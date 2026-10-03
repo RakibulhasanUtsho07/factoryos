@@ -10,8 +10,10 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
+import { IamModule } from './iam/iam.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
+import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 
 @Module({
   imports: [
@@ -20,6 +22,7 @@ import { TenantContextMiddleware } from './common/middleware/tenant-context.midd
     }),
     DatabaseModule,
     HealthModule,
+    IamModule,
   ],
   controllers: [AppController],
   providers: [AppService],
@@ -29,6 +32,7 @@ export class AppModule implements NestModule {
     consumer
       .apply(
         RequestIdMiddleware,
+        TraceIdMiddleware,
         TenantContextMiddleware,
       )
       .forRoutes({

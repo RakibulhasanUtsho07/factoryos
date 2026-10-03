@@ -8,7 +8,6 @@ import {
 import { Request, Response } from 'express';
 
 interface ErrorResponse {
-  error?: string;
   message?: string | string[];
 }
 
@@ -22,6 +21,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const requestId =
       request.header('x-request-id') ?? 'unknown';
+
+    const traceId =
+      request.header('x-trace-id') ?? requestId;
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let code = 'INTERNAL_SERVER_ERROR';
@@ -54,9 +56,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error: {
         code,
         message,
-        requestId,
-        timestamp: new Date().toISOString(),
-        path: request.url,
+        retryable: status >= 500,
+        details: {},
+        trace_id: traceId,
+        request_id: requestId,
       },
     });
   }
