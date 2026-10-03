@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: factoryos-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: factoryos
+      POSTGRES_USER: factoryos
+      POSTGRES_PASSWORD: factoryos_dev_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - factoryos_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factoryos -d factoryos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  factoryos_postgres_data:
