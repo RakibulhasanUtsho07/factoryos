@@ -4,7 +4,7 @@ import {
   Injectable,
   NestInterceptor,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { Observable, map } from 'rxjs';
 
 import { ApiResponse } from '../types/api-response';
@@ -20,33 +20,32 @@ export class ApiResponseInterceptor<T>
     const request =
       context.switchToHttp().getRequest<Request>();
 
-    const requestContext = request.factoryos;
-
     const requestId =
-      requestContext?.requestId ??
+      request.factoryos?.requestId ??
       request.header('x-request-id') ??
       'unknown';
 
     const traceId =
-      requestContext?.traceId ??
+      request.factoryos?.traceId ??
       request.header('x-trace-id') ??
       requestId;
 
-    // IMPORTANT:
-    // tenantId comes only from server-verified context.
-    const tenantId =
-      requestContext?.tenantId ?? null;
-
     return next.handle().pipe(
-      map((data) => ({
-        request_id: requestId,
-        trace_id: traceId,
-        api_version: 'v1',
-        tenant_id: tenantId,
-        data,
-        meta: {},
-        errors: [],
-      })),
+      map((data) => {
+        // Read verified tenant AFTER controller/guard execution.
+        const tenantId =
+          request.factoryos?.tenantId ?? null;
+
+        return {
+          request_id: requestId,
+          trace_id: traceId,
+          api_version: 'v1',
+          tenant_id: tenantId,
+          data,
+          meta: {},
+          errors: [],
+        };
+      }),
     );
   }
 }
