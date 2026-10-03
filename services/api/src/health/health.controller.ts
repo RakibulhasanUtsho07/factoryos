@@ -4,12 +4,14 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 
+import { Public } from '../auth/decorators/public.decorator';
 import { DatabaseService } from '../database/database.service';
 
 @Controller('health')
 export class HealthController {
   constructor(private readonly database: DatabaseService) {}
 
+  @Public()
   @Get()
   async check() {
     const startedAt = Date.now();
@@ -19,10 +21,12 @@ export class HealthController {
         result: number;
       }>('SELECT 1 AS result');
 
+      const databaseOk = result.rows[0]?.result === 1;
+
       return {
-        status: 'ok',
+        status: databaseOk ? 'ok' : 'error',
         service: 'factoryos-api',
-        database: result.rows[0]?.result === 1 ? 'ok' : 'error',
+        database: databaseOk ? 'ok' : 'error',
         timestamp: new Date().toISOString(),
         responseTimeMs: Date.now() - startedAt,
       };
