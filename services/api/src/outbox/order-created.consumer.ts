@@ -79,8 +79,15 @@ export class OrderCreatedConsumer
     const order =
       payload.order;
 
+    // ----------------------------------------------------------
+    // Validate required payload fields.
+    // ----------------------------------------------------------
+
     if (
       !order ||
+      typeof order.id !== 'string' ||
+      typeof order.tenant_id !== 'string' ||
+      typeof order.factory_id !== 'string' ||
       typeof order.order_number !== 'string' ||
       typeof order.status !== 'string'
     ) {
@@ -89,24 +96,65 @@ export class OrderCreatedConsumer
       );
     }
 
+    // ----------------------------------------------------------
+    // Verify aggregate identity.
+    // ----------------------------------------------------------
+
+    if (
+      order.id !== event.aggregateId
+    ) {
+      throw new Error(
+        'ORDER_CREATED_PAYLOAD_AGGREGATE_MISMATCH',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Verify tenant identity.
+    // ----------------------------------------------------------
+
+    if (
+      order.tenant_id !== event.tenantId
+    ) {
+      throw new Error(
+        'ORDER_CREATED_PAYLOAD_TENANT_MISMATCH',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Verify factory identity.
+    // ----------------------------------------------------------
+
+    if (
+      event.factoryId !== null &&
+      order.factory_id !== event.factoryId
+    ) {
+      throw new Error(
+        'ORDER_CREATED_PAYLOAD_FACTORY_MISMATCH',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Verify aggregate still exists.
+    //
+    // IMPORTANT:
+    // Current aggregate state is NOT used for the projection
+    // snapshot. We only verify tenant-scoped existence.
+    // ----------------------------------------------------------
+
     const orderResult =
       await client.query<{
         id: string;
-        tenant_id: string;
-        factory_id: string;
-        order_number: string;
-        status: string;
       }>(
         `
         SELECT
-          id::text AS id,
-          tenant_id::text AS tenant_id,
-          factory_id::text AS factory_id,
-          order_number,
-          status
+          id::text AS id
+
         FROM orders
-        WHERE id = $1
+
+        WHERE
+          id = $1
           AND tenant_id = $2
+
         LIMIT 1
         `,
         [
@@ -124,6 +172,12 @@ export class OrderCreatedConsumer
       );
     }
 
+    // ----------------------------------------------------------
+    // Persist historical event snapshot.
+    //
+    // These fields MUST come from the event payload.
+    // ----------------------------------------------------------
+
     const projectionResult =
       await client.query<{
         id: string;
@@ -138,6 +192,7 @@ export class OrderCreatedConsumer
           status,
           event_version
         )
+
         VALUES (
           $1,
           $2,
@@ -147,23 +202,30 @@ export class OrderCreatedConsumer
           $6,
           $7
         )
+
         ON CONFLICT (event_id)
         DO NOTHING
-        RETURNING id::text AS id
+
+        RETURNING
+          id::text AS id
         `,
         [
           event.tenantId,
           event.id,
-          existingOrder.id,
-          existingOrder.factory_id,
-          existingOrder.order_number,
-          existingOrder.status,
+          event.aggregateId,
+          order.factory_id,
+          order.order_number,
+          order.status,
           event.eventVersion,
         ],
       );
 
     const projection =
       projectionResult.rows[0];
+
+    // ----------------------------------------------------------
+    // Duplicate delivery.
+    // ----------------------------------------------------------
 
     if (!projection) {
       const existingProjection =
@@ -173,11 +235,17 @@ export class OrderCreatedConsumer
           `
           SELECT
             id::text AS id
+
           FROM order_event_projections
-          WHERE event_id = $1
+
+          WHERE
+            event_id = $1
+
           LIMIT 1
           `,
-          [event.id],
+          [
+            event.id,
+          ],
         );
 
       const existing =
@@ -190,14 +258,20 @@ export class OrderCreatedConsumer
       }
 
       return {
-        projectionId: existing.id,
-        orderId: existingOrder.id,
+        projectionId:
+          existing.id,
+
+        orderId:
+          event.aggregateId,
       };
     }
 
     return {
-      projectionId: projection.id,
-      orderId: existingOrder.id,
+      projectionId:
+        projection.id,
+
+      orderId:
+        event.aggregateId,
     };
   }
 }

@@ -26,11 +26,16 @@ describe(
     const runId =
       randomUUID();
 
-    let pool: Pool;
+    const TEST_USER_ID =
+      '921382b8-e83f-43ab-a576-e3db6a06b70c';
 
-    let orderId: string;
-    let tenantId: string;
-    let eventId: string;
+    let pool!: Pool;
+
+    let orderId!: string;
+    let tenantId!: string;
+    let factoryId!: string;
+    let orderNumber!: string;
+    let eventId!: string;
 
     async function transaction<T>(
       callback: (
@@ -45,14 +50,16 @@ describe(
           'BEGIN',
         );
 
-        const result =
-          await callback(client);
+        const value =
+          await callback(
+            client,
+          );
 
         await client.query(
           'COMMIT',
         );
 
-        return result;
+        return value;
       } catch (error) {
         await client.query(
           'ROLLBACK',
@@ -64,7 +71,89 @@ describe(
       }
     }
 
+    async function createDispatcher() {
+      const database = {
+        transaction,
+        query:
+          pool.query.bind(pool),
+      };
+
+      const inboxService =
+        new InboxService(
+          database as never,
+        );
+
+      const orderConsumer =
+        new OrderCreatedConsumer(
+          inboxService,
+        );
+
+      const registry =
+        new OutboxConsumerRegistry(
+          orderConsumer,
+        );
+
+      const publisher =
+        new OutboxPublisher();
+
+      return new OutboxDispatcherService(
+        database as never,
+        publisher,
+        registry,
+      );
+    }
+
+    async function dispatchUntilPublished(
+      targetEventId: string,
+      maxAttempts = 10,
+    ): Promise<void> {
+      for (
+        let attempt = 0;
+        attempt < maxAttempts;
+        attempt += 1
+      ) {
+        const current =
+          await pool.query<{
+            status: string;
+          }>(
+            `
+            SELECT
+              status
+
+            FROM outbox_events
+
+            WHERE
+              id = $1
+            `,
+            [
+              targetEventId,
+            ],
+          );
+
+        if (
+          current.rowCount === 1 &&
+          current.rows[0]?.status ===
+            'PUBLISHED'
+        ) {
+          return;
+        }
+
+        const dispatcher =
+          await createDispatcher();
+
+        await dispatcher.dispatchOnce();
+      }
+
+      throw new Error(
+        `ORDER.CREATED test event was not published after ${maxAttempts} dispatcher attempts: ${targetEventId}`,
+      );
+    }
+
     beforeAll(async () => {
+      // --------------------------------------------------------
+      // Test-only failure injection must be disabled.
+      // --------------------------------------------------------
+
       if (
         process.env
           .OUTBOX_TEST_FORCE_FAILURE ===
@@ -75,6 +164,10 @@ describe(
         );
       }
 
+      // --------------------------------------------------------
+      // Database configuration.
+      // --------------------------------------------------------
+
       const databaseUrl =
         process.env.DATABASE_URL;
 
@@ -84,40 +177,150 @@ describe(
         );
       }
 
-      pool = new Pool({
-        connectionString:
-          databaseUrl,
-      });
+      pool =
+        new Pool({
+          connectionString:
+            databaseUrl,
+        });
 
-      const orderResult =
-        await pool.query(
+      // --------------------------------------------------------
+      // Verify test actor.
+      // --------------------------------------------------------
+
+      const userResult =
+        await pool.query<{
+          id: string;
+        }>(
           `
           SELECT
-            id::text AS id,
-            tenant_id::text AS tenant_id
-          FROM orders
-          ORDER BY created_at DESC
+            id::text AS id
+
+          FROM users
+
+          WHERE
+            id = $1
+            AND status = 'ACTIVE'
+
           LIMIT 1
           `,
+          [
+            TEST_USER_ID,
+          ],
+        );
+
+      if (
+        userResult.rowCount !== 1
+      ) {
+        throw new Error(
+          `Test user does not exist or is inactive: ${TEST_USER_ID}`,
+        );
+      }
+
+      // --------------------------------------------------------
+      // IMPORTANT:
+      // orderNumber is declared at describe scope and assigned
+      // here, so it is available in all test cases.
+      // --------------------------------------------------------
+
+      orderNumber =
+        `OUTBOX-PROJECTION-TEST-${runId}`;
+
+      // --------------------------------------------------------
+      // Create isolated DRAFT order.
+      // --------------------------------------------------------
+
+      const orderResult =
+        await pool.query<{
+          id: string;
+          tenant_id: string;
+          factory_id: string;
+        }>(
+          `
+          INSERT INTO orders (
+            tenant_id,
+            factory_id,
+            order_number,
+            customer_name,
+            status,
+            order_date,
+            currency,
+            created_by_user_id
+          )
+
+          SELECT
+            t.id,
+            f.id,
+            $1,
+            'ORDER.CREATED Projection Test',
+            'DRAFT',
+            CURRENT_DATE,
+            'BDT',
+            u.id
+
+          FROM tenants t
+
+          INNER JOIN factories f
+            ON f.tenant_id = t.id
+
+          INNER JOIN users u
+            ON u.id = $2
+
+          WHERE
+            t.status = 'ACTIVE'
+            AND f.status = 'ACTIVE'
+            AND u.status = 'ACTIVE'
+
+          ORDER BY
+            t.created_at ASC,
+            f.created_at ASC
+
+          LIMIT 1
+
+          RETURNING
+            id::text AS id,
+            tenant_id::text AS tenant_id,
+            factory_id::text AS factory_id
+          `,
+          [
+            orderNumber,
+            TEST_USER_ID,
+          ],
         );
 
       if (
         orderResult.rowCount !== 1
       ) {
         throw new Error(
-          'No order available for pipeline integration test.',
+          'Could not create isolated ORDER.CREATED pipeline test order.',
+        );
+      }
+
+      const createdOrder =
+        orderResult.rows[0];
+
+      if (!createdOrder) {
+        throw new Error(
+          'Created order row is missing.',
         );
       }
 
       orderId =
-        orderResult.rows[0].id;
+        createdOrder.id;
 
       tenantId =
-        orderResult.rows[0]
-          .tenant_id;
+        createdOrder.tenant_id;
+
+      factoryId =
+        createdOrder.factory_id;
 
       eventId =
         randomUUID();
+
+      // --------------------------------------------------------
+      // Persist immutable ORDER.CREATED event.
+      //
+      // Event snapshot = DRAFT.
+      // --------------------------------------------------------
 
       await pool.query(
         `
@@ -135,50 +338,144 @@ describe(
           next_attempt_at
         )
 
-        SELECT
+        VALUES (
           $1,
-          o.tenant_id,
-          o.factory_id,
+          $2,
+          $3,
           'ORDER',
-          o.id,
+          $4,
           'ORDER.CREATED',
           1,
-
-          jsonb_build_object(
-            'order',
-            jsonb_build_object(
-              'id',
-              o.id,
-
-              'tenant_id',
-              o.tenant_id,
-
-              'factory_id',
-              o.factory_id,
-
-              'order_number',
-              o.order_number,
-
-              'status',
-              o.status
-            )
-          ),
-
+          $5::jsonb,
           'PENDING',
           0,
           now()
-
-        FROM orders o
-
-        WHERE o.id = $2
-          AND o.tenant_id = $3
+        )
         `,
         [
           eventId,
-          orderId,
           tenantId,
+          factoryId,
+          orderId,
+          JSON.stringify({
+            order: {
+              id:
+                orderId,
+
+              tenant_id:
+                tenantId,
+
+              factory_id:
+                factoryId,
+
+              order_number:
+                orderNumber,
+
+              status:
+                'DRAFT',
+            },
+          }),
         ],
       );
+
+      // --------------------------------------------------------
+      // Regression setup:
+      //
+      // Event already contains historical DRAFT snapshot.
+      // Current aggregate then moves to COMPLETED.
+      // --------------------------------------------------------
+
+      const updateResult =
+        await pool.query(
+          `
+          UPDATE orders
+
+          SET
+            status = 'COMPLETED'
+
+          WHERE
+            id = $1
+            AND tenant_id = $2
+          `,
+          [
+            orderId,
+            tenantId,
+          ],
+        );
+
+      if (
+        updateResult.rowCount !== 1
+      ) {
+        throw new Error(
+          'Could not move test order to COMPLETED.',
+        );
+      }
+
+      // --------------------------------------------------------
+      // Verify test setup.
+      // --------------------------------------------------------
+
+      const setupResult =
+        await pool.query<{
+          order_status: string;
+          payload_status:
+            | string
+            | null;
+          payload_order_number:
+            | string
+            | null;
+        }>(
+          `
+          SELECT
+            o.status AS order_status,
+
+            oe.payload->'order'->>'status'
+              AS payload_status,
+
+            oe.payload->'order'->>'order_number'
+              AS payload_order_number
+
+          FROM orders o
+
+          INNER JOIN outbox_events oe
+            ON oe.aggregate_id = o.id
+
+          WHERE
+            o.id = $1
+            AND oe.id = $2
+            AND o.tenant_id = $3
+          `,
+          [
+            orderId,
+            eventId,
+            tenantId,
+          ],
+        );
+
+      expect(
+        setupResult.rowCount,
+      ).toBe(1);
+
+      const setup =
+        setupResult.rows[0];
+
+      if (!setup) {
+        throw new Error(
+          'Regression setup row is missing.',
+        );
+      }
+
+      expect(
+        setup.order_status,
+      ).toBe('COMPLETED');
+
+      expect(
+        setup.payload_status,
+      ).toBe('DRAFT');
+
+      expect(
+        setup.payload_order_number,
+      ).toBe(orderNumber);
     });
 
     afterAll(async () => {
@@ -186,118 +483,220 @@ describe(
         return;
       }
 
-      await pool.query(
-        `
-        DELETE FROM inbox_events
-        WHERE event_id = $1
-        `,
-        [eventId],
-      );
+      // --------------------------------------------------------
+      // Delete inbox first.
+      // --------------------------------------------------------
 
-      await pool.query(
-        `
-        DELETE FROM order_event_projections
-        WHERE event_id = $1
-        `,
-        [eventId],
-      );
+      if (eventId) {
+        await pool.query(
+          `
+          DELETE FROM inbox_events
 
-      await pool.query(
-        `
-        DELETE FROM outbox_events
-        WHERE id = $1
-        `,
-        [eventId],
-      );
+          WHERE
+            event_id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        // ------------------------------------------------------
+        // Delete projection.
+        // ------------------------------------------------------
+
+        await pool.query(
+          `
+          DELETE FROM order_event_projections
+
+          WHERE
+            event_id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        // ------------------------------------------------------
+        // Delete outbox event.
+        // ------------------------------------------------------
+
+        await pool.query(
+          `
+          DELETE FROM outbox_events
+
+          WHERE
+            id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+      }
+
+      // --------------------------------------------------------
+      // Delete isolated order.
+      // --------------------------------------------------------
+
+      if (orderId) {
+        await pool.query(
+          `
+          DELETE FROM orders
+
+          WHERE
+            id = $1
+          `,
+          [
+            orderId,
+          ],
+        );
+      }
 
       await pool.end();
     });
 
     it(
-      'should publish and consume ORDER.CREATED exactly once',
+      'should publish and consume ORDER.CREATED using the immutable event snapshot',
       async () => {
-        const database = {
-          transaction,
-          query:
-            pool.query.bind(pool),
-        };
+        await dispatchUntilPublished(
+          eventId,
+        );
 
-        const inboxService =
-          new InboxService(
-            database as never,
-          );
-
-        const orderConsumer =
-          new OrderCreatedConsumer(
-            inboxService,
-          );
-
-        const registry =
-          new OutboxConsumerRegistry(
-            orderConsumer,
-          );
-
-        const publisher =
-          new OutboxPublisher();
-
-        const dispatcher =
-          new OutboxDispatcherService(
-            database as never,
-            publisher,
-            registry,
-          );
-
-        const result =
-          await dispatcher.dispatchOnce();
-
-        expect(
-          result.claimed,
-        ).toBeGreaterThanOrEqual(1);
+        // ------------------------------------------------------
+        // Verify outbox.
+        // ------------------------------------------------------
 
         const outboxResult =
-          await pool.query(
+          await pool.query<{
+            status: string;
+            attempts: number;
+            published_at:
+              | string
+              | null;
+            last_error:
+              | string
+              | null;
+            payload_status:
+              | string
+              | null;
+            payload_order_number:
+              | string
+              | null;
+          }>(
             `
             SELECT
               status,
               attempts,
               published_at,
-              last_error
+              last_error,
+
+              payload->'order'->>'status'
+                AS payload_status,
+
+              payload->'order'->>'order_number'
+                AS payload_order_number
 
             FROM outbox_events
 
-            WHERE id = $1
+            WHERE
+              id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
           outboxResult.rowCount,
         ).toBe(1);
 
+        const outbox =
+          outboxResult.rows[0];
+
+        if (!outbox) {
+          throw new Error(
+            'Outbox test event row is missing.',
+          );
+        }
+
         expect(
-          outboxResult.rows[0]
-            .status,
+          outbox.status,
         ).toBe('PUBLISHED');
 
         expect(
           Number(
-            outboxResult.rows[0]
-              .attempts,
+            outbox.attempts,
           ),
         ).toBe(1);
 
         expect(
-          outboxResult.rows[0]
-            .published_at,
+          outbox.published_at,
         ).toBeTruthy();
 
         expect(
-          outboxResult.rows[0]
-            .last_error,
+          outbox.last_error,
         ).toBeNull();
 
+        expect(
+          outbox.payload_status,
+        ).toBe('DRAFT');
+
+        expect(
+          outbox.payload_order_number,
+        ).toBe(orderNumber);
+
+        // ------------------------------------------------------
+        // Verify current aggregate is COMPLETED.
+        // ------------------------------------------------------
+
+        const orderResult =
+          await pool.query<{
+            status: string;
+          }>(
+            `
+            SELECT
+              status
+
+            FROM orders
+
+            WHERE
+              id = $1
+              AND tenant_id = $2
+            `,
+            [
+              orderId,
+              tenantId,
+            ],
+          );
+
+        expect(
+          orderResult.rowCount,
+        ).toBe(1);
+
+        const currentOrder =
+          orderResult.rows[0];
+
+        if (!currentOrder) {
+          throw new Error(
+            'Current order row is missing.',
+          );
+        }
+
+        expect(
+          currentOrder.status,
+        ).toBe('COMPLETED');
+
+        // ------------------------------------------------------
+        // Verify inbox exactly once.
+        // ------------------------------------------------------
+
         const inboxResult =
-          await pool.query(
+          await pool.query<{
+            consumer_name: string;
+            event_id: string;
+            processed_at:
+              | string
+              | null;
+          }>(
             `
             SELECT
               consumer_name,
@@ -306,29 +705,55 @@ describe(
 
             FROM inbox_events
 
-            WHERE event_id = $1
+            WHERE
+              event_id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
           inboxResult.rowCount,
         ).toBe(1);
 
+        const inbox =
+          inboxResult.rows[0];
+
+        if (!inbox) {
+          throw new Error(
+            'Inbox row is missing.',
+          );
+        }
+
         expect(
-          inboxResult.rows[0]
-            .consumer_name,
+          inbox.consumer_name,
         ).toBe(
           'order-created-projection-v1',
         );
 
         expect(
-          inboxResult.rows[0]
-            .processed_at,
+          inbox.event_id,
+        ).toBe(eventId);
+
+        expect(
+          inbox.processed_at,
         ).toBeTruthy();
 
+        // ------------------------------------------------------
+        // Verify projection.
+        // ------------------------------------------------------
+
         const projectionResult =
-          await pool.query(
+          await pool.query<{
+            event_id: string;
+            order_id: string;
+            tenant_id: string;
+            factory_id: string;
+            order_number: string;
+            status: string;
+            event_version: number;
+          }>(
             `
             SELECT
               event_id,
@@ -341,38 +766,69 @@ describe(
 
             FROM order_event_projections
 
-            WHERE event_id = $1
+            WHERE
+              event_id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
           projectionResult.rowCount,
         ).toBe(1);
 
+        const projection =
+          projectionResult.rows[0];
+
+        if (!projection) {
+          throw new Error(
+            'Projection row is missing.',
+          );
+        }
+
         expect(
-          projectionResult.rows[0]
-            .event_id,
+          projection.event_id,
         ).toBe(eventId);
 
         expect(
-          projectionResult.rows[0]
-            .order_id,
+          projection.order_id,
         ).toBe(orderId);
 
         expect(
-          projectionResult.rows[0]
-            .tenant_id,
+          projection.tenant_id,
         ).toBe(tenantId);
 
         expect(
-          projectionResult.rows[0]
-            .order_number,
-        ).toBeTruthy();
+          projection.factory_id,
+        ).toBe(factoryId);
 
         expect(
-          projectionResult.rows[0]
-            .event_version,
+          projection.order_number,
+        ).toBe(orderNumber);
+
+        // ------------------------------------------------------
+        // Critical regression assertion.
+        //
+        // Current aggregate = COMPLETED
+        // Historical event = DRAFT
+        // Projection = DRAFT
+        // ------------------------------------------------------
+
+        expect(
+          projection.status,
+        ).toBe('DRAFT');
+
+        expect(
+          projection.status,
+        ).not.toBe(
+          currentOrder.status,
+        );
+
+        expect(
+          Number(
+            projection.event_version,
+          ),
         ).toBe(1);
       },
     );
@@ -380,24 +836,26 @@ describe(
     it(
       'should skip a duplicate ORDER.CREATED delivery',
       async () => {
-        const database = {
-          transaction,
-          query:
-            pool.query.bind(pool),
-        };
-
-        const inboxService =
-          new InboxService(
-            database as never,
-          );
-
-        const orderConsumer =
-          new OrderCreatedConsumer(
-            inboxService,
-          );
+        // ------------------------------------------------------
+        // Read exact persisted event.
+        // ------------------------------------------------------
 
         const eventResult =
-          await pool.query(
+          await pool.query<{
+            id: string;
+            tenant_id: string;
+            factory_id:
+              | string
+              | null;
+            aggregate_type: string;
+            aggregate_id: string;
+            event_type: string;
+            event_version: number;
+            payload: Record<
+              string,
+              unknown
+            >;
+          }>(
             `
             SELECT
               id::text AS id,
@@ -411,9 +869,12 @@ describe(
 
             FROM outbox_events
 
-            WHERE id = $1
+            WHERE
+              id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -423,8 +884,15 @@ describe(
         const row =
           eventResult.rows[0];
 
+        if (!row) {
+          throw new Error(
+            'Outbox event row is missing.',
+          );
+        }
+
         const event: OutboxEvent = {
-          id: row.id,
+          id:
+            row.id,
 
           tenantId:
             row.tenant_id,
@@ -448,6 +916,26 @@ describe(
             row.payload,
         };
 
+        // ------------------------------------------------------
+        // Deliver same event again.
+        // ------------------------------------------------------
+
+        const database = {
+          transaction,
+          query:
+            pool.query.bind(pool),
+        };
+
+        const inboxService =
+          new InboxService(
+            database as never,
+          );
+
+        const orderConsumer =
+          new OrderCreatedConsumer(
+            inboxService,
+          );
+
         const result =
           await orderConsumer.consume(
             event,
@@ -461,43 +949,104 @@ describe(
           result.result,
         ).toBeNull();
 
-        const inboxResult =
-          await pool.query(
+        // ------------------------------------------------------
+        // Inbox remains exactly once.
+        // ------------------------------------------------------
+
+        const inboxCountResult =
+          await pool.query<{
+            count: number;
+          }>(
             `
             SELECT
               COUNT(*)::int AS count
 
             FROM inbox_events
 
-            WHERE event_id = $1
+            WHERE
+              event_id = $1
               AND consumer_name =
                 'order-created-projection-v1'
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
-          inboxResult.rows[0]
-            .count,
+          inboxCountResult.rowCount,
         ).toBe(1);
 
-        const projectionResult =
-          await pool.query(
+        expect(
+          Number(
+            inboxCountResult.rows[0]
+              ?.count ?? 0,
+          ),
+        ).toBe(1);
+
+        // ------------------------------------------------------
+        // Projection remains exactly once.
+        // ------------------------------------------------------
+
+        const projectionCountResult =
+          await pool.query<{
+            count: number;
+          }>(
             `
             SELECT
               COUNT(*)::int AS count
 
             FROM order_event_projections
 
-            WHERE event_id = $1
+            WHERE
+              event_id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
-          projectionResult.rows[0]
-            .count,
+          projectionCountResult.rowCount,
         ).toBe(1);
+
+        expect(
+          Number(
+            projectionCountResult.rows[0]
+              ?.count ?? 0,
+          ),
+        ).toBe(1);
+
+        // ------------------------------------------------------
+        // Duplicate delivery must not change snapshot.
+        // ------------------------------------------------------
+
+        const projectionStatusResult =
+          await pool.query<{
+            status: string;
+          }>(
+            `
+            SELECT
+              status
+
+            FROM order_event_projections
+
+            WHERE
+              event_id = $1
+            `,
+            [
+              eventId,
+            ],
+          );
+
+        expect(
+          projectionStatusResult.rowCount,
+        ).toBe(1);
+
+        expect(
+          projectionStatusResult.rows[0]
+            ?.status,
+        ).toBe('DRAFT');
       },
     );
   },
