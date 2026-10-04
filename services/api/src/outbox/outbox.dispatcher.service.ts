@@ -8,10 +8,15 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import { DatabaseService } from '../database/database.service';
+
 import {
   OutboxEvent,
   OutboxPublisher,
 } from './outbox.publisher';
+
+import {
+  OutboxConsumerRegistry,
+} from './outbox.consumer.registry';
 
 interface OutboxRow {
   id: string;
@@ -36,7 +41,9 @@ interface OutboxRow {
 
 @Injectable()
 export class OutboxDispatcherService
-  implements OnModuleInit, OnModuleDestroy
+  implements
+    OnModuleInit,
+    OnModuleDestroy
 {
   private readonly logger =
     new Logger(
@@ -59,6 +66,12 @@ export class OutboxDispatcherService
   private readonly leaseMs = 60_000;
 
   private readonly maxAttempts = 10;
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly publisher: OutboxPublisher,
+    private readonly consumerRegistry: OutboxConsumerRegistry,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     const enabled =
@@ -106,7 +119,7 @@ export class OutboxDispatcherService
 
     for (const row of rows) {
       try {
-        await this.publisher.publish({
+        const event: OutboxEvent = {
           id: row.id,
           tenantId: row.tenant_id,
           factoryId: row.factory_id,
@@ -120,7 +133,37 @@ export class OutboxDispatcherService
             row.event_version,
           payload:
             row.payload,
-        });
+        };
+
+        // ------------------------------------------------------
+        // External/local publisher
+        // ------------------------------------------------------
+
+        await this.publisher.publish(
+          event,
+        );
+
+        // ------------------------------------------------------
+        // Local idempotent consumers
+        // ------------------------------------------------------
+
+        const consumerResult =
+          await this.consumerRegistry.dispatch(
+            event,
+          );
+
+        if (
+          consumerResult.handled
+        ) {
+          this.logger.log(
+            `Outbox event consumed: event_id=${event.id}, consumer=${consumerResult.consumerName}`,
+          );
+        }
+
+        // ------------------------------------------------------
+        // Mark event complete only after publication
+        // and local consumer processing succeed.
+        // ------------------------------------------------------
 
         await this.markPublished(
           row.id,
@@ -199,30 +242,20 @@ export class OutboxDispatcherService
 
     return this.database.transaction(
       async (client) => {
-        /*
-         * Recover stale PROCESSING events.
-         *
-         * A worker may have crashed after claiming
-         * an event but before publishing it.
-         */
         await client.query(
           `
           UPDATE outbox_events
+
           SET
             status = 'PENDING',
             locked_at = NULL,
             locked_by = NULL
+
           WHERE status = 'PROCESSING'
             AND next_attempt_at <= now()
           `,
         );
 
-        /*
-         * Claim pending/retryable events.
-         *
-         * FOR UPDATE SKIP LOCKED allows multiple
-         * workers/instances to operate safely.
-         */
         const result =
           await client.query<OutboxRow>(
             `
@@ -273,7 +306,9 @@ export class OutboxDispatcherService
             [this.batchSize],
           );
 
-        if (result.rows.length === 0) {
+        if (
+          result.rows.length === 0
+        ) {
           return [];
         }
 
@@ -288,17 +323,12 @@ export class OutboxDispatcherService
 
           SET
             status = 'PROCESSING',
-
             attempts = attempts + 1,
-
             locked_at = $1,
-
             locked_by = $2,
-
             last_attempt_at = now(),
-
             next_attempt_at = $3
-          
+
           WHERE id = ANY($4::uuid[])
           `,
           [
@@ -323,13 +353,9 @@ export class OutboxDispatcherService
 
       SET
         status = 'PUBLISHED',
-
         published_at = now(),
-
         locked_at = NULL,
-
         locked_by = NULL,
-
         last_error = NULL
 
       WHERE id = $1
@@ -352,20 +378,19 @@ export class OutboxDispatcherService
         ? error.message
         : String(error);
 
-    /*
-     * Reload attempts so retry delay is based
-     * on the current delivery count.
-     */
     const result =
       await this.database.query<{
         attempts: number;
       }>(
         `
         SELECT attempts
+
         FROM outbox_events
+
         WHERE id = $1
           AND status = 'PROCESSING'
           AND locked_by = $2
+
         LIMIT 1
         `,
         [
@@ -377,16 +402,6 @@ export class OutboxDispatcherService
     const attempts =
       result.rows[0]?.attempts ?? 1;
 
-    /*
-     * Exponential backoff:
-     *
-     * 1st failure  = 5s
-     * 2nd           = 10s
-     * 3rd           = 20s
-     * ...
-     *
-     * capped at 1 hour.
-     */
     const delaySeconds =
       Math.min(
         5 *
@@ -407,10 +422,6 @@ export class OutboxDispatcherService
             1000,
       );
 
-    /*
-     * After maxAttempts the event remains FAILED
-     * with the next retry pushed 24h away.
-     */
     const permanentlyFailed =
       attempts >= this.maxAttempts;
 
@@ -431,13 +442,9 @@ export class OutboxDispatcherService
 
       SET
         status = 'FAILED',
-
         next_attempt_at = $1,
-
         locked_at = NULL,
-
         locked_by = NULL,
-
         last_error = $2
 
       WHERE id = $3
@@ -459,9 +466,4 @@ export class OutboxDispatcherService
       `Outbox event failed: ${eventId}; attempts=${attempts}; retryAt=${finalNextAttempt.toISOString()}`,
     );
   }
-  
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly publisher: OutboxPublisher,
-  ) {}
 }
