@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Headers,
+  Param,
+  ParseUUIDPipe,
   Post,
   Req,
   UnauthorizedException,
@@ -78,6 +80,54 @@ export class OrdersController {
       requestId,
       traceId,
       idempotencyKey ?? null,
+    );
+  }
+    @Post(':orderId/status')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.write')
+  @RequireFactoryScope()
+  async transitionStatus(
+    @Req() request: FactoryOsRequest,
+    @Param(
+      'orderId',
+      new ParseUUIDPipe(),
+    )
+    orderId: string,
+    @Body()
+    body: import('./dto/transition-order.dto').TransitionOrderDto,
+  ) {
+    const userId =
+      request.factoryos?.userId ??
+      null;
+
+    const tenantId =
+      request.factoryos?.tenantId ??
+      null;
+
+    const requestId =
+      request.factoryos?.requestId ??
+      null;
+
+    const traceId =
+      request.factoryos?.traceId ??
+      null;
+
+    if (
+      !userId ||
+      !tenantId
+    ) {
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
+      );
+    }
+
+    return this.ordersService.transitionOrderStatus(
+      userId,
+      tenantId,
+      orderId,
+      body.target_status,
+      requestId,
+      traceId,
     );
   }
 }

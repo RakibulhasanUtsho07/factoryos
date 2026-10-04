@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 
 import { PoolClient } from 'pg';
@@ -669,5 +670,362 @@ export class OrdersService {
        * an API failure.
        */
     }
+  }
+    // ============================================================
+  // ORDER STATUS TRANSITION
+  // ============================================================
+
+  async transitionOrderStatus(
+    userId: string,
+    tenantId: string,
+    orderId: string,
+    targetStatus:
+      | 'DRAFT'
+      | 'CONFIRMED'
+      | 'IN_PROGRESS'
+      | 'COMPLETED'
+      | 'CANCELLED',
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    if (!isUUID(userId)) {
+      throw new BadRequestException(
+        'userId must be a valid UUID',
+      );
+    }
+
+    if (!isUUID(tenantId)) {
+      throw new BadRequestException(
+        'tenantId must be a valid UUID',
+      );
+    }
+
+    if (!isUUID(orderId)) {
+      throw new BadRequestException(
+        'orderId must be a valid UUID',
+      );
+    }
+
+    const result =
+      await this.database.transaction(
+        async (client) => {
+          // ----------------------------------------------------
+          // Lock authoritative order row.
+          // This serializes concurrent lifecycle transitions.
+          // ----------------------------------------------------
+
+          const orderResult =
+            await client.query<{
+              id: string;
+              tenant_id: string;
+              factory_id: string;
+              order_number: string;
+              status:
+                | 'DRAFT'
+                | 'CONFIRMED'
+                | 'IN_PROGRESS'
+                | 'COMPLETED'
+                | 'CANCELLED';
+            }>(
+              `
+              SELECT
+                id::text AS id,
+                tenant_id::text AS tenant_id,
+                factory_id::text AS factory_id,
+                order_number,
+                status
+
+              FROM orders
+
+              WHERE
+                id = $1
+                AND tenant_id = $2
+
+              FOR UPDATE
+              `,
+              [
+                orderId,
+                tenantId,
+              ],
+            );
+
+          const order =
+            orderResult.rows[0];
+
+          if (!order) {
+            throw new NotFoundException(
+              'Order not found',
+            );
+          }
+
+          // ----------------------------------------------------
+          // No-op transitions are rejected explicitly.
+          // ----------------------------------------------------
+
+          if (
+            order.status ===
+            targetStatus
+          ) {
+            throw new ConflictException(
+              `Order is already in ${targetStatus} status`,
+            );
+          }
+
+          // ----------------------------------------------------
+          // Strict lifecycle transition matrix.
+          // ----------------------------------------------------
+
+          const allowedTransitions:
+            Record<
+              string,
+              readonly string[]
+            > = {
+              DRAFT: [
+                'CONFIRMED',
+                'CANCELLED',
+              ],
+
+              CONFIRMED: [
+                'IN_PROGRESS',
+                'CANCELLED',
+              ],
+
+              IN_PROGRESS: [
+                'COMPLETED',
+                'CANCELLED',
+              ],
+
+              COMPLETED: [],
+
+              CANCELLED: [],
+            };
+
+          const allowed =
+            allowedTransitions[
+              order.status
+            ] ?? [];
+
+          if (
+            !allowed.includes(
+              targetStatus,
+            )
+          ) {
+            throw new ConflictException(
+              `Invalid order status transition: ${order.status} -> ${targetStatus}`,
+            );
+          }
+
+          // ----------------------------------------------------
+          // Status transition.
+          // ----------------------------------------------------
+
+          const updatedResult =
+            await client.query<{
+              id: string;
+              tenant_id: string;
+              factory_id: string;
+              order_number: string;
+              status: string;
+              order_date: string;
+              requested_delivery_date:
+                | string
+                | null;
+              currency: string;
+              created_at: string;
+            }>(
+              `
+              UPDATE orders
+
+              SET
+                status = $1
+
+              WHERE
+                id = $2
+                AND tenant_id = $3
+
+              RETURNING
+                id::text AS id,
+                tenant_id::text AS tenant_id,
+                factory_id::text AS factory_id,
+                order_number,
+                status,
+                order_date::text AS order_date,
+                requested_delivery_date::text
+                  AS requested_delivery_date,
+                currency,
+                created_at::text AS created_at
+              `,
+              [
+                targetStatus,
+                order.id,
+                tenantId,
+              ],
+            );
+
+          const updatedOrder =
+            updatedResult.rows[0];
+
+          if (!updatedOrder) {
+            throw new ConflictException(
+              'Order status could not be updated',
+            );
+          }
+
+          // ----------------------------------------------------
+          // Transactional outbox.
+          // ----------------------------------------------------
+
+          const eventType =
+            `ORDER.${targetStatus}`;
+
+          const eventPayload = {
+            order: {
+              id:
+                updatedOrder.id,
+
+              tenant_id:
+                updatedOrder.tenant_id,
+
+              factory_id:
+                updatedOrder.factory_id,
+
+              order_number:
+                updatedOrder.order_number,
+
+              previous_status:
+                order.status,
+
+              status:
+                updatedOrder.status,
+            },
+
+            actor: {
+              user_id: userId,
+            },
+          };
+
+          await client.query(
+            `
+            INSERT INTO outbox_events (
+              tenant_id,
+              factory_id,
+              aggregate_type,
+              aggregate_id,
+              event_type,
+              event_version,
+              payload
+            )
+
+            VALUES (
+              $1,
+              $2,
+              'ORDER',
+              $3,
+              $4,
+              1,
+              $5::jsonb
+            )
+            `,
+            [
+              tenantId,
+              updatedOrder.factory_id,
+              updatedOrder.id,
+              eventType,
+              JSON.stringify(
+                eventPayload,
+              ),
+            ],
+          );
+
+          return {
+            id:
+              updatedOrder.id,
+
+            tenant_id:
+              updatedOrder.tenant_id,
+
+            factory_id:
+              updatedOrder.factory_id,
+
+            order_number:
+              updatedOrder.order_number,
+
+            previous_status:
+              order.status,
+
+            status:
+              updatedOrder.status,
+
+            order_date:
+              updatedOrder.order_date,
+
+            requested_delivery_date:
+              updatedOrder.requested_delivery_date,
+
+            currency:
+              updatedOrder.currency,
+
+            created_at:
+              updatedOrder.created_at,
+          };
+        },
+      );
+
+    // ----------------------------------------------------------
+    // Audit original material lifecycle transition.
+    // ----------------------------------------------------------
+
+    try {
+      await this.auditService.record({
+        tenantId,
+
+        factoryId:
+          result.factory_id,
+
+        actorUserId:
+          userId,
+
+        eventType:
+          'ORDER',
+
+        action:
+          'STATUS_TRANSITION',
+
+        resourceType:
+          'ORDER',
+
+        resourceId:
+          result.id,
+
+        correlationId:
+          traceId,
+
+        requestId,
+
+        dataClass:
+          'INTERNAL',
+
+        payload: {
+          orderNumber:
+            result.order_number,
+
+          from:
+            result.previous_status,
+
+          to:
+            result.status,
+
+          result:
+            'UPDATED',
+        },
+      });
+    } catch {
+      /*
+       * The business transaction is already committed.
+       * Audit failure must not roll back the order state.
+       */
+    }
+
+    return result;
   }
 }
