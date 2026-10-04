@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -7,6 +8,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { JwksClient } from 'jwks-rsa';
 import { isUUID } from 'class-validator';
+import type { Request } from 'express';
 
 import { DatabaseService } from '../../database/database.service';
 import type { AuthUser } from '../auth-user';
@@ -26,6 +28,14 @@ interface JwkHeader {
   kid?: string;
 }
 
+interface FactoryOsRequestContext {
+  requestedTenantId: string | null;
+}
+
+type FactoryOsRequest = Request & {
+  factoryos?: FactoryOsRequestContext;
+};
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(
   Strategy,
@@ -38,11 +48,10 @@ export class JwtStrategy extends PassportStrategy(
     const authMode =
       configService.get<string>('AUTH_MODE') || 'dev';
 
-    /*
-     * ============================================================
-     * PRODUCTION OIDC / JWKS MODE
-     * ============================================================
-     */
+    // ==========================================================
+    // PRODUCTION OIDC / JWKS MODE
+    // ==========================================================
+
     if (authMode === 'oidc') {
       const issuer =
         configService.get<string>('OIDC_ISSUER');
@@ -83,40 +92,19 @@ export class JwtStrategy extends PassportStrategy(
       });
 
       super({
-        /*
-         * Bearer token:
-         *
-         * Authorization: Bearer <JWT>
-         */
         jwtFromRequest:
           ExtractJwt.fromAuthHeaderAsBearerToken(),
 
-        /*
-         * Passport will reject expired tokens.
-         */
         ignoreExpiration: false,
 
-        /*
-         * Token issuer must match IdP issuer.
-         */
         issuer,
 
-        /*
-         * Token audience must match FactoryOS API client.
-         */
         audience,
 
-        /*
-         * Production OIDC tokens are expected
-         * to use asymmetric RSA signatures.
-         */
         algorithms: ['RS256'],
 
-        /*
-         * IMPORTANT:
-         * We dynamically resolve the public signing key
-         * using JWT header.kid from the IdP JWKS endpoint.
-         */
+        passReqToCallback: true,
+
         secretOrKeyProvider: (
           _request,
           rawJwtToken,
@@ -128,7 +116,9 @@ export class JwtStrategy extends PassportStrategy(
 
             if (parts.length !== 3) {
               done(
-                new Error('Invalid JWT format'),
+                new Error(
+                  'Invalid JWT format',
+                ),
               );
               return;
             }
@@ -137,20 +127,22 @@ export class JwtStrategy extends PassportStrategy(
 
             if (!encodedHeader) {
               done(
-                new Error('JWT header is missing'),
+                new Error(
+                  'JWT header is missing',
+                ),
               );
               return;
             }
 
-            const decodedHeader =
-              Buffer.from(
-                encodedHeader,
-                'base64url',
-              ).toString('utf8');
-
             let header: JwkHeader;
 
             try {
+              const decodedHeader =
+                Buffer.from(
+                  encodedHeader,
+                  'base64url',
+                ).toString('utf8');
+
               header =
                 JSON.parse(
                   decodedHeader,
@@ -164,9 +156,7 @@ export class JwtStrategy extends PassportStrategy(
               return;
             }
 
-            const kid = header.kid;
-
-            if (!kid) {
+            if (!header.kid) {
               done(
                 new Error(
                   'JWT key id (kid) is missing',
@@ -176,7 +166,7 @@ export class JwtStrategy extends PassportStrategy(
             }
 
             jwksClient
-              .getSigningKey(kid)
+              .getSigningKey(header.kid)
               .then((signingKey) => {
                 done(
                   null,
@@ -207,11 +197,9 @@ export class JwtStrategy extends PassportStrategy(
       return;
     }
 
-    /*
-     * ============================================================
-     * LOCAL DEVELOPMENT MODE
-     * ============================================================
-     */
+    // ==========================================================
+    // LOCAL DEVELOPMENT MODE
+    // ==========================================================
 
     const secret =
       configService.get<string>('JWT_SECRET');
@@ -231,67 +219,49 @@ export class JwtStrategy extends PassportStrategy(
       'factoryos-web';
 
     super({
-      /*
-       * Local development also uses:
-       *
-       * Authorization: Bearer <JWT>
-       */
       jwtFromRequest:
         ExtractJwt.fromAuthHeaderAsBearerToken(),
 
-      /*
-       * Reject expired tokens.
-       */
       ignoreExpiration: false,
 
-      /*
-       * Development token signing secret.
-       */
       secretOrKey: secret,
 
-      /*
-       * Token issuer.
-       */
       issuer,
 
-      /*
-       * Token audience.
-       */
       audience,
 
-      /*
-       * Local dev-token uses HS256.
-       */
       algorithms: ['HS256'],
+
+      passReqToCallback: true,
     });
   }
 
-  /*
-   * ============================================================
-   * JWT VALIDATION
-   * ============================================================
-   *
-   * This runs AFTER cryptographic JWT validation.
-   *
-   * It verifies:
-   *
-   * 1. sub is a valid FactoryOS user UUID
-   * 2. tenant_id is a valid tenant UUID
-   * 3. user is ACTIVE
-   * 4. membership is ACTIVE
-   * 5. tenant is ACTIVE
-   */
+  // ============================================================
+  // JWT VALIDATION
+  // ============================================================
+
   async validate(
+    request: FactoryOsRequest,
     payload: JwtPayload,
   ): Promise<AuthUser> {
+    const authMode =
+      this.configService.get<string>('AUTH_MODE') ||
+      'dev';
+
+    // ==========================================================
+    // SUBJECT
+    // ==========================================================
+
     /*
-     * ----------------------------------------------------------
-     * Validate authenticated subject
-     * ----------------------------------------------------------
+     * Production OIDC:
+     *
+     *   sub = arbitrary external IdP subject
+     *
+     * Therefore do NOT use UUID validation here.
      */
     if (
       typeof payload.sub !== 'string' ||
-      !isUUID(payload.sub)
+      payload.sub.trim().length === 0
     ) {
       throw new UnauthorizedException(
         'Invalid authentication subject',
@@ -299,24 +269,186 @@ export class JwtStrategy extends PassportStrategy(
     }
 
     /*
-     * ----------------------------------------------------------
-     * Validate tenant claim
-     * ----------------------------------------------------------
+     * auth_identities.subject is varchar(255).
      */
+    if (payload.sub.length > 255) {
+      throw new UnauthorizedException(
+        'Authentication subject exceeds maximum length',
+      );
+    }
+
+    // ==========================================================
+    // LOCAL DEVELOPMENT
+    // ==========================================================
+
+    /*
+     * Existing dev-token flow intentionally keeps
+     * UUID user IDs.
+     */
+    if (authMode !== 'oidc') {
+      return this.resolveDevelopmentIdentity(
+        payload,
+      );
+    }
+
+    // ==========================================================
+    // PRODUCTION OIDC
+    // ==========================================================
+
+    if (
+      typeof payload.iss !== 'string' ||
+      payload.iss.trim().length === 0
+    ) {
+      throw new UnauthorizedException(
+        'JWT issuer is missing',
+      );
+    }
+
+    /*
+     * Resolve:
+     *
+     *   issuer + external subject
+     *          ↓
+     *   auth_identities
+     *          ↓
+     *   FactoryOS users
+     */
+    const identityResult =
+      await this.database.query<{
+        user_id: string;
+      }>(
+        `
+        SELECT
+          ai.user_id::text AS user_id
+
+        FROM auth_identities ai
+
+        INNER JOIN users u
+          ON u.id = ai.user_id
+
+        WHERE ai.issuer = $1
+          AND ai.subject = $2
+          AND ai.status = 'ACTIVE'
+          AND u.status = 'ACTIVE'
+
+        LIMIT 1
+        `,
+        [
+          payload.iss,
+          payload.sub,
+        ],
+      );
+
+    const identity =
+      identityResult.rows[0];
+
+    if (!identity) {
+      throw new UnauthorizedException(
+        'OIDC identity is not linked to a FactoryOS user',
+      );
+    }
+
+    // ==========================================================
+    // TENANT MEMBERSHIP
+    // ==========================================================
+
+    /*
+     * Tenant comes from an explicit request selector,
+     * not from an arbitrary untrusted identity claim.
+     */
+    const requestedTenantId =
+      request.factoryos?.requestedTenantId ??
+      null;
+
+    const membershipResult =
+      await this.database.query<{
+        membership_id: string;
+        tenant_id: string;
+      }>(
+        `
+        SELECT
+          m.id::text AS membership_id,
+          m.tenant_id::text AS tenant_id
+
+        FROM tenant_memberships m
+
+        INNER JOIN tenants t
+          ON t.id = m.tenant_id
+
+        WHERE m.user_id = $1
+          AND m.status = 'ACTIVE'
+          AND t.status = 'ACTIVE'
+          AND (
+            $2::uuid IS NULL
+            OR m.tenant_id = $2::uuid
+          )
+
+        ORDER BY m.created_at ASC
+        `,
+        [
+          identity.user_id,
+          requestedTenantId,
+        ],
+      );
+
+    const memberships =
+      membershipResult.rows;
+
+    if (memberships.length === 0) {
+      throw new UnauthorizedException(
+        'Authenticated user has no active tenant membership',
+      );
+    }
+
+    /*
+     * Multi-tenant users must explicitly select
+     * their tenant.
+     */
+    if (
+      memberships.length > 1 &&
+      !requestedTenantId
+    ) {
+      throw new BadRequestException(
+        'Tenant context is required for a multi-tenant user',
+      );
+    }
+
+    const membership =
+      memberships[0];
+
+    return {
+      userId: identity.user_id,
+      tenantId: membership.tenant_id,
+      membershipId:
+        membership.membership_id,
+    };
+  }
+
+  // ============================================================
+  // DEVELOPMENT IDENTITY RESOLUTION
+  // ============================================================
+
+  private async resolveDevelopmentIdentity(
+    payload: JwtPayload,
+  ): Promise<AuthUser> {
+    if (
+      typeof payload.sub !== 'string' ||
+      !isUUID(payload.sub)
+    ) {
+      throw new UnauthorizedException(
+        'Invalid development authentication subject',
+      );
+    }
+
     if (
       typeof payload.tenant_id !== 'string' ||
       !isUUID(payload.tenant_id)
     ) {
       throw new UnauthorizedException(
-        'Invalid authentication tenant claim',
+        'Invalid development authentication tenant claim',
       );
     }
 
-    /*
-     * ----------------------------------------------------------
-     * Resolve active FactoryOS membership
-     * ----------------------------------------------------------
-     */
     const result =
       await this.database.query<{
         user_id: string;
@@ -355,15 +487,10 @@ export class JwtStrategy extends PassportStrategy(
 
     if (!row) {
       throw new UnauthorizedException(
-        'User is not an active member of the requested tenant',
+        'Development user is not an active member of the requested tenant',
       );
     }
 
-    /*
-     * ----------------------------------------------------------
-     * Return verified FactoryOS authentication context
-     * ----------------------------------------------------------
-     */
     return {
       userId: row.user_id,
       tenantId: row.tenant_id,
