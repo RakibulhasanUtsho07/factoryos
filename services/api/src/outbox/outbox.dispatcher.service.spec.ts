@@ -63,14 +63,14 @@ describe(
 
         expect(
           queryCalls[0].sql,
-        ).toContain(
-          'RETURNING id',
+        ).toMatch(
+          /RETURNING\s+id/i,
         );
 
         expect(
           queryCalls[0].sql,
-        ).toContain(
-          "status = 'PUBLISHED'",
+        ).toMatch(
+          /status\s*=\s*'PUBLISHED'/i,
         );
 
         expect(
@@ -138,14 +138,14 @@ describe(
 
         expect(
           queryCalls[0].sql,
-        ).toContain(
-          'RETURNING id',
+        ).toMatch(
+          /RETURNING\s+id/i,
         );
 
         expect(
           queryCalls[0].sql,
-        ).toContain(
-          "status = 'PUBLISHED'",
+        ).toMatch(
+          /status\s*=\s*'PUBLISHED'/i,
         );
 
         expect(
