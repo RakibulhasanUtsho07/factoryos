@@ -1,17 +1,18 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-
 import type { Request } from 'express';
-
+import { ListOrdersDto } from './dto/list-orders.dto';
 import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
@@ -128,6 +129,73 @@ export class OrdersController {
       body.target_status,
       requestId,
       traceId,
+    );
+  }
+    @Get()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.read')
+  @RequireFactoryScope()
+  async list(
+    @Req() request: FactoryOsRequest,
+    @Query() query: ListOrdersDto,
+  ) {
+    const tenantId =
+      request.factoryos?.tenantId ??
+      null;
+
+    const factoryId =
+      request.factoryos?.factoryId ??
+      null;
+
+    if (
+      !tenantId ||
+      !factoryId
+    ) {
+      throw new UnauthorizedException(
+        'Authenticated tenant/factory context is missing',
+      );
+    }
+
+    return this.ordersService.listOrders(
+      tenantId,
+      factoryId,
+      query,
+    );
+  }
+
+  @Get(':orderId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.read')
+  @RequireFactoryScope()
+  async getById(
+    @Req() request: FactoryOsRequest,
+    @Param(
+      'orderId',
+      new ParseUUIDPipe(),
+    )
+    orderId: string,
+  ) {
+    const tenantId =
+      request.factoryos?.tenantId ??
+      null;
+
+    const factoryId =
+      request.factoryos?.factoryId ??
+      null;
+
+    if (
+      !tenantId ||
+      !factoryId
+    ) {
+      throw new UnauthorizedException(
+        'Authenticated tenant/factory context is missing',
+      );
+    }
+
+    return this.ordersService.getOrderById(
+      tenantId,
+      factoryId,
+      orderId,
     );
   }
 }

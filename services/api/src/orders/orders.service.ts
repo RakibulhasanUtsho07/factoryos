@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 
 import { PoolClient } from 'pg';
-
+import { ListOrdersDto } from './dto/list-orders.dto';
 import { isUUID } from 'class-validator';
 
 import { AuditService } from '../audit/audit.service';
@@ -1027,5 +1027,364 @@ export class OrdersService {
     }
 
     return result;
+  }
+    // ============================================================
+  // GET ORDER BY ID
+  // ============================================================
+
+  async getOrderById(
+    tenantId: string,
+    factoryId: string,
+    orderId: string,
+  ) {
+    if (!isUUID(tenantId)) {
+      throw new BadRequestException(
+        'tenantId must be a valid UUID',
+      );
+    }
+
+    if (!isUUID(factoryId)) {
+      throw new BadRequestException(
+        'factoryId must be a valid UUID',
+      );
+    }
+
+    if (!isUUID(orderId)) {
+      throw new BadRequestException(
+        'orderId must be a valid UUID',
+      );
+    }
+
+    const orderResult =
+      await this.database.query<{
+        id: string;
+        tenant_id: string;
+        factory_id: string;
+        order_number: string;
+        customer_name: string | null;
+        customer_reference: string | null;
+        status: string;
+        order_date: string;
+        requested_delivery_date: string | null;
+        currency: string;
+        notes: string | null;
+        created_by_user_id: string;
+        created_at: string;
+        updated_at: string;
+        version: string;
+      }>(
+        `
+        SELECT
+          o.id::text AS id,
+          o.tenant_id::text AS tenant_id,
+          o.factory_id::text AS factory_id,
+          o.order_number,
+          o.customer_name,
+          o.customer_reference,
+          o.status,
+          o.order_date::text AS order_date,
+          o.requested_delivery_date::text
+            AS requested_delivery_date,
+          o.currency,
+          o.notes,
+          o.created_by_user_id::text
+            AS created_by_user_id,
+          o.created_at::text AS created_at,
+          o.updated_at::text AS updated_at,
+          o.version::text AS version
+        FROM orders o
+        WHERE
+          o.id = $1
+          AND o.tenant_id = $2
+          AND o.factory_id = $3
+        LIMIT 1
+        `,
+        [
+          orderId,
+          tenantId,
+          factoryId,
+        ],
+      );
+
+    const order =
+      orderResult.rows[0];
+
+    if (!order) {
+      throw new NotFoundException(
+        'Order not found',
+      );
+    }
+
+    const linesResult =
+      await this.database.query<{
+        id: string;
+        line_number: number;
+        product_code: string;
+        product_name: string;
+        quantity: string;
+        unit: string;
+        unit_price: string | null;
+        requested_delivery_date:
+          | string
+          | null;
+        notes: string | null;
+      }>(
+        `
+        SELECT
+          ol.id::text AS id,
+          ol.line_number,
+          ol.product_code,
+          ol.product_name,
+          ol.quantity::text AS quantity,
+          ol.unit,
+          ol.unit_price::text AS unit_price,
+          ol.requested_delivery_date::text
+            AS requested_delivery_date,
+          ol.notes
+        FROM order_lines ol
+        WHERE
+          ol.order_id = $1
+          AND ol.tenant_id = $2
+        ORDER BY
+          ol.line_number ASC
+        `,
+        [
+          orderId,
+          tenantId,
+        ],
+      );
+
+    return {
+      id: order.id,
+
+      tenant_id:
+        order.tenant_id,
+
+      factory_id:
+        order.factory_id,
+
+      order_number:
+        order.order_number,
+
+      customer_name:
+        order.customer_name,
+
+      customer_reference:
+        order.customer_reference,
+
+      status:
+        order.status,
+
+      order_date:
+        order.order_date,
+
+      requested_delivery_date:
+        order.requested_delivery_date,
+
+      currency:
+        order.currency,
+
+      notes:
+        order.notes,
+
+      created_by_user_id:
+        order.created_by_user_id,
+
+      created_at:
+        order.created_at,
+
+      updated_at:
+        order.updated_at,
+
+      version:
+        order.version,
+
+      lines:
+        linesResult.rows,
+    };
+  }
+
+  // ============================================================
+  // LIST ORDERS
+  // ============================================================
+
+  async listOrders(
+    tenantId: string,
+    factoryId: string,
+    dto: ListOrdersDto,
+  ) {
+    if (!isUUID(tenantId)) {
+      throw new BadRequestException(
+        'tenantId must be a valid UUID',
+      );
+    }
+
+    if (!isUUID(factoryId)) {
+      throw new BadRequestException(
+        'factoryId must be a valid UUID',
+      );
+    }
+
+    const page =
+      dto.page ?? 1;
+
+    const limit =
+      dto.limit ?? 20;
+
+    const offset =
+      (page - 1) * limit;
+
+    const status =
+      dto.status ?? null;
+
+    const normalizedSearch =
+      dto.search?.trim() || null;
+
+    const searchPattern =
+      normalizedSearch
+        ? `%${normalizedSearch}%`
+        : null;
+
+    const result =
+      await this.database.query<{
+        id: string;
+        tenant_id: string;
+        factory_id: string;
+        order_number: string;
+        customer_name: string | null;
+        customer_reference: string | null;
+        status: string;
+        order_date: string;
+        requested_delivery_date:
+          | string
+          | null;
+        currency: string;
+        created_at: string;
+        total_count: string;
+      }>(
+        `
+        SELECT
+          o.id::text AS id,
+          o.tenant_id::text AS tenant_id,
+          o.factory_id::text AS factory_id,
+          o.order_number,
+          o.customer_name,
+          o.customer_reference,
+          o.status,
+          o.order_date::text AS order_date,
+          o.requested_delivery_date::text
+            AS requested_delivery_date,
+          o.currency,
+          o.created_at::text AS created_at,
+
+          COUNT(*) OVER()::text
+            AS total_count
+
+        FROM orders o
+
+        WHERE
+          o.tenant_id = $1
+          AND o.factory_id = $2
+
+          AND (
+            $3::text IS NULL
+            OR o.status = $3
+          )
+
+          AND (
+            $4::text IS NULL
+
+            OR o.order_number
+              ILIKE $4
+
+            OR COALESCE(
+              o.customer_name,
+              ''
+            ) ILIKE $4
+
+            OR COALESCE(
+              o.customer_reference,
+              ''
+            ) ILIKE $4
+          )
+
+        ORDER BY
+          o.created_at DESC,
+          o.id DESC
+
+        LIMIT $5
+        OFFSET $6
+        `,
+        [
+          tenantId,
+          factoryId,
+          status,
+          searchPattern,
+          limit,
+          offset,
+        ],
+      );
+
+    const total =
+      result.rows.length > 0
+        ? Number(
+            result.rows[0]
+              .total_count,
+          )
+        : 0;
+
+    const totalPages =
+      total === 0
+        ? 0
+        : Math.ceil(
+            total / limit,
+          );
+
+    return {
+      items:
+        result.rows.map(
+          (row) => ({
+            id: row.id,
+
+            tenant_id:
+              row.tenant_id,
+
+            factory_id:
+              row.factory_id,
+
+            order_number:
+              row.order_number,
+
+            customer_name:
+              row.customer_name,
+
+            customer_reference:
+              row.customer_reference,
+
+            status:
+              row.status,
+
+            order_date:
+              row.order_date,
+
+            requested_delivery_date:
+              row.requested_delivery_date,
+
+            currency:
+              row.currency,
+
+            created_at:
+              row.created_at,
+          }),
+        ),
+
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages:
+          totalPages,
+      },
+    };
   }
 }
