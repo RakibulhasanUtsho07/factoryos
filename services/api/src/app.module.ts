@@ -16,6 +16,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
 import { OrdersModule } from './orders/orders.module';
+import { OutboxModule } from './outbox/outbox.module';
 
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
@@ -23,12 +24,16 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 
 @Module({
   imports: [
+    // ----------------------------------------------------------
+    // Configuration
+    // ----------------------------------------------------------
+
     ConfigModule.forRoot({
       isGlobal: true,
     }),
 
     // ----------------------------------------------------------
-    // Infrastructure
+    // Database
     // ----------------------------------------------------------
 
     DatabaseModule,
@@ -52,6 +57,12 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     HealthModule,
     IamModule,
     OrdersModule,
+
+    // ----------------------------------------------------------
+    // Transactional Outbox
+    // ----------------------------------------------------------
+
+    OutboxModule,
   ],
 
   controllers: [
