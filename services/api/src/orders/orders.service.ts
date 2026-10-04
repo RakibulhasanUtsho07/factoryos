@@ -1,0 +1,517 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
+
+import { isUUID } from 'class-validator';
+
+import { AuditService } from '../audit/audit.service';
+import { DatabaseService } from '../database/database.service';
+
+import { CreateOrderDto } from './dto/create-order.dto';
+
+@Injectable()
+export class OrdersService {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly auditService: AuditService,
+  ) {}
+
+  // ============================================================
+  // CREATE ORDER
+  // ============================================================
+
+  async createOrder(
+    userId: string,
+    tenantId: string,
+    dto: CreateOrderDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    // ----------------------------------------------------------
+    // Validate authenticated context
+    // ----------------------------------------------------------
+
+    if (!isUUID(userId)) {
+      throw new BadRequestException(
+        'userId must be a valid UUID',
+      );
+    }
+
+    if (!isUUID(tenantId)) {
+      throw new BadRequestException(
+        'tenantId must be a valid UUID',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Validate factory
+    // ----------------------------------------------------------
+
+    if (!isUUID(dto.factory_id)) {
+      throw new BadRequestException(
+        'factory_id must be a valid UUID',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Validate order lines
+    // ----------------------------------------------------------
+
+    if (
+      !Array.isArray(dto.lines) ||
+      dto.lines.length === 0
+    ) {
+      throw new BadRequestException(
+        'At least one order line is required',
+      );
+    }
+
+    const lineNumbers =
+      dto.lines.map(
+        (line) => line.line_number,
+      );
+
+    if (
+      new Set(lineNumbers).size !==
+      lineNumbers.length
+    ) {
+      throw new BadRequestException(
+        'Duplicate line_number is not allowed',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Currency
+    // ----------------------------------------------------------
+
+    const currency =
+      (dto.currency || 'BDT')
+        .trim()
+        .toUpperCase();
+
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      throw new BadRequestException(
+        'currency must be a 3-letter ISO-style currency code',
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Order number
+    // ----------------------------------------------------------
+
+    const orderNumber =
+      dto.order_number.trim();
+
+    if (!orderNumber) {
+      throw new BadRequestException(
+        'order_number is required',
+      );
+    }
+
+    // ==========================================================
+    // TRANSACTION
+    // ==========================================================
+
+    const order =
+      await this.database.transaction(
+        async (client) => {
+          // ----------------------------------------------------
+          // Verify factory belongs to tenant
+          // ----------------------------------------------------
+
+          const factoryResult =
+            await client.query<{
+              id: string;
+              code: string;
+              name: string;
+            }>(
+              `
+              SELECT
+                f.id::text AS id,
+                f.code,
+                f.name
+
+              FROM factories f
+
+              WHERE f.id = $1
+                AND f.tenant_id = $2
+                AND f.status = 'ACTIVE'
+
+              LIMIT 1
+              `,
+              [
+                dto.factory_id,
+                tenantId,
+              ],
+            );
+
+          const factory =
+            factoryResult.rows[0];
+
+          if (!factory) {
+            throw new ForbiddenException(
+              'Factory does not belong to tenant or is not active',
+            );
+          }
+
+          // ----------------------------------------------------
+          // Create order
+          // ----------------------------------------------------
+
+          let orderRow: {
+            id: string;
+            tenant_id: string;
+            factory_id: string;
+            order_number: string;
+            status: string;
+            order_date: string;
+            requested_delivery_date:
+              | string
+              | null;
+            currency: string;
+            created_at: string;
+          };
+
+          try {
+            const result =
+              await client.query<{
+                id: string;
+                tenant_id: string;
+                factory_id: string;
+                order_number: string;
+                status: string;
+                order_date: string;
+                requested_delivery_date:
+                  | string
+                  | null;
+                currency: string;
+                created_at: string;
+              }>(
+                `
+                INSERT INTO orders (
+                  tenant_id,
+                  factory_id,
+                  order_number,
+                  customer_name,
+                  customer_reference,
+                  status,
+                  order_date,
+                  requested_delivery_date,
+                  currency,
+                  notes,
+                  created_by_user_id
+                )
+
+                VALUES (
+                  $1,
+                  $2,
+                  $3,
+                  $4,
+                  $5,
+                  'DRAFT',
+                  COALESCE($6::date, CURRENT_DATE),
+                  $7::date,
+                  $8,
+                  $9,
+                  $10
+                )
+
+                RETURNING
+                  id::text AS id,
+                  tenant_id::text AS tenant_id,
+                  factory_id::text AS factory_id,
+                  order_number,
+                  status,
+                  order_date::text AS order_date,
+                  requested_delivery_date::text
+                    AS requested_delivery_date,
+                  currency,
+                  created_at::text AS created_at
+                `,
+                [
+                  tenantId,
+                  dto.factory_id,
+                  orderNumber,
+                  dto.customer_name?.trim() ||
+                    null,
+                  dto.customer_reference?.trim() ||
+                    null,
+                  dto.order_date || null,
+                  dto.requested_delivery_date ||
+                    null,
+                  currency,
+                  dto.notes?.trim() || null,
+                  userId,
+                ],
+              );
+
+            const row =
+              result.rows[0];
+
+            if (!row) {
+              throw new BadRequestException(
+                'Failed to create order',
+              );
+            }
+
+            orderRow = row;
+          } catch (error) {
+            /*
+             * PostgreSQL unique constraint:
+             *
+             * uq_orders_tenant_number
+             */
+            if (
+              error &&
+              typeof error === 'object' &&
+              'code' in error &&
+              (error as { code?: string })
+                .code === '23505'
+            ) {
+              throw new ConflictException(
+                'Order number already exists in this tenant',
+              );
+            }
+
+            throw error;
+          }
+
+          // ----------------------------------------------------
+          // Create lines
+          // ----------------------------------------------------
+
+          const createdLines: Array<{
+            id: string;
+            line_number: number;
+            product_code: string;
+            product_name: string;
+            quantity: string;
+            unit: string;
+            unit_price: string | null;
+          }> = [];
+
+          for (const line of dto.lines) {
+            const lineResult =
+              await client.query<{
+                id: string;
+                line_number: number;
+                product_code: string;
+                product_name: string;
+                quantity: string;
+                unit: string;
+                unit_price: string | null;
+              }>(
+                `
+                INSERT INTO order_lines (
+                  tenant_id,
+                  order_id,
+                  line_number,
+                  product_code,
+                  product_name,
+                  quantity,
+                  unit,
+                  unit_price,
+                  requested_delivery_date,
+                  notes
+                )
+
+                VALUES (
+                  $1,
+                  $2,
+                  $3,
+                  $4,
+                  $5,
+                  $6,
+                  $7,
+                  $8,
+                  $9::date,
+                  $10
+                )
+
+                RETURNING
+                  id::text AS id,
+                  line_number,
+                  product_code,
+                  product_name,
+                  quantity::text AS quantity,
+                  unit,
+                  unit_price::text AS unit_price
+                `,
+                [
+                  tenantId,
+                  orderRow.id,
+                  line.line_number,
+                  line.product_code.trim(),
+                  line.product_name.trim(),
+                  line.quantity,
+                  line.unit.trim(),
+                  line.unit_price ?? null,
+                  line.requested_delivery_date ||
+                    null,
+                  line.notes?.trim() || null,
+                ],
+              );
+
+            const createdLine =
+              lineResult.rows[0];
+
+            if (!createdLine) {
+              throw new BadRequestException(
+                `Failed to create order line ${line.line_number}`,
+              );
+            }
+
+            createdLines.push(
+              createdLine,
+            );
+          }
+
+          // ----------------------------------------------------
+          // Transactional outbox
+          // ----------------------------------------------------
+
+          const eventPayload = {
+            order: {
+              id: orderRow.id,
+              tenant_id:
+                orderRow.tenant_id,
+              factory_id:
+                orderRow.factory_id,
+              order_number:
+                orderRow.order_number,
+              status:
+                orderRow.status,
+            },
+
+            lines: createdLines.map(
+              (line) => ({
+                id: line.id,
+                line_number:
+                  line.line_number,
+                product_code:
+                  line.product_code,
+                quantity:
+                  line.quantity,
+                unit:
+                  line.unit,
+              }),
+            ),
+
+            actor: {
+              user_id: userId,
+            },
+          };
+
+          await client.query(
+            `
+            INSERT INTO outbox_events (
+              tenant_id,
+              factory_id,
+              aggregate_type,
+              aggregate_id,
+              event_type,
+              event_version,
+              payload
+            )
+
+            VALUES (
+              $1,
+              $2,
+              'ORDER',
+              $3,
+              'ORDER.CREATED',
+              1,
+              $4::jsonb
+            )
+            `,
+            [
+              tenantId,
+              dto.factory_id,
+              orderRow.id,
+              JSON.stringify(
+                eventPayload,
+              ),
+            ],
+          );
+
+          // ----------------------------------------------------
+          // Return created aggregate
+          // ----------------------------------------------------
+
+          return {
+            id: orderRow.id,
+            tenant_id:
+              orderRow.tenant_id,
+            factory_id:
+              orderRow.factory_id,
+            order_number:
+              orderRow.order_number,
+            status:
+              orderRow.status,
+            order_date:
+              orderRow.order_date,
+            requested_delivery_date:
+              orderRow.requested_delivery_date,
+            currency:
+              orderRow.currency,
+            created_at:
+              orderRow.created_at,
+            lines: createdLines,
+          };
+        },
+      );
+
+    // ==========================================================
+    // AUDIT
+    // ==========================================================
+
+    try {
+      await this.auditService.record({
+        tenantId,
+
+        factoryId:
+          order.factory_id,
+
+        actorUserId: userId,
+
+        eventType: 'ORDER',
+
+        action: 'CREATE',
+
+        resourceType: 'ORDER',
+
+        resourceId: order.id,
+
+        correlationId: traceId,
+
+        requestId,
+
+        dataClass: 'INTERNAL',
+
+        payload: {
+          orderNumber:
+            order.order_number,
+
+          status:
+            order.status,
+
+          lineCount:
+            order.lines.length,
+
+          result: 'CREATED',
+        },
+      });
+    } catch {
+      /*
+       * Order creation already succeeded.
+       * Audit infrastructure failure must not
+       * turn a successful write into an API failure.
+       */
+    }
+
+    return order;
+  }
+}
