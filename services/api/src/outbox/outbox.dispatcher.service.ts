@@ -344,30 +344,6 @@ export class OutboxDispatcherService
     );
   }
 
-  private async markPublished(
-    eventId: string,
-  ): Promise<void> {
-    await this.database.query(
-      `
-      UPDATE outbox_events
-
-      SET
-        status = 'PUBLISHED',
-        published_at = now(),
-        locked_at = NULL,
-        locked_by = NULL,
-        last_error = NULL
-
-      WHERE id = $1
-        AND status = 'PROCESSING'
-        AND locked_by = $2
-      `,
-      [
-        eventId,
-        this.workerId,
-      ],
-    );
-  }
 
   private async markFailed(
     eventId: string,
@@ -466,4 +442,39 @@ export class OutboxDispatcherService
       `Outbox event failed: ${eventId}; attempts=${attempts}; retryAt=${finalNextAttempt.toISOString()}`,
     );
   }
+  private async markPublished(
+  eventId: string,
+): Promise<void> {
+  const result =
+    await this.database.query<{
+      id: string;
+    }>(
+      `
+      UPDATE outbox_events
+
+      SET
+        status = 'PUBLISHED',
+        published_at = now(),
+        locked_at = NULL,
+        locked_by = NULL,
+        last_error = NULL
+
+      WHERE id = $1
+        AND status = 'PROCESSING'
+        AND locked_by = $2
+
+      RETURNING id
+      `,
+      [
+        eventId,
+        this.workerId,
+      ],
+    );
+
+  if (result.rowCount !== 1) {
+    throw new Error(
+      `OUTBOX_MARK_PUBLISHED_FAILED: event=${eventId} was not transitioned to PUBLISHED by worker=${this.workerId}`,
+    );
+  }
+}
 }
