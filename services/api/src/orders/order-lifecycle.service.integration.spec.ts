@@ -12,16 +12,15 @@ describe(
     const TEST_USER_ID =
       '921382b8-e83f-43ab-a576-e3db6a06b70c';
 
-    let pool: Pool;
+    let pool!: Pool;
 
     let database: DatabaseService;
     let auditService: AuditService;
-
     let ordersService: OrdersService;
 
-    let orderId: string;
-    let tenantId: string;
-    let factoryId: string;
+    let orderId!: string;
+    let tenantId!: string;
+    let factoryId!: string;
 
     beforeAll(async () => {
       const databaseUrl =
@@ -40,9 +39,7 @@ describe(
         });
 
       // --------------------------------------------------------
-      // Resolve an active tenant + factory.
-      // User membership is NOT inferred from users.tenant_id
-      // because the actual local schema does not have that column.
+      // Resolve one active tenant + factory.
       // --------------------------------------------------------
 
       const contextResult =
@@ -57,7 +54,7 @@ describe(
 
           FROM tenants t
 
-          JOIN factories f
+          INNER JOIN factories f
             ON f.tenant_id = t.id
 
           WHERE
@@ -80,17 +77,23 @@ describe(
         );
       }
 
+      const context =
+        contextResult.rows[0];
+
+      if (!context) {
+        throw new Error(
+          'Lifecycle test context is missing.',
+        );
+      }
+
       tenantId =
-        contextResult.rows[0]
-          .tenant_id;
+        context.tenant_id;
 
       factoryId =
-        contextResult.rows[0]
-          .factory_id;
+        context.factory_id;
 
       // --------------------------------------------------------
-      // Verify the local test actor exists.
-      // Do NOT assume users.tenant_id exists.
+      // Verify test actor.
       // --------------------------------------------------------
 
       const userResult =
@@ -108,7 +111,9 @@ describe(
 
           LIMIT 1
           `,
-          [TEST_USER_ID],
+          [
+            TEST_USER_ID,
+          ],
         );
 
       if (
@@ -120,7 +125,7 @@ describe(
       }
 
       // --------------------------------------------------------
-      // Create isolated lifecycle test order.
+      // Create isolated test order.
       // --------------------------------------------------------
 
       const orderNumber =
@@ -130,6 +135,8 @@ describe(
         await pool.query<{
           id: string;
           status: string;
+          updated_at: string;
+          version: string;
         }>(
           `
           INSERT INTO orders (
@@ -154,7 +161,9 @@ describe(
 
           RETURNING
             id::text AS id,
-            status
+            status,
+            updated_at::text AS updated_at,
+            version::text AS version
           `,
           [
             tenantId,
@@ -172,11 +181,30 @@ describe(
         );
       }
 
+      const createdOrder =
+        orderResult.rows[0];
+
+      if (!createdOrder) {
+        throw new Error(
+          'Created lifecycle order row is missing.',
+        );
+      }
+
       orderId =
-        orderResult.rows[0].id;
+        createdOrder.id;
+
+      expect(
+        createdOrder.status,
+      ).toBe('DRAFT');
+
+      expect(
+        Number(
+          createdOrder.version,
+        ),
+      ).toBe(1);
 
       // --------------------------------------------------------
-      // Lightweight real PostgreSQL database adapter.
+      // Real PostgreSQL adapter.
       // --------------------------------------------------------
 
       database =
@@ -221,8 +249,7 @@ describe(
         } as never;
 
       // --------------------------------------------------------
-      // Audit is intentionally mocked for this service test.
-      // Database lifecycle + outbox are tested against real PG.
+      // Audit mocked for service-level lifecycle test.
       // --------------------------------------------------------
 
       auditService =
@@ -253,7 +280,9 @@ describe(
           WHERE
             aggregate_id = $1
           `,
-          [orderId],
+          [
+            orderId,
+          ],
         );
 
         await pool.query(
@@ -263,7 +292,9 @@ describe(
           WHERE
             id = $1
           `,
-          [orderId],
+          [
+            orderId,
+          ],
         );
       }
 
@@ -271,76 +302,23 @@ describe(
     });
 
     it(
-      'should enforce the complete valid lifecycle',
+      'should enforce the complete valid lifecycle and increment version',
       async () => {
-        const traceId =
-          randomUUID();
-
-        const confirmed =
-          await ordersService.transitionOrderStatus(
-            TEST_USER_ID,
-            tenantId,
-            orderId,
-            'CONFIRMED',
-            null,
-            traceId,
-          );
-
-        expect(
-          confirmed.previous_status,
-        ).toBe('DRAFT');
-
-        expect(
-          confirmed.status,
-        ).toBe('CONFIRMED');
-
-        const inProgress =
-          await ordersService.transitionOrderStatus(
-            TEST_USER_ID,
-            tenantId,
-            orderId,
-            'IN_PROGRESS',
-            null,
-            traceId,
-          );
-
-        expect(
-          inProgress.previous_status,
-        ).toBe('CONFIRMED');
-
-        expect(
-          inProgress.status,
-        ).toBe('IN_PROGRESS');
-
-        const completed =
-          await ordersService.transitionOrderStatus(
-            TEST_USER_ID,
-            tenantId,
-            orderId,
-            'COMPLETED',
-            null,
-            traceId,
-          );
-
-        expect(
-          completed.previous_status,
-        ).toBe('IN_PROGRESS');
-
-        expect(
-          completed.status,
-        ).toBe('COMPLETED');
-
         // ------------------------------------------------------
-        // Verify authoritative DB state.
+        // Initial state.
         // ------------------------------------------------------
 
-        const orderResult =
+        const initialResult =
           await pool.query<{
             status: string;
+            updated_at: string;
+            version: string;
           }>(
             `
             SELECT
-              status
+              status,
+              updated_at::text AS updated_at,
+              version::text AS version
 
             FROM orders
 
@@ -355,29 +333,224 @@ describe(
           );
 
         expect(
-          orderResult.rowCount,
+          initialResult.rowCount,
         ).toBe(1);
 
+        const initial =
+          initialResult.rows[0];
+
+        if (!initial) {
+          throw new Error(
+            'Initial lifecycle order state is missing.',
+          );
+        }
+
         expect(
-          orderResult.rows[0]
-            .status,
-        ).toBe(
-          'COMPLETED',
+          initial.status,
+        ).toBe('DRAFT');
+
+        expect(
+          Number(
+            initial.version,
+          ),
+        ).toBe(1);
+
+        const initialUpdatedAt =
+          new Date(
+            initial.updated_at,
+          );
+
+        // ------------------------------------------------------
+        // DRAFT -> CONFIRMED
+        // ------------------------------------------------------
+
+        const confirmed =
+          await ordersService.transitionOrderStatus(
+            TEST_USER_ID,
+            tenantId,
+            orderId,
+            'CONFIRMED',
+            null,
+            randomUUID(),
+          );
+
+        expect(
+          confirmed.previous_status,
+        ).toBe('DRAFT');
+
+        expect(
+          confirmed.status,
+        ).toBe('CONFIRMED');
+
+        expect(
+          confirmed.version,
+        ).toBe(2);
+
+        expect(
+          new Date(
+            confirmed.updated_at,
+          ).getTime(),
+        ).toBeGreaterThan(
+          initialUpdatedAt.getTime(),
         );
 
         // ------------------------------------------------------
-        // Verify exactly one event for each transition.
+        // CONFIRMED -> IN_PROGRESS
+        // ------------------------------------------------------
+
+        const confirmedUpdatedAt =
+          new Date(
+            confirmed.updated_at,
+          );
+
+        const inProgress =
+          await ordersService.transitionOrderStatus(
+            TEST_USER_ID,
+            tenantId,
+            orderId,
+            'IN_PROGRESS',
+            null,
+            randomUUID(),
+          );
+
+        expect(
+          inProgress.previous_status,
+        ).toBe('CONFIRMED');
+
+        expect(
+          inProgress.status,
+        ).toBe('IN_PROGRESS');
+
+        expect(
+          inProgress.version,
+        ).toBe(3);
+
+        expect(
+          new Date(
+            inProgress.updated_at,
+          ).getTime(),
+        ).toBeGreaterThan(
+          confirmedUpdatedAt.getTime(),
+        );
+
+        // ------------------------------------------------------
+        // IN_PROGRESS -> COMPLETED
+        // ------------------------------------------------------
+
+        const inProgressUpdatedAt =
+          new Date(
+            inProgress.updated_at,
+          );
+
+        const completed =
+          await ordersService.transitionOrderStatus(
+            TEST_USER_ID,
+            tenantId,
+            orderId,
+            'COMPLETED',
+            null,
+            randomUUID(),
+          );
+
+        expect(
+          completed.previous_status,
+        ).toBe('IN_PROGRESS');
+
+        expect(
+          completed.status,
+        ).toBe('COMPLETED');
+
+        expect(
+          completed.version,
+        ).toBe(4);
+
+        expect(
+          new Date(
+            completed.updated_at,
+          ).getTime(),
+        ).toBeGreaterThan(
+          inProgressUpdatedAt.getTime(),
+        );
+
+        // ------------------------------------------------------
+        // Verify authoritative DB state.
+        // ------------------------------------------------------
+
+        const finalResult =
+          await pool.query<{
+            status: string;
+            updated_at: string;
+            version: string;
+          }>(
+            `
+            SELECT
+              status,
+              updated_at::text AS updated_at,
+              version::text AS version
+
+            FROM orders
+
+            WHERE
+              id = $1
+              AND tenant_id = $2
+            `,
+            [
+              orderId,
+              tenantId,
+            ],
+          );
+
+        expect(
+          finalResult.rowCount,
+        ).toBe(1);
+
+        const finalOrder =
+          finalResult.rows[0];
+
+        if (!finalOrder) {
+          throw new Error(
+            'Final lifecycle order state is missing.',
+          );
+        }
+
+        expect(
+          finalOrder.status,
+        ).toBe('COMPLETED');
+
+        expect(
+          Number(
+            finalOrder.version,
+          ),
+        ).toBe(4);
+
+        expect(
+          new Date(
+            finalOrder.updated_at,
+          ).getTime(),
+        ).toBeGreaterThan(
+          initialUpdatedAt.getTime(),
+        );
+
+        // ------------------------------------------------------
+        // Verify exactly one event per transition.
         // ------------------------------------------------------
 
         const outboxResult =
           await pool.query<{
             event_type: string;
             count: number;
+            version: number | null;
           }>(
             `
             SELECT
               event_type,
-              COUNT(*)::int AS count
+              COUNT(*)::int AS count,
+
+              MAX(
+                (
+                  payload->'order'->>'version'
+                )::bigint
+              )::int AS version
 
             FROM outbox_events
 
@@ -411,15 +584,87 @@ describe(
             outboxResult.rows
         ) {
           expect(
-            Number(row.count),
+            Number(
+              row.count,
+            ),
           ).toBe(1);
         }
+
+        const confirmedEvent =
+          outboxResult.rows.find(
+            (row) =>
+              row.event_type ===
+              'ORDER.CONFIRMED',
+          );
+
+        const inProgressEvent =
+          outboxResult.rows.find(
+            (row) =>
+              row.event_type ===
+              'ORDER.IN_PROGRESS',
+          );
+
+        const completedEvent =
+          outboxResult.rows.find(
+            (row) =>
+              row.event_type ===
+              'ORDER.COMPLETED',
+          );
+
+        expect(
+          confirmedEvent?.version,
+        ).toBe(2);
+
+        expect(
+          inProgressEvent?.version,
+        ).toBe(3);
+
+        expect(
+          completedEvent?.version,
+        ).toBe(4);
       },
     );
 
     it(
-      'should reject an invalid backward transition',
+      'should reject an invalid backward transition without changing version or timestamp',
       async () => {
+        const beforeResult =
+          await pool.query<{
+            status: string;
+            updated_at: string;
+            version: string;
+          }>(
+            `
+            SELECT
+              status,
+              updated_at::text AS updated_at,
+              version::text AS version
+
+            FROM orders
+
+            WHERE
+              id = $1
+              AND tenant_id = $2
+            `,
+            [
+              orderId,
+              tenantId,
+            ],
+          );
+
+        expect(
+          beforeResult.rowCount,
+        ).toBe(1);
+
+        const before =
+          beforeResult.rows[0];
+
+        if (!before) {
+          throw new Error(
+            'Order state before invalid transition is missing.',
+          );
+        }
+
         await expect(
           ordersService.transitionOrderStatus(
             TEST_USER_ID,
@@ -432,12 +677,108 @@ describe(
         ).rejects.toThrow(
           'Invalid order status transition',
         );
+
+        const afterResult =
+          await pool.query<{
+            status: string;
+            updated_at: string;
+            version: string;
+          }>(
+            `
+            SELECT
+              status,
+              updated_at::text AS updated_at,
+              version::text AS version
+
+            FROM orders
+
+            WHERE
+              id = $1
+              AND tenant_id = $2
+            `,
+            [
+              orderId,
+              tenantId,
+            ],
+          );
+
+        expect(
+          afterResult.rowCount,
+        ).toBe(1);
+
+        const after =
+          afterResult.rows[0];
+
+        if (!after) {
+          throw new Error(
+            'Order state after invalid transition is missing.',
+          );
+        }
+
+        expect(
+          after.status,
+        ).toBe(
+          before.status,
+        );
+
+        expect(
+          Number(
+            after.version,
+          ),
+        ).toBe(
+          Number(
+            before.version,
+          ),
+        );
+
+        expect(
+          after.updated_at,
+        ).toBe(
+          before.updated_at,
+        );
       },
     );
 
     it(
-      'should reject a terminal-state transition',
+      'should reject a terminal-state transition without changing version or timestamp',
       async () => {
+        const beforeResult =
+          await pool.query<{
+            status: string;
+            updated_at: string;
+            version: string;
+          }>(
+            `
+            SELECT
+              status,
+              updated_at::text AS updated_at,
+              version::text AS version
+
+            FROM orders
+
+            WHERE
+              id = $1
+              AND tenant_id = $2
+            `,
+            [
+              orderId,
+              tenantId,
+            ],
+          );
+
+        expect(
+          beforeResult.rowCount,
+        ).toBe(1);
+
+        const before =
+          beforeResult.rows[0];
+
+        if (!before) {
+          throw new Error(
+            'Terminal-state precondition state is missing.',
+          );
+        }
+
         await expect(
           ordersService.transitionOrderStatus(
             TEST_USER_ID,
@@ -449,6 +790,65 @@ describe(
           ),
         ).rejects.toThrow(
           'Invalid order status transition',
+        );
+
+        const afterResult =
+          await pool.query<{
+            status: string;
+            updated_at: string;
+            version: string;
+          }>(
+            `
+            SELECT
+              status,
+              updated_at::text AS updated_at,
+              version::text AS version
+
+            FROM orders
+
+            WHERE
+              id = $1
+              AND tenant_id = $2
+            `,
+            [
+              orderId,
+              tenantId,
+            ],
+          );
+
+        expect(
+          afterResult.rowCount,
+        ).toBe(1);
+
+        const after =
+          afterResult.rows[0];
+
+        if (!after) {
+          throw new Error(
+            'Terminal-state postcondition state is missing.',
+          );
+        }
+
+        expect(
+          after.status,
+        ).toBe(
+          before.status,
+        );
+
+        expect(
+          Number(
+            after.version,
+          ),
+        ).toBe(
+          Number(
+            before.version,
+          ),
+        );
+
+        expect(
+          after.updated_at,
+        ).toBe(
+          before.updated_at,
         );
       },
     );

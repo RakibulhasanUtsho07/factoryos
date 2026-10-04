@@ -7,13 +7,13 @@ import {
 } from '@nestjs/common';
 
 import { PoolClient } from 'pg';
-import { ListOrdersDto } from './dto/list-orders.dto';
 import { isUUID } from 'class-validator';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 
 import { CreateOrderDto } from './dto/create-order.dto';
+import { ListOrdersDto } from './dto/list-orders.dto';
 import { OrderIdempotencyService } from './order-idempotency.service';
 
 @Injectable()
@@ -233,10 +233,14 @@ export class OrdersService {
           f.id::text AS id,
           f.code,
           f.name
+
         FROM factories f
-        WHERE f.id = $1
+
+        WHERE
+          f.id = $1
           AND f.tenant_id = $2
           AND f.status = 'ACTIVE'
+
         LIMIT 1
         `,
         [
@@ -340,13 +344,11 @@ export class OrdersService {
             factory_id::text AS factory_id,
             order_number,
             status,
-            order_date::text
-              AS order_date,
+            order_date::text AS order_date,
             requested_delivery_date::text
               AS requested_delivery_date,
             currency,
-            created_at::text
-              AS created_at
+            created_at::text AS created_at
           `,
           [
             tenantId,
@@ -502,13 +504,18 @@ export class OrdersService {
 
     const eventPayload = {
       order: {
-        id: orderRow.id,
+        id:
+          orderRow.id,
+
         tenant_id:
           orderRow.tenant_id,
+
         factory_id:
           orderRow.factory_id,
+
         order_number:
           orderRow.order_number,
+
         status:
           orderRow.status,
       },
@@ -516,20 +523,26 @@ export class OrdersService {
       lines:
         createdLines.map(
           (line) => ({
-            id: line.id,
+            id:
+              line.id,
+
             line_number:
               line.line_number,
+
             product_code:
               line.product_code,
+
             quantity:
               line.quantity,
+
             unit:
               line.unit,
           }),
         ),
 
       actor: {
-        user_id: userId,
+        user_id:
+          userId,
       },
     };
 
@@ -570,7 +583,8 @@ export class OrdersService {
     // ----------------------------------------------------------
 
     return {
-      id: orderRow.id,
+      id:
+        orderRow.id,
 
       tenant_id:
         orderRow.tenant_id,
@@ -671,7 +685,8 @@ export class OrdersService {
        */
     }
   }
-    // ============================================================
+
+  // ============================================================
   // ORDER STATUS TRANSITION
   // ============================================================
 
@@ -817,6 +832,10 @@ export class OrdersService {
 
           // ----------------------------------------------------
           // Status transition.
+          //
+          // Every successful material state change also:
+          // - updates updated_at
+          // - increments version
           // ----------------------------------------------------
 
           const updatedResult =
@@ -832,12 +851,16 @@ export class OrdersService {
                 | null;
               currency: string;
               created_at: string;
+              updated_at: string;
+              version: string;
             }>(
               `
               UPDATE orders
 
               SET
-                status = $1
+                status = $1,
+                updated_at = clock_timestamp(),
+                version = version + 1
 
               WHERE
                 id = $2
@@ -853,7 +876,9 @@ export class OrdersService {
                 requested_delivery_date::text
                   AS requested_delivery_date,
                 currency,
-                created_at::text AS created_at
+                created_at::text AS created_at,
+                updated_at::text AS updated_at,
+                version::text AS version
               `,
               [
                 targetStatus,
@@ -873,6 +898,8 @@ export class OrdersService {
 
           // ----------------------------------------------------
           // Transactional outbox.
+          //
+          // Capture exact post-transition snapshot.
           // ----------------------------------------------------
 
           const eventType =
@@ -897,10 +924,19 @@ export class OrdersService {
 
               status:
                 updatedOrder.status,
+
+              version:
+                Number(
+                  updatedOrder.version,
+                ),
+
+              updated_at:
+                updatedOrder.updated_at,
             },
 
             actor: {
-              user_id: userId,
+              user_id:
+                userId,
             },
           };
 
@@ -937,6 +973,10 @@ export class OrdersService {
             ],
           );
 
+          // ----------------------------------------------------
+          // Transaction result.
+          // ----------------------------------------------------
+
           return {
             id:
               updatedOrder.id,
@@ -967,6 +1007,14 @@ export class OrdersService {
 
             created_at:
               updatedOrder.created_at,
+
+            updated_at:
+              updatedOrder.updated_at,
+
+            version:
+              Number(
+                updatedOrder.version,
+              ),
           };
         },
       );
@@ -1015,6 +1063,12 @@ export class OrdersService {
           to:
             result.status,
 
+          version:
+            result.version,
+
+          updatedAt:
+            result.updated_at,
+
           result:
             'UPDATED',
         },
@@ -1028,7 +1082,8 @@ export class OrdersService {
 
     return result;
   }
-    // ============================================================
+
+  // ============================================================
   // GET ORDER BY ID
   // ============================================================
 
@@ -1065,7 +1120,9 @@ export class OrdersService {
         customer_reference: string | null;
         status: string;
         order_date: string;
-        requested_delivery_date: string | null;
+        requested_delivery_date:
+          | string
+          | null;
         currency: string;
         notes: string | null;
         created_by_user_id: string;
@@ -1092,11 +1149,14 @@ export class OrdersService {
           o.created_at::text AS created_at,
           o.updated_at::text AS updated_at,
           o.version::text AS version
+
         FROM orders o
+
         WHERE
           o.id = $1
           AND o.tenant_id = $2
           AND o.factory_id = $3
+
         LIMIT 1
         `,
         [
@@ -1141,10 +1201,13 @@ export class OrdersService {
           ol.requested_delivery_date::text
             AS requested_delivery_date,
           ol.notes
+
         FROM order_lines ol
+
         WHERE
           ol.order_id = $1
           AND ol.tenant_id = $2
+
         ORDER BY
           ol.line_number ASC
         `,
@@ -1155,7 +1218,8 @@ export class OrdersService {
       );
 
     return {
-      id: order.id,
+      id:
+        order.id,
 
       tenant_id:
         order.tenant_id,
@@ -1238,7 +1302,8 @@ export class OrdersService {
       dto.status ?? null;
 
     const normalizedSearch =
-      dto.search?.trim() || null;
+      dto.search?.trim() ||
+      null;
 
     const searchPattern =
       normalizedSearch
@@ -1344,7 +1409,8 @@ export class OrdersService {
       items:
         result.rows.map(
           (row) => ({
-            id: row.id,
+            id:
+              row.id,
 
             tenant_id:
               row.tenant_id,
