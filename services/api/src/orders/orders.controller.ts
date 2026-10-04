@@ -1,11 +1,13 @@
 import {
   Body,
   Controller,
+  Headers,
   Post,
   Req,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+
 import type { Request } from 'express';
 
 import { PermissionGuard } from '../iam/guards/permission.guard';
@@ -45,6 +47,8 @@ export class OrdersController {
   async create(
     @Req() request: FactoryOsRequest,
     @Body() body: CreateOrderDto,
+    @Headers('idempotency-key')
+    idempotencyKey?: string,
   ) {
     const userId =
       request.factoryos?.userId ?? null;
@@ -58,7 +62,10 @@ export class OrdersController {
     const traceId =
       request.factoryos?.traceId ?? null;
 
-    if (!userId || !tenantId) {
+    if (
+      !userId ||
+      !tenantId
+    ) {
       throw new UnauthorizedException(
         'Authenticated user context is missing',
       );
@@ -70,6 +77,7 @@ export class OrdersController {
       body,
       requestId,
       traceId,
+      idempotencyKey ?? null,
     );
   }
 }
