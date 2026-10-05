@@ -1495,5 +1495,4 @@ export class OrdersService {
       },
     };
   }
-  
 }
