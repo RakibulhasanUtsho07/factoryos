@@ -28,8 +28,7 @@ function isRecord(
   value: unknown,
 ): value is JsonRecord {
   return (
-    typeof value ===
-      'object' &&
+    typeof value === 'object' &&
     value !== null &&
     !Array.isArray(value)
   );
@@ -38,18 +37,14 @@ function isRecord(
 function unwrapResponse(
   body: unknown,
 ): JsonRecord {
-  if (
-    !isRecord(body)
-  ) {
+  if (!isRecord(body)) {
     return {};
   }
 
   const data =
     body.data;
 
-  if (
-    isRecord(data)
-  ) {
+  if (isRecord(data)) {
     return data;
   }
 
@@ -69,29 +64,20 @@ function findStringByKeys(
     return null;
   }
 
-  if (
-    isRecord(value)
-  ) {
-    for (
-      const key of keys
-    ) {
+  if (isRecord(value)) {
+    for (const key of keys) {
       const candidate =
         value[key];
 
       if (
-        typeof candidate ===
-          'string' &&
+        typeof candidate === 'string' &&
         candidate.trim()
       ) {
         return candidate;
       }
     }
 
-    for (
-      const nested of Object.values(
-        value,
-      )
-    ) {
+    for (const nested of Object.values(value)) {
       const result =
         findStringByKeys(
           nested,
@@ -105,12 +91,8 @@ function findStringByKeys(
     }
   }
 
-  if (
-    Array.isArray(value)
-  ) {
-    for (
-      const nested of value
-    ) {
+  if (Array.isArray(value)) {
+    for (const nested of value) {
       const result =
         findStringByKeys(
           nested,
@@ -133,13 +115,10 @@ async function parseHttpResponse(
   const text =
     await response.text();
 
-  if (
-    !text.trim()
-  ) {
+  if (!text.trim()) {
     return {
       status:
         response.status,
-
       body:
         null,
     };
@@ -149,17 +128,13 @@ async function parseHttpResponse(
     return {
       status:
         response.status,
-
       body:
-        JSON.parse(
-          text,
-        ) as unknown,
+        JSON.parse(text) as unknown,
     };
   } catch {
     return {
       status:
         response.status,
-
       body:
         text,
     };
@@ -202,461 +177,430 @@ describe(
     let originalOutboxDispatcherEnabled:
       string | undefined;
 
-    beforeAll(
-      async () => {
-        // --------------------------------------------------------
-        // Preserve the current process environment.
-        // --------------------------------------------------------
+    beforeAll(async () => {
+      // ==========================================================
+      // PRESERVE PROCESS ENVIRONMENT
+      // ==========================================================
 
-        originalNodeEnv =
-          process.env.NODE_ENV;
+      originalNodeEnv =
+        process.env.NODE_ENV;
 
-        originalDevAuthEnabled =
-          process.env.DEV_AUTH_ENABLED;
+      originalDevAuthEnabled =
+        process.env.DEV_AUTH_ENABLED;
 
-        originalOutboxDispatcherEnabled =
-          process.env
-            .OUTBOX_DISPATCHER_ENABLED;
+      originalOutboxDispatcherEnabled =
+        process.env.OUTBOX_DISPATCHER_ENABLED;
 
-        // --------------------------------------------------------
-        // The development token endpoint is intentionally hidden
-        // outside development mode. Jest normally runs with
-        // NODE_ENV="test", so enable the development-auth path
-        // only for this isolated integration test application.
-        // --------------------------------------------------------
+      // ==========================================================
+      // TEST AUTH CONFIGURATION
+      // ==========================================================
+      //
+      // The development token endpoint is intentionally hidden
+      // outside development mode.
+      //
+      // This test uses the real HTTP authentication boundary.
+      //
 
-        process.env.NODE_ENV =
-          'development';
+      process.env.NODE_ENV =
+        'development';
 
-        process.env.DEV_AUTH_ENABLED =
-          'true';
+      process.env.DEV_AUTH_ENABLED =
+        'true';
 
-        // --------------------------------------------------------
-        // IMPORTANT TEST ISOLATION
-        //
-        // This test starts a real Nest application, but it must not
-        // start a background outbox worker against the shared
-        // integration-test PostgreSQL database.
-        //
-        // Dispatcher behavior is covered separately by the
-        // dedicated dispatcher/concurrency/restart/lease/
-        // quarantine tests.
-        // --------------------------------------------------------
+      // ==========================================================
+      // IMPORTANT TEST ISOLATION
+      // ==========================================================
+      //
+      // This test creates a real Nest application against the
+      // integration-test database.
+      //
+      // It must NOT start the background Outbox dispatcher,
+      // otherwise the dispatcher can race with the dedicated
+      // concurrent/restart/lease/quarantine integration tests
+      // that also use the same PostgreSQL database.
+      //
+      // Dedicated dispatcher tests instantiate the dispatcher
+      // explicitly and call dispatchOnce().
+      //
 
-        process.env
-          .OUTBOX_DISPATCHER_ENABLED =
-          'false';
+      process.env.OUTBOX_DISPATCHER_ENABLED =
+        'false';
 
-        const databaseUrl =
-          process.env
-            .DATABASE_URL;
+      // ==========================================================
+      // DATABASE
+      // ==========================================================
 
-        if (
-          !databaseUrl
-        ) {
-          throw new Error(
-            'DATABASE_URL is required.',
-          );
-        }
+      const databaseUrl =
+        process.env.DATABASE_URL;
 
-        pool =
-          new Pool({
-            connectionString:
-              databaseUrl,
-          });
+      if (!databaseUrl) {
+        throw new Error(
+          'DATABASE_URL is required.',
+        );
+      }
 
-        // --------------------------------------------------------
-        // Start the real Nest application.
-        // --------------------------------------------------------
+      pool =
+        new Pool({
+          connectionString:
+            databaseUrl,
+        });
 
-        app =
-          await NestFactory.create(
-            AppModule,
-          );
+      // ==========================================================
+      // REAL NEST APPLICATION
+      // ==========================================================
 
-        app.setGlobalPrefix(
-          'api',
+      app =
+        await NestFactory.create(
+          AppModule,
         );
 
-        app.useGlobalPipes(
-          new ValidationPipe({
-            whitelist:
-              true,
+      app.setGlobalPrefix(
+        'api',
+      );
 
-            transform:
-              true,
+      app.useGlobalPipes(
+        new ValidationPipe({
+          whitelist:
+            true,
 
-            forbidNonWhitelisted:
-              true,
-          }),
+          transform:
+            true,
+
+          forbidNonWhitelisted:
+            true,
+        }),
+      );
+
+      app.useGlobalFilters(
+        new HttpExceptionFilter(),
+      );
+
+      app.useGlobalInterceptors(
+        new ApiResponseInterceptor(),
+      );
+
+      await app.listen(
+        0,
+        '127.0.0.1',
+      );
+
+      baseUrl =
+        await app.getUrl();
+
+      // ==========================================================
+      // ACTIVE TENANT + FACTORY
+      // ==========================================================
+
+      const contextResult =
+        await pool.query<{
+          tenant_id: string;
+          factory_id: string;
+        }>(
+          `
+          SELECT
+            t.id::text AS tenant_id,
+
+            f.id::text AS factory_id
+
+          FROM tenants t
+
+          INNER JOIN factories f
+            ON f.tenant_id = t.id
+
+          WHERE
+            t.status = 'ACTIVE'
+
+            AND f.status = 'ACTIVE'
+
+          ORDER BY
+            t.created_at ASC,
+            f.created_at ASC
+
+          LIMIT 1
+          `,
         );
 
-        app.useGlobalFilters(
-          new HttpExceptionFilter(),
+      if (
+        contextResult.rowCount !==
+        1
+      ) {
+        throw new Error(
+          'No active tenant/factory available for HTTP lifecycle test.',
+        );
+      }
+
+      const context =
+        contextResult.rows[0];
+
+      if (!context) {
+        throw new Error(
+          'HTTP lifecycle test context is missing.',
+        );
+      }
+
+      tenantId =
+        context.tenant_id;
+
+      factoryId =
+        context.factory_id;
+
+      // ==========================================================
+      // TEST ACTOR
+      // ==========================================================
+
+      const userResult =
+        await pool.query<{
+          id: string;
+        }>(
+          `
+          SELECT
+            id::text AS id
+
+          FROM users
+
+          WHERE
+            id = $1
+
+          LIMIT 1
+          `,
+          [
+            TEST_USER_ID,
+          ],
         );
 
-        app.useGlobalInterceptors(
-          new ApiResponseInterceptor(),
+      if (
+        userResult.rowCount !==
+        1
+      ) {
+        throw new Error(
+          `Test user does not exist: ${TEST_USER_ID}`,
+        );
+      }
+
+      // ==========================================================
+      // VERIFY ACTIVE TENANT MEMBERSHIP
+      // ==========================================================
+      //
+      // users is tenant-neutral.
+      // Tenant membership belongs to tenant_memberships.
+      //
+
+      const membershipResult =
+        await pool.query<{
+          membership_id: string;
+        }>(
+          `
+          SELECT
+            tm.id::text AS membership_id
+
+          FROM users u
+
+          INNER JOIN tenant_memberships tm
+            ON tm.user_id = u.id
+
+          WHERE
+            u.id = $1
+
+            AND tm.tenant_id = $2
+
+            AND u.status = 'ACTIVE'
+
+            AND tm.status = 'ACTIVE'
+
+          LIMIT 1
+          `,
+          [
+            TEST_USER_ID,
+            tenantId,
+          ],
         );
 
-        await app.listen(
-          0,
-          '127.0.0.1',
+      if (
+        membershipResult.rowCount !==
+        1
+      ) {
+        throw new Error(
+          `Test user ${TEST_USER_ID} does not have an active membership in tenant ${tenantId}.`,
+        );
+      }
+
+      // ==========================================================
+      // CREATE ISOLATED AUTHORITATIVE ORDER
+      // ==========================================================
+
+      const orderNumber =
+        `HTTP-CONCURRENCY-TEST-${randomUUID()}`;
+
+      const orderResult =
+        await pool.query<{
+          id: string;
+          status: string;
+          version: string;
+          updated_at: string;
+        }>(
+          `
+          INSERT INTO orders (
+            tenant_id,
+            factory_id,
+            order_number,
+            status,
+            order_date,
+            currency,
+            created_by_user_id
+          )
+
+          VALUES (
+            $1,
+            $2,
+            $3,
+            'DRAFT',
+            CURRENT_DATE,
+            'BDT',
+            $4
+          )
+
+          RETURNING
+            id::text AS id,
+
+            status,
+
+            version::text AS version,
+
+            updated_at::text AS updated_at
+          `,
+          [
+            tenantId,
+            factoryId,
+            orderNumber,
+            TEST_USER_ID,
+          ],
         );
 
-        baseUrl =
-          await app.getUrl();
-
-        // --------------------------------------------------------
-        // Resolve an active tenant + factory.
-        // --------------------------------------------------------
-
-        const contextResult =
-          await pool.query<{
-            tenant_id: string;
-
-            factory_id: string;
-          }>(
-            `
-            SELECT
-              t.id::text AS tenant_id,
-
-              f.id::text AS factory_id
-
-            FROM tenants t
-
-            INNER JOIN factories f
-              ON f.tenant_id = t.id
-
-            WHERE
-              t.status = 'ACTIVE'
-
-              AND f.status = 'ACTIVE'
-
-            ORDER BY
-              t.created_at ASC,
-              f.created_at ASC
-
-            LIMIT 1
-            `,
-          );
-
-        if (
-          contextResult.rowCount !==
-          1
-        ) {
-          throw new Error(
-            'No active tenant/factory available for HTTP lifecycle test.',
-          );
-        }
-
-        const context =
-          contextResult.rows[0];
-
-        if (
-          !context
-        ) {
-          throw new Error(
-            'HTTP lifecycle test context is missing.',
-          );
-        }
-
-        tenantId =
-          context.tenant_id;
-
-        factoryId =
-          context.factory_id;
-
-        // --------------------------------------------------------
-        // Verify test actor.
-        // --------------------------------------------------------
-
-        const userResult =
-          await pool.query<{
-            id: string;
-          }>(
-            `
-            SELECT
-              id::text AS id
-
-            FROM users
-
-            WHERE
-              id = $1
-
-            LIMIT 1
-            `,
-            [
-              TEST_USER_ID,
-            ],
-          );
-
-        if (
-          userResult.rowCount !==
-          1
-        ) {
-          throw new Error(
-            `Test user does not exist: ${TEST_USER_ID}`,
-          );
-        }
-
-        // --------------------------------------------------------
-        // Verify test actor has an active membership in the
-        // selected tenant.
-        //
-        // This follows the authoritative IAM schema:
-        // users -> tenant_memberships.
-        // --------------------------------------------------------
-
-        const membershipResult =
-          await pool.query<{
-            membership_id: string;
-          }>(
-            `
-            SELECT
-              tm.id::text AS membership_id
-
-            FROM users u
-
-            INNER JOIN tenant_memberships tm
-              ON tm.user_id = u.id
-
-            WHERE
-              u.id = $1
-
-              AND tm.tenant_id = $2
-
-              AND u.status = 'ACTIVE'
-
-              AND tm.status = 'ACTIVE'
-
-            LIMIT 1
-            `,
-            [
-              TEST_USER_ID,
-
-              tenantId,
-            ],
-          );
-
-        if (
-          membershipResult.rowCount !==
-          1
-        ) {
-          throw new Error(
-            `Test user ${TEST_USER_ID} does not have an active membership in tenant ${tenantId}.`,
-          );
-        }
-
-        // --------------------------------------------------------
-        // Create an isolated authoritative order directly in DB.
-        // --------------------------------------------------------
-
-        const orderNumber =
-          `HTTP-CONCURRENCY-TEST-${randomUUID()}`;
-
-        const orderResult =
-          await pool.query<{
-            id: string;
-
-            status: string;
-
-            version: string;
-
-            updated_at: string;
-          }>(
-            `
-            INSERT INTO orders (
-              tenant_id,
-              factory_id,
-              order_number,
-              status,
-              order_date,
-              currency,
-              created_by_user_id
-            )
-
-            VALUES (
-              $1,
-              $2,
-              $3,
-              'DRAFT',
-              CURRENT_DATE,
-              'BDT',
-              $4
-            )
-
-            RETURNING
-              id::text AS id,
-
-              status,
-
-              version::text AS version,
-
-              updated_at::text AS updated_at
-            `,
-            [
-              tenantId,
-
-              factoryId,
-
-              orderNumber,
-
-              TEST_USER_ID,
-            ],
-          );
-
-        if (
-          orderResult.rowCount !==
-          1
-        ) {
-          throw new Error(
-            'HTTP concurrency test order could not be created.',
-          );
-        }
-
-        const createdOrder =
-          orderResult.rows[0];
-
-        if (
-          !createdOrder
-        ) {
-          throw new Error(
-            'HTTP concurrency test order row is missing.',
-          );
-        }
-
-        orderId =
-          createdOrder.id;
-
-        expect(
-          createdOrder.status,
-        ).toBe(
-          'DRAFT',
+      if (
+        orderResult.rowCount !==
+        1
+      ) {
+        throw new Error(
+          'HTTP concurrency test order could not be created.',
         );
+      }
 
-        expect(
-          Number(
-            createdOrder.version,
-          ),
-        ).toBe(1);
+      const createdOrder =
+        orderResult.rows[0];
 
-        // --------------------------------------------------------
-        // Obtain a real JWT through the public development-auth
-        // endpoint instead of bypassing authentication.
-        // --------------------------------------------------------
+      if (!createdOrder) {
+        throw new Error(
+          'HTTP concurrency test order row is missing.',
+        );
+      }
 
-        const devAuthSecret =
-          process.env
-            .DEV_AUTH_SECRET;
+      orderId =
+        createdOrder.id;
 
-        if (
-          !devAuthSecret
-        ) {
-          throw new Error(
-            'DEV_AUTH_SECRET is required for the HTTP lifecycle integration test.',
-          );
-        }
+      expect(
+        createdOrder.status,
+      ).toBe(
+        'DRAFT',
+      );
 
-        const tokenResponse =
-          await fetch(
-            `${baseUrl}/api/auth/dev-token`,
-            {
-              method:
-                'POST',
+      expect(
+        Number(
+          createdOrder.version,
+        ),
+      ).toBe(1);
 
-              headers: {
-                'content-type':
-                  'application/json',
+      // ==========================================================
+      // REAL JWT THROUGH REAL DEV AUTH ENDPOINT
+      // ==========================================================
 
-                'x-dev-auth-secret':
-                  devAuthSecret,
-              },
+      const devAuthSecret =
+        process.env.DEV_AUTH_SECRET;
 
-              body:
-                JSON.stringify({
-                  user_id:
-                    TEST_USER_ID,
+      if (!devAuthSecret) {
+        throw new Error(
+          'DEV_AUTH_SECRET is required for the HTTP lifecycle integration test.',
+        );
+      }
 
-                  tenant_id:
-                    tenantId,
-                }),
+      const tokenResponse =
+        await fetch(
+          `${baseUrl}/api/auth/dev-token`,
+          {
+            method:
+              'POST',
+
+            headers: {
+              'content-type':
+                'application/json',
+
+              'x-dev-auth-secret':
+                devAuthSecret,
             },
-          );
 
-        const tokenResult =
-          await parseHttpResponse(
-            tokenResponse,
-          );
+            body:
+              JSON.stringify({
+                user_id:
+                  TEST_USER_ID,
 
-        if (
-          tokenResult.status <
-            200 ||
-          tokenResult.status >=
-            300
-        ) {
-          throw new Error(
-            `Dev token request failed with HTTP ${tokenResult.status}: ${JSON.stringify(tokenResult.body)}`,
-          );
-        }
+                tenant_id:
+                  tenantId,
+              }),
+          },
+        );
 
-        accessToken =
-          findStringByKeys(
-            tokenResult.body,
-            [
-              'access_token',
-              'accessToken',
-              'token',
-              'jwt',
-            ],
-          ) ??
-          '';
+      const tokenResult =
+        await parseHttpResponse(
+          tokenResponse,
+        );
 
-        if (
-          !accessToken
-        ) {
-          throw new Error(
-            `Dev token response did not contain an access token: ${JSON.stringify(tokenResult.body)}`,
-          );
-        }
-      },
-    );
+      if (
+        tokenResult.status <
+          200 ||
+        tokenResult.status >=
+          300
+      ) {
+        throw new Error(
+          `Dev token request failed with HTTP ${tokenResult.status}: ${JSON.stringify(tokenResult.body)}`,
+        );
+      }
 
-    afterAll(
-      async () => {
-        // --------------------------------------------------------
-        // Clean test-created dependent data first.
-        // --------------------------------------------------------
+      accessToken =
+        findStringByKeys(
+          tokenResult.body,
+          [
+            'access_token',
+            'accessToken',
+            'token',
+            'jwt',
+          ],
+        ) ?? '';
 
-        if (
-          pool &&
-          orderId
-        ) {
-          await pool.query(
-            `
-            DELETE FROM order_event_projections
+      if (!accessToken) {
+        throw new Error(
+          `Dev token response did not contain an access token: ${JSON.stringify(tokenResult.body)}`,
+        );
+      }
+    });
 
-            WHERE
-              event_id IN (
-                SELECT
-                  id
+    afterAll(async () => {
+      // ==========================================================
+      // CLEAN TEST DATA
+      // ==========================================================
 
-                FROM outbox_events
+      if (
+        pool &&
+        orderId
+      ) {
+        /*
+         * Remove projections produced for events belonging
+         * to this test order.
+         */
+        await pool.query(
+          `
+          DELETE FROM order_event_projections
 
-                WHERE
-                  aggregate_id = $1
-              )
-            `,
-            [
-              orderId,
-            ],
-          );
-
-          await pool.query(
-            `
-            DELETE FROM inbox_events
-
-            WHERE event_id IN (
+          WHERE
+            event_id IN (
               SELECT
                 id
 
@@ -665,95 +609,120 @@ describe(
               WHERE
                 aggregate_id = $1
             )
-            `,
-            [
-              orderId,
-            ],
-          );
+          `,
+          [
+            orderId,
+          ],
+        );
 
-          await pool.query(
-            `
-            DELETE FROM outbox_events
+        /*
+         * Remove inbox entries belonging to events of this order.
+         */
+        await pool.query(
+          `
+          DELETE FROM inbox_events
 
-            WHERE
-              aggregate_id = $1
-            `,
-            [
-              orderId,
-            ],
-          );
+          WHERE
+            event_id IN (
+              SELECT
+                id
 
-          await pool.query(
-            `
-            DELETE FROM orders
+              FROM outbox_events
 
-            WHERE
-              id = $1
-            `,
-            [
-              orderId,
-            ],
-          );
-        }
+              WHERE
+                aggregate_id = $1
+            )
+          `,
+          [
+            orderId,
+          ],
+        );
 
-        // --------------------------------------------------------
-        // Close the test application.
-        // --------------------------------------------------------
+        /*
+         * Remove outbox entries generated by this test.
+         */
+        await pool.query(
+          `
+          DELETE FROM outbox_events
 
-        if (
-          app
-        ) {
-          await app.close();
-        }
+          WHERE
+            aggregate_id = $1
+          `,
+          [
+            orderId,
+          ],
+        );
 
-        // --------------------------------------------------------
-        // Close database pool.
-        // --------------------------------------------------------
+        /*
+         * Finally remove the authoritative order.
+         */
+        await pool.query(
+          `
+          DELETE FROM orders
 
-        if (
-          pool
-        ) {
-          await pool.end();
-        }
+          WHERE
+            id = $1
+          `,
+          [
+            orderId,
+          ],
+        );
+      }
 
-        // --------------------------------------------------------
-        // Restore process environment.
-        // --------------------------------------------------------
+      // ==========================================================
+      // CLOSE NEST APP
+      // ==========================================================
 
-        if (
-          originalNodeEnv ===
-          undefined
-        ) {
-          delete process.env.NODE_ENV;
-        } else {
-          process.env.NODE_ENV =
-            originalNodeEnv;
-        }
+      if (app) {
+        await app.close();
+      }
 
-        if (
-          originalDevAuthEnabled ===
-          undefined
-        ) {
-          delete process.env
-            .DEV_AUTH_ENABLED;
-        } else {
-          process.env.DEV_AUTH_ENABLED =
-            originalDevAuthEnabled;
-        }
+      // ==========================================================
+      // CLOSE DATABASE POOL
+      // ==========================================================
 
-        if (
-          originalOutboxDispatcherEnabled ===
-          undefined
-        ) {
-          delete process.env
-            .OUTBOX_DISPATCHER_ENABLED;
-        } else {
-          process.env
-            .OUTBOX_DISPATCHER_ENABLED =
-            originalOutboxDispatcherEnabled;
-        }
-      },
-    );
+      if (pool) {
+        await pool.end();
+      }
+
+      // ==========================================================
+      // RESTORE PROCESS ENVIRONMENT
+      // ==========================================================
+
+      if (
+        originalNodeEnv ===
+        undefined
+      ) {
+        delete process.env
+          .NODE_ENV;
+      } else {
+        process.env.NODE_ENV =
+          originalNodeEnv;
+      }
+
+      if (
+        originalDevAuthEnabled ===
+        undefined
+      ) {
+        delete process.env
+          .DEV_AUTH_ENABLED;
+      } else {
+        process.env.DEV_AUTH_ENABLED =
+          originalDevAuthEnabled;
+      }
+
+      if (
+        originalOutboxDispatcherEnabled ===
+        undefined
+      ) {
+        delete process.env
+          .OUTBOX_DISPATCHER_ENABLED;
+      } else {
+        process.env
+          .OUTBOX_DISPATCHER_ENABLED =
+          originalOutboxDispatcherEnabled;
+      }
+    });
 
     // ============================================================
     // HTTP OPTIMISTIC-CONCURRENCY CONTRACT
@@ -783,11 +752,11 @@ describe(
               randomUUID(),
           };
 
-        // --------------------------------------------------------
-        // First client:
+        // ========================================================
+        // FIRST CLIENT
         //
         // version 1 -> CONFIRMED / version 2
-        // --------------------------------------------------------
+        // ========================================================
 
         const successfulTransition =
           await fetch(
@@ -840,11 +809,11 @@ describe(
           ),
         ).toBe(2);
 
-        // --------------------------------------------------------
-        // Stale client:
+        // ========================================================
+        // STALE CLIENT
         //
-        // version 1 must now be rejected.
-        // --------------------------------------------------------
+        // version 1 must be rejected.
+        // ========================================================
 
         const staleTransition =
           await fetch(
@@ -894,9 +863,11 @@ describe(
           'version conflict',
         );
 
-        // --------------------------------------------------------
-        // Real GET endpoint must still return version 2.
-        // --------------------------------------------------------
+        // ========================================================
+        // REAL GET ENDPOINT
+        //
+        // Version must remain 2.
+        // ========================================================
 
         const getResponse =
           await fetch(
@@ -942,14 +913,13 @@ describe(
           ),
         ).toBe(2);
 
-        // --------------------------------------------------------
-        // Authoritative PostgreSQL state must match HTTP state.
-        // --------------------------------------------------------
+        // ========================================================
+        // AUTHORITATIVE POSTGRES STATE
+        // ========================================================
 
         const dbResult =
           await pool.query<{
             status: string;
-
             version: string;
           }>(
             `
@@ -969,9 +939,7 @@ describe(
             `,
             [
               orderId,
-
               tenantId,
-
               factoryId,
             ],
           );
@@ -983,9 +951,7 @@ describe(
         const dbOrder =
           dbResult.rows[0];
 
-        if (
-          !dbOrder
-        ) {
+        if (!dbOrder) {
           throw new Error(
             'HTTP concurrency DB state is missing.',
           );
