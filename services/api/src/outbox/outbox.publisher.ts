@@ -1,57 +1,62 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 
-export interface OutboxEvent {
-  id: string;
-  tenantId: string;
-  factoryId: string | null;
-  aggregateType: string;
-  aggregateId: string;
-  eventType: string;
-  eventVersion: number;
-  payload: Record<string, unknown>;
-}
+import {
+  assertValidOutboxEvent,
+} from './outbox-event.contract';
+
+import type {
+  OutboxEvent,
+} from './outbox-event.contract';
+
+export type {
+  OutboxEvent,
+} from './outbox-event.contract';
 
 @Injectable()
 export class OutboxPublisher {
   private readonly logger =
-    new Logger(OutboxPublisher.name);
+    new Logger(
+      OutboxPublisher.name,
+    );
 
   async publish(
     event: OutboxEvent,
   ): Promise<void> {
     /*
      * ----------------------------------------------------------
+     * EVENT CONTRACT GATE
+     * ----------------------------------------------------------
+     *
+     * Validate before the event crosses the publisher boundary.
+     *
+     * Validation also deep-freezes the event snapshot so local
+     * consumers cannot mutate the event after validation.
+     */
+    const validatedEvent =
+      assertValidOutboxEvent(
+        event,
+      );
+
+    /*
+     * ----------------------------------------------------------
      * DEVELOPMENT FAILURE INJECTION
      * ----------------------------------------------------------
      *
-     * This is ONLY for local testing.
-     *
-     * When:
-     *
-     *   OUTBOX_TEST_FORCE_FAILURE=true
-     *
-     * the publisher deliberately fails.
-     *
-     * This lets us verify:
-     *
-     * PROCESSING
-     *    ↓
-     * FAILED
-     *    ↓
-     * retry
-     *    ↓
-     * PUBLISHED
-     *
-     * Production should never enable this.
+     * ONLY for local testing.
      */
     const forceFailure =
-      process.env.NODE_ENV === 'development' &&
-      process.env.OUTBOX_TEST_FORCE_FAILURE ===
+      process.env.NODE_ENV ===
+        'development' &&
+      process.env
+        .OUTBOX_TEST_FORCE_FAILURE ===
         'true';
 
     if (forceFailure) {
       this.logger.warn(
-        `TEST FAILURE INJECTION: refusing to publish outbox event ${event.id}`,
+        `TEST FAILURE INJECTION: refusing to publish outbox event ${validatedEvent.id}`,
       );
 
       throw new Error(
@@ -64,10 +69,9 @@ export class OutboxPublisher {
      * Local development publisher
      * ----------------------------------------------------------
      *
-     * For now we simulate successful event publication
-     * through structured logging.
+     * Temporary transport boundary.
      *
-     * Later this boundary can connect to:
+     * Later this can connect to:
      * - Kafka
      * - RabbitMQ
      * - NATS
@@ -76,28 +80,32 @@ export class OutboxPublisher {
      */
     this.logger.log(
       JSON.stringify({
-        type: 'OUTBOX_EVENT_PUBLISHED',
+        type:
+          'OUTBOX_EVENT_PUBLISHED',
 
-        event_id: event.id,
+        event_id:
+          validatedEvent.id,
 
-        tenant_id: event.tenantId,
+        tenant_id:
+          validatedEvent.tenantId,
 
-        factory_id: event.factoryId,
+        factory_id:
+          validatedEvent.factoryId,
 
         aggregate_type:
-          event.aggregateType,
+          validatedEvent.aggregateType,
 
         aggregate_id:
-          event.aggregateId,
+          validatedEvent.aggregateId,
 
         event_type:
-          event.eventType,
+          validatedEvent.eventType,
 
         event_version:
-          event.eventVersion,
+          validatedEvent.eventVersion,
 
         payload:
-          event.payload,
+          validatedEvent.payload,
       }),
     );
   }

@@ -4,14 +4,20 @@ import {
 } from '@nestjs/common';
 
 import {
+  assertValidOutboxEvent,
+} from './outbox-event.contract';
+
+import type {
+  OutboxEvent,
+} from './outbox-event.contract';
+
+import {
   OutboxConsumer,
 } from './outbox.consumer';
 
 import {
-  OutboxEvent,
-} from './outbox.publisher';
-import { OrderCreatedConsumer } from './order-created.consumer';
-
+  OrderCreatedConsumer,
+} from './order-created.consumer';
 
 @Injectable()
 export class OutboxConsumerRegistry {
@@ -27,7 +33,8 @@ export class OutboxConsumerRegistry {
     >();
 
   constructor(
-    private readonly orderCreatedConsumer: OrderCreatedConsumer,
+    private readonly orderCreatedConsumer:
+      OrderCreatedConsumer,
   ) {
     this.register(
       this.orderCreatedConsumer,
@@ -35,12 +42,15 @@ export class OutboxConsumerRegistry {
   }
 
   private register(
-    consumer: OutboxConsumer<unknown>,
+    consumer:
+      OutboxConsumer<unknown>,
   ): void {
     const key =
       consumer.eventType;
 
-    if (this.consumers.has(key)) {
+    if (
+      this.consumers.has(key)
+    ) {
       throw new Error(
         `Duplicate outbox consumer registration: ${key}`,
       );
@@ -58,14 +68,29 @@ export class OutboxConsumerRegistry {
     handled: boolean;
     consumerName: string | null;
   }> {
+    /*
+     * ----------------------------------------------------------
+     * CONSUMER CONTRACT GATE
+     * ----------------------------------------------------------
+     *
+     * Re-validate at the consumer boundary.
+     *
+     * The publisher is a separate boundary, so consumers must
+     * never assume that an event reaching them is already safe.
+     */
+    const validatedEvent =
+      assertValidOutboxEvent(
+        event,
+      );
+
     const consumer =
       this.consumers.get(
-        event.eventType,
+        validatedEvent.eventType,
       );
 
     if (!consumer) {
       this.logger.debug(
-        `No local consumer registered for event type ${event.eventType}`,
+        `No local consumer registered for event type ${validatedEvent.eventType}`,
       );
 
       return {
@@ -75,7 +100,7 @@ export class OutboxConsumerRegistry {
     }
 
     await consumer.consume(
-      event,
+      validatedEvent,
     );
 
     return {
