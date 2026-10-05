@@ -6,6 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import { randomUUID } from 'node:crypto';
+
 import { PoolClient } from 'pg';
 import { isUUID } from 'class-validator';
 
@@ -58,6 +60,8 @@ export class OrdersService {
               userId,
               tenantId,
               dto,
+              requestId,
+              traceId,
             );
           },
         );
@@ -105,6 +109,8 @@ export class OrdersService {
             userId,
             tenantId,
             dto,
+            requestId,
+            traceId,
           );
         },
       );
@@ -217,6 +223,8 @@ export class OrdersService {
     userId: string,
     tenantId: string,
     dto: CreateOrderDto,
+    requestId: string | null,
+    traceId: string | null,
   ) {
     // ----------------------------------------------------------
     // Verify factory belongs to tenant
@@ -540,10 +548,57 @@ export class OrdersService {
           }),
         ),
 
+      /*
+       * Backward-compatible payload actor.
+       *
+       * The canonical envelope actor is persisted separately
+       * below.
+       */
       actor: {
         user_id:
           userId,
       },
+    };
+
+    /*
+     * ----------------------------------------------------------
+     * Canonical event envelope metadata
+     * ----------------------------------------------------------
+     *
+     * Prefer the request trace as the correlation identifier.
+     *
+     * Fallback to requestId for service calls where traceId is
+     * unavailable.
+     *
+     * Final fallback generates a UUID for non-HTTP callers.
+     *
+     * causation_id remains NULL because this command is not caused
+     * by another persisted domain event yet.
+     */
+    const correlationId =
+      traceId ??
+      requestId ??
+      randomUUID();
+
+    const actor = {
+      type:
+        'user' as const,
+
+      id:
+        userId,
+    };
+
+    const source = {
+      system:
+        'FactoryOS',
+
+      connector:
+        'orders-service',
+
+      version:
+        process.env.APP_VERSION ??
+        process.env.npm_package_version ??
+        '0.1.0',
     };
 
     await client.query(
@@ -555,6 +610,11 @@ export class OrdersService {
         aggregate_id,
         event_type,
         event_version,
+        occurred_at,
+        correlation_id,
+        causation_id,
+        actor,
+        source,
         payload
       )
 
@@ -565,13 +625,31 @@ export class OrdersService {
         $3,
         'ORDER.CREATED',
         1,
-        $4::jsonb
+        clock_timestamp(),
+        $4,
+        NULL,
+        $5::jsonb,
+        $6::jsonb,
+        $7::jsonb
       )
       `,
       [
         tenantId,
+
         dto.factory_id,
+
         orderRow.id,
+
+        correlationId,
+
+        JSON.stringify(
+          actor,
+        ),
+
+        JSON.stringify(
+          source,
+        ),
+
         JSON.stringify(
           eventPayload,
         ),
@@ -679,16 +757,12 @@ export class OrdersService {
     } catch {
       /*
        * Order creation has already committed.
-       * Audit infrastructure failure must not
-       * turn a successful business write into
-       * an API failure.
+       *
+       * Audit infrastructure failure must not turn a successful
+       * business write into an API failure.
        */
     }
   }
-
-  // ============================================================
-  // ORDER STATUS TRANSITION
-  // ============================================================
 
   // ============================================================
   // ORDER STATUS TRANSITION
@@ -729,7 +803,9 @@ export class OrdersService {
     if (
       expectedVersion !== undefined &&
       (
-        !Number.isInteger(expectedVersion) ||
+        !Number.isInteger(
+          expectedVersion,
+        ) ||
         expectedVersion < 1
       )
     ) {
@@ -794,13 +870,15 @@ export class OrdersService {
           }
 
           const currentVersion =
-            Number(order.version);
+            Number(
+              order.version,
+            );
 
           // ----------------------------------------------------
           // Optimistic concurrency check.
           //
-          // If the caller supplied an old version,
-          // reject the write before changing anything.
+          // If the caller supplied an old version, reject the
+          // write before changing anything.
           // ----------------------------------------------------
 
           if (
@@ -817,7 +895,8 @@ export class OrdersService {
           // ----------------------------------------------------
 
           if (
-            order.status === targetStatus
+            order.status ===
+            targetStatus
           ) {
             throw new ConflictException(
               `Order is already in ${targetStatus} status`,
@@ -977,10 +1056,53 @@ export class OrdersService {
                 updatedOrder.updated_at,
             },
 
+            /*
+             * Backward-compatible payload actor.
+             *
+             * The canonical envelope actor is persisted separately
+             * below.
+             */
             actor: {
               user_id:
                 userId,
             },
+          };
+
+          /*
+           * ------------------------------------------------------
+           * Canonical event envelope metadata.
+           * ------------------------------------------------------
+           *
+           * Prefer traceId, then requestId, then generate a UUID.
+           *
+           * causation_id remains NULL because this transition is
+           * directly caused by the current command/request, not by
+           * another persisted domain event.
+           */
+          const correlationId =
+            traceId ??
+            requestId ??
+            randomUUID();
+
+          const actor = {
+            type:
+              'user' as const,
+
+            id:
+              userId,
+          };
+
+          const source = {
+            system:
+              'FactoryOS',
+
+            connector:
+              'orders-service',
+
+            version:
+              process.env.APP_VERSION ??
+              process.env.npm_package_version ??
+              '0.1.0',
           };
 
           await client.query(
@@ -992,6 +1114,11 @@ export class OrdersService {
               aggregate_id,
               event_type,
               event_version,
+              occurred_at,
+              correlation_id,
+              causation_id,
+              actor,
+              source,
               payload
             )
 
@@ -1002,14 +1129,33 @@ export class OrdersService {
               $3,
               $4,
               1,
-              $5::jsonb
+              clock_timestamp(),
+              $5,
+              NULL,
+              $6::jsonb,
+              $7::jsonb,
+              $8::jsonb
             )
             `,
             [
               tenantId,
+
               updatedOrder.factory_id,
+
               updatedOrder.id,
+
               eventType,
+
+              correlationId,
+
+              JSON.stringify(
+                actor,
+              ),
+
+              JSON.stringify(
+                source,
+              ),
+
               JSON.stringify(
                 eventPayload,
               ),
@@ -1119,12 +1265,14 @@ export class OrdersService {
     } catch {
       /*
        * The business transaction is already committed.
+       *
        * Audit failure must not roll back the order state.
        */
     }
 
     return result;
   }
+
   // ============================================================
   // GET ORDER BY ID
   // ============================================================

@@ -19,10 +19,8 @@ export type KnownOrderEventType =
 /*
  * Event schema compatibility registry.
  *
- * Keep this registry separate from aggregate state rules.
- *
  * eventVersion describes the event schema version.
- * It does NOT describe the aggregate's lifecycle version.
+ * It does NOT describe the aggregate lifecycle version.
  */
 export const ORDER_EVENT_SCHEMA_VERSIONS: Record<
   KnownOrderEventType,
@@ -35,6 +33,22 @@ export const ORDER_EVENT_SCHEMA_VERSIONS: Record<
   'ORDER.CANCELLED': [1],
 };
 
+export type OutboxActorType =
+  | 'user'
+  | 'service'
+  | 'agent';
+
+export interface OutboxActor {
+  type: OutboxActorType;
+  id: string;
+}
+
+export interface OutboxSource {
+  system: string;
+  connector?: string;
+  version?: string;
+}
+
 export interface OutboxEvent {
   id: string;
   tenantId: string;
@@ -43,6 +57,21 @@ export interface OutboxEvent {
   aggregateId: string;
   eventType: string;
   eventVersion: number;
+
+  /*
+   * Canonical persisted event envelope metadata.
+   *
+   * Optional at the type level during the migration window so
+   * historical/test fixtures remain compatible.
+   *
+   * New Order events populate these fields.
+   */
+  occurredAt?: string;
+  correlationId?: string | null;
+  causationId?: string | null;
+  actor?: OutboxActor | null;
+  source?: OutboxSource | null;
+
   payload: Record<string, unknown>;
 }
 
@@ -65,6 +94,9 @@ export interface OrderCreatedEventPayload {
 
   lines?: OrderCreatedEventLine[];
 
+  /*
+   * Legacy payload actor retained for current consumer compatibility.
+   */
   actor?: {
     user_id: string;
   };
@@ -82,6 +114,9 @@ export interface OrderLifecycleEventPayload {
     updated_at: string;
   };
 
+  /*
+   * Legacy payload actor retained for compatibility.
+   */
   actor?: {
     user_id: string;
   };
@@ -195,6 +230,135 @@ function requireUuid(
   return value;
 }
 
+function validateCanonicalEnvelopeMetadata(
+  event: OutboxEvent,
+): void {
+  // ------------------------------------------------------------
+  // occurred_at
+  // ------------------------------------------------------------
+
+  if (
+    event.occurredAt !== undefined &&
+    !isValidTimestamp(
+      event.occurredAt,
+    )
+  ) {
+    throw new OutboxEventContractError(
+      'OUTBOX_EVENT_INVALID_OCCURRED_AT',
+      'event.occurredAt must be a valid timestamp',
+    );
+  }
+
+  // ------------------------------------------------------------
+  // correlation_id
+  // ------------------------------------------------------------
+
+  if (
+    event.correlationId !== undefined &&
+    event.correlationId !== null
+  ) {
+    requireUuid(
+      event.correlationId,
+      'OUTBOX_EVENT_INVALID_CORRELATION_ID',
+      'event.correlationId',
+    );
+  }
+
+  // ------------------------------------------------------------
+  // causation_id
+  // ------------------------------------------------------------
+
+  if (
+    event.causationId !== undefined &&
+    event.causationId !== null
+  ) {
+    requireUuid(
+      event.causationId,
+      'OUTBOX_EVENT_INVALID_CAUSATION_ID',
+      'event.causationId',
+    );
+  }
+
+  // ------------------------------------------------------------
+  // actor
+  // ------------------------------------------------------------
+
+  if (
+    event.actor !== undefined &&
+    event.actor !== null
+  ) {
+    if (
+      !isRecord(event.actor)
+    ) {
+      throw new OutboxEventContractError(
+        'OUTBOX_EVENT_INVALID_ACTOR',
+        'event.actor must be an object',
+      );
+    }
+
+    if (
+      event.actor.type !== 'user' &&
+      event.actor.type !== 'service' &&
+      event.actor.type !== 'agent'
+    ) {
+      throw new OutboxEventContractError(
+        'OUTBOX_EVENT_INVALID_ACTOR_TYPE',
+        'event.actor.type must be user, service or agent',
+      );
+    }
+
+    requireString(
+      event.actor.id,
+      'OUTBOX_EVENT_INVALID_ACTOR_ID',
+      'event.actor.id',
+    );
+  }
+
+  // ------------------------------------------------------------
+  // source
+  // ------------------------------------------------------------
+
+  if (
+    event.source !== undefined &&
+    event.source !== null
+  ) {
+    if (
+      !isRecord(event.source)
+    ) {
+      throw new OutboxEventContractError(
+        'OUTBOX_EVENT_INVALID_SOURCE',
+        'event.source must be an object',
+      );
+    }
+
+    requireString(
+      event.source.system,
+      'OUTBOX_EVENT_INVALID_SOURCE_SYSTEM',
+      'event.source.system',
+    );
+
+    if (
+      event.source.connector !== undefined
+    ) {
+      requireString(
+        event.source.connector,
+        'OUTBOX_EVENT_INVALID_SOURCE_CONNECTOR',
+        'event.source.connector',
+      );
+    }
+
+    if (
+      event.source.version !== undefined
+    ) {
+      requireString(
+        event.source.version,
+        'OUTBOX_EVENT_INVALID_SOURCE_VERSION',
+        'event.source.version',
+      );
+    }
+  }
+}
+
 function validateGenericEnvelope(
   event: OutboxEvent,
 ): void {
@@ -261,12 +425,19 @@ function validateGenericEnvelope(
     );
   }
 
+  validateCanonicalEnvelopeMetadata(
+    event,
+  );
+
   /*
    * ORDER events must belong to ORDER aggregate.
    */
   if (
-    event.eventType.startsWith('ORDER.') &&
-    event.aggregateType !== 'ORDER'
+    event.eventType.startsWith(
+      'ORDER.',
+    ) &&
+    event.aggregateType !==
+      'ORDER'
   ) {
     throw new OutboxEventContractError(
       'ORDER_EVENT_INVALID_AGGREGATE_TYPE',
@@ -276,12 +447,11 @@ function validateGenericEnvelope(
 
   /*
    * Current Order events are factory scoped.
-   *
-   * We enforce this because the current OrdersService writes
-   * factory_id for material order events.
    */
   if (
-    event.eventType.startsWith('ORDER.') &&
+    event.eventType.startsWith(
+      'ORDER.',
+    ) &&
     event.factoryId === null
   ) {
     throw new OutboxEventContractError(
@@ -304,8 +474,7 @@ function validateSupportedVersion(
   ) {
     /*
      * Unknown future event types are allowed through the generic
-     * envelope boundary. Their dedicated payload contract can be
-     * introduced when that event type is actually implemented.
+     * envelope boundary.
      */
     return;
   }
@@ -329,10 +498,9 @@ function validateOptionalActor(
     payload.actor;
 
   /*
-   * Actor is optional for the current persisted event contract.
+   * Actor inside the current payload is a legacy compatibility field.
    *
-   * Later canonical envelope hardening can make actor mandatory
-   * once OrdersService persists the canonical actor structure.
+   * The canonical envelope actor is event.actor.
    */
   if (
     actor === undefined ||
@@ -371,7 +539,7 @@ function validateOptionalOrderSnapshot(
    * intentionally minimal ORDER event payloads.
    *
    * The generic event envelope is authoritative until the producer
-   * contract itself is upgraded to the canonical payload envelope.
+   * contract itself is fully upgraded.
    */
   if (
     order === undefined ||
@@ -397,7 +565,8 @@ function validateOptionalOrderSnapshot(
     );
 
   if (
-    orderId !== event.aggregateId
+    orderId !==
+    event.aggregateId
   ) {
     throw new OutboxEventContractError(
       'ORDER_EVENT_AGGREGATE_MISMATCH',
@@ -413,7 +582,8 @@ function validateOptionalOrderSnapshot(
     );
 
   if (
-    tenantId !== event.tenantId
+    tenantId !==
+    event.tenantId
   ) {
     throw new OutboxEventContractError(
       'ORDER_EVENT_TENANT_MISMATCH',
@@ -429,7 +599,8 @@ function validateOptionalOrderSnapshot(
     );
 
   if (
-    factoryId !== event.factoryId
+    factoryId !==
+    event.factoryId
   ) {
     throw new OutboxEventContractError(
       'ORDER_EVENT_FACTORY_MISMATCH',
@@ -471,14 +642,10 @@ function validateCreatedPayload(
     );
 
   /*
-   * IMPORTANT:
+   * Do NOT force ORDER.CREATED status to DRAFT.
    *
-   * Do NOT force ORDER.CREATED status to DRAFT here.
-   *
-   * The event is a historical snapshot. Existing regression tests
-   * deliberately use different aggregate states to verify that the
-   * consumer uses the event snapshot rather than rereading current
-   * aggregate state.
+   * ORDER.CREATED is a historical event snapshot and existing
+   * regression tests intentionally verify snapshot semantics.
    */
   if (
     order === null
@@ -490,7 +657,7 @@ function validateCreatedPayload(
     event.payload.lines;
 
   /*
-   * Lines are optional for the current compatibility boundary.
+   * Lines are optional during the current compatibility window.
    */
   if (
     lines === undefined ||
@@ -580,11 +747,12 @@ function validateLifecyclePayload(
   /*
    * These fields are validated only when present.
    *
-   * This keeps current dispatcher fixtures compatible while still
-   * validating fully shaped lifecycle snapshots.
+   * This preserves compatibility with existing dispatcher fixtures
+   * while fully validating current lifecycle snapshots.
    */
   if (
-    order.previous_status !== undefined &&
+    order.previous_status !==
+      undefined &&
     !isOrderStatus(
       order.previous_status,
     )
@@ -596,7 +764,8 @@ function validateLifecyclePayload(
   }
 
   if (
-    order.version !== undefined &&
+    order.version !==
+      undefined &&
     !isPositiveInteger(
       order.version,
     )
@@ -608,7 +777,8 @@ function validateLifecyclePayload(
   }
 
   if (
-    order.updated_at !== undefined &&
+    order.updated_at !==
+      undefined &&
     !isValidTimestamp(
       order.updated_at,
     )
@@ -624,7 +794,8 @@ function validateLifecyclePayload(
    * actually carries status.
    */
   if (
-    order.status !== undefined
+    order.status !==
+    undefined
   ) {
     const expectedStatus =
       event.eventType.replace(
@@ -675,13 +846,16 @@ function deepFreeze<T>(
 ): T {
   if (
     value === null ||
-    typeof value !== 'object'
+    typeof value !==
+      'object'
   ) {
     return value;
   }
 
   if (
-    Object.isFrozen(value)
+    Object.isFrozen(
+      value,
+    )
   ) {
     return value;
   }

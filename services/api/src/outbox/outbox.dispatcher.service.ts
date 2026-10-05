@@ -10,9 +10,14 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseService } from '../database/database.service';
 
 import {
-  OutboxEvent,
   OutboxPublisher,
 } from './outbox.publisher';
+
+import type {
+  OutboxEvent,
+  OutboxActor,
+  OutboxSource,
+} from './outbox-event.contract';
 
 import {
   OutboxConsumerRegistry,
@@ -20,23 +25,77 @@ import {
 
 interface OutboxRow {
   id: string;
+
   tenant_id: string;
-  factory_id: string | null;
+
+  factory_id:
+    | string
+    | null;
 
   aggregate_type: string;
+
   aggregate_id: string;
 
   event_type: string;
+
   event_version: number;
 
-  payload: Record<string, unknown>;
+  payload: Record<
+    string,
+    unknown
+  >;
 
   status: string;
+
   attempts: number;
 
-  next_attempt_at: string;
+  next_attempt_at: Date;
 
-  created_at: string;
+  occurred_at: Date;
+
+  published_at:
+    | Date
+    | null;
+
+  last_error:
+    | string
+    | null;
+
+  created_at: Date;
+
+  locked_at:
+    | Date
+    | null;
+
+  locked_by:
+    | string
+    | null;
+
+  last_attempt_at:
+    | Date
+    | null;
+
+  correlation_id:
+    | string
+    | null;
+
+  causation_id:
+    | string
+    | null;
+
+  /*
+   * PostgreSQL JSONB returns these values dynamically.
+   *
+   * We type them according to the canonical event contract because
+   * OutboxPublisher performs the authoritative runtime validation.
+   */
+  actor:
+    | OutboxActor
+    | null;
+
+  source:
+    | OutboxSource
+    | null;
 }
 
 @Injectable()
@@ -54,33 +113,47 @@ export class OutboxDispatcherService
     `api-outbox-${randomUUID()}`;
 
   private timer:
-    ReturnType<typeof setTimeout> | null =
-    null;
+    | ReturnType<typeof setTimeout>
+    | null = null;
 
-  private running = false;
+  private running =
+    false;
 
-  private readonly batchSize = 20;
+  private readonly batchSize =
+    20;
 
-  private readonly intervalMs = 5000;
+  private readonly intervalMs =
+    5000;
 
-  private readonly leaseMs = 60_000;
+  private readonly leaseMs =
+    60000;
 
-  private readonly maxAttempts = 10;
+  private readonly maxAttempts =
+    10;
 
   constructor(
     private readonly database: DatabaseService,
-    private readonly publisher: OutboxPublisher,
-    private readonly consumerRegistry: OutboxConsumerRegistry,
+
+    private readonly publisher:
+      OutboxPublisher,
+
+    private readonly consumerRegistry:
+      OutboxConsumerRegistry,
   ) {}
+
+  // ============================================================
+  // MODULE LIFECYCLE
+  // ============================================================
 
   async onModuleInit(): Promise<void> {
     const enabled =
-      process.env.OUTBOX_DISPATCHER_ENABLED !==
+      process.env
+        .OUTBOX_DISPATCHER_ENABLED !==
       'false';
 
     if (!enabled) {
       this.logger.warn(
-        'Outbox dispatcher is disabled',
+        'Outbox dispatcher disabled by OUTBOX_DISPATCHER_ENABLED',
       );
 
       return;
@@ -94,17 +167,28 @@ export class OutboxDispatcherService
   }
 
   async onModuleDestroy(): Promise<void> {
-    this.running = false;
+    this.running =
+      false;
 
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
+    if (
+      this.timer !== null
+    ) {
+      clearTimeout(
+        this.timer,
+      );
+
+      this.timer =
+        null;
     }
 
     this.logger.log(
       'Outbox dispatcher stopped',
     );
   }
+
+  // ============================================================
+  // PUBLIC DISPATCH ENTRYPOINT
+  // ============================================================
 
   async dispatchOnce(): Promise<{
     claimed: number;
@@ -114,48 +198,77 @@ export class OutboxDispatcherService
     const rows =
       await this.claimBatch();
 
-    let published = 0;
-    let failed = 0;
+    let published =
+      0;
 
-    for (const row of rows) {
+    let failed =
+      0;
+
+    for (
+      const row of rows
+    ) {
       try {
-        const event: OutboxEvent = {
-          id: row.id,
+        // ------------------------------------------------------
+        // Hydrate canonical event envelope from PostgreSQL.
+        // ------------------------------------------------------
 
-          tenantId:
-            row.tenant_id,
+        const event: OutboxEvent =
+          {
+            id:
+              row.id,
 
-          factoryId:
-            row.factory_id,
+            tenantId:
+              row.tenant_id,
 
-          aggregateType:
-            row.aggregate_type,
+            factoryId:
+              row.factory_id,
 
-          aggregateId:
-            row.aggregate_id,
+            aggregateType:
+              row.aggregate_type,
 
-          eventType:
-            row.event_type,
+            aggregateId:
+              row.aggregate_id,
 
-          eventVersion:
-            row.event_version,
+            eventType:
+              row.event_type,
 
-          payload:
-            row.payload,
-        };
+            eventVersion:
+              row.event_version,
 
-        // --------------------------------------------------
-        // External/local publisher
-        // --------------------------------------------------
+            occurredAt:
+              row.occurred_at instanceof Date
+                ? row.occurred_at.toISOString()
+                : String(
+                    row.occurred_at,
+                  ),
 
+            correlationId:
+              row.correlation_id,
+
+            causationId:
+              row.causation_id,
+
+            actor:
+              row.actor,
+
+            source:
+              row.source,
+
+            payload:
+              row.payload,
+          };
+
+        /*
+         * Publisher validates the complete canonical event contract
+         * and deep-freezes the event snapshot.
+         */
         await this.publisher.publish(
           event,
         );
 
-        // --------------------------------------------------
-        // Local idempotent consumers
-        // --------------------------------------------------
-
+        /*
+         * Local consumers receive the exact same event snapshot.
+         */
         const consumerResult =
           await this.consumerRegistry.dispatch(
             event,
@@ -165,22 +278,29 @@ export class OutboxDispatcherService
           consumerResult.handled
         ) {
           this.logger.log(
-            `Outbox event consumed: event_id=${event.id}, consumer=${consumerResult.consumerName}`,
+            `Outbox event consumed: event_id=${row.id}, consumer=${consumerResult.consumerName}`,
           );
         }
 
-        // --------------------------------------------------
-        // Mark event complete only after publisher
-        // and local consumer processing succeed.
-        // --------------------------------------------------
-
+        /*
+         * IMPORTANT:
+         *
+         * Event becomes PUBLISHED only after publisher and local
+         * consumers succeed.
+         *
+         * This preserves the existing restart/idempotency contract.
+         */
         await this.markPublished(
           row.id,
         );
 
-        published += 1;
-      } catch (error) {
-        failed += 1;
+        published +=
+          1;
+      } catch (
+        error
+      ) {
+        failed +=
+          1;
 
         await this.markFailed(
           row.id,
@@ -190,28 +310,39 @@ export class OutboxDispatcherService
     }
 
     return {
-      claimed: rows.length,
+      claimed:
+        rows.length,
+
       published,
+
       failed,
     };
   }
 
+  // ============================================================
+  // SCHEDULER
+  // ============================================================
+
   private async scheduleNext(): Promise<void> {
-    if (!this.running) {
-      this.running = true;
+    if (
+      !this.running
+    ) {
+      this.running =
+        true;
     }
 
     await this.runCycle();
 
-    if (!this.running) {
+    if (
+      !this.running
+    ) {
       return;
     }
 
     this.timer =
       setTimeout(
-        () => {
-          void this.scheduleNext();
-        },
+        () =>
+          void this.scheduleNext(),
         this.intervalMs,
       );
   }
@@ -226,37 +357,27 @@ export class OutboxDispatcherService
         result.failed > 0
       ) {
         this.logger.log(
-          `Outbox cycle: claimed=${result.claimed}, published=${result.published}, failed=${result.failed}`,
+          `Outbox dispatch cycle: claimed=${result.claimed}, published=${result.published}, failed=${result.failed}`,
         );
       }
-    } catch (error) {
-      this.logger.error(
-        'Outbox dispatch cycle failed',
+    } catch (
+      error
+    ) {
+      const message =
         error instanceof Error
-          ? error.stack
-          : String(error),
+          ? error.message
+          : String(error);
+
+      this.logger.error(
+        `Outbox dispatch cycle failed: ${message}`,
       );
     }
   }
 
-  /**
-   * Claims a batch of outbox events atomically.
-   *
-   * Claim rules:
-   *
-   * 1. PENDING / FAILED events are eligible when
-   *    next_attempt_at <= now().
-   *
-   * 2. PROCESSING events are eligible only when
-   *    their lease has expired based on locked_at.
-   *
-   * 3. FOR UPDATE SKIP LOCKED prevents concurrent workers
-   *    from claiming the same rows in the same moment.
-   *
-   * 4. The selected rows are changed to PROCESSING,
-   *    attempts are incremented and a fresh lease is assigned
-   *    in the same SQL statement/transaction.
-   */
+  // ============================================================
+  // CLAIM BATCH
+  // ============================================================
+
   private async claimBatch(): Promise<
     OutboxRow[]
   > {
@@ -270,7 +391,9 @@ export class OutboxDispatcherService
       );
 
     return this.database.transaction(
-      async (client) => {
+      async (
+        client,
+      ) => {
         const result =
           await client.query<OutboxRow>(
             `
@@ -293,18 +416,12 @@ export class OutboxDispatcherService
                 OR
 
                 (
-                  status = 'PROCESSING'
+                  status =
+                    'PROCESSING'
 
-                  AND (
-                    locked_at IS NULL
+                  AND locked_at IS NOT NULL
 
-                    OR locked_at <=
-                      now() -
-                      (
-                        $1::double precision
-                        * interval '1 millisecond'
-                      )
-                  )
+                  AND locked_at < now()
                 )
 
               ORDER BY
@@ -312,93 +429,96 @@ export class OutboxDispatcherService
 
               FOR UPDATE SKIP LOCKED
 
-              LIMIT $2
-            ),
-
-            claimed AS (
-              UPDATE outbox_events AS event
-
-              SET
-                status =
-                  'PROCESSING',
-
-                attempts =
-                  event.attempts + 1,
-
-                locked_at =
-                  $3,
-
-                locked_by =
-                  $4,
-
-                last_attempt_at =
-                  now(),
-
-                next_attempt_at =
-                  $5
-
-              FROM candidates
-
-              WHERE
-                event.id =
-                  candidates.id
-
-              RETURNING
-                event.id::text
-                  AS id,
-
-                event.tenant_id::text
-                  AS tenant_id,
-
-                event.factory_id::text
-                  AS factory_id,
-
-                event.aggregate_type,
-
-                event.aggregate_id::text
-                  AS aggregate_id,
-
-                event.event_type,
-
-                event.event_version,
-
-                event.payload,
-
-                event.status,
-
-                event.attempts,
-
-                event.next_attempt_at::text
-                  AS next_attempt_at,
-
-                event.created_at::text
-                  AS created_at
+              LIMIT $1
             )
 
-            SELECT
-              id,
-              tenant_id,
-              factory_id,
-              aggregate_type,
-              aggregate_id,
-              event_type,
-              event_version,
-              payload,
-              status,
-              attempts,
-              next_attempt_at,
-              created_at
+            UPDATE outbox_events AS oe
 
-            FROM claimed
+            SET
+              status =
+                'PROCESSING',
 
-            ORDER BY
-              created_at ASC
+              attempts =
+                oe.attempts + 1,
+
+              locked_at =
+                $2,
+
+              locked_by =
+                $3,
+
+              last_attempt_at =
+                $4,
+
+              next_attempt_at =
+                $5
+
+            FROM candidates
+
+            WHERE
+              oe.id =
+                candidates.id
+
+            RETURNING
+              oe.id::text
+                AS id,
+
+              oe.tenant_id::text
+                AS tenant_id,
+
+              oe.factory_id::text
+                AS factory_id,
+
+              oe.aggregate_type,
+
+              oe.aggregate_id::text
+                AS aggregate_id,
+
+              oe.event_type,
+
+              oe.event_version,
+
+              oe.payload,
+
+              oe.status,
+
+              oe.attempts,
+
+              oe.next_attempt_at,
+
+              oe.occurred_at,
+
+              oe.published_at,
+
+              oe.last_error,
+
+              oe.created_at,
+
+              oe.locked_at,
+
+              oe.locked_by,
+
+              oe.last_attempt_at,
+
+              oe.correlation_id::text
+                AS correlation_id,
+
+              oe.causation_id::text
+                AS causation_id,
+
+              oe.actor,
+
+              oe.source
             `,
             [
-              this.leaseMs,
               this.batchSize,
+
               now,
+
               this.workerId,
+
+              now,
+
               leaseUntil,
             ],
           );
@@ -407,6 +527,10 @@ export class OutboxDispatcherService
       },
     );
   }
+
+  // ============================================================
+  // MARK FAILED
+  // ============================================================
 
   private async markFailed(
     eventId: string,
@@ -418,116 +542,168 @@ export class OutboxDispatcherService
         : String(error);
 
     const result =
-      await this.database.query<{
-        attempts: number;
-      }>(
-        `
-        SELECT
-          attempts
+      await this.database.transaction(
+        async (
+          client,
+        ) => {
+          const currentResult =
+            await client.query<{
+              attempts: number;
+            }>(
+              `
+              SELECT
+                attempts
 
-        FROM outbox_events
+              FROM outbox_events
 
-        WHERE
-          id = $1
-          AND status = 'PROCESSING'
-          AND locked_by = $2
+              WHERE
+                id = $1
 
-        LIMIT 1
-        `,
-        [
-          eventId,
-          this.workerId,
-        ],
+                AND status =
+                  'PROCESSING'
+
+                AND locked_by =
+                  $2
+
+              LIMIT 1
+              `,
+              [
+                eventId,
+
+                this.workerId,
+              ],
+            );
+
+          const current =
+            currentResult
+              .rows[0];
+
+          if (
+            !current
+          ) {
+            return null;
+          }
+
+          const attempts =
+            Number(
+              current.attempts,
+            );
+
+          /*
+           * Retry schedule:
+           *
+           * attempt 1  -> 5 sec
+           * attempt 2  -> 10 sec
+           * attempt 3  -> 20 sec
+           * ...
+           * maximum    -> 1 hour
+           *
+           * After maxAttempts the event is scheduled for a long
+           * quarantine period while retaining the error.
+           */
+          const retryDelaySeconds =
+            attempts >=
+              this.maxAttempts
+              ? 24 * 60 * 60
+              : Math.min(
+                  5 *
+                    2 **
+                      Math.max(
+                        attempts -
+                          1,
+                        0,
+                      ),
+                  60 * 60,
+                );
+
+          const retryAt =
+            new Date(
+              Date.now() +
+                retryDelaySeconds *
+                  1000,
+            );
+
+          const updateResult =
+            await client.query<{
+              id: string;
+            }>(
+              `
+              UPDATE outbox_events
+
+              SET
+                status =
+                  'FAILED',
+
+                next_attempt_at =
+                  $1,
+
+                locked_at =
+                  NULL,
+
+                locked_by =
+                  NULL,
+
+                last_error =
+                  $2
+
+              WHERE
+                id = $3
+
+                AND status =
+                  'PROCESSING'
+
+                AND locked_by =
+                  $4
+
+              RETURNING
+                id::text AS id
+              `,
+              [
+                retryAt,
+
+                message,
+
+                eventId,
+
+                this.workerId,
+              ],
+            );
+
+          if (
+            updateResult.rowCount !==
+            1
+          ) {
+            return null;
+          }
+
+          return {
+            attempts,
+
+            retryAt,
+          };
+        },
       );
 
-    const attempts =
-      result.rows[0]
-        ?.attempts ??
-      1;
-
-    const delaySeconds =
-      Math.min(
-        5 *
-          Math.pow(
-            2,
-            Math.max(
-              attempts - 1,
-              0,
-            ),
-          ),
-        3600,
-      );
-
-    const nextAttemptAt =
-      new Date(
-        Date.now() +
-          delaySeconds *
-            1000,
-      );
-
-    const permanentlyFailed =
-      attempts >=
-      this.maxAttempts;
-
-    const finalNextAttempt =
-      permanentlyFailed
-        ? new Date(
-            Date.now() +
-              24 *
-                60 *
-                60 *
-                1000,
-          )
-        : nextAttemptAt;
-
-    await this.database.query(
-      `
-      UPDATE outbox_events
-
-      SET
-        status =
-          'FAILED',
-
-        next_attempt_at =
-          $1,
-
-        locked_at =
-          NULL,
-
-        locked_by =
-          NULL,
-
-        last_error =
-          $2
-
-      WHERE
-        id = $3
-        AND status = 'PROCESSING'
-        AND locked_by = $4
-      `,
-      [
-        finalNextAttempt,
-        message.substring(
-          0,
-          5000,
-        ),
-        eventId,
-        this.workerId,
-      ],
-    );
+    if (
+      !result
+    ) {
+      return;
+    }
 
     this.logger.error(
-      `Outbox event failed: ${eventId}; attempts=${attempts}; retryAt=${finalNextAttempt.toISOString()}`,
+      `Outbox event failed: ${eventId}; attempts=${result.attempts}; retryAt=${result.retryAt.toISOString()}`,
     );
   }
+
+  // ============================================================
+  // MARK PUBLISHED
+  // ============================================================
 
   private async markPublished(
     eventId: string,
   ): Promise<void> {
     const result =
-      await this.database.query<{
-        id: string;
-      }>(
+      await this.database.query(
         `
         UPDATE outbox_events
 
@@ -536,7 +712,7 @@ export class OutboxDispatcherService
             'PUBLISHED',
 
           published_at =
-            now(),
+            clock_timestamp(),
 
           locked_at =
             NULL,
@@ -549,23 +725,29 @@ export class OutboxDispatcherService
 
         WHERE
           id = $1
-          AND status = 'PROCESSING'
-          AND locked_by = $2
+
+          AND status =
+            'PROCESSING'
+
+          AND locked_by =
+            $2
 
         RETURNING
-          id
+          id::text AS id
         `,
         [
           eventId,
+
           this.workerId,
         ],
       );
 
     if (
-      result.rowCount !== 1
+      result.rowCount !==
+      1
     ) {
       throw new Error(
-        `OUTBOX_MARK_PUBLISHED_FAILED: event=${eventId} was not transitioned to PUBLISHED by worker=${this.workerId}`,
+        `OUTBOX_MARK_PUBLISHED_FAILED:${eventId}`,
       );
     }
   }

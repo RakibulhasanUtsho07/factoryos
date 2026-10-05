@@ -30,10 +30,10 @@ export class OutboxPublisher {
      * EVENT CONTRACT GATE
      * ----------------------------------------------------------
      *
-     * Validate before the event crosses the publisher boundary.
+     * Validate the event before it crosses the publisher boundary.
      *
-     * Validation also deep-freezes the event snapshot so local
-     * consumers cannot mutate the event after validation.
+     * Validation also deep-freezes the complete in-memory event
+     * snapshot so consumers cannot mutate it after publication.
      */
     const validatedEvent =
       assertValidOutboxEvent(
@@ -86,6 +86,15 @@ export class OutboxPublisher {
         event_id:
           validatedEvent.id,
 
+        event_type:
+          validatedEvent.eventType,
+
+        event_version:
+          validatedEvent.eventVersion,
+
+        occurred_at:
+          validatedEvent.occurredAt,
+
         tenant_id:
           validatedEvent.tenantId,
 
@@ -98,11 +107,17 @@ export class OutboxPublisher {
         aggregate_id:
           validatedEvent.aggregateId,
 
-        event_type:
-          validatedEvent.eventType,
+        correlation_id:
+          validatedEvent.correlationId,
 
-        event_version:
-          validatedEvent.eventVersion,
+        causation_id:
+          validatedEvent.causationId,
+
+        actor:
+          validatedEvent.actor,
+
+        source:
+          validatedEvent.source,
 
         payload:
           validatedEvent.payload,
