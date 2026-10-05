@@ -455,9 +455,13 @@ export class OutboxDispatcherService
                   status =
                     'PROCESSING'
 
-                  AND locked_at IS NOT NULL
+                  AND (
+                    locked_at IS NULL
 
-                  AND locked_at < now()
+                    OR locked_at <=
+                      now() -
+                      interval '60 seconds'
+                  )
                 )
 
               ORDER BY
