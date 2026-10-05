@@ -3,10 +3,12 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 
 import { randomUUID } from 'node:crypto';
 
+import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 
 import {
@@ -84,10 +86,10 @@ interface OutboxRow {
     | null;
 
   /*
-   * PostgreSQL JSONB returns these values dynamically.
+   * PostgreSQL JSONB is runtime data.
    *
-   * We type them according to the canonical event contract because
-   * OutboxPublisher performs the authoritative runtime validation.
+   * The canonical OutboxEvent contract performs authoritative
+   * runtime validation before publication/consumption.
    */
   actor:
     | OutboxActor
@@ -95,6 +97,34 @@ interface OutboxRow {
 
   source:
     | OutboxSource
+    | null;
+}
+
+interface FailedOutboxContext {
+  attempts: number;
+
+  tenantId: string;
+
+  factoryId:
+    | string
+    | null;
+
+  eventType: string;
+
+  eventVersion: number;
+
+  correlationId:
+    | string
+    | null;
+}
+
+interface FailureResult {
+  quarantined: boolean;
+
+  attempts: number;
+
+  retryAt:
+    | Date
     | null;
 }
 
@@ -132,13 +162,22 @@ export class OutboxDispatcherService
     10;
 
   constructor(
-    private readonly database: DatabaseService,
+    private readonly database:
+      DatabaseService,
 
     private readonly publisher:
       OutboxPublisher,
 
     private readonly consumerRegistry:
       OutboxConsumerRegistry,
+
+    /*
+     * Optional keeps existing manually-instantiated unit/integration
+     * tests compatible while production Nest wiring provides AuditService.
+     */
+    @Optional()
+    private readonly auditService?:
+      AuditService,
   ) {}
 
   // ============================================================
@@ -259,15 +298,16 @@ export class OutboxDispatcherService
           };
 
         /*
-         * Publisher validates the complete canonical event contract
-         * and deep-freezes the event snapshot.
+         * Publisher is the first canonical contract boundary.
+         *
+         * It validates and deep-freezes the event snapshot.
          */
         await this.publisher.publish(
           event,
         );
 
         /*
-         * Local consumers receive the exact same event snapshot.
+         * Local consumers receive the exact same immutable snapshot.
          */
         const consumerResult =
           await this.consumerRegistry.dispatch(
@@ -283,12 +323,8 @@ export class OutboxDispatcherService
         }
 
         /*
-         * IMPORTANT:
-         *
-         * Event becomes PUBLISHED only after publisher and local
-         * consumers succeed.
-         *
-         * This preserves the existing restart/idempotency contract.
+         * Event becomes PUBLISHED only after publisher and all
+         * local consumers succeed.
          */
         await this.markPublished(
           row.id,
@@ -529,7 +565,7 @@ export class OutboxDispatcherService
   }
 
   // ============================================================
-  // MARK FAILED
+  // MARK FAILED / QUARANTINED
   // ============================================================
 
   private async markFailed(
@@ -545,14 +581,41 @@ export class OutboxDispatcherService
       await this.database.transaction(
         async (
           client,
-        ) => {
+        ): Promise<FailureResult | null> => {
           const currentResult =
             await client.query<{
               attempts: number;
+
+              tenant_id: string;
+
+              factory_id:
+                | string
+                | null;
+
+              event_type: string;
+
+              event_version: number;
+
+              correlation_id:
+                | string
+                | null;
             }>(
               `
               SELECT
-                attempts
+                attempts,
+
+                tenant_id::text
+                  AS tenant_id,
+
+                factory_id::text
+                  AS factory_id,
+
+                event_type,
+
+                event_version,
+
+                correlation_id::text
+                  AS correlation_id
 
               FROM outbox_events
 
@@ -589,32 +652,134 @@ export class OutboxDispatcherService
               current.attempts,
             );
 
+          const context:
+            FailedOutboxContext =
+            {
+              attempts,
+
+              tenantId:
+                current.tenant_id,
+
+              factoryId:
+                current.factory_id,
+
+              eventType:
+                current.event_type,
+
+              eventVersion:
+                Number(
+                  current.event_version,
+                ),
+
+              correlationId:
+                current.correlation_id,
+            };
+
           /*
-           * Retry schedule:
+           * ----------------------------------------------------
+           * TERMINAL FAILURE / QUARANTINE
+           * ----------------------------------------------------
            *
-           * attempt 1  -> 5 sec
-           * attempt 2  -> 10 sec
-           * attempt 3  -> 20 sec
+           * Attempt count is incremented during claimBatch().
+           * Therefore attempts >= maxAttempts means this failure
+           * has reached the terminal retry threshold.
+           *
+           * QUARANTINED events are never selected by claimBatch().
+           */
+          if (
+            attempts >=
+            this.maxAttempts
+          ) {
+            const quarantineResult =
+              await client.query<{
+                id: string;
+              }>(
+                `
+                UPDATE outbox_events
+
+                SET
+                  status =
+                    'QUARANTINED',
+
+                  quarantined_at =
+                    clock_timestamp(),
+
+                  quarantined_by =
+                    $1,
+
+                  quarantine_reason =
+                    $2,
+
+                  locked_at =
+                    NULL,
+
+                  locked_by =
+                    NULL,
+
+                  last_error =
+                    $2
+
+                WHERE
+                  id = $3
+
+                  AND status =
+                    'PROCESSING'
+
+                  AND locked_by =
+                    $1
+
+                RETURNING
+                  id::text AS id
+                `,
+                [
+                  this.workerId,
+
+                  message,
+
+                  eventId,
+                ],
+              );
+
+            if (
+              quarantineResult.rowCount !==
+              1
+            ) {
+              return null;
+            }
+
+            return {
+              quarantined:
+                true,
+
+              attempts,
+
+              retryAt:
+                null,
+            };
+          }
+
+          /*
+           * ----------------------------------------------------
+           * NORMAL RETRY
+           * ----------------------------------------------------
+           *
+           * attempt 1 -> 5 sec
+           * attempt 2 -> 10 sec
+           * attempt 3 -> 20 sec
            * ...
-           * maximum    -> 1 hour
-           *
-           * After maxAttempts the event is scheduled for a long
-           * quarantine period while retaining the error.
+           * capped at 1 hour.
            */
           const retryDelaySeconds =
-            attempts >=
-              this.maxAttempts
-              ? 24 * 60 * 60
-              : Math.min(
-                  5 *
-                    2 **
-                      Math.max(
-                        attempts -
-                          1,
-                        0,
-                      ),
-                  60 * 60,
-                );
+            Math.min(
+              5 *
+                2 **
+                  Math.max(
+                    attempts -
+                      1,
+                    0,
+                  ),
+              60 * 60,
+            );
 
           const retryAt =
             new Date(
@@ -677,6 +842,9 @@ export class OutboxDispatcherService
           }
 
           return {
+            quarantined:
+              false,
+
             attempts,
 
             retryAt,
@@ -690,9 +858,249 @@ export class OutboxDispatcherService
       return;
     }
 
-    this.logger.error(
-      `Outbox event failed: ${eventId}; attempts=${result.attempts}; retryAt=${result.retryAt.toISOString()}`,
-    );
+    // ----------------------------------------------------------
+    // QUARANTINED
+    // ----------------------------------------------------------
+
+    if (
+      result.quarantined
+    ) {
+      this.logger.error(
+        `Outbox event quarantined: ${eventId}; attempts=${result.attempts}; reason=${message}`,
+      );
+
+      await this.recordQuarantineAudit(
+        eventId,
+        result.attempts,
+        message,
+        await this.getAuditContext(
+          eventId,
+        ),
+      );
+
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // NORMAL FAILURE / RETRY
+    // ----------------------------------------------------------
+
+    if (
+      result.retryAt
+    ) {
+      this.logger.error(
+        `Outbox event failed: ${eventId}; attempts=${result.attempts}; retryAt=${result.retryAt.toISOString()}`,
+      );
+    }
+  }
+
+  // ============================================================
+  // QUARANTINE AUDIT
+  // ============================================================
+
+  private async recordQuarantineAudit(
+    eventId: string,
+    attempts: number,
+    reason: string,
+    context:
+      | FailedOutboxContext
+      | null,
+  ): Promise<void> {
+    if (
+      !this.auditService
+    ) {
+      this.logger.warn(
+        `Outbox quarantine audit skipped because AuditService is unavailable: event_id=${eventId}`,
+      );
+
+      return;
+    }
+
+    if (
+      !context
+    ) {
+      this.logger.error(
+        `Outbox quarantine audit context unavailable: event_id=${eventId}`,
+      );
+
+      return;
+    }
+
+    try {
+      await this.auditService.record({
+        tenantId:
+          context.tenantId,
+
+        factoryId:
+          context.factoryId,
+
+        actorUserId:
+          null,
+
+        eventType:
+          'OUTBOX_EVENT',
+
+        action:
+          'QUARANTINED',
+
+        resourceType:
+          'OUTBOX_EVENT',
+
+        resourceId:
+          eventId,
+
+        correlationId:
+          context.correlationId,
+
+        dataClass:
+          'INTERNAL',
+
+        payload: {
+          event_id:
+            eventId,
+
+          event_type:
+            context.eventType,
+
+          event_version:
+            context.eventVersion,
+
+          attempts,
+
+          reason,
+
+          worker_id:
+            this.workerId,
+        },
+      });
+    } catch (
+      auditError
+    ) {
+      const auditMessage =
+        auditError instanceof Error
+          ? auditError.message
+          : String(
+              auditError,
+            );
+
+      /*
+       * The quarantine state has already been committed.
+       *
+       * Do not attempt to roll back the event because audit
+       * recording failed. Surface the failure operationally.
+       */
+      this.logger.error(
+        `Outbox quarantine audit failed: event_id=${eventId}; error=${auditMessage}`,
+      );
+    }
+  }
+
+  // ============================================================
+  // FETCH AUDIT CONTEXT
+  // ============================================================
+
+  private async getAuditContext(
+    eventId: string,
+  ): Promise<
+    FailedOutboxContext | null
+  > {
+    try {
+      const result =
+        await this.database.query<{
+          tenant_id: string;
+
+          factory_id:
+            | string
+            | null;
+
+          event_type: string;
+
+          event_version: number;
+
+          correlation_id:
+            | string
+            | null;
+
+          attempts: number;
+        }>(
+          `
+          SELECT
+            tenant_id::text
+              AS tenant_id,
+
+            factory_id::text
+              AS factory_id,
+
+            event_type,
+
+            event_version,
+
+            correlation_id::text
+              AS correlation_id,
+
+            attempts
+
+          FROM outbox_events
+
+          WHERE
+            id = $1
+
+            AND status =
+              'QUARANTINED'
+
+          LIMIT 1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+      const row =
+        result.rows[0];
+
+      if (
+        !row
+      ) {
+        return null;
+      }
+
+      return {
+        attempts:
+          Number(
+            row.attempts,
+          ),
+
+        tenantId:
+          row.tenant_id,
+
+        factoryId:
+          row.factory_id,
+
+        eventType:
+          row.event_type,
+
+        eventVersion:
+          Number(
+            row.event_version,
+          ),
+
+        correlationId:
+          row.correlation_id,
+      };
+    } catch (
+      error
+    ) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error);
+
+      this.logger.error(
+        `Failed to load quarantine audit context: event_id=${eventId}; error=${message}`,
+      );
+
+      return null;
+    }
   }
 
   // ============================================================
