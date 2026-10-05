@@ -11,13 +11,17 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+
 import type { Request } from 'express';
-import { ListOrdersDto } from './dto/list-orders.dto';
+
 import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 
 import { CreateOrderDto } from './dto/create-order.dto';
+import { ListOrdersDto } from './dto/list-orders.dto';
+import { TransitionOrderDto } from './dto/transition-order.dto';
+
 import { OrdersService } from './orders.service';
 
 interface FactoryOsRequestContext {
@@ -43,6 +47,10 @@ export class OrdersController {
     private readonly ordersService: OrdersService,
   ) {}
 
+  // ============================================================
+  // CREATE ORDER
+  // ============================================================
+
   @Post()
   @UseGuards(PermissionGuard)
   @RequirePermission('orders.write')
@@ -65,10 +73,7 @@ export class OrdersController {
     const traceId =
       request.factoryos?.traceId ?? null;
 
-    if (
-      !userId ||
-      !tenantId
-    ) {
+    if (!userId || !tenantId) {
       throw new UnauthorizedException(
         'Authenticated user context is missing',
       );
@@ -83,7 +88,12 @@ export class OrdersController {
       idempotencyKey ?? null,
     );
   }
-    @Post(':orderId/status')
+
+  // ============================================================
+  // ORDER STATUS TRANSITION
+  // ============================================================
+
+  @Post(':orderId/status')
   @UseGuards(PermissionGuard)
   @RequirePermission('orders.write')
   @RequireFactoryScope()
@@ -94,29 +104,21 @@ export class OrdersController {
       new ParseUUIDPipe(),
     )
     orderId: string,
-    @Body()
-    body: import('./dto/transition-order.dto').TransitionOrderDto,
+    @Body() body: TransitionOrderDto,
   ) {
     const userId =
-      request.factoryos?.userId ??
-      null;
+      request.factoryos?.userId ?? null;
 
     const tenantId =
-      request.factoryos?.tenantId ??
-      null;
+      request.factoryos?.tenantId ?? null;
 
     const requestId =
-      request.factoryos?.requestId ??
-      null;
+      request.factoryos?.requestId ?? null;
 
     const traceId =
-      request.factoryos?.traceId ??
-      null;
+      request.factoryos?.traceId ?? null;
 
-    if (
-      !userId ||
-      !tenantId
-    ) {
+    if (!userId || !tenantId) {
       throw new UnauthorizedException(
         'Authenticated user context is missing',
       );
@@ -129,9 +131,15 @@ export class OrdersController {
       body.target_status,
       requestId,
       traceId,
+      body.expected_version,
     );
   }
-    @Get()
+
+  // ============================================================
+  // LIST ORDERS
+  // ============================================================
+
+  @Get()
   @UseGuards(PermissionGuard)
   @RequirePermission('orders.read')
   @RequireFactoryScope()
@@ -140,17 +148,12 @@ export class OrdersController {
     @Query() query: ListOrdersDto,
   ) {
     const tenantId =
-      request.factoryos?.tenantId ??
-      null;
+      request.factoryos?.tenantId ?? null;
 
     const factoryId =
-      request.factoryos?.factoryId ??
-      null;
+      request.factoryos?.factoryId ?? null;
 
-    if (
-      !tenantId ||
-      !factoryId
-    ) {
+    if (!tenantId || !factoryId) {
       throw new UnauthorizedException(
         'Authenticated tenant/factory context is missing',
       );
@@ -162,6 +165,10 @@ export class OrdersController {
       query,
     );
   }
+
+  // ============================================================
+  // GET ORDER BY ID
+  // ============================================================
 
   @Get(':orderId')
   @UseGuards(PermissionGuard)
@@ -176,17 +183,12 @@ export class OrdersController {
     orderId: string,
   ) {
     const tenantId =
-      request.factoryos?.tenantId ??
-      null;
+      request.factoryos?.tenantId ?? null;
 
     const factoryId =
-      request.factoryos?.factoryId ??
-      null;
+      request.factoryos?.factoryId ?? null;
 
-    if (
-      !tenantId ||
-      !factoryId
-    ) {
+    if (!tenantId || !factoryId) {
       throw new UnauthorizedException(
         'Authenticated tenant/factory context is missing',
       );

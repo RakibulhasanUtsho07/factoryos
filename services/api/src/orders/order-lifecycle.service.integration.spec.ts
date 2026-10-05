@@ -372,6 +372,7 @@ describe(
             'CONFIRMED',
             null,
             randomUUID(),
+            1,
           );
 
         expect(
@@ -411,6 +412,7 @@ describe(
             'IN_PROGRESS',
             null,
             randomUUID(),
+            2,
           );
 
         expect(
@@ -450,6 +452,7 @@ describe(
             'COMPLETED',
             null,
             randomUUID(),
+            3,
           );
 
         expect(
@@ -852,5 +855,192 @@ describe(
         );
       },
     );
+
+    it(
+      'should reject a stale expected version',
+      async () => {
+        // ------------------------------------------------------
+        // Create an isolated order for the concurrency test.
+        // ------------------------------------------------------
+
+        const concurrencyOrderNumber =
+          `CONCURRENCY-TEST-${randomUUID()}`;
+
+        const createResult =
+          await pool.query<{
+            id: string;
+            version: string;
+            status: string;
+          }>(
+            `
+            INSERT INTO orders (
+              tenant_id,
+              factory_id,
+              order_number,
+              status,
+              order_date,
+              currency,
+              created_by_user_id
+            )
+
+            VALUES (
+              $1,
+              $2,
+              $3,
+              'DRAFT',
+              CURRENT_DATE,
+              'BDT',
+              $4
+            )
+
+            RETURNING
+              id::text AS id,
+              version::text AS version,
+              status
+            `,
+            [
+              tenantId,
+              factoryId,
+              concurrencyOrderNumber,
+              TEST_USER_ID,
+            ],
+          );
+
+        expect(
+          createResult.rowCount,
+        ).toBe(1);
+
+        const testOrder =
+          createResult.rows[0];
+
+        if (!testOrder) {
+          throw new Error(
+            'Concurrency test order could not be created.',
+          );
+        }
+
+        const concurrencyOrderId =
+          testOrder.id;
+
+        try {
+          expect(
+            Number(testOrder.version),
+          ).toBe(1);
+
+          expect(
+            testOrder.status,
+          ).toBe('DRAFT');
+
+          // ----------------------------------------------------
+          // First client succeeds with version 1.
+          // ----------------------------------------------------
+
+          const confirmed =
+            await ordersService.transitionOrderStatus(
+              TEST_USER_ID,
+              tenantId,
+              concurrencyOrderId,
+              'CONFIRMED',
+              null,
+              randomUUID(),
+              1,
+            );
+
+          expect(
+            confirmed.status,
+          ).toBe('CONFIRMED');
+
+          expect(
+            confirmed.version,
+          ).toBe(2);
+
+          // ----------------------------------------------------
+          // Second stale client still believes version = 1.
+          // ----------------------------------------------------
+
+          await expect(
+            ordersService.transitionOrderStatus(
+              TEST_USER_ID,
+              tenantId,
+              concurrencyOrderId,
+              'IN_PROGRESS',
+              null,
+              randomUUID(),
+              1,
+            ),
+          ).rejects.toThrow(
+            'Order version conflict',
+          );
+
+          // ----------------------------------------------------
+          // Authoritative state must remain unchanged.
+          // ----------------------------------------------------
+
+          const finalResult =
+            await pool.query<{
+              status: string;
+              version: string;
+            }>(
+              `
+              SELECT
+                status,
+                version::text AS version
+
+              FROM orders
+
+              WHERE
+                id = $1
+                AND tenant_id = $2
+              `,
+              [
+                concurrencyOrderId,
+                tenantId,
+              ],
+            );
+
+          expect(
+            finalResult.rowCount,
+          ).toBe(1);
+
+          const finalOrder =
+            finalResult.rows[0];
+
+          if (!finalOrder) {
+            throw new Error(
+              'Concurrency test final state is missing.',
+            );
+          }
+
+          expect(
+            finalOrder.status,
+          ).toBe('CONFIRMED');
+
+          expect(
+            Number(finalOrder.version),
+          ).toBe(2);
+        } finally {
+          await pool.query(
+            `
+            DELETE FROM outbox_events
+
+            WHERE
+              aggregate_id = $1
+            `,
+            [concurrencyOrderId],
+          );
+
+          await pool.query(
+            `
+            DELETE FROM orders
+
+            WHERE
+              id = $1
+            `,
+            [concurrencyOrderId],
+          );
+        }
+      },
+    );
+
   },
 );

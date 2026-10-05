@@ -690,6 +690,10 @@ export class OrdersService {
   // ORDER STATUS TRANSITION
   // ============================================================
 
+  // ============================================================
+  // ORDER STATUS TRANSITION
+  // ============================================================
+
   async transitionOrderStatus(
     userId: string,
     tenantId: string,
@@ -702,6 +706,7 @@ export class OrdersService {
       | 'CANCELLED',
     requestId: string | null,
     traceId: string | null,
+    expectedVersion?: number,
   ) {
     if (!isUUID(userId)) {
       throw new BadRequestException(
@@ -721,11 +726,24 @@ export class OrdersService {
       );
     }
 
+    if (
+      expectedVersion !== undefined &&
+      (
+        !Number.isInteger(expectedVersion) ||
+        expectedVersion < 1
+      )
+    ) {
+      throw new BadRequestException(
+        'expectedVersion must be a positive integer',
+      );
+    }
+
     const result =
       await this.database.transaction(
         async (client) => {
           // ----------------------------------------------------
           // Lock authoritative order row.
+          //
           // This serializes concurrent lifecycle transitions.
           // ----------------------------------------------------
 
@@ -741,6 +759,7 @@ export class OrdersService {
                 | 'IN_PROGRESS'
                 | 'COMPLETED'
                 | 'CANCELLED';
+              version: string;
             }>(
               `
               SELECT
@@ -748,7 +767,8 @@ export class OrdersService {
                 tenant_id::text AS tenant_id,
                 factory_id::text AS factory_id,
                 order_number,
-                status
+                status,
+                version::text AS version
 
               FROM orders
 
@@ -773,13 +793,31 @@ export class OrdersService {
             );
           }
 
+          const currentVersion =
+            Number(order.version);
+
+          // ----------------------------------------------------
+          // Optimistic concurrency check.
+          //
+          // If the caller supplied an old version,
+          // reject the write before changing anything.
+          // ----------------------------------------------------
+
+          if (
+            expectedVersion !== undefined &&
+            expectedVersion !== currentVersion
+          ) {
+            throw new ConflictException(
+              `Order version conflict. Expected version ${expectedVersion}, current version is ${currentVersion}`,
+            );
+          }
+
           // ----------------------------------------------------
           // No-op transitions are rejected explicitly.
           // ----------------------------------------------------
 
           if (
-            order.status ===
-            targetStatus
+            order.status === targetStatus
           ) {
             throw new ConflictException(
               `Order is already in ${targetStatus} status`,
@@ -833,9 +871,12 @@ export class OrdersService {
           // ----------------------------------------------------
           // Status transition.
           //
-          // Every successful material state change also:
+          // Every successful material state change:
           // - updates updated_at
           // - increments version
+          //
+          // The version predicate makes the write itself
+          // concurrency-safe as well.
           // ----------------------------------------------------
 
           const updatedResult =
@@ -865,6 +906,7 @@ export class OrdersService {
               WHERE
                 id = $2
                 AND tenant_id = $3
+                AND version = $4
 
               RETURNING
                 id::text AS id,
@@ -884,6 +926,7 @@ export class OrdersService {
                 targetStatus,
                 order.id,
                 tenantId,
+                currentVersion,
               ],
             );
 
@@ -892,14 +935,14 @@ export class OrdersService {
 
           if (!updatedOrder) {
             throw new ConflictException(
-              'Order status could not be updated',
+              'Order was modified before the status transition could be committed',
             );
           }
 
           // ----------------------------------------------------
           // Transactional outbox.
           //
-          // Capture exact post-transition snapshot.
+          // Capture the exact post-transition snapshot.
           // ----------------------------------------------------
 
           const eventType =
@@ -1082,7 +1125,6 @@ export class OrdersService {
 
     return result;
   }
-
   // ============================================================
   // GET ORDER BY ID
   // ============================================================
@@ -1453,4 +1495,5 @@ export class OrdersService {
       },
     };
   }
+  
 }
