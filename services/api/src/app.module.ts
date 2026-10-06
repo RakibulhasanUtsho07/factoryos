@@ -20,6 +20,7 @@ import { OrdersModule } from './orders/orders.module';
 import { OutboxModule } from './outbox/outbox.module';
 
 import { PolicyModule } from './policy/policy.module';
+import { CbbModule } from './cbb/cbb.module';
 
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
@@ -66,6 +67,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     EntitlementsModule,
 
     PolicyModule,
+
+    CbbModule,
 
     // ----------------------------------------------------------
     // Transactional Outbox
