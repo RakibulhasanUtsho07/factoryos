@@ -1,9 +1,7 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
-  Headers,
   Post,
   Query,
   Req,
@@ -52,34 +50,27 @@ export class IamController {
   // ============================================================
 
   @Get('access')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('iam.access.read')
   async getAccess(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
     @Req() request: FactoryOsRequest,
   ) {
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
-    const access =
-      await this.iamService.resolveAccess(
-        userId,
-        tenantId,
-      );
-
-    if (request.factoryos) {
-      request.factoryos.userId =
-        access.user.id;
-
-      request.factoryos.tenantId =
-        access.tenant.id;
-
-      request.factoryos.factoryId = null;
-    }
-
-    return access;
+    return this.iamService.resolveAccess(
+      userId,
+      tenantId,
+    );
   }
 
   // ============================================================
@@ -119,13 +110,18 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.users.read')
   async getUsers(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
     @Query('limit') limit = '50',
   ) {
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -144,12 +140,17 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.roles.read')
   async getRoles(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
   ) {
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -167,12 +168,17 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.permissions.read')
   async getPermissions(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
   ) {
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -190,12 +196,17 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.access.read')
   async getFactories(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
   ) {
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
