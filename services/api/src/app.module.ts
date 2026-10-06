@@ -4,6 +4,7 @@ import {
   NestModule,
   RequestMethod,
 } from '@nestjs/common';
+
 import { EntitlementsModule } from './entitlements/entitlements.module';
 import { ConfigModule } from '@nestjs/config';
 
@@ -17,6 +18,8 @@ import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
 import { OrdersModule } from './orders/orders.module';
 import { OutboxModule } from './outbox/outbox.module';
+
+import { PolicyModule } from './policy/policy.module';
 
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
@@ -55,9 +58,15 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     // ----------------------------------------------------------
 
     HealthModule,
+
     IamModule,
+
     OrdersModule,
+
     EntitlementsModule,
+
+    PolicyModule,
+
     // ----------------------------------------------------------
     // Transactional Outbox
     // ----------------------------------------------------------
