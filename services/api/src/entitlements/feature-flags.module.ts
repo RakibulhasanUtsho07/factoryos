@@ -11,30 +11,22 @@ import {
 } from '../database/database.module';
 
 import {
-  EntitlementService,
-} from './entitlement.service';
-
-import {
-  FeatureFlagsModule,
-} from './feature-flags.module';
+  FeatureFlagService,
+} from './feature-flag.service';
 
 @Module({
   imports: [
     DatabaseModule,
 
     AuditModule,
-
-    FeatureFlagsModule,
   ],
 
   providers: [
-    EntitlementService,
+    FeatureFlagService,
   ],
 
   exports: [
-    EntitlementService,
-
-    FeatureFlagsModule,
+    FeatureFlagService,
   ],
 })
-export class EntitlementsModule {}
+export class FeatureFlagsModule {}
