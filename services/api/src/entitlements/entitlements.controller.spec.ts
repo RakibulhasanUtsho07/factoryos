@@ -1,3 +1,5 @@
+import { jest } from '@jest/globals';
+
 import {
   ForbiddenException,
   UnauthorizedException,
@@ -78,7 +80,8 @@ describe(
         jest.fn(),
     };
 
-    let controller: EntitlementsController;
+    let controller:
+      EntitlementsController;
 
     beforeEach(
       () => {
@@ -106,18 +109,26 @@ describe(
           .listEntitlements
           .mockResolvedValue({
             items: [],
-            limit: 50,
-            offset: 0,
-            count: 0,
+
+            limit:
+              50,
+
+            offset:
+              0,
+
+            count:
+              0,
           });
 
         await controller.listEntitlements(
           request,
 
           {
-            limit: 50,
+            limit:
+              50,
 
-            offset: 0,
+            offset:
+              0,
           },
         );
 
