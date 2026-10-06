@@ -95,6 +95,26 @@ VALUES
   (
     'iam.permissions.read',
     'Read permission information'
+  ),
+  (
+    'entitlements.read',
+    'Read tenant entitlement configuration'
+  ),
+  (
+    'entitlements.write',
+    'Create new tenant entitlement versions'
+  ),
+  (
+    'feature_flags.read',
+    'Read and evaluate tenant feature flags'
+  ),
+  (
+    'feature_flags.write',
+    'Create tenant feature flag versions'
+  ),
+  (
+    'feature_flags.security_critical.write',
+    'Create security-critical tenant feature flag versions'
   )
 ON CONFLICT (code) DO NOTHING;
 
@@ -112,7 +132,12 @@ WHERE r.code = 'ORG_ADMIN'
     'iam.access.read',
     'iam.users.read',
     'iam.roles.read',
-    'iam.permissions.read'
+    'iam.permissions.read',
+    'entitlements.read',
+    'entitlements.write',
+    'feature_flags.read',
+    'feature_flags.write',
+    'feature_flags.security_critical.write'
   );
 
 COMMIT;

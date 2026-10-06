@@ -11,6 +11,14 @@ import {
 } from '../database/database.module';
 
 import {
+  IamModule,
+} from '../iam/iam.module';
+
+import {
+  EntitlementsController,
+} from './entitlements.controller';
+
+import {
   EntitlementService,
 } from './entitlement.service';
 
@@ -24,7 +32,13 @@ import {
 
     AuditModule,
 
+    IamModule,
+
     FeatureFlagsModule,
+  ],
+
+  controllers: [
+    EntitlementsController,
   ],
 
   providers: [
