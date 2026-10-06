@@ -4,7 +4,7 @@ import {
   NestModule,
   RequestMethod,
 } from '@nestjs/common';
-
+import { EntitlementsModule } from './entitlements/entitlements.module';
 import { ConfigModule } from '@nestjs/config';
 
 import { AppController } from './app.controller';
@@ -57,7 +57,7 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     HealthModule,
     IamModule,
     OrdersModule,
-
+    EntitlementsModule,
     // ----------------------------------------------------------
     // Transactional Outbox
     // ----------------------------------------------------------
