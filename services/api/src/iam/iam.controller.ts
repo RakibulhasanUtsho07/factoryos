@@ -1,9 +1,7 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
-  Headers,
   Post,
   Query,
   Req,
@@ -26,6 +24,12 @@ interface FactoryOsRequestContext {
   requestedTenantId: string | null;
   requestedFactoryId: string | null;
 
+  /**
+   * Verified authentication context.
+   *
+   * These values must come from the authentication boundary,
+   * never from user-controlled request headers.
+   */
   userId: string | null;
   tenantId: string | null;
   factoryId: string | null;
@@ -52,34 +56,38 @@ export class IamController {
   // ============================================================
 
   @Get('access')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('iam.access.read')
   async getAccess(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
     @Req() request: FactoryOsRequest,
   ) {
+    /**
+     * IMPORTANT:
+     *
+     * Identity must come from the verified JWT context.
+     *
+     * Do NOT use:
+     * - X-User-Id
+     * - X-Tenant-Id
+     *
+     * as the authorization identity.
+     */
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
-    const access =
-      await this.iamService.resolveAccess(
-        userId,
-        tenantId,
-      );
-
-    if (request.factoryos) {
-      request.factoryos.userId =
-        access.user.id;
-
-      request.factoryos.tenantId =
-        access.tenant.id;
-
-      request.factoryos.factoryId = null;
-    }
-
-    return access;
+    return this.iamService.resolveAccess(
+      userId,
+      tenantId,
+    );
   }
 
   // ============================================================
@@ -119,13 +127,21 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.users.read')
   async getUsers(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
     @Query('limit') limit = '50',
   ) {
+    /**
+     * Use only the verified authentication context.
+     */
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -144,12 +160,20 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.roles.read')
   async getRoles(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
   ) {
+    /**
+     * Use only the verified authentication context.
+     */
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -167,12 +191,20 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.permissions.read')
   async getPermissions(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
   ) {
+    /**
+     * Use only the verified authentication context.
+     */
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -190,12 +222,20 @@ export class IamController {
   @UseGuards(PermissionGuard)
   @RequirePermission('iam.access.read')
   async getFactories(
-    @Headers('x-user-id') userId: string | undefined,
-    @Headers('x-tenant-id') tenantId: string | undefined,
+    @Req() request: FactoryOsRequest,
   ) {
+    /**
+     * Use only the verified authentication context.
+     */
+    const userId =
+      request.factoryos?.userId ?? null;
+
+    const tenantId =
+      request.factoryos?.tenantId ?? null;
+
     if (!userId || !tenantId) {
-      throw new BadRequestException(
-        'x-user-id and x-tenant-id headers are required',
+      throw new UnauthorizedException(
+        'Authenticated user context is missing',
       );
     }
 
@@ -218,8 +258,8 @@ export class IamController {
     @Req() request: FactoryOsRequest,
     @Body() body: LinkAuthIdentityDto,
   ) {
-    /*
-     * Identity comes from verified JWT context.
+    /**
+     * Identity comes from the verified JWT context.
      *
      * Do NOT read X-User-Id here.
      */
