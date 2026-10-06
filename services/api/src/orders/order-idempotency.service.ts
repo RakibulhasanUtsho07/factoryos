@@ -3,11 +3,17 @@
   Injectable,
 } from '@nestjs/common';
 
-import { createHash } from 'node:crypto';
+import {
+  createHash,
+} from 'node:crypto';
 
-import { PoolClient } from 'pg';
+import {
+  PoolClient,
+} from 'pg';
 
-import { DatabaseService } from '../database/database.service';
+import {
+  DatabaseService,
+} from '../database/database.service';
 
 export interface OrderIdempotencyExecutionResult<T> {
   replayed: boolean;
@@ -16,34 +22,55 @@ export interface OrderIdempotencyExecutionResult<T> {
 
 interface IdempotencyRow<T> {
   id: string;
+
   request_hash: string;
+
   status: string;
-  response_payload: T | null;
-  resource_id: string | null;
+
+  response_payload:
+    | T
+    | null;
+
+  resource_id:
+    | string
+    | null;
+
   expires_at: string;
 }
 
 @Injectable()
 export class OrderIdempotencyService {
   constructor(
-    private readonly database: DatabaseService,
+    private readonly database:
+      DatabaseService,
   ) {}
 
   createRequestHash(
     body: unknown,
   ): string {
     const canonicalBody =
-      this.canonicalize(body);
+      this.canonicalize(
+        body,
+      );
 
     const serialized =
       JSON.stringify({
-        operation: 'ORDER.CREATE',
-        payload: canonicalBody,
+        operation:
+          'ORDER.CREATE',
+
+        payload:
+          canonicalBody,
       });
 
-    return createHash('sha256')
-      .update(serialized)
-      .digest('hex');
+    return createHash(
+      'sha256',
+    )
+      .update(
+        serialized,
+      )
+      .digest(
+        'hex',
+      );
   }
 
   async execute<T>(
@@ -57,7 +84,9 @@ export class OrderIdempotencyService {
     OrderIdempotencyExecutionResult<T>
   > {
     return this.database.transaction(
-      async (client) => {
+      async (
+        client,
+      ) => {
         /*
          * Allow a key to be reused after its
          * retention window has expired.
@@ -70,8 +99,11 @@ export class OrderIdempotencyService {
           `
           DELETE FROM order_idempotency_keys
 
-          WHERE tenant_id = $1
+          WHERE
+            tenant_id = $1
+
             AND idempotency_key = $2
+
             AND expires_at <= now()
           `,
           [
@@ -129,7 +161,8 @@ export class OrderIdempotencyService {
          * Existing key.
          */
         if (
-          inserted.rowCount === 0
+          inserted.rowCount ===
+          0
         ) {
           const existingResult =
             await client.query<
@@ -138,16 +171,26 @@ export class OrderIdempotencyService {
               `
               SELECT
                 id::text AS id,
+
                 request_hash,
+
                 status,
+
                 response_payload,
-                resource_id::text AS resource_id,
-                expires_at::text AS expires_at
+
+                resource_id::text
+                  AS resource_id,
+
+                expires_at::text
+                  AS expires_at
 
               FROM order_idempotency_keys
 
-              WHERE tenant_id = $1
-                AND idempotency_key = $2
+              WHERE
+                tenant_id = $1
+
+                AND idempotency_key =
+                  $2
 
               LIMIT 1
 
@@ -160,9 +203,12 @@ export class OrderIdempotencyService {
             );
 
           const existing =
-            existingResult.rows[0];
+            existingResult
+              .rows[0];
 
-          if (!existing) {
+          if (
+            !existing
+          ) {
             throw new ConflictException(
               'Unable to resolve Idempotency-Key state',
             );
@@ -192,7 +238,9 @@ export class OrderIdempotencyService {
               null
           ) {
             return {
-              replayed: true,
+              replayed:
+                true,
+
               result:
                 existing.response_payload,
             };
@@ -225,13 +273,18 @@ export class OrderIdempotencyService {
          * in this SAME database transaction.
          */
         const result =
-          await handler(client);
+          await handler(
+            client,
+          );
 
-        let serializedResult: string;
+        let serializedResult:
+          string;
 
         try {
           serializedResult =
-            JSON.stringify(result);
+            JSON.stringify(
+              result,
+            );
         } catch {
           throw new ConflictException(
             'Order response could not be serialized for idempotency replay',
@@ -249,15 +302,29 @@ export class OrderIdempotencyService {
             UPDATE order_idempotency_keys
 
             SET
-              status = 'COMPLETED',
-              response_payload = $1::jsonb,
-              resource_type = 'ORDER',
-              resource_id = $2,
-              completed_at = now()
+              status =
+                'COMPLETED',
 
-            WHERE tenant_id = $3
-              AND idempotency_key = $4
-              AND status = 'PROCESSING'
+              response_payload =
+                $1::jsonb,
+
+              resource_type =
+                'ORDER',
+
+              resource_id =
+                $2,
+
+              completed_at =
+                now()
+
+            WHERE
+              tenant_id = $3
+
+              AND idempotency_key =
+                $4
+
+              AND status =
+                'PROCESSING'
             `,
             [
               serializedResult,
@@ -268,7 +335,8 @@ export class OrderIdempotencyService {
           );
 
         if (
-          completed.rowCount !== 1
+          completed.rowCount !==
+          1
         ) {
           throw new Error(
             'ORDER_IDEMPOTENCY_COMPLETION_UPDATE_FAILED',
@@ -276,9 +344,14 @@ export class OrderIdempotencyService {
         }
 
         return {
-          replayed: false,
+          replayed:
+            false,
+
           result,
         };
+      },
+      {
+        tenantId,
       },
     );
   }
@@ -287,9 +360,13 @@ export class OrderIdempotencyService {
     result: unknown,
   ): string | null {
     if (
-      typeof result !== 'object' ||
+      typeof result !==
+        'object' ||
       result === null ||
-      !('id' in result)
+      !(
+        'id' in
+        result
+      )
     ) {
       return null;
     }
@@ -301,7 +378,8 @@ export class OrderIdempotencyService {
         }
       ).id;
 
-    return typeof id === 'string'
+    return typeof id ===
+      'string'
       ? id
       : null;
   }
@@ -311,15 +389,22 @@ export class OrderIdempotencyService {
   ): unknown {
     if (
       value === null ||
-      typeof value !== 'object'
+      typeof value !==
+        'object'
     ) {
       return value;
     }
 
-    if (Array.isArray(value)) {
+    if (
+      Array.isArray(value)
+    ) {
       return value.map(
-        (item) =>
-          this.canonicalize(item),
+        (
+          item,
+        ) =>
+          this.canonicalize(
+            item,
+          ),
       );
     }
 
@@ -329,7 +414,9 @@ export class OrderIdempotencyService {
         unknown
       >;
 
-    return Object.keys(record)
+    return Object.keys(
+      record,
+    )
       .sort()
       .reduce(
         (

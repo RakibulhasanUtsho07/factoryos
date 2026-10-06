@@ -3,14 +3,24 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+
 import { ConfigService } from '@nestjs/config';
+
 import { PassportStrategy } from '@nestjs/passport';
-import { ExtractJwt, Strategy } from 'passport-jwt';
+
+import {
+  ExtractJwt,
+  Strategy,
+} from 'passport-jwt';
+
 import { JwksClient } from 'jwks-rsa';
+
 import { isUUID } from 'class-validator';
+
 import type { Request } from 'express';
 
 import { DatabaseService } from '../../database/database.service';
+
 import type { AuthUser } from '../auth-user';
 
 interface JwtPayload {
@@ -46,21 +56,27 @@ export class JwtStrategy extends PassportStrategy(
     private readonly configService: ConfigService,
   ) {
     const authMode =
-      configService.get<string>('AUTH_MODE') || 'dev';
+      configService.get<string>(
+        'AUTH_MODE',
+      ) || 'dev';
 
-    // ==========================================================
-    // PRODUCTION OIDC / JWKS MODE
-    // ==========================================================
-
-    if (authMode === 'oidc') {
+    if (
+      authMode === 'oidc'
+    ) {
       const issuer =
-        configService.get<string>('OIDC_ISSUER');
+        configService.get<string>(
+          'OIDC_ISSUER',
+        );
 
       const audience =
-        configService.get<string>('OIDC_AUDIENCE');
+        configService.get<string>(
+          'OIDC_AUDIENCE',
+        );
 
       const jwksUri =
-        configService.get<string>('OIDC_JWKS_URI');
+        configService.get<string>(
+          'OIDC_JWKS_URI',
+        );
 
       if (!issuer) {
         throw new Error(
@@ -80,16 +96,21 @@ export class JwtStrategy extends PassportStrategy(
         );
       }
 
-      const jwksClient = new JwksClient({
-        jwksUri,
+      const jwksClient =
+        new JwksClient({
+          jwksUri,
 
-        cache: true,
-        cacheMaxEntries: 5,
-        cacheMaxAge: 10 * 60 * 1000,
+          cache: true,
 
-        rateLimit: true,
-        jwksRequestsPerMinute: 10,
-      });
+          cacheMaxEntries: 5,
+
+          cacheMaxAge:
+            10 * 60 * 1000,
+
+          rateLimit: true,
+
+          jwksRequestsPerMinute: 10,
+        });
 
       super({
         jwtFromRequest:
@@ -114,16 +135,20 @@ export class JwtStrategy extends PassportStrategy(
             const parts =
               rawJwtToken.split('.');
 
-            if (parts.length !== 3) {
+            if (
+              parts.length !== 3
+            ) {
               done(
                 new Error(
                   'Invalid JWT format',
                 ),
               );
+
               return;
             }
 
-            const encodedHeader = parts[0];
+            const encodedHeader =
+              parts[0];
 
             if (!encodedHeader) {
               done(
@@ -131,17 +156,21 @@ export class JwtStrategy extends PassportStrategy(
                   'JWT header is missing',
                 ),
               );
+
               return;
             }
 
-            let header: JwkHeader;
+            let header:
+              JwkHeader;
 
             try {
               const decodedHeader =
                 Buffer.from(
                   encodedHeader,
                   'base64url',
-                ).toString('utf8');
+                ).toString(
+                  'utf8',
+                );
 
               header =
                 JSON.parse(
@@ -153,6 +182,7 @@ export class JwtStrategy extends PassportStrategy(
                   'Invalid JWT header',
                 ),
               );
+
               return;
             }
 
@@ -162,27 +192,40 @@ export class JwtStrategy extends PassportStrategy(
                   'JWT key id (kid) is missing',
                 ),
               );
+
               return;
             }
 
             jwksClient
-              .getSigningKey(header.kid)
-              .then((signingKey) => {
-                done(
-                  null,
-                  signingKey.getPublicKey(),
-                );
-              })
-              .catch((error: unknown) => {
-                done(
-                  error instanceof Error
-                    ? error
-                    : new Error(
-                        'Unable to resolve OIDC signing key',
-                      ),
-                );
-              });
-          } catch (error) {
+              .getSigningKey(
+                header.kid,
+              )
+              .then(
+                (
+                  signingKey,
+                ) => {
+                  done(
+                    null,
+                    signingKey.getPublicKey(),
+                  );
+                },
+              )
+              .catch(
+                (
+                  error: unknown,
+                ) => {
+                  done(
+                    error instanceof Error
+                      ? error
+                      : new Error(
+                          'Unable to resolve OIDC signing key',
+                        ),
+                  );
+                },
+              );
+          } catch (
+            error
+          ) {
             done(
               error instanceof Error
                 ? error
@@ -197,12 +240,10 @@ export class JwtStrategy extends PassportStrategy(
       return;
     }
 
-    // ==========================================================
-    // LOCAL DEVELOPMENT MODE
-    // ==========================================================
-
     const secret =
-      configService.get<string>('JWT_SECRET');
+      configService.get<string>(
+        'JWT_SECRET',
+      );
 
     if (!secret) {
       throw new Error(
@@ -211,11 +252,15 @@ export class JwtStrategy extends PassportStrategy(
     }
 
     const issuer =
-      configService.get<string>('JWT_ISSUER') ||
+      configService.get<string>(
+        'JWT_ISSUER',
+      ) ||
       'factoryos-api';
 
     const audience =
-      configService.get<string>('JWT_AUDIENCE') ||
+      configService.get<string>(
+        'JWT_AUDIENCE',
+      ) ||
       'factoryos-web';
 
     super({
@@ -224,7 +269,8 @@ export class JwtStrategy extends PassportStrategy(
 
       ignoreExpiration: false,
 
-      secretOrKey: secret,
+      secretOrKey:
+        secret,
 
       issuer,
 
@@ -236,83 +282,54 @@ export class JwtStrategy extends PassportStrategy(
     });
   }
 
-  // ============================================================
-  // JWT VALIDATION
-  // ============================================================
-
   async validate(
     request: FactoryOsRequest,
     payload: JwtPayload,
   ): Promise<AuthUser> {
     const authMode =
-      this.configService.get<string>('AUTH_MODE') ||
-      'dev';
+      this.configService.get<string>(
+        'AUTH_MODE',
+      ) || 'dev';
 
-    // ==========================================================
-    // SUBJECT
-    // ==========================================================
-
-    /*
-     * Production OIDC:
-     *
-     *   sub = arbitrary external IdP subject
-     *
-     * Therefore do NOT use UUID validation here.
-     */
     if (
-      typeof payload.sub !== 'string' ||
-      payload.sub.trim().length === 0
+      typeof payload.sub !==
+        'string' ||
+      payload.sub.trim().length ===
+        0
     ) {
       throw new UnauthorizedException(
         'Invalid authentication subject',
       );
     }
 
-    /*
-     * auth_identities.subject is varchar(255).
-     */
-    if (payload.sub.length > 255) {
+    if (
+      payload.sub.length >
+      255
+    ) {
       throw new UnauthorizedException(
         'Authentication subject exceeds maximum length',
       );
     }
 
-    // ==========================================================
-    // LOCAL DEVELOPMENT
-    // ==========================================================
-
-    /*
-     * Existing dev-token flow intentionally keeps
-     * UUID user IDs.
-     */
-    if (authMode !== 'oidc') {
+    if (
+      authMode !== 'oidc'
+    ) {
       return this.resolveDevelopmentIdentity(
         payload,
       );
     }
 
-    // ==========================================================
-    // PRODUCTION OIDC
-    // ==========================================================
-
     if (
-      typeof payload.iss !== 'string' ||
-      payload.iss.trim().length === 0
+      typeof payload.iss !==
+        'string' ||
+      payload.iss.trim().length ===
+        0
     ) {
       throw new UnauthorizedException(
         'JWT issuer is missing',
       );
     }
 
-    /*
-     * Resolve:
-     *
-     *   issuer + external subject
-     *          ↓
-     *   auth_identities
-     *          ↓
-     *   FactoryOS users
-     */
     const identityResult =
       await this.database.query<{
         user_id: string;
@@ -348,16 +365,9 @@ export class JwtStrategy extends PassportStrategy(
       );
     }
 
-    // ==========================================================
-    // TENANT MEMBERSHIP
-    // ==========================================================
-
-    /*
-     * Tenant comes from an explicit request selector,
-     * not from an arbitrary untrusted identity claim.
-     */
     const requestedTenantId =
-      request.factoryos?.requestedTenantId ??
+      request.factoryos
+        ?.requestedTenantId ??
       null;
 
     const membershipResult =
@@ -378,32 +388,40 @@ export class JwtStrategy extends PassportStrategy(
         WHERE m.user_id = $1
           AND m.status = 'ACTIVE'
           AND t.status = 'ACTIVE'
+
           AND (
             $2::uuid IS NULL
             OR m.tenant_id = $2::uuid
           )
 
-        ORDER BY m.created_at ASC
+        ORDER BY
+          m.created_at ASC
         `,
         [
           identity.user_id,
           requestedTenantId,
         ],
+        {
+          tenantId:
+            requestedTenantId,
+
+          userId:
+            identity.user_id,
+        },
       );
 
     const memberships =
       membershipResult.rows;
 
-    if (memberships.length === 0) {
+    if (
+      memberships.length ===
+      0
+    ) {
       throw new UnauthorizedException(
         'Authenticated user has no active tenant membership',
       );
     }
 
-    /*
-     * Multi-tenant users must explicitly select
-     * their tenant.
-     */
     if (
       memberships.length > 1 &&
       !requestedTenantId
@@ -417,22 +435,23 @@ export class JwtStrategy extends PassportStrategy(
       memberships[0];
 
     return {
-      userId: identity.user_id,
-      tenantId: membership.tenant_id,
+      userId:
+        identity.user_id,
+
+      tenantId:
+        membership.tenant_id,
+
       membershipId:
         membership.membership_id,
     };
   }
 
-  // ============================================================
-  // DEVELOPMENT IDENTITY RESOLUTION
-  // ============================================================
-
   private async resolveDevelopmentIdentity(
     payload: JwtPayload,
   ): Promise<AuthUser> {
     if (
-      typeof payload.sub !== 'string' ||
+      typeof payload.sub !==
+        'string' ||
       !isUUID(payload.sub)
     ) {
       throw new UnauthorizedException(
@@ -441,8 +460,11 @@ export class JwtStrategy extends PassportStrategy(
     }
 
     if (
-      typeof payload.tenant_id !== 'string' ||
-      !isUUID(payload.tenant_id)
+      typeof payload.tenant_id !==
+        'string' ||
+      !isUUID(
+        payload.tenant_id,
+      )
     ) {
       throw new UnauthorizedException(
         'Invalid development authentication tenant claim',
@@ -481,9 +503,17 @@ export class JwtStrategy extends PassportStrategy(
           payload.sub,
           payload.tenant_id,
         ],
+        {
+          tenantId:
+            payload.tenant_id,
+
+          userId:
+            payload.sub,
+        },
       );
 
-    const row = result.rows[0];
+    const row =
+      result.rows[0];
 
     if (!row) {
       throw new UnauthorizedException(
@@ -492,9 +522,14 @@ export class JwtStrategy extends PassportStrategy(
     }
 
     return {
-      userId: row.user_id,
-      tenantId: row.tenant_id,
-      membershipId: row.membership_id,
+      userId:
+        row.user_id,
+
+      tenantId:
+        row.tenant_id,
+
+      membershipId:
+        row.membership_id,
     };
   }
 }

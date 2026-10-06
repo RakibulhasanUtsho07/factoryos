@@ -85,12 +85,6 @@ interface OutboxRow {
     | string
     | null;
 
-  /*
-   * PostgreSQL JSONB is runtime data.
-   *
-   * The canonical OutboxEvent contract performs authoritative
-   * runtime validation before publication/consumption.
-   */
   actor:
     | OutboxActor
     | null;
@@ -126,6 +120,14 @@ interface FailureResult {
   retryAt:
     | Date
     | null;
+
+  context:
+    | FailedOutboxContext
+    | null;
+}
+
+interface TenantRow {
+  id: string;
 }
 
 @Injectable()
@@ -144,7 +146,8 @@ export class OutboxDispatcherService
 
   private timer:
     | ReturnType<typeof setTimeout>
-    | null = null;
+    | null =
+      null;
 
   private running =
     false;
@@ -171,10 +174,6 @@ export class OutboxDispatcherService
     private readonly consumerRegistry:
       OutboxConsumerRegistry,
 
-    /*
-     * Optional keeps existing manually-instantiated unit/integration
-     * tests compatible while production Nest wiring provides AuditService.
-     */
     @Optional()
     private readonly auditService?:
       AuditService,
@@ -210,7 +209,8 @@ export class OutboxDispatcherService
       false;
 
     if (
-      this.timer !== null
+      this.timer !==
+      null
     ) {
       clearTimeout(
         this.timer,
@@ -234,8 +234,32 @@ export class OutboxDispatcherService
     published: number;
     failed: number;
   }> {
-    const rows =
-      await this.claimBatch();
+    /*
+     * ----------------------------------------------------------
+     * RLS REQUIREMENT
+     * ----------------------------------------------------------
+     *
+     * The outbox is tenant scoped.
+     *
+     * We first discover tenant IDs from the global
+     * control-plane table and then execute each tenant's
+     * outbox work under transaction-local RLS context.
+     */
+    const tenants =
+      await this.database.query<TenantRow>(
+        `
+        SELECT
+          id::text AS id
+
+        FROM tenants
+
+        ORDER BY
+          id
+        `,
+      );
+
+    let claimed =
+      0;
 
     let published =
       0;
@@ -243,111 +267,150 @@ export class OutboxDispatcherService
     let failed =
       0;
 
+    /*
+     * Process tenants independently.
+     *
+     * Failure of one tenant must not stop the remaining tenants.
+     */
     for (
-      const row of rows
+      const tenant of
+        tenants.rows
     ) {
+      let rows:
+        | OutboxRow[]
+        = [];
+
       try {
-        // ------------------------------------------------------
-        // Hydrate canonical event envelope from PostgreSQL.
-        // ------------------------------------------------------
-
-        const event: OutboxEvent =
-          {
-            id:
-              row.id,
-
-            tenantId:
-              row.tenant_id,
-
-            factoryId:
-              row.factory_id,
-
-            aggregateType:
-              row.aggregate_type,
-
-            aggregateId:
-              row.aggregate_id,
-
-            eventType:
-              row.event_type,
-
-            eventVersion:
-              row.event_version,
-
-            occurredAt:
-              row.occurred_at instanceof Date
-                ? row.occurred_at.toISOString()
-                : String(
-                    row.occurred_at,
-                  ),
-
-            correlationId:
-              row.correlation_id,
-
-            causationId:
-              row.causation_id,
-
-            actor:
-              row.actor,
-
-            source:
-              row.source,
-
-            payload:
-              row.payload,
-          };
-
-        /*
-         * Publisher is the first canonical contract boundary.
-         *
-         * It validates and deep-freezes the event snapshot.
-         */
-        await this.publisher.publish(
-          event,
-        );
-
-        /*
-         * Local consumers receive the exact same immutable snapshot.
-         */
-        const consumerResult =
-          await this.consumerRegistry.dispatch(
-            event,
+        rows =
+          await this.claimBatch(
+            tenant.id,
           );
-
-        if (
-          consumerResult.handled
-        ) {
-          this.logger.log(
-            `Outbox event consumed: event_id=${row.id}, consumer=${consumerResult.consumerName}`,
-          );
-        }
-
-        /*
-         * Event becomes PUBLISHED only after publisher and all
-         * local consumers succeed.
-         */
-        await this.markPublished(
-          row.id,
-        );
-
-        published +=
-          1;
       } catch (
         error
       ) {
-        failed +=
-          1;
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(
+                error,
+              );
 
-        await this.markFailed(
-          row.id,
-          error,
+        this.logger.error(
+          `Outbox tenant claim failed: tenant_id=${tenant.id}; error=${message}`,
         );
+
+        continue;
+      }
+
+      claimed +=
+        rows.length;
+
+      for (
+        const row of
+          rows
+      ) {
+        try {
+          const event:
+            OutboxEvent =
+            {
+              id:
+                row.id,
+
+              tenantId:
+                row.tenant_id,
+
+              factoryId:
+                row.factory_id,
+
+              aggregateType:
+                row.aggregate_type,
+
+              aggregateId:
+                row.aggregate_id,
+
+              eventType:
+                row.event_type,
+
+              eventVersion:
+                row.event_version,
+
+              occurredAt:
+                row.occurred_at instanceof Date
+                  ? row.occurred_at.toISOString()
+                  : String(
+                      row.occurred_at,
+                    ),
+
+              correlationId:
+                row.correlation_id,
+
+              causationId:
+                row.causation_id,
+
+              actor:
+                row.actor,
+
+              source:
+                row.source,
+
+              payload:
+                row.payload,
+            };
+
+          /*
+           * Publisher is the canonical contract boundary.
+           *
+           * It validates/deep-freezes the event snapshot.
+           */
+          await this.publisher.publish(
+            event,
+          );
+
+          /*
+           * Local consumers receive the exact same
+           * immutable event snapshot.
+           */
+          const consumerResult =
+            await this.consumerRegistry.dispatch(
+              event,
+            );
+
+          if (
+            consumerResult.handled
+          ) {
+            this.logger.log(
+              `Outbox event consumed: event_id=${row.id}, tenant_id=${row.tenant_id}, consumer=${consumerResult.consumerName}`,
+            );
+          }
+
+          /*
+           * Event becomes PUBLISHED only after publisher
+           * and all local consumers succeed.
+           */
+          await this.markPublished(
+            row.id,
+            row.tenant_id,
+          );
+
+          published +=
+            1;
+        } catch (
+          error
+        ) {
+          failed +=
+            1;
+
+          await this.markFailed(
+            row.id,
+            row.tenant_id,
+            error,
+          );
+        }
       }
     }
 
     return {
-      claimed:
-        rows.length,
+      claimed,
 
       published,
 
@@ -389,8 +452,10 @@ export class OutboxDispatcherService
         await this.dispatchOnce();
 
       if (
-        result.claimed > 0 ||
-        result.failed > 0
+        result.claimed >
+          0 ||
+        result.failed >
+          0
       ) {
         this.logger.log(
           `Outbox dispatch cycle: claimed=${result.claimed}, published=${result.published}, failed=${result.failed}`,
@@ -402,7 +467,9 @@ export class OutboxDispatcherService
       const message =
         error instanceof Error
           ? error.message
-          : String(error);
+          : String(
+              error,
+            );
 
       this.logger.error(
         `Outbox dispatch cycle failed: ${message}`,
@@ -414,7 +481,9 @@ export class OutboxDispatcherService
   // CLAIM BATCH
   // ============================================================
 
-  private async claimBatch(): Promise<
+  private async claimBatch(
+    tenantId: string,
+  ): Promise<
     OutboxRow[]
   > {
     const now =
@@ -440,36 +509,42 @@ export class OutboxDispatcherService
               FROM outbox_events
 
               WHERE
-                (
-                  status IN (
-                    'PENDING',
-                    'FAILED'
+                tenant_id = $1
+
+                AND (
+                  (
+                    status IN (
+                      'PENDING',
+                      'FAILED'
+                    )
+
+                    AND next_attempt_at <=
+                      now()
                   )
 
-                  AND next_attempt_at <= now()
-                )
+                  OR
 
-                OR
+                  (
+                    status =
+                      'PROCESSING'
 
-                (
-                  status =
-                    'PROCESSING'
+                    AND (
+                      locked_at IS NULL
 
-                  AND (
-                    locked_at IS NULL
-
-                    OR locked_at <=
-                      now() -
-                      interval '60 seconds'
+                      OR locked_at <=
+                        now() -
+                        interval '60 seconds'
+                    )
                   )
                 )
 
               ORDER BY
-                created_at ASC
+                created_at ASC,
+                id ASC
 
               FOR UPDATE SKIP LOCKED
 
-              LIMIT $1
+              LIMIT $2
             )
 
             UPDATE outbox_events AS oe
@@ -482,22 +557,25 @@ export class OutboxDispatcherService
                 oe.attempts + 1,
 
               locked_at =
-                $2,
-
-              locked_by =
                 $3,
 
-              last_attempt_at =
+              locked_by =
                 $4,
 
+              last_attempt_at =
+                $5,
+
               next_attempt_at =
-                $5
+                $6
 
             FROM candidates
 
             WHERE
               oe.id =
                 candidates.id
+
+              AND oe.tenant_id =
+                $1
 
             RETURNING
               oe.id::text
@@ -551,6 +629,8 @@ export class OutboxDispatcherService
               oe.source
             `,
             [
+              tenantId,
+
               this.batchSize,
 
               now,
@@ -565,6 +645,9 @@ export class OutboxDispatcherService
 
         return result.rows;
       },
+      {
+        tenantId,
+      },
     );
   }
 
@@ -574,18 +657,24 @@ export class OutboxDispatcherService
 
   private async markFailed(
     eventId: string,
+    tenantId: string,
     error: unknown,
   ): Promise<void> {
     const message =
       error instanceof Error
         ? error.message
-        : String(error);
+        : String(
+            error,
+          );
 
     const result =
       await this.database.transaction(
         async (
           client,
-        ): Promise<FailureResult | null> => {
+        ): Promise<
+          FailureResult |
+          null
+        > => {
           const currentResult =
             await client.query<{
               attempts: number;
@@ -626,6 +715,8 @@ export class OutboxDispatcherService
               WHERE
                 id = $1
 
+                AND tenant_id = $3
+
                 AND status =
                   'PROCESSING'
 
@@ -633,11 +724,15 @@ export class OutboxDispatcherService
                   $2
 
               LIMIT 1
+
+              FOR UPDATE
               `,
               [
                 eventId,
 
                 this.workerId,
+
+                tenantId,
               ],
             );
 
@@ -683,12 +778,6 @@ export class OutboxDispatcherService
            * ----------------------------------------------------
            * TERMINAL FAILURE / QUARANTINE
            * ----------------------------------------------------
-           *
-           * Attempt count is incremented during claimBatch().
-           * Therefore attempts >= maxAttempts means this failure
-           * has reached the terminal retry threshold.
-           *
-           * QUARANTINED events are never selected by claimBatch().
            */
           if (
             attempts >=
@@ -726,6 +815,9 @@ export class OutboxDispatcherService
                 WHERE
                   id = $3
 
+                  AND tenant_id =
+                    $4
+
                   AND status =
                     'PROCESSING'
 
@@ -741,6 +833,8 @@ export class OutboxDispatcherService
                   message,
 
                   eventId,
+
+                  tenantId,
                 ],
               );
 
@@ -759,6 +853,8 @@ export class OutboxDispatcherService
 
               retryAt:
                 null,
+
+              context,
             };
           }
 
@@ -782,6 +878,7 @@ export class OutboxDispatcherService
                       1,
                     0,
                   ),
+
               60 * 60,
             );
 
@@ -818,11 +915,14 @@ export class OutboxDispatcherService
               WHERE
                 id = $3
 
+                AND tenant_id =
+                  $4
+
                 AND status =
                   'PROCESSING'
 
                 AND locked_by =
-                  $4
+                  $5
 
               RETURNING
                 id::text AS id
@@ -833,6 +933,8 @@ export class OutboxDispatcherService
                 message,
 
                 eventId,
+
+                tenantId,
 
                 this.workerId,
               ],
@@ -852,7 +954,12 @@ export class OutboxDispatcherService
             attempts,
 
             retryAt,
+
+            context,
           };
+        },
+        {
+          tenantId,
         },
       );
 
@@ -870,16 +977,14 @@ export class OutboxDispatcherService
       result.quarantined
     ) {
       this.logger.error(
-        `Outbox event quarantined: ${eventId}; attempts=${result.attempts}; reason=${message}`,
+        `Outbox event quarantined: event_id=${eventId}; tenant_id=${tenantId}; attempts=${result.attempts}; reason=${message}`,
       );
 
       await this.recordQuarantineAudit(
         eventId,
         result.attempts,
         message,
-        await this.getAuditContext(
-          eventId,
-        ),
+        result.context,
       );
 
       return;
@@ -893,7 +998,7 @@ export class OutboxDispatcherService
       result.retryAt
     ) {
       this.logger.error(
-        `Outbox event failed: ${eventId}; attempts=${result.attempts}; retryAt=${result.retryAt.toISOString()}`,
+        `Outbox event failed: event_id=${eventId}; tenant_id=${tenantId}; attempts=${result.attempts}; retryAt=${result.retryAt.toISOString()}`,
       );
     }
   }
@@ -988,122 +1093,11 @@ export class OutboxDispatcherService
             );
 
       /*
-       * The quarantine state has already been committed.
-       *
-       * Do not attempt to roll back the event because audit
-       * recording failed. Surface the failure operationally.
+       * Quarantine state has already been committed.
        */
       this.logger.error(
-        `Outbox quarantine audit failed: event_id=${eventId}; error=${auditMessage}`,
+        `Outbox quarantine audit failed: event_id=${eventId}; tenant_id=${context.tenantId}; error=${auditMessage}`,
       );
-    }
-  }
-
-  // ============================================================
-  // FETCH AUDIT CONTEXT
-  // ============================================================
-
-  private async getAuditContext(
-    eventId: string,
-  ): Promise<
-    FailedOutboxContext | null
-  > {
-    try {
-      const result =
-        await this.database.query<{
-          tenant_id: string;
-
-          factory_id:
-            | string
-            | null;
-
-          event_type: string;
-
-          event_version: number;
-
-          correlation_id:
-            | string
-            | null;
-
-          attempts: number;
-        }>(
-          `
-          SELECT
-            tenant_id::text
-              AS tenant_id,
-
-            factory_id::text
-              AS factory_id,
-
-            event_type,
-
-            event_version,
-
-            correlation_id::text
-              AS correlation_id,
-
-            attempts
-
-          FROM outbox_events
-
-          WHERE
-            id = $1
-
-            AND status =
-              'QUARANTINED'
-
-          LIMIT 1
-          `,
-          [
-            eventId,
-          ],
-        );
-
-      const row =
-        result.rows[0];
-
-      if (
-        !row
-      ) {
-        return null;
-      }
-
-      return {
-        attempts:
-          Number(
-            row.attempts,
-          ),
-
-        tenantId:
-          row.tenant_id,
-
-        factoryId:
-          row.factory_id,
-
-        eventType:
-          row.event_type,
-
-        eventVersion:
-          Number(
-            row.event_version,
-          ),
-
-        correlationId:
-          row.correlation_id,
-      };
-    } catch (
-      error
-    ) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
-      this.logger.error(
-        `Failed to load quarantine audit context: event_id=${eventId}; error=${message}`,
-      );
-
-      return null;
     }
   }
 
@@ -1113,6 +1107,7 @@ export class OutboxDispatcherService
 
   private async markPublished(
     eventId: string,
+    tenantId: string,
   ): Promise<void> {
     const result =
       await this.database.query(
@@ -1138,11 +1133,14 @@ export class OutboxDispatcherService
         WHERE
           id = $1
 
+          AND tenant_id =
+            $2
+
           AND status =
             'PROCESSING'
 
           AND locked_by =
-            $2
+            $3
 
         RETURNING
           id::text AS id
@@ -1150,8 +1148,13 @@ export class OutboxDispatcherService
         [
           eventId,
 
+          tenantId,
+
           this.workerId,
         ],
+        {
+          tenantId,
+        },
       );
 
     if (

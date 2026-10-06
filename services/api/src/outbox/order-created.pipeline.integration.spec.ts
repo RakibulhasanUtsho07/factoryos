@@ -8,6 +8,10 @@ import {
 } from './order-created.consumer';
 
 import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
+
+import {
   OutboxConsumerRegistry,
 } from './outbox.consumer.registry';
 
@@ -31,52 +35,19 @@ describe(
 
     let pool!: Pool;
 
+    let appPool!: Pool;
+
     let orderId!: string;
     let tenantId!: string;
     let factoryId!: string;
     let orderNumber!: string;
     let eventId!: string;
 
-    async function transaction<T>(
-      callback: (
-        client: import('pg').PoolClient,
-      ) => Promise<T>,
-    ): Promise<T> {
-      const client =
-        await pool.connect();
-
-      try {
-        await client.query(
-          'BEGIN',
-        );
-
-        const value =
-          await callback(
-            client,
-          );
-
-        await client.query(
-          'COMMIT',
-        );
-
-        return value;
-      } catch (error) {
-        await client.query(
-          'ROLLBACK',
-        );
-
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-
     async function createDispatcher() {
-      const database = {
-        transaction,
-        query:
-          pool.query.bind(pool),
-      };
+      const database =
+        createIntegrationDatabase(
+          appPool,
+        );
 
       const inboxService =
         new InboxService(
@@ -171,13 +142,34 @@ describe(
       const databaseUrl =
         process.env.DATABASE_URL;
 
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
+
       if (!databaseUrl) {
         throw new Error(
           'DATABASE_URL is required.',
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
+      /*
+       * Admin fixture pool.
+       */
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      /*
+       * Runtime/application pool.
+       */
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -479,79 +471,81 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        // ------------------------------------------------------
+        // Delete inbox first.
+        // ------------------------------------------------------
+
+        if (eventId) {
+          await pool.query(
+            `
+            DELETE FROM inbox_events
+
+            WHERE
+              event_id = $1
+            `,
+            [
+              eventId,
+            ],
+          );
+
+          // ----------------------------------------------------
+          // Delete projection.
+          // ----------------------------------------------------
+
+          await pool.query(
+            `
+            DELETE FROM order_event_projections
+
+            WHERE
+              event_id = $1
+            `,
+            [
+              eventId,
+            ],
+          );
+
+          // ----------------------------------------------------
+          // Delete outbox event.
+          // ----------------------------------------------------
+
+          await pool.query(
+            `
+            DELETE FROM outbox_events
+
+            WHERE
+              id = $1
+            `,
+            [
+              eventId,
+            ],
+          );
+        }
+
+        // ------------------------------------------------------
+        // Delete isolated order.
+        // ------------------------------------------------------
+
+        if (orderId) {
+          await pool.query(
+            `
+            DELETE FROM orders
+
+            WHERE
+              id = $1
+            `,
+            [
+              orderId,
+            ],
+          );
+        }
+
+        await pool.end();
       }
 
-      // --------------------------------------------------------
-      // Delete inbox first.
-      // --------------------------------------------------------
-
-      if (eventId) {
-        await pool.query(
-          `
-          DELETE FROM inbox_events
-
-          WHERE
-            event_id = $1
-          `,
-          [
-            eventId,
-          ],
-        );
-
-        // ------------------------------------------------------
-        // Delete projection.
-        // ------------------------------------------------------
-
-        await pool.query(
-          `
-          DELETE FROM order_event_projections
-
-          WHERE
-            event_id = $1
-          `,
-          [
-            eventId,
-          ],
-        );
-
-        // ------------------------------------------------------
-        // Delete outbox event.
-        // ------------------------------------------------------
-
-        await pool.query(
-          `
-          DELETE FROM outbox_events
-
-          WHERE
-            id = $1
-          `,
-          [
-            eventId,
-          ],
-        );
+      if (appPool) {
+        await appPool.end();
       }
-
-      // --------------------------------------------------------
-      // Delete isolated order.
-      // --------------------------------------------------------
-
-      if (orderId) {
-        await pool.query(
-          `
-          DELETE FROM orders
-
-          WHERE
-            id = $1
-          `,
-          [
-            orderId,
-          ],
-        );
-      }
-
-      await pool.end();
     });
 
     it(
@@ -920,11 +914,10 @@ describe(
         // Deliver same event again.
         // ------------------------------------------------------
 
-        const database = {
-          transaction,
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const inboxService =
           new InboxService(

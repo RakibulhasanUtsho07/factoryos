@@ -4,6 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 
+import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
+
 import { OrdersService } from './orders.service';
 
 describe(
@@ -13,6 +17,8 @@ describe(
       '921382b8-e83f-43ab-a576-e3db6a06b70c';
 
     let pool!: Pool;
+
+    let appPool!: Pool;
 
     let database: DatabaseService;
     let auditService: AuditService;
@@ -26,13 +32,46 @@ describe(
       const databaseUrl =
         process.env.DATABASE_URL;
 
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
+
       if (!databaseUrl) {
         throw new Error(
           'DATABASE_URL is required.',
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
+      /*
+       * --------------------------------------------------------
+       * Admin/test-fixture connection.
+       *
+       * This connection is intentionally privileged and is used
+       * only to create/read/clean integration-test fixtures.
+       *
+       * Production application code NEVER receives this pool.
+       * --------------------------------------------------------
+       */
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      /*
+       * --------------------------------------------------------
+       * Production-like application connection.
+       *
+       * This must use the non-superuser factoryos_app role so
+       * PostgreSQL RLS is actually enforced during service tests.
+       * --------------------------------------------------------
+       */
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -205,48 +244,15 @@ describe(
 
       // --------------------------------------------------------
       // Real PostgreSQL adapter.
+      //
+      // Important:
+      // service operations use appPool so RLS is enforced.
       // --------------------------------------------------------
 
       database =
-        {
-          transaction:
-            async <T>(
-              callback: (
-                client: import('pg').PoolClient,
-              ) => Promise<T>,
-            ): Promise<T> => {
-              const client =
-                await pool.connect();
-
-              try {
-                await client.query(
-                  'BEGIN',
-                );
-
-                const value =
-                  await callback(
-                    client,
-                  );
-
-                await client.query(
-                  'COMMIT',
-                );
-
-                return value;
-              } catch (error) {
-                await client.query(
-                  'ROLLBACK',
-                );
-
-                throw error;
-              } finally {
-                client.release();
-              }
-            },
-
-          query:
-            pool.query.bind(pool),
-        } as never;
+        createIntegrationDatabase(
+          appPool,
+        ) as never;
 
       // --------------------------------------------------------
       // Audit mocked for service-level lifecycle test.
@@ -268,37 +274,39 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        if (orderId) {
+          await pool.query(
+            `
+            DELETE FROM outbox_events
+
+            WHERE
+              aggregate_id = $1
+            `,
+            [
+              orderId,
+            ],
+          );
+
+          await pool.query(
+            `
+            DELETE FROM orders
+
+            WHERE
+              id = $1
+            `,
+            [
+              orderId,
+            ],
+          );
+        }
+
+        await pool.end();
       }
 
-      if (orderId) {
-        await pool.query(
-          `
-          DELETE FROM outbox_events
-
-          WHERE
-            aggregate_id = $1
-          `,
-          [
-            orderId,
-          ],
-        );
-
-        await pool.query(
-          `
-          DELETE FROM orders
-
-          WHERE
-            id = $1
-          `,
-          [
-            orderId,
-          ],
-        );
+      if (appPool) {
+        await appPool.end();
       }
-
-      await pool.end();
     });
 
     it(
@@ -1041,6 +1049,5 @@ describe(
         }
       },
     );
-
   },
 );

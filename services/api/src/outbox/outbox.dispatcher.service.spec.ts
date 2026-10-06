@@ -1,10 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import {
+  randomUUID,
+} from 'node:crypto';
 
-import { OutboxDispatcherService } from './outbox.dispatcher.service';
+import {
+  OutboxDispatcherService,
+} from './outbox.dispatcher.service';
 
 type QueryCall = {
   sql: string;
-  params: readonly unknown[];
+
+  params:
+    readonly unknown[];
 };
 
 describe(
@@ -13,23 +19,32 @@ describe(
     it(
       'should fail when markPublished updates zero rows',
       async () => {
-        const queryCalls: QueryCall[] = [];
+        const queryCalls:
+          QueryCall[] = [];
 
         const eventId =
+          randomUUID();
+
+        const tenantId =
           randomUUID();
 
         const database = {
           query: async (
             sql: string,
-            params: readonly unknown[] = [],
+
+            params:
+              readonly unknown[] =
+                [],
           ) => {
             queryCalls.push({
               sql,
+
               params,
             });
 
             return {
               rowCount: 0,
+
               rows: [],
             };
           },
@@ -38,7 +53,9 @@ describe(
         const dispatcher =
           new OutboxDispatcherService(
             database as never,
+
             {} as never,
+
             {} as never,
           );
 
@@ -46,66 +63,96 @@ describe(
           dispatcher as unknown as {
             markPublished: (
               eventId: string,
+
+              tenantId: string,
             ) => Promise<void>;
           };
 
         await expect(
           internal.markPublished(
             eventId,
+
+            tenantId,
           ),
         ).rejects.toThrow(
           'OUTBOX_MARK_PUBLISHED_FAILED',
         );
 
         expect(
-          queryCalls.length,
-        ).toBe(1);
+          queryCalls,
+        ).toHaveLength(1);
 
         expect(
-          queryCalls[0].sql,
+          queryCalls[0]
+            .sql,
         ).toMatch(
           /RETURNING\s+id/i,
         );
 
         expect(
-          queryCalls[0].sql,
+          queryCalls[0]
+            .sql,
         ).toMatch(
           /status\s*=\s*'PUBLISHED'/i,
         );
 
         expect(
-          queryCalls[0].params[0],
-        ).toBe(eventId);
+          queryCalls[0]
+            .params[0],
+        ).toBe(
+          eventId,
+        );
 
         expect(
-          typeof queryCalls[0].params[1],
-        ).toBe('string');
+          queryCalls[0]
+            .params[1],
+        ).toBe(
+          tenantId,
+        );
+
+        expect(
+          typeof
+            queryCalls[0]
+              .params[2],
+        ).toBe(
+          'string',
+        );
       },
     );
 
     it(
       'should succeed when exactly one row is marked PUBLISHED',
       async () => {
-        const queryCalls: QueryCall[] = [];
+        const queryCalls:
+          QueryCall[] = [];
 
         const eventId =
+          randomUUID();
+
+        const tenantId =
           randomUUID();
 
         const database = {
           query: async (
             sql: string,
-            params: readonly unknown[] = [],
+
+            params:
+              readonly unknown[] =
+                [],
           ) => {
             queryCalls.push({
               sql,
+
               params,
             });
 
             return {
               rowCount: 1,
+
               rows: [
                 {
-                  id: eventId,
+                  id:
+                    eventId,
                 },
               ],
             };
@@ -115,7 +162,9 @@ describe(
         const dispatcher =
           new OutboxDispatcherService(
             database as never,
+
             {} as never,
+
             {} as never,
           );
 
@@ -123,38 +172,58 @@ describe(
           dispatcher as unknown as {
             markPublished: (
               eventId: string,
+
+              tenantId: string,
             ) => Promise<void>;
           };
 
         await expect(
           internal.markPublished(
             eventId,
+
+            tenantId,
           ),
         ).resolves.toBeUndefined();
 
         expect(
-          queryCalls.length,
-        ).toBe(1);
+          queryCalls,
+        ).toHaveLength(1);
 
         expect(
-          queryCalls[0].sql,
+          queryCalls[0]
+            .sql,
         ).toMatch(
           /RETURNING\s+id/i,
         );
 
         expect(
-          queryCalls[0].sql,
+          queryCalls[0]
+            .sql,
         ).toMatch(
           /status\s*=\s*'PUBLISHED'/i,
         );
 
         expect(
-          queryCalls[0].params[0],
-        ).toBe(eventId);
+          queryCalls[0]
+            .params[0],
+        ).toBe(
+          eventId,
+        );
 
         expect(
-          typeof queryCalls[0].params[1],
-        ).toBe('string');
+          queryCalls[0]
+            .params[1],
+        ).toBe(
+          tenantId,
+        );
+
+        expect(
+          typeof
+            queryCalls[0]
+              .params[2],
+        ).toBe(
+          'string',
+        );
       },
     );
   },

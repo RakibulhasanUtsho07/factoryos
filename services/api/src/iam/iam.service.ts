@@ -6,13 +6,24 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { isUUID } from 'class-validator';
-import type { QueryResultRow } from 'pg';
+import {
+  isUUID,
+} from 'class-validator';
 
-import { AuditService } from '../audit/audit.service';
-import { DatabaseService } from '../database/database.service';
+import type {
+  QueryResultRow,
+} from 'pg';
 
-interface AccessRow extends QueryResultRow {
+import {
+  AuditService,
+} from '../audit/audit.service';
+
+import {
+  DatabaseService,
+} from '../database/database.service';
+
+interface AccessRow
+  extends QueryResultRow {
   tenant_id: string;
   tenant_slug: string;
   tenant_name: string;
@@ -49,16 +60,19 @@ export class IamService {
     private readonly auditService: AuditService,
   ) {}
 
-  // ============================================================
-  // RESOLVE ACCESS
-  // ============================================================
-
   async resolveAccess(
     userId: string,
     tenantId: string,
   ) {
-    this.validateUuid(userId, 'userId');
-    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(
+      userId,
+      'userId',
+    );
+
+    this.validateUuid(
+      tenantId,
+      'tenantId',
+    );
 
     const result =
       await this.database.query<AccessRow>(
@@ -80,6 +94,7 @@ export class IamService {
           tm.status AS membership_status,
 
           ur.factory_id,
+
           f.code AS factory_code,
           f.name AS factory_name,
 
@@ -127,72 +142,128 @@ export class IamService {
           r.code NULLS LAST,
           p.code NULLS LAST
         `,
-        [userId, tenantId],
+        [
+          userId,
+          tenantId,
+        ],
+        {
+          tenantId,
+          userId,
+        },
       );
 
-    if (result.rows.length === 0) {
+    if (
+      result.rows.length ===
+      0
+    ) {
       throw new NotFoundException(
         'Active user membership not found for this tenant',
       );
     }
 
-    const rows = result.rows;
-    const first = rows[0];
+    const rows =
+      result.rows;
 
-    const factories = this.uniqueBy(
-      rows
-        .filter((row) => row.factory_id)
-        .map((row) => ({
-          id: row.factory_id,
-          code: row.factory_code,
-          name: row.factory_name,
-        })),
-      (item) => item.id as string,
-    );
+    const first =
+      rows[0];
 
-    const roles = this.uniqueBy(
-      rows
-        .filter((row) => row.role_id)
-        .map((row) => ({
-          id: row.role_id,
-          code: row.role_code,
-          name: row.role_name,
-          isSystem: row.role_is_system,
-        })),
-      (item) => item.id as string,
-    );
+    const factories =
+      this.uniqueBy(
+        rows
+          .filter(
+            (row) =>
+              row.factory_id,
+          )
+          .map(
+            (row) => ({
+              id:
+                row.factory_id,
+              code:
+                row.factory_code,
+              name:
+                row.factory_name,
+            }),
+          ),
+        (item) =>
+          item.id as string,
+      );
 
-    const permissions = this.uniqueBy(
-      rows
-        .filter((row) => row.permission_id)
-        .map((row) => ({
-          id: row.permission_id,
-          code: row.permission_code,
-          description: row.permission_description,
-        })),
-      (item) => item.id as string,
-    );
+    const roles =
+      this.uniqueBy(
+        rows
+          .filter(
+            (row) =>
+              row.role_id,
+          )
+          .map(
+            (row) => ({
+              id:
+                row.role_id,
+              code:
+                row.role_code,
+              name:
+                row.role_name,
+              isSystem:
+                row.role_is_system,
+            }),
+          ),
+        (item) =>
+          item.id as string,
+      );
+
+    const permissions =
+      this.uniqueBy(
+        rows
+          .filter(
+            (row) =>
+              row.permission_id,
+          )
+          .map(
+            (row) => ({
+              id:
+                row.permission_id,
+              code:
+                row.permission_code,
+              description:
+                row.permission_description,
+            }),
+          ),
+        (item) =>
+          item.id as string,
+      );
 
     return {
       user: {
-        id: first.user_id,
-        email: first.user_email,
-        displayName: first.display_name,
-        status: first.user_status,
+        id:
+          first.user_id,
+        email:
+          first.user_email,
+        displayName:
+          first.display_name,
+        status:
+          first.user_status,
       },
 
       tenant: {
-        id: first.tenant_id,
-        slug: first.tenant_slug,
-        name: first.tenant_name,
-        status: first.tenant_status,
-        timezone: first.tenant_timezone,
-        defaultLocale: first.tenant_locale,
+        id:
+          first.tenant_id,
+        slug:
+          first.tenant_slug,
+        name:
+          first.tenant_name,
+        status:
+          first.tenant_status,
+        timezone:
+          first.tenant_timezone,
+        defaultLocale:
+          first.tenant_locale,
       },
 
       membership: {
-        id: first.membership_id,
-        status: first.membership_status,
+        id:
+          first.membership_id,
+        status:
+          first.membership_status,
       },
 
       factories,
@@ -201,27 +272,34 @@ export class IamService {
     };
   }
 
-  // ============================================================
-  // AUTHORIZE
-  // ============================================================
-
   async authorize(
     userId: string,
     tenantId: string,
     permissionCode: string,
     factoryId: string | null = null,
   ): Promise<void> {
-    this.validateUuid(userId, 'userId');
-    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(
+      userId,
+      'userId',
+    );
+
+    this.validateUuid(
+      tenantId,
+      'tenantId',
+    );
 
     if (factoryId) {
-      this.validateUuid(factoryId, 'factoryId');
+      this.validateUuid(
+        factoryId,
+        'factoryId',
+      );
     }
 
     const result =
       await this.database.query(
         `
         SELECT 1
+
         FROM users u
 
         INNER JOIN tenant_memberships tm
@@ -274,9 +352,16 @@ export class IamService {
           permissionCode,
           factoryId,
         ],
+        {
+          tenantId,
+          userId,
+        },
       );
 
-    if (result.rows.length === 0) {
+    if (
+      result.rows.length ===
+      0
+    ) {
       throw new ForbiddenException(
         factoryId
           ? `Missing permission or factory scope: ${permissionCode}`
@@ -284,10 +369,6 @@ export class IamService {
       );
     }
   }
-
-  // ============================================================
-  // LIST USERS
-  // ============================================================
 
   async listUsers(
     userId: string,
@@ -302,17 +383,22 @@ export class IamService {
     );
 
     const numericLimit =
-      Number(requestedLimit);
+      Number(
+        requestedLimit,
+      );
 
-    const limit = Math.min(
-      Math.max(
-        Number.isFinite(numericLimit)
-          ? numericLimit
-          : 50,
-        1,
-      ),
-      100,
-    );
+    const limit =
+      Math.min(
+        Math.max(
+          Number.isFinite(
+            numericLimit,
+          )
+            ? numericLimit
+            : 50,
+          1,
+        ),
+        100,
+      );
 
     const result =
       await this.database.query(
@@ -324,6 +410,7 @@ export class IamService {
           u.status,
           u.created_at,
           u.updated_at
+
         FROM users u
 
         INNER JOIN tenant_memberships tm
@@ -332,7 +419,8 @@ export class IamService {
         WHERE tm.tenant_id = $1
           AND tm.status = 'ACTIVE'
 
-        ORDER BY u.created_at ASC
+        ORDER BY
+          u.created_at ASC
 
         LIMIT $2
         `,
@@ -340,18 +428,22 @@ export class IamService {
           tenantId,
           limit,
         ],
+        {
+          tenantId,
+          userId,
+        },
       );
 
     return {
-      items: result.rows,
+      items:
+        result.rows,
+
       limit,
-      count: result.rows.length,
+
+      count:
+        result.rows.length,
     };
   }
-
-  // ============================================================
-  // LIST ROLES
-  // ============================================================
 
   async listRoles(
     userId: string,
@@ -381,20 +473,24 @@ export class IamService {
 
         WHERE tenant_id = $1
 
-        ORDER BY code
+        ORDER BY
+          code
         `,
         [tenantId],
+        {
+          tenantId,
+          userId,
+        },
       );
 
     return {
-      items: result.rows,
-      count: result.rows.length,
+      items:
+        result.rows,
+
+      count:
+        result.rows.length,
     };
   }
-
-  // ============================================================
-  // LIST PERMISSIONS
-  // ============================================================
 
   async listPermissions(
     userId: string,
@@ -418,19 +514,19 @@ export class IamService {
 
         FROM permissions
 
-        ORDER BY code
+        ORDER BY
+          code
         `,
       );
 
     return {
-      items: result.rows,
-      count: result.rows.length,
+      items:
+        result.rows,
+
+      count:
+        result.rows.length,
     };
   }
-
-  // ============================================================
-  // LIST FACTORIES
-  // ============================================================
 
   async listFactories(
     userId: string,
@@ -460,20 +556,24 @@ export class IamService {
 
         WHERE tenant_id = $1
 
-        ORDER BY code
+        ORDER BY
+          code
         `,
         [tenantId],
+        {
+          tenantId,
+          userId,
+        },
       );
 
     return {
-      items: result.rows,
-      count: result.rows.length,
+      items:
+        result.rows,
+
+      count:
+        result.rows.length,
     };
   }
-
-  // ============================================================
-  // LINK EXTERNAL AUTH IDENTITY
-  // ============================================================
 
   async linkAuthIdentity(
     actorUserId: string,
@@ -482,12 +582,6 @@ export class IamService {
     issuer: string,
     subject: string,
   ) {
-    /*
-     * ----------------------------------------------------------
-     * Validate UUID inputs
-     * ----------------------------------------------------------
-     */
-
     this.validateUuid(
       actorUserId,
       'actorUserId',
@@ -502,12 +596,6 @@ export class IamService {
       targetUserId,
       'targetUserId',
     );
-
-    /*
-     * ----------------------------------------------------------
-     * Normalize and validate external identity
-     * ----------------------------------------------------------
-     */
 
     const normalizedIssuer =
       issuer?.trim();
@@ -527,23 +615,23 @@ export class IamService {
       );
     }
 
-    if (normalizedIssuer.length > 500) {
+    if (
+      normalizedIssuer.length >
+      500
+    ) {
       throw new BadRequestException(
         'issuer must not exceed 500 characters',
       );
     }
 
-    if (normalizedSubject.length > 255) {
+    if (
+      normalizedSubject.length >
+      255
+    ) {
       throw new BadRequestException(
         'subject must not exceed 255 characters',
       );
     }
-
-    /*
-     * ----------------------------------------------------------
-     * Actor permission
-     * ----------------------------------------------------------
-     */
 
     await this.authorize(
       actorUserId,
@@ -551,12 +639,6 @@ export class IamService {
       'iam.users.identities.write',
       null,
     );
-
-    /*
-     * ----------------------------------------------------------
-     * Verify target user belongs to this tenant
-     * ----------------------------------------------------------
-     */
 
     const targetResult =
       await this.database.query<{
@@ -588,6 +670,11 @@ export class IamService {
           targetUserId,
           tenantId,
         ],
+        {
+          tenantId,
+          userId:
+            actorUserId,
+        },
       );
 
     const target =
@@ -598,12 +685,6 @@ export class IamService {
         'Target user is not an active member of this tenant',
       );
     }
-
-    /*
-     * ----------------------------------------------------------
-     * Check whether issuer + subject is already linked
-     * ----------------------------------------------------------
-     */
 
     const existingIdentity =
       await this.database.query<{
@@ -626,6 +707,11 @@ export class IamService {
           normalizedIssuer,
           normalizedSubject,
         ],
+        {
+          tenantId,
+          userId:
+            actorUserId,
+        },
       );
 
     const existing =
@@ -633,7 +719,8 @@ export class IamService {
 
     if (existing) {
       if (
-        existing.user_id === targetUserId
+        existing.user_id ===
+        targetUserId
       ) {
         throw new ConflictException(
           'This external authentication identity is already linked to this user',
@@ -644,12 +731,6 @@ export class IamService {
         'This external authentication identity is already linked to another user',
       );
     }
-
-    /*
-     * ----------------------------------------------------------
-     * Insert identity
-     * ----------------------------------------------------------
-     */
 
     let inserted: {
       id: string;
@@ -677,6 +758,7 @@ export class IamService {
             subject,
             status
           )
+
           VALUES (
             $1,
             $2,
@@ -697,6 +779,11 @@ export class IamService {
             normalizedIssuer,
             normalizedSubject,
           ],
+          {
+            tenantId,
+            userId:
+              actorUserId,
+          },
         );
 
       const row =
@@ -708,18 +795,21 @@ export class IamService {
         );
       }
 
-      inserted = row;
-    } catch (error) {
-      /*
-       * PostgreSQL unique constraint:
-       *
-       * uq_auth_identity_issuer_subject
-       */
+      inserted =
+        row;
+    } catch (
+      error
+    ) {
       if (
         error &&
-        typeof error === 'object' &&
+        typeof error ===
+          'object' &&
         'code' in error &&
-        (error as { code?: string }).code ===
+        (
+          error as {
+            code?: string;
+          }
+        ).code ===
           '23505'
       ) {
         throw new ConflictException(
@@ -730,97 +820,113 @@ export class IamService {
       throw error;
     }
 
-    /*
-     * ----------------------------------------------------------
-     * Audit identity-link action
-     * ----------------------------------------------------------
-     */
-
     try {
       await this.auditService.record({
         tenantId,
 
-        factoryId: null,
+        factoryId:
+          null,
 
         actorUserId,
 
-        eventType: 'AUTH_IDENTITY',
+        eventType:
+          'AUTH_IDENTITY',
 
-        action: 'LINK',
+        action:
+          'LINK',
 
-        resourceType: 'USER_AUTH_IDENTITY',
+        resourceType:
+          'USER_AUTH_IDENTITY',
 
-        resourceId: inserted.id,
+        resourceId:
+          inserted.id,
 
-        correlationId: null,
+        correlationId:
+          null,
 
-        requestId: null,
+        requestId:
+          null,
 
-        dataClass: 'INTERNAL',
+        dataClass:
+          'INTERNAL',
 
         payload: {
-          targetUserId: inserted.user_id,
-          issuer: inserted.issuer,
-          subject: inserted.subject,
-          result: 'LINK',
+          targetUserId:
+            inserted.user_id,
+
+          issuer:
+            inserted.issuer,
+
+          subject:
+            inserted.subject,
+
+          result:
+            'LINK',
         },
       });
     } catch {
-      /*
-       * Identity linking succeeded.
-       *
-       * Audit failure must not convert a successful
-       * identity-link operation into an application failure.
-       */
+      // Business action already succeeded.
     }
 
-    /*
-     * ----------------------------------------------------------
-     * Response
-     * ----------------------------------------------------------
-     */
-
     return {
-      id: inserted.id,
-      user_id: inserted.user_id,
-      issuer: inserted.issuer,
-      subject: inserted.subject,
-      status: inserted.status,
-      created_at: inserted.created_at,
+      id:
+        inserted.id,
+
+      user_id:
+        inserted.user_id,
+
+      issuer:
+        inserted.issuer,
+
+      subject:
+        inserted.subject,
+
+      status:
+        inserted.status,
+
+      created_at:
+        inserted.created_at,
     };
   }
-
-  // ============================================================
-  // UUID VALIDATION
-  // ============================================================
 
   private validateUuid(
     value: string,
     field: string,
   ): void {
-    if (!isUUID(value)) {
+    if (
+      !isUUID(value)
+    ) {
       throw new BadRequestException(
         `${field} must be a valid UUID`,
       );
     }
   }
 
-  // ============================================================
-  // UNIQUE ARRAY HELPER
-  // ============================================================
-
   private uniqueBy<T>(
     items: T[],
-    keyFn: (item: T) => string,
+    keyFn: (
+      item: T,
+    ) => string,
   ): T[] {
     const map =
-      new Map<string, T>();
+      new Map<
+        string,
+        T
+      >();
 
-    for (const item of items) {
-      const key = keyFn(item);
+    for (
+      const item of items
+    ) {
+      const key =
+        keyFn(item);
 
-      if (!map.has(key)) {
-        map.set(key, item);
+      if (
+        !map.has(key)
+      ) {
+        map.set(
+          key,
+          item,
+        );
       }
     }
 

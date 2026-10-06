@@ -4,6 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 
+import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
+
 import { OrdersService } from './orders.service';
 
 describe(
@@ -12,7 +16,9 @@ describe(
     const TEST_USER_ID =
       '921382b8-e83f-43ab-a576-e3db6a06b70c';
 
-    let pool: Pool;
+    let pool!: Pool;
+
+    let appPool!: Pool;
 
     let database: DatabaseService;
     let auditService: AuditService;
@@ -29,13 +35,28 @@ describe(
       const databaseUrl =
         process.env.DATABASE_URL;
 
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
+
       if (!databaseUrl) {
         throw new Error(
           'DATABASE_URL is required.',
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -337,45 +358,9 @@ describe(
       // --------------------------------------------------------
 
       database =
-        {
-          transaction:
-            async <T>(
-              callback: (
-                client: import('pg').PoolClient,
-              ) => Promise<T>,
-            ): Promise<T> => {
-              const client =
-                await pool.connect();
-
-              try {
-                await client.query(
-                  'BEGIN',
-                );
-
-                const value =
-                  await callback(
-                    client,
-                  );
-
-                await client.query(
-                  'COMMIT',
-                );
-
-                return value;
-              } catch (error) {
-                await client.query(
-                  'ROLLBACK',
-                );
-
-                throw error;
-              } finally {
-                client.release();
-              }
-            },
-
-          query:
-            pool.query.bind(pool),
-        } as never;
+        createIntegrationDatabase(
+          appPool,
+        ) as never;
 
       // --------------------------------------------------------
       // Audit is irrelevant to pure read queries.
@@ -397,39 +382,41 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        if (orderAId) {
+          await pool.query(
+            `
+            DELETE FROM orders
+
+            WHERE
+              id = $1
+            `,
+            [
+              orderAId,
+            ],
+          );
+        }
+
+        if (orderBId) {
+          await pool.query(
+            `
+            DELETE FROM orders
+
+            WHERE
+              id = $1
+            `,
+            [
+              orderBId,
+            ],
+          );
+        }
+
+        await pool.end();
       }
 
-      if (orderAId) {
-        await pool.query(
-          `
-          DELETE FROM orders
-
-          WHERE
-            id = $1
-          `,
-          [
-            orderAId,
-          ],
-        );
+      if (appPool) {
+        await appPool.end();
       }
-
-      if (orderBId) {
-        await pool.query(
-          `
-          DELETE FROM orders
-
-          WHERE
-            id = $1
-          `,
-          [
-            orderBId,
-          ],
-        );
-      }
-
-      await pool.end();
     });
 
     it(

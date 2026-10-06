@@ -2,26 +2,38 @@ import {
   BadRequestException,
   Injectable,
 } from '@nestjs/common';
-import { isUUID } from 'class-validator';
+
+import {
+  isUUID,
+} from 'class-validator';
 
 import { DatabaseService } from '../database/database.service';
 
 export interface AuditEventInput {
   tenantId: string;
+
   factoryId?: string | null;
+
   actorUserId?: string | null;
 
   eventType: string;
+
   action: string;
 
   resourceType?: string | null;
+
   resourceId?: string | null;
 
   correlationId?: string | null;
+
   requestId?: string | null;
 
   dataClass?: string;
-  payload?: Record<string, unknown>;
+
+  payload?: Record<
+    string,
+    unknown
+  >;
 }
 
 @Injectable()
@@ -58,20 +70,26 @@ export class AuditService {
       'requestId',
     );
 
-    if (!input.eventType.trim()) {
+    if (
+      !input.eventType.trim()
+    ) {
       throw new BadRequestException(
         'eventType is required',
       );
     }
 
-    if (!input.action.trim()) {
+    if (
+      !input.action.trim()
+    ) {
       throw new BadRequestException(
         'action is required',
       );
     }
 
     const result =
-      await this.database.query<{ id: string }>(
+      await this.database.query<{
+        id: string;
+      }>(
         `
         INSERT INTO audit_events (
           tenant_id,
@@ -86,6 +104,7 @@ export class AuditService {
           data_class,
           payload
         )
+
         VALUES (
           $1,
           $2,
@@ -99,31 +118,61 @@ export class AuditService {
           $10,
           $11::jsonb
         )
-        RETURNING id
+
+        RETURNING
+          id
         `,
         [
           input.tenantId,
-          input.factoryId ?? null,
-          input.actorUserId ?? null,
+          input.factoryId ??
+            null,
+          input.actorUserId ??
+            null,
           input.eventType,
           input.action,
-          input.resourceType ?? null,
-          input.resourceId ?? null,
-          input.correlationId ?? null,
-          input.requestId ?? null,
-          input.dataClass ?? 'INTERNAL',
-          JSON.stringify(input.payload ?? {}),
+          input.resourceType ??
+            null,
+          input.resourceId ??
+            null,
+          input.correlationId ??
+            null,
+          input.requestId ??
+            null,
+          input.dataClass ??
+            'INTERNAL',
+          JSON.stringify(
+            input.payload ??
+              {},
+          ),
         ],
+        {
+          tenantId:
+            input.tenantId,
+
+          userId:
+            input.actorUserId,
+        },
       );
 
-    return result.rows[0].id;
+    const row =
+      result.rows[0];
+
+    if (!row) {
+      throw new Error(
+        'AUDIT_EVENT_INSERT_FAILED',
+      );
+    }
+
+    return row.id;
   }
 
   private validateUuid(
     value: string,
     field: string,
   ): void {
-    if (!isUUID(value)) {
+    if (
+      !isUUID(value)
+    ) {
       throw new BadRequestException(
         `${field} must be a valid UUID`,
       );
@@ -131,7 +180,10 @@ export class AuditService {
   }
 
   private validateOptionalUuid(
-    value: string | null | undefined,
+    value:
+      | string
+      | null
+      | undefined,
     field: string,
   ): void {
     if (

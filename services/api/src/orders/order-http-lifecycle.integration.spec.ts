@@ -235,21 +235,20 @@ describe(
         // DATABASE
         // ========================================================
 
-        const databaseUrl =
-          process.env.DATABASE_URL;
+    const testAdminDatabaseUrl =
+  process.env.TEST_ADMIN_DATABASE_URL;
 
-        if (!databaseUrl) {
-          throw new Error(
-            'DATABASE_URL is required.',
-          );
-        }
+if (!testAdminDatabaseUrl) {
+  throw new Error(
+    'TEST_ADMIN_DATABASE_URL is required.',
+  );
+}
 
-        pool =
-          new Pool({
-            connectionString:
-              databaseUrl,
-          });
-
+pool =
+  new Pool({
+    connectionString:
+      testAdminDatabaseUrl,
+  });
         // ========================================================
         // REAL NEST APPLICATION
         // ========================================================

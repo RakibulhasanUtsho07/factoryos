@@ -2,10 +2,26 @@ import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 
 import { InboxService } from './inbox.service';
-import { OrderCreatedConsumer } from './order-created.consumer';
-import { OutboxConsumerRegistry } from './outbox.consumer.registry';
-import { OutboxDispatcherService } from './outbox.dispatcher.service';
-import { OutboxPublisher } from './outbox.publisher';
+
+import {
+  OrderCreatedConsumer,
+} from './order-created.consumer';
+
+import {
+  OutboxConsumerRegistry,
+} from './outbox.consumer.registry';
+
+import {
+  OutboxDispatcherService,
+} from './outbox.dispatcher.service';
+
+import {
+  OutboxPublisher,
+} from './outbox.publisher';
+
+import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
 
 describe(
   'Outbox dispatcher stale lease recovery',
@@ -13,46 +29,20 @@ describe(
     const runId =
       randomUUID();
 
-    let pool: Pool;
+    let pool!: Pool;
+
+    let appPool!: Pool;
+
     let eventId: string;
     let orderId: string;
     let tenantId: string;
 
-    async function transaction<T>(
-      callback: (
-        client: import('pg').PoolClient,
-      ) => Promise<T>,
-    ): Promise<T> {
-      const client =
-        await pool.connect();
-
-      try {
-        await client.query(
-          'BEGIN',
-        );
-
-        const result =
-          await callback(client);
-
-        await client.query(
-          'COMMIT',
-        );
-
-        return result;
-      } catch (error) {
-        await client.query(
-          'ROLLBACK',
-        );
-
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-
     beforeAll(async () => {
       const databaseUrl =
         process.env.DATABASE_URL;
+
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
 
       if (!databaseUrl) {
         throw new Error(
@@ -60,7 +50,19 @@ describe(
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -93,12 +95,20 @@ describe(
         );
       }
 
+      const selectedOrder =
+        orderResult.rows[0];
+
+      if (!selectedOrder) {
+        throw new Error(
+          'Stale lease test order row is missing.',
+        );
+      }
+
       orderId =
-        orderResult.rows[0].id;
+        selectedOrder.id;
 
       tenantId =
-        orderResult.rows[0]
-          .tenant_id;
+        selectedOrder.tenant_id;
 
       eventId =
         randomUUID();
@@ -175,45 +185,52 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        await pool.query(
+          `
+          DELETE FROM inbox_events
+          WHERE event_id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.query(
+          `
+          DELETE FROM order_event_projections
+          WHERE event_id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.query(
+          `
+          DELETE FROM outbox_events
+          WHERE id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.end();
       }
 
-      await pool.query(
-        `
-        DELETE FROM inbox_events
-        WHERE event_id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.query(
-        `
-        DELETE FROM order_event_projections
-        WHERE event_id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.query(
-        `
-        DELETE FROM outbox_events
-        WHERE id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.end();
+      if (appPool) {
+        await appPool.end();
+      }
     });
 
     it(
       'should reclaim a stale PROCESSING event based on locked_at',
       async () => {
-        const database = {
-          transaction,
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const inboxService =
           new InboxService(
@@ -263,7 +280,9 @@ describe(
 
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -314,7 +333,9 @@ describe(
               AND consumer_name =
                 'order-created-projection-v1'
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -332,7 +353,9 @@ describe(
 
             WHERE event_id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(

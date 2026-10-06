@@ -1,6 +1,14 @@
-import { Injectable } from '@nestjs/common';
-import { PoolClient } from 'pg';
-import { DatabaseService } from '../database/database.service';
+import {
+  Injectable,
+} from '@nestjs/common';
+
+import {
+  PoolClient,
+} from 'pg';
+
+import {
+  DatabaseService,
+} from '../database/database.service';
 
 export interface InboxExecutionResult<T> {
   duplicate: boolean;
@@ -14,53 +22,104 @@ interface InboxInsertRow {
 @Injectable()
 export class InboxService {
   constructor(
-    private readonly database: DatabaseService,
+    private readonly database:
+      DatabaseService,
   ) {}
 
   async executeOnce<T>(
     tenantId: string,
     consumerName: string,
     eventId: string,
-    handler: (client: PoolClient) => Promise<T>,
-  ): Promise<InboxExecutionResult<T>> {
-    return this.database.transaction(async (client) => {
-      const inserted = await client.query<InboxInsertRow>(
-        `
-          INSERT INTO inbox_events (
-            tenant_id,
-            consumer_name,
-            event_id
-          )
-          VALUES ($1, $2, $3)
-          ON CONFLICT (consumer_name, event_id)
-          DO NOTHING
-          RETURNING id
-        `,
-        [tenantId, consumerName, eventId],
-      );
+    handler: (
+      client: PoolClient,
+    ) => Promise<T>,
+  ): Promise<
+    InboxExecutionResult<T>
+  > {
+    return this.database.transaction(
+      async (
+        client,
+      ) => {
+        const inserted =
+          await client.query<InboxInsertRow>(
+            `
+            INSERT INTO inbox_events (
+              tenant_id,
+              consumer_name,
+              event_id
+            )
 
-      if (inserted.rowCount === 0) {
-        return {
-          duplicate: true,
-          result: null,
-        };
-      }
+            VALUES (
+              $1,
+              $2,
+              $3
+            )
 
-      const result = await handler(client);
+            ON CONFLICT (
+              consumer_name,
+              event_id
+            )
 
-      await client.query(
-        `
+            DO NOTHING
+
+            RETURNING
+              id
+            `,
+            [
+              tenantId,
+              consumerName,
+              eventId,
+            ],
+          );
+
+        if (
+          inserted.rowCount ===
+          0
+        ) {
+          return {
+            duplicate:
+              true,
+
+            result:
+              null,
+          };
+        }
+
+        const result =
+          await handler(
+            client,
+          );
+
+        await client.query(
+          `
           UPDATE inbox_events
-          SET processed_at = now()
-          WHERE id = $1
-        `,
-        [inserted.rows[0].id],
-      );
 
-      return {
-        duplicate: false,
-        result,
-      };
-    });
+          SET
+            processed_at =
+              now()
+
+          WHERE
+            id = $1
+
+            AND tenant_id =
+              $2
+          `,
+          [
+            inserted.rows[0].id,
+            tenantId,
+          ],
+        );
+
+        return {
+          duplicate:
+            false,
+
+          result,
+        };
+      },
+      {
+        tenantId,
+      },
+    );
   }
 }

@@ -6,29 +6,48 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { randomUUID } from 'node:crypto';
+import {
+  randomUUID,
+} from 'node:crypto';
 
-import { PoolClient } from 'pg';
-import { isUUID } from 'class-validator';
+import {
+  PoolClient,
+} from 'pg';
 
-import { AuditService } from '../audit/audit.service';
-import { DatabaseService } from '../database/database.service';
+import {
+  isUUID,
+} from 'class-validator';
 
-import { CreateOrderDto } from './dto/create-order.dto';
-import { ListOrdersDto } from './dto/list-orders.dto';
-import { OrderIdempotencyService } from './order-idempotency.service';
+import {
+  AuditService,
+} from '../audit/audit.service';
+
+import {
+  DatabaseService,
+} from '../database/database.service';
+
+import {
+  CreateOrderDto,
+} from './dto/create-order.dto';
+
+import {
+  ListOrdersDto,
+} from './dto/list-orders.dto';
+
+import {
+  OrderIdempotencyService,
+} from './order-idempotency.service';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly database: DatabaseService,
-    private readonly auditService: AuditService,
-    private readonly orderIdempotencyService: OrderIdempotencyService,
-  ) {}
 
-  // ============================================================
-  // CREATE ORDER
-  // ============================================================
+    private readonly auditService: AuditService,
+
+    private readonly orderIdempotencyService:
+      OrderIdempotencyService,
+  ) {}
 
   async createOrder(
     userId: string,
@@ -44,17 +63,18 @@ export class OrdersService {
       dto,
     );
 
-    /*
-     * No Idempotency-Key:
-     *
-     * Preserve the existing behavior.
-     */
     if (
       idempotencyKey === null
     ) {
       const order =
         await this.database.transaction(
-          async (client) => {
+          {
+            tenantId,
+            userId,
+          },
+          async (
+            client,
+          ) => {
             return this.createOrderInTransaction(
               client,
               userId,
@@ -87,7 +107,8 @@ export class OrdersService {
     }
 
     if (
-      normalizedKey.length > 255
+      normalizedKey.length >
+      255
     ) {
       throw new BadRequestException(
         'Idempotency-Key must be at most 255 characters',
@@ -96,14 +117,18 @@ export class OrdersService {
 
     const requestHash =
       this.orderIdempotencyService
-        .createRequestHash(dto);
+        .createRequestHash(
+          dto,
+        );
 
     const execution =
       await this.orderIdempotencyService.execute(
         tenantId,
         normalizedKey,
         requestHash,
-        async (client) => {
+        async (
+          client,
+        ) => {
           return this.createOrderInTransaction(
             client,
             userId,
@@ -115,12 +140,9 @@ export class OrdersService {
         },
       );
 
-    /*
-     * Audit only the original business write.
-     *
-     * A replay is not a new order creation.
-     */
-    if (!execution.replayed) {
+    if (
+      !execution.replayed
+    ) {
       await this.recordOrderAudit(
         tenantId,
         userId,
@@ -132,10 +154,6 @@ export class OrdersService {
 
     return execution.result;
   }
-
-  // ============================================================
-  // REQUEST VALIDATION
-  // ============================================================
 
   private validateCreateOrderRequest(
     userId: string,
@@ -214,10 +232,6 @@ export class OrdersService {
     }
   }
 
-  // ============================================================
-  // ORDER TRANSACTION
-  // ============================================================
-
   private async createOrderInTransaction(
     client: PoolClient,
     userId: string,
@@ -226,10 +240,6 @@ export class OrdersService {
     requestId: string | null,
     traceId: string | null,
   ) {
-    // ----------------------------------------------------------
-    // Verify factory belongs to tenant
-    // ----------------------------------------------------------
-
     const factoryResult =
       await client.query<{
         id: string;
@@ -266,10 +276,6 @@ export class OrdersService {
       );
     }
 
-    // ----------------------------------------------------------
-    // Normalize order values
-    // ----------------------------------------------------------
-
     const currency =
       (
         dto.currency ||
@@ -280,10 +286,6 @@ export class OrdersService {
 
     const orderNumber =
       dto.order_number.trim();
-
-    // ----------------------------------------------------------
-    // Create order
-    // ----------------------------------------------------------
 
     let orderRow: {
       id: string;
@@ -386,16 +388,15 @@ export class OrdersService {
         );
       }
 
-      orderRow = row;
-    } catch (error) {
-      /*
-       * PostgreSQL unique constraint:
-       *
-       * uq_orders_tenant_number
-       */
+      orderRow =
+        row;
+    } catch (
+      error
+    ) {
       if (
         error &&
-        typeof error === 'object' &&
+        typeof error ===
+          'object' &&
         'code' in error &&
         (
           error as {
@@ -410,10 +411,6 @@ export class OrdersService {
 
       throw error;
     }
-
-    // ----------------------------------------------------------
-    // Create lines
-    // ----------------------------------------------------------
 
     const createdLines:
       Array<{
@@ -506,10 +503,6 @@ export class OrdersService {
       );
     }
 
-    // ----------------------------------------------------------
-    // Transactional outbox
-    // ----------------------------------------------------------
-
     const eventPayload = {
       order: {
         id:
@@ -530,7 +523,9 @@ export class OrdersService {
 
       lines:
         createdLines.map(
-          (line) => ({
+          (
+            line,
+          ) => ({
             id:
               line.id,
 
@@ -548,33 +543,12 @@ export class OrdersService {
           }),
         ),
 
-      /*
-       * Backward-compatible payload actor.
-       *
-       * The canonical envelope actor is persisted separately
-       * below.
-       */
       actor: {
         user_id:
           userId,
       },
     };
 
-    /*
-     * ----------------------------------------------------------
-     * Canonical event envelope metadata
-     * ----------------------------------------------------------
-     *
-     * Prefer the request trace as the correlation identifier.
-     *
-     * Fallback to requestId for service calls where traceId is
-     * unavailable.
-     *
-     * Final fallback generates a UUID for non-HTTP callers.
-     *
-     * causation_id remains NULL because this command is not caused
-     * by another persisted domain event yet.
-     */
     const correlationId =
       traceId ??
       requestId ??
@@ -656,10 +630,6 @@ export class OrdersService {
       ],
     );
 
-    // ----------------------------------------------------------
-    // Return created aggregate
-    // ----------------------------------------------------------
-
     return {
       id:
         orderRow.id,
@@ -692,10 +662,6 @@ export class OrdersService {
         createdLines,
     };
   }
-
-  // ============================================================
-  // AUDIT
-  // ============================================================
 
   private async recordOrderAudit(
     tenantId: string,
@@ -755,18 +721,9 @@ export class OrdersService {
         },
       });
     } catch {
-      /*
-       * Order creation has already committed.
-       *
-       * Audit infrastructure failure must not turn a successful
-       * business write into an API failure.
-       */
+      // Audit failure must not fail committed business work.
     }
   }
-
-  // ============================================================
-  // ORDER STATUS TRANSITION
-  // ============================================================
 
   async transitionOrderStatus(
     userId: string,
@@ -816,34 +773,41 @@ export class OrdersService {
 
     const result =
       await this.database.transaction(
-        async (client) => {
-          // ----------------------------------------------------
-          // Lock authoritative order row.
-          //
-          // This serializes concurrent lifecycle transitions.
-          // ----------------------------------------------------
-
+        {
+          tenantId,
+          userId,
+        },
+        async (
+          client,
+        ) => {
           const orderResult =
             await client.query<{
               id: string;
               tenant_id: string;
               factory_id: string;
               order_number: string;
+
               status:
                 | 'DRAFT'
                 | 'CONFIRMED'
                 | 'IN_PROGRESS'
                 | 'COMPLETED'
                 | 'CANCELLED';
+
               version: string;
             }>(
               `
               SELECT
                 id::text AS id,
+
                 tenant_id::text AS tenant_id,
+
                 factory_id::text AS factory_id,
+
                 order_number,
+
                 status,
+
                 version::text AS version
 
               FROM orders
@@ -874,25 +838,16 @@ export class OrdersService {
               order.version,
             );
 
-          // ----------------------------------------------------
-          // Optimistic concurrency check.
-          //
-          // If the caller supplied an old version, reject the
-          // write before changing anything.
-          // ----------------------------------------------------
-
           if (
-            expectedVersion !== undefined &&
-            expectedVersion !== currentVersion
+            expectedVersion !==
+              undefined &&
+            expectedVersion !==
+              currentVersion
           ) {
             throw new ConflictException(
               `Order version conflict. Expected version ${expectedVersion}, current version is ${currentVersion}`,
             );
           }
-
-          // ----------------------------------------------------
-          // No-op transitions are rejected explicitly.
-          // ----------------------------------------------------
 
           if (
             order.status ===
@@ -902,10 +857,6 @@ export class OrdersService {
               `Order is already in ${targetStatus} status`,
             );
           }
-
-          // ----------------------------------------------------
-          // Strict lifecycle transition matrix.
-          // ----------------------------------------------------
 
           const allowedTransitions:
             Record<
@@ -947,17 +898,6 @@ export class OrdersService {
             );
           }
 
-          // ----------------------------------------------------
-          // Status transition.
-          //
-          // Every successful material state change:
-          // - updates updated_at
-          // - increments version
-          //
-          // The version predicate makes the write itself
-          // concurrency-safe as well.
-          // ----------------------------------------------------
-
           const updatedResult =
             await client.query<{
               id: string;
@@ -979,27 +919,49 @@ export class OrdersService {
 
               SET
                 status = $1,
-                updated_at = clock_timestamp(),
-                version = version + 1
+
+                updated_at =
+                  clock_timestamp(),
+
+                version =
+                  version + 1
 
               WHERE
                 id = $2
+
                 AND tenant_id = $3
+
                 AND version = $4
 
               RETURNING
                 id::text AS id,
-                tenant_id::text AS tenant_id,
-                factory_id::text AS factory_id,
+
+                tenant_id::text
+                  AS tenant_id,
+
+                factory_id::text
+                  AS factory_id,
+
                 order_number,
+
                 status,
-                order_date::text AS order_date,
+
+                order_date::text
+                  AS order_date,
+
                 requested_delivery_date::text
                   AS requested_delivery_date,
+
                 currency,
-                created_at::text AS created_at,
-                updated_at::text AS updated_at,
-                version::text AS version
+
+                created_at::text
+                  AS created_at,
+
+                updated_at::text
+                  AS updated_at,
+
+                version::text
+                  AS version
               `,
               [
                 targetStatus,
@@ -1017,12 +979,6 @@ export class OrdersService {
               'Order was modified before the status transition could be committed',
             );
           }
-
-          // ----------------------------------------------------
-          // Transactional outbox.
-          //
-          // Capture the exact post-transition snapshot.
-          // ----------------------------------------------------
 
           const eventType =
             `ORDER.${targetStatus}`;
@@ -1056,29 +1012,12 @@ export class OrdersService {
                 updatedOrder.updated_at,
             },
 
-            /*
-             * Backward-compatible payload actor.
-             *
-             * The canonical envelope actor is persisted separately
-             * below.
-             */
             actor: {
               user_id:
                 userId,
             },
           };
 
-          /*
-           * ------------------------------------------------------
-           * Canonical event envelope metadata.
-           * ------------------------------------------------------
-           *
-           * Prefer traceId, then requestId, then generate a UUID.
-           *
-           * causation_id remains NULL because this transition is
-           * directly caused by the current command/request, not by
-           * another persisted domain event.
-           */
           const correlationId =
             traceId ??
             requestId ??
@@ -1162,10 +1101,6 @@ export class OrdersService {
             ],
           );
 
-          // ----------------------------------------------------
-          // Transaction result.
-          // ----------------------------------------------------
-
           return {
             id:
               updatedOrder.id,
@@ -1207,10 +1142,6 @@ export class OrdersService {
           };
         },
       );
-
-    // ----------------------------------------------------------
-    // Audit original material lifecycle transition.
-    // ----------------------------------------------------------
 
     try {
       await this.auditService.record({
@@ -1263,19 +1194,11 @@ export class OrdersService {
         },
       });
     } catch {
-      /*
-       * The business transaction is already committed.
-       *
-       * Audit failure must not roll back the order state.
-       */
+      // Business transaction already committed.
     }
 
     return result;
   }
-
-  // ============================================================
-  // GET ORDER BY ID
-  // ============================================================
 
   async getOrderById(
     tenantId: string,
@@ -1306,16 +1229,29 @@ export class OrdersService {
         tenant_id: string;
         factory_id: string;
         order_number: string;
-        customer_name: string | null;
-        customer_reference: string | null;
+
+        customer_name:
+          string | null;
+
+        customer_reference:
+          string | null;
+
         status: string;
+
         order_date: string;
+
         requested_delivery_date:
           | string
           | null;
+
         currency: string;
-        notes: string | null;
-        created_by_user_id: string;
+
+        notes:
+          string | null;
+
+        created_by_user_id:
+          string;
+
         created_at: string;
         updated_at: string;
         version: string;
@@ -1323,21 +1259,35 @@ export class OrdersService {
         `
         SELECT
           o.id::text AS id,
+
           o.tenant_id::text AS tenant_id,
+
           o.factory_id::text AS factory_id,
+
           o.order_number,
+
           o.customer_name,
+
           o.customer_reference,
+
           o.status,
+
           o.order_date::text AS order_date,
+
           o.requested_delivery_date::text
             AS requested_delivery_date,
+
           o.currency,
+
           o.notes,
+
           o.created_by_user_id::text
             AS created_by_user_id,
+
           o.created_at::text AS created_at,
+
           o.updated_at::text AS updated_at,
+
           o.version::text AS version
 
         FROM orders o
@@ -1354,6 +1304,9 @@ export class OrdersService {
           tenantId,
           factoryId,
         ],
+        {
+          tenantId,
+        },
       );
 
     const order =
@@ -1373,23 +1326,39 @@ export class OrdersService {
         product_name: string;
         quantity: string;
         unit: string;
-        unit_price: string | null;
+        unit_price:
+          | string
+          | null;
+
         requested_delivery_date:
           | string
           | null;
-        notes: string | null;
+
+        notes:
+          | string
+          | null;
       }>(
         `
         SELECT
           ol.id::text AS id,
+
           ol.line_number,
+
           ol.product_code,
+
           ol.product_name,
-          ol.quantity::text AS quantity,
+
+          ol.quantity::text
+            AS quantity,
+
           ol.unit,
-          ol.unit_price::text AS unit_price,
+
+          ol.unit_price::text
+            AS unit_price,
+
           ol.requested_delivery_date::text
             AS requested_delivery_date,
+
           ol.notes
 
         FROM order_lines ol
@@ -1405,6 +1374,9 @@ export class OrdersService {
           orderId,
           tenantId,
         ],
+        {
+          tenantId,
+        },
       );
 
     return {
@@ -1458,10 +1430,6 @@ export class OrdersService {
     };
   }
 
-  // ============================================================
-  // LIST ORDERS
-  // ============================================================
-
   async listOrders(
     tenantId: string,
     factoryId: string,
@@ -1480,16 +1448,20 @@ export class OrdersService {
     }
 
     const page =
-      dto.page ?? 1;
+      dto.page ??
+      1;
 
     const limit =
-      dto.limit ?? 20;
+      dto.limit ??
+      20;
 
     const offset =
-      (page - 1) * limit;
+      (page - 1) *
+      limit;
 
     const status =
-      dto.status ?? null;
+      dto.status ??
+      null;
 
     const normalizedSearch =
       dto.search?.trim() ||
@@ -1506,31 +1478,55 @@ export class OrdersService {
         tenant_id: string;
         factory_id: string;
         order_number: string;
-        customer_name: string | null;
-        customer_reference: string | null;
+
+        customer_name:
+          string | null;
+
+        customer_reference:
+          string | null;
+
         status: string;
+
         order_date: string;
+
         requested_delivery_date:
           | string
           | null;
+
         currency: string;
+
         created_at: string;
+
         total_count: string;
       }>(
         `
         SELECT
           o.id::text AS id,
-          o.tenant_id::text AS tenant_id,
-          o.factory_id::text AS factory_id,
+
+          o.tenant_id::text
+            AS tenant_id,
+
+          o.factory_id::text
+            AS factory_id,
+
           o.order_number,
+
           o.customer_name,
+
           o.customer_reference,
+
           o.status,
-          o.order_date::text AS order_date,
+
+          o.order_date::text
+            AS order_date,
+
           o.requested_delivery_date::text
             AS requested_delivery_date,
+
           o.currency,
-          o.created_at::text AS created_at,
+
+          o.created_at::text
+            AS created_at,
 
           COUNT(*) OVER()::text
             AS total_count
@@ -1539,6 +1535,7 @@ export class OrdersService {
 
         WHERE
           o.tenant_id = $1
+
           AND o.factory_id = $2
 
           AND (
@@ -1578,10 +1575,14 @@ export class OrdersService {
           limit,
           offset,
         ],
+        {
+          tenantId,
+        },
       );
 
     const total =
-      result.rows.length > 0
+      result.rows.length >
+      0
         ? Number(
             result.rows[0]
               .total_count,
@@ -1598,7 +1599,9 @@ export class OrdersService {
     return {
       items:
         result.rows.map(
-          (row) => ({
+          (
+            row,
+          ) => ({
             id:
               row.id,
 
@@ -1636,8 +1639,11 @@ export class OrdersService {
 
       pagination: {
         page,
+
         limit,
+
         total,
+
         total_pages:
           totalPages,
       },

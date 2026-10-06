@@ -4,13 +4,19 @@ import { randomUUID } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 
 import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
+
+import {
   OutboxDlqService,
 } from './outbox-dlq.service';
 
 describe(
   'Outbox DLQ and replay',
   () => {
-    let pool: Pool;
+    let pool!: Pool;
+
+    let appPool!: Pool;
 
     let eventId: string;
 
@@ -24,41 +30,12 @@ describe(
 
     let actorUserId: string;
 
-    async function transaction<T>(
-      callback: (
-        client: import('pg').PoolClient,
-      ) => Promise<T>,
-    ): Promise<T> {
-      const client =
-        await pool.connect();
-
-      try {
-        await client.query(
-          'BEGIN',
-        );
-
-        const result =
-          await callback(client);
-
-        await client.query(
-          'COMMIT',
-        );
-
-        return result;
-      } catch (error) {
-        await client.query(
-          'ROLLBACK',
-        );
-
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-
     beforeAll(async () => {
       const databaseUrl =
         process.env.DATABASE_URL;
+
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
 
       if (!databaseUrl) {
         throw new Error(
@@ -66,7 +43,19 @@ describe(
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -118,20 +107,26 @@ describe(
         );
       }
 
+      const selectedOrder =
+        orderResult.rows[0];
+
+      if (!selectedOrder) {
+        throw new Error(
+          'DLQ test order row is missing.',
+        );
+      }
+
       orderId =
-        orderResult.rows[0].id;
+        selectedOrder.id;
 
       tenantId =
-        orderResult.rows[0]
-          .tenant_id;
+        selectedOrder.tenant_id;
 
       factoryId =
-        orderResult.rows[0]
-          .factory_id;
+        selectedOrder.factory_id;
 
       orderNumber =
-        orderResult.rows[0]
-          .order_number;
+        selectedOrder.order_number;
 
       // ----------------------------------------------------------
       // Users are tenant-neutral.
@@ -164,7 +159,9 @@ describe(
 
           LIMIT 1
           `,
-          [tenantId],
+          [
+            tenantId,
+          ],
         );
 
       if (
@@ -175,8 +172,17 @@ describe(
         );
       }
 
+      const actor =
+        actorResult.rows[0];
+
+      if (!actor) {
+        throw new Error(
+          'DLQ actor row is missing.',
+        );
+      }
+
       actorUserId =
-        actorResult.rows[0].id;
+        actor.id;
 
       // ----------------------------------------------------------
       // Create a quarantined event fixture.
@@ -245,9 +251,11 @@ describe(
           randomUUID(),
 
           JSON.stringify({
-            type: 'user',
+            type:
+              'user',
 
-            id: actorUserId,
+            id:
+              actorUserId,
           }),
 
           JSON.stringify({
@@ -291,38 +299,42 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        // Remove audit records created by this test fixture.
+        await pool.query(
+          `
+          DELETE FROM audit_events
+
+          WHERE
+            resource_type =
+              'OUTBOX_EVENT'
+
+            AND resource_id =
+              $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        // Remove the outbox fixture.
+        await pool.query(
+          `
+          DELETE FROM outbox_events
+
+          WHERE id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.end();
       }
 
-      // Remove audit records created by this test fixture.
-
-      await pool.query(
-        `
-        DELETE FROM audit_events
-
-        WHERE
-          resource_type =
-            'OUTBOX_EVENT'
-
-          AND resource_id =
-            $1
-        `,
-        [eventId],
-      );
-
-      // Remove the outbox fixture.
-
-      await pool.query(
-        `
-        DELETE FROM outbox_events
-
-        WHERE id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.end();
+      if (appPool) {
+        await appPool.end();
+      }
     });
 
     // ==========================================================
@@ -332,12 +344,10 @@ describe(
     it(
       'should list quarantined events inside the tenant/factory scope',
       async () => {
-        const database = {
-          transaction,
-
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const auditService =
           new AuditService(
@@ -421,12 +431,10 @@ describe(
     it(
       'should reject replay from the wrong tenant',
       async () => {
-        const database = {
-          transaction,
-
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const auditService =
           new AuditService(
@@ -479,7 +487,9 @@ describe(
 
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -502,12 +512,10 @@ describe(
     it(
       'should reject replay outside the authenticated factory scope',
       async () => {
-        const database = {
-          transaction,
-
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const auditService =
           new AuditService(
@@ -560,7 +568,9 @@ describe(
 
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -583,18 +593,14 @@ describe(
     it(
       'should replay a quarantined event and create an audit record',
       async () => {
-        const database = {
-          transaction,
-
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const auditService =
           new AuditService(
             database as never,
-
-            // No additional dependencies.
           );
 
         const service =
@@ -626,17 +632,26 @@ describe(
 
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
           originalResult.rowCount,
         ).toBe(1);
 
+        const originalRow =
+          originalResult.rows[0];
+
+        if (!originalRow) {
+          throw new Error(
+            'Original DLQ payload row is missing.',
+          );
+        }
+
         const originalPayload =
-          originalResult
-            .rows[0]
-            .payload;
+          originalRow.payload;
 
         const replayTraceId =
           randomUUID();
@@ -765,7 +780,9 @@ describe(
 
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -774,6 +791,12 @@ describe(
 
         const state =
           stateResult.rows[0];
+
+        if (!state) {
+          throw new Error(
+            'DLQ replay state row is missing.',
+          );
+        }
 
         expect(
           state.status,
@@ -895,59 +918,63 @@ describe(
 
             LIMIT 1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
           auditResult.rowCount,
         ).toBe(1);
 
+        const auditRow =
+          auditResult.rows[0];
+
+        if (!auditRow) {
+          throw new Error(
+            'DLQ replay audit row is missing.',
+          );
+        }
+
         expect(
-          auditResult.rows[0]
-            .action,
+          auditRow.action,
         ).toBe(
           'REPLAY_REQUESTED',
         );
 
         expect(
-          auditResult.rows[0]
-            .resource_type,
+          auditRow.resource_type,
         ).toBe(
           'OUTBOX_EVENT',
         );
 
         expect(
-          auditResult.rows[0]
-            .resource_id,
+          auditRow.resource_id,
         ).toBe(
           eventId,
         );
 
         expect(
-          auditResult.rows[0]
-            .correlation_id,
+          auditRow.correlation_id,
         ).toBe(
           replayTraceId,
         );
 
         expect(
-          auditResult.rows[0]
-            .request_id,
+          auditRow.request_id,
         ).toBe(
           replayRequestId,
         );
 
         expect(
-          auditResult.rows[0]
-            .payload
+          auditRow.payload
             .event_id,
         ).toBe(
           eventId,
         );
 
         expect(
-          auditResult.rows[0]
-            .payload
+          auditRow.payload
             .replay_count,
         ).toBe(1);
       },

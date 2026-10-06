@@ -9,61 +9,36 @@ import {
   OutboxDispatcherService,
 } from './outbox.dispatcher.service';
 
-type DispatcherDatabase = {
-  transaction: <T>(
-    callback: (
-      client: import('pg').PoolClient,
-    ) => Promise<T>,
-  ) => Promise<T>;
+import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
 
-  query: typeof Pool.prototype.query;
-};
+type DispatcherDatabase =
+  ReturnType<
+    typeof createIntegrationDatabase
+  >;
 
 describe(
   'Outbox dispatcher concurrent claiming',
   () => {
     const eventCount = 40;
 
-    let pool: Pool;
+    let pool!: Pool;
+
+    let appPool!: Pool;
+
     let eventIds: string[] = [];
+
     let orderId: string;
+
     let tenantId: string;
-
-    async function transaction<T>(
-      callback: (
-        client: import('pg').PoolClient,
-      ) => Promise<T>,
-    ): Promise<T> {
-      const client =
-        await pool.connect();
-
-      try {
-        await client.query(
-          'BEGIN',
-        );
-
-        const result =
-          await callback(client);
-
-        await client.query(
-          'COMMIT',
-        );
-
-        return result;
-      } catch (error) {
-        await client.query(
-          'ROLLBACK',
-        );
-
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
 
     beforeAll(async () => {
       const databaseUrl =
         process.env.DATABASE_URL;
+
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
 
       if (!databaseUrl) {
         throw new Error(
@@ -71,7 +46,19 @@ describe(
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -150,19 +137,29 @@ describe(
         );
       }
 
+      const selectedOrder =
+        orderResult.rows[0];
+
+      if (!selectedOrder) {
+        throw new Error(
+          'Concurrent claim test order row is missing.',
+        );
+      }
+
       orderId =
-        orderResult.rows[0].id;
+        selectedOrder.id;
 
       tenantId =
-        orderResult.rows[0]
-          .tenant_id;
+        selectedOrder.tenant_id;
 
       eventIds =
         Array.from(
           {
-            length: eventCount,
+            length:
+              eventCount,
           },
-          () => randomUUID(),
+          () =>
+            randomUUID(),
         );
 
       await pool.query(
@@ -231,36 +228,40 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        if (
+          eventIds.length > 0
+        ) {
+          await pool.query(
+            `
+            DELETE FROM outbox_events
+
+            WHERE id = ANY(
+              $1::uuid[]
+            )
+            `,
+            [
+              eventIds,
+            ],
+          );
+        }
+
+        await pool.end();
       }
 
-      if (eventIds.length > 0) {
-        await pool.query(
-          `
-          DELETE FROM outbox_events
-
-          WHERE id = ANY(
-            $1::uuid[]
-          )
-          `,
-          [eventIds],
-        );
+      if (appPool) {
+        await appPool.end();
       }
-
-      await pool.end();
     });
 
     it(
       'should distribute events across concurrent workers without duplicate claims',
       async () => {
         const database:
-          DispatcherDatabase = {
-          transaction,
-
-          query:
-            pool.query.bind(pool),
-        };
+          DispatcherDatabase =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const publishedByWorkerA:
           string[] = [];
@@ -414,7 +415,9 @@ describe(
               $1::uuid[]
             )
             `,
-            [eventIds],
+            [
+              eventIds,
+            ],
           );
 
         expect(

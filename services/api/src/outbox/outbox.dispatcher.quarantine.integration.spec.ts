@@ -4,6 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 
 import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
+
+import {
   OutboxDispatcherService,
 } from './outbox.dispatcher.service';
 
@@ -14,7 +18,9 @@ import type {
 describe(
   'Outbox dispatcher quarantine',
   () => {
-    let pool: Pool;
+    let pool!: Pool;
+
+    let appPool!: Pool;
 
     let eventId: string;
 
@@ -33,7 +39,7 @@ describe(
       ) => Promise<T>,
     ): Promise<T> {
       const client =
-        await pool.connect();
+        await appPool.connect();
 
       try {
         await client.query(
@@ -41,7 +47,9 @@ describe(
         );
 
         const result =
-          await callback(client);
+          await callback(
+            client,
+          );
 
         await client.query(
           'COMMIT',
@@ -49,9 +57,13 @@ describe(
 
         return result;
       } catch (error) {
-        await client.query(
-          'ROLLBACK',
-        );
+        try {
+          await client.query(
+            'ROLLBACK',
+          );
+        } catch {
+          // Preserve original error.
+        }
 
         throw error;
       } finally {
@@ -63,13 +75,28 @@ describe(
       const databaseUrl =
         process.env.DATABASE_URL;
 
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
+
       if (!databaseUrl) {
         throw new Error(
           'DATABASE_URL is required.',
         );
       }
 
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
+
       pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
+
+      appPool =
         new Pool({
           connectionString:
             databaseUrl,
@@ -106,16 +133,23 @@ describe(
         );
       }
 
+      const selectedOrder =
+        orderResult.rows[0];
+
+      if (!selectedOrder) {
+        throw new Error(
+          'Quarantine test order row is missing.',
+        );
+      }
+
       orderId =
-        orderResult.rows[0].id;
+        selectedOrder.id;
 
       tenantId =
-        orderResult.rows[0]
-          .tenant_id;
+        selectedOrder.tenant_id;
 
       factoryId =
-        orderResult.rows[0]
-          .factory_id;
+        selectedOrder.factory_id;
 
       eventId =
         randomUUID();
@@ -170,14 +204,22 @@ describe(
           correlationId,
 
           JSON.stringify({
-            type: 'user',
-            id: '921382b8-e83f-43ab-a576-e3db6a06b70c',
+            type:
+              'user',
+
+            id:
+              '921382b8-e83f-43ab-a576-e3db6a06b70c',
           }),
 
           JSON.stringify({
-            system: 'FactoryOS',
-            connector: 'quarantine-test',
-            version: 'test',
+            system:
+              'FactoryOS',
+
+            connector:
+              'quarantine-test',
+
+            version:
+              'test',
           }),
 
           JSON.stringify({
@@ -197,7 +239,7 @@ describe(
                 factoryId,
 
               order_number:
-                orderResult.rows[0]
+                selectedOrder
                   .order_number,
 
               status:
@@ -209,45 +251,49 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        await pool.query(
+          `
+          DELETE FROM audit_events
+
+          WHERE
+            resource_type =
+              'OUTBOX_EVENT'
+
+            AND resource_id =
+              $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.query(
+          `
+          DELETE FROM outbox_events
+
+          WHERE id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.end();
       }
 
-      await pool.query(
-        `
-        DELETE FROM audit_events
-
-        WHERE
-          resource_type =
-            'OUTBOX_EVENT'
-
-          AND resource_id =
-            $1
-        `,
-        [eventId],
-      );
-
-      await pool.query(
-        `
-        DELETE FROM outbox_events
-
-        WHERE id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.end();
+      if (appPool) {
+        await appPool.end();
+      }
     });
 
     it(
       'should quarantine an event after the maximum retry attempt',
       async () => {
-        const database = {
-          transaction,
-
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const publisher = {
           publish: async (
@@ -268,7 +314,8 @@ describe(
           dispatch: async (
             _event: OutboxEvent,
           ) => ({
-            handled: false,
+            handled:
+              false,
 
             consumerName:
               null,
@@ -354,7 +401,9 @@ describe(
 
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -363,6 +412,12 @@ describe(
 
         const row =
           outboxResult.rows[0];
+
+        if (!row) {
+          throw new Error(
+            'Quarantine outbox row is missing.',
+          );
+        }
 
         expect(
           row.status,
@@ -457,52 +512,57 @@ describe(
 
             LIMIT 1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
           auditResult.rowCount,
         ).toBe(1);
 
+        const auditRow =
+          auditResult.rows[0];
+
+        if (!auditRow) {
+          throw new Error(
+            'Quarantine audit row is missing.',
+          );
+        }
+
         expect(
-          auditResult.rows[0]
-            .action,
+          auditRow.action,
         ).toBe(
           'QUARANTINED',
         );
 
         expect(
-          auditResult.rows[0]
-            .resource_type,
+          auditRow.resource_type,
         ).toBe(
           'OUTBOX_EVENT',
         );
 
         expect(
-          auditResult.rows[0]
-            .resource_id,
+          auditRow.resource_id,
         ).toBe(
           eventId,
         );
 
         expect(
-          auditResult.rows[0]
-            .correlation_id,
+          auditRow.correlation_id,
         ).toBe(
           correlationId,
         );
 
         expect(
-          auditResult.rows[0]
-            .payload
+          auditRow.payload
             .event_id,
         ).toBe(
           eventId,
         );
 
         expect(
-          auditResult.rows[0]
-            .payload
+          auditRow.payload
             .attempts,
         ).toBe(10);
       },

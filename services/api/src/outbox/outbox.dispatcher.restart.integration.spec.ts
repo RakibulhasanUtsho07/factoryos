@@ -2,47 +2,47 @@ import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 
 import { InboxService } from './inbox.service';
-import { OrderCreatedConsumer } from './order-created.consumer';
-import { OutboxConsumerRegistry } from './outbox.consumer.registry';
-import { OutboxDispatcherService } from './outbox.dispatcher.service';
-import { OutboxPublisher } from './outbox.publisher';
+
+import {
+  OrderCreatedConsumer,
+} from './order-created.consumer';
+
+import {
+  OutboxConsumerRegistry,
+} from './outbox.consumer.registry';
+
+import {
+  OutboxDispatcherService,
+} from './outbox.dispatcher.service';
+
+import {
+  OutboxPublisher,
+} from './outbox.publisher';
+
+import {
+  createIntegrationDatabase,
+} from '../database/integration-database.adapter';
 
 describe(
   'Outbox dispatcher restart/idempotency boundary',
   () => {
-    const runId = randomUUID();
+    const runId =
+      randomUUID();
 
-    let pool: Pool;
+    let pool!: Pool;
+
+    let appPool!: Pool;
+
     let orderId: string;
+
     let tenantId: string;
+
     let eventId: string;
-
-    async function transaction<T>(
-      callback: (
-        client: import('pg').PoolClient,
-      ) => Promise<T>,
-    ): Promise<T> {
-      const client = await pool.connect();
-
-      try {
-        await client.query('BEGIN');
-
-        const result = await callback(client);
-
-        await client.query('COMMIT');
-
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
 
     beforeAll(async () => {
       if (
-        process.env.OUTBOX_TEST_FORCE_FAILURE ===
+        process.env
+          .OUTBOX_TEST_FORCE_FAILURE ===
         'true'
       ) {
         throw new Error(
@@ -53,39 +53,77 @@ describe(
       const databaseUrl =
         process.env.DATABASE_URL;
 
+      const testAdminDatabaseUrl =
+        process.env.TEST_ADMIN_DATABASE_URL;
+
       if (!databaseUrl) {
         throw new Error(
           'DATABASE_URL is required.',
         );
       }
 
-      pool = new Pool({
-        connectionString: databaseUrl,
-      });
+      if (!testAdminDatabaseUrl) {
+        throw new Error(
+          'TEST_ADMIN_DATABASE_URL is required.',
+        );
+      }
 
-      const orderResult = await pool.query<{
-        id: string;
-        tenant_id: string;
-      }>(
-        `
-        SELECT
-          id::text AS id,
-          tenant_id::text AS tenant_id
-        FROM orders
-        ORDER BY created_at DESC
-        LIMIT 1
-        `,
-      );
+      pool =
+        new Pool({
+          connectionString:
+            testAdminDatabaseUrl,
+        });
 
-      if (orderResult.rowCount !== 1) {
+      appPool =
+        new Pool({
+          connectionString:
+            databaseUrl,
+        });
+
+      const orderResult =
+        await pool.query<{
+          id: string;
+          tenant_id: string;
+        }>(
+          `
+          SELECT
+            id::text AS id,
+            tenant_id::text AS tenant_id
+
+          FROM orders
+
+          ORDER BY
+            created_at DESC
+
+          LIMIT 1
+          `,
+        );
+
+      if (
+        orderResult.rowCount !== 1
+      ) {
         throw new Error(
           'No order available for restart integration test.',
         );
       }
 
-      orderId = orderResult.rows[0].id;
-      tenantId = orderResult.rows[0].tenant_id;
-      eventId = randomUUID();
+      const selectedOrder =
+        orderResult.rows[0];
+
+      if (!selectedOrder) {
+        throw new Error(
+          'Restart integration test order row is missing.',
+        );
+      }
+
+      orderId =
+        selectedOrder.id;
+
+      tenantId =
+        selectedOrder.tenant_id;
+
+      eventId =
+        randomUUID();
 
       await pool.query(
         `
@@ -102,6 +140,7 @@ describe(
           attempts,
           next_attempt_at
         )
+
         SELECT
           $1,
           o.tenant_id,
@@ -129,7 +168,9 @@ describe(
           0,
           now()
         FROM orders o
-        WHERE o.id = $2
+
+        WHERE
+          o.id = $2
           AND o.tenant_id = $3
         `,
         [
@@ -141,45 +182,52 @@ describe(
     });
 
     afterAll(async () => {
-      if (!pool) {
-        return;
+      if (pool) {
+        await pool.query(
+          `
+          DELETE FROM inbox_events
+          WHERE event_id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.query(
+          `
+          DELETE FROM order_event_projections
+          WHERE event_id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.query(
+          `
+          DELETE FROM outbox_events
+          WHERE id = $1
+          `,
+          [
+            eventId,
+          ],
+        );
+
+        await pool.end();
       }
 
-      await pool.query(
-        `
-        DELETE FROM inbox_events
-        WHERE event_id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.query(
-        `
-        DELETE FROM order_event_projections
-        WHERE event_id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.query(
-        `
-        DELETE FROM outbox_events
-        WHERE id = $1
-        `,
-        [eventId],
-      );
-
-      await pool.end();
+      if (appPool) {
+        await appPool.end();
+      }
     });
 
     it(
       'should retry after failure between consumer success and markPublished without duplicating the consumer effect',
       async () => {
-        const database = {
-          transaction,
-          query:
-            pool.query.bind(pool),
-        };
+        const database =
+          createIntegrationDatabase(
+            appPool,
+          );
 
         const inboxService =
           new InboxService(
@@ -210,6 +258,7 @@ describe(
           dispatcher as unknown as {
             markPublished: (
               eventId: string,
+              tenantId: string,
             ) => Promise<void>;
           };
 
@@ -218,14 +267,17 @@ describe(
             dispatcher,
           );
 
-        let injectedFailure = true;
+        let injectedFailure =
+          true;
 
         dispatcherInternal.markPublished =
           async (
             currentEventId: string,
+            currentTenantId: string,
           ) => {
             if (injectedFailure) {
-              injectedFailure = false;
+              injectedFailure =
+                false;
 
               throw new Error(
                 'TEST_CRASH_BEFORE_MARK_PUBLISHED',
@@ -234,16 +286,17 @@ describe(
 
             await originalMarkPublished(
               currentEventId,
+              currentTenantId,
             );
           };
 
-        // --------------------------------------------------
+        // ------------------------------------------------------
         // Attempt 1:
         // publisher succeeds
         // consumer succeeds
         // markPublished fails
         // dispatcher must move event to FAILED
-        // --------------------------------------------------
+        // ------------------------------------------------------
 
         const firstResult =
           await dispatcher.dispatchOnce();
@@ -268,10 +321,14 @@ describe(
               attempts,
               published_at,
               last_error
+
             FROM outbox_events
+
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -279,7 +336,8 @@ describe(
         ).toBe(1);
 
         expect(
-          firstOutboxResult.rows[0].status,
+          firstOutboxResult.rows[0]
+            .status,
         ).toBe('FAILED');
 
         expect(
@@ -306,16 +364,22 @@ describe(
             `
             SELECT
               COUNT(*)::int AS count
+
             FROM inbox_events
-            WHERE event_id = $1
+
+            WHERE
+              event_id = $1
               AND consumer_name =
                 'order-created-projection-v1'
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
-          firstInboxResult.rows[0].count,
+          firstInboxResult.rows[0]
+            .count,
         ).toBe(1);
 
         const firstProjectionResult =
@@ -323,33 +387,49 @@ describe(
             `
             SELECT
               COUNT(*)::int AS count
+
             FROM order_event_projections
-            WHERE event_id = $1
+
+            WHERE
+              event_id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
-          firstProjectionResult.rows[0].count,
+          firstProjectionResult.rows[0]
+            .count,
         ).toBe(1);
 
-        // Make retry immediately eligible rather than waiting 5 seconds.
+        // ------------------------------------------------------
+        // Make retry immediately eligible rather than waiting
+        // 5 seconds.
+        // ------------------------------------------------------
+
         await pool.query(
           `
           UPDATE outbox_events
-          SET next_attempt_at = now()
-          WHERE id = $1
+
+          SET
+            next_attempt_at = now()
+
+          WHERE
+            id = $1
           `,
-          [eventId],
+          [
+            eventId,
+          ],
         );
 
-        // --------------------------------------------------
+        // ------------------------------------------------------
         // Attempt 2:
         // event is retried
         // Inbox detects duplicate
         // projection remains exactly one row
         // outbox becomes PUBLISHED
-        // --------------------------------------------------
+        // ------------------------------------------------------
 
         const secondResult =
           await dispatcher.dispatchOnce();
@@ -374,10 +454,14 @@ describe(
               attempts,
               published_at,
               last_error
+
             FROM outbox_events
+
             WHERE id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
@@ -411,17 +495,24 @@ describe(
             `
             SELECT
               COUNT(*)::int AS count,
-              MIN(processed_at) AS processed_at
+              MIN(processed_at)
+                AS processed_at
+
             FROM inbox_events
-            WHERE event_id = $1
+
+            WHERE
+              event_id = $1
               AND consumer_name =
                 'order-created-projection-v1'
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
-          finalInboxResult.rows[0].count,
+          finalInboxResult.rows[0]
+            .count,
         ).toBe(1);
 
         expect(
@@ -434,11 +525,17 @@ describe(
             `
             SELECT
               COUNT(*)::int AS count,
-              MIN(order_id::text) AS order_id
+              MIN(order_id::text)
+                AS order_id
+
             FROM order_event_projections
-            WHERE event_id = $1
+
+            WHERE
+              event_id = $1
             `,
-            [eventId],
+            [
+              eventId,
+            ],
           );
 
         expect(
