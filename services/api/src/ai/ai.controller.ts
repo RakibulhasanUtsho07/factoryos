@@ -1,6 +1,9 @@
 import {
   Body,
   Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
   Post,
   Req,
   UnauthorizedException,
@@ -38,6 +41,26 @@ import {
 import {
   VerifyAiDecisionDto,
 } from './dto/verify-ai-decision.dto';
+
+import {
+  AuthorizeAiActionDto,
+} from './dto/authorize-ai-action.dto';
+
+import {
+  ExecuteAiActionDto,
+} from './dto/execute-ai-action.dto';
+
+import {
+  CreateAiOutcomeDto,
+} from './dto/create-ai-outcome.dto';
+
+import {
+  CreateAiLearningSignalDto,
+} from './dto/create-ai-learning-signal.dto';
+
+import {
+  CreateAiReleaseDto,
+} from './dto/create-ai-release.dto';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -134,6 +157,157 @@ export class AiController {
       context.factoryId,
       context.userId,
       body,
+    );
+  }
+
+  // ============================================================
+  // ACTION AUTHORIZATION
+  // ============================================================
+
+  @Post('actions/authorize')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.authorize')
+  @RequireFactoryScope()
+  async authorizeAction(
+    @Req() request: FactoryOsRequest,
+    @Body() body: AuthorizeAiActionDto,
+  ) {
+    const context =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.aiRuntimeService.authorizeAction(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  // ============================================================
+  // ACTION EXECUTION
+  // ============================================================
+
+  @Post('actions/execute')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.execute')
+  @RequireFactoryScope()
+  async executeAction(
+    @Req() request: FactoryOsRequest,
+    @Body() body: ExecuteAiActionDto,
+  ) {
+    const context =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.aiRuntimeService.executeAction(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  // ============================================================
+  // OUTCOMES
+  // ============================================================
+
+  @Post('outcomes')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.outcomes.write')
+  @RequireFactoryScope()
+  async createOutcome(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiOutcomeDto,
+  ) {
+    const context =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.aiRuntimeService.createOutcome(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  // ============================================================
+  // LEARNING SIGNALS
+  // ============================================================
+
+  @Post('learning/signals')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.learning.write')
+  @RequireFactoryScope()
+  async createLearningSignal(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiLearningSignalDto,
+  ) {
+    const context =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.aiRuntimeService.createLearningSignal(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  // ============================================================
+  // RELEASES
+  // ============================================================
+
+  @Post('releases')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.release.write')
+  @RequireFactoryScope()
+  async createRelease(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiReleaseDto,
+  ) {
+    const context =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.aiRuntimeService.createRelease(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  // ============================================================
+  // REPLAY
+  // ============================================================
+
+  @Get('replay/:traceId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.replay.read')
+  @RequireFactoryScope()
+  async replayDecision(
+    @Req() request: FactoryOsRequest,
+    @Param('traceId', new ParseUUIDPipe())
+    traceId: string,
+  ) {
+    const context =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.aiRuntimeService.replayDecision(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      traceId,
     );
   }
 
