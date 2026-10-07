@@ -523,11 +523,23 @@ describe(
       );
 
       await expect(
-        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+        service.executeStep(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          stepId,
+        ),
       ).rejects.toBeInstanceOf(ForbiddenException);
 
-      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
-        tenantId, factoryId, 'AGENT.TEST', 'AI.RUNTIME.NOOP', '1.0.0',
+      expect(
+        aiAgentCatalogueService.assertToolEntitled,
+      ).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        'AGENT.TEST',
+        'AI.RUNTIME.NOOP',
+        '1.0.0',
       );
       expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
       expect(toolGateway.execute).not.toHaveBeenCalled();
@@ -535,42 +547,99 @@ describe(
     });
 
     it('skips agent entitlement lookup for legacy steps without an agent binding', async () => {
-      const task = taskRow({ state: 'EXECUTING' });
-      const step = stepRow({ agent_id: null });
+      const task = taskRow({
+        state: 'EXECUTING',
+      });
+      const step = stepRow({
+        agent_id: null,
+      });
       const runningStep = stepRow({
         status: 'RUNNING',
         action_intent_id: actionIntentId,
       });
+      const succeededStep = stepRow({
+        status: 'SUCCEEDED',
+        action_intent_id: actionIntentId,
+        execution_record_id:
+          'bf1a2222-2222-4222-8222-222222222222',
+        output: {
+          execution: 'NO_SIDE_EFFECT',
+        },
+      });
+      const verifyingTask = taskRow({
+        state: 'VERIFYING',
+        completed_step_count: 1,
+        version: 2,
+      });
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
-      (service as any).assertDependencies = jest.fn();
-      (service as any).claimToolCall = jest.fn();
-      (service as any).updateStep = jest.fn().mockResolvedValueOnce(runningStep);
-      (service as any).recordAttempt = jest.fn();
-      (service as any).persistExecutionRecord = jest.fn().mockResolvedValue(
-        'bf1a2222-2222-4222-8222-222222222222',
-      );
-      (service as any).countCompletedSteps = jest.fn().mockResolvedValue(1);
-      (service as any).countSteps = jest.fn().mockResolvedValue(1);
-      (service as any).updateTaskStateRaw = jest.fn().mockResolvedValue(
-        taskRow({ state: 'VERIFYING', completed_step_count: 1 }),
-      );
+      (service as any).requireTask = jest
+        .fn()
+        .mockResolvedValue(task);
+      (service as any).requireStep = jest
+        .fn()
+        .mockResolvedValue(step);
+      (service as any).assertDependencies =
+        jest.fn();
+      (service as any).claimToolCall =
+        jest.fn();
+      (service as any).updateStep = jest
+        .fn()
+        .mockResolvedValueOnce(runningStep)
+        .mockResolvedValueOnce(succeededStep);
+      (service as any).recordAttempt =
+        jest.fn();
+      (service as any).persistExecutionRecord =
+        jest
+          .fn()
+          .mockResolvedValue(
+            'bf1a2222-2222-4222-8222-222222222222',
+          );
+      (service as any).countCompletedSteps =
+        jest
+          .fn()
+          .mockResolvedValue(1);
+      (service as any).countSteps =
+        jest
+          .fn()
+          .mockResolvedValue(1);
+      (service as any).updateTaskStateRaw =
+        jest
+          .fn()
+          .mockResolvedValue(verifyingTask);
 
-      database.query.mockResolvedValueOnce({ rows: [] });
+      database.query.mockResolvedValueOnce({
+        rows: [],
+      });
+
       aiRuntimeService.authorizeAction.mockResolvedValue({
         action: action(),
         actionToken: 'token',
       });
-      toolGateway.execute.mockResolvedValue(gatewayOutcome());
-
-      await service.executeStep(
-        tenantId, factoryId, userId, taskId, stepId,
+      toolGateway.execute.mockResolvedValue(
+        gatewayOutcome(),
       );
 
-      expect(aiAgentCatalogueService.assertToolEntitled).not.toHaveBeenCalled();
-      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledTimes(1);
-      expect(toolGateway.execute).toHaveBeenCalledTimes(1);
+      const result =
+        await service.executeStep(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          stepId,
+        );
+
+      expect(
+        aiAgentCatalogueService.assertToolEntitled,
+      ).not.toHaveBeenCalled();
+      expect(
+        aiRuntimeService.authorizeAction,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        toolGateway.execute,
+      ).toHaveBeenCalledTimes(1);
+      expect(result.step.status).toBe(
+        'SUCCEEDED',
+      );
     });
 
     it('keeps gateway execution fail-closed when the gateway rejects', async () => {
@@ -631,7 +700,9 @@ describe(
         stepId,
       );
 
-      expect(result.error?.code).toBe('AI_TOOL_GATEWAY_FAILURE');
+      expect(result.error?.code).toBe(
+        'AI_TOOL_GATEWAY_FAILURE',
+      );
       expect(toolGateway.execute).toHaveBeenCalledTimes(1);
     });
 
@@ -643,26 +714,34 @@ describe(
         status: 'SUCCEEDED',
       });
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).requireTask =
+        jest.fn().mockResolvedValue(task);
+      (service as any).requireStep =
+        jest.fn().mockResolvedValue(step);
+
       toolRegistry.getTool.mockResolvedValue({
         rollback: {
           type: 'NONE',
         },
       });
 
-      const result = await service.compensateStep(
-        tenantId,
-        factoryId,
-        userId,
-        taskId,
-        stepId,
-        {},
-      );
+      const result =
+        await service.compensateStep(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          stepId,
+          {},
+        );
 
       expect(result.attempted).toBe(false);
-      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(
+        aiRuntimeService.authorizeAction,
+      ).not.toHaveBeenCalled();
+      expect(
+        toolGateway.execute,
+      ).not.toHaveBeenCalled();
     });
 
     it('fails closed when a non-NONE rollback contract is incomplete', async () => {
@@ -673,8 +752,11 @@ describe(
         status: 'SUCCEEDED',
       });
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).requireTask =
+        jest.fn().mockResolvedValue(task);
+      (service as any).requireStep =
+        jest.fn().mockResolvedValue(step);
+
       toolRegistry.getTool.mockResolvedValue({
         rollback: {
           type: 'COMPENSATION',
@@ -690,10 +772,16 @@ describe(
           stepId,
           {},
         ),
-      ).rejects.toBeInstanceOf(ConflictException);
+      ).rejects.toBeInstanceOf(
+        ConflictException,
+      );
 
-      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(
+        aiRuntimeService.authorizeAction,
+      ).not.toHaveBeenCalled();
+      expect(
+        toolGateway.execute,
+      ).not.toHaveBeenCalled();
     });
 
     it('re-checks receiving permissions for every permitted handoff tool', async () => {
@@ -722,11 +810,13 @@ describe(
       (service as any).getHandoff = jest
         .fn()
         .mockResolvedValue(handoff);
+
       toolRegistry.getTool.mockResolvedValue({
         requiredScopes: [
           'ai.actions.execute',
         ],
       });
+
       database.query.mockResolvedValueOnce({
         rows: [
           {
@@ -737,15 +827,21 @@ describe(
         ],
       });
 
-      const result = await service.acceptHandoff(
-        tenantId,
-        factoryId,
-        userId,
-        handoff.id,
+      const result =
+        await service.acceptHandoff(
+          tenantId,
+          factoryId,
+          userId,
+          handoff.id,
+        );
+
+      expect(result.status).toBe(
+        'ACCEPTED',
       );
 
-      expect(result.status).toBe('ACCEPTED');
-      expect(iamService.authorize).toHaveBeenLastCalledWith(
+      expect(
+        iamService.authorize,
+      ).toHaveBeenLastCalledWith(
         userId,
         tenantId,
         'ai.actions.execute',
@@ -761,9 +857,13 @@ describe(
           userId,
           taskId,
         ),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
 
-      expect(database.query).not.toHaveBeenCalled();
+      expect(
+        database.query,
+      ).not.toHaveBeenCalled();
     });
   },
 );
