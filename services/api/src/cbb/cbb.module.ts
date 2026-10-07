@@ -18,9 +18,12 @@ import {
   CbbController,
 } from './cbb.controller';
 
+
+
 import {
   CbbService,
 } from './cbb.service';
+import { CbbChangeService } from './cbb.change.service';
 
 @Module({
   imports: [
@@ -35,10 +38,12 @@ import {
 
   providers: [
     CbbService,
+    CbbChangeService,
   ],
 
   exports: [
     CbbService,
+    CbbChangeService,
   ],
 })
 export class CbbModule {}

@@ -43,11 +43,54 @@ const getProcess =
     ) => Promise<unknown>
   >();
 
+const createChangeProposal =
+  jest.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<unknown>
+  >();
+
+const listChangeProposals =
+  jest.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<unknown>
+  >();
+
+const approveChangeProposal =
+  jest.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<unknown>
+  >();
+
+const rejectChangeProposal =
+  jest.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<unknown>
+  >();
+
+const createFeedback =
+  jest.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<unknown>
+  >();
+
 const cbbService = {
   getBusinessModel,
   getBusinessMap,
   listProcesses,
   getProcess,
+};
+
+const cbbChangeService = {
+  createChangeProposal,
+  listChangeProposals,
+  approveChangeProposal,
+  rejectChangeProposal,
+  createFeedback,
 };
 
 describe(
@@ -64,6 +107,9 @@ describe(
 
     const processId =
       '9fa03a36-4e3e-45ff-8f48-9ce3e2af0004';
+
+    const proposalId =
+      'a0000000-0000-0000-0000-000000000001';
 
     const request = {
       factoryos: {
@@ -100,9 +146,14 @@ describe(
         controller =
           new CbbController(
             cbbService as never,
+            cbbChangeService as never,
           );
       },
     );
+
+    // ==========================================================
+    // READS
+    // ==========================================================
 
     it(
       'uses verified tenant and factory context for business model reads',
@@ -171,12 +222,10 @@ describe(
       'returns process list using verified factory scope',
       async () => {
         listProcesses
-          .mockResolvedValue(
-            {
-              items: [],
-              count: 0,
-            },
-          );
+          .mockResolvedValue({
+            items: [],
+            count: 0,
+          });
 
         await controller.listProcesses(
           request,
@@ -195,16 +244,14 @@ describe(
       'returns process detail using verified factory scope',
       async () => {
         getProcess
-          .mockResolvedValue(
-            {
-              process: {
-                id:
-                  processId,
-              },
-
-              steps: [],
+          .mockResolvedValue({
+            process: {
+              id:
+                processId,
             },
-          );
+
+            steps: [],
+          });
 
         await controller.getProcess(
           request,
@@ -220,6 +267,220 @@ describe(
         );
       },
     );
+
+    // ==========================================================
+    // CHANGES
+    // ==========================================================
+
+    it(
+      'creates a business change using the verified factory context',
+      async () => {
+        const result = {
+          id:
+            proposalId,
+
+          status:
+            'PENDING',
+        };
+
+        createChangeProposal
+          .mockResolvedValue(
+            result,
+          );
+
+        await expect(
+          controller.createChange(
+            request,
+            {
+              target_type:
+                'ENTITY',
+
+              target_id:
+                proposalId,
+
+              proposal_type:
+                'UPDATE',
+
+              proposed_state:
+                'PROPOSED',
+
+              proposed_payload:
+                {},
+
+              reason:
+                'Review',
+            },
+          ),
+        ).resolves.toBe(
+          result,
+        );
+
+        expect(
+          createChangeProposal,
+        ).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          userId,
+          expect.objectContaining({
+            targetType:
+              'ENTITY',
+          }),
+        );
+      },
+    );
+
+    it(
+      'lists changes using verified tenant and factory scope',
+      async () => {
+        listChangeProposals
+          .mockResolvedValue({
+            items: [],
+            limit: 50,
+            offset: 0,
+            count: 0,
+          });
+
+        await controller.listChanges(
+          request,
+          {
+            limit: 50,
+            offset: 0,
+          },
+        );
+
+        expect(
+          listChangeProposals,
+        ).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          expect.any(
+            Object,
+          ),
+        );
+      },
+    );
+
+    it(
+      'approves a business change using verified identity',
+      async () => {
+        approveChangeProposal
+          .mockResolvedValue({
+            status:
+              'APPROVED',
+          });
+
+        await controller.approveChange(
+          request,
+          proposalId,
+          {
+            reason:
+              'Approved',
+          },
+        );
+
+        expect(
+          approveChangeProposal,
+        ).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          userId,
+          proposalId,
+          'Approved',
+        );
+      },
+    );
+
+    it(
+      'rejects a business change using verified identity',
+      async () => {
+        rejectChangeProposal
+          .mockResolvedValue({
+            status:
+              'REJECTED',
+          });
+
+        await controller.rejectChange(
+          request,
+          proposalId,
+          {
+            reason:
+              'Insufficient evidence',
+          },
+        );
+
+        expect(
+          rejectChangeProposal,
+        ).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          userId,
+          proposalId,
+          'Insufficient evidence',
+        );
+      },
+    );
+
+    // ==========================================================
+    // FEEDBACK
+    // ==========================================================
+
+    it(
+      'creates feedback in the verified factory scope',
+      async () => {
+        createFeedback
+          .mockResolvedValue({
+            id:
+              'f0000000-0000-0000-0000-000000000001',
+          });
+
+        await controller.createFeedback(
+          request,
+          {
+            subject_type:
+              'ENTITY',
+
+            subject_id:
+              proposalId,
+
+            feedback_type:
+              'INCORRECT',
+
+            payload_json:
+              {
+                note:
+                  'Incorrect node',
+              },
+          },
+        );
+
+        expect(
+          createFeedback,
+        ).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          userId,
+          {
+            subjectType:
+              'ENTITY',
+
+            subjectId:
+              proposalId,
+
+            feedbackType:
+              'INCORRECT',
+
+            payload: {
+              note:
+                'Incorrect node',
+            },
+          },
+        );
+      },
+    );
+
+    // ==========================================================
+    // AUTH CONTEXT
+    // ==========================================================
 
     it(
       'rejects a missing verified factory context',

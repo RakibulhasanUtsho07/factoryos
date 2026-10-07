@@ -1,8 +1,11 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
   ParseUUIDPipe,
+  Post,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -24,9 +27,28 @@ import {
   RequirePermission,
 } from '../iam/require-permission.decorator';
 
+
+
 import {
   CbbService,
 } from './cbb.service';
+
+import {
+  CreateBusinessChangeDto,
+} from './dto/create-business-change.dto';
+
+import {
+  CreateBusinessFeedbackDto,
+} from './dto/create-business-feedback.dto';
+
+import {
+  DecideBusinessChangeDto,
+} from './dto/decide-business-change.dto';
+
+import {
+  ListBusinessChangesDto,
+} from './dto/list-business-changes.dto';
+import { CbbChangeService } from './cbb.change.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -71,10 +93,13 @@ export class CbbController {
   constructor(
     private readonly cbbService:
       CbbService,
+
+    private readonly cbbChangeService:
+      CbbChangeService,
   ) {}
 
   // ============================================================
-  // GET /api/v1/business-model
+  // BUSINESS MODEL READS
   // ============================================================
 
   @Get()
@@ -103,10 +128,6 @@ export class CbbController {
     );
   }
 
-  // ============================================================
-  // GET /api/v1/business-model/map
-  // ============================================================
-
   @Get('map')
   @UseGuards(
     PermissionGuard,
@@ -133,10 +154,6 @@ export class CbbController {
     );
   }
 
-  // ============================================================
-  // GET /api/v1/business-model/processes
-  // ============================================================
-
   @Get('processes')
   @UseGuards(
     PermissionGuard,
@@ -162,10 +179,6 @@ export class CbbController {
       factoryId,
     );
   }
-
-  // ============================================================
-  // GET /api/v1/business-model/processes/:id
-  // ============================================================
 
   @Get(
     'processes/:id',
@@ -203,7 +216,240 @@ export class CbbController {
   }
 
   // ============================================================
-  // AUTHENTICATED FACTORY CONTEXT
+  // CHANGE PROPOSALS
+  // ============================================================
+
+  @Post('changes')
+  @UseGuards(
+    PermissionGuard,
+  )
+  @RequirePermission(
+    'ai.business.review',
+  )
+  @RequireFactoryScope()
+  async createChange(
+    @Req()
+    request: FactoryOsRequest,
+
+    @Body()
+    body: CreateBusinessChangeDto,
+  ) {
+    const {
+      userId,
+      tenantId,
+      factoryId,
+    } =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.cbbChangeService.createChangeProposal(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        targetType:
+          body.target_type,
+
+        targetId:
+          body.target_id ??
+          null,
+
+        proposalType:
+          body.proposal_type,
+
+        proposedState:
+          body.proposed_state ??
+          null,
+
+        proposedPayload:
+          body.proposed_payload ??
+          {},
+
+        reason:
+          body.reason ??
+          null,
+      },
+    );
+  }
+
+  @Get('changes')
+  @UseGuards(
+    PermissionGuard,
+  )
+  @RequirePermission(
+    'ai.business.review',
+  )
+  @RequireFactoryScope()
+  async listChanges(
+    @Req()
+    request: FactoryOsRequest,
+
+    @Query()
+    query: ListBusinessChangesDto,
+  ) {
+    const {
+      tenantId,
+      factoryId,
+    } =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.cbbChangeService.listChangeProposals(
+      tenantId,
+      factoryId,
+      {
+        status:
+          query.status,
+
+        targetType:
+          query.target_type,
+
+        limit:
+          query.limit,
+
+        offset:
+          query.offset,
+      },
+    );
+  }
+
+  @Post(
+    'changes/:id/approve',
+  )
+  @UseGuards(
+    PermissionGuard,
+  )
+  @RequirePermission(
+    'ai.business.review',
+  )
+  @RequireFactoryScope()
+  async approveChange(
+    @Req()
+    request: FactoryOsRequest,
+
+    @Param(
+      'id',
+      new ParseUUIDPipe(),
+    )
+    proposalId: string,
+
+    @Body()
+    body: DecideBusinessChangeDto,
+  ) {
+    const {
+      userId,
+      tenantId,
+      factoryId,
+    } =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.cbbChangeService.approveChangeProposal(
+      tenantId,
+      factoryId,
+      userId,
+      proposalId,
+      body?.reason ??
+        null,
+    );
+  }
+
+  @Post(
+    'changes/:id/reject',
+  )
+  @UseGuards(
+    PermissionGuard,
+  )
+  @RequirePermission(
+    'ai.business.review',
+  )
+  @RequireFactoryScope()
+  async rejectChange(
+    @Req()
+    request: FactoryOsRequest,
+
+    @Param(
+      'id',
+      new ParseUUIDPipe(),
+    )
+    proposalId: string,
+
+    @Body()
+    body: DecideBusinessChangeDto,
+  ) {
+    const {
+      userId,
+      tenantId,
+      factoryId,
+    } =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.cbbChangeService.rejectChangeProposal(
+      tenantId,
+      factoryId,
+      userId,
+      proposalId,
+      body?.reason ??
+        null,
+    );
+  }
+
+  // ============================================================
+  // FEEDBACK
+  // ============================================================
+
+  @Post('feedback')
+  @UseGuards(
+    PermissionGuard,
+  )
+  @RequirePermission(
+    'ai.business.feedback',
+  )
+  @RequireFactoryScope()
+  async createFeedback(
+    @Req()
+    request: FactoryOsRequest,
+
+    @Body()
+    body: CreateBusinessFeedbackDto,
+  ) {
+    const {
+      userId,
+      tenantId,
+      factoryId,
+    } =
+      this.getAuthenticatedFactoryContext(
+        request,
+      );
+
+    return this.cbbChangeService.createFeedback(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        subjectType:
+          body.subject_type,
+
+        subjectId:
+          body.subject_id,
+
+        feedbackType:
+          body.feedback_type,
+
+        payload:
+          body.payload_json ??
+          {},
+      },
+    );
+  }
+
+  // ============================================================
+  // VERIFIED FACTORY CONTEXT
   // ============================================================
 
   private getAuthenticatedFactoryContext(
