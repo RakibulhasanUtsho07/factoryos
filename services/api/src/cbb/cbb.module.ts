@@ -18,12 +18,17 @@ import {
   CbbController,
 } from './cbb.controller';
 
-
-
 import {
   CbbService,
 } from './cbb.service';
-import { CbbChangeService } from './cbb.change.service';
+
+import {
+  CbbChangeService,
+} from './cbb.change.service';
+
+import {
+  CbbPromotionService,
+} from './cbb.promotion.service';
 
 @Module({
   imports: [
@@ -39,11 +44,13 @@ import { CbbChangeService } from './cbb.change.service';
   providers: [
     CbbService,
     CbbChangeService,
+    CbbPromotionService,
   ],
 
   exports: [
     CbbService,
     CbbChangeService,
+    CbbPromotionService,
   ],
 })
 export class CbbModule {}
