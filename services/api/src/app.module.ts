@@ -21,6 +21,7 @@ import { OutboxModule } from './outbox/outbox.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
+import { AiModule } from './ai/ai.module';
 
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
@@ -69,6 +70,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     PolicyModule,
 
     CbbModule,
+
+    AiModule,
 
     // ----------------------------------------------------------
     // Transactional Outbox
