@@ -35,6 +35,10 @@ import {
 } from '../ai.runtime.service';
 
 import {
+  AiAgentCatalogueService,
+} from './ai.agent.catalogue.service';
+
+import {
   AiToolGatewayService,
 } from '../tools/ai.tool.gateway.service';
 
@@ -195,6 +199,7 @@ export class AiAgentRuntimeService {
     private readonly auditService: AuditService,
     private readonly iamService: IamService,
     private readonly aiRuntimeService: AiRuntimeService,
+    private readonly aiAgentCatalogueService: AiAgentCatalogueService,
     private readonly toolGateway: AiToolGatewayService,
     private readonly toolRegistry: AiToolRegistryService,
   ) {}
@@ -552,6 +557,16 @@ export class AiAgentRuntimeService {
 
     this.assertExecutable(task, step);
     await this.assertDependencies(tenantId, factoryId, task, step);
+
+    if (step.agent_id) {
+      await this.aiAgentCatalogueService.assertToolEntitled(
+        tenantId,
+        factoryId,
+        step.agent_id,
+        step.tool_id,
+        step.tool_version,
+      );
+    }
 
     if (task.state === 'PLAN_READY') {
       await this.transitionState(
@@ -1415,6 +1430,16 @@ export class AiAgentRuntimeService {
     ) {
       throw new ConflictException(
         'Registered rollback contract is incomplete; compensation is fail-closed',
+      );
+    }
+
+    if (step.agent_id) {
+      await this.aiAgentCatalogueService.assertToolEntitled(
+        tenantId,
+        factoryId,
+        step.agent_id,
+        tool.rollback.toolId,
+        tool.rollback.toolVersion,
       );
     }
 

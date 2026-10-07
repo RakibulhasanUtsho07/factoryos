@@ -5,6 +5,7 @@ import {
 import {
   ConflictException,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 
 import {
@@ -169,6 +170,22 @@ describe('AiAgentCatalogueService', () => {
     expect(result.grant.toolId).toBe(
       'AI.RUNTIME.NOOP',
     );
+  });
+
+  it('does not resolve an inactive agent for runtime entitlement', async () => {
+    databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      service.assertToolEntitled(
+        tenantId,
+        factoryId,
+        'graph-reasoner',
+        'AI.RUNTIME.NOOP',
+        '1',
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(getToolMock).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate versioned agent definitions as conflict', async () => {

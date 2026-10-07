@@ -472,6 +472,7 @@ export class AiAgentCatalogueService {
           d.tenant_id = $1
           AND d.factory_id = $2
           AND d.agent_id = $3
+          AND d.status = 'ACTIVE'
         ORDER BY
           d.created_at DESC,
           d.id DESC

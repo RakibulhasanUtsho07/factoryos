@@ -5,6 +5,7 @@ import {
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 
 import {
@@ -203,6 +204,10 @@ describe(
       authorizeAction: jest.fn(),
     };
 
+    const aiAgentCatalogueService = {
+      assertToolEntitled: jest.fn(),
+    };
+
     const toolGateway = {
       execute: jest.fn(),
     };
@@ -216,12 +221,14 @@ describe(
 
       iamService.authorize.mockResolvedValue(undefined);
       auditService.record.mockResolvedValue('audit-id');
+      aiAgentCatalogueService.assertToolEntitled.mockResolvedValue({});
 
       service = new AiAgentRuntimeService(
         database as never,
         auditService as never,
         iamService as never,
         aiRuntimeService as never,
+        aiAgentCatalogueService as never,
         toolGateway as never,
         toolRegistry as never,
       );
@@ -480,6 +487,16 @@ describe(
       );
 
       expect(
+        aiAgentCatalogueService.assertToolEntitled,
+      ).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        'AGENT.TEST',
+        'AI.RUNTIME.NOOP',
+        '1.0.0',
+      );
+
+      expect(
         aiRuntimeService.authorizeAction,
       ).toHaveBeenCalledWith(
         tenantId,
@@ -491,6 +508,69 @@ describe(
       );
       expect(toolGateway.execute).toHaveBeenCalledTimes(1);
       expect(result.step.status).toBe('SUCCEEDED');
+    });
+
+    it('fails closed when the agent tool entitlement is denied', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+
+      (service as any).requireTask = jest.fn().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn();
+
+      aiAgentCatalogueService.assertToolEntitled.mockRejectedValue(
+        new ForbiddenException('AI agent tool is not entitled'),
+      );
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
+        tenantId, factoryId, 'AGENT.TEST', 'AI.RUNTIME.NOOP', '1.0.0',
+      );
+      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
+      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(database.query).not.toHaveBeenCalled();
+    });
+
+    it('skips agent entitlement lookup for legacy steps without an agent binding', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({ agent_id: null });
+      const runningStep = stepRow({
+        status: 'RUNNING',
+        action_intent_id: actionIntentId,
+      });
+
+      (service as any).requireTask = jest.fn().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn();
+      (service as any).claimToolCall = jest.fn();
+      (service as any).updateStep = jest.fn().mockResolvedValueOnce(runningStep);
+      (service as any).recordAttempt = jest.fn();
+      (service as any).persistExecutionRecord = jest.fn().mockResolvedValue(
+        'bf1a2222-2222-4222-8222-222222222222',
+      );
+      (service as any).countCompletedSteps = jest.fn().mockResolvedValue(1);
+      (service as any).countSteps = jest.fn().mockResolvedValue(1);
+      (service as any).updateTaskStateRaw = jest.fn().mockResolvedValue(
+        taskRow({ state: 'VERIFYING', completed_step_count: 1 }),
+      );
+
+      database.query.mockResolvedValueOnce({ rows: [] });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action(),
+        actionToken: 'token',
+      });
+      toolGateway.execute.mockResolvedValue(gatewayOutcome());
+
+      await service.executeStep(
+        tenantId, factoryId, userId, taskId, stepId,
+      );
+
+      expect(aiAgentCatalogueService.assertToolEntitled).not.toHaveBeenCalled();
+      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledTimes(1);
+      expect(toolGateway.execute).toHaveBeenCalledTimes(1);
     });
 
     it('keeps gateway execution fail-closed when the gateway rejects', async () => {
