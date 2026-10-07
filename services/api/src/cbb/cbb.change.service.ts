@@ -13,13 +13,23 @@ import type {
   PoolClient,
   QueryResultRow,
 } from 'pg';
-import { BusinessChangeState, BusinessChangeTargetType } from './dto/create-business-change.dto';
-import { BusinessChangeStatus } from './dto/list-business-changes.dto';
-import { DatabaseService } from '../database/database.service';
-import { AuditService } from '../audit/audit.service';
 
+import {
+  BusinessChangeState,
+  BusinessChangeTargetType,
+} from './dto/create-business-change.dto';
 
+import {
+  BusinessChangeStatus,
+} from './dto/list-business-changes.dto';
 
+import {
+  DatabaseService,
+} from '../database/database.service';
+
+import {
+  AuditService,
+} from '../audit/audit.service';
 
 interface ChangeProposalRow
   extends QueryResultRow {
@@ -30,6 +40,18 @@ interface ChangeProposalRow
   factory_id: string;
 
   blueprint_id: string;
+
+  source_version_id:
+    | string
+    | null;
+
+  promoted_version_id:
+    | string
+    | null;
+
+  promoted_at:
+    | string
+    | null;
 
   target_type:
     BusinessChangeTargetType;
@@ -226,6 +248,7 @@ export class CbbChangeService {
                 tenant_id,
                 factory_id,
                 blueprint_id,
+                source_version_id,
                 target_type,
                 target_id,
                 proposal_type,
@@ -244,10 +267,11 @@ export class CbbChangeService {
                 $5,
                 $6,
                 $7,
-                $8::jsonb,
+                $8,
+                $9::jsonb,
                 'PENDING',
-                $9,
-                $10
+                $10,
+                $11
               )
 
               RETURNING
@@ -261,6 +285,15 @@ export class CbbChangeService {
 
                 blueprint_id::text
                   AS blueprint_id,
+
+                source_version_id::text
+                  AS source_version_id,
+
+                promoted_version_id::text
+                  AS promoted_version_id,
+
+                promoted_at::text
+                  AS promoted_at,
 
                 target_type,
 
@@ -295,6 +328,7 @@ export class CbbChangeService {
                 tenantId,
                 factoryId,
                 blueprint.id,
+                blueprint.current_version_id,
                 normalized.targetType,
                 normalized.targetId,
                 normalized.proposalType,
@@ -342,6 +376,9 @@ export class CbbChangeService {
 
         blueprintId:
           created.blueprint_id,
+
+        sourceVersionId:
+          created.source_version_id,
 
         targetType:
           created.target_type,
@@ -478,6 +515,15 @@ export class CbbChangeService {
 
           cp.blueprint_id::text
             AS blueprint_id,
+
+          cp.source_version_id::text
+            AS source_version_id,
+
+          cp.promoted_version_id::text
+            AS promoted_version_id,
+
+          cp.promoted_at::text
+            AS promoted_at,
 
           cp.target_type,
 
@@ -876,6 +922,15 @@ export class CbbChangeService {
           blueprint_id::text
             AS blueprint_id,
 
+          source_version_id::text
+            AS source_version_id,
+
+          promoted_version_id::text
+            AS promoted_version_id,
+
+          promoted_at::text
+            AS promoted_at,
+
           target_type,
 
           target_id::text
@@ -971,6 +1026,9 @@ export class CbbChangeService {
 
         blueprintId:
           row.blueprint_id,
+
+        sourceVersionId:
+          row.source_version_id,
 
         targetType:
           row.target_type,
@@ -1341,6 +1399,15 @@ export class CbbChangeService {
           cp.blueprint_id::text
             AS blueprint_id,
 
+          cp.source_version_id::text
+            AS source_version_id,
+
+          cp.promoted_version_id::text
+            AS promoted_version_id,
+
+          cp.promoted_at::text
+            AS promoted_at,
+
           cp.target_type,
 
           cp.target_id::text
@@ -1420,6 +1487,15 @@ export class CbbChangeService {
 
       blueprintId:
         row.blueprint_id,
+
+      sourceVersionId:
+        row.source_version_id,
+
+      promotedVersionId:
+        row.promoted_version_id,
+
+      promotedAt:
+        row.promoted_at,
 
       targetType:
         row.target_type,

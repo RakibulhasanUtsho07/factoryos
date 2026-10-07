@@ -15,9 +15,10 @@ import type {
   PoolClient,
   QueryResultRow,
 } from 'pg';
-import { CbbChangeService } from './cbb.change.service';
 
-
+import {
+  CbbChangeService,
+} from './cbb.change.service';
 
 type TestQueryResult = {
   rows: QueryResultRow[];
@@ -121,6 +122,9 @@ describe(
     const proposalId =
       'a0000000-0000-4000-8000-000000000001';
 
+    const promotedVersionId =
+      'd0000000-0000-4000-8000-000000000001';
+
     const feedbackId =
       'f0000000-0000-4000-8000-000000000001';
 
@@ -144,7 +148,7 @@ describe(
     // ==========================================================
 
     it(
-      'creates a pending business change proposal',
+      'creates a pending business change proposal pinned to the current blueprint version',
       async () => {
         queryMock
           .mockResolvedValueOnce({
@@ -182,6 +186,15 @@ describe(
 
                 blueprint_id:
                   blueprintId,
+
+                source_version_id:
+                  versionId,
+
+                promoted_version_id:
+                  null,
+
+                promoted_at:
+                  null,
 
                 target_type:
                   'ENTITY',
@@ -285,6 +298,20 @@ describe(
         );
 
         expect(
+          result.sourceVersionId,
+        ).toBe(
+          versionId,
+        );
+
+        expect(
+          result.promotedVersionId,
+        ).toBeNull();
+
+        expect(
+          result.promotedAt,
+        ).toBeNull();
+
+        expect(
           transactionMock,
         ).toHaveBeenCalledTimes(
           1,
@@ -294,6 +321,29 @@ describe(
           auditRecordMock,
         ).toHaveBeenCalledTimes(
           1,
+        );
+
+        expect(
+          auditRecordMock.mock.calls[0]?.[0],
+        ).toEqual(
+          expect.objectContaining({
+            tenantId,
+            actorUserId:
+              userId,
+            eventType:
+              'BUSINESS_MODEL_CHANGE',
+            action:
+              'CREATE_PROPOSAL',
+            resourceType:
+              'BUSINESS_CHANGE_PROPOSAL',
+            resourceId:
+              proposalId,
+            payload:
+              expect.objectContaining({
+                sourceVersionId:
+                  versionId,
+              }),
+          }),
         );
       },
     );
@@ -368,7 +418,7 @@ describe(
     // ==========================================================
 
     it(
-      'approves a pending proposal',
+      'approves a pending proposal without mutating the blueprint graph',
       async () => {
         queryMock.mockResolvedValueOnce({
           rows: [
@@ -384,6 +434,15 @@ describe(
 
               blueprint_id:
                 blueprintId,
+
+              source_version_id:
+                versionId,
+
+              promoted_version_id:
+                null,
+
+              promoted_at:
+                null,
 
               target_type:
                 'ENTITY',
@@ -452,9 +511,35 @@ describe(
         );
 
         expect(
+          result.sourceVersionId,
+        ).toBe(
+          versionId,
+        );
+
+        expect(
+          result.promotedVersionId,
+        ).toBeNull();
+
+        expect(
+          result.promotedAt,
+        ).toBeNull();
+
+        expect(
           auditRecordMock,
         ).toHaveBeenCalledTimes(
           1,
+        );
+
+        expect(
+          auditRecordMock.mock.calls[0]?.[0],
+        ).toEqual(
+          expect.objectContaining({
+            payload:
+              expect.objectContaining({
+                sourceVersionId:
+                  versionId,
+              }),
+          }),
         );
       },
     );
@@ -513,6 +598,15 @@ describe(
 
               blueprint_id:
                 blueprintId,
+
+              source_version_id:
+                versionId,
+
+              promoted_version_id:
+                null,
+
+              promoted_at:
+                null,
 
               target_type:
                 'ENTITY',
@@ -581,6 +675,20 @@ describe(
         );
 
         expect(
+          result.sourceVersionId,
+        ).toBe(
+          versionId,
+        );
+
+        expect(
+          result.promotedVersionId,
+        ).toBeNull();
+
+        expect(
+          result.promotedAt,
+        ).toBeNull();
+
+        expect(
           auditRecordMock,
         ).toHaveBeenCalledTimes(
           1,
@@ -614,6 +722,15 @@ describe(
 
                 blueprint_id:
                   blueprintId,
+
+                source_version_id:
+                  versionId,
+
+                promoted_version_id:
+                  promotedVersionId,
+
+                promoted_at:
+                  '2026-10-06T02:00:00.000Z',
 
                 target_type:
                   'ENTITY',
@@ -755,7 +872,7 @@ describe(
         ).toEqual({
           note:
             'Wrong name',
-      });
+        });
 
         expect(
           result.tenantId,
@@ -807,4 +924,3 @@ describe(
     );
   },
 );
-
