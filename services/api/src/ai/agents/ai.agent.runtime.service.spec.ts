@@ -188,8 +188,8 @@ describe(
     let service: AiAgentRuntimeService;
 
     const database = {
-      query: jest.fn(),
-      transaction: jest.fn(),
+      query: jest.fn<() => Promise<unknown>>(),
+      transaction: jest.fn<() => Promise<unknown>>(),
     };
 
     const auditService = {
@@ -201,19 +201,19 @@ describe(
     };
 
     const aiRuntimeService = {
-      authorizeAction: jest.fn(),
+      authorizeAction: jest.fn<() => Promise<unknown>>(),
     };
 
     const aiAgentCatalogueService = {
-      assertToolEntitled: jest.fn(),
+      assertToolEntitled: jest.fn<() => Promise<unknown>>(),
     };
 
     const toolGateway = {
-      execute: jest.fn(),
+      execute: jest.fn<() => Promise<unknown>>(),
     };
 
     const toolRegistry = {
-      getTool: jest.fn(),
+      getTool: jest.fn<() => Promise<unknown>>(),
     };
 
     beforeEach(() => {
@@ -243,7 +243,7 @@ describe(
         version: 2,
       });
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(oldTask);
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(oldTask);
       database.query.mockResolvedValueOnce({
         rows: [newTask],
       });
@@ -284,8 +284,8 @@ describe(
         status: 'SUCCEEDED',
       });
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
 
       const result = await service.executeStep(
         tenantId,
@@ -306,8 +306,8 @@ describe(
       });
       const step = stepRow();
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
 
       await expect(
         service.executeStep(
@@ -331,8 +331,8 @@ describe(
       });
       const step = stepRow();
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
 
       await expect(
         service.executeStep(
@@ -365,17 +365,17 @@ describe(
       });
 
       (service as any).requireTask = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValueOnce(task)
         .mockResolvedValueOnce(task);
       (service as any).requireStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValueOnce(step);
       (service as any).updateTaskStateRaw = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(waitingTask);
       (service as any).updateStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(waitingStep);
 
       database.query.mockResolvedValueOnce({
@@ -438,29 +438,29 @@ describe(
       });
 
       (service as any).requireTask = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValueOnce(task)
         .mockResolvedValueOnce(task);
       (service as any).requireStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValueOnce(step);
-      (service as any).assertDependencies = jest.fn();
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
       (service as any).transitionState = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(executingTask);
-      (service as any).claimToolCall = jest.fn();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
       (service as any).updateStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValueOnce(runningStep)
         .mockResolvedValueOnce(succeededStep);
-      (service as any).countCompletedSteps = jest.fn().mockResolvedValue(1);
-      (service as any).countSteps = jest.fn().mockResolvedValue(1);
+      (service as any).countCompletedSteps = jest.fn<() => Promise<unknown>>().mockResolvedValue(1);
+      (service as any).countSteps = jest.fn<() => Promise<unknown>>().mockResolvedValue(1);
       (service as any).updateTaskStateRaw = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(verifyingTask);
-      (service as any).recordAttempt = jest.fn();
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
       (service as any).persistExecutionRecord = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue('bf1a2222-2222-4222-8222-222222222222');
 
       database.query.mockResolvedValueOnce({
@@ -514,27 +514,19 @@ describe(
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow();
 
-      (service as any).requireTask = jest.fn().mockResolvedValue(task);
-      (service as any).requireStep = jest.fn().mockResolvedValue(step);
-      (service as any).assertDependencies = jest.fn();
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
 
       aiAgentCatalogueService.assertToolEntitled.mockRejectedValue(
         new ForbiddenException('AI agent tool is not entitled'),
       );
 
       await expect(
-        service.executeStep(
-          tenantId,
-          factoryId,
-          userId,
-          taskId,
-          stepId,
-        ),
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
       ).rejects.toBeInstanceOf(ForbiddenException);
 
-      expect(
-        aiAgentCatalogueService.assertToolEntitled,
-      ).toHaveBeenCalledWith(
+      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
         tenantId,
         factoryId,
         'AGENT.TEST',
@@ -550,13 +542,16 @@ describe(
       const task = taskRow({
         state: 'EXECUTING',
       });
+
       const step = stepRow({
         agent_id: null,
       });
+
       const runningStep = stepRow({
         status: 'RUNNING',
         action_intent_id: actionIntentId,
       });
+
       const succeededStep = stepRow({
         status: 'SUCCEEDED',
         action_intent_id: actionIntentId,
@@ -566,46 +561,51 @@ describe(
           execution: 'NO_SIDE_EFFECT',
         },
       });
+
       const verifyingTask = taskRow({
         state: 'VERIFYING',
         completed_step_count: 1,
-        version: 2,
       });
 
       (service as any).requireTask = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(task);
+
       (service as any).requireStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(step);
+
       (service as any).assertDependencies =
-        jest.fn();
+        jest.fn<() => Promise<unknown>>();
+
       (service as any).claimToolCall =
-        jest.fn();
+        jest.fn<() => Promise<unknown>>();
+
       (service as any).updateStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValueOnce(runningStep)
         .mockResolvedValueOnce(succeededStep);
+
       (service as any).recordAttempt =
-        jest.fn();
-      (service as any).persistExecutionRecord =
-        jest
-          .fn()
-          .mockResolvedValue(
-            'bf1a2222-2222-4222-8222-222222222222',
-          );
-      (service as any).countCompletedSteps =
-        jest
-          .fn()
-          .mockResolvedValue(1);
-      (service as any).countSteps =
-        jest
-          .fn()
-          .mockResolvedValue(1);
-      (service as any).updateTaskStateRaw =
-        jest
-          .fn()
-          .mockResolvedValue(verifyingTask);
+        jest.fn<() => Promise<unknown>>();
+
+      (service as any).persistExecutionRecord = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(
+          'bf1a2222-2222-4222-8222-222222222222',
+        );
+
+      (service as any).countCompletedSteps = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(1);
+
+      (service as any).countSteps = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(1);
+
+      (service as any).updateTaskStateRaw = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(verifyingTask);
 
       database.query.mockResolvedValueOnce({
         rows: [],
@@ -615,6 +615,7 @@ describe(
         action: action(),
         actionToken: 'token',
       });
+
       toolGateway.execute.mockResolvedValue(
         gatewayOutcome(),
       );
@@ -631,12 +632,15 @@ describe(
       expect(
         aiAgentCatalogueService.assertToolEntitled,
       ).not.toHaveBeenCalled();
+
       expect(
         aiRuntimeService.authorizeAction,
       ).toHaveBeenCalledTimes(1);
+
       expect(
         toolGateway.execute,
       ).toHaveBeenCalledTimes(1);
+
       expect(result.step.status).toBe(
         'SUCCEEDED',
       );
@@ -649,23 +653,23 @@ describe(
       const step = stepRow();
 
       (service as any).requireTask = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(task);
       (service as any).requireStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(step);
-      (service as any).assertDependencies = jest.fn();
-      (service as any).claimToolCall = jest.fn();
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
       (service as any).updateStep = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(
           stepRow({
             status: 'RUNNING',
             action_intent_id: actionIntentId,
           }),
         );
-      (service as any).recordAttempt = jest.fn();
-      (service as any).applyFailure = jest.fn().mockResolvedValue({
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
+      (service as any).applyFailure = jest.fn<() => Promise<unknown>>().mockResolvedValue({
         idempotent: false,
         task: {
           ...task,
@@ -700,9 +704,7 @@ describe(
         stepId,
       );
 
-      expect(result.error?.code).toBe(
-        'AI_TOOL_GATEWAY_FAILURE',
-      );
+      expect(result.error?.code).toBe('AI_TOOL_GATEWAY_FAILURE');
       expect(toolGateway.execute).toHaveBeenCalledTimes(1);
     });
 
@@ -714,34 +716,26 @@ describe(
         status: 'SUCCEEDED',
       });
 
-      (service as any).requireTask =
-        jest.fn().mockResolvedValue(task);
-      (service as any).requireStep =
-        jest.fn().mockResolvedValue(step);
-
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       toolRegistry.getTool.mockResolvedValue({
         rollback: {
           type: 'NONE',
         },
       });
 
-      const result =
-        await service.compensateStep(
-          tenantId,
-          factoryId,
-          userId,
-          taskId,
-          stepId,
-          {},
-        );
+      const result = await service.compensateStep(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        {},
+      );
 
       expect(result.attempted).toBe(false);
-      expect(
-        aiRuntimeService.authorizeAction,
-      ).not.toHaveBeenCalled();
-      expect(
-        toolGateway.execute,
-      ).not.toHaveBeenCalled();
+      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
+      expect(toolGateway.execute).not.toHaveBeenCalled();
     });
 
     it('fails closed when a non-NONE rollback contract is incomplete', async () => {
@@ -752,11 +746,8 @@ describe(
         status: 'SUCCEEDED',
       });
 
-      (service as any).requireTask =
-        jest.fn().mockResolvedValue(task);
-      (service as any).requireStep =
-        jest.fn().mockResolvedValue(step);
-
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       toolRegistry.getTool.mockResolvedValue({
         rollback: {
           type: 'COMPENSATION',
@@ -772,16 +763,92 @@ describe(
           stepId,
           {},
         ),
-      ).rejects.toBeInstanceOf(
-        ConflictException,
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
+      expect(toolGateway.execute).not.toHaveBeenCalled();
+    });
+
+    it('requires the source agent to be entitled to every permitted handoff tool', async () => {
+      aiAgentCatalogueService.assertToolEntitled.mockRejectedValue(
+        new ForbiddenException('AI agent tool is not entitled'),
       );
 
-      expect(
-        aiRuntimeService.authorizeAction,
-      ).not.toHaveBeenCalled();
-      expect(
-        toolGateway.execute,
-      ).not.toHaveBeenCalled();
+      await expect(
+        service.createHandoff(
+          tenantId,
+          factoryId,
+          userId,
+          {
+            sourceAgentId: 'AGENT.SENDER',
+            targetAgentId: 'AGENT.RECEIVER',
+            purpose: 'Check order recovery',
+            allowedDataClasses: ['INTERNAL'],
+            permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            parentTraceId: traceId,
+            expectedArtifact: { type: 'recovery-options' },
+          },
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        'AGENT.SENDER',
+        'AI.RUNTIME.NOOP',
+        '1.0.0',
+      );
+      expect(database.query).not.toHaveBeenCalled();
+    });
+
+    it('creates a handoff only after source entitlement is verified', async () => {
+      const handoff = {
+        id: 'cf1a2222-2222-4222-8222-222222222222',
+        tenant_id: tenantId,
+        factory_id: factoryId,
+        source_agent_id: 'AGENT.SENDER',
+        target_agent_id: 'AGENT.RECEIVER',
+        purpose: 'Check order recovery',
+        allowed_data_classes: ['INTERNAL'],
+        permitted_tools: ['AI.RUNTIME.NOOP@1.0.0'],
+        expires_at: '2099-01-01T00:00:00.000Z',
+        parent_trace_id: traceId,
+        expected_artifact: { type: 'recovery-options' },
+        handoff_hash: 'c'.repeat(64),
+        status: 'PENDING' as const,
+        accepted_by: null,
+        accepted_at: null,
+        created_at: '2026-10-07T00:00:00.000Z',
+        updated_at: '2026-10-07T00:00:00.000Z',
+      };
+
+      database.query.mockResolvedValueOnce({ rows: [handoff] });
+
+      const result = await service.createHandoff(
+        tenantId,
+        factoryId,
+        userId,
+        {
+          sourceAgentId: 'AGENT.SENDER',
+          targetAgentId: 'AGENT.RECEIVER',
+          purpose: 'Check order recovery',
+          allowedDataClasses: ['INTERNAL'],
+          permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          parentTraceId: traceId,
+          expectedArtifact: { type: 'recovery-options' },
+        },
+      );
+
+      expect(result.status).toBe('PENDING');
+      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        'AGENT.SENDER',
+        'AI.RUNTIME.NOOP',
+        '1.0.0',
+      );
     });
 
     it('re-checks receiving permissions for every permitted handoff tool', async () => {
@@ -808,15 +875,13 @@ describe(
       };
 
       (service as any).getHandoff = jest
-        .fn()
+        .fn<() => Promise<unknown>>()
         .mockResolvedValue(handoff);
-
       toolRegistry.getTool.mockResolvedValue({
         requiredScopes: [
           'ai.actions.execute',
         ],
       });
-
       database.query.mockResolvedValueOnce({
         rows: [
           {
@@ -827,26 +892,69 @@ describe(
         ],
       });
 
-      const result =
-        await service.acceptHandoff(
-          tenantId,
-          factoryId,
-          userId,
-          handoff.id,
-        );
-
-      expect(result.status).toBe(
-        'ACCEPTED',
+      const result = await service.acceptHandoff(
+        tenantId,
+        factoryId,
+        userId,
+        handoff.id,
       );
 
-      expect(
-        iamService.authorize,
-      ).toHaveBeenLastCalledWith(
+      expect(result.status).toBe('ACCEPTED');
+      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        'AGENT.RECEIVER',
+        'AI.RUNTIME.NOOP',
+        '1.0.0',
+      );
+      expect(iamService.authorize).toHaveBeenLastCalledWith(
         userId,
         tenantId,
         'ai.actions.execute',
         factoryId,
       );
+    });
+
+    it('rejects handoff acceptance when the receiving agent lacks tool entitlement', async () => {
+      const handoff = {
+        id: 'cf1a2222-2222-4222-8222-222222222222',
+        tenantId,
+        factoryId,
+        sourceAgentId: 'AGENT.SENDER',
+        targetAgentId: 'AGENT.RECEIVER',
+        purpose: 'Check order recovery',
+        allowedDataClasses: ['INTERNAL'],
+        permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        parentTraceId: traceId,
+        expectedArtifact: { type: 'recovery-options' },
+        handoffHash: 'c'.repeat(64),
+        status: 'PENDING' as const,
+        acceptedBy: null,
+        acceptedAt: null,
+        createdAt: '2026-10-07T00:00:00.000Z',
+        updatedAt: '2026-10-07T00:00:00.000Z',
+      };
+
+      (service as any).getHandoff = jest.fn<() => Promise<unknown>>().mockResolvedValue(handoff);
+      aiAgentCatalogueService.assertToolEntitled.mockRejectedValue(
+        new ForbiddenException('AI agent tool is not entitled'),
+      );
+
+      await expect(
+        service.acceptHandoff(tenantId, factoryId, userId, handoff.id),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(aiAgentCatalogueService.assertToolEntitled).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        'AGENT.RECEIVER',
+        'AI.RUNTIME.NOOP',
+        '1.0.0',
+      );
+      expect(iamService.authorize).toHaveBeenCalledTimes(0);
+      expect(toolRegistry.getTool).not.toHaveBeenCalled();
+      expect(database.query).not.toHaveBeenCalled();
     });
 
     it('rejects invalid UUID scope before database access', async () => {
@@ -857,13 +965,9 @@ describe(
           userId,
           taskId,
         ),
-      ).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      ).rejects.toBeInstanceOf(BadRequestException);
 
-      expect(
-        database.query,
-      ).not.toHaveBeenCalled();
+      expect(database.query).not.toHaveBeenCalled();
     });
   },
 );

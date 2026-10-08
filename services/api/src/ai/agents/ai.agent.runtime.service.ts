@@ -1161,6 +1161,13 @@ export class AiAgentRuntimeService {
       );
     }
 
+    await this.assertHandoffToolEntitlements(
+      tenantId,
+      factoryId,
+      sourceAgentId,
+      permittedTools,
+    );
+
     const handoffHash = this.computeHash({
       tenantId,
       factoryId,
@@ -1300,6 +1307,15 @@ export class AiAgentRuntimeService {
 
       throw new ConflictException('AI agent handoff has expired');
     }
+
+    // Handoff does not transfer sender authority. The receiving agent
+    // must independently hold a current entitlement for every permitted tool.
+    await this.assertHandoffToolEntitlements(
+      tenantId,
+      factoryId,
+      handoff.targetAgentId,
+      handoff.permittedTools,
+    );
 
     for (const reference of handoff.permittedTools) {
       const { toolId, version } = this.parseToolReference(reference);
@@ -2469,6 +2485,32 @@ export class AiAgentRuntimeService {
     return result.rows[0]
       ? this.mapHandoff(result.rows[0])
       : null;
+  }
+
+  private async assertHandoffToolEntitlements(
+    tenantId: string,
+    factoryId: string,
+    agentId: string,
+    permittedTools: string[],
+  ): Promise<void> {
+    const normalizedAgentId = this.requiredString(
+      agentId,
+      'agentId',
+      200,
+    );
+
+    for (const reference of permittedTools) {
+      const { toolId, version } =
+        this.parseToolReference(reference);
+
+      await this.aiAgentCatalogueService.assertToolEntitled(
+        tenantId,
+        factoryId,
+        normalizedAgentId,
+        toolId,
+        version,
+      );
+    }
   }
 
   private toGatewayAction(
