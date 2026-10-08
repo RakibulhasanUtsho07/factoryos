@@ -6,13 +6,15 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 import { PolicyModule } from '../policy/policy.module';
 
+import { AiAgentCatalogueController } from './agents/ai.agent.catalogue.controller';
+import { AiAgentCatalogueService } from './agents/ai.agent.catalogue.service';
 import { AiAgentController } from './agents/ai.agent.controller';
 import { AiAgentRuntimeService } from './agents/ai.agent.runtime.service';
+import { AiAgentStudioController } from './agents/ai.agent.studio.controller';
+import { AiAgentStudioService } from './agents/ai.agent.studio.service';
 import { AiController } from './ai.controller';
 import { AiRuntimeService } from './ai.runtime.service';
 import { AiToolModule } from './ai.tool.module';
-import { AiAgentCatalogueController } from './agents/ai.agent.catalogue.controller';
-import { AiAgentCatalogueService } from './agents/ai.agent.catalogue.service';
 
 @Module({
   imports: [
@@ -27,16 +29,19 @@ import { AiAgentCatalogueService } from './agents/ai.agent.catalogue.service';
     AiController,
     AiAgentController,
     AiAgentCatalogueController,
+    AiAgentStudioController,
   ],
   providers: [
     AiRuntimeService,
     AiAgentRuntimeService,
     AiAgentCatalogueService,
+    AiAgentStudioService,
   ],
   exports: [
     AiRuntimeService,
     AiAgentRuntimeService,
     AiAgentCatalogueService,
+    AiAgentStudioService,
   ],
 })
 export class AiModule {}
