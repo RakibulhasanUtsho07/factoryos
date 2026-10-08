@@ -1,4 +1,5 @@
-import type { PolicyEvaluationOutcome } from '../../../policy/policy.service';
+import { PolicyEvaluationOutcome } from "../../policy/policy.service";
+
 
 export type AiAgentStudioPolicySimulationStatus =
   | 'COMPLETED'
