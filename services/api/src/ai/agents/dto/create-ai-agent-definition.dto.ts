@@ -3,6 +3,9 @@ import type {
 } from '../../tools/ai.tool.types';
 
 import {
+  ArrayMaxSize,
+  ArrayUnique,
+  IsArray,
   IsInt,
   IsObject,
   IsOptional,
@@ -46,6 +49,14 @@ export class CreateAiAgentDefinitionDto {
   @IsString()
   @MaxLength(20)
   risk_ceiling?: AiToolRiskClass;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  execution_scopes?: string[];
 
   @IsOptional()
   @IsString()

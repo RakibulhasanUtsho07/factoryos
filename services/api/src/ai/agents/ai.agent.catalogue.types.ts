@@ -21,6 +21,7 @@ export interface CreateAiAgentDefinitionInput {
   typicalOutput: string;
   authority: string;
   riskCeiling?: AiToolRiskClass;
+  executionScopes?: string[];
   status?: AiAgentCatalogueStatus;
   maxSteps?: number;
   maxRetries?: number;
@@ -41,6 +42,7 @@ export interface AiAgentDefinition {
   typicalOutput: string;
   authority: string;
   riskCeiling: AiToolRiskClass;
+  executionScopes: string[];
   status: AiAgentCatalogueStatus;
   maxSteps: number;
   maxRetries: number;

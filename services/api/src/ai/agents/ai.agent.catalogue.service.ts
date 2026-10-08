@@ -57,6 +57,7 @@ interface AgentDefinitionRow extends QueryResultRow {
   typical_output: string;
   authority: string;
   risk_ceiling: AiToolRiskClass;
+  execution_scopes: string[];
   status: AiAgentCatalogueStatus;
   max_steps: number;
   max_retries: number;
@@ -135,6 +136,7 @@ export class AiAgentCatalogueService {
             typical_output,
             authority,
             risk_ceiling,
+            execution_scopes,
             status,
             max_steps,
             max_retries,
@@ -160,7 +162,8 @@ export class AiAgentCatalogueService {
             $14,
             $15,
             $16,
-            $17
+            $17,
+            $18
           )
           RETURNING
             id::text AS id,
@@ -174,6 +177,7 @@ export class AiAgentCatalogueService {
             typical_output,
             authority,
             risk_ceiling,
+            execution_scopes,
             status,
             max_steps,
             max_retries,
@@ -195,6 +199,7 @@ export class AiAgentCatalogueService {
             normalized.typicalOutput,
             normalized.authority,
             normalized.riskCeiling,
+            normalized.executionScopes,
             normalized.status,
             normalized.maxSteps,
             normalized.maxRetries,
@@ -230,6 +235,7 @@ export class AiAgentCatalogueService {
           version: mapped.version,
           status: mapped.status,
           riskCeiling: mapped.riskCeiling,
+          executionScopes: mapped.executionScopes,
           result: 'CREATED',
         },
       });
@@ -277,6 +283,7 @@ export class AiAgentCatalogueService {
           d.typical_output,
           d.authority,
           d.risk_ceiling,
+          d.execution_scopes,
           d.status,
           d.max_steps,
           d.max_retries,
@@ -385,6 +392,7 @@ export class AiAgentCatalogueService {
           d.typical_output,
           d.authority,
           d.risk_ceiling,
+          d.execution_scopes,
           d.status,
           d.max_steps,
           d.max_retries,
@@ -458,6 +466,7 @@ export class AiAgentCatalogueService {
           d.typical_output,
           d.authority,
           d.risk_ceiling,
+          d.execution_scopes,
           d.status,
           d.max_steps,
           d.max_retries,
@@ -620,6 +629,10 @@ export class AiAgentCatalogueService {
       );
 
     this.assertToolRiskWithinAgentCeiling(
+      agent,
+      tool,
+    );
+    this.assertToolScopesWithinAgentExecutionScopes(
       agent,
       tool,
     );
@@ -987,6 +1000,10 @@ export class AiAgentCatalogueService {
       agent,
       tool,
     );
+    this.assertToolScopesWithinAgentExecutionScopes(
+      agent,
+      tool,
+    );
 
     const result =
       await this.database.query<AgentToolGrantRow>(
@@ -1159,6 +1176,11 @@ export class AiAgentCatalogueService {
 
     this.validateStatus(status);
 
+    const executionScopes =
+      this.normalizeExecutionScopes(
+        input.executionScopes,
+      );
+
     return {
       agentId: this.requiredString(
         input.agentId,
@@ -1200,6 +1222,7 @@ export class AiAgentCatalogueService {
         500,
       ),
       riskCeiling,
+      executionScopes,
       status,
       maxSteps: this.normalizeBound(
         input.maxSteps,
@@ -1252,6 +1275,32 @@ export class AiAgentCatalogueService {
     }
   }
 
+  private assertToolScopesWithinAgentExecutionScopes(
+    agent: AiAgentDefinition,
+    tool: AiToolDefinition,
+  ): void {
+    const allowedScopes = new Set(
+      Array.isArray(agent.executionScopes)
+        ? agent.executionScopes
+        : [],
+    );
+
+    const requiredScopes =
+      Array.isArray(tool.requiredScopes)
+        ? tool.requiredScopes
+        : [];
+
+    const missingScopes = requiredScopes.filter(
+      (scope) => !allowedScopes.has(scope),
+    );
+
+    if (missingScopes.length > 0) {
+      throw new ForbiddenException(
+        `AI agent execution scopes do not permit tool ${tool.toolId}@${tool.version}; missing scopes: ${missingScopes.join(', ')}`,
+      );
+    }
+  }
+
   private mapAgentDefinition(
     row: AgentDefinitionRow,
   ): AiAgentDefinition {
@@ -1267,6 +1316,9 @@ export class AiAgentCatalogueService {
       typicalOutput: row.typical_output,
       authority: row.authority,
       riskCeiling: row.risk_ceiling,
+      executionScopes: Array.isArray(row.execution_scopes)
+        ? [...row.execution_scopes]
+        : [],
       status: row.status,
       maxSteps: row.max_steps,
       maxRetries: row.max_retries,
@@ -1353,6 +1405,61 @@ export class AiAgentCatalogueService {
         `${field} must be a valid UUID`,
       );
     }
+  }
+
+  private normalizeExecutionScopes(
+    value: unknown,
+  ): string[] {
+    if (
+      value === undefined ||
+      value === null
+    ) {
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new BadRequestException(
+        'executionScopes must be an array',
+      );
+    }
+
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+
+    for (const [index, rawScope] of value.entries()) {
+      if (typeof rawScope !== 'string') {
+        throw new BadRequestException(
+          `executionScopes[${index}] must be a string`,
+        );
+      }
+
+      const scope = rawScope.trim();
+
+      if (!scope) {
+        throw new BadRequestException(
+          `executionScopes[${index}] must not be empty`,
+        );
+      }
+
+      if (scope.length > 200) {
+        throw new BadRequestException(
+          `executionScopes[${index}] must not exceed 200 characters`,
+        );
+      }
+
+      if (!seen.has(scope)) {
+        seen.add(scope);
+        normalized.push(scope);
+      }
+    }
+
+    if (normalized.length > 100) {
+      throw new BadRequestException(
+        'executionScopes must contain at most 100 unique scopes',
+      );
+    }
+
+    return normalized;
   }
 
   private normalizeBound(
