@@ -21,6 +21,49 @@ DO UPDATE SET
   status = 'ACTIVE';
 
 
+
+-- Two early factories under one tenant keep order-read integration fixtures
+-- within a single tenant while still exercising cross-factory isolation.
+INSERT INTO factories (
+  tenant_id,
+  code,
+  name,
+  status
+)
+SELECT
+  t.id,
+  'CI-FACTORY-B',
+  'FactoryOS CI Factory B',
+  'ACTIVE'
+FROM tenants t
+WHERE t.slug = 'factoryos-demo'
+ON CONFLICT (tenant_id, code)
+DO UPDATE SET
+  name = EXCLUDED.name,
+  status = 'ACTIVE';
+
+-- Legacy order/outbox tests use this fixed actor identity. Keep it isolated
+-- to the disposable PostgreSQL test database.
+INSERT INTO users (
+  id,
+  external_subject,
+  email,
+  display_name,
+  status
+) VALUES (
+  '921382b8-e83f-43ab-a576-e3db6a06b70c',
+  'factoryos-ci-legacy-test-user',
+  'ci-legacy-test-user@factoryos.local',
+  'FactoryOS CI Legacy Test User',
+  'ACTIVE'
+)
+ON CONFLICT (id) DO UPDATE
+SET
+  external_subject = EXCLUDED.external_subject,
+  email = EXCLUDED.email,
+  display_name = EXCLUDED.display_name,
+  status = 'ACTIVE';
+
 -- Legacy integration suites use this isolated fixed tenant/factory fixture.
 -- These identifiers exist only inside the disposable CI database.
 INSERT INTO tenants (
