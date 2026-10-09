@@ -49,12 +49,6 @@ type PromotionOperation =
   | 'SET_STATE'
   | 'RETIRE';
 
-type VersionedTargetType =
-  Exclude<
-    BusinessChangeTargetType,
-    'BLUEPRINT'
-  >;
-
 // ============================================================
 // CHANGE PROPOSAL
 // ============================================================
@@ -1485,7 +1479,7 @@ export class CbbPromotionService {
     tenantId: string,
     factoryId: string,
     versionId: string,
-    blueprintId: string,
+    _blueprintId: string,
   ): Promise<ClonedGraph> {
     const entitiesResult =
       await client.query<EntityGraphRow>(

@@ -33,44 +33,6 @@ describe(
     const correlationId =
       randomUUID();
 
-    async function transaction<T>(
-      callback: (
-        client: import('pg').PoolClient,
-      ) => Promise<T>,
-    ): Promise<T> {
-      const client =
-        await appPool.connect();
-
-      try {
-        await client.query(
-          'BEGIN',
-        );
-
-        const result =
-          await callback(
-            client,
-          );
-
-        await client.query(
-          'COMMIT',
-        );
-
-        return result;
-      } catch (error) {
-        try {
-          await client.query(
-            'ROLLBACK',
-          );
-        } catch {
-          // Preserve original error.
-        }
-
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-
     beforeAll(async () => {
       const databaseUrl =
         process.env.DATABASE_URL;

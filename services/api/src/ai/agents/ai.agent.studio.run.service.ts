@@ -21,7 +21,6 @@ import type {
   AiAgentStudioSandboxRecord,
   AiAgentStudioSimulationRun,
   AiAgentStudioSpec,
-  AiAgentStudioToolSpec,
 } from './ai.agent.studio.types';
 import type {
   AiAgentStudioExpectedToolCall,
