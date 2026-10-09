@@ -1,0 +1,188 @@
+openapi: 3.1.0
+
+info:
+  title: FactoryOS API
+  version: 0.1.0
+  description: FactoryOS core platform API
+
+servers:
+  - url: http://localhost:4000
+
+tags:
+  - name: Health
+  - name: Tenants
+  - name: Factories
+  - name: Users
+
+paths:
+
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/tenants:
+    get:
+      tags: [Tenants]
+      operationId: listTenants
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of accessible tenants
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tenant"
+
+  /api/v1/factories:
+    get:
+      tags: [Factories]
+      operationId: listFactories
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: List of accessible factories
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Factory"
+
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    TenantId:
+      name: X-Tenant-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: api-gateway
+
+    Tenant:
+      type: object
+      required:
+        - id
+        - slug
+        - name
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+            - ACTIVE
+            - SUSPENDED
+            - ARCHIVED
+
+    Factory:
+      type: object
+      required:
+        - id
+        - tenantId
+        - code
+        - name
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenantId:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+            - ACTIVE
+            - INACTIVE
+
+    User:
+      type: object
+      required:
+        - id
+        - displayName
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        status:
+          type: string
+          enum:
+            - ACTIVE
+            - INVITED
+            - DISABLED
