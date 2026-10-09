@@ -1,0 +1,194 @@
+name: API PostgreSQL CI
+
+on:
+  pull_request:
+    paths:
+      - 'services/api/**'
+      - 'migrations/**'
+      - 'scripts/seed-dev-iam.sql'
+      - 'scripts/seed-dev-factory-manager.sql'
+      - '.github/workflows/api-postgres-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'services/api/**'
+      - 'migrations/**'
+      - 'scripts/seed-dev-iam.sql'
+      - 'scripts/seed-dev-factory-manager.sql'
+      - '.github/workflows/api-postgres-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-postgres-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-postgres-only
+          POSTGRES_DB: factoryos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factoryos_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
+      TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test
+      B19_TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+      JWT_SECRET: ci-only-not-a-production-secret
+      NODE_ENV: test
+      PORT: 3001
+      AUTH_MODE: dev
+      DEV_AUTH_ENABLED: 'false'
+      DEV_AUTH_SECRET: ci-only-dev-secret
+      OUTBOX_DISPATCHER_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Initialize isolated PostgreSQL test database
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PGPASSWORD=ci-postgres-only
+
+          # These numbered files are not a simple lexical sequence:
+          # 003_outbox_event_envelope alters outbox_events created by 004_orders_outbox.
+          migrations=(
+            migrations/001_init.sql
+            migrations/002_auth_identity.sql
+            migrations/003_auth_identity_management.sql
+            migrations/004_orders_outbox.sql
+            migrations/003_outbox_event_envelope.sql
+            migrations/004_outbox_dlq_replay.sql
+            migrations/005_outbox_dispatcher.sql
+            migrations/006_inbox_idempotency.sql
+            migrations/007_order_event_projection.sql
+            migrations/008_order_idempotency.sql
+            migrations/009_tenant_integrity_hardening.sql
+            migrations/010_postgres_rls_tenant_context.sql
+            migrations/011_entitlement_feature_flags.sql
+            migrations/012_admin_control_plane_permissions.sql
+            migrations/013_policy_risk_approvals.sql
+            migrations/014_cbb_business_model.sql
+            migrations/015_cbb_change_promotion.sql
+            migrations/016_ai_runtime_wave1.sql
+            migrations/017_ai_governed_actions_learning.sql
+            migrations/018_ai_tool_registry.sql
+            migrations/019_ai_agent_runtime.sql
+            migrations/020_ai_agent_catalogue.sql
+            migrations/021_ai_agent_execution_scopes.sql
+            migrations/022_ai_agent_studio_sandbox.sql
+            migrations/023_ai_agent_publication_rollout.sql
+            migrations/024_ai_agent_workflow_drafts.sql
+            migrations/025_ai_tool_action_binding.sql
+            migrations/026_ai_action_binding_integrity.sql
+            migrations/027_ai_execution_idempotency_claims.sql
+            migrations/028_ai_execution_claim_reconciliation.sql
+          )
+
+          for migration in "${migrations[@]}"; do
+            echo "Applying $migration"
+            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+              -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factoryos_app') THEN
+              CREATE ROLE factoryos_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+            ELSE
+              ALTER ROLE factoryos_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+            END IF;
+          END;
+          $$;
+          GRANT CONNECT ON DATABASE factoryos_test TO factoryos_app;
+          GRANT USAGE ON SCHEMA public TO factoryos_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO factoryos_app;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO factoryos_app;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO factoryos_app;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
+          SQL
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/seed-dev-iam.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
+
+          # B19 tests clone only this dedicated, idle template DB.
+          psql "postgresql://postgres@127.0.0.1:5432/postgres" \
+            -v ON_ERROR_STOP=1 -c \
+            'CREATE DATABASE factoryos_b19_restore_test_ci TEMPLATE factoryos_test'
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_b19_restore_test_ci" \
+            -v ON_ERROR_STOP=1 -c \
+            "SELECT version FROM schema_migrations WHERE version = '028_ai_execution_claim_reconciliation'"
+
+      - name: Prepare Jest environment file
+        shell: bash
+        run: |
+          cat > services/api/.env <<'EOF'
+          NODE_ENV=test
+          PORT=3001
+          DATABASE_URL=postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
+          TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test
+          B19_TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+          JWT_SECRET=ci-only-not-a-production-secret
+          AUTH_MODE=dev
+          DEV_AUTH_ENABLED=false
+          DEV_AUTH_SECRET=ci-only-dev-secret
+          OUTBOX_DISPATCHER_ENABLED=false
+          EOF
+
+      - name: Lint API
+        working-directory: services/api
+        run: npm run lint
+
+      - name: Build API
+        working-directory: services/api
+        run: npm run build
+
+      - name: Run isolated PostgreSQL integration suites
+        working-directory: services/api
+        run: |
+          node --experimental-vm-modules ../../node_modules/jest/bin/jest.js \
+            --config ./jest.config.cjs \
+            --runInBand \
+            --runTestsByPath \
+            src/ai/ai.runtime.execution-claim-concurrency.postgres.integration.spec.ts \
+            src/ai/ai.runtime.execution-claim-recovery.postgres.integration.spec.ts \
+            src/ai/tools/ai.tool.registry.postgres.integration.spec.ts \
+            src/ai/tools/ai.tool.registry.lifecycle.postgres.integration.spec.ts \
+            src/database/database-tenant-isolation.integration.spec.ts \
+            src/entitlements/entitlement.service.integration.spec.ts \
+            src/entitlements/feature-flag.service.integration.spec.ts
+

@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS agent_sandboxes (
         REFERENCES users (id)
         ON DELETE SET NULL,
 
+    CONSTRAINT uq_agent_sandbox_id_scope
+        UNIQUE (id, tenant_id, factory_id),
+
     CONSTRAINT chk_agent_sandbox_name
         CHECK (LENGTH(BTRIM(name)) > 0),
 
@@ -150,9 +153,6 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
         FOREIGN KEY (factory_id, tenant_id)
         REFERENCES factories (id, tenant_id)
         ON DELETE RESTRICT,
-
-    CONSTRAINT uq_agent_sandbox_id_scope
-        UNIQUE (id, tenant_id, factory_id),
 
     CONSTRAINT fk_simulation_run_sandbox_scope
         FOREIGN KEY (
