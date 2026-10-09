@@ -4,7 +4,6 @@ import {
 } from 'node:crypto';
 
 import {
-  BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
 
