@@ -1,0 +1,55 @@
+name: API CI
+
+on:
+  pull_request:
+    paths:
+      - 'services/api/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/api-ci.yml'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'services/api/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/api-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Prepare isolated API test environment
+        shell: bash
+        run: |
+          cat > services/api/.env <<'EOF'
+          NODE_ENV=test
+          PORT=3001
+          DATABASE_URL=postgresql://factoryos:factoryos@127.0.0.1:5432/factoryos_test
+          JWT_SECRET=ci-only-not-a-production-secret
+          AUTH_MODE=dev
+          DEV_AUTH_ENABLED=false
+          EOF
+      - name: Lint API
+        working-directory: services/api
+        run: npm run lint
+      - name: Build API
+        working-directory: services/api
+        run: npm run build
+      - name: Run API unit tests
+        working-directory: services/api
+        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand --testPathIgnorePatterns='\.integration\.spec\.ts$|\.postgres\.integration\.spec\.ts$'

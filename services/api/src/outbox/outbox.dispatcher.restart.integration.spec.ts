@@ -26,9 +26,6 @@ import {
 describe(
   'Outbox dispatcher restart/idempotency boundary',
   () => {
-    const runId =
-      randomUUID();
-
     let pool!: Pool;
 
     let appPool!: Pool;

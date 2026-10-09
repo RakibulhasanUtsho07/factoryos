@@ -26,9 +26,6 @@ import {
 describe(
   'Outbox dispatcher stale lease recovery',
   () => {
-    const runId =
-      randomUUID();
-
     let pool!: Pool;
 
     let appPool!: Pool;

@@ -224,14 +224,8 @@ ON ai_agent_definitions
 FOR EACH ROW
 EXECUTE FUNCTION factoryos_touch_ai_agent_catalogue_updated_at();
 
-DROP TRIGGER IF EXISTS ai_agent_tool_grants_updated_at
-ON ai_agent_tool_grants;
-
-CREATE TRIGGER ai_agent_tool_grants_updated_at
-BEFORE UPDATE
-ON ai_agent_tool_grants
-FOR EACH ROW
-EXECUTE FUNCTION factoryos_touch_ai_agent_catalogue_updated_at();
+-- ai_agent_tool_grants are immutable/versioned and have no updated_at column.
+-- Do not add an updated_at trigger: mutations are rejected below.
 
 -- ------------------------------------------------------------
 -- AGENT TOOL GRANTS
