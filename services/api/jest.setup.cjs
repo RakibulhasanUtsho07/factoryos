@@ -3,16 +3,9 @@ const path = require('node:path');
 
 const envPath = path.resolve(__dirname, '.env');
 
-if (!fs.existsSync(envPath)) {
-  throw new Error(
-    `Jest environment file not found: ${envPath}`,
-  );
-}
-
-const envContent = fs.readFileSync(
-  envPath,
-  'utf8',
-);
+const envContent = fs.existsSync(envPath)
+  ? fs.readFileSync(envPath, 'utf8')
+  : '';
 
 for (const rawLine of envContent.split(/\r?\n/)) {
   const line = rawLine.trim();
