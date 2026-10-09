@@ -153,6 +153,22 @@ jobs:
             -v ON_ERROR_STOP=1 -c \
             "SELECT version FROM schema_migrations WHERE version = '028_ai_execution_claim_reconciliation'"
 
+      - name: Prepare Jest environment file
+        shell: bash
+        run: |
+          cat > services/api/.env <<'EOF'
+          NODE_ENV=test
+          PORT=3001
+          DATABASE_URL=postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
+          TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test
+          B19_TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+          JWT_SECRET=ci-only-not-a-production-secret
+          AUTH_MODE=dev
+          DEV_AUTH_ENABLED=false
+          DEV_AUTH_SECRET=ci-only-dev-secret
+          OUTBOX_DISPATCHER_ENABLED=false
+          EOF
+
       - name: Lint API
         working-directory: services/api
         run: npm run lint
