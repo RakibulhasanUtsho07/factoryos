@@ -30,8 +30,6 @@ describe(
 
     let entitlementAId: string;
 
-    let entitlementBId: string;
-
     beforeAll(
       async () => {
         const databaseUrl =
