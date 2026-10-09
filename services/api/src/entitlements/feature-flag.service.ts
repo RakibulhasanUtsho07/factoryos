@@ -445,27 +445,12 @@ export class FeatureFlagService {
         200,
       );
 
-    let effectiveAt:
-      | string
-      | null;
+    const effectiveAt =
+      this.normalizeOptionalDate(
+        at,
 
-    try {
-      effectiveAt =
-        this.normalizeOptionalDate(
-          at,
-
-          'at',
-        );
-    } catch (
-      error
-    ) {
-      /*
-       * Invalid caller-provided evaluation time is a request
-       * validation error and therefore should not silently become
-       * a disabled flag.
-       */
-      throw error;
-    }
+        'at',
+      );
 
     try {
       const result =
