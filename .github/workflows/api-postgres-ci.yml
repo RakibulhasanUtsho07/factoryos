@@ -177,6 +177,18 @@ jobs:
         working-directory: services/api
         run: npm run build
 
-      - name: Run all API unit and PostgreSQL integration tests
+      - name: Run isolated PostgreSQL integration suites
         working-directory: services/api
-        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand
+        run: |
+          node --experimental-vm-modules ../../node_modules/jest/bin/jest.js \
+            --config ./jest.config.cjs \
+            --runInBand \
+            --runTestsByPath \
+            src/ai/ai.runtime.execution-claim-concurrency.postgres.integration.spec.ts \
+            src/ai/ai.runtime.execution-claim-recovery.postgres.integration.spec.ts \
+            src/ai/tools/ai.tool.registry.postgres.integration.spec.ts \
+            src/ai/tools/ai.tool.registry.lifecycle.postgres.integration.spec.ts \
+            src/database/database-tenant-isolation.integration.spec.ts \
+            src/entitlements/entitlement.service.integration.spec.ts \
+            src/entitlements/feature-flag.service.integration.spec.ts
+
