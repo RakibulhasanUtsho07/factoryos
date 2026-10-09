@@ -8,10 +8,21 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
+      next-framework:
+        applies-to: version-updates
+        patterns:
+          - "next"
+          - "eslint-config-next"
+        update-types:
+          - "minor"
+          - "patch"
       npm-minor-and-patch:
         applies-to: version-updates
         patterns:
           - "*"
+        exclude-patterns:
+          - "next"
+          - "eslint-config-next"
         update-types:
           - "minor"
           - "patch"
