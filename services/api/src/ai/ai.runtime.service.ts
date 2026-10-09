@@ -63,6 +63,10 @@ import {
 } from './dto/create-ai-outcome.dto';
 
 import {
+  ReconcileAiExecutionClaimDto,
+} from './dto/reconcile-ai-execution-claim.dto';
+
+import {
   CreateAiLearningSignalDto,
 } from './dto/create-ai-learning-signal.dto';
 
@@ -187,6 +191,42 @@ interface ExecutionClaimRow extends QueryResultRow {
   failure_code: string | null;
   claimed_at: string;
   completed_at: string | null;
+}
+
+interface ExecutionClaimStaleRow extends QueryResultRow {
+  id: string;
+  action_intent_id: string;
+  execution_key: string;
+  tool_version: string;
+  status: 'CLAIMED';
+  claimed_at: string;
+  age_minutes: number | string;
+  has_execution_record: boolean;
+  execution_record_status: 'SUCCEEDED' | 'FAILED' | null;
+}
+
+interface ExecutionClaimReconciliationPreflightRow extends QueryResultRow {
+  id: string;
+  action_intent_id: string;
+  execution_key: string;
+  tool_version: string;
+  inputs_hash: string;
+  status: 'CLAIMED' | 'COMPLETED' | 'FAILED';
+  claimed_at: string;
+  is_stale: boolean;
+  execution_record_status: 'SUCCEEDED' | 'FAILED' | null;
+  record_execution_key: string | null;
+  record_tool_version: string | null;
+  record_inputs_hash: string | null;
+}
+
+interface ExecutionClaimReconciliationResultRow extends QueryResultRow {
+  reconciliation_id: string;
+  claim_id: string;
+  decision: 'CONFIRMED_COMPLETED' | 'CONFIRMED_FAILED';
+  resulting_status: 'COMPLETED' | 'FAILED';
+  reconciled_at: string;
+  evidence_ref: string;
 }
 
 interface OutcomeRow extends QueryResultRow {
@@ -1543,90 +1583,180 @@ export class AiRuntimeService {
   // ============================================================
 
   async executeAction(
-    tenantId: string,
-    factoryId: string,
-    actorUserId: string,
-    input: ExecuteAiActionDto,
+  tenantId: string,
+  factoryId: string,
+  actorUserId: string,
+  input: ExecuteAiActionDto,
+) {
+  this.validateScope(tenantId, factoryId);
+  this.validateUuid(actorUserId, 'actorUserId');
+
+  await this.iamService.authorize(
+    actorUserId,
+    tenantId,
+    'ai.actions.execute',
+    factoryId,
+  );
+
+  const actionToken = this.requiredString(
+    input.action_token,
+    'action_token',
+    255,
+  );
+
+  const executionKey = this.requiredString(
+    input.execution_key,
+    'execution_key',
+    255,
+  );
+
+  const toolVersion = this.requiredString(
+    input.tool_version,
+    'tool_version',
+    100,
+  );
+
+  const tokenHash = this.computeHash(actionToken);
+
+  const action = await this.getActionIntentByTokenHash(
+    tenantId,
+    factoryId,
+    tokenHash,
+  );
+
+  if (!action) {
+    throw new NotFoundException(
+      'AI action token was not found for this factory',
+    );
+  }
+
+  if (action.authorization_status !== 'AUTHORIZED') {
+    throw new ConflictException(
+      'AI action intent is not authorized for execution',
+    );
+  }
+
+  if (!action.tool_id || !action.tool_version) {
+    throw new ConflictException(
+      'AI action intent is not bound to a registered tool version',
+    );
+  }
+
+  if (
+    action.tool_id !== action.action_type ||
+    toolVersion !== action.tool_version
   ) {
-    this.validateScope(tenantId, factoryId);
-    this.validateUuid(actorUserId, 'actorUserId');
+    throw new ConflictException(
+      'Requested tool version does not match the authorization-bound tool version',
+    );
+  }
 
-    await this.iamService.authorize(
-      actorUserId,
+  // Return the existing immutable execution only when its bindings match.
+  const existing = await this.getExecutionByActionIntent(
+    tenantId,
+    factoryId,
+    action.id,
+  );
+
+  if (existing) {
+    this.assertExecutionReplayBinding(
+      existing,
+      executionKey,
+      action.tool_version,
+      action.payload_hash,
+    );
+
+    return {
+      idempotent: true,
+      execution: this.mapExecution(existing),
+    };
+  }
+
+  const executionKeyExisting = await this.getExecutionByKey(
+    tenantId,
+    factoryId,
+    executionKey,
+  );
+
+  if (
+    executionKeyExisting &&
+    executionKeyExisting.action_intent_id !== action.id
+  ) {
+    throw new ConflictException(
+      'execution_key is already bound to a different AI action',
+    );
+  }
+
+  if (executionKeyExisting) {
+    this.assertExecutionReplayBinding(
+      executionKeyExisting,
+      executionKey,
+      action.tool_version,
+      action.payload_hash,
+    );
+
+    return {
+      idempotent: true,
+      execution: this.mapExecution(executionKeyExisting),
+    };
+  }
+
+  if (
+    !action.token_expires_at ||
+    new Date(action.token_expires_at).getTime() <= Date.now()
+  ) {
+    throw new ConflictException(
+      'AI action token has expired',
+    );
+  }
+
+  // Reserve the action before calling the gateway.
+  // A conflicting reservation never permits automatic replay.
+  const claimInsert = await this.database.query<ExecutionClaimRow>(
+    `
+    INSERT INTO ai_execution_claims (
+      id,
+      tenant_id,
+      factory_id,
+      action_intent_id,
+      execution_key,
+      tool_version,
+      inputs_hash,
+      status
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, 'CLAIMED')
+    ON CONFLICT DO NOTHING
+    RETURNING id::text AS id
+    `,
+    [
+      randomUUID(),
       tenantId,
-      'ai.actions.execute',
       factoryId,
-    );
+      action.id,
+      executionKey,
+      action.tool_version,
+      action.payload_hash,
+    ],
+    {
+      tenantId,
+      userId: actorUserId,
+    },
+  );
 
-    const actionToken = this.requiredString(
-      input.action_token,
-      'action_token',
-      255,
-    );
-    const executionKey = this.requiredString(
-      input.execution_key,
-      'execution_key',
-      255,
-    );
-    const toolVersion = this.requiredString(
-      input.tool_version,
-      'tool_version',
-      100,
-    );
-    const tokenHash = this.computeHash(
-      actionToken,
-    );
+  const reservedClaim = claimInsert.rows[0];
 
-    const action =
-      await this.getActionIntentByTokenHash(
-        tenantId,
-        factoryId,
-        tokenHash,
-      );
-
-    if (!action) {
-      throw new NotFoundException(
-        'AI action token was not found for this factory',
-      );
-    }
-
-    if (
-      action.authorization_status !==
-      'AUTHORIZED'
-    ) {
-      throw new ConflictException(
-        'AI action intent is not authorized for execution',
-      );
-    }
-
-    if (
-      !action.tool_id ||
-      !action.tool_version
-    ) {
-      throw new ConflictException(
-        'AI action intent is not bound to a registered tool version',
-      );
-    }
-
-    if (
-      action.tool_id !== action.action_type ||
-      toolVersion !== action.tool_version
-    ) {
-      throw new ConflictException(
-        'Requested tool version does not match the authorization-bound tool version',
-      );
-    }
-
-    const existing =
+  if (!reservedClaim) {
+    // A concurrent request may already have finished the execution.
+    const concurrentExecution =
       await this.getExecutionByActionIntent(
         tenantId,
         factoryId,
         action.id,
       );
 
-    if (existing) {
+    if (concurrentExecution) {
       this.assertExecutionReplayBinding(
-        existing,
+        concurrentExecution,
         executionKey,
         action.tool_version,
         action.payload_hash,
@@ -1634,110 +1764,12 @@ export class AiRuntimeService {
 
       return {
         idempotent: true,
-        execution:
-          this.mapExecution(existing),
+        execution: this.mapExecution(concurrentExecution),
       };
     }
 
-    const executionKeyExisting =
-      await this.getExecutionByKey(
-        tenantId,
-        factoryId,
-        executionKey,
-      );
-
-    if (
-      executionKeyExisting &&
-      executionKeyExisting.action_intent_id !==
-        action.id
-    ) {
-      throw new ConflictException(
-        'execution_key is already bound to a different AI action',
-      );
-    }
-
-    if (executionKeyExisting) {
-      this.assertExecutionReplayBinding(
-        executionKeyExisting,
-        executionKey,
-        action.tool_version,
-        action.payload_hash,
-      );
-
-      return {
-        idempotent: true,
-        execution: this.mapExecution(executionKeyExisting),
-      };
-    }
-
-    // Allow a completed, exactly matching execution to be replayed after
-    // token expiry, but never use an expired token to start new work.
-    if (
-      !action.token_expires_at ||
-      new Date(action.token_expires_at).getTime() <= Date.now()
-    ) {
-      throw new ConflictException(
-        'AI action token has expired',
-      );
-    }
-
-    // Reserve the action and execution key before calling any executor.
-    // Unique constraints serialize concurrent requests across API instances.
-    // A stale CLAIMED row fails closed because an external side effect may
-    // have happened before a process crashed.
-    const claimInsert = await this.database.query<ExecutionClaimRow>(
-      `
-      INSERT INTO ai_execution_claims (
-        id,
-        tenant_id,
-        factory_id,
-        action_intent_id,
-        execution_key,
-        tool_version,
-        inputs_hash,
-        status
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'CLAIMED')
-      ON CONFLICT DO NOTHING
-      RETURNING id::text AS id
-      `,
-      [
-        randomUUID(),
-        tenantId,
-        factoryId,
-        action.id,
-        executionKey,
-        action.tool_version,
-        action.payload_hash,
-      ],
-      { tenantId, userId: actorUserId },
-    );
-
-    if (!claimInsert.rows[0]) {
-      // A concurrent request may have completed between the initial read
-      // and reservation. Replay only when all bindings are identical.
-      const concurrentlyCreatedExecution =
-        await this.getExecutionByActionIntent(
-          tenantId,
-          factoryId,
-          action.id,
-        );
-
-      if (concurrentlyCreatedExecution) {
-        this.assertExecutionReplayBinding(
-          concurrentlyCreatedExecution,
-          executionKey,
-          action.tool_version,
-          action.payload_hash,
-        );
-
-        return {
-          idempotent: true,
-          execution: this.mapExecution(concurrentlyCreatedExecution),
-        };
-      }
-
-      const claimLookup = await this.database.query<ExecutionClaimRow>(
+    const claimLookup =
+      await this.database.query<ExecutionClaimRow>(
         `
         SELECT
           id::text AS id,
@@ -1754,184 +1786,19 @@ export class AiRuntimeService {
         FROM ai_execution_claims
         WHERE tenant_id = $1
           AND factory_id = $2
-          AND (action_intent_id = $3 OR execution_key = $4)
-        ORDER BY CASE WHEN action_intent_id = $3 THEN 0 ELSE 1 END
+          AND (
+            action_intent_id = $3
+            OR execution_key = $4
+          )
+        ORDER BY
+          CASE WHEN action_intent_id = $3 THEN 0 ELSE 1 END
         LIMIT 1
         `,
-        [tenantId, factoryId, action.id, executionKey],
-        { tenantId },
-      );
-
-      const existingClaim = claimLookup.rows[0];
-
-      if (!existingClaim) {
-        throw new ConflictException(
-          'AI execution could not be claimed safely; retry is blocked',
-        );
-      }
-
-      if (existingClaim.action_intent_id !== action.id) {
-        throw new ConflictException(
-          'execution_key is already bound to a different AI action',
-        );
-      }
-
-      if (
-        existingClaim.execution_key !== executionKey ||
-        existingClaim.tool_version !== action.tool_version ||
-        existingClaim.inputs_hash !== action.payload_hash
-      ) {
-        throw new ConflictException(
-          'execution claim is bound to a different key, tool version, or input hash',
-        );
-      }
-
-      if (existingClaim.status === 'FAILED') {
-        throw new ConflictException(
-          'The previous AI execution attempt failed; automatic replay is blocked',
-        );
-      }
-
-      if (existingClaim.status === 'COMPLETED') {
-        throw new ConflictException(
-          'AI execution claim is completed but its execution record is missing; manual reconciliation is required',
-        );
-      }
-
-      throw new ConflictException(
-        'AI action execution is already in progress or requires recovery; automatic replay is blocked',
-      );
-    }
-
-    // The client-provided executor_type is deliberately not trusted as an
-    // execution identity. This request is handled by the governed gateway.
-    const gatewayAction: AiToolActionContext = {
-      tenantId,
-      factoryId,
-      actorUserId,
-      actionIntentId: action.id,
-      decisionId: action.decision_id,
-      toolId: action.tool_id,
-      toolVersion: action.tool_version,
-      actionType: action.action_type,
-      target: action.target,
-      resourceType: action.resource_type,
-      resourceId: action.resource_id,
-      payload: action.payload,
-      payloadHash: action.payload_hash,
-      riskClass: action.risk_class as AiToolRiskClass,
-      authorizationStatus: action.authorization_status,
-      approvalId: action.approval_id,
-      actionTokenHash: action.action_token_hash,
-      tokenExpiresAt: action.token_expires_at,
-      idempotencyKey: action.idempotency_key,
-      executorType: 'AI_TOOL_GATEWAY',
-      actionToken,
-    };
-
-    let gatewayOutcome: Awaited<
-      ReturnType<AiToolGatewayService['execute']>
-    >;
-
-    try {
-      gatewayOutcome = await this.aiToolGateway.execute(
-        gatewayAction,
-      );
-    } catch (error) {
-      // A thrown gateway result can be ambiguous: an external side effect
-      // may already have occurred. Mark the claim terminal where possible.
-      // If that update also fails, CLAIMED still blocks automatic replay.
-      try {
-        await this.database.query(
-          `
-          UPDATE ai_execution_claims
-          SET status = 'FAILED',
-              failure_code = 'TOOL_GATEWAY_ERROR',
-              completed_at = NOW()
-          WHERE tenant_id = $1
-            AND factory_id = $2
-            AND action_intent_id = $3
-            AND execution_key = $4
-            AND status = 'CLAIMED'
-          `,
-          [tenantId, factoryId, action.id, executionKey],
-          { tenantId, userId: actorUserId },
-        );
-      } catch {
-        // Keep CLAIMED if failure finalization cannot be persisted.
-      }
-
-      throw error;
-    }
-
-    const executorType = gatewayOutcome.executorType;
-    const inputsHash = gatewayOutcome.inputsHash;
-    const status = gatewayOutcome.status;
-    const result = gatewayOutcome.result;
-    const error = gatewayOutcome.error;
-
-    const insertResult =
-      await this.database.query<ExecutionRow>(
-        `
-        INSERT INTO ai_execution_records (
-          id,
-          tenant_id,
-          factory_id,
-          decision_id,
-          action_intent_id,
-          execution_key,
-          executor_type,
-          tool_version,
-          inputs_hash,
-          result,
-          error,
-          status,
-          finished_at
-        )
-        VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-          $10::jsonb,
-          $11::jsonb,
-          $12,
-          NOW()
-        )
-        RETURNING
-          id::text AS id,
-          tenant_id::text AS tenant_id,
-          factory_id::text AS factory_id,
-          decision_id::text AS decision_id,
-          action_intent_id::text AS action_intent_id,
-          execution_key,
-          executor_type,
-          tool_version,
-          inputs_hash,
-          result,
-          error,
-          status,
-          started_at::text AS started_at,
-          finished_at::text AS finished_at
-        `,
         [
-          randomUUID(),
           tenantId,
           factoryId,
-          action.decision_id,
           action.id,
           executionKey,
-          executorType,
-          gatewayOutcome.toolVersion,
-          inputsHash,
-          JSON.stringify(result),
-          JSON.stringify(error),
-          status,
         ],
         {
           tenantId,
@@ -1939,72 +1806,725 @@ export class AiRuntimeService {
         },
       );
 
-    const row = insertResult.rows[0];
+    const existingClaim = claimLookup.rows[0];
 
-    if (!row) {
-      throw new Error(
-        'AI_EXECUTION_RECORD_INSERT_FAILED',
+    if (!existingClaim) {
+      throw new ConflictException(
+        'AI execution could not be claimed safely; retry is blocked',
       );
     }
 
-    const claimCompletion = await this.database.query<ExecutionClaimRow>(
-      `
-      UPDATE ai_execution_claims
-      SET status = CASE WHEN $7 = 'SUCCEEDED' THEN 'COMPLETED' ELSE 'FAILED' END,
-          failure_code = CASE WHEN $7 = 'FAILED' THEN 'TOOL_EXECUTION_FAILED' ELSE NULL END,
+    if (existingClaim.action_intent_id !== action.id) {
+      throw new ConflictException(
+        'execution_key is already bound to a different AI action',
+      );
+    }
+
+    if (
+      existingClaim.execution_key !== executionKey ||
+      existingClaim.tool_version !== action.tool_version ||
+      existingClaim.inputs_hash !== action.payload_hash
+    ) {
+      throw new ConflictException(
+        'Execution claim is bound to a different key, tool version, or input hash',
+      );
+    }
+
+    if (existingClaim.status === 'FAILED') {
+      throw new ConflictException(
+        'The previous AI execution attempt failed; automatic replay is blocked',
+      );
+    }
+
+    if (existingClaim.status === 'COMPLETED') {
+      throw new ConflictException(
+        'AI execution claim is completed but its execution record is missing; manual reconciliation is required',
+      );
+    }
+
+    throw new ConflictException(
+      'AI action execution is already in progress or requires recovery; automatic replay is blocked',
+    );
+  }
+
+  const gatewayAction: AiToolActionContext = {
+    tenantId,
+    factoryId,
+    actorUserId,
+    actionIntentId: action.id,
+    decisionId: action.decision_id,
+    toolId: action.tool_id,
+    toolVersion: action.tool_version,
+    actionType: action.action_type,
+    target: action.target,
+    resourceType: action.resource_type,
+    resourceId: action.resource_id,
+    payload: action.payload,
+    payloadHash: action.payload_hash,
+    riskClass: action.risk_class as AiToolRiskClass,
+    authorizationStatus: action.authorization_status,
+    approvalId: action.approval_id,
+    actionTokenHash: action.action_token_hash,
+    tokenExpiresAt: action.token_expires_at,
+    idempotencyKey: action.idempotency_key,
+    executorType: 'AI_TOOL_GATEWAY',
+    actionToken,
+  };
+
+  /*
+   * Important concurrency rule:
+   *
+   * Lock the claim BEFORE invoking the gateway, then retain that
+   * lock through execution-record insertion and claim finalization.
+   *
+   * Reconciliation uses FOR UPDATE on the same claim row, so it
+   * cannot finalize this claim concurrently with this transaction.
+   */
+  const finalization = await this.database.transaction(
+    async (client) => {
+      const lockedClaimResult =
+        await client.query<ExecutionClaimRow>(
+          `
+          SELECT
+            id::text AS id,
+            tenant_id::text AS tenant_id,
+            factory_id::text AS factory_id,
+            action_intent_id::text AS action_intent_id,
+            execution_key,
+            tool_version,
+            inputs_hash,
+            status,
+            failure_code,
+            claimed_at::text AS claimed_at,
+            completed_at::text AS completed_at
+          FROM ai_execution_claims
+          WHERE id = $1
+            AND tenant_id = $2
+            AND factory_id = $3
+          FOR UPDATE
+          `,
+          [
+            reservedClaim.id,
+            tenantId,
+            factoryId,
+          ],
+        );
+
+      const claim = lockedClaimResult.rows[0];
+
+      // A reconciler or another finalizer may have won the race.
+      // Do not invoke the gateway if the claim is no longer active.
+      if (!claim || claim.status !== 'CLAIMED') {
+        throw new ConflictException(
+          'AI execution claim is no longer available for execution',
+        );
+      }
+
+      if (
+        claim.action_intent_id !== action.id ||
+        claim.execution_key !== executionKey ||
+        claim.tool_version !== action.tool_version ||
+        claim.inputs_hash !== action.payload_hash
+      ) {
+        throw new ConflictException(
+          'Locked execution claim does not match the authorized action binding',
+        );
+      }
+
+      // Check the token again immediately before invoking the gateway.
+      if (
+        !action.token_expires_at ||
+        new Date(action.token_expires_at).getTime() <= Date.now()
+      ) {
+        throw new ConflictException(
+          'AI action token expired before gateway execution began',
+        );
+      }
+
+      let gatewayOutcome: Awaited<
+        ReturnType<AiToolGatewayService['execute']>
+      >;
+
+      try {
+        gatewayOutcome = await this.aiToolGateway.execute(
+          gatewayAction,
+        );
+      } catch (error) {
+        /*
+         * The gateway error may be ambiguous: a side effect might
+         * have occurred before the error reached us.
+         *
+         * Leave the claim CLAIMED so it remains blocked from replay
+         * and is eligible for later operator-led reconciliation.
+         * Returning normally commits the transaction without making
+         * a false claim that the execution definitely failed.
+         */
+        return {
+          kind: 'gateway-error' as const,
+          error,
+        };
+      }
+
+      // Validate the immutable binding before inserting any record.
+      if (
+        gatewayOutcome.toolVersion !== claim.tool_version ||
+        gatewayOutcome.inputsHash !== claim.inputs_hash
+      ) {
+        throw new ConflictException(
+          'Gateway outcome does not match the immutable execution claim binding',
+        );
+      }
+
+      const insertResult =
+        await client.query<ExecutionRow>(
+          `
+          INSERT INTO ai_execution_records (
+            id,
+            tenant_id,
+            factory_id,
+            decision_id,
+            action_intent_id,
+            execution_key,
+            executor_type,
+            tool_version,
+            inputs_hash,
+            result,
+            error,
+            status,
+            finished_at
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9,
+            $10::jsonb,
+            $11::jsonb,
+            $12,
+            NOW()
+          )
+          RETURNING
+            id::text AS id,
+            tenant_id::text AS tenant_id,
+            factory_id::text AS factory_id,
+            decision_id::text AS decision_id,
+            action_intent_id::text AS action_intent_id,
+            execution_key,
+            executor_type,
+            tool_version,
+            inputs_hash,
+            result,
+            error,
+            status,
+            started_at::text AS started_at,
+            finished_at::text AS finished_at
+          `,
+          [
+            randomUUID(),
+            tenantId,
+            factoryId,
+            action.decision_id,
+            action.id,
+            executionKey,
+            gatewayOutcome.executorType,
+            gatewayOutcome.toolVersion,
+            gatewayOutcome.inputsHash,
+            JSON.stringify(gatewayOutcome.result),
+            JSON.stringify(gatewayOutcome.error),
+            gatewayOutcome.status,
+          ],
+        );
+
+      const executionRow = insertResult.rows[0];
+
+      if (!executionRow) {
+        throw new Error(
+          'AI_EXECUTION_RECORD_INSERT_FAILED',
+        );
+      }
+
+      /*
+       * The execution record INSERT and claim UPDATE use the same
+       * transaction and the same locked claim row.
+       *
+       * If this UPDATE fails, throwing rolls back the INSERT too.
+       */
+      const claimCompletion = await client.query<{ id: string }>(
+        `
+        UPDATE ai_execution_claims
+        SET
+          status = CASE
+            WHEN $5 = 'SUCCEEDED' THEN 'COMPLETED'
+            ELSE 'FAILED'
+          END,
+          failure_code = CASE
+            WHEN $5 = 'FAILED' THEN 'TOOL_EXECUTION_FAILED'
+            ELSE NULL
+          END,
           completed_at = NOW()
-      WHERE tenant_id = $1
-        AND factory_id = $2
-        AND action_intent_id = $3
-        AND execution_key = $4
-        AND tool_version = $5
-        AND inputs_hash = $6
-        AND status = 'CLAIMED'
-      RETURNING id::text AS id
+        WHERE id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND action_intent_id = $4
+          AND status = 'CLAIMED'
+          AND execution_key = $6
+          AND tool_version = $7
+          AND inputs_hash = $8
+        RETURNING id::text AS id
+        `,
+        [
+          claim.id,
+          tenantId,
+          factoryId,
+          action.id,
+          gatewayOutcome.status,
+          executionKey,
+          gatewayOutcome.toolVersion,
+          gatewayOutcome.inputsHash,
+        ],
+      );
+
+      if (!claimCompletion.rows[0]) {
+        throw new ConflictException(
+          'AI execution claim could not be finalized; the transaction was rolled back',
+        );
+      }
+
+      return {
+        kind: 'completed' as const,
+        row: executionRow,
+      };
+    },
+    {
+      tenantId,
+      userId: actorUserId,
+    },
+  );
+
+  if (finalization.kind === 'gateway-error') {
+    throw finalization.error;
+  }
+
+  const row = finalization.row;
+
+  await this.recordAuditSafely({
+    tenantId,
+    factoryId,
+    actorUserId,
+    eventType: 'AI_ACTION',
+    action: 'EXECUTE',
+    resourceType: 'AI_EXECUTION_RECORD',
+    resourceId: row.id,
+    payload: {
+      decisionId: row.decision_id,
+      actionIntentId: row.action_intent_id,
+      executionKey: row.execution_key,
+      toolVersion: row.tool_version,
+      status: row.status,
+      inputsHash: row.inputs_hash,
+    },
+  });
+
+  return {
+    idempotent: false,
+    execution: this.mapExecution(row),
+  };
+}
+
+  // ============================================================
+  // EXECUTION CLAIM RECOVERY / MANUAL RECONCILIATION
+  // ============================================================
+
+  async listStaleExecutionClaims(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    limit = 50,
+  ) {
+    this.validateScope(tenantId, factoryId);
+    this.validateUuid(actorUserId, 'actorUserId');
+
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('limit must be an integer between 1 and 100');
+    }
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.execution.claims.read',
+      factoryId,
+    );
+
+    const result = await this.database.query<ExecutionClaimStaleRow>(
+      `
+      SELECT
+        c.id::text AS id,
+        c.action_intent_id::text AS action_intent_id,
+        c.execution_key,
+        c.tool_version,
+        c.status,
+        c.claimed_at::text AS claimed_at,
+        ROUND((EXTRACT(EPOCH FROM (NOW() - c.claimed_at)) / 60)::numeric, 1)::float8 AS age_minutes,
+        (e.id IS NOT NULL) AS has_execution_record,
+        e.status AS execution_record_status
+      FROM ai_execution_claims c
+      LEFT JOIN ai_execution_records e
+        ON e.tenant_id = c.tenant_id
+       AND e.factory_id = c.factory_id
+       AND e.action_intent_id = c.action_intent_id
+      WHERE c.tenant_id = $1
+        AND c.factory_id = $2
+        AND c.status = 'CLAIMED'
+        AND c.claimed_at <= NOW() - INTERVAL '5 minutes'
+      ORDER BY c.claimed_at ASC
+      LIMIT $3
       `,
-      [
-        tenantId,
-        factoryId,
-        action.id,
-        executionKey,
-        gatewayOutcome.toolVersion,
-        inputsHash,
-        status,
-      ],
+      [tenantId, factoryId, limit],
       { tenantId, userId: actorUserId },
     );
 
-    if (!claimCompletion.rows[0]) {
-      throw new ConflictException(
-        'AI execution was recorded but its claim could not be finalized; manual reconciliation is required',
-      );
-    }
-
-    await this.recordAuditSafely({
-      tenantId,
-      factoryId,
-      actorUserId,
-      eventType: 'AI_ACTION',
-      action: 'EXECUTE',
-      resourceType: 'AI_EXECUTION_RECORD',
-      resourceId: row.id,
-      payload: {
-        decisionId: row.decision_id,
-        actionIntentId:
-          row.action_intent_id,
+    return {
+      staleAfterMinutes: 5,
+      automaticRetryAllowed: false,
+      items: result.rows.map((row) => ({
+        id: row.id,
+        actionIntentId: row.action_intent_id,
         executionKey: row.execution_key,
         toolVersion: row.tool_version,
         status: row.status,
-        inputsHash: row.inputs_hash,
-      },
-    });
-
-    return {
-      idempotent: false,
-      execution: this.mapExecution(row),
+        claimedAt: row.claimed_at,
+        ageMinutes: Number(row.age_minutes),
+        hasExecutionRecord: row.has_execution_record,
+        executionRecordStatus: row.execution_record_status,
+        automaticRetryAllowed: false,
+      })),
     };
   }
 
+
+  async reconcileExecutionClaim(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    claimId: string,
+    input: ReconcileAiExecutionClaimDto,
+  ) {
+    this.validateScope(tenantId, factoryId);
+    this.validateUuid(actorUserId, 'actorUserId');
+    this.validateUuid(claimId, 'claimId');
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.execution.claims.reconcile',
+      factoryId,
+    );
+
+    if (
+      input.decision !== 'CONFIRMED_COMPLETED' &&
+      input.decision !== 'CONFIRMED_FAILED'
+    ) {
+      throw new BadRequestException(
+        'decision must be CONFIRMED_COMPLETED or CONFIRMED_FAILED',
+      );
+    }
+
+    const reason = this.requiredString(
+      input.reason,
+      'reason',
+      1000,
+    );
+
+    if (reason.length < 15) {
+      throw new BadRequestException(
+        'reason must contain at least 15 non-whitespace characters',
+      );
+    }
+
+    const evidenceRef = this.requiredString(
+      input.evidence_ref,
+      'evidence_ref',
+      255,
+    );
+
+    const preflight =
+      await this.database.query<ExecutionClaimReconciliationPreflightRow>(
+        `
+        SELECT
+          c.id::text AS id,
+          c.action_intent_id::text AS action_intent_id,
+          c.execution_key,
+          c.tool_version,
+          c.inputs_hash,
+          c.status,
+          c.claimed_at::text AS claimed_at,
+          (
+            c.claimed_at <= NOW() - INTERVAL '5 minutes'
+          ) AS is_stale,
+          e.status AS execution_record_status,
+          e.execution_key AS record_execution_key,
+          e.tool_version AS record_tool_version,
+          e.inputs_hash AS record_inputs_hash
+        FROM ai_execution_claims c
+        LEFT JOIN ai_execution_records e
+          ON e.tenant_id = c.tenant_id
+         AND e.factory_id = c.factory_id
+         AND e.action_intent_id = c.action_intent_id
+        WHERE c.id = $1
+          AND c.tenant_id = $2
+          AND c.factory_id = $3
+        LIMIT 1
+        `,
+        [claimId, tenantId, factoryId],
+        { tenantId, userId: actorUserId },
+      );
+
+    const claim = preflight.rows[0];
+
+    if (!claim) {
+      throw new NotFoundException(
+        'AI execution claim was not found in this factory',
+      );
+    }
+
+    if (claim.status !== 'CLAIMED') {
+      throw new ConflictException(
+        'Only CLAIMED execution rows can be reconciled',
+      );
+    }
+
+    if (!claim.is_stale) {
+      throw new ConflictException(
+        'Execution claim must be at least five minutes old before reconciliation',
+      );
+    }
+
+    if (claim.execution_record_status !== null) {
+      const bindingMatches =
+        claim.record_execution_key === claim.execution_key &&
+        claim.record_tool_version === claim.tool_version &&
+        claim.record_inputs_hash === claim.inputs_hash;
+
+      if (!bindingMatches) {
+        throw new ConflictException(
+          'Execution record binding does not match the claim; manual investigation is required',
+        );
+      }
+
+      const decisionMatchesRecord =
+        (
+          input.decision === 'CONFIRMED_COMPLETED' &&
+          claim.execution_record_status === 'SUCCEEDED'
+        ) ||
+        (
+          input.decision === 'CONFIRMED_FAILED' &&
+          claim.execution_record_status === 'FAILED'
+        );
+
+      if (!decisionMatchesRecord) {
+        throw new ConflictException(
+          'Reconciliation decision conflicts with the existing execution record',
+        );
+      }
+    }
+
+    const reconciled =
+      await this.database.query<ExecutionClaimReconciliationResultRow>(
+        `
+        WITH target AS (
+          SELECT
+            c.id,
+            c.tenant_id,
+            c.factory_id,
+            c.action_intent_id,
+            c.execution_key,
+            c.tool_version,
+            c.inputs_hash,
+            c.status,
+            c.claimed_at
+          FROM ai_execution_claims c
+          WHERE c.id = $1
+            AND c.tenant_id = $2
+            AND c.factory_id = $3
+          FOR UPDATE
+        ),
+        updated AS (
+          UPDATE ai_execution_claims c
+          SET
+            status = CASE
+              WHEN $5 = 'CONFIRMED_COMPLETED' THEN 'COMPLETED'
+              ELSE 'FAILED'
+            END,
+            failure_code = CASE
+              WHEN $5 = 'CONFIRMED_FAILED'
+                THEN 'OPERATOR_CONFIRMED_FAILED'
+              ELSE NULL
+            END,
+            completed_at = NOW()
+          FROM target t
+          WHERE c.id = t.id
+            AND c.tenant_id = t.tenant_id
+            AND c.factory_id = t.factory_id
+            AND c.status = 'CLAIMED'
+            AND t.status = 'CLAIMED'
+            AND t.claimed_at <= NOW() - INTERVAL '5 minutes'
+            AND (
+              NOT EXISTS (
+                SELECT 1
+                FROM ai_execution_records e
+                WHERE e.tenant_id = t.tenant_id
+                  AND e.factory_id = t.factory_id
+                  AND e.action_intent_id = t.action_intent_id
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM ai_execution_records e
+                WHERE e.tenant_id = t.tenant_id
+                  AND e.factory_id = t.factory_id
+                  AND e.action_intent_id = t.action_intent_id
+                  AND e.execution_key = t.execution_key
+                  AND e.tool_version = t.tool_version
+                  AND e.inputs_hash = t.inputs_hash
+                  AND (
+                    (
+                      $5 = 'CONFIRMED_COMPLETED'
+                      AND e.status = 'SUCCEEDED'
+                    )
+                    OR (
+                      $5 = 'CONFIRMED_FAILED'
+                      AND e.status = 'FAILED'
+                    )
+                  )
+              )
+            )
+          RETURNING
+            c.id,
+            c.tenant_id,
+            c.factory_id,
+            c.action_intent_id,
+            c.status,
+            c.failure_code,
+            c.completed_at
+        ),
+        logged AS (
+          INSERT INTO ai_execution_claim_reconciliations (
+            id,
+            tenant_id,
+            factory_id,
+            claim_id,
+            actor_user_id,
+            decision,
+            prior_status,
+            resulting_status,
+            reason,
+            evidence_ref
+          )
+          SELECT
+            gen_random_uuid(),
+            u.tenant_id,
+            u.factory_id,
+            u.id,
+            $4,
+            $5,
+            'CLAIMED',
+            u.status,
+            $6,
+            $7
+          FROM updated u
+          RETURNING
+            id AS reconciliation_id,
+            tenant_id,
+            factory_id,
+            claim_id,
+            actor_user_id,
+            decision,
+            resulting_status,
+            evidence_ref,
+            created_at
+        ),
+        audit AS (
+          INSERT INTO audit_events (
+            tenant_id,
+            factory_id,
+            actor_user_id,
+            event_type,
+            action,
+            resource_type,
+            resource_id,
+            correlation_id,
+            request_id,
+            data_class,
+            payload
+          )
+          SELECT
+            l.tenant_id,
+            l.factory_id,
+            l.actor_user_id,
+            'AI_ACTION',
+            'RECONCILE_EXECUTION_CLAIM',
+            'AI_EXECUTION_CLAIM',
+            l.claim_id,
+            NULL,
+            NULL,
+            'INTERNAL',
+            jsonb_build_object(
+              'reconciliationId', l.reconciliation_id,
+              'decision', l.decision,
+              'resultingStatus', l.resulting_status
+            )
+          FROM logged l
+          RETURNING id
+        )
+        SELECT
+          l.reconciliation_id::text AS reconciliation_id,
+          l.claim_id::text AS claim_id,
+          l.decision,
+          l.resulting_status,
+          l.created_at::text AS reconciled_at,
+          l.evidence_ref
+        FROM logged l
+        CROSS JOIN (
+          SELECT COUNT(*) AS audit_count
+          FROM audit
+        ) audit_check
+        `,
+        [
+          claimId,
+          tenantId,
+          factoryId,
+          actorUserId,
+          input.decision,
+          reason,
+          evidenceRef,
+        ],
+        { tenantId, userId: actorUserId },
+      );
+
+    const row = reconciled.rows[0];
+
+    if (!row) {
+      throw new ConflictException(
+        'Execution claim changed or is no longer eligible for reconciliation',
+      );
+    }
+
+    return {
+      reconciliationId: row.reconciliation_id,
+      claimId: row.claim_id,
+      decision: row.decision,
+      resultingStatus: row.resulting_status,
+      reconciledAt: row.reconciled_at,
+      evidenceRef: row.evidence_ref,
+      existingExecutionRecordStatus:
+        claim.execution_record_status,
+      automaticRetryAllowed: false,
+    };
+  }
   // ============================================================
   // OUTCOME CAPTURE
   // ============================================================

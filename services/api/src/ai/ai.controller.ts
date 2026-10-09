@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -49,6 +50,10 @@ import {
 import {
   ExecuteAiActionDto,
 } from './dto/execute-ai-action.dto';
+
+import {
+  ReconcileAiExecutionClaimDto,
+} from './dto/reconcile-ai-execution-claim.dto';
 
 import {
   CreateAiOutcomeDto,
@@ -206,6 +211,48 @@ export class AiController {
       context.tenantId,
       context.factoryId,
       context.userId,
+      body,
+    );
+  }
+
+  // ============================================================
+  // EXECUTION CLAIM RECOVERY
+  // ============================================================
+
+  @Get('actions/execution-claims/stale')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.execution.claims.read')
+  @RequireFactoryScope()
+  async listStaleExecutionClaims(
+    @Req() request: FactoryOsRequest,
+    @Query('limit') limit?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiRuntimeService.listStaleExecutionClaims(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      limit === undefined ? 50 : Number(limit),
+    );
+  }
+
+  @Post('actions/execution-claims/:claimId/reconcile')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.execution.claims.reconcile')
+  @RequireFactoryScope()
+  async reconcileExecutionClaim(
+    @Req() request: FactoryOsRequest,
+    @Param('claimId', ParseUUIDPipe) claimId: string,
+    @Body() body: ReconcileAiExecutionClaimDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiRuntimeService.reconcileExecutionClaim(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      claimId,
       body,
     );
   }

@@ -1,3 +1,4 @@
+
 import {
   jest,
 } from '@jest/globals';
@@ -50,8 +51,8 @@ const sha256 = (value: string) =>
     .digest('hex');
 
 /**
- * AiRuntimeService currently hashes action tokens through its canonical
- * JSON hashing helper, so the contract fixture mirrors that exact hash.
+ * AiRuntimeService hashes action tokens through its canonical
+ * JSON hashing helper, so the contract fixture mirrors that hash.
  */
 const actionTokenHash = (value: string) =>
   sha256(JSON.stringify(value));
@@ -187,18 +188,34 @@ describe(
 
     beforeEach(() => {
       /*
-       * resetAllMocks() is required here.
-       *
-       * clearAllMocks() clears call history but does not reset queued
-       * mockResolvedValueOnce() values. Without resetAllMocks(), one test
-       * can consume another test's database fixture responses.
+       * resetAllMocks() removes implementations as well as call history.
+       * Restore the transaction mock after resetting, otherwise
+       * executeAction() can receive undefined instead of its transaction
+       * callback result.
        */
       jest.resetAllMocks();
+
+      databaseTransactionMock.mockImplementation(
+        async function <T>(
+          callback: (
+            client: {
+              query: PoolClient['query'];
+            },
+          ) => Promise<T>,
+          _context?: DatabaseContext,
+        ): Promise<T> {
+          return callback({
+            query:
+              databaseQueryMock as unknown as PoolClient['query'],
+          });
+        },
+      );
 
       aiToolRegistry.getTool.mockImplementation(
         async (...args: unknown[]) => {
           const toolId = String(args[2]);
           const version = String(args[3]);
+
           return {
             toolId,
             version,
@@ -219,8 +236,10 @@ describe(
             riskClass: string;
             payloadHash: string;
           };
+
           const isNoop =
             action.toolId === 'AI.RUNTIME.NOOP';
+
           return {
             status: isNoop ? 'SUCCEEDED' : 'FAILED',
             result: isNoop
@@ -590,9 +609,10 @@ describe(
          *   1. action lookup by token hash
          *   2. execution lookup by action intent
          *   3. execution lookup by execution key
-         *   4. claim INSERT (before gateway execution)
-         *   5. immutable execution INSERT
-         *   6. claim completion UPDATE
+         *   4. claim INSERT
+         *   5. claim SELECT FOR UPDATE
+         *   6. immutable execution INSERT
+         *   7. claim completion UPDATE
          */
         databaseQueryMock.mockResolvedValueOnce({
           rows: [
@@ -646,10 +666,31 @@ describe(
           rows: [],
         });
 
+        // Claim reservation INSERT.
         databaseQueryMock.mockResolvedValueOnce({
           rows: [{ id: 'execution-claim' }],
         });
 
+        // Lock and validate the existing claim.
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'execution-claim',
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              action_intent_id: actionId,
+              execution_key: 'execution-1',
+              tool_version: 'wave2-test',
+              inputs_hash: 'd'.repeat(64),
+              status: 'CLAIMED',
+              failure_code: null,
+              claimed_at: '2026-10-07T00:00:00.000Z',
+              completed_at: null,
+            },
+          ],
+        });
+
+        // Immutable execution record INSERT.
         databaseQueryMock.mockResolvedValueOnce({
           rows: [
             {
@@ -681,6 +722,7 @@ describe(
           ],
         });
 
+        // Claim completion UPDATE.
         databaseQueryMock.mockResolvedValueOnce({
           rows: [{ id: 'execution-claim' }],
         });
@@ -712,6 +754,7 @@ describe(
         expect(
           result.idempotent,
         ).toBe(false);
+
         expect(
           aiToolGateway.execute,
         ).toHaveBeenCalledWith(
@@ -722,6 +765,14 @@ describe(
             executorType: 'AI_TOOL_GATEWAY',
           }),
         );
+
+        expect(
+          databaseTransactionMock,
+        ).toHaveBeenCalled();
+
+        expect(
+          databaseQueryMock,
+        ).toHaveBeenCalledTimes(7);
       },
     );
 
@@ -924,10 +975,31 @@ describe(
           rows: [],
         });
 
+        // Claim reservation INSERT.
         databaseQueryMock.mockResolvedValueOnce({
           rows: [{ id: 'execution-claim' }],
         });
 
+        // Locked CLAIMED row selected by FOR UPDATE.
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'execution-claim',
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              action_intent_id: actionId,
+              execution_key: 'execution-2',
+              tool_version: 'wave2-test',
+              inputs_hash: 'f'.repeat(64),
+              status: 'CLAIMED',
+              failure_code: null,
+              claimed_at: '2026-10-07T00:00:00.000Z',
+              completed_at: null,
+            },
+          ],
+        });
+
+        // Immutable execution record INSERT.
         databaseQueryMock.mockResolvedValueOnce({
           rows: [
             {
@@ -962,6 +1034,7 @@ describe(
           ],
         });
 
+        // Claim completion UPDATE.
         databaseQueryMock.mockResolvedValueOnce({
           rows: [{ id: 'execution-claim' }],
         });
@@ -992,14 +1065,35 @@ describe(
           'EXECUTOR_NOT_CONFIGURED',
         );
 
-        const claimCompletionCall = databaseQueryMock.mock.calls[5];
-        expect(String(claimCompletionCall?.[0])).toContain(
-          "SET status = CASE WHEN $7 = 'SUCCEEDED' THEN 'COMPLETED' ELSE 'FAILED' END",
+        const claimCompletionCall =
+          databaseQueryMock.mock.calls[6];
+
+        const claimCompletionSql =
+          String(claimCompletionCall?.[0]);
+
+        expect(claimCompletionSql).toContain(
+          'UPDATE ai_execution_claims',
         );
-        expect(String(claimCompletionCall?.[0])).toContain(
-          "failure_code = CASE WHEN $7 = 'FAILED' THEN 'TOOL_EXECUTION_FAILED' ELSE NULL END",
+
+        expect(claimCompletionSql).toContain(
+          "WHEN $5 = 'SUCCEEDED' THEN 'COMPLETED'",
         );
-        expect(claimCompletionCall?.[1]?.[6]).toBe('FAILED');
+
+        expect(claimCompletionSql).toContain(
+          "WHEN $5 = 'FAILED' THEN 'TOOL_EXECUTION_FAILED'",
+        );
+
+        expect(
+          claimCompletionCall?.[1]?.[4],
+        ).toBe('FAILED');
+
+        expect(
+          databaseTransactionMock,
+        ).toHaveBeenCalled();
+
+        expect(
+          databaseQueryMock,
+        ).toHaveBeenCalledTimes(7);
       },
     );
 
