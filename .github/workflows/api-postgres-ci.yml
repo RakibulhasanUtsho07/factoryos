@@ -50,7 +50,7 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
-      TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test
+      TEST_ADMIN_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
       B19_TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
       JWT_SECRET: ci-only-not-a-production-secret
       NODE_ENV: test
@@ -65,7 +65,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -120,15 +120,8 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 <<'SQL'
-          DO $$
-          BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factoryos_app') THEN
-              CREATE ROLE factoryos_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-            ELSE
-              ALTER ROLE factoryos_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-            END IF;
-          END;
-          $$;
+          CREATE ROLE factoryos LOGIN PASSWORD 'ci-admin-only' SUPERUSER CREATEDB CREATEROLE;
+          CREATE ROLE factoryos_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           GRANT CONNECT ON DATABASE factoryos_test TO factoryos_app;
           GRANT USAGE ON SCHEMA public TO factoryos_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO factoryos_app;
@@ -160,7 +153,7 @@ jobs:
           NODE_ENV=test
           PORT=3001
           DATABASE_URL=postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
-          TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test
+          TEST_ADMIN_DATABASE_URL=postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
           B19_TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
           JWT_SECRET=ci-only-not-a-production-secret
           AUTH_MODE=dev
@@ -177,18 +170,7 @@ jobs:
         working-directory: services/api
         run: npm run build
 
-      - name: Run isolated PostgreSQL integration suites
+      - name: Run full API unit and PostgreSQL integration suite
         working-directory: services/api
-        run: |
-          node --experimental-vm-modules ../../node_modules/jest/bin/jest.js \
-            --config ./jest.config.cjs \
-            --runInBand \
-            --runTestsByPath \
-            src/ai/ai.runtime.execution-claim-concurrency.postgres.integration.spec.ts \
-            src/ai/ai.runtime.execution-claim-recovery.postgres.integration.spec.ts \
-            src/ai/tools/ai.tool.registry.postgres.integration.spec.ts \
-            src/ai/tools/ai.tool.registry.lifecycle.postgres.integration.spec.ts \
-            src/database/database-tenant-isolation.integration.spec.ts \
-            src/entitlements/entitlement.service.integration.spec.ts \
-            src/entitlements/feature-flag.service.integration.spec.ts
+        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand
 
