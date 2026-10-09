@@ -6,7 +6,9 @@ on:
       - 'services/api/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
+      - 'scripts/seed-dev-factory-manager.sql'
       - '.github/workflows/api-postgres-ci.yml'
+      - '.github/workflows/api-ci.yml'
       - 'package.json'
       - 'package-lock.json'
   push:
@@ -15,7 +17,9 @@ on:
       - 'services/api/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
+      - 'scripts/seed-dev-factory-manager.sql'
       - '.github/workflows/api-postgres-ci.yml'
+      - '.github/workflows/api-ci.yml'
       - 'package.json'
       - 'package-lock.json'
 
@@ -72,7 +76,43 @@ jobs:
         run: |
           set -euo pipefail
           export PGPASSWORD=ci-postgres-only
-          for migration in migrations/*.sql; do
+
+          # These numbered files are not a simple lexical sequence:
+          # 003_outbox_event_envelope alters outbox_events created by 004_orders_outbox.
+          migrations=(
+            migrations/001_init.sql
+            migrations/002_auth_identity.sql
+            migrations/003_auth_identity_management.sql
+            migrations/004_orders_outbox.sql
+            migrations/003_outbox_event_envelope.sql
+            migrations/004_outbox_dlq_replay.sql
+            migrations/005_outbox_dispatcher.sql
+            migrations/006_inbox_idempotency.sql
+            migrations/007_order_event_projection.sql
+            migrations/008_order_idempotency.sql
+            migrations/009_tenant_integrity_hardening.sql
+            migrations/010_postgres_rls_tenant_context.sql
+            migrations/011_entitlement_feature_flags.sql
+            migrations/012_admin_control_plane_permissions.sql
+            migrations/013_policy_risk_approvals.sql
+            migrations/014_cbb_business_model.sql
+            migrations/015_cbb_change_promotion.sql
+            migrations/016_ai_runtime_wave1.sql
+            migrations/017_ai_governed_actions_learning.sql
+            migrations/018_ai_tool_registry.sql
+            migrations/019_ai_agent_runtime.sql
+            migrations/020_ai_agent_catalogue.sql
+            migrations/021_ai_agent_execution_scopes.sql
+            migrations/022_ai_agent_studio_sandbox.sql
+            migrations/023_ai_agent_publication_rollout.sql
+            migrations/024_ai_agent_workflow_drafts.sql
+            migrations/025_ai_tool_action_binding.sql
+            migrations/026_ai_action_binding_integrity.sql
+            migrations/027_ai_execution_idempotency_claims.sql
+            migrations/028_ai_execution_claim_reconciliation.sql
+          )
+
+          for migration in "${migrations[@]}"; do
             echo "Applying $migration"
             psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
               -v ON_ERROR_STOP=1 -f "$migration"
@@ -101,9 +141,10 @@ jobs:
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-iam.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
 
-          # B19 tests require a dedicated, idle template DB with migration 028.
-          # It is created only inside this ephemeral CI PostgreSQL service.
+          # B19 tests clone only this dedicated, idle template DB.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" \
             -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_b19_restore_test_ci TEMPLATE factoryos_test'
