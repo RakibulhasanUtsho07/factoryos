@@ -20,7 +20,34 @@ DO UPDATE SET
   name = EXCLUDED.name,
   status = 'ACTIVE';
 
-DO $$
+
+-- Legacy integration suites use this isolated fixed tenant/factory fixture.
+-- These identifiers exist only inside the disposable CI database.
+INSERT INTO tenants (
+  id, slug, name, status, timezone, default_locale
+) VALUES (
+  'faaab63d-c447-46ce-950d-deebdd7f5f30',
+  'factoryos-ci-legacy',
+  'FactoryOS CI Legacy Tenant',
+  'ACTIVE',
+  'Asia/Dhaka',
+  'en-BD'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO factories (
+  id, tenant_id, code, name, status, timezone
+) VALUES (
+  '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+  'faaab63d-c447-46ce-950d-deebdd7f5f30',
+  'FAC-A',
+  'FactoryOS CI Factory A',
+  'ACTIVE',
+  'Asia/Dhaka'
+)
+ON CONFLICT (id) DO NOTHING;
+
+DO $
 BEGIN
   IF NOT EXISTS (
     SELECT 1
