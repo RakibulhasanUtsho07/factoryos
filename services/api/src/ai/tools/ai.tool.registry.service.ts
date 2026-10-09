@@ -1,3 +1,4 @@
+
 import {
   BadRequestException,
   Injectable,
@@ -346,6 +347,48 @@ export class AiToolRegistryService {
       );
     }
 
+    /*
+     * Validate rollback before accessing its type.
+     *
+     * JSONB guarantees valid JSON, but it does not guarantee
+     * that the stored object follows the application contract.
+     */
+    const rollback:
+      unknown =
+        tool.rollback;
+
+    if (
+      !this.isObject(
+        rollback,
+      )
+    ) {
+      throw new BadRequestException(
+        `AI tool rollback definition is invalid: ${tool.toolId}@${tool.version}`,
+      );
+    }
+
+    const rollbackType =
+      rollback.type;
+
+    if (
+      typeof rollbackType !==
+        'string' ||
+      ![
+        'NONE',
+        'REVERSIBLE',
+        'COMPENSATION',
+      ].includes(
+        rollbackType,
+      )
+    ) {
+      throw new BadRequestException(
+        `AI tool rollback definition is invalid: ${tool.toolId}@${tool.version}`,
+      );
+    }
+
+    /*
+     * Write-capable tools must always require idempotency.
+     */
     if (
       tool.writeCapable &&
       !tool.idempotencyRequired
@@ -355,16 +398,21 @@ export class AiToolRegistryService {
       );
     }
 
+    /*
+     * Write-capable tools must define a rollback strategy.
+     */
     if (
       tool.writeCapable &&
-      tool.rollback.type ===
-        'NONE'
+      rollbackType === 'NONE'
     ) {
       throw new BadRequestException(
         `AI write-capable tool must define rollback: ${tool.toolId}@${tool.version}`,
       );
     }
 
+    /*
+     * Keep execution bounded.
+     */
     if (
       !Number.isInteger(
         tool.timeoutMs,
@@ -377,6 +425,9 @@ export class AiToolRegistryService {
       );
     }
 
+    /*
+     * Validate the input JSON Schema object.
+     */
     if (
       !this.isObject(
         tool.inputSchema,
@@ -387,6 +438,9 @@ export class AiToolRegistryService {
       );
     }
 
+    /*
+     * Validate the output JSON Schema object.
+     */
     if (
       !this.isObject(
         tool.outputSchema,
@@ -397,6 +451,9 @@ export class AiToolRegistryService {
       );
     }
 
+    /*
+     * Required IAM scopes must be an array.
+     */
     if (
       !Array.isArray(
         tool.requiredScopes,
@@ -407,27 +464,34 @@ export class AiToolRegistryService {
       );
     }
 
+    /*
+     * Reject empty, non-string, or whitespace-padded scopes.
+     * Do not silently normalize a persisted permission name.
+     */
     if (
       tool.requiredScopes.some(
         (scope) =>
           typeof scope !==
             'string' ||
-          scope.trim().length === 0,
+          scope.trim().length === 0 ||
+          scope !== scope.trim(),
       )
     ) {
       throw new BadRequestException(
-        `AI tool required scopes must contain only non-empty strings: ${tool.toolId}@${tool.version}`,
+        `AI tool required scopes must contain non-empty, trimmed strings: ${tool.toolId}@${tool.version}`,
       );
     }
 
+    /*
+     * Registry metadata must be a JSON object.
+     */
     if (
-      !tool.rollback ||
       !this.isObject(
-        tool.rollback,
+        tool.metadata,
       )
     ) {
       throw new BadRequestException(
-        `AI tool rollback definition is invalid: ${tool.toolId}@${tool.version}`,
+        `AI tool metadata must be an object: ${tool.toolId}@${tool.version}`,
       );
     }
   }
