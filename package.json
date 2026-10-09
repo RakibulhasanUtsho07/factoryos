@@ -12,5 +12,10 @@
     "build": "npm run build --workspaces",
     "lint": "npm run lint --workspaces",
     "test": "npm run test --workspaces"
+  },
+  "overrides": {
+    "handlebars": "4.7.10",
+    "tmp": "0.2.7",
+    "undici": "6.29.0"
   }
 }
