@@ -20,6 +20,8 @@ import { AiAgentStudioRunController } from './agents/ai.agent.studio.run.control
 import { AiAgentStudioRunService } from './agents/ai.agent.studio.run.service';
 import { AiAgentStudioDraftController } from './agents/ai.agent.studio.draft.controller';
 import { AiAgentStudioDraftService } from './agents/ai.agent.studio.draft.service';
+import { AiAgentStudioTemplateController } from './agents/ai.agent.studio.template.controller';
+import { AiAgentStudioTemplateService } from './agents/ai.agent.studio.template.service';
 import { AiController } from './ai.controller';
 import { AiRuntimeService } from './ai.runtime.service';
 import { AiToolModule } from './ai.tool.module';
@@ -42,6 +44,7 @@ import { AiToolModule } from './ai.tool.module';
     AiAgentStudioPolicySimulationController,
     AiAgentStudioPromotionController,
     AiAgentStudioDraftController,
+    AiAgentStudioTemplateController,
   ],
   providers: [
     AiRuntimeService,
@@ -52,6 +55,7 @@ import { AiToolModule } from './ai.tool.module';
     AiAgentStudioPolicySimulationService,
     AiAgentStudioPromotionService,
     AiAgentStudioDraftService,
+    AiAgentStudioTemplateService,
   ],
   exports: [
     AiRuntimeService,
@@ -62,6 +66,7 @@ import { AiToolModule } from './ai.tool.module';
     AiAgentStudioPolicySimulationService,
     AiAgentStudioPromotionService,
     AiAgentStudioDraftService,
+    AiAgentStudioTemplateService,
   ],
 })
 export class AiModule {}
