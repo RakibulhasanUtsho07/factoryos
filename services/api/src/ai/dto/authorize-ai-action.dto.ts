@@ -17,6 +17,10 @@ export class AuthorizeAiActionDto {
   @MaxLength(200)
   action_type!: string;
 
+  @IsString()
+  @MaxLength(100)
+  tool_version!: string;
+
   @IsObject()
   target!: Record<string, unknown>;
 

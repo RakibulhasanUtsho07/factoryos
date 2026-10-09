@@ -151,6 +151,14 @@ const cbbService = {
   getBusinessModel: getBusinessModelMock,
 };
 
+const aiToolRegistry = {
+  getTool: jest.fn(),
+};
+
+const aiToolGateway = {
+  execute: jest.fn(),
+};
+
 const decisionRow = {
   id: decisionId,
   tenant_id: tenantId,
@@ -187,12 +195,68 @@ describe(
        */
       jest.resetAllMocks();
 
+      aiToolRegistry.getTool.mockImplementation(
+        async (...args: unknown[]) => {
+          const toolId = String(args[2]);
+          const version = String(args[3]);
+          return {
+            toolId,
+            version,
+            riskClass:
+              toolId === 'PLAN.CHANGE'
+                ? 'L3'
+                : 'L1',
+          };
+        },
+      );
+
+      aiToolGateway.execute.mockImplementation(
+        async (...args: unknown[]) => {
+          const action = args[0] as {
+            toolId: string;
+            toolVersion: string;
+            actionType: string;
+            riskClass: string;
+            payloadHash: string;
+          };
+          const isNoop =
+            action.toolId === 'AI.RUNTIME.NOOP';
+          return {
+            status: isNoop ? 'SUCCEEDED' : 'FAILED',
+            result: isNoop
+              ? {
+                  execution: 'NO_SIDE_EFFECT',
+                  executorType: 'AI_TOOL_GATEWAY',
+                  actionType: action.actionType,
+                  committed: false,
+                }
+              : {},
+            error: isNoop
+              ? {}
+              : {
+                  code: 'EXECUTOR_NOT_CONFIGURED',
+                  message: 'No domain executor is configured',
+                },
+            tool: {
+              toolId: action.toolId,
+              version: action.toolVersion,
+              riskClass: action.riskClass,
+            },
+            executorType: 'AI_TOOL_GATEWAY',
+            toolVersion: action.toolVersion,
+            inputsHash: action.payloadHash,
+          };
+        },
+      );
+
       service = new AiRuntimeService(
         database as never,
         auditService as never,
         iamService as never,
         policyService as never,
         cbbService as never,
+        aiToolRegistry as never,
+        aiToolGateway as never,
       );
     });
 
@@ -222,6 +286,8 @@ describe(
               decision_id: decisionId,
               action_type:
                 'AI.RUNTIME.NOOP',
+              tool_id: 'AI.RUNTIME.NOOP',
+              tool_version: '1.0.0',
               target: {
                 decision_id:
                   decisionId,
@@ -286,6 +352,7 @@ describe(
                 decisionId,
               action_type:
                 'AI.RUNTIME.NOOP',
+              tool_version: '1.0.0',
               target: {
                 decision_id:
                   decisionId,
@@ -352,6 +419,8 @@ describe(
               decision_id: decisionId,
               action_type:
                 'PLAN.CHANGE',
+              tool_id: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
               target: {
                 decision_id:
                   decisionId,
@@ -426,6 +495,7 @@ describe(
                 decisionId,
               action_type:
                 'PLAN.CHANGE',
+              tool_version: '1.0.0',
               target: {
                 decision_id:
                   decisionId,
@@ -464,6 +534,55 @@ describe(
     );
 
     it(
+      'rejects an execution request whose tool version differs from the authorization binding',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: actionId,
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              decision_id: decisionId,
+              action_type: 'AI.RUNTIME.NOOP',
+              tool_id: 'AI.RUNTIME.NOOP',
+              tool_version: 'wave2-test',
+              target: {},
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: {},
+              payload_hash: 'd'.repeat(64),
+              risk_class: 'L1',
+              authorization_status: 'AUTHORIZED',
+              authorization: { outcome: 'ALLOWED' },
+              approval_id: null,
+              action_token_hash: actionTokenHash('contract-token'),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+              idempotency_key: 'action-version-binding',
+              created_by: userId,
+              created_at: '2026-10-07T00:00:00.000Z',
+            },
+          ],
+        });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: 'contract-token',
+              execution_key: 'execution-version-mismatch',
+              tool_version: '99.0.0',
+            },
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
       'executes the deterministic contract executor and is idempotent per action intent',
       async () => {
         /*
@@ -482,6 +601,8 @@ describe(
               decision_id: decisionId,
               action_type:
                 'AI.RUNTIME.NOOP',
+              tool_id: 'AI.RUNTIME.NOOP',
+              tool_version: 'wave2-test',
               target: {
                 decision_id:
                   decisionId,
@@ -581,6 +702,16 @@ describe(
         expect(
           result.idempotent,
         ).toBe(false);
+        expect(
+          aiToolGateway.execute,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            toolId: 'AI.RUNTIME.NOOP',
+            toolVersion: 'wave2-test',
+            actionToken: 'contract-token',
+            executorType: 'AI_TOOL_GATEWAY',
+          }),
+        );
       },
     );
 
@@ -598,6 +729,8 @@ describe(
                 decisionId,
               action_type:
                 'PLAN.CHANGE',
+              tool_id: 'PLAN.CHANGE',
+              tool_version: 'wave2-test',
               target: {
                 decision_id:
                   decisionId,

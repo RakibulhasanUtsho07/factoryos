@@ -612,6 +612,7 @@ export class AiAgentRuntimeService {
           {
             decision_id: task.decision_id,
             action_type: step.action_type,
+            tool_version: step.tool_version,
             target: step.target,
             resource_type: step.resource_type,
             resource_id: step.resource_id,
@@ -1449,6 +1450,12 @@ export class AiAgentRuntimeService {
       );
     }
 
+    if (tool.rollback.actionType !== tool.rollback.toolId) {
+      throw new ConflictException(
+        'Registered rollback action type must equal its tool id; compensation is fail-closed',
+      );
+    }
+
     if (step.agent_id) {
       await this.aiAgentCatalogueService.assertToolEntitled(
         tenantId,
@@ -1467,6 +1474,7 @@ export class AiAgentRuntimeService {
         {
           decision_id: task.decision_id,
           action_type: tool.rollback.actionType,
+          tool_version: tool.rollback.toolVersion,
           target: step.target,
           resource_type: step.resource_type,
           resource_id: step.resource_id,
@@ -2584,6 +2592,12 @@ export class AiAgentRuntimeService {
           `steps[${index}].${field} is required`,
         );
       }
+    }
+
+    if (step.actionType.trim() !== step.toolId.trim()) {
+      throw new BadRequestException(
+        `steps[${index}].actionType must equal steps[${index}].toolId for Tool Gateway execution`,
+      );
     }
 
     if (

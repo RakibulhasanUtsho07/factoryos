@@ -70,6 +70,19 @@ import {
   CreateAiReleaseDto,
 } from './dto/create-ai-release.dto';
 
+import {
+  AiToolGatewayService,
+} from './tools/ai.tool.gateway.service';
+
+import {
+  AiToolRegistryService,
+} from './tools/ai.tool.registry.service';
+
+import type {
+  AiToolActionContext,
+  AiToolRiskClass,
+} from './tools/ai.tool.types';
+
 interface DecisionRow extends QueryResultRow {
   id: string;
   tenant_id: string;
@@ -127,6 +140,8 @@ interface ActionIntentRow extends QueryResultRow {
   factory_id: string;
   decision_id: string;
   action_type: string;
+  tool_id: string | null;
+  tool_version: string | null;
   target: Record<string, unknown>;
   resource_type: string | null;
   resource_id: string | null;
@@ -227,6 +242,8 @@ export class AiRuntimeService {
     private readonly iamService: IamService,
     private readonly policyService: PolicyService,
     private readonly cbbService: CbbService,
+    private readonly aiToolRegistry: AiToolRegistryService,
+    private readonly aiToolGateway: AiToolGatewayService,
   ) {}
 
   // ============================================================
@@ -1121,6 +1138,11 @@ export class AiRuntimeService {
       'action_type',
       200,
     );
+    const toolVersion = this.requiredString(
+      input.tool_version,
+      'tool_version',
+      100,
+    );
     const target = this.normalizeObject(
       input.target,
       'target',
@@ -1158,6 +1180,8 @@ export class AiRuntimeService {
         if (
           existing.decision_id !== decisionId ||
           existing.action_type !== actionType ||
+          existing.tool_id !== actionType ||
+          existing.tool_version !== toolVersion ||
           existing.resource_type !== resourceType ||
           existing.resource_id !== resourceId ||
           existing.payload_hash !== payloadHash
@@ -1174,6 +1198,14 @@ export class AiRuntimeService {
         };
       }
     }
+    const registeredTool =
+      await this.aiToolRegistry.getTool(
+        tenantId,
+        factoryId,
+        actionType,
+        toolVersion,
+      );
+
     const evaluation =
       await this.policyService.evaluatePolicy(
         tenantId,
@@ -1181,9 +1213,19 @@ export class AiRuntimeService {
           action: actionType,
           resourceType,
           attributes:
-            input.policy_attributes ?? {},
+            input.policy_attributes ??
+            {},
         },
       );
+
+    if (
+      evaluation.risk.class !==
+      registeredTool.riskClass
+    ) {
+      throw new ConflictException(
+        'AI action risk class does not match the registered tool risk class',
+      );
+    }
 
     let authorizationStatus:
       | 'DENIED'
@@ -1357,6 +1399,8 @@ export class AiRuntimeService {
           factory_id,
           decision_id,
           action_type,
+          tool_id,
+          tool_version,
           target,
           resource_type,
           resource_id,
@@ -1377,19 +1421,21 @@ export class AiRuntimeService {
           $3,
           $4,
           $5,
-          $6::jsonb,
+          $6,
           $7,
-          $8,
-          $9::jsonb,
+          $8::jsonb,
+          $9,
           $10,
-          $11,
+          $11::jsonb,
           $12,
-          $13::jsonb,
+          $13,
           $14,
-          $15,
+          $15::jsonb,
           $16,
           $17,
-          $18
+          $18,
+          $19,
+          $20
         )
         RETURNING
           id::text AS id,
@@ -1397,6 +1443,8 @@ export class AiRuntimeService {
           factory_id::text AS factory_id,
           decision_id::text AS decision_id,
           action_type,
+          tool_id,
+          tool_version,
           target,
           resource_type,
           resource_id,
@@ -1418,6 +1466,8 @@ export class AiRuntimeService {
           factoryId,
           decisionId,
           actionType,
+          actionType,
+          toolVersion,
           JSON.stringify(target),
           resourceType,
           resourceId,
@@ -1545,6 +1595,24 @@ export class AiRuntimeService {
       );
     }
 
+    if (
+      !action.tool_id ||
+      !action.tool_version
+    ) {
+      throw new ConflictException(
+        'AI action intent is not bound to a registered tool version',
+      );
+    }
+
+    if (
+      action.tool_id !== action.action_type ||
+      toolVersion !== action.tool_version
+    ) {
+      throw new ConflictException(
+        'Requested tool version does not match the authorization-bound tool version',
+      );
+    }
+
     const existing =
       await this.getExecutionByActionIntent(
         tenantId,
@@ -1577,48 +1645,42 @@ export class AiRuntimeService {
       );
     }
 
-    const executorType =
-      this.optionalString(
-        input.executor_type,
-        'executor_type',
-        100,
-      ) ?? action.action_type;
+    // The client-provided executor_type is deliberately not trusted as an
+    // execution identity. This request is handled by the governed gateway.
+    const gatewayAction: AiToolActionContext = {
+      tenantId,
+      factoryId,
+      actorUserId,
+      actionIntentId: action.id,
+      decisionId: action.decision_id,
+      toolId: action.tool_id,
+      toolVersion: action.tool_version,
+      actionType: action.action_type,
+      target: action.target,
+      resourceType: action.resource_type,
+      resourceId: action.resource_id,
+      payload: action.payload,
+      payloadHash: action.payload_hash,
+      riskClass: action.risk_class as AiToolRiskClass,
+      authorizationStatus: action.authorization_status,
+      approvalId: action.approval_id,
+      actionTokenHash: action.action_token_hash,
+      tokenExpiresAt: action.token_expires_at,
+      idempotencyKey: action.idempotency_key,
+      executorType: 'AI_TOOL_GATEWAY',
+      actionToken,
+    };
 
-    const inputsHash =
-      action.payload_hash;
+    const gatewayOutcome =
+      await this.aiToolGateway.execute(
+        gatewayAction,
+      );
 
-    let status:
-      | 'SUCCEEDED'
-      | 'FAILED' = 'FAILED';
-    let result: Record<string, unknown> = {};
-    let error: Record<string, unknown> = {};
-
-    /*
-     * Wave 2 intentionally keeps actual business mutations behind a future
-     * Tool Gateway/domain adapter. AUDIT_ONLY and AI.RUNTIME.NOOP provide a
-     * deterministic contract-level executor for acceptance tests; all other
-     * action types fail closed without mutating a business aggregate.
-     */
-    if (
-      executorType === 'AUDIT_ONLY' ||
-      action.action_type === 'AI.RUNTIME.NOOP'
-    ) {
-      status = 'SUCCEEDED';
-      result = {
-        execution: 'NO_SIDE_EFFECT',
-        executorType,
-        actionType: action.action_type,
-        committed: false,
-      };
-    } else {
-      error = {
-        code: 'EXECUTOR_NOT_CONFIGURED',
-        message:
-          'No Tool Gateway/domain executor is registered for this AI action type',
-        actionType: action.action_type,
-        executorType,
-      };
-    }
+    const executorType = gatewayOutcome.executorType;
+    const inputsHash = gatewayOutcome.inputsHash;
+    const status = gatewayOutcome.status;
+    const result = gatewayOutcome.result;
+    const error = gatewayOutcome.error;
 
     const insertResult =
       await this.database.query<ExecutionRow>(
@@ -1677,7 +1739,7 @@ export class AiRuntimeService {
           action.id,
           executionKey,
           executorType,
-          toolVersion,
+          gatewayOutcome.toolVersion,
           inputsHash,
           JSON.stringify(result),
           JSON.stringify(error),
@@ -2559,6 +2621,8 @@ export class AiRuntimeService {
           factory_id::text AS factory_id,
           decision_id::text AS decision_id,
           action_type,
+          tool_id,
+          tool_version,
           target,
           resource_type,
           resource_id,
@@ -3057,6 +3121,8 @@ export class AiRuntimeService {
         a.factory_id::text AS factory_id,
         a.decision_id::text AS decision_id,
         a.action_type,
+        a.tool_id,
+        a.tool_version,
         a.target,
         a.resource_type,
         a.resource_id,
@@ -3367,6 +3433,8 @@ export class AiRuntimeService {
       factoryId: row.factory_id,
       decisionId: row.decision_id,
       actionType: row.action_type,
+      toolId: row.tool_id,
+      toolVersion: row.tool_version,
       target: row.target,
       resourceType: row.resource_type,
       resourceId: row.resource_id,

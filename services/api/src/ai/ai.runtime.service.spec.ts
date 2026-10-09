@@ -103,6 +103,14 @@ const cbbService = {
     getBusinessModelMock,
 };
 
+const aiToolRegistry = {
+  getTool: jest.fn(),
+};
+
+const aiToolGateway = {
+  execute: jest.fn(),
+};
+
 describe(
   'AiRuntimeService',
   () => {
@@ -118,6 +126,8 @@ describe(
           iamService as never,
           policyService as never,
           cbbService as never,
+          aiToolRegistry as never,
+          aiToolGateway as never,
         );
     });
 
