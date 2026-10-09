@@ -6,6 +6,10 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
+import {
+  resolveCorsOrigins,
+  resolveSwaggerEnabled,
+} from './config/runtime-config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -16,27 +20,10 @@ async function bootstrap() {
     'NODE_ENV',
     'development',
   );
-  const defaultCorsOrigins =
-    nodeEnv === 'production'
-      ? ''
-      : 'http://localhost:3000';
-  const corsOrigins = configService
-    .get<string>('CORS_ORIGINS', defaultCorsOrigins)
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
-  if (nodeEnv === 'production' && corsOrigins.length === 0) {
-    throw new Error(
-      'CORS_ORIGINS must contain at least one allowed origin in production',
-    );
-  }
-
-  if (nodeEnv === 'production' && corsOrigins.includes('*')) {
-    throw new Error(
-      'CORS_ORIGINS must not use a wildcard in production',
-    );
-  }
+  const corsOrigins = resolveCorsOrigins(
+    nodeEnv,
+    configService.get<string>('CORS_ORIGINS'),
+  );
 
   app.enableCors({
     origin: corsOrigins,
@@ -59,11 +46,10 @@ async function bootstrap() {
     new ApiResponseInterceptor(),
   );
 
-  const swaggerEnabled =
-    configService.get<string>(
-      'SWAGGER_ENABLED',
-      nodeEnv === 'production' ? 'false' : 'true',
-    ) === 'true';
+  const swaggerEnabled = resolveSwaggerEnabled(
+    nodeEnv,
+    configService.get<string>('SWAGGER_ENABLED'),
+  );
 
   if (swaggerEnabled) {
     const swaggerConfig = new DocumentBuilder()
