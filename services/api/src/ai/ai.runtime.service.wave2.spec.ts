@@ -590,7 +590,9 @@ describe(
          *   1. action lookup by token hash
          *   2. execution lookup by action intent
          *   3. execution lookup by execution key
-         *   4. execution INSERT
+         *   4. claim INSERT (before gateway execution)
+         *   5. immutable execution INSERT
+         *   6. claim completion UPDATE
          */
         databaseQueryMock.mockResolvedValueOnce({
           rows: [
@@ -645,6 +647,10 @@ describe(
         });
 
         databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'execution-claim' }],
+        });
+
+        databaseQueryMock.mockResolvedValueOnce({
           rows: [
             {
               id: executionId,
@@ -673,6 +679,10 @@ describe(
                 '2026-10-07T00:00:01.000Z',
             },
           ],
+        });
+
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'execution-claim' }],
         });
 
         const result =
@@ -712,6 +722,147 @@ describe(
             executorType: 'AI_TOOL_GATEWAY',
           }),
         );
+      },
+    );
+
+    it(
+      'rejects an idempotent replay when the execution key differs from the recorded request',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: actionId,
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              decision_id: decisionId,
+              action_type: 'AI.RUNTIME.NOOP',
+              tool_id: 'AI.RUNTIME.NOOP',
+              tool_version: 'wave2-test',
+              target: { decision_id: decisionId },
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: {},
+              payload_hash: 'd'.repeat(64),
+              risk_class: 'L1',
+              authorization_status: 'AUTHORIZED',
+              authorization: { outcome: 'ALLOWED' },
+              approval_id: null,
+              action_token_hash: actionTokenHash('contract-token'),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+              idempotency_key: 'action-3',
+              created_by: userId,
+              created_at: '2026-10-07T00:00:00.000Z',
+            },
+          ],
+        });
+
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: executionId,
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              decision_id: decisionId,
+              action_intent_id: actionId,
+              execution_key: 'execution-original',
+              executor_type: 'AI_TOOL_GATEWAY',
+              tool_version: 'wave2-test',
+              inputs_hash: 'd'.repeat(64),
+              result: { committed: false },
+              error: {},
+              status: 'SUCCEEDED',
+              started_at: '2026-10-07T00:00:00.000Z',
+              finished_at: '2026-10-07T00:00:01.000Z',
+            },
+          ],
+        });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: 'contract-token',
+              execution_key: 'execution-different',
+              tool_version: 'wave2-test',
+            },
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
+      'fails closed when another request already owns the execution claim',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: actionId,
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              decision_id: decisionId,
+              action_type: 'AI.RUNTIME.NOOP',
+              tool_id: 'AI.RUNTIME.NOOP',
+              tool_version: 'wave2-test',
+              target: { decision_id: decisionId },
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: {},
+              payload_hash: 'd'.repeat(64),
+              risk_class: 'L1',
+              authorization_status: 'AUTHORIZED',
+              authorization: { outcome: 'ALLOWED' },
+              approval_id: null,
+              action_token_hash: actionTokenHash('contract-token'),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+              idempotency_key: 'action-3',
+              created_by: userId,
+              created_at: '2026-10-07T00:00:00.000Z',
+            },
+          ],
+        });
+
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'execution-claim-existing',
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              action_intent_id: actionId,
+              execution_key: 'execution-1',
+              tool_version: 'wave2-test',
+              inputs_hash: 'd'.repeat(64),
+              status: 'CLAIMED',
+              failure_code: null,
+              claimed_at: '2026-10-09T00:00:00.000Z',
+              completed_at: null,
+            },
+          ],
+        });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: 'contract-token',
+              execution_key: 'execution-1',
+              tool_version: 'wave2-test',
+            },
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(6);
       },
     );
 
@@ -774,6 +925,10 @@ describe(
         });
 
         databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'execution-claim' }],
+        });
+
+        databaseQueryMock.mockResolvedValueOnce({
           rows: [
             {
               id: executionId,
@@ -807,6 +962,10 @@ describe(
           ],
         });
 
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'execution-claim' }],
+        });
+
         const result =
           await service.executeAction(
             tenantId,
@@ -832,6 +991,15 @@ describe(
         ).toBe(
           'EXECUTOR_NOT_CONFIGURED',
         );
+
+        const claimCompletionCall = databaseQueryMock.mock.calls[5];
+        expect(String(claimCompletionCall?.[0])).toContain(
+          "SET status = CASE WHEN $7 = 'SUCCEEDED' THEN 'COMPLETED' ELSE 'FAILED' END",
+        );
+        expect(String(claimCompletionCall?.[0])).toContain(
+          "failure_code = CASE WHEN $7 = 'FAILED' THEN 'TOOL_EXECUTION_FAILED' ELSE NULL END",
+        );
+        expect(claimCompletionCall?.[1]?.[6]).toBe('FAILED');
       },
     );
 
