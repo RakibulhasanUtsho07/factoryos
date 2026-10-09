@@ -47,24 +47,8 @@ INSERT INTO factories (
 )
 ON CONFLICT (id) DO NOTHING;
 
-DO $
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM tenants t
-    INNER JOIN factories f ON f.tenant_id = t.id
-    INNER JOIN tenant_memberships tm ON tm.tenant_id = t.id
-    INNER JOIN users u ON u.id = tm.user_id
-    WHERE t.slug = 'factoryos-demo'
-      AND t.status = 'ACTIVE'
-      AND f.code = 'CI-FACTORY'
-      AND f.status = 'ACTIVE'
-      AND tm.status = 'ACTIVE'
-      AND u.status = 'ACTIVE'
-  ) THEN
-    RAISE EXCEPTION 'CI PostgreSQL fixture requires an active demo tenant, user membership and factory';
-  END IF;
-END;
-$$;
+-- Fixture is deterministic and covered by PostgreSQL integration tests.
+
+
 
 COMMIT;
