@@ -40,6 +40,10 @@ import {
 } from './dto/create-ai-operational-evaluation.dto';
 
 import {
+  ReconcileAiOperationalForecastDto,
+} from './dto/reconcile-ai-operational-forecast.dto';
+
+import {
   CreateAiDecisionDto,
 } from './dto/create-ai-decision.dto';
 
@@ -288,6 +292,24 @@ export class AiController {
     );
   }
 
+  @Post('operational-evaluations/reconcile-forecast')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.outcomes.write')
+  @RequireFactoryScope()
+  async reconcileOperationalForecast(
+    @Req() request: FactoryOsRequest,
+    @Body() body: ReconcileAiOperationalForecastDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.reconcileForecast(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
   @Get('operational-evaluations/calibration')
   @UseGuards(PermissionGuard)
   @RequirePermission('ai.business.read')
@@ -317,6 +339,26 @@ export class AiController {
   // ============================================================
   // OUTCOMES
   // ============================================================
+
+  @Get('operational-evaluations/forecast-accuracy')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getOperationalForecastAccuracy(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('model_version') modelVersion?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.getForecastAccuracy(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      { domain, metricKey, modelVersion },
+    );
+  }
 
   @Post('outcomes')
   @UseGuards(PermissionGuard)
