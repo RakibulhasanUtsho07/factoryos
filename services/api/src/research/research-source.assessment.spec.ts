@@ -133,7 +133,7 @@ describe('ResearchSourceRegistryService source assessments', () => {
 
   it('rejects assessments bound to a different content digest', async () => {
     database.query.mockResolvedValueOnce({
-      rows: [{ id: sourceId, content_sha256: contentSha256, content_hash_is_ingested: true }],
+      rows: [{ id: sourceId, content_sha256: contentSha256, content_hash_is_ingested: false }],
     });
 
     await expect(
