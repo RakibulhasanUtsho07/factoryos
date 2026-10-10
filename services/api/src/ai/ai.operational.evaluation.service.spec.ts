@@ -509,6 +509,49 @@ describe('AiOperationalEvaluationService', () => {
     expect(database.query).toHaveBeenCalledTimes(3);
   });
 
+  it('replays an identical policy version idempotently', async () => {
+    const savedRequestHash = (
+      service as unknown as {
+        requestHash: (request: Record<string, unknown>) => string;
+      }
+    ).requestHash({
+      tenantId,
+      factoryId,
+      actorUserId: userId,
+      policyKey: 'planning.lead-time',
+      policyVersion: 'v1',
+      domain: 'PLANNING',
+      metricKey: 'lead-time',
+      minimumSamples: 3,
+      maxMae: 2,
+      maxMape: null,
+      minWithinToleranceRate: 0.7,
+      maxEce: null,
+    });
+
+    database.query.mockResolvedValueOnce({
+      rows: [policyRow({ request_hash: savedRequestHash })],
+    });
+
+    const result = await service.createEvaluationPolicy(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        policy_key: 'planning.lead-time',
+        policy_version: 'v1',
+        domain: 'PLANNING',
+        metric_key: 'lead-time',
+        minimum_samples: 3,
+        max_mean_absolute_error: 2,
+        min_within_tolerance_rate: 0.7,
+      } as never,
+    );
+
+    expect(result.idempotent).toBe(true);
+    expect(database.query).toHaveBeenCalledTimes(1);
+  });
+
   it('requires at least one measurable threshold when creating a policy', async () => {
     await expect(
       service.createEvaluationPolicy(
@@ -657,6 +700,50 @@ describe('AiOperationalEvaluationService', () => {
       candidateExpectedCalibrationError: null,
       calibrationSampleCount: null,
     });
+  });
+
+  it('reports a candidate that violates a configured forecast threshold', async () => {
+    database.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            model_version: 'planner-1',
+            sample_count: '4',
+            mean_absolute_error: 2.5,
+            mean_absolute_percentage_error: 0.2,
+            mean_signed_error: -1,
+            within_tolerance_rate: 0.5,
+          },
+          {
+            model_version: 'planner-2',
+            sample_count: '5',
+            mean_absolute_error: 1.5,
+            mean_absolute_percentage_error: 0.1,
+            mean_signed_error: 0.5,
+            within_tolerance_rate: 0.8,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [policyRow({ max_mean_absolute_error: '1.000000' })],
+      });
+
+    const result = await service.compareForecastModels(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        domain: 'PLANNING',
+        metricKey: 'lead-time',
+        baselineModelVersion: 'planner-1',
+        candidateModelVersion: 'planner-2',
+        policyKey: 'planning.lead-time',
+      },
+    );
+
+    expect(result.policyEvaluation.status).toBe('DOES_NOT_MEET_POLICY');
+    expect(result.policyEvaluation.checks.maxMeanAbsoluteError).toBe(false);
+    expect(result.policyEvaluation.checks.minWithinToleranceRate).toBe(true);
   });
 
   it('rejects comparing the same model version against itself', async () => {
