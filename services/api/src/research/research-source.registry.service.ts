@@ -74,7 +74,9 @@ interface ResearchSourceTextContentRow extends QueryResultRow {
   canonical_text: string;
   character_count: number;
   line_count: number;
-  parser_version: 'factoryos-plain-text-v1';
+  parser_version: 'factoryos-plain-text-v1' | 'factoryos-document-extractor-v1';
+  source_format: 'PLAIN_TEXT' | 'PDF' | 'DOCX';
+  original_file_sha256: string | null;
   created_by: string;
   created_at: string;
 }
@@ -351,6 +353,11 @@ export class ResearchSourceRegistryService {
     actorUserId: string,
     sourceId: string,
     input: IngestResearchSourceTextDto,
+    provenance: {
+      sourceFormat?: 'PLAIN_TEXT' | 'PDF' | 'DOCX';
+      originalFileSha256?: string | null;
+      parserVersion?: 'factoryos-plain-text-v1' | 'factoryos-document-extractor-v1';
+    } = {},
   ) {
     this.validateScope(tenantId, factoryId, actorUserId);
     this.requiredUuid(sourceId, 'sourceId');
@@ -366,7 +373,21 @@ export class ResearchSourceRegistryService {
     const contentSha256 = createHash('sha256')
       .update(canonicalText, 'utf8')
       .digest('hex');
-
+    const sourceFormat = provenance.sourceFormat ?? 'PLAIN_TEXT';
+    const parserVersion = provenance.parserVersion ?? 'factoryos-plain-text-v1';
+    const originalFileSha256 = provenance.originalFileSha256 ?? null;
+    if (!['PLAIN_TEXT', 'PDF', 'DOCX'].includes(sourceFormat)) {
+      throw new BadRequestException('sourceFormat must be PLAIN_TEXT, PDF, or DOCX');
+    }
+    if (
+      (sourceFormat === 'PLAIN_TEXT' && parserVersion !== 'factoryos-plain-text-v1') ||
+      (sourceFormat !== 'PLAIN_TEXT' &&
+        (parserVersion !== 'factoryos-document-extractor-v1' ||
+          typeof originalFileSha256 !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(originalFileSha256)))
+    ) {
+      throw new BadRequestException('Document extraction provenance is invalid');
+    }
     const sourceResult = await this.database.query<
       QueryResultRow & {
         id: string;
@@ -401,12 +422,7 @@ export class ResearchSourceRegistryService {
         'Plain-text ingestion requires VERIFIED source rights and allow_research',
       );
     }
-    if (!source.content_sha256) {
-      throw new BadRequestException(
-        'A registered content_sha256 is required before ingestion',
-      );
-    }
-    if (source.content_sha256 !== contentSha256) {
+    if (source.content_sha256 && source.content_sha256 !== contentSha256) {
       throw new ConflictException(
         'Normalized UTF-8 text SHA-256 does not match the registered source version',
       );
@@ -415,14 +431,13 @@ export class ResearchSourceRegistryService {
     const existingResult = await this.database.query<ResearchSourceTextContentRow>(
       this.selectTextContentSql(`
         tenant_id = $1 AND factory_id = $2 AND source_id = $3
-        AND content_sha256 = $4
       `),
-      [tenantId, factoryId, sourceId, contentSha256],
+      [tenantId, factoryId, sourceId],
       { tenantId, userId: actorUserId },
     );
     const existing = existingResult.rows[0];
     if (existing) {
-      if (existing.canonical_text !== canonicalText) {
+      if (existing.content_sha256 !== contentSha256 || existing.canonical_text !== canonicalText) {
         throw new ConflictException(
           'An existing text record has the same SHA-256 but different canonical text',
         );
@@ -436,13 +451,13 @@ export class ResearchSourceRegistryService {
       `
       INSERT INTO research_source_text_content (
         id, tenant_id, factory_id, source_id, content_sha256, canonical_text,
-        character_count, line_count, parser_version, created_by
+        character_count, line_count, parser_version, source_format,
+        original_file_sha256, created_by
       )
       VALUES (
-        gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7,
-        'factoryos-plain-text-v1', $8
+        gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
       )
-      ON CONFLICT (source_id, tenant_id, factory_id, content_sha256) DO NOTHING
+      ON CONFLICT (tenant_id, factory_id, source_id) DO NOTHING
       RETURNING
         id::text AS id,
         tenant_id::text AS tenant_id,
@@ -453,6 +468,8 @@ export class ResearchSourceRegistryService {
         character_count,
         line_count,
         parser_version,
+        source_format,
+        original_file_sha256,
         created_by::text AS created_by,
         created_at::text AS created_at
       `,
@@ -464,6 +481,9 @@ export class ResearchSourceRegistryService {
         canonicalText,
         characterCount,
         lineCount,
+        parserVersion,
+        sourceFormat,
+        originalFileSha256,
         actorUserId,
       ],
       { tenantId, userId: actorUserId },
@@ -474,13 +494,12 @@ export class ResearchSourceRegistryService {
       const racedResult = await this.database.query<ResearchSourceTextContentRow>(
         this.selectTextContentSql(`
           tenant_id = $1 AND factory_id = $2 AND source_id = $3
-          AND content_sha256 = $4
         `),
-        [tenantId, factoryId, sourceId, contentSha256],
+        [tenantId, factoryId, sourceId],
         { tenantId, userId: actorUserId },
       );
       row = racedResult.rows[0];
-      if (!row || row.canonical_text !== canonicalText) {
+      if (!row || row.content_sha256 !== contentSha256 || row.canonical_text !== canonicalText) {
         throw new ConflictException(
           'Text content was concurrently ingested with conflicting canonical content',
         );
@@ -497,6 +516,9 @@ export class ResearchSourceRegistryService {
       contentSha256,
       characterCount,
       lineCount,
+      sourceFormat,
+      originalFileSha256,
+      parserVersion,
     });
 
     return { idempotent: false, content: this.mapTextContent(row) };
@@ -583,6 +605,8 @@ export class ResearchSourceRegistryService {
       characterCount: row.character_count,
       lineCount: row.line_count,
       parserVersion: row.parser_version,
+      sourceFormat: row.source_format,
+      originalFileSha256: row.original_file_sha256,
       securityReview: 'MANUAL_APPROVED',
       sourceTrust: 'UNTRUSTED',
       mustTreatAsUntrusted: true,
@@ -633,6 +657,8 @@ export class ResearchSourceRegistryService {
         character_count,
         line_count,
         parser_version,
+        source_format,
+        original_file_sha256,
         created_by::text AS created_by,
         created_at::text AS created_at
       FROM research_source_text_content
@@ -651,6 +677,8 @@ export class ResearchSourceRegistryService {
       characterCount: row.character_count,
       lineCount: row.line_count,
       parserVersion: row.parser_version,
+      sourceFormat: row.source_format,
+      originalFileSha256: row.original_file_sha256,
       ingestionStatus: 'PENDING_REVIEW',
       promptInjectionStatus: 'NOT_ASSESSED',
       createdAt: row.created_at,
@@ -666,6 +694,9 @@ export class ResearchSourceRegistryService {
     contentSha256: string;
     characterCount: number;
     lineCount: number;
+    sourceFormat: 'PLAIN_TEXT' | 'PDF' | 'DOCX';
+    originalFileSha256: string | null;
+    parserVersion: 'factoryos-plain-text-v1' | 'factoryos-document-extractor-v1';
   }): Promise<void> {
     try {
       await this.auditService.record({
@@ -682,7 +713,9 @@ export class ResearchSourceRegistryService {
           contentSha256: input.contentSha256,
           characterCount: input.characterCount,
           lineCount: input.lineCount,
-          parserVersion: 'factoryos-plain-text-v1',
+          parserVersion: input.parserVersion,
+          sourceFormat: input.sourceFormat,
+          originalFileSha256: input.originalFileSha256,
           ingestionStatus: 'PENDING_REVIEW',
         },
       });
@@ -743,29 +776,43 @@ export class ResearchSourceRegistryService {
     }
 
     const sourceResult = await this.database.query<
-      QueryResultRow & { id: string; content_sha256: string | null }
+      QueryResultRow & {
+        id: string;
+        content_sha256: string | null;
+        content_hash_is_ingested: boolean;
+      }
     >(
       `
-      SELECT id::text AS id, content_sha256
-      FROM research_source_registry
-      WHERE tenant_id = $1 AND factory_id = $2 AND id = $3
+      SELECT
+        s.id::text AS id,
+        s.content_sha256,
+        EXISTS (
+          SELECT 1
+          FROM research_source_text_content c
+          WHERE c.tenant_id = s.tenant_id
+            AND c.factory_id = s.factory_id
+            AND c.source_id = s.id
+            AND c.content_sha256 = $4
+        ) AS content_hash_is_ingested
+      FROM research_source_registry s
+      WHERE s.tenant_id = $1 AND s.factory_id = $2 AND s.id = $3
       LIMIT 1
       `,
-      [tenantId, factoryId, sourceId],
+      [tenantId, factoryId, sourceId, contentSha256],
       { tenantId, userId: actorUserId },
     );
     const source = sourceResult.rows[0];
     if (!source) {
       throw new NotFoundException('Research source version was not found in this factory');
     }
-    if (!source.content_sha256) {
-      throw new BadRequestException(
-        'A registered content_sha256 is required before a source can be assessed',
-      );
-    }
-    if (source.content_sha256 !== contentSha256) {
+    if (source.content_sha256 && source.content_sha256 !== contentSha256) {
       throw new ConflictException(
         'Assessment content_sha256 must match the registered source version',
+      );
+    }
+    if (source.content_hash_is_ingested !== true) {
+      throw new BadRequestException(
+        'Assessment content_sha256 must match an ingested text record before assessment',
       );
     }
 
