@@ -1,6 +1,5 @@
 import { deflateRawSync, deflateSync } from 'node:zlib';
 
-import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 
 import { ResearchDocumentExtractionService } from './research-document-extraction.service';
