@@ -134,6 +134,82 @@ describe('ResearchSourceRegistryService plain-text ingestion', () => {
     expect(database.query).toHaveBeenCalledTimes(2);
   });
 
+  it('validates a PDF against the registered file digest while reviewing extracted-text digest separately', async () => {
+    const originalFileSha256 = 'b'.repeat(64);
+    database.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: sourceId,
+          content_sha256: originalFileSha256,
+          rights_status: 'VERIFIED',
+          allow_research: true,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [contentRow({
+          source_format: 'PDF',
+          original_file_sha256: originalFileSha256,
+          parser_version: 'factoryos-document-extractor-v1',
+        })],
+      });
+
+    const result = await service.ingestPlainText(
+      tenantId,
+      factoryId,
+      userId,
+      sourceId,
+      { content: canonicalText } as never,
+      {
+        sourceFormat: 'PDF',
+        originalFileSha256,
+        parserVersion: 'factoryos-document-extractor-v1',
+      },
+    );
+
+    expect(result.content.contentSha256).toBe(contentSha256);
+    expect(result.content.sourceFormat).toBe('PDF');
+    expect(result.content.originalFileSha256).toBe(originalFileSha256);
+    expect(database.query.mock.calls[2]?.[1]).toEqual([
+      tenantId,
+      factoryId,
+      sourceId,
+      contentSha256,
+      canonicalText,
+      canonicalText.length,
+      2,
+      'factoryos-document-extractor-v1',
+      'PDF',
+      originalFileSha256,
+      userId,
+    ]);
+  });
+
+  it('accepts an unpinned registry hash but binds the first ingestion hash immutably', async () => {
+    database.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: sourceId,
+          content_sha256: null,
+          rights_status: 'VERIFIED',
+          allow_research: true,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [contentRow()] });
+
+    const result = await service.ingestPlainText(
+      tenantId,
+      factoryId,
+      userId,
+      sourceId,
+      { content: canonicalText } as never,
+    );
+
+    expect(result.idempotent).toBe(false);
+    expect(result.content.contentSha256).toBe(contentSha256);
+  });
+
   it('rejects a digest mismatch before attempting content insertion', async () => {
     database.query.mockResolvedValueOnce({
       rows: [{
