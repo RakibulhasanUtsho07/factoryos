@@ -78,7 +78,9 @@ describe('AiOperationalEvaluationService', () => {
 
   it('records an evaluation linked to a tenant-scoped AI decision and audits the result', async () => {
     database.query
-      .mockResolvedValueOnce({ rows: [{ id: decisionId }] })
+      .mockResolvedValueOnce({
+        rows: [{ id: decisionId, metadata: { model_version: 'model-2.1.0' } }],
+      })
       .mockResolvedValueOnce({ rows: [evaluationRow()] });
 
     const result = await service.recordEvaluation(
@@ -105,6 +107,23 @@ describe('AiOperationalEvaluationService', () => {
     );
   });
 
+  it('rejects an evaluation that relabels the model version declared on its decision', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{ id: decisionId, metadata: { model_version: 'model-1.9.0' } }],
+    });
+
+    await expect(
+      service.recordEvaluation(
+        tenantId,
+        factoryId,
+        userId,
+        input({ model_version: 'model-2.1.0' }) as never,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(database.query).toHaveBeenCalledTimes(1);
+  });
+
   it('replays the same evaluation key only when the request fingerprint matches', async () => {
     // Mirror the normalized request hash persisted by the service.
     const savedRequestHash = (
@@ -127,7 +146,9 @@ describe('AiOperationalEvaluationService', () => {
 
     database.query.mockReset();
     database.query
-      .mockResolvedValueOnce({ rows: [{ id: decisionId }] })
+      .mockResolvedValueOnce({
+        rows: [{ id: decisionId, metadata: { model_version: 'model-2.1.0' } }],
+      })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
         rows: [evaluationRow({ request_hash: savedRequestHash })],
@@ -146,7 +167,9 @@ describe('AiOperationalEvaluationService', () => {
 
   it('rejects reuse of an evaluation key with a different payload', async () => {
     database.query
-      .mockResolvedValueOnce({ rows: [{ id: decisionId }] })
+      .mockResolvedValueOnce({
+        rows: [{ id: decisionId, metadata: { model_version: 'model-2.1.0' } }],
+      })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
         rows: [evaluationRow({ request_hash: 'a'.repeat(64) })],
@@ -251,6 +274,7 @@ describe('AiOperationalEvaluationService', () => {
           actual_metric: { 'defect-rate': 10.2 },
           status: 'OBSERVED',
           observed_at: observedAt,
+          decision_metadata: { model_version: 'model-2.1.0' },
         }],
       })
       .mockResolvedValueOnce({
@@ -287,6 +311,39 @@ describe('AiOperationalEvaluationService', () => {
     expect(result.evaluation.absoluteError).toBeCloseTo(0.2);
     expect(result.evaluation.predictionCorrect).toBe(true);
     expect(database.query).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a forecast model version that conflicts with its source decision', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: '9f1a2222-2222-4222-8222-222222222222',
+        decision_id: decisionId,
+        expected_metric: { 'defect-rate': 10 },
+        actual_metric: { 'defect-rate': 10.2 },
+        status: 'OBSERVED',
+        observed_at: '2026-10-10T09:00:00.000Z',
+        decision_metadata: { model_version: 'model-1.9.0' },
+      }],
+    });
+
+    await expect(
+      service.reconcileForecast(
+        tenantId,
+        factoryId,
+        userId,
+        {
+          source_outcome_id: '9f1a2222-2222-4222-8222-222222222222',
+          evaluation_key: 'forecast-model-mismatch',
+          domain: 'QUALITY',
+          metric_key: 'defect-rate',
+          model_version: 'model-2.1.0',
+          confidence: 0.8,
+          tolerance: 0.3,
+        } as never,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(database.query).toHaveBeenCalledTimes(1);
   });
 
   it('refuses to score an outcome that is not marked OBSERVED', async () => {
