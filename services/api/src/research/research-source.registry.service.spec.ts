@@ -110,9 +110,11 @@ describe('ResearchSourceRegistryService', () => {
         }),
       }),
     );
-    const auditPayload = auditService.record.mock.calls[0]?.[0]?.payload as Record<string, unknown>;
-    expect(auditPayload).not.toHaveProperty('canonicalUri');
-    expect(auditPayload).not.toHaveProperty('rightsBasis');
+    const auditInput = auditService.record.mock.calls[0]?.[0] as
+      | { payload?: Record<string, unknown> }
+      | undefined;
+    expect(auditInput?.payload).not.toHaveProperty('canonicalUri');
+    expect(auditInput?.payload).not.toHaveProperty('rightsBasis');
   });
 
   it('replays identical source versions idempotently', async () => {
