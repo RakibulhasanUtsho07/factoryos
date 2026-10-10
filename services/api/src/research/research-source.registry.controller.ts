@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Post,
   Query,
   Req,
   UnauthorizedException,
