@@ -45,32 +45,32 @@ const RETRIEVAL_SQL =
   'e.created_at::text AS evidence_created_at, s.source_key, s.source_version, s.source_type, ' +
   's.title AS source_title, s.canonical_uri, v.id::text AS validation_id, v.verdict AS validation_verdict, ' +
   'v.reason_code AS validation_reason_code, v.created_at::text AS validation_created_at, ' +
-  '(ts_rank_cd(to_tsvector(\\'simple\\', c.statement), q.tsq) + ' +
-  '0.75 * ts_rank_cd(to_tsvector(\\'simple\\', e.quote_text), q.tsq) + ' +
-  '0.25 * ts_rank_cd(to_tsvector(\\'simple\\', s.title || \\' \\' || s.source_key), q.tsq))::float8 AS relevance_score ' +
+  '(ts_rank_cd(to_tsvector(\'simple\', c.statement), q.tsq) + ' +
+  '0.75 * ts_rank_cd(to_tsvector(\'simple\', e.quote_text), q.tsq) + ' +
+  '0.25 * ts_rank_cd(to_tsvector(\'simple\', s.title || \' \' || s.source_key), q.tsq))::float8 AS relevance_score ' +
   'FROM research_claim_registry c ' +
   'JOIN research_claim_evidence e ON e.claim_id = c.id AND e.tenant_id = c.tenant_id AND e.factory_id = c.factory_id ' +
   'JOIN research_source_registry s ON s.id = e.source_id AND s.tenant_id = e.tenant_id AND s.factory_id = e.factory_id ' +
   'JOIN research_source_text_content t ON t.id = e.content_id AND t.source_id = e.source_id ' +
   'AND t.tenant_id = e.tenant_id AND t.factory_id = e.factory_id AND t.content_sha256 = e.content_sha256 ' +
-  'CROSS JOIN (SELECT plainto_tsquery(\\'simple\\', $3::text) AS tsq) q ' +
+  'CROSS JOIN (SELECT plainto_tsquery(\'simple\', $3::text) AS tsq) q ' +
   'LEFT JOIN LATERAL (SELECT decision, content_sha256 FROM research_source_assessments ' +
   'WHERE tenant_id = e.tenant_id AND factory_id = e.factory_id AND source_id = e.source_id ' +
-  'AND assessment_type = \\'RIGHTS\\' ORDER BY created_at DESC, id DESC LIMIT 1) rights ON TRUE ' +
+  'AND assessment_type = \'RIGHTS\' ORDER BY created_at DESC, id DESC LIMIT 1) rights ON TRUE ' +
   'LEFT JOIN LATERAL (SELECT decision, content_sha256 FROM research_source_assessments ' +
   'WHERE tenant_id = e.tenant_id AND factory_id = e.factory_id AND source_id = e.source_id ' +
-  'AND assessment_type = \\'SECURITY\\' ORDER BY created_at DESC, id DESC LIMIT 1) security ON TRUE ' +
+  'AND assessment_type = \'SECURITY\' ORDER BY created_at DESC, id DESC LIMIT 1) security ON TRUE ' +
   'LEFT JOIN LATERAL (SELECT id, verdict, reason_code, content_sha256, quote_sha256, created_at ' +
   'FROM research_citation_validations WHERE tenant_id = e.tenant_id AND factory_id = e.factory_id ' +
   'AND claim_id = c.id AND evidence_id = e.id ORDER BY created_at DESC, id DESC LIMIT 1) v ON TRUE ' +
   'WHERE c.tenant_id = $1 AND c.factory_id = $2 ' +
-  'AND (to_tsvector(\\'simple\\', c.statement) @@ q.tsq ' +
-  'OR to_tsvector(\\'simple\\', e.quote_text) @@ q.tsq ' +
-  'OR to_tsvector(\\'simple\\', s.title || \\' \\' || s.source_key) @@ q.tsq) ' +
-  'AND s.registry_status = \\'REGISTERED\\' AND s.rights_status = \\'VERIFIED\\' AND s.allow_research IS TRUE ' +
-  'AND rights.decision = \\'APPROVED\\' AND rights.content_sha256 = e.content_sha256 ' +
-  'AND security.decision = \\'APPROVED\\' AND security.content_sha256 = e.content_sha256 ' +
-  'AND v.verdict = \\'VALID\\' AND v.reason_code = \\'QUOTE_MATCHED\\' ' +
+  'AND (to_tsvector(\'simple\', c.statement) @@ q.tsq ' +
+  'OR to_tsvector(\'simple\', e.quote_text) @@ q.tsq ' +
+  'OR to_tsvector(\'simple\', s.title || \' \' || s.source_key) @@ q.tsq) ' +
+  'AND s.registry_status = \'REGISTERED\' AND s.rights_status = \'VERIFIED\' AND s.allow_research IS TRUE ' +
+  'AND rights.decision = \'APPROVED\' AND rights.content_sha256 = e.content_sha256 ' +
+  'AND security.decision = \'APPROVED\' AND security.content_sha256 = e.content_sha256 ' +
+  'AND v.verdict = \'VALID\' AND v.reason_code = \'QUOTE_MATCHED\' ' +
   'AND v.content_sha256 = e.content_sha256 AND v.quote_sha256 = e.quote_sha256 ' +
   'ORDER BY relevance_score DESC, c.created_at DESC, e.created_at DESC, e.id ' +
   'LIMIT $4';
