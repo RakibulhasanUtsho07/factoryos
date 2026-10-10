@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS ai_operational_evaluation_policies (
     domain                          VARCHAR(20) NOT NULL,
     metric_key                      VARCHAR(100) NOT NULL,
     minimum_samples                 INTEGER NOT NULL,
-    max_mean_absolute_error         NUMERIC(21, 6),
+    max_mean_absolute_error         NUMERIC(22, 6),
     max_mean_absolute_percentage_error NUMERIC(21, 6),
     min_within_tolerance_rate        NUMERIC(7, 6),
     max_expected_calibration_error   NUMERIC(7, 6),
