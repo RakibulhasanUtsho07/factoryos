@@ -21,7 +21,7 @@ import {
   type ListMachineDowntimeDto,
 } from './dto/list-machine-downtime.dto';
 
-interface MachineRow extends QueryResultRow {
+export interface MachineRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -36,7 +36,7 @@ interface MachineRow extends QueryResultRow {
   version: number | string;
 }
 
-interface MachineDowntimeRow extends QueryResultRow {
+export interface MachineDowntimeRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
