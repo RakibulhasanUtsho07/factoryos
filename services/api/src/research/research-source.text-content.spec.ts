@@ -24,6 +24,8 @@ function contentRow(overrides: Record<string, unknown> = {}) {
     character_count: canonicalText.length,
     line_count: 2,
     parser_version: 'factoryos-plain-text-v1',
+    source_format: 'PLAIN_TEXT',
+    original_file_sha256: null,
     created_by: userId,
     created_at: '2026-10-10T10:00:00.000Z',
     ...overrides,
