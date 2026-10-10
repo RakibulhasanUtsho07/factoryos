@@ -110,6 +110,7 @@ jobs:
             migrations/026_ai_action_binding_integrity.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
+            migrations/029_maintenance_machine_downtime.sql
           )
 
           for migration in "${migrations[@]}"; do
