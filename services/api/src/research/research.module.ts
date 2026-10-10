@@ -9,11 +9,13 @@ import { ResearchSourceRegistryService } from './research-source.registry.servic
 import { ResearchDocumentExtractionService } from './research-document-extraction.service';
 import { ResearchClaimEvidenceController } from './research-claim-evidence.controller';
 import { ResearchClaimEvidenceService } from './research-claim-evidence.service';
+import { ResearchRetrievalController } from './research-retrieval.controller';
+import { ResearchRetrievalService } from './research-retrieval.service';
 
 @Module({
   imports: [AuditModule, DatabaseModule, IamModule],
-  controllers: [ResearchSourceRegistryController, ResearchClaimEvidenceController],
-  providers: [ResearchSourceRegistryService, ResearchDocumentExtractionService, ResearchClaimEvidenceService],
-  exports: [ResearchSourceRegistryService, ResearchClaimEvidenceService],
+  controllers: [ResearchSourceRegistryController, ResearchClaimEvidenceController, ResearchRetrievalController],
+  providers: [ResearchSourceRegistryService, ResearchDocumentExtractionService, ResearchClaimEvidenceService, ResearchRetrievalService],
+  exports: [ResearchSourceRegistryService, ResearchClaimEvidenceService, ResearchRetrievalService],
 })
 export class ResearchModule {}
