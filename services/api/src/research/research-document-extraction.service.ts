@@ -69,7 +69,7 @@ export class ResearchDocumentExtractionService {
       );
     }
 
-    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(normalized)) {
+    if (this.containsUnsupportedControlCharacters(normalized)) {
       throw new BadRequestException('Extracted text contains unsupported control characters');
     }
 
@@ -79,6 +79,19 @@ export class ResearchDocumentExtractionService {
       originalFileSha256,
       parserVersion: 'factoryos-document-extractor-v1',
     };
+  }
+
+  private containsUnsupportedControlCharacters(value: string): boolean {
+    return Array.from(value).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return (
+        codePoint <= 0x08 ||
+        codePoint === 0x0b ||
+        codePoint === 0x0c ||
+        (codePoint >= 0x0e && codePoint <= 0x1f) ||
+        (codePoint >= 0x7f && codePoint <= 0x9f)
+      );
+    });
   }
 
   private extractDocx(input: Buffer): string {
@@ -326,9 +339,11 @@ export class ResearchDocumentExtractionService {
     const marker = /stream\r?\n/g;
     let match: RegExpExecArray | null;
     let expandedTotal = 0;
+    let streamCount = 0;
 
     while ((match = marker.exec(raw)) !== null) {
-      if (streams.length >= 1024) {
+      streamCount += 1;
+      if (streamCount > 1024) {
         throw new BadRequestException('PDF has too many streams to process safely');
       }
       const dictionaryEnd = raw.lastIndexOf('>>', match.index);
