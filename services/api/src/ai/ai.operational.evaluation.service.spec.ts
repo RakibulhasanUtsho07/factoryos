@@ -39,6 +39,12 @@ function evaluationRow(overrides: Record<string, unknown> = {}) {
     confidence: '0.800000',
     prediction_correct: true,
     request_hash: 'b'.repeat(64),
+    source_outcome_id: null,
+    predicted_value: null,
+    actual_value: null,
+    absolute_error: null,
+    absolute_percentage_error: null,
+    tolerance: null,
     created_by: userId,
     observed_at: '2026-10-10T09:00:00.000Z',
     created_at: '2026-10-10T09:00:00.000Z',
@@ -232,6 +238,153 @@ describe('AiOperationalEvaluationService', () => {
       'ai.business.read',
       factoryId,
     );
+  });
+
+  it('scores a forecast using numeric values from an observed, scoped outcome', async () => {
+    const observedAt = '2026-10-10T09:00:00.000Z';
+    database.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: '9f1a2222-2222-4222-8222-222222222222',
+          decision_id: decisionId,
+          expected_metric: { 'defect-rate': 10 },
+          actual_metric: { 'defect-rate': 10.2 },
+          status: 'OBSERVED',
+          observed_at: observedAt,
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [evaluationRow({
+          source_outcome_id: '9f1a2222-2222-4222-8222-222222222222',
+          predicted_value: '10',
+          actual_value: '10.2',
+          absolute_error: '0.2',
+          absolute_percentage_error: String(0.2 / 10.2),
+          tolerance: '0.3',
+          prediction_correct: true,
+          observed_at: observedAt,
+        })],
+      });
+
+    const result = await service.reconcileForecast(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        source_outcome_id: '9f1a2222-2222-4222-8222-222222222222',
+        evaluation_key: 'forecast-key-001',
+        domain: 'QUALITY',
+        metric_key: 'defect-rate',
+        model_version: 'model-2.1.0',
+        confidence: 0.8,
+        tolerance: 0.3,
+      } as never,
+    );
+
+    expect(result.idempotent).toBe(false);
+    expect(result.evaluation.predictedValue).toBe(10);
+    expect(result.evaluation.actualValue).toBe(10.2);
+    expect(result.evaluation.absoluteError).toBeCloseTo(0.2);
+    expect(result.evaluation.predictionCorrect).toBe(true);
+    expect(database.query).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses to score an outcome that is not marked OBSERVED', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: '9f1a2222-2222-4222-8222-222222222222',
+        decision_id: decisionId,
+        expected_metric: { 'defect-rate': 10 },
+        actual_metric: { 'defect-rate': 10.2 },
+        status: 'EXPECTED',
+        observed_at: '2026-10-10T09:00:00.000Z',
+      }],
+    });
+
+    await expect(
+      service.reconcileForecast(
+        tenantId,
+        factoryId,
+        userId,
+        {
+          source_outcome_id: '9f1a2222-2222-4222-8222-222222222222',
+          evaluation_key: 'forecast-key-002',
+          domain: 'QUALITY',
+          metric_key: 'defect-rate',
+          model_version: 'model-2.1.0',
+          confidence: 0.8,
+          tolerance: 0.3,
+        } as never,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(database.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects non-numeric values in the source outcome metric', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: '9f1a2222-2222-4222-8222-222222222222',
+        decision_id: decisionId,
+        expected_metric: { 'defect-rate': 'ten' },
+        actual_metric: { 'defect-rate': 10.2 },
+        status: 'OBSERVED',
+        observed_at: '2026-10-10T09:00:00.000Z',
+      }],
+    });
+
+    await expect(
+      service.reconcileForecast(
+        tenantId,
+        factoryId,
+        userId,
+        {
+          source_outcome_id: '9f1a2222-2222-4222-8222-222222222222',
+          evaluation_key: 'forecast-key-003',
+          domain: 'QUALITY',
+          metric_key: 'defect-rate',
+          model_version: 'model-2.1.0',
+          confidence: 0.8,
+          tolerance: 0.3,
+        } as never,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(database.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('aggregates numeric forecast error by scoped domain, metric, and model', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        domain: 'PLANNING',
+        metric_key: 'lead-time',
+        model_version: 'planner-1',
+        sample_count: '4',
+        mean_absolute_error: 1.5,
+        mean_absolute_percentage_error: 0.12,
+        mean_signed_error: -0.5,
+        within_tolerance_rate: 0.75,
+      }],
+    });
+
+    const result = await service.getForecastAccuracy(
+      tenantId,
+      factoryId,
+      userId,
+      { domain: 'PLANNING', metricKey: 'lead-time' },
+    );
+
+    expect(result.totalSamples).toBe(4);
+    expect(result.series[0]).toEqual({
+      domain: 'PLANNING',
+      metricKey: 'lead-time',
+      modelVersion: 'planner-1',
+      sampleCount: 4,
+      meanAbsoluteError: 1.5,
+      meanAbsolutePercentageError: 0.12,
+      meanSignedError: -0.5,
+      withinToleranceRate: 0.75,
+    });
   });
 
   it('rejects an invalid calibration bin count before querying data', async () => {
