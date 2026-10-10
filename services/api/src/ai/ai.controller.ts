@@ -44,6 +44,10 @@ import {
 } from './dto/reconcile-ai-operational-forecast.dto';
 
 import {
+  CreateAiOperationalEvaluationPolicyDto,
+} from './dto/create-ai-operational-evaluation-policy.dto';
+
+import {
   CreateAiDecisionDto,
 } from './dto/create-ai-decision.dto';
 
@@ -370,6 +374,7 @@ export class AiController {
     @Query('metric_key') metricKey?: string,
     @Query('baseline_model_version') baselineModelVersion?: string,
     @Query('candidate_model_version') candidateModelVersion?: string,
+    @Query('policy_key') policyKey?: string,
   ) {
     const context = this.getAuthenticatedFactoryContext(request);
 
@@ -382,7 +387,46 @@ export class AiController {
         metricKey,
         baselineModelVersion,
         candidateModelVersion,
+        policyKey,
       },
+    );
+  }
+
+  @Post('operational-evaluations/policies')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.evaluation.policies.write')
+  @RequireFactoryScope()
+  async createOperationalEvaluationPolicy(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiOperationalEvaluationPolicyDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.createEvaluationPolicy(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  @Get('operational-evaluations/policies')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listOperationalEvaluationPolicies(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('policy_key') policyKey?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.getEvaluationPolicies(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      { domain, metricKey, policyKey },
     );
   }
 
