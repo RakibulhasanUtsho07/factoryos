@@ -445,9 +445,15 @@ export class ResearchSourceRegistryService {
     );
     const existing = existingResult.rows[0];
     if (existing) {
-      if (existing.content_sha256 !== contentSha256 || existing.canonical_text !== canonicalText) {
+      if (
+        existing.content_sha256 !== contentSha256 ||
+        existing.canonical_text !== canonicalText ||
+        existing.parser_version !== parserVersion ||
+        existing.source_format !== sourceFormat ||
+        existing.original_file_sha256 !== originalFileSha256
+      ) {
         throw new ConflictException(
-          'An existing text record has the same SHA-256 but different canonical text',
+          'The immutable source version already has different text or extraction provenance',
         );
       }
       return { idempotent: true, content: this.mapTextContent(existing) };
@@ -507,9 +513,16 @@ export class ResearchSourceRegistryService {
         { tenantId, userId: actorUserId },
       );
       row = racedResult.rows[0];
-      if (!row || row.content_sha256 !== contentSha256 || row.canonical_text !== canonicalText) {
+      if (
+        !row ||
+        row.content_sha256 !== contentSha256 ||
+        row.canonical_text !== canonicalText ||
+        row.parser_version !== parserVersion ||
+        row.source_format !== sourceFormat ||
+        row.original_file_sha256 !== originalFileSha256
+      ) {
         throw new ConflictException(
-          'Text content was concurrently ingested with conflicting canonical content',
+          'Text content was concurrently ingested with conflicting content or provenance',
         );
       }
       return { idempotent: true, content: this.mapTextContent(row) };
