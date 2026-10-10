@@ -360,6 +360,32 @@ export class AiController {
     );
   }
 
+  @Get('operational-evaluations/model-comparison')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async compareOperationalForecastModels(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('baseline_model_version') baselineModelVersion?: string,
+    @Query('candidate_model_version') candidateModelVersion?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.compareForecastModels(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      {
+        domain,
+        metricKey,
+        baselineModelVersion,
+        candidateModelVersion,
+      },
+    );
+  }
+
   @Post('outcomes')
   @UseGuards(PermissionGuard)
   @RequirePermission('ai.outcomes.write')
