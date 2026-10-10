@@ -444,6 +444,101 @@ describe('AiOperationalEvaluationService', () => {
     });
   });
 
+  it('compares baseline and candidate forecasts using scoped observed outcomes', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [
+        {
+          model_version: 'planner-1',
+          sample_count: '4',
+          mean_absolute_error: 2.5,
+          mean_absolute_percentage_error: 0.2,
+          mean_signed_error: -1,
+          within_tolerance_rate: 0.5,
+        },
+        {
+          model_version: 'planner-2',
+          sample_count: '5',
+          mean_absolute_error: 1.5,
+          mean_absolute_percentage_error: 0.1,
+          mean_signed_error: 0.5,
+          within_tolerance_rate: 0.8,
+        },
+      ],
+    });
+
+    const result = await service.compareForecastModels(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        domain: 'PLANNING',
+        metricKey: 'lead-time',
+        baselineModelVersion: 'planner-1',
+        candidateModelVersion: 'planner-2',
+      },
+    );
+
+    expect(result).toMatchObject({
+      windowDays: 90,
+      domain: 'PLANNING',
+      metricKey: 'lead-time',
+      comparisonMode: 'descriptive_only',
+      comparable: true,
+      baseline: {
+        modelVersion: 'planner-1',
+        sampleCount: 4,
+        meanAbsoluteError: 2.5,
+      },
+      candidate: {
+        modelVersion: 'planner-2',
+        sampleCount: 5,
+        meanAbsoluteError: 1.5,
+      },
+      delta: {
+        meanAbsoluteError: -1,
+        meanAbsolutePercentageError: -0.1,
+        meanSignedError: 1.5,
+        withinToleranceRate: 0.3,
+      },
+    });
+    expect(iamService.authorize).toHaveBeenCalledWith(
+      userId,
+      tenantId,
+      'ai.business.read',
+      factoryId,
+    );
+    expect(database.query).toHaveBeenCalledWith(
+      expect.stringContaining('model_version IN ($5, $6)'),
+      [
+        tenantId,
+        factoryId,
+        'PLANNING',
+        'lead-time',
+        'planner-1',
+        'planner-2',
+      ],
+      { tenantId, userId },
+    );
+  });
+
+  it('rejects comparing the same model version against itself', async () => {
+    await expect(
+      service.compareForecastModels(
+        tenantId,
+        factoryId,
+        userId,
+        {
+          domain: 'QUALITY',
+          metricKey: 'defect-rate',
+          baselineModelVersion: 'model-1',
+          candidateModelVersion: 'model-1',
+        },
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid calibration bin count before querying data', async () => {
     await expect(
       service.getCalibration(tenantId, factoryId, userId, { bins: 30 }),
