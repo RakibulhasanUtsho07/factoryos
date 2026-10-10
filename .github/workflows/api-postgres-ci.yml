@@ -110,6 +110,14 @@ jobs:
             migrations/026_ai_action_binding_integrity.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
+            migrations/027_ai_operational_evaluation.sql
+            migrations/028_ai_operational_forecast_accuracy.sql
+            migrations/029_ai_operational_evaluation_policies.sql
+            migrations/030_research_source_registry.sql
+            migrations/031_research_source_assessments.sql
+            migrations/032_research_source_text_content.sql
+            migrations/033_research_claim_evidence_graph.sql
+            migrations/034_research_retrieval_search_indexes.sql
           )
 
           for migration in "${migrations[@]}"; do

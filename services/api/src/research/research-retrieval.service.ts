@@ -8,6 +8,8 @@ import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 
 import { ResearchRetrievalDto } from './dto/research-retrieval.dto';
+import { ResearchClaimType } from './dto/create-research-claim.dto';
+import { ResearchSourceType } from './dto/create-research-source.dto';
 
 interface ResearchRetrievalRow extends QueryResultRow {
   claim_id: string;
@@ -72,8 +74,10 @@ const RETRIEVAL_SQL =
   'AND security.decision = \'APPROVED\' AND security.content_sha256 = e.content_sha256 ' +
   'AND v.verdict = \'VALID\' AND v.reason_code = \'QUOTE_MATCHED\' ' +
   'AND v.content_sha256 = e.content_sha256 AND v.quote_sha256 = e.quote_sha256 ' +
+  'AND ($5::varchar IS NULL OR s.source_type = $5) ' +
+  'AND ($6::varchar IS NULL OR c.claim_type = $6) ' +
   'ORDER BY relevance_score DESC, c.created_at DESC, e.created_at DESC, e.id ' +
-  'LIMIT $4';
+  'LIMIT $4 OFFSET $7';
 
 @Injectable()
 export class ResearchRetrievalService {
@@ -102,12 +106,20 @@ export class ResearchRetrievalService {
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
       throw new BadRequestException('limit must be an integer between 1 and 20');
     }
+    const offset = input?.offset === undefined ? 0 : input.offset;
+    if (!Number.isInteger(offset) || offset < 0 || offset > 10_000) {
+      throw new BadRequestException('offset must be an integer between 0 and 10000');
+    }
+    const sourceType = this.normalizeSourceType(input?.source_type);
+    const claimType = this.normalizeClaimType(input?.claim_type);
 
     const found = await this.database.query<ResearchRetrievalRow>(
       RETRIEVAL_SQL,
-      [tenantId, factoryId, query, limit],
+      [tenantId, factoryId, query, limit + 1, sourceType, claimType, offset],
       { tenantId, userId: actorUserId },
     );
+    const hasMore = found.rows.length > limit;
+    const rows = found.rows.slice(0, limit);
 
     const querySha256 = this.sha256(query);
     await this.auditSafely({
@@ -116,17 +128,24 @@ export class ResearchRetrievalService {
       actorUserId,
       querySha256,
       limit,
-      resultCount: found.rows.length,
+      offset,
+      sourceType,
+      claimType,
+      resultCount: rows.length,
     });
 
     return {
       query,
       limit,
-      resultCount: found.rows.length,
+      offset,
+      resultCount: rows.length,
+      hasMore,
+      nextOffset: hasMore ? offset + rows.length : null,
+      filters: { sourceType, claimType },
       retrievalMethod: 'postgresql-full-text-simple-v1',
       rankingSemantics: 'LEXICAL_RELEVANCE_ONLY',
       note: 'Results contain only evidence with current source approvals and a latest VALID citation check. Relevance is not confidence in the claim truth.',
-      results: found.rows.map((row, index) => ({
+      results: rows.map((row, index) => ({
         rank: index + 1,
         relevanceScore: this.score(row.relevance_score),
         claim: {
@@ -190,6 +209,22 @@ export class ResearchRetrievalService {
     return query;
   }
 
+  private normalizeSourceType(value: unknown): ResearchSourceType | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string' || !Object.values(ResearchSourceType).includes(value as ResearchSourceType)) {
+      throw new BadRequestException('source_type is invalid');
+    }
+    return value as ResearchSourceType;
+  }
+
+  private normalizeClaimType(value: unknown): ResearchClaimType | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'string' || !Object.values(ResearchClaimType).includes(value as ResearchClaimType)) {
+      throw new BadRequestException('claim_type is invalid');
+    }
+    return value as ResearchClaimType;
+  }
+
   private score(value: number | string) {
     const score = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(score) && score >= 0 ? score : 0;
@@ -205,6 +240,9 @@ export class ResearchRetrievalService {
     actorUserId: string;
     querySha256: string;
     limit: number;
+    offset: number;
+    sourceType: ResearchSourceType | null;
+    claimType: ResearchClaimType | null;
     resultCount: number;
   }) {
     try {
@@ -221,6 +259,9 @@ export class ResearchRetrievalService {
           querySha256: input.querySha256,
           resultCount: input.resultCount,
           limit: input.limit,
+          offset: input.offset,
+          sourceType: input.sourceType,
+          claimType: input.claimType,
           retrievalMethod: 'postgresql-full-text-simple-v1',
         },
       });

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { jest } from '@jest/globals';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
 import { ResearchRetrievalService } from './research-retrieval.service';
 
@@ -74,6 +74,9 @@ describe('ResearchRetrievalService', () => {
     });
 
     expect(result.resultCount).toBe(1);
+    expect(result.hasMore).toBe(false);
+    expect(result.nextOffset).toBeNull();
+    expect(result.offset).toBe(0);
     expect(result.retrievalMethod).toBe('postgresql-full-text-simple-v1');
     expect(result.rankingSemantics).toBe('LEXICAL_RELEVANCE_ONLY');
     expect(result.results[0]).toEqual(expect.objectContaining({
@@ -103,8 +106,43 @@ describe('ResearchRetrievalService', () => {
     expect(sql).toContain("rights.decision = 'APPROVED'");
     expect(sql).toContain("security.decision = 'APPROVED'");
     expect(sql).toContain('ORDER BY created_at DESC, id DESC LIMIT 1');
-    expect(values).toEqual([tenantId, factoryId, 'yield above 95', 5]);
+    expect(sql).toContain('LIMIT $4 OFFSET $7');
+    expect(values).toEqual([tenantId, factoryId, 'yield above 95', 6, null, null, 0]);
     expect(context).toEqual({ tenantId, userId });
+  });
+
+  it('supports deterministic bounded offset pagination and source/claim type filters', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [
+        resultRow(),
+        resultRow({
+          claim_id: 'd4f7232a-6a66-4a82-9ee4-504944cc4c06',
+          evidence_id: 'e4f7232a-6a66-4a82-9ee4-504944cc4c07',
+          relevance_score: 0.5,
+        }),
+      ],
+    });
+
+    const page = await service.search(tenantId, factoryId, userId, {
+      query: 'yield',
+      limit: 1,
+      offset: 10,
+      source_type: 'DOCUMENT' as never,
+      claim_type: 'FACT' as never,
+    });
+
+    expect(page.resultCount).toBe(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(11);
+    expect(page.filters).toEqual({ sourceType: 'DOCUMENT', claimType: 'FACT' });
+    expect(page.results).toHaveLength(1);
+    const [sql, values] = database.query.mock.calls[0] ?? [];
+    expect(sql).toContain('($5::varchar IS NULL OR s.source_type = $5)');
+    expect(sql).toContain('($6::varchar IS NULL OR c.claim_type = $6)');
+    expect(values).toEqual([tenantId, factoryId, 'yield', 2, 'DOCUMENT', 'FACT', 10]);
+    expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ offset: 10, sourceType: 'DOCUMENT', claimType: 'FACT' }),
+    }));
   });
 
   it('returns no unsupported results when nothing meets the evidence gate', async () => {
@@ -114,12 +152,29 @@ describe('ResearchRetrievalService', () => {
 
     expect(result.resultCount).toBe(0);
     expect(result.results).toEqual([]);
-    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(result.hasMore).toBe(false);
+    expect(result.nextOffset).toBeNull();
   });
 
-  it('rejects invalid limits without querying the database', async () => {
+  it('rejects invalid limits and offsets without querying the database', async () => {
     await expect(
       service.search(tenantId, factoryId, userId, { query: 'valid query', limit: 21 }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.search(tenantId, factoryId, userId, { query: 'valid query', offset: -1 }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.search(tenantId, factoryId, userId, { query: 'valid query', offset: 10_001 }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid source and claim types without querying the database', async () => {
+    await expect(
+      service.search(tenantId, factoryId, userId, { query: 'valid query', source_type: 'REMOTE' as never }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.search(tenantId, factoryId, userId, { query: 'valid query', claim_type: 'UNKNOWN' as never }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(database.query).not.toHaveBeenCalled();
   });
@@ -131,6 +186,15 @@ describe('ResearchRetrievalService', () => {
     await expect(
       service.search(tenantId, factoryId, userId, { query: 'x'.repeat(501) }),
     ).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the actor lacks retrieval permission', async () => {
+    iamService.authorize.mockRejectedValueOnce(new ForbiddenException('not allowed'));
+
+    await expect(
+      service.search(tenantId, factoryId, userId, { query: 'yield' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
     expect(database.query).not.toHaveBeenCalled();
   });
 
@@ -146,6 +210,7 @@ describe('ResearchRetrievalService', () => {
     expect(auditInput.payload).toEqual(expect.objectContaining({
       querySha256: createHash('sha256').update(query).digest('hex'),
       resultCount: 0,
+      offset: 0,
     }));
     expect(JSON.stringify(auditInput.payload)).not.toContain(query);
   });
