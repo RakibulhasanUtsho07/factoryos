@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Post,
+  Param,
   Query,
   Req,
   UnauthorizedException,
@@ -16,6 +17,7 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
+import { CreateResearchSourceAssessmentDto } from './dto/create-research-source-assessment.dto';
 import { ResearchSourceRegistryService } from './research-source.registry.service';
 
 interface FactoryOsRequestContext {
@@ -76,6 +78,44 @@ export class ResearchSourceRegistryController {
         sourceType,
         limit: limit === undefined ? undefined : Number(limit),
       },
+    );
+  }
+
+  @Post(':sourceId/assessments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.sources.assess')
+  @RequireFactoryScope()
+  async createAssessment(
+    @Req() request: FactoryOsRequest,
+    @Param('sourceId') sourceId: string,
+    @Body() body: CreateResearchSourceAssessmentDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.sourceRegistry.createAssessment(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      sourceId,
+      body,
+    );
+  }
+
+  @Get(':sourceId/assessments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.sources.read')
+  @RequireFactoryScope()
+  async listAssessments(
+    @Req() request: FactoryOsRequest,
+    @Param('sourceId') sourceId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.sourceRegistry.listAssessments(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      sourceId,
+      limit === undefined ? 25 : Number(limit),
     );
   }
 
