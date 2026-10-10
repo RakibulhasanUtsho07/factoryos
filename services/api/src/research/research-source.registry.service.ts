@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -23,6 +24,7 @@ import {
   ResearchSourceAssessmentDecision,
   ResearchSourceAssessmentType,
 } from './dto/create-research-source-assessment.dto';
+import { IngestResearchSourceTextDto } from './dto/ingest-research-source-text.dto';
 
 interface ResearchSourceRow extends QueryResultRow {
   id: string;
@@ -60,6 +62,20 @@ interface ResearchSourceAssessmentRow extends QueryResultRow {
   idempotency_key: string;
   request_hash: string;
   assessed_by: string;
+  created_at: string;
+}
+
+interface ResearchSourceTextContentRow extends QueryResultRow {
+  id: string;
+  tenant_id: string;
+  factory_id: string;
+  source_id: string;
+  content_sha256: string;
+  canonical_text: string;
+  character_count: number;
+  line_count: number;
+  parser_version: 'factoryos-plain-text-v1';
+  created_by: string;
   created_at: string;
 }
 
@@ -327,6 +343,352 @@ export class ResearchSourceRegistryService {
       limit,
       sources: result.rows.map((row) => this.mapSource(row)),
     };
+  }
+
+  async ingestPlainText(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    sourceId: string,
+    input: IngestResearchSourceTextDto,
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+    this.requiredUuid(sourceId, 'sourceId');
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'research.sources.ingest',
+      factoryId,
+    );
+
+    const canonicalText = this.normalizePlainText(input.content);
+    const contentSha256 = createHash('sha256')
+      .update(canonicalText, 'utf8')
+      .digest('hex');
+
+    const sourceResult = await this.database.query<
+      QueryResultRow & {
+        id: string;
+        content_sha256: string | null;
+        rights_status: ResearchRightsStatus;
+        allow_research: boolean;
+      }
+    >(
+      `
+      SELECT
+        id::text AS id,
+        content_sha256,
+        rights_status,
+        allow_research
+      FROM research_source_registry
+      WHERE tenant_id = $1 AND factory_id = $2 AND id = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, sourceId],
+      { tenantId, userId: actorUserId },
+    );
+
+    const source = sourceResult.rows[0];
+    if (!source) {
+      throw new NotFoundException('Research source version was not found in this factory');
+    }
+    if (
+      source.rights_status !== ResearchRightsStatus.VERIFIED ||
+      source.allow_research !== true
+    ) {
+      throw new ForbiddenException(
+        'Plain-text ingestion requires VERIFIED source rights and allow_research',
+      );
+    }
+    if (!source.content_sha256) {
+      throw new BadRequestException(
+        'A registered content_sha256 is required before ingestion',
+      );
+    }
+    if (source.content_sha256 !== contentSha256) {
+      throw new ConflictException(
+        'Normalized UTF-8 text SHA-256 does not match the registered source version',
+      );
+    }
+
+    const existingResult = await this.database.query<ResearchSourceTextContentRow>(
+      this.selectTextContentSql(`
+        tenant_id = $1 AND factory_id = $2 AND source_id = $3
+        AND content_sha256 = $4
+      `),
+      [tenantId, factoryId, sourceId, contentSha256],
+      { tenantId, userId: actorUserId },
+    );
+    const existing = existingResult.rows[0];
+    if (existing) {
+      if (existing.canonical_text !== canonicalText) {
+        throw new ConflictException(
+          'An existing text record has the same SHA-256 but different canonical text',
+        );
+      }
+      return { idempotent: true, content: this.mapTextContent(existing) };
+    }
+
+    const characterCount = Array.from(canonicalText).length;
+    const lineCount = canonicalText.split('\n').length;
+    const inserted = await this.database.query<ResearchSourceTextContentRow>(
+      `
+      INSERT INTO research_source_text_content (
+        id, tenant_id, factory_id, source_id, content_sha256, canonical_text,
+        character_count, line_count, parser_version, created_by
+      )
+      VALUES (
+        gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7,
+        'factoryos-plain-text-v1', $8
+      )
+      ON CONFLICT (source_id, tenant_id, factory_id, content_sha256) DO NOTHING
+      RETURNING
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        source_id::text AS source_id,
+        content_sha256,
+        canonical_text,
+        character_count,
+        line_count,
+        parser_version,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      `,
+      [
+        tenantId,
+        factoryId,
+        sourceId,
+        contentSha256,
+        canonicalText,
+        characterCount,
+        lineCount,
+        actorUserId,
+      ],
+      { tenantId, userId: actorUserId },
+    );
+
+    let row = inserted.rows[0];
+    if (!row) {
+      const racedResult = await this.database.query<ResearchSourceTextContentRow>(
+        this.selectTextContentSql(`
+          tenant_id = $1 AND factory_id = $2 AND source_id = $3
+          AND content_sha256 = $4
+        `),
+        [tenantId, factoryId, sourceId, contentSha256],
+        { tenantId, userId: actorUserId },
+      );
+      row = racedResult.rows[0];
+      if (!row || row.canonical_text !== canonicalText) {
+        throw new ConflictException(
+          'Text content was concurrently ingested with conflicting canonical content',
+        );
+      }
+      return { idempotent: true, content: this.mapTextContent(row) };
+    }
+
+    await this.recordTextContentAuditSafely({
+      tenantId,
+      factoryId,
+      actorUserId,
+      contentId: row.id,
+      sourceId,
+      contentSha256,
+      characterCount,
+      lineCount,
+    });
+
+    return { idempotent: false, content: this.mapTextContent(row) };
+  }
+
+  async getApprovedTextContent(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    sourceId: string,
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+    this.requiredUuid(sourceId, 'sourceId');
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'research.sources.content.read',
+      factoryId,
+    );
+
+    const result = await this.database.query<ResearchSourceTextContentRow>(
+      `
+      WITH latest_assessments AS (
+        SELECT DISTINCT ON (assessment_type)
+          assessment_type, decision, content_sha256
+        FROM research_source_assessments
+        WHERE tenant_id = $1 AND factory_id = $2 AND source_id = $3
+        ORDER BY assessment_type, created_at DESC, id DESC
+      )
+      SELECT
+        c.id::text AS id,
+        c.tenant_id::text AS tenant_id,
+        c.factory_id::text AS factory_id,
+        c.source_id::text AS source_id,
+        c.content_sha256,
+        c.canonical_text,
+        c.character_count,
+        c.line_count,
+        c.parser_version,
+        c.created_by::text AS created_by,
+        c.created_at::text AS created_at
+      FROM research_source_text_content c
+      JOIN research_source_registry s
+        ON s.id = c.source_id
+        AND s.tenant_id = c.tenant_id
+        AND s.factory_id = c.factory_id
+      WHERE c.tenant_id = $1
+        AND c.factory_id = $2
+        AND c.source_id = $3
+        AND s.rights_status = 'VERIFIED'
+        AND s.allow_research = TRUE
+        AND EXISTS (
+          SELECT 1 FROM latest_assessments a
+          WHERE a.assessment_type = 'RIGHTS'
+            AND a.decision = 'APPROVED'
+            AND a.content_sha256 = c.content_sha256
+        )
+        AND EXISTS (
+          SELECT 1 FROM latest_assessments a
+          WHERE a.assessment_type = 'SECURITY'
+            AND a.decision = 'APPROVED'
+            AND a.content_sha256 = c.content_sha256
+        )
+      ORDER BY c.created_at DESC, c.id DESC
+      LIMIT 1
+      `,
+      [tenantId, factoryId, sourceId],
+      { tenantId, userId: actorUserId },
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new ForbiddenException(
+        'No review-approved content is available; the latest RIGHTS and SECURITY assessments for the registered hash must both be APPROVED',
+      );
+    }
+
+    return {
+      id: row.id,
+      sourceId: row.source_id,
+      contentSha256: row.content_sha256,
+      content: row.canonical_text,
+      characterCount: row.character_count,
+      lineCount: row.line_count,
+      parserVersion: row.parser_version,
+      securityReview: 'MANUAL_APPROVED',
+      sourceTrust: 'UNTRUSTED',
+      mustTreatAsUntrusted: true,
+      createdAt: row.created_at,
+    };
+  }
+
+  private normalizePlainText(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw new BadRequestException('content must be a UTF-8 plain-text string');
+    }
+
+    const normalized = value
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n')
+      .normalize('NFC');
+
+    if (!normalized.trim()) {
+      throw new BadRequestException('content must not be empty');
+    }
+
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(normalized)) {
+      throw new BadRequestException(
+        'content contains unsupported control characters',
+      );
+    }
+
+    const characterCount = Array.from(normalized).length;
+    const byteCount = Buffer.byteLength(normalized, 'utf8');
+    if (characterCount > 32768 || byteCount > 49152) {
+      throw new BadRequestException(
+        'content exceeds the 32,768-character or 49,152-byte ingestion limit',
+      );
+    }
+
+    return normalized;
+  }
+
+  private selectTextContentSql(whereClause: string): string {
+    return `
+      SELECT
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        source_id::text AS source_id,
+        content_sha256,
+        canonical_text,
+        character_count,
+        line_count,
+        parser_version,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      FROM research_source_text_content
+      WHERE ${whereClause}
+      LIMIT 1
+    `;
+  }
+
+  private mapTextContent(row: ResearchSourceTextContentRow) {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      sourceId: row.source_id,
+      contentSha256: row.content_sha256,
+      characterCount: row.character_count,
+      lineCount: row.line_count,
+      parserVersion: row.parser_version,
+      ingestionStatus: 'PENDING_REVIEW',
+      promptInjectionStatus: 'NOT_ASSESSED',
+      createdAt: row.created_at,
+    };
+  }
+
+  private async recordTextContentAuditSafely(input: {
+    tenantId: string;
+    factoryId: string;
+    actorUserId: string;
+    contentId: string;
+    sourceId: string;
+    contentSha256: string;
+    characterCount: number;
+    lineCount: number;
+  }): Promise<void> {
+    try {
+      await this.auditService.record({
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        actorUserId: input.actorUserId,
+        eventType: 'RESEARCH_SOURCE_TEXT_CONTENT',
+        action: 'INGEST_CANONICAL_TEXT',
+        resourceType: 'RESEARCH_SOURCE_TEXT_CONTENT',
+        resourceId: input.contentId,
+        dataClass: 'INTERNAL',
+        payload: {
+          sourceId: input.sourceId,
+          contentSha256: input.contentSha256,
+          characterCount: input.characterCount,
+          lineCount: input.lineCount,
+          parserVersion: 'factoryos-plain-text-v1',
+          ingestionStatus: 'PENDING_REVIEW',
+        },
+      });
+    } catch {
+      // Do not mask committed content ingestion if audit delivery fails.
+    }
   }
 
   async createAssessment(
