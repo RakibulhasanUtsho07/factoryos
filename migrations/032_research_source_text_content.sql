@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS research_source_text_content (
       CHECK (source_format IN ('PLAIN_TEXT', 'PDF', 'DOCX')),
 
     CONSTRAINT chk_research_text_content_original_file_hash
-      CHECK (original_file_sha256 IS NULL OR original_file_sha256 ~ '^[a-f0-9]{64}
+      CHECK (original_file_sha256 IS NULL OR original_file_sha256 ~ '^[a-f0-9]{64}$'),
 
     CONSTRAINT chk_research_text_content_nonempty
       CHECK (LENGTH(BTRIM(canonical_text)) > 0)
