@@ -408,10 +408,16 @@ export class ResearchSourceRegistryService {
   }
 
   private normalizeUri(value: string | null | undefined): string | null {
-    if (value === undefined || value === null || value.trim() === '') {
+    if (value === undefined || value === null) {
       return null;
     }
-    if (typeof value !== 'string' || value.length > 2048) {
+    if (typeof value !== 'string') {
+      throw new BadRequestException('canonical_uri must be a valid HTTP(S) URL');
+    }
+    if (value.trim() === '') {
+      return null;
+    }
+    if (value.length > 2048) {
       throw new BadRequestException('canonical_uri must be a valid HTTP(S) URL');
     }
 
