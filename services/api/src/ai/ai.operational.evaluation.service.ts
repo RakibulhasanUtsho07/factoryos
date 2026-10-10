@@ -1170,28 +1170,30 @@ export class AiOperationalEvaluationService {
     }
 
     const policyConfig = this.mapEvaluationPolicy(policy);
-    const checks: Record<string, boolean | null> = {
-      maxMeanAbsoluteError:
-        policyConfig.maxMeanAbsoluteError === null || !candidate
-          ? null
-          : candidate.meanAbsoluteError <= policyConfig.maxMeanAbsoluteError,
-      maxMeanAbsolutePercentageError:
-        policyConfig.maxMeanAbsolutePercentageError === null ||
-        !candidate ||
-        candidate.meanAbsolutePercentageError === null
+    const checks: Record<string, boolean | null> = {};
+
+    if (policyConfig.maxMeanAbsoluteError !== null) {
+      checks.maxMeanAbsoluteError = candidate
+        ? candidate.meanAbsoluteError <= policyConfig.maxMeanAbsoluteError
+        : null;
+    }
+    if (policyConfig.maxMeanAbsolutePercentageError !== null) {
+      checks.maxMeanAbsolutePercentageError =
+        !candidate || candidate.meanAbsolutePercentageError === null
           ? null
           : candidate.meanAbsolutePercentageError <=
-            policyConfig.maxMeanAbsolutePercentageError,
-      minWithinToleranceRate:
-        policyConfig.minWithinToleranceRate === null || !candidate
-          ? null
-          : candidate.withinToleranceRate >= policyConfig.minWithinToleranceRate,
-      maxExpectedCalibrationError: null,
-    };
+            policyConfig.maxMeanAbsolutePercentageError;
+    }
+    if (policyConfig.minWithinToleranceRate !== null) {
+      checks.minWithinToleranceRate = candidate
+        ? candidate.withinToleranceRate >= policyConfig.minWithinToleranceRate
+        : null;
+    }
 
     let calibrationSampleCount: number | null = null;
     let candidateExpectedCalibrationError: number | null = null;
     if (policyConfig.maxExpectedCalibrationError !== null) {
+      checks.maxExpectedCalibrationError = null;
       const calibration = await this.getCalibration(
         tenantId,
         factoryId,
@@ -1211,9 +1213,8 @@ export class AiOperationalEvaluationService {
 
     const candidateSampleCount = candidate?.sampleCount ?? 0;
     const baselineSampleCount = baseline?.sampleCount ?? 0;
-    const requiredCheckMissing = Object.values(checks).some(
-      (value) => value === null,
-    );
+    const requiredCheckMissing = Object.values(checks).length === 0 ||
+      Object.values(checks).some((value) => value === null);
     const insufficientData =
       !baseline ||
       !candidate ||
