@@ -190,7 +190,7 @@ describe('ResearchDocumentExtractionService', () => {
   });
 
   it('decodes UTF-16BE PDF text strings and normalizes Unicode', () => {
-    const result = service.extract(createPdf('BT <FEFF0043006100660065000301> Tj ET'));
+    const result = service.extract(createPdf('BT <FEFF00430061006600650301> Tj ET'));
 
     expect(result.text).toBe('Café');
   });
