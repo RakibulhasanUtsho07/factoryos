@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS research_source_text_content (
     CONSTRAINT chk_research_text_content_original_file_hash
       CHECK (original_file_sha256 IS NULL OR original_file_sha256 ~ '^[a-f0-9]{64}$'),
 
+    CONSTRAINT chk_research_text_content_provenance
+      CHECK (
+        (source_format = 'PLAIN_TEXT'
+          AND parser_version = 'factoryos-plain-text-v1'
+          AND original_file_sha256 IS NULL)
+        OR
+        (source_format IN ('PDF', 'DOCX')
+          AND parser_version = 'factoryos-document-extractor-v1'
+          AND original_file_sha256 IS NOT NULL)
+      ),
+
     CONSTRAINT chk_research_text_content_nonempty
       CHECK (LENGTH(BTRIM(canonical_text)) > 0)
 );
