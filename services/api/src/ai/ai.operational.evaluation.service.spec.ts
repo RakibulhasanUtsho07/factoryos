@@ -48,7 +48,7 @@ function evaluationRow(overrides: Record<string, unknown> = {}) {
 
 describe('AiOperationalEvaluationService', () => {
   const database = {
-    query: jest.fn<(query: string, values?: unknown[], context?: unknown) => Promise<{ rows: any[] }>>(),
+    query: jest.fn<(query: string, values?: unknown[], context?: unknown) => Promise<{ rows: unknown[] }>>(),
   };
   const iamService = {
     authorize: jest.fn<(...args: unknown[]) => Promise<void>>(),
@@ -100,14 +100,12 @@ describe('AiOperationalEvaluationService', () => {
   });
 
   it('replays the same evaluation key only when the request fingerprint matches', async () => {
-    database.query
-      .mockResolvedValueOnce({ rows: [{ id: decisionId }] })
-      .mockResolvedValueOnce({ rows: [] });
-
-    // The fingerprint is read from the exact insert arguments, then returned
-    // as the persisted value on the scoped idempotency lookup.
-    database.query.mockImplementationOnce(async () => ({ rows: [] }));
-    const savedRequestHash = (service as any).requestHash({
+    // Mirror the normalized request hash persisted by the service.
+    const savedRequestHash = (
+      service as unknown as {
+        requestHash: (request: Record<string, unknown>) => string;
+      }
+    ).requestHash({
       tenantId,
       factoryId,
       actorUserId: userId,
