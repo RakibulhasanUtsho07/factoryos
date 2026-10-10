@@ -271,7 +271,7 @@ export class GrowthOpportunityService {
       ),
     ]);
     return {
-      opportunity: this.mapOpportunity(opportunity),
+      opportunity,
       decisions: decisionsResult.rows.map((row) => this.mapDecision(row)),
       outcomes: outcomesResult.rows.map((row) => this.mapOutcome(row)),
       governance: {
@@ -291,7 +291,7 @@ export class GrowthOpportunityService {
     this.validateScope(tenantId, factoryId, actorUserId);
     this.requiredUuid(opportunityId, 'opportunityId');
     await this.authorize(actorUserId, tenantId, 'growth.opportunities.decisions.write', factoryId);
-    const decision = this.requiredEnum(input?.decision, DECISION_SET, 'decision');
+    const decision = this.requiredEnum(input?.decision, DECISION_SET, 'decision') as GrowthOpportunityDecision;
     const rationale = this.requiredString(input?.rationale, 'rationale', 2000);
     const idempotencyKey = this.normalizeIdempotencyKey(input?.idempotency_key);
     const opportunity = await this.findOpportunity(tenantId, factoryId, actorUserId, opportunityId);
@@ -355,7 +355,7 @@ export class GrowthOpportunityService {
     this.validateScope(tenantId, factoryId, actorUserId);
     this.requiredUuid(opportunityId, 'opportunityId');
     await this.authorize(actorUserId, tenantId, 'growth.opportunities.outcomes.write', factoryId);
-    const stage = this.requiredEnum(input?.measurement_stage, STAGE_SET, 'measurement_stage');
+    const stage = this.requiredEnum(input?.measurement_stage, STAGE_SET, 'measurement_stage') as GrowthOutcomeStage;
     const metricKey = this.requiredString(input?.metric_key, 'metric_key', 100);
     const metricUnit = this.requiredPattern(input?.metric_unit, 'metric_unit', /^[a-zA-Z0-9][a-zA-Z0-9._/%-]{0,39}$/);
     const actualValue = input?.actual_value;
@@ -364,7 +364,7 @@ export class GrowthOpportunityService {
     }
     const observedAt = this.requiredString(input?.observed_at, 'observed_at', 64);
     if (Number.isNaN(Date.parse(observedAt))) throw new BadRequestException('observed_at must be a valid timestamp');
-    const sourceSystem = this.requiredEnum(input?.source_system, SOURCE_SET, 'source_system');
+    const sourceSystem = this.requiredEnum(input?.source_system, SOURCE_SET, 'source_system') as GrowthOutcomeSourceSystem;
     const sourceRecordRef = this.requiredString(input?.source_record_ref, 'source_record_ref', 255);
     const snapshotHash = input?.source_snapshot_sha256 === undefined
       ? null
