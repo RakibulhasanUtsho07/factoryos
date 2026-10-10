@@ -380,7 +380,8 @@ export class ResearchSourceRegistryService {
       throw new BadRequestException('sourceFormat must be PLAIN_TEXT, PDF, or DOCX');
     }
     if (
-      (sourceFormat === 'PLAIN_TEXT' && parserVersion !== 'factoryos-plain-text-v1') ||
+      (sourceFormat === 'PLAIN_TEXT' &&
+        (parserVersion !== 'factoryos-plain-text-v1' || originalFileSha256 !== null)) ||
       (sourceFormat !== 'PLAIN_TEXT' &&
         (parserVersion !== 'factoryos-document-extractor-v1' ||
           typeof originalFileSha256 !== 'string' ||
@@ -422,9 +423,16 @@ export class ResearchSourceRegistryService {
         'Plain-text ingestion requires VERIFIED source rights and allow_research',
       );
     }
-    if (source.content_sha256 && source.content_sha256 !== contentSha256) {
+    const registeredDigestExpectation =
+      sourceFormat === 'PLAIN_TEXT' ? contentSha256 : originalFileSha256;
+    if (
+      source.content_sha256 &&
+      source.content_sha256 !== registeredDigestExpectation
+    ) {
       throw new ConflictException(
-        'Normalized UTF-8 text SHA-256 does not match the registered source version',
+        sourceFormat === 'PLAIN_TEXT'
+          ? 'Normalized UTF-8 text SHA-256 does not match the registered source version'
+          : 'Uploaded document SHA-256 does not match the registered source version',
       );
     }
 
@@ -795,6 +803,17 @@ export class ResearchSourceRegistryService {
             AND c.factory_id = s.factory_id
             AND c.source_id = s.id
             AND c.content_sha256 = $4
+            AND (
+              s.content_sha256 IS NULL
+              OR (
+                c.source_format = 'PLAIN_TEXT'
+                AND s.content_sha256 = c.content_sha256
+              )
+              OR (
+                c.source_format IN ('PDF', 'DOCX')
+                AND s.content_sha256 = c.original_file_sha256
+              )
+            )
         ) AS content_hash_is_ingested
       FROM research_source_registry s
       WHERE s.tenant_id = $1 AND s.factory_id = $2 AND s.id = $3
@@ -807,12 +826,12 @@ export class ResearchSourceRegistryService {
     if (!source) {
       throw new NotFoundException('Research source version was not found in this factory');
     }
-    if (source.content_sha256 && source.content_sha256 !== contentSha256) {
-      throw new ConflictException(
-        'Assessment content_sha256 must match the registered source version',
-      );
-    }
     if (source.content_hash_is_ingested !== true) {
+      if (source.content_sha256) {
+        throw new ConflictException(
+          'Assessment content hash does not belong to the registered source bytes or extracted text',
+        );
+      }
       throw new BadRequestException(
         'Assessment content_sha256 must match an ingested text record before assessment',
       );
