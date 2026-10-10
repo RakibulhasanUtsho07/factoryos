@@ -559,6 +559,8 @@ export class ResearchSourceRegistryService {
         c.character_count,
         c.line_count,
         c.parser_version,
+        c.source_format,
+        c.original_file_sha256,
         c.created_by::text AS created_by,
         c.created_at::text AS created_at
       FROM research_source_text_content c
