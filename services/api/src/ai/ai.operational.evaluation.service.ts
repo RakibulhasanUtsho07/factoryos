@@ -18,6 +18,10 @@ import {
   CreateAiOperationalEvaluationDto,
 } from './dto/create-ai-operational-evaluation.dto';
 
+import {
+  ReconcileAiOperationalForecastDto,
+} from './dto/reconcile-ai-operational-forecast.dto';
+
 interface EvaluationRow extends QueryResultRow {
   id: string;
   tenant_id: string;
@@ -30,6 +34,12 @@ interface EvaluationRow extends QueryResultRow {
   confidence: number | string;
   prediction_correct: boolean;
   request_hash: string;
+  source_outcome_id: string | null;
+  predicted_value: number | string | null;
+  actual_value: number | string | null;
+  absolute_error: number | string | null;
+  absolute_percentage_error: number | string | null;
+  tolerance: number | string | null;
   created_by: string;
   observed_at: string;
   created_at: string;
@@ -144,6 +154,12 @@ export class AiOperationalEvaluationService {
         confidence,
         prediction_correct,
         request_hash,
+        source_outcome_id::text AS source_outcome_id,
+        predicted_value,
+        actual_value,
+        absolute_error,
+        absolute_percentage_error,
+        tolerance,
         created_by::text AS created_by,
         observed_at::text AS observed_at,
         created_at::text AS created_at
@@ -203,6 +219,12 @@ export class AiOperationalEvaluationService {
         confidence,
         prediction_correct,
         request_hash,
+        source_outcome_id::text AS source_outcome_id,
+        predicted_value,
+        actual_value,
+        absolute_error,
+        absolute_percentage_error,
+        tolerance,
         created_by::text AS created_by,
         observed_at::text AS observed_at,
         created_at::text AS created_at
@@ -232,6 +254,374 @@ export class AiOperationalEvaluationService {
     return {
       idempotent: true,
       evaluation: this.mapEvaluation(existing),
+    };
+  }
+
+  async reconcileForecast(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ReconcileAiOperationalForecastDto,
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.outcomes.write',
+      factoryId,
+    );
+
+    const sourceOutcomeId = this.requiredUuid(
+      input.source_outcome_id,
+      'source_outcome_id',
+    );
+    const evaluationKey = this.requiredString(
+      input.evaluation_key,
+      'evaluation_key',
+      255,
+    );
+    const domain = this.normalizeDomain(input.domain);
+    const metricKey = this.requiredString(input.metric_key, 'metric_key', 100);
+    const modelVersion = this.requiredString(input.model_version, 'model_version', 100);
+
+    if (
+      typeof input.confidence !== 'number' ||
+      !Number.isFinite(input.confidence) ||
+      input.confidence < 0 ||
+      input.confidence > 1 ||
+      Math.round(input.confidence * 1_000_000) / 1_000_000 !== input.confidence
+    ) {
+      throw new BadRequestException(
+        'confidence must be a number between 0 and 1 with at most six decimal places',
+      );
+    }
+
+    if (
+      typeof input.tolerance !== 'number' ||
+      !Number.isFinite(input.tolerance) ||
+      input.tolerance < 0 ||
+      input.tolerance > 1_000_000_000_000_000 ||
+      Math.round(input.tolerance * 1_000_000) / 1_000_000 !== input.tolerance
+    ) {
+      throw new BadRequestException(
+        'tolerance must be a finite non-negative number with at most six decimal places',
+      );
+    }
+
+    const outcomeResult = await this.database.query<{
+      id: string;
+      decision_id: string;
+      expected_metric: Record<string, unknown>;
+      actual_metric: Record<string, unknown>;
+      status: string;
+      observed_at: string;
+    }>(
+      `
+      SELECT
+        id::text AS id,
+        decision_id::text AS decision_id,
+        expected_metric,
+        actual_metric,
+        status,
+        created_at::text AS observed_at
+      FROM ai_outcome_links
+      WHERE id = $1
+        AND tenant_id = $2
+        AND factory_id = $3
+      LIMIT 1
+      `,
+      [sourceOutcomeId, tenantId, factoryId],
+      { tenantId, userId: actorUserId },
+    );
+
+    const outcome = outcomeResult.rows[0];
+    if (!outcome) {
+      throw new NotFoundException(
+        'Observed AI outcome was not found for this factory',
+      );
+    }
+
+    if (outcome.status !== 'OBSERVED') {
+      throw new ConflictException(
+        'Only an OBSERVED AI outcome can be used to score an operational forecast',
+      );
+    }
+
+    const predictedValue = this.metricNumber(
+      outcome.expected_metric,
+      metricKey,
+      'expected_metric',
+    );
+    const actualValue = this.metricNumber(
+      outcome.actual_metric,
+      metricKey,
+      'actual_metric',
+    );
+    const absoluteError = Math.abs(predictedValue - actualValue);
+    const absolutePercentageError =
+      actualValue === 0 ? null : absoluteError / Math.abs(actualValue);
+    const predictionCorrect = absoluteError <= input.tolerance;
+    const observedAt = new Date(outcome.observed_at).toISOString();
+
+    const requestHash = this.requestHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      sourceOutcomeId,
+      decisionId: outcome.decision_id,
+      evaluationKey,
+      domain,
+      metricKey,
+      modelVersion,
+      confidence: input.confidence,
+      tolerance: input.tolerance,
+      predictedValue,
+      actualValue,
+      observedAt,
+    });
+
+    const inserted = await this.database.query<EvaluationRow>(
+      `
+      INSERT INTO ai_operational_evaluation_records (
+        id,
+        tenant_id,
+        factory_id,
+        decision_id,
+        source_outcome_id,
+        evaluation_key,
+        domain,
+        metric_key,
+        model_version,
+        confidence,
+        prediction_correct,
+        request_hash,
+        created_by,
+        observed_at,
+        predicted_value,
+        actual_value,
+        absolute_error,
+        absolute_percentage_error,
+        tolerance
+      )
+      VALUES (
+        gen_random_uuid(),
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15, $16, $17, $18
+      )
+      ON CONFLICT (tenant_id, factory_id, evaluation_key) DO NOTHING
+      RETURNING
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        decision_id::text AS decision_id,
+        evaluation_key,
+        domain,
+        metric_key,
+        model_version,
+        confidence,
+        prediction_correct,
+        request_hash,
+        source_outcome_id::text AS source_outcome_id,
+        predicted_value,
+        actual_value,
+        absolute_error,
+        absolute_percentage_error,
+        tolerance,
+        created_by::text AS created_by,
+        observed_at::text AS observed_at,
+        created_at::text AS created_at
+      `,
+      [
+        tenantId,
+        factoryId,
+        outcome.decision_id,
+        sourceOutcomeId,
+        evaluationKey,
+        domain,
+        metricKey,
+        modelVersion,
+        input.confidence,
+        predictionCorrect,
+        requestHash,
+        actorUserId,
+        observedAt,
+        predictedValue,
+        actualValue,
+        absoluteError,
+        absolutePercentageError,
+        input.tolerance,
+      ],
+      { tenantId, userId: actorUserId },
+    );
+
+    const insertedRow = inserted.rows[0];
+    if (insertedRow) {
+      await this.recordAuditSafely({
+        tenantId,
+        factoryId,
+        actorUserId,
+        resourceId: insertedRow.id,
+        action: 'RECONCILE_FORECAST',
+        payload: {
+          decisionId: outcome.decision_id,
+          sourceOutcomeId,
+          domain,
+          metricKey,
+          modelVersion,
+          confidence: input.confidence,
+          predictedValue,
+          actualValue,
+          absoluteError,
+          absolutePercentageError,
+          tolerance: input.tolerance,
+          predictionCorrect,
+        },
+      });
+
+      return {
+        idempotent: false,
+        evaluation: this.mapEvaluation(insertedRow),
+      };
+    }
+
+    const existingResult = await this.database.query<EvaluationRow>(
+      `
+      SELECT
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        decision_id::text AS decision_id,
+        evaluation_key,
+        domain,
+        metric_key,
+        model_version,
+        confidence,
+        prediction_correct,
+        request_hash,
+        source_outcome_id::text AS source_outcome_id,
+        predicted_value,
+        actual_value,
+        absolute_error,
+        absolute_percentage_error,
+        tolerance,
+        created_by::text AS created_by,
+        observed_at::text AS observed_at,
+        created_at::text AS created_at
+      FROM ai_operational_evaluation_records
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND evaluation_key = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, evaluationKey],
+      { tenantId, userId: actorUserId },
+    );
+
+    const existing = existingResult.rows[0];
+    if (!existing) {
+      throw new ConflictException(
+        'The forecast could not be scored because a conflicting request was detected',
+      );
+    }
+
+    if (existing.request_hash !== requestHash) {
+      throw new ConflictException(
+        'The evaluation key was already used for a different forecast request',
+      );
+    }
+
+    return {
+      idempotent: true,
+      evaluation: this.mapEvaluation(existing),
+    };
+  }
+
+  async getForecastAccuracy(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    filters: {
+      domain?: string;
+      metricKey?: string;
+      modelVersion?: string;
+    } = {},
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.business.read',
+      factoryId,
+    );
+
+    const domain = filters.domain
+      ? this.normalizeDomain(filters.domain)
+      : null;
+    const metricKey = filters.metricKey
+      ? this.requiredString(filters.metricKey, 'metric_key', 100)
+      : null;
+    const modelVersion = filters.modelVersion
+      ? this.requiredString(filters.modelVersion, 'model_version', 100)
+      : null;
+
+    const result = await this.database.query<{
+      domain: AiOperationalDomain;
+      metric_key: string;
+      model_version: string;
+      sample_count: number | string;
+      mean_absolute_error: number | string;
+      mean_absolute_percentage_error: number | string | null;
+      mean_signed_error: number | string;
+      within_tolerance_rate: number | string;
+    }>(
+      `
+      SELECT
+        domain,
+        metric_key,
+        model_version,
+        COUNT(*)::integer AS sample_count,
+        AVG(absolute_error)::double precision AS mean_absolute_error,
+        AVG(absolute_percentage_error)
+          FILTER (WHERE absolute_percentage_error IS NOT NULL)
+          ::double precision AS mean_absolute_percentage_error,
+        AVG(actual_value - predicted_value)::double precision AS mean_signed_error,
+        AVG((absolute_error <= tolerance)::integer)::double precision AS within_tolerance_rate
+      FROM ai_operational_evaluation_records
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND source_outcome_id IS NOT NULL
+        AND observed_at >= NOW() - INTERVAL '90 days'
+        AND ($3::varchar IS NULL OR domain = $3)
+        AND ($4::varchar IS NULL OR metric_key = $4)
+        AND ($5::varchar IS NULL OR model_version = $5)
+      GROUP BY domain, metric_key, model_version
+      ORDER BY domain, metric_key, model_version
+      `,
+      [tenantId, factoryId, domain, metricKey, modelVersion],
+      { tenantId, userId: actorUserId },
+    );
+
+    return {
+      windowDays: 90,
+      totalSamples: result.rows.reduce(
+        (sum, row) => sum + Number(row.sample_count),
+        0,
+      ),
+      series: result.rows.map((row) => ({
+        domain: row.domain,
+        metricKey: row.metric_key,
+        modelVersion: row.model_version,
+        sampleCount: Number(row.sample_count),
+        meanAbsoluteError: this.round(Number(row.mean_absolute_error)),
+        meanAbsolutePercentageError:
+          row.mean_absolute_percentage_error === null
+            ? null
+            : this.round(Number(row.mean_absolute_percentage_error)),
+        meanSignedError: this.round(Number(row.mean_signed_error)),
+        withinToleranceRate: this.round(Number(row.within_tolerance_rate)),
+      })),
     };
   }
 
@@ -442,6 +832,26 @@ export class AiOperationalEvaluationService {
     };
   }
 
+  private metricNumber(
+    metrics: Record<string, unknown>,
+    metricKey: string,
+    field: 'expected_metric' | 'actual_metric',
+  ): number {
+    const value = metrics[metricKey];
+
+    if (
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      Math.abs(value) > 1_000_000_000_000_000
+    ) {
+      throw new BadRequestException(
+        `${field}.${metricKey} must be a finite numeric value within the supported range`,
+      );
+    }
+
+    return value;
+  }
+
   private normalizeDomain(value: unknown): AiOperationalDomain {
     if (typeof value !== 'string') {
       throw new BadRequestException('domain is required');
@@ -502,6 +912,27 @@ export class AiOperationalEvaluationService {
       modelVersion: row.model_version,
       confidence: Number(row.confidence),
       predictionCorrect: row.prediction_correct,
+      sourceOutcomeId: row.source_outcome_id ?? null,
+      predictedValue:
+        row.predicted_value === null || row.predicted_value === undefined
+          ? null
+          : Number(row.predicted_value),
+      actualValue:
+        row.actual_value === null || row.actual_value === undefined
+          ? null
+          : Number(row.actual_value),
+      absoluteError:
+        row.absolute_error === null || row.absolute_error === undefined
+          ? null
+          : Number(row.absolute_error),
+      absolutePercentageError:
+        row.absolute_percentage_error === null || row.absolute_percentage_error === undefined
+          ? null
+          : Number(row.absolute_percentage_error),
+      tolerance:
+        row.tolerance === null || row.tolerance === undefined
+          ? null
+          : Number(row.tolerance),
       observedAt: row.observed_at,
       createdAt: row.created_at,
     };
