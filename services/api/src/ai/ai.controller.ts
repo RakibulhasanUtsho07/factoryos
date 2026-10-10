@@ -32,6 +32,22 @@ import {
 } from './ai.runtime.service';
 
 import {
+  AiOperationalEvaluationService,
+} from './ai.operational.evaluation.service';
+
+import {
+  CreateAiOperationalEvaluationDto,
+} from './dto/create-ai-operational-evaluation.dto';
+
+import {
+  ReconcileAiOperationalForecastDto,
+} from './dto/reconcile-ai-operational-forecast.dto';
+
+import {
+  CreateAiOperationalEvaluationPolicyDto,
+} from './dto/create-ai-operational-evaluation-policy.dto';
+
+import {
   CreateAiDecisionDto,
 } from './dto/create-ai-decision.dto';
 
@@ -86,6 +102,7 @@ type FactoryOsRequest = Request & {
 export class AiController {
   constructor(
     private readonly aiRuntimeService: AiRuntimeService,
+    private readonly operationalEvaluationService: AiOperationalEvaluationService,
   ) {}
 
   // ============================================================
@@ -258,8 +275,160 @@ export class AiController {
   }
 
   // ============================================================
+  // WP07 OPERATIONAL AI EVALUATION AND CALIBRATION
+  // ============================================================
+
+  @Post('operational-evaluations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.outcomes.write')
+  @RequireFactoryScope()
+  async recordOperationalEvaluation(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiOperationalEvaluationDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.recordEvaluation(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  @Post('operational-evaluations/reconcile-forecast')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.outcomes.write')
+  @RequireFactoryScope()
+  async reconcileOperationalForecast(
+    @Req() request: FactoryOsRequest,
+    @Body() body: ReconcileAiOperationalForecastDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.reconcileForecast(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  @Get('operational-evaluations/calibration')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getOperationalCalibration(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('model_version') modelVersion?: string,
+    @Query('bins') bins?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.getCalibration(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      {
+        domain,
+        metricKey,
+        modelVersion,
+        bins: bins === undefined ? undefined : Number(bins),
+      },
+    );
+  }
+
+  // ============================================================
   // OUTCOMES
   // ============================================================
+
+  @Get('operational-evaluations/forecast-accuracy')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getOperationalForecastAccuracy(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('model_version') modelVersion?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.getForecastAccuracy(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      { domain, metricKey, modelVersion },
+    );
+  }
+
+  @Get('operational-evaluations/model-comparison')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async compareOperationalForecastModels(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('baseline_model_version') baselineModelVersion?: string,
+    @Query('candidate_model_version') candidateModelVersion?: string,
+    @Query('policy_key') policyKey?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.compareForecastModels(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      {
+        domain,
+        metricKey,
+        baselineModelVersion,
+        candidateModelVersion,
+        policyKey,
+      },
+    );
+  }
+
+  @Post('operational-evaluations/policies')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.evaluation.policies.write')
+  @RequireFactoryScope()
+  async createOperationalEvaluationPolicy(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiOperationalEvaluationPolicyDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.createEvaluationPolicy(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  @Get('operational-evaluations/policies')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listOperationalEvaluationPolicies(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('policy_key') policyKey?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.getEvaluationPolicies(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      { domain, metricKey, policyKey },
+    );
+  }
 
   @Post('outcomes')
   @UseGuards(PermissionGuard)
