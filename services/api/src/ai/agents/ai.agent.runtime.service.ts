@@ -90,6 +90,7 @@ interface AgentTaskRow extends QueryResultRow {
   failure_code: string | null;
   failure_reason: string | null;
   idempotency_key: string | null;
+  request_hash: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -249,6 +250,41 @@ export class AiAgentRuntimeService {
       255,
     );
 
+    const contextVersion = this.optionalString(
+      input.contextVersion,
+      'contextVersion',
+      100,
+    );
+    const planVersion = this.optionalString(
+      input.planVersion,
+      'planVersion',
+      100,
+    );
+    const contextHash = this.optionalString(
+      input.contextHash,
+      'contextHash',
+      128,
+    );
+
+    for (let index = 0; index < input.steps.length; index += 1) {
+      this.validateStepDefinition(input.steps[index]!, index);
+    }
+
+    const requestHash = this.computeTaskRequestHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      deadlineAt,
+      contextVersion,
+      planVersion,
+      contextHash,
+    });
+
     if (idempotencyKey) {
       const existing = await this.getTaskByIdempotencyKey(
         tenantId,
@@ -257,15 +293,17 @@ export class AiAgentRuntimeService {
       );
 
       if (existing) {
+        if (existing.request_hash !== requestHash) {
+          throw new ConflictException(
+            'The idempotency key was already used for a different or unverifiable AI agent task request',
+          );
+        }
+
         return {
           idempotent: true,
           task: this.mapTask(existing),
         };
       }
-    }
-
-    for (let index = 0; index < input.steps.length; index += 1) {
-      this.validateStepDefinition(input.steps[index]!, index);
     }
 
     const result = await this.database.transaction(
@@ -290,12 +328,13 @@ export class AiAgentRuntimeService {
             context_version,
             plan_version,
             context_hash,
-            idempotency_key
+            idempotency_key,
+            request_hash
           )
           VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
-            $13, $14, $15, $16
+            $13, $14, $15, $16, $17
           )
           RETURNING ${this.taskSelectColumns()}
           `,
@@ -312,10 +351,11 @@ export class AiAgentRuntimeService {
             limits.maxToolCalls,
             limits.timeoutMs,
             deadlineAt,
-            this.optionalString(input.contextVersion, 'contextVersion', 100),
-            this.optionalString(input.planVersion, 'planVersion', 100),
-            this.optionalString(input.contextHash, 'contextHash', 128),
+            contextVersion,
+            planVersion,
+            contextHash,
             idempotencyKey,
+            requestHash,
           ],
         );
 
@@ -2576,6 +2616,77 @@ export class AiAgentRuntimeService {
     };
   }
 
+  private computeTaskRequestHash(args: {
+    tenantId: string;
+    factoryId: string;
+    actorUserId: string;
+    input: CreateAiAgentTaskInput;
+    decisionId: string;
+    parentTraceId: string;
+    goal: string;
+    limits: {
+      maxSteps: number;
+      maxRetries: number;
+      maxToolCalls: number;
+      timeoutMs: number;
+    };
+    deadlineAt: string;
+    contextVersion: string | null;
+    planVersion: string | null;
+    contextHash: string | null;
+  }): string {
+    const {
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      deadlineAt,
+      contextVersion,
+      planVersion,
+      contextHash,
+    } = args;
+
+    return this.computeHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      // Do not fingerprint the generated deadline when callers omit it:
+      // otherwise an identical retry would hash differently on every attempt.
+      requestedDeadlineAt: input.deadlineAt ? deadlineAt : null,
+      contextVersion,
+      planVersion,
+      contextHash,
+      steps: input.steps.map((step, index) => ({
+        stepKey: step.stepKey.trim(),
+        stepIndex: index,
+        agentId: step.agentId ?? null,
+        capability: step.capability.trim(),
+        inputSchema: step.inputSchema ?? {},
+        outputSchema: step.outputSchema ?? {},
+        toolId: step.toolId.trim(),
+        toolVersion: step.toolVersion.trim(),
+        actionType: step.actionType.trim(),
+        target: step.target ?? {},
+        payload: step.payload ?? {},
+        resourceType: step.resourceType ?? null,
+        resourceId: step.resourceId ?? null,
+        riskClass: step.riskClass ?? null,
+        timeoutMs: step.timeoutMs ?? 1000,
+        retryLimit: step.retryLimit ?? 0,
+        authorityLevel: step.authorityLevel?.trim() ?? 'TASK_SCOPED',
+        dependsOn: step.dependsOn ?? [],
+      })),
+    });
+  }
+
   private validateStepDefinition(
     step: AiAgentStepDefinition,
     index: number,
@@ -2942,6 +3053,7 @@ export class AiAgentRuntimeService {
       failure_code,
       failure_reason,
       idempotency_key,
+      request_hash,
       version,
       created_at::text AS created_at,
       updated_at::text AS updated_at

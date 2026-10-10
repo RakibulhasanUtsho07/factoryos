@@ -59,6 +59,7 @@ function taskRow(
     failure_code: null,
     failure_reason: null,
     idempotency_key: 'task-001',
+    request_hash: null,
     version: 1,
     created_at: '2026-10-07T00:00:00.000Z',
     updated_at: '2026-10-07T00:00:00.000Z',
@@ -232,6 +233,107 @@ describe(
         toolGateway as never,
         toolRegistry as never,
       );
+    });
+
+    const buildTaskRequest = (goal = 'Run deterministic AI agent task') => ({
+      decisionId,
+      parentTraceId: traceId,
+      goal,
+      idempotencyKey: 'task-001',
+      steps: [
+        {
+          stepKey: 'step-1',
+          capability: 'deterministic-test',
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          toolId: 'AI.RUNTIME.NOOP',
+          toolVersion: '1.0.0',
+          actionType: 'AI.RUNTIME.NOOP',
+          target: {},
+          payload: { sample: 'value' },
+          riskClass: 'L0',
+          timeoutMs: 1000,
+          retryLimit: 1,
+          authorityLevel: 'TASK_SCOPED',
+          dependsOn: [],
+        },
+      ],
+    });
+
+    const hashTaskRequest = (input: ReturnType<typeof buildTaskRequest>) =>
+      (service as any).computeTaskRequestHash({
+        tenantId,
+        factoryId,
+        actorUserId: userId,
+        input,
+        decisionId: input.decisionId,
+        parentTraceId: input.parentTraceId,
+        goal: input.goal,
+        limits: {
+          maxSteps: 20,
+          maxRetries: 3,
+          maxToolCalls: 20,
+          timeoutMs: 60_000,
+        },
+        deadlineAt: '2099-01-01T00:00:00.000Z',
+        contextVersion: null,
+        planVersion: null,
+        contextHash: null,
+      });
+
+    it('replays a task only when the idempotency key matches the request fingerprint', async () => {
+      const input = buildTaskRequest();
+      const requestHash = hashTaskRequest(input);
+      (service as any).getTaskByIdempotencyKey = jest
+        .fn()
+        .mockResolvedValue(taskRow({ request_hash: requestHash }));
+
+      const result = await service.createTask(
+        tenantId,
+        factoryId,
+        userId,
+        input,
+      );
+
+      expect(result.idempotent).toBe(true);
+      expect(result.task.id).toBe(taskId);
+      expect(database.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects an idempotency key reused with a different task payload', async () => {
+      const originalInput = buildTaskRequest();
+      const originalHash = hashTaskRequest(originalInput);
+      (service as any).getTaskByIdempotencyKey = jest
+        .fn()
+        .mockResolvedValue(taskRow({ request_hash: originalHash }));
+
+      await expect(
+        service.createTask(
+          tenantId,
+          factoryId,
+          userId,
+          buildTaskRequest('Different task goal'),
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(database.transaction).not.toHaveBeenCalled();
+    });
+
+    it('fails closed for an existing idempotency key without a stored fingerprint', async () => {
+      (service as any).getTaskByIdempotencyKey = jest
+        .fn()
+        .mockResolvedValue(taskRow({ request_hash: null }));
+
+      await expect(
+        service.createTask(
+          tenantId,
+          factoryId,
+          userId,
+          buildTaskRequest(),
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(database.transaction).not.toHaveBeenCalled();
     });
 
     it('accepts the canonical CREATED -> CONTEXT_READY transition', async () => {
