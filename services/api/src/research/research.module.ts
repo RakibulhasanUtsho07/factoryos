@@ -6,11 +6,12 @@ import { IamModule } from '../iam/iam.module';
 
 import { ResearchSourceRegistryController } from './research-source.registry.controller';
 import { ResearchSourceRegistryService } from './research-source.registry.service';
+import { ResearchDocumentExtractionService } from './research-document-extraction.service';
 
 @Module({
   imports: [AuditModule, DatabaseModule, IamModule],
   controllers: [ResearchSourceRegistryController],
-  providers: [ResearchSourceRegistryService],
+  providers: [ResearchSourceRegistryService, ResearchDocumentExtractionService],
   exports: [ResearchSourceRegistryService],
 })
 export class ResearchModule {}
