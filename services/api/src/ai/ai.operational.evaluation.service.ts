@@ -1192,7 +1192,9 @@ export class AiOperationalEvaluationService {
 
     let calibrationSampleCount: number | null = null;
     let candidateExpectedCalibrationError: number | null = null;
-    if (policyConfig.maxExpectedCalibrationError !== null) {
+    const maxExpectedCalibrationError =
+      policyConfig.maxExpectedCalibrationError;
+    if (maxExpectedCalibrationError !== null) {
       checks.maxExpectedCalibrationError = null;
       const calibration = await this.getCalibration(
         tenantId,
@@ -1207,7 +1209,7 @@ export class AiOperationalEvaluationService {
           calibrationSeries.expectedCalibrationError;
         candidateExpectedCalibrationError = expectedCalibrationError;
         checks.maxExpectedCalibrationError =
-          expectedCalibrationError <= policyConfig.maxExpectedCalibrationError;
+          expectedCalibrationError <= maxExpectedCalibrationError;
       }
     }
 
