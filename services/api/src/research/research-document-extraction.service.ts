@@ -107,13 +107,18 @@ export class ResearchDocumentExtractionService {
     for (const paragraph of xml.matchAll(paragraphPattern)) {
       const paragraphXml = paragraph[1] ?? '';
       const pieces: string[] = [];
-      for (const textMatch of paragraphXml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)) {
-        pieces.push(this.decodeXmlEntities(textMatch[1] ?? ''));
+      const runPartPattern = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab(?:\s[^>]*)?\s*\/>|<w:br(?:\s[^>]*)?\s*\/>/g;
+      for (const part of paragraphXml.matchAll(runPartPattern)) {
+        const token = part[0] ?? '';
+        if (part[1] !== undefined) {
+          pieces.push(this.decodeXmlEntities(part[1]));
+        } else if (token.startsWith('<w:tab')) {
+          pieces.push('\t');
+        } else {
+          pieces.push('\n');
+        }
       }
-      const text = pieces.join('')
-        .replace(/<w:tab\s*\/>/g, '\t')
-        .replace(/<w:br(?:\s[^>]*)?\s*\/>/g, '\n')
-        .trim();
+      const text = pieces.join('').trim();
       if (text) paragraphs.push(text);
       if (paragraphs.join('\n').length > MAX_TEXT_CHARACTERS) {
         throw new BadRequestException('Extracted DOCX text exceeds the character limit');
@@ -548,12 +553,12 @@ export class ResearchDocumentExtractionService {
 
   private decodePdfBytes(bytes: Buffer): string {
     if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
-      const even = bytes.length % 2 === 0 ? bytes : bytes.subarray(0, bytes.length - 1);
-      return even.toString('utf16be' as BufferEncoding, 2);
+      const payload = bytes.subarray(2, bytes.length - ((bytes.length - 2) % 2));
+      return payload.swap16().toString('utf16le');
     }
     if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
-      const even = bytes.length % 2 === 0 ? bytes : bytes.subarray(0, bytes.length - 1);
-      return even.swap16().toString('utf16le', 2);
+      const payload = bytes.subarray(2, bytes.length - ((bytes.length - 2) % 2));
+      return payload.toString('utf16le');
     }
     return new TextDecoder('windows-1252').decode(bytes);
   }
