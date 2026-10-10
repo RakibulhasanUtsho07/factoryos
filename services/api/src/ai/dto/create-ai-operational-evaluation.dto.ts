@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsDateString,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -53,7 +54,7 @@ export class CreateAiOperationalEvaluationDto {
   prediction_correct!: boolean;
 
   @IsOptional()
-  @IsString()
+  @IsDateString()
   @MaxLength(64)
   observed_at?: string | null;
 }
