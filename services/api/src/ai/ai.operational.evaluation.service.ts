@@ -644,6 +644,145 @@ export class AiOperationalEvaluationService {
     };
   }
 
+  async compareForecastModels(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    filters: {
+      domain?: string;
+      metricKey?: string;
+      baselineModelVersion?: string;
+      candidateModelVersion?: string;
+    } = {},
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.business.read',
+      factoryId,
+    );
+
+    const domain = this.normalizeDomain(filters.domain);
+    const metricKey = this.requiredString(filters.metricKey, 'metric_key', 100);
+    const baselineModelVersion = this.requiredString(
+      filters.baselineModelVersion,
+      'baseline_model_version',
+      100,
+    );
+    const candidateModelVersion = this.requiredString(
+      filters.candidateModelVersion,
+      'candidate_model_version',
+      100,
+    );
+
+    if (baselineModelVersion === candidateModelVersion) {
+      throw new BadRequestException(
+        'baseline_model_version and candidate_model_version must be different',
+      );
+    }
+
+    const result = await this.database.query<{
+      model_version: string;
+      sample_count: number | string;
+      mean_absolute_error: number | string;
+      mean_absolute_percentage_error: number | string | null;
+      mean_signed_error: number | string;
+      within_tolerance_rate: number | string;
+    }>(
+      `
+      SELECT
+        model_version,
+        COUNT(*)::integer AS sample_count,
+        AVG(absolute_error)::double precision AS mean_absolute_error,
+        AVG(absolute_percentage_error)
+          FILTER (WHERE absolute_percentage_error IS NOT NULL)
+          ::double precision AS mean_absolute_percentage_error,
+        AVG(actual_value - predicted_value)::double precision AS mean_signed_error,
+        AVG((absolute_error <= tolerance)::integer)::double precision AS within_tolerance_rate
+      FROM ai_operational_evaluation_records
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND domain = $3
+        AND metric_key = $4
+        AND model_version IN ($5, $6)
+        AND source_outcome_id IS NOT NULL
+        AND observed_at >= NOW() - INTERVAL '90 days'
+      GROUP BY model_version
+      ORDER BY model_version
+      `,
+      [
+        tenantId,
+        factoryId,
+        domain,
+        metricKey,
+        baselineModelVersion,
+        candidateModelVersion,
+      ],
+      { tenantId, userId: actorUserId },
+    );
+
+    const byVersion = new Map(
+      result.rows.map((row) => [row.model_version, row]),
+    );
+
+    const toMetrics = (modelVersion: string) => {
+      const row = byVersion.get(modelVersion);
+      if (!row) {
+        return null;
+      }
+
+      return {
+        modelVersion,
+        sampleCount: Number(row.sample_count),
+        meanAbsoluteError: this.round(Number(row.mean_absolute_error)),
+        meanAbsolutePercentageError:
+          row.mean_absolute_percentage_error === null
+            ? null
+            : this.round(Number(row.mean_absolute_percentage_error)),
+        meanSignedError: this.round(Number(row.mean_signed_error)),
+        withinToleranceRate: this.round(Number(row.within_tolerance_rate)),
+      };
+    };
+
+    const baseline = toMetrics(baselineModelVersion);
+    const candidate = toMetrics(candidateModelVersion);
+    const delta =
+      baseline && candidate
+        ? {
+            meanAbsoluteError: this.round(
+              candidate.meanAbsoluteError - baseline.meanAbsoluteError,
+            ),
+            meanAbsolutePercentageError:
+              baseline.meanAbsolutePercentageError === null ||
+              candidate.meanAbsolutePercentageError === null
+                ? null
+                : this.round(
+                    candidate.meanAbsolutePercentageError -
+                      baseline.meanAbsolutePercentageError,
+                  ),
+            meanSignedError: this.round(
+              candidate.meanSignedError - baseline.meanSignedError,
+            ),
+            withinToleranceRate: this.round(
+              candidate.withinToleranceRate - baseline.withinToleranceRate,
+            ),
+          }
+        : null;
+
+    return {
+      windowDays: 90,
+      domain,
+      metricKey,
+      comparisonMode: 'descriptive_only' as const,
+      comparable: baseline !== null && candidate !== null,
+      baseline,
+      candidate,
+      delta,
+    };
+  }
+
   async getCalibration(
     tenantId: string,
     factoryId: string,
