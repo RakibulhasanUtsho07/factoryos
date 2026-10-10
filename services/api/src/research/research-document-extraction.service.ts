@@ -19,6 +19,11 @@ const MAX_PDF_TOTAL_EXPANDED_BYTES = 12 * 1024 * 1024;
 const MAX_TEXT_CHARACTERS = 32768;
 const MAX_TEXT_BYTES = 49152;
 
+type PdfTextToken =
+  | { type: 'string'; value: string }
+  | { type: 'array'; value: string[] }
+  | { type: 'word'; value: string };
+
 @Injectable()
 export class ResearchDocumentExtractionService {
   extract(input: Buffer): ExtractedResearchDocument {
@@ -444,10 +449,8 @@ export class ResearchDocumentExtractionService {
     return blocks;
   }
 
-  private tokenizePdfTextObject(
-    source: string,
-  ): Array<{ type: 'string' | 'array' | 'word'; value: string | string[] }> {
-    const tokens: Array<{ type: 'string' | 'array' | 'word'; value: string | string[] }> = [];
+  private tokenizePdfTextObject(source: string): PdfTextToken[] {
+    const tokens: PdfTextToken[] = [];
     let cursor = 0;
 
     const skipSpaceAndComments = () => {
