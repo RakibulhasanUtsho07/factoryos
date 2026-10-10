@@ -1203,11 +1203,11 @@ export class AiOperationalEvaluationService {
       const calibrationSeries = calibration.series[0];
       if (calibrationSeries) {
         calibrationSampleCount = calibrationSeries.sampleCount;
-        candidateExpectedCalibrationError =
+        const expectedCalibrationError =
           calibrationSeries.expectedCalibrationError;
+        candidateExpectedCalibrationError = expectedCalibrationError;
         checks.maxExpectedCalibrationError =
-          candidateExpectedCalibrationError <=
-          policyConfig.maxExpectedCalibrationError;
+          expectedCalibrationError <= policyConfig.maxExpectedCalibrationError;
       }
     }
 
