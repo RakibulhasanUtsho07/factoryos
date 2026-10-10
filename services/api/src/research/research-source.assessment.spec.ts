@@ -70,7 +70,7 @@ describe('ResearchSourceRegistryService source assessments', () => {
 
   it('records an append-only human assessment bound to the registered source hash', async () => {
     database.query
-      .mockResolvedValueOnce({ rows: [{ id: sourceId, content_sha256: contentSha256 }] })
+      .mockResolvedValueOnce({ rows: [{ id: sourceId, content_sha256: contentSha256, content_hash_is_ingested: true }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [assessmentRow()] });
 
@@ -133,7 +133,7 @@ describe('ResearchSourceRegistryService source assessments', () => {
 
   it('rejects assessments bound to a different content digest', async () => {
     database.query.mockResolvedValueOnce({
-      rows: [{ id: sourceId, content_sha256: contentSha256 }],
+      rows: [{ id: sourceId, content_sha256: contentSha256, content_hash_is_ingested: true }],
     });
 
     await expect(
@@ -168,7 +168,7 @@ describe('ResearchSourceRegistryService source assessments', () => {
     });
 
     database.query
-      .mockResolvedValueOnce({ rows: [{ id: sourceId, content_sha256: contentSha256 }] })
+      .mockResolvedValueOnce({ rows: [{ id: sourceId, content_sha256: contentSha256, content_hash_is_ingested: true }] })
       .mockResolvedValueOnce({
         rows: [assessmentRow({ request_hash: requestHash })],
       });
@@ -187,7 +187,7 @@ describe('ResearchSourceRegistryService source assessments', () => {
 
   it('rejects reuse of an idempotency key for a different assessment', async () => {
     database.query
-      .mockResolvedValueOnce({ rows: [{ id: sourceId, content_sha256: contentSha256 }] })
+      .mockResolvedValueOnce({ rows: [{ id: sourceId, content_sha256: contentSha256, content_hash_is_ingested: true }] })
       .mockResolvedValueOnce({ rows: [assessmentRow({ request_hash: 'c'.repeat(64) })] });
 
     await expect(
