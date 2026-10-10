@@ -32,6 +32,14 @@ import {
 } from './ai.runtime.service';
 
 import {
+  AiOperationalEvaluationService,
+} from './ai.operational.evaluation.service';
+
+import {
+  CreateAiOperationalEvaluationDto,
+} from './dto/create-ai-operational-evaluation.dto';
+
+import {
   CreateAiDecisionDto,
 } from './dto/create-ai-decision.dto';
 
@@ -86,6 +94,7 @@ type FactoryOsRequest = Request & {
 export class AiController {
   constructor(
     private readonly aiRuntimeService: AiRuntimeService,
+    private readonly operationalEvaluationService: AiOperationalEvaluationService,
   ) {}
 
   // ============================================================
@@ -254,6 +263,54 @@ export class AiController {
       context.userId,
       claimId,
       body,
+    );
+  }
+
+  // ============================================================
+  // WP07 OPERATIONAL AI EVALUATION AND CALIBRATION
+  // ============================================================
+
+  @Post('operational-evaluations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.outcomes.write')
+  @RequireFactoryScope()
+  async recordOperationalEvaluation(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateAiOperationalEvaluationDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.recordEvaluation(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+    );
+  }
+
+  @Get('operational-evaluations/calibration')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getOperationalCalibration(
+    @Req() request: FactoryOsRequest,
+    @Query('domain') domain?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('model_version') modelVersion?: string,
+    @Query('bins') bins?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.operationalEvaluationService.getCalibration(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      {
+        domain,
+        metricKey,
+        modelVersion,
+        bins: bins === undefined ? undefined : Number(bins),
+      },
     );
   }
 
