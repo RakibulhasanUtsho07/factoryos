@@ -100,9 +100,12 @@ export class AiOperationalEvaluationService {
       ...normalized,
     });
 
-    const decision = await this.database.query<{ id: string }>(
+    const decision = await this.database.query<{
+      id: string;
+      metadata?: unknown;
+    }>(
       `
-      SELECT id::text AS id
+      SELECT id::text AS id, metadata
       FROM ai_decision_envelopes
       WHERE id = $1
         AND tenant_id = $2
@@ -118,6 +121,11 @@ export class AiOperationalEvaluationService {
         'AI decision envelope was not found for this factory',
       );
     }
+
+    this.assertModelVersionMatchesDecisionMetadata(
+      normalized.modelVersion,
+      decision.rows[0].metadata,
+    );
 
     const inserted = await this.database.query<EvaluationRow>(
       `
@@ -316,19 +324,25 @@ export class AiOperationalEvaluationService {
       actual_metric: Record<string, unknown>;
       status: string;
       observed_at: string;
+      decision_metadata?: unknown;
     }>(
       `
       SELECT
-        id::text AS id,
-        decision_id::text AS decision_id,
-        expected_metric,
-        actual_metric,
-        status,
-        created_at::text AS observed_at
-      FROM ai_outcome_links
-      WHERE id = $1
-        AND tenant_id = $2
-        AND factory_id = $3
+        o.id::text AS id,
+        o.decision_id::text AS decision_id,
+        o.expected_metric,
+        o.actual_metric,
+        o.status,
+        o.created_at::text AS observed_at,
+        d.metadata AS decision_metadata
+      FROM ai_outcome_links o
+      INNER JOIN ai_decision_envelopes d
+        ON d.id = o.decision_id
+        AND d.tenant_id = o.tenant_id
+        AND d.factory_id = o.factory_id
+      WHERE o.id = $1
+        AND o.tenant_id = $2
+        AND o.factory_id = $3
       LIMIT 1
       `,
       [sourceOutcomeId, tenantId, factoryId],
@@ -347,6 +361,11 @@ export class AiOperationalEvaluationService {
         'Only an OBSERVED AI outcome can be used to score an operational forecast',
       );
     }
+
+    this.assertModelVersionMatchesDecisionMetadata(
+      modelVersion,
+      outcome.decision_metadata,
+    );
 
     const predictedValue = this.metricNumber(
       outcome.expected_metric,
@@ -830,6 +849,43 @@ export class AiOperationalEvaluationService {
       predictionCorrect: input.prediction_correct,
       observedAt,
     };
+  }
+
+  /**
+   * A model version recorded on the immutable decision envelope is the
+   * canonical label when present. Legacy decisions without that metadata
+   * remain readable, but an explicitly declared version cannot be relabelled
+   * during evaluation.
+   */
+  private assertModelVersionMatchesDecisionMetadata(
+    modelVersion: string,
+    metadata: unknown,
+  ): void {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return;
+    }
+
+    const record = metadata as Record<string, unknown>;
+    const declaredVersion = record.model_version ?? record.modelVersion;
+
+    if (declaredVersion === undefined || declaredVersion === null) {
+      return;
+    }
+
+    if (
+      typeof declaredVersion !== 'string' ||
+      declaredVersion.trim().length === 0
+    ) {
+      throw new ConflictException(
+        'The source AI decision contains an invalid model version reference',
+      );
+    }
+
+    if (declaredVersion.trim() !== modelVersion) {
+      throw new ConflictException(
+        'model_version does not match the source AI decision metadata',
+      );
+    }
   }
 
   private metricNumber(
