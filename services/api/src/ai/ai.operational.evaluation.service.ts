@@ -22,6 +22,10 @@ import {
   ReconcileAiOperationalForecastDto,
 } from './dto/reconcile-ai-operational-forecast.dto';
 
+import {
+  CreateAiOperationalEvaluationPolicyDto,
+} from './dto/create-ai-operational-evaluation-policy.dto';
+
 interface EvaluationRow extends QueryResultRow {
   id: string;
   tenant_id: string;
@@ -65,6 +69,24 @@ interface NormalizedEvaluation {
   confidence: number;
   predictionCorrect: boolean;
   observedAt: string | null;
+}
+
+interface EvaluationPolicyRow extends QueryResultRow {
+  id: string;
+  tenant_id: string;
+  factory_id: string;
+  policy_key: string;
+  policy_version: string;
+  domain: AiOperationalDomain;
+  metric_key: string;
+  minimum_samples: number | string;
+  max_mean_absolute_error: number | string | null;
+  max_mean_absolute_percentage_error: number | string | null;
+  min_within_tolerance_rate: number | string | null;
+  max_expected_calibration_error: number | string | null;
+  request_hash: string;
+  created_by: string;
+  created_at: string;
 }
 
 const OPERATIONAL_DOMAINS = new Set<string>(Object.values(AiOperationalDomain));
@@ -644,6 +666,324 @@ export class AiOperationalEvaluationService {
     };
   }
 
+  async createEvaluationPolicy(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: CreateAiOperationalEvaluationPolicyDto,
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.evaluation.policies.write',
+      factoryId,
+    );
+
+    const policyKey = this.requiredString(input.policy_key, 'policy_key', 150);
+    const policyVersion = this.requiredString(
+      input.policy_version,
+      'policy_version',
+      50,
+    );
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(policyKey)) {
+      throw new BadRequestException('policy_key contains unsupported characters');
+    }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._+-]*$/.test(policyVersion)) {
+      throw new BadRequestException('policy_version contains unsupported characters');
+    }
+
+    const domain = this.normalizeDomain(input.domain);
+    const metricKey = this.requiredString(input.metric_key, 'metric_key', 100);
+    const minimumSamples = input.minimum_samples;
+    if (
+      !Number.isInteger(minimumSamples) ||
+      minimumSamples < 1 ||
+      minimumSamples > 1_000_000
+    ) {
+      throw new BadRequestException(
+        'minimum_samples must be an integer between 1 and 1000000',
+      );
+    }
+
+    const maxMae = this.optionalThreshold(
+      input.max_mean_absolute_error,
+      'max_mean_absolute_error',
+      1_000_000_000_000_000,
+    );
+    const maxMape = this.optionalThreshold(
+      input.max_mean_absolute_percentage_error,
+      'max_mean_absolute_percentage_error',
+      1_000_000_000,
+    );
+    const minWithinToleranceRate = this.optionalThreshold(
+      input.min_within_tolerance_rate,
+      'min_within_tolerance_rate',
+      1,
+    );
+    const maxEce = this.optionalThreshold(
+      input.max_expected_calibration_error,
+      'max_expected_calibration_error',
+      1,
+    );
+
+    if (
+      maxMae === null &&
+      maxMape === null &&
+      minWithinToleranceRate === null &&
+      maxEce === null
+    ) {
+      throw new BadRequestException(
+        'At least one measurable evaluation threshold must be configured',
+      );
+    }
+
+    const requestHash = this.requestHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      policyKey,
+      policyVersion,
+      domain,
+      metricKey,
+      minimumSamples,
+      maxMae,
+      maxMape,
+      minWithinToleranceRate,
+      maxEce,
+    });
+
+    const existingVersion = await this.database.query<EvaluationPolicyRow>(
+      `
+      SELECT
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        policy_key,
+        policy_version,
+        domain,
+        metric_key,
+        minimum_samples,
+        max_mean_absolute_error,
+        max_mean_absolute_percentage_error,
+        min_within_tolerance_rate,
+        max_expected_calibration_error,
+        request_hash,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      FROM ai_operational_evaluation_policies
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND policy_key = $3
+        AND policy_version = $4
+      LIMIT 1
+      `,
+      [tenantId, factoryId, policyKey, policyVersion],
+      { tenantId, userId: actorUserId },
+    );
+
+    const existing = existingVersion.rows[0];
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        throw new ConflictException(
+          'The policy version already exists with a different configuration',
+        );
+      }
+      return { idempotent: true, policy: this.mapEvaluationPolicy(existing) };
+    }
+
+    const latestResult = await this.database.query<{
+      domain: AiOperationalDomain;
+      metric_key: string;
+    }>(
+      `
+      SELECT domain, metric_key
+      FROM ai_operational_evaluation_policies
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND policy_key = $3
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+      `,
+      [tenantId, factoryId, policyKey],
+      { tenantId, userId: actorUserId },
+    );
+
+    const latest = latestResult.rows[0];
+    if (
+      latest &&
+      (latest.domain !== domain || latest.metric_key !== metricKey)
+    ) {
+      throw new ConflictException(
+        'A policy_key cannot be reused for a different domain or metric_key',
+      );
+    }
+
+    const inserted = await this.database.query<EvaluationPolicyRow>(
+      `
+      INSERT INTO ai_operational_evaluation_policies (
+        id, tenant_id, factory_id, policy_key, policy_version,
+        domain, metric_key, minimum_samples, max_mean_absolute_error,
+        max_mean_absolute_percentage_error, min_within_tolerance_rate,
+        max_expected_calibration_error, request_hash, created_by
+      )
+      VALUES (
+        gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+      )
+      ON CONFLICT (tenant_id, factory_id, policy_key, policy_version) DO NOTHING
+      RETURNING
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        policy_key,
+        policy_version,
+        domain,
+        metric_key,
+        minimum_samples,
+        max_mean_absolute_error,
+        max_mean_absolute_percentage_error,
+        min_within_tolerance_rate,
+        max_expected_calibration_error,
+        request_hash,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      `,
+      [
+        tenantId,
+        factoryId,
+        policyKey,
+        policyVersion,
+        domain,
+        metricKey,
+        minimumSamples,
+        maxMae,
+        maxMape,
+        minWithinToleranceRate,
+        maxEce,
+        requestHash,
+        actorUserId,
+      ],
+      { tenantId, userId: actorUserId },
+    );
+
+    const row = inserted.rows[0];
+    if (!row) {
+      const racedResult = await this.database.query<EvaluationPolicyRow>(
+        `
+        SELECT
+          id::text AS id,
+          tenant_id::text AS tenant_id,
+          factory_id::text AS factory_id,
+          policy_key,
+          policy_version,
+          domain,
+          metric_key,
+          minimum_samples,
+          max_mean_absolute_error,
+          max_mean_absolute_percentage_error,
+          min_within_tolerance_rate,
+          max_expected_calibration_error,
+          request_hash,
+          created_by::text AS created_by,
+          created_at::text AS created_at
+        FROM ai_operational_evaluation_policies
+        WHERE tenant_id = $1
+          AND factory_id = $2
+          AND policy_key = $3
+          AND policy_version = $4
+        LIMIT 1
+        `,
+        [tenantId, factoryId, policyKey, policyVersion],
+        { tenantId, userId: actorUserId },
+      );
+      const raced = racedResult.rows[0];
+      if (!raced || raced.request_hash !== requestHash) {
+        throw new ConflictException(
+          'The policy version was concurrently created with a conflicting configuration',
+        );
+      }
+      return { idempotent: true, policy: this.mapEvaluationPolicy(raced) };
+    }
+
+    await this.recordAuditSafely({
+      tenantId,
+      factoryId,
+      actorUserId,
+      resourceId: row.id,
+      action: 'CREATE_POLICY_VERSION',
+      payload: {
+        policyKey,
+        policyVersion,
+        domain,
+        metricKey,
+        minimumSamples,
+        maxMeanAbsoluteError: maxMae,
+        maxMeanAbsolutePercentageError: maxMape,
+        minWithinToleranceRate,
+        maxExpectedCalibrationError: maxEce,
+      },
+    });
+
+    return { idempotent: false, policy: this.mapEvaluationPolicy(row) };
+  }
+
+  async getEvaluationPolicies(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    filters: { domain?: string; metricKey?: string; policyKey?: string } = {},
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.business.read',
+      factoryId,
+    );
+
+    const domain = filters.domain ? this.normalizeDomain(filters.domain) : null;
+    const metricKey = filters.metricKey
+      ? this.requiredString(filters.metricKey, 'metric_key', 100)
+      : null;
+    const policyKey = filters.policyKey
+      ? this.requiredString(filters.policyKey, 'policy_key', 150)
+      : null;
+
+    const result = await this.database.query<EvaluationPolicyRow>(
+      `
+      SELECT DISTINCT ON (policy_key)
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        policy_key,
+        policy_version,
+        domain,
+        metric_key,
+        minimum_samples,
+        max_mean_absolute_error,
+        max_mean_absolute_percentage_error,
+        min_within_tolerance_rate,
+        max_expected_calibration_error,
+        request_hash,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      FROM ai_operational_evaluation_policies
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND ($3::varchar IS NULL OR domain = $3)
+        AND ($4::varchar IS NULL OR metric_key = $4)
+        AND ($5::varchar IS NULL OR policy_key = $5)
+      ORDER BY policy_key, created_at DESC, id DESC
+      `,
+      [tenantId, factoryId, domain, metricKey, policyKey],
+      { tenantId, userId: actorUserId },
+    );
+
+    return {
+      policies: result.rows.map((row) => this.mapEvaluationPolicy(row)),
+    };
+  }
+
   async compareForecastModels(
     tenantId: string,
     factoryId: string,
@@ -653,6 +993,7 @@ export class AiOperationalEvaluationService {
       metricKey?: string;
       baselineModelVersion?: string;
       candidateModelVersion?: string;
+      policyKey?: string;
     } = {},
   ) {
     this.validateScope(tenantId, factoryId, actorUserId);
@@ -676,6 +1017,9 @@ export class AiOperationalEvaluationService {
       'candidate_model_version',
       100,
     );
+    const policyKey = filters.policyKey
+      ? this.requiredString(filters.policyKey, 'policy_key', 150)
+      : null;
 
     if (baselineModelVersion === candidateModelVersion) {
       throw new BadRequestException(
@@ -774,15 +1118,134 @@ export class AiOperationalEvaluationService {
           }
         : null;
 
+    if (!policyKey) {
+      return {
+        windowDays: 90,
+        domain,
+        metricKey,
+        comparisonMode: 'descriptive_only' as const,
+        comparable: baseline !== null && candidate !== null,
+        baseline,
+        candidate,
+        delta,
+      };
+    }
+
+    const policyResult = await this.database.query<EvaluationPolicyRow>(
+      `
+      SELECT
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        policy_key,
+        policy_version,
+        domain,
+        metric_key,
+        minimum_samples,
+        max_mean_absolute_error,
+        max_mean_absolute_percentage_error,
+        min_within_tolerance_rate,
+        max_expected_calibration_error,
+        request_hash,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      FROM ai_operational_evaluation_policies
+      WHERE tenant_id = $1
+        AND factory_id = $2
+        AND policy_key = $3
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+      `,
+      [tenantId, factoryId, policyKey],
+      { tenantId, userId: actorUserId },
+    );
+    const policy = policyResult.rows[0];
+    if (!policy) {
+      throw new NotFoundException('Operational evaluation policy was not found');
+    }
+    if (policy.domain !== domain || policy.metric_key !== metricKey) {
+      throw new BadRequestException(
+        'The selected policy does not apply to the requested domain and metric_key',
+      );
+    }
+
+    const policyConfig = this.mapEvaluationPolicy(policy);
+    const checks: Record<string, boolean | null> = {
+      maxMeanAbsoluteError:
+        policyConfig.maxMeanAbsoluteError === null || !candidate
+          ? null
+          : candidate.meanAbsoluteError <= policyConfig.maxMeanAbsoluteError,
+      maxMeanAbsolutePercentageError:
+        policyConfig.maxMeanAbsolutePercentageError === null ||
+        !candidate ||
+        candidate.meanAbsolutePercentageError === null
+          ? null
+          : candidate.meanAbsolutePercentageError <=
+            policyConfig.maxMeanAbsolutePercentageError,
+      minWithinToleranceRate:
+        policyConfig.minWithinToleranceRate === null || !candidate
+          ? null
+          : candidate.withinToleranceRate >= policyConfig.minWithinToleranceRate,
+      maxExpectedCalibrationError: null,
+    };
+
+    let calibrationSampleCount: number | null = null;
+    let candidateExpectedCalibrationError: number | null = null;
+    if (policyConfig.maxExpectedCalibrationError !== null) {
+      const calibration = await this.getCalibration(
+        tenantId,
+        factoryId,
+        actorUserId,
+        { domain, metricKey, modelVersion: candidateModelVersion },
+      );
+      const calibrationSeries = calibration.series[0];
+      if (calibrationSeries) {
+        calibrationSampleCount = calibrationSeries.sampleCount;
+        candidateExpectedCalibrationError =
+          calibrationSeries.expectedCalibrationError;
+        checks.maxExpectedCalibrationError =
+          candidateExpectedCalibrationError <=
+          policyConfig.maxExpectedCalibrationError;
+      }
+    }
+
+    const candidateSampleCount = candidate?.sampleCount ?? 0;
+    const baselineSampleCount = baseline?.sampleCount ?? 0;
+    const requiredCheckMissing = Object.values(checks).some(
+      (value) => value === null,
+    );
+    const insufficientData =
+      !baseline ||
+      !candidate ||
+      baselineSampleCount < policyConfig.minimumSamples ||
+      candidateSampleCount < policyConfig.minimumSamples ||
+      requiredCheckMissing ||
+      (policyConfig.maxExpectedCalibrationError !== null &&
+        (calibrationSampleCount === null ||
+          calibrationSampleCount < policyConfig.minimumSamples));
+
     return {
       windowDays: 90,
       domain,
       metricKey,
-      comparisonMode: 'descriptive_only' as const,
+      comparisonMode: 'policy_evaluated' as const,
       comparable: baseline !== null && candidate !== null,
       baseline,
       candidate,
       delta,
+      policyEvaluation: {
+        policyKey: policyConfig.policyKey,
+        policyVersion: policyConfig.policyVersion,
+        minimumSamples: policyConfig.minimumSamples,
+        status: insufficientData
+          ? 'INSUFFICIENT_DATA'
+          : Object.values(checks).every((value) => value === true)
+            ? 'MEETS_POLICY'
+            : 'DOES_NOT_MEET_POLICY',
+        checks,
+        candidateExpectedCalibrationError,
+        calibrationSampleCount,
+      },
     };
   }
 
@@ -1028,6 +1491,52 @@ export class AiOperationalEvaluationService {
         'model_version does not match the source AI decision metadata',
       );
     }
+  }
+
+  private optionalThreshold(
+    value: number | null | undefined,
+    field: string,
+    maximum: number,
+  ): number | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > maximum ||
+      Math.round(value * 1_000_000) / 1_000_000 !== value
+    ) {
+      throw new BadRequestException(
+        `${field} must be a finite non-negative number within the supported range with at most six decimal places`,
+      );
+    }
+    return value;
+  }
+
+  private mapEvaluationPolicy(row: EvaluationPolicyRow) {
+    const nullableNumber = (value: number | string | null): number | null =>
+      value === null || value === undefined ? null : Number(value);
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      policyKey: row.policy_key,
+      policyVersion: row.policy_version,
+      domain: row.domain,
+      metricKey: row.metric_key,
+      minimumSamples: Number(row.minimum_samples),
+      maxMeanAbsoluteError: nullableNumber(row.max_mean_absolute_error),
+      maxMeanAbsolutePercentageError: nullableNumber(
+        row.max_mean_absolute_percentage_error,
+      ),
+      minWithinToleranceRate: nullableNumber(row.min_within_tolerance_rate),
+      maxExpectedCalibrationError: nullableNumber(
+        row.max_expected_calibration_error,
+      ),
+      createdAt: row.created_at,
+    };
   }
 
   private metricNumber(
