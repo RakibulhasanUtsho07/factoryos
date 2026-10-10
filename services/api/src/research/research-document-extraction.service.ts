@@ -118,8 +118,8 @@ export class ResearchDocumentExtractionService {
           pieces.push('\n');
         }
       }
-      const text = pieces.join('').trim();
-      if (text) paragraphs.push(text);
+      const text = pieces.join('');
+      if (text.trim()) paragraphs.push(text);
       if (paragraphs.join('\n').length > MAX_TEXT_CHARACTERS) {
         throw new BadRequestException('Extracted DOCX text exceeds the character limit');
       }
@@ -242,7 +242,13 @@ export class ResearchDocumentExtractionService {
     const localNameLength = input.readUInt16LE(offset + 26);
     const localExtraLength = input.readUInt16LE(offset + 28);
     const localName = input.subarray(offset + 30, offset + 30 + localNameLength).toString('utf8');
-    if (localName !== entry.name) {
+    const localFlags = input.readUInt16LE(offset + 6);
+    const localMethod = input.readUInt16LE(offset + 8);
+    if (
+      localName !== entry.name ||
+      localMethod !== entry.method ||
+      (localFlags & 0x0001) !== 0
+    ) {
       throw new BadRequestException('DOCX ZIP directory does not match its local entry');
     }
 
