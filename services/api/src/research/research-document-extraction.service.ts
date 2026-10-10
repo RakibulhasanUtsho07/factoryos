@@ -89,7 +89,16 @@ export class ResearchDocumentExtractionService {
     }
 
     const documentXml = this.readZipEntry(input, documentEntry[0]!);
-    const contentTypesXml = this.readZipEntry(input, contentTypesEntry).toString('utf8');
+    let documentXmlText: string;
+    let contentTypesXml: string;
+    try {
+      documentXmlText = new TextDecoder('utf-8', { fatal: true }).decode(documentXml);
+      contentTypesXml = new TextDecoder('utf-8', { fatal: true }).decode(
+        this.readZipEntry(input, contentTypesEntry),
+      );
+    } catch {
+      throw new BadRequestException('DOCX XML must use valid UTF-8 encoding');
+    }
     if (
       /wordprocessingml\.document\.macroEnabled/i.test(contentTypesXml) ||
       !/wordprocessingml\.document\.main\+xml/i.test(contentTypesXml)
@@ -97,7 +106,7 @@ export class ResearchDocumentExtractionService {
       throw new BadRequestException('Only non-macro DOCX documents are supported');
     }
 
-    const xml = documentXml.toString('utf8');
+    const xml = documentXmlText;
     if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
       throw new BadRequestException('DOCX XML declarations with DTD/entities are not supported');
     }
@@ -335,7 +344,7 @@ export class ResearchDocumentExtractionService {
         continue;
       }
 
-      const declaredLength = dictionary.match(/\/Length\s+(\d+)\b/);
+      const declaredLength = dictionary.match(/\/Length\s+(\d+)\b(?!\s+\d+\s+R)/);
       let streamEnd: number;
       if (declaredLength) {
         streamEnd = streamStart + Number(declaredLength[1]);
@@ -347,18 +356,32 @@ export class ResearchDocumentExtractionService {
       }
 
       let bytes = input.subarray(streamStart, streamEnd);
-      if (dictionary.includes('/FlateDecode') || /\/Filter\s*\/Fl\b/.test(dictionary)) {
-        try {
-          bytes = inflateSync(bytes, { maxOutputLength: MAX_PDF_STREAM_BYTES });
-        } catch {
-          throw new BadRequestException('PDF compressed stream is invalid or exceeds the safety limit');
-        }
-      } else if (/\/Filter\s*(?:\[|\/)/.test(dictionary)) {
+      const filterArray = dictionary.match(/\/Filter\s*\[([^\]]+)\]/);
+      const filters = filterArray?.[1]?.match(/\/[A-Za-z0-9]+/g) ?? [];
+      const hasDirectFlate =
+        /\/Filter\s*\/(?:FlateDecode|Fl)\b/.test(dictionary) && !filterArray;
+      const hasSingleFlateArray =
+        Boolean(filterArray) && filters.length === 1 && /\/(?:FlateDecode|Fl)\b/.test(filters[0]!);
+      const isFlate = hasDirectFlate || hasSingleFlateArray;
+      if (filterArray && !hasSingleFlateArray) {
+        const end = raw.indexOf('endstream', streamStart);
+        if (end < 0) break;
+        marker.lastIndex = end + 9;
+        continue;
+      }
+      if (dictionary.includes('/Filter') && !isFlate) {
         // Skip streams using unsupported filters; no external filters are loaded.
         const end = raw.indexOf('endstream', streamStart);
         if (end < 0) break;
         marker.lastIndex = end + 9;
         continue;
+      }
+      if (isFlate) {
+        try {
+          bytes = inflateSync(bytes, { maxOutputLength: MAX_PDF_STREAM_BYTES });
+        } catch {
+          throw new BadRequestException('PDF compressed stream is invalid or exceeds the safety limit');
+        }
       }
 
       expandedTotal += bytes.length;
