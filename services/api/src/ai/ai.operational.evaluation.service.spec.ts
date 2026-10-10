@@ -26,6 +26,27 @@ function input(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function policyRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: '3f2b2222-2222-4222-8222-222222222222',
+    tenant_id: tenantId,
+    factory_id: factoryId,
+    policy_key: 'planning.lead-time',
+    policy_version: 'v1',
+    domain: 'PLANNING',
+    metric_key: 'lead-time',
+    minimum_samples: '3',
+    max_mean_absolute_error: '2.000000',
+    max_mean_absolute_percentage_error: null,
+    min_within_tolerance_rate: '0.700000',
+    max_expected_calibration_error: null,
+    request_hash: 'c'.repeat(64),
+    created_by: userId,
+    created_at: '2026-10-10T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
 function evaluationRow(overrides: Record<string, unknown> = {}) {
   return {
     id: '8f1a2222-2222-4222-8222-222222222222',
@@ -444,6 +465,69 @@ describe('AiOperationalEvaluationService', () => {
     });
   });
 
+  it('creates an append-only scoped evaluation policy version and audits it', async () => {
+    database.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [policyRow()] });
+
+    const result = await service.createEvaluationPolicy(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        policy_key: 'planning.lead-time',
+        policy_version: 'v1',
+        domain: 'PLANNING',
+        metric_key: 'lead-time',
+        minimum_samples: 3,
+        max_mean_absolute_error: 2,
+        min_within_tolerance_rate: 0.7,
+      } as never,
+    );
+
+    expect(result.idempotent).toBe(false);
+    expect(result.policy).toMatchObject({
+      policyKey: 'planning.lead-time',
+      policyVersion: 'v1',
+      minimumSamples: 3,
+      maxMeanAbsoluteError: 2,
+      minWithinToleranceRate: 0.7,
+    });
+    expect(iamService.authorize).toHaveBeenCalledWith(
+      userId,
+      tenantId,
+      'ai.evaluation.policies.write',
+      factoryId,
+    );
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'CREATE_POLICY_VERSION',
+        resourceId: policyRow().id,
+      }),
+    );
+    expect(database.query).toHaveBeenCalledTimes(3);
+  });
+
+  it('requires at least one measurable threshold when creating a policy', async () => {
+    await expect(
+      service.createEvaluationPolicy(
+        tenantId,
+        factoryId,
+        userId,
+        {
+          policy_key: 'planning.lead-time',
+          policy_version: 'v1',
+          domain: 'PLANNING',
+          metric_key: 'lead-time',
+          minimum_samples: 3,
+        } as never,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
   it('compares baseline and candidate forecasts using scoped observed outcomes', async () => {
     database.query.mockResolvedValueOnce({
       rows: [
@@ -519,6 +603,60 @@ describe('AiOperationalEvaluationService', () => {
       ],
       { tenantId, userId },
     );
+  });
+
+  it('evaluates candidate forecast metrics against the latest matching policy version', async () => {
+    database.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            model_version: 'planner-1',
+            sample_count: '4',
+            mean_absolute_error: 2.5,
+            mean_absolute_percentage_error: 0.2,
+            mean_signed_error: -1,
+            within_tolerance_rate: 0.5,
+          },
+          {
+            model_version: 'planner-2',
+            sample_count: '5',
+            mean_absolute_error: 1.5,
+            mean_absolute_percentage_error: 0.1,
+            mean_signed_error: 0.5,
+            within_tolerance_rate: 0.8,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [policyRow()],
+      });
+
+    const result = await service.compareForecastModels(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        domain: 'PLANNING',
+        metricKey: 'lead-time',
+        baselineModelVersion: 'planner-1',
+        candidateModelVersion: 'planner-2',
+        policyKey: 'planning.lead-time',
+      },
+    );
+
+    expect(result.comparisonMode).toBe('policy_evaluated');
+    expect(result.policyEvaluation).toEqual({
+      policyKey: 'planning.lead-time',
+      policyVersion: 'v1',
+      minimumSamples: 3,
+      status: 'MEETS_POLICY',
+      checks: {
+        maxMeanAbsoluteError: true,
+        minWithinToleranceRate: true,
+      },
+      candidateExpectedCalibrationError: null,
+      calibrationSampleCount: null,
+    });
   });
 
   it('rejects comparing the same model version against itself', async () => {
