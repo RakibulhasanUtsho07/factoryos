@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 
 import { createHash } from 'node:crypto';
@@ -17,6 +18,11 @@ import {
   ResearchRightsStatus,
   ResearchSourceType,
 } from './dto/create-research-source.dto';
+import {
+  CreateResearchSourceAssessmentDto,
+  ResearchSourceAssessmentDecision,
+  ResearchSourceAssessmentType,
+} from './dto/create-research-source-assessment.dto';
 
 interface ResearchSourceRow extends QueryResultRow {
   id: string;
@@ -38,6 +44,22 @@ interface ResearchSourceRow extends QueryResultRow {
   registry_status: 'REGISTERED';
   request_hash: string;
   created_by: string;
+  created_at: string;
+}
+
+interface ResearchSourceAssessmentRow extends QueryResultRow {
+  id: string;
+  tenant_id: string;
+  factory_id: string;
+  source_id: string;
+  assessment_type: ResearchSourceAssessmentType;
+  decision: ResearchSourceAssessmentDecision;
+  assessment_method: 'MANUAL';
+  content_sha256: string;
+  assessment_basis: string;
+  idempotency_key: string;
+  request_hash: string;
+  assessed_by: string;
   created_at: string;
 }
 
@@ -307,6 +329,282 @@ export class ResearchSourceRegistryService {
     };
   }
 
+  async createAssessment(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    sourceId: string,
+    input: CreateResearchSourceAssessmentDto,
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+    this.requiredUuid(sourceId, 'sourceId');
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'research.sources.assess',
+      factoryId,
+    );
+
+    if (!Object.values(ResearchSourceAssessmentType).includes(input.assessment_type)) {
+      throw new BadRequestException('assessment_type must be RIGHTS or SECURITY');
+    }
+    if (!Object.values(ResearchSourceAssessmentDecision).includes(input.decision)) {
+      throw new BadRequestException(
+        'decision must be APPROVED, REJECTED, or REVIEW_REQUIRED',
+      );
+    }
+
+    const contentSha256 = this.requiredString(
+      input.content_sha256,
+      'content_sha256',
+      64,
+    ).toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(contentSha256)) {
+      throw new BadRequestException(
+        'content_sha256 must be a 64-character SHA-256 hex digest',
+      );
+    }
+
+    const assessmentBasis = this.requiredString(
+      input.assessment_basis,
+      'assessment_basis',
+      4000,
+    );
+    const idempotencyKey = this.requiredString(
+      input.idempotency_key,
+      'idempotency_key',
+      128,
+    );
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(idempotencyKey)) {
+      throw new BadRequestException('idempotency_key contains unsupported characters');
+    }
+
+    const sourceResult = await this.database.query<
+      QueryResultRow & { id: string; content_sha256: string | null }
+    >(
+      `
+      SELECT id::text AS id, content_sha256
+      FROM research_source_registry
+      WHERE tenant_id = $1 AND factory_id = $2 AND id = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, sourceId],
+      { tenantId, userId: actorUserId },
+    );
+    const source = sourceResult.rows[0];
+    if (!source) {
+      throw new NotFoundException('Research source version was not found in this factory');
+    }
+    if (!source.content_sha256) {
+      throw new BadRequestException(
+        'A registered content_sha256 is required before a source can be assessed',
+      );
+    }
+    if (source.content_sha256 !== contentSha256) {
+      throw new ConflictException(
+        'Assessment content_sha256 must match the registered source version',
+      );
+    }
+
+    const requestHash = this.requestHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      sourceId,
+      assessmentType: input.assessment_type,
+      decision: input.decision,
+      assessmentMethod: 'MANUAL',
+      contentSha256,
+      assessmentBasis,
+      idempotencyKey,
+    });
+
+    const existingResult = await this.database.query<ResearchSourceAssessmentRow>(
+      this.selectAssessmentSql(`
+        tenant_id = $1
+        AND factory_id = $2
+        AND idempotency_key = $3
+      `),
+      [tenantId, factoryId, idempotencyKey],
+      { tenantId, userId: actorUserId },
+    );
+    const existing = existingResult.rows[0];
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        throw new ConflictException(
+          'The idempotency_key was already used for a different assessment',
+        );
+      }
+      return { idempotent: true, assessment: this.mapAssessment(existing) };
+    }
+
+    const inserted = await this.database.query<ResearchSourceAssessmentRow>(
+      `
+      INSERT INTO research_source_assessments (
+        id, tenant_id, factory_id, source_id, assessment_type, decision,
+        assessment_method, content_sha256, assessment_basis, idempotency_key,
+        request_hash, assessed_by
+      )
+      VALUES (
+        gen_random_uuid(), $1, $2, $3, $4, $5, 'MANUAL', $6, $7, $8, $9, $10
+      )
+      ON CONFLICT (tenant_id, factory_id, idempotency_key) DO NOTHING
+      RETURNING
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        source_id::text AS source_id,
+        assessment_type,
+        decision,
+        assessment_method,
+        content_sha256,
+        assessment_basis,
+        idempotency_key,
+        request_hash,
+        assessed_by::text AS assessed_by,
+        created_at::text AS created_at
+      `,
+      [
+        tenantId,
+        factoryId,
+        sourceId,
+        input.assessment_type,
+        input.decision,
+        contentSha256,
+        assessmentBasis,
+        idempotencyKey,
+        requestHash,
+        actorUserId,
+      ],
+      { tenantId, userId: actorUserId },
+    );
+
+    const row = inserted.rows[0];
+    if (!row) {
+      const racedResult = await this.database.query<ResearchSourceAssessmentRow>(
+        this.selectAssessmentSql(`
+          tenant_id = $1
+          AND factory_id = $2
+          AND idempotency_key = $3
+        `),
+        [tenantId, factoryId, idempotencyKey],
+        { tenantId, userId: actorUserId },
+      );
+      const raced = racedResult.rows[0];
+      if (!raced || raced.request_hash !== requestHash) {
+        throw new ConflictException(
+          'The idempotency_key was concurrently used for a different assessment',
+        );
+      }
+      return { idempotent: true, assessment: this.mapAssessment(raced) };
+    }
+
+    await this.recordAssessmentAuditSafely({
+      tenantId,
+      factoryId,
+      actorUserId,
+      assessmentId: row.id,
+      sourceId,
+      assessmentType: row.assessment_type,
+      decision: row.decision,
+      contentSha256: row.content_sha256,
+    });
+
+    return { idempotent: false, assessment: this.mapAssessment(row) };
+  }
+
+  async listAssessments(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    sourceId: string,
+    limit = 25,
+  ) {
+    this.validateScope(tenantId, factoryId, actorUserId);
+    this.requiredUuid(sourceId, 'sourceId');
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'research.sources.read',
+      factoryId,
+    );
+
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('limit must be an integer between 1 and 100');
+    }
+
+    const sourceResult = await this.database.query<
+      QueryResultRow & { id: string }
+    >(
+      `
+      SELECT id::text AS id
+      FROM research_source_registry
+      WHERE tenant_id = $1 AND factory_id = $2 AND id = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, sourceId],
+      { tenantId, userId: actorUserId },
+    );
+    if (!sourceResult.rows[0]) {
+      throw new NotFoundException('Research source version was not found in this factory');
+    }
+
+    const result = await this.database.query<ResearchSourceAssessmentRow>(
+      this.selectAssessmentSql(`
+        tenant_id = $1 AND factory_id = $2 AND source_id = $3
+      `, 'ORDER BY created_at DESC, id DESC LIMIT $4'),
+      [tenantId, factoryId, sourceId, limit],
+      { tenantId, userId: actorUserId },
+    );
+
+    return {
+      sourceId,
+      limit,
+      assessments: result.rows.map((row) => this.mapAssessment(row)),
+    };
+  }
+
+  private selectAssessmentSql(whereClause: string, ordering = 'LIMIT 1'): string {
+    return `
+      SELECT
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        source_id::text AS source_id,
+        assessment_type,
+        decision,
+        assessment_method,
+        content_sha256,
+        assessment_basis,
+        idempotency_key,
+        request_hash,
+        assessed_by::text AS assessed_by,
+        created_at::text AS created_at
+      FROM research_source_assessments
+      WHERE ${whereClause}
+      ${ordering}
+    `;
+  }
+
+  private mapAssessment(row: ResearchSourceAssessmentRow) {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      sourceId: row.source_id,
+      assessmentType: row.assessment_type,
+      decision: row.decision,
+      assessmentMethod: row.assessment_method,
+      contentSha256: row.content_sha256,
+      assessmentBasis: row.assessment_basis,
+      idempotencyKey: row.idempotency_key,
+      assessedBy: row.assessed_by,
+      createdAt: row.created_at,
+    };
+  }
+
   private normalizeSource(input: CreateResearchSourceDto): NormalizedResearchSource {
     const sourceKey = this.requiredString(input.source_key, 'source_key', 200);
     const sourceVersion = this.requiredString(
@@ -532,6 +830,39 @@ export class ResearchSourceRegistryService {
       );
     }
     return normalized;
+  }
+
+  private async recordAssessmentAuditSafely(input: {
+    tenantId: string;
+    factoryId: string;
+    actorUserId: string;
+    assessmentId: string;
+    sourceId: string;
+    assessmentType: ResearchSourceAssessmentType;
+    decision: ResearchSourceAssessmentDecision;
+    contentSha256: string;
+  }): Promise<void> {
+    try {
+      await this.auditService.record({
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        actorUserId: input.actorUserId,
+        eventType: 'RESEARCH_SOURCE_ASSESSMENT',
+        action: 'RECORD_MANUAL_ASSESSMENT',
+        resourceType: 'RESEARCH_SOURCE_ASSESSMENT',
+        resourceId: input.assessmentId,
+        dataClass: 'INTERNAL',
+        payload: {
+          sourceId: input.sourceId,
+          assessmentType: input.assessmentType,
+          decision: input.decision,
+          assessmentMethod: 'MANUAL',
+          contentSha256: input.contentSha256,
+        },
+      });
+    } catch {
+      // Do not mask a committed assessment if audit delivery fails.
+    }
   }
 
   private async recordAuditSafely(input: {
