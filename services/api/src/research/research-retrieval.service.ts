@@ -146,7 +146,7 @@ export class ResearchRetrievalService {
       rankingSemantics: 'LEXICAL_RELEVANCE_ONLY',
       note: 'Results contain only evidence with current source approvals and a latest VALID citation check. Relevance is not confidence in the claim truth.',
       results: rows.map((row, index) => ({
-        rank: index + 1,
+        rank: offset + index + 1,
         relevanceScore: this.score(row.relevance_score),
         claim: {
           id: row.claim_id,

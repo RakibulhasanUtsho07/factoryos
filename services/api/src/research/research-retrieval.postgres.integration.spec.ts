@@ -16,12 +16,12 @@ function sha256(value: string) {
 }
 
 describe('Research retrieval PostgreSQL integration', () => {
-  let pool: Pool;
-  let client: PoolClient;
-  let service: ResearchRetrievalService;
-  let tenantId: string;
-  let factoryId: string;
-  let userId: string;
+  let pool!: Pool;
+  let client!: PoolClient;
+  let service!: ResearchRetrievalService;
+  let tenantId!: string;
+  let factoryId!: string;
+  let userId!: string;
 
   beforeAll(async () => {
     const connectionString = process.env.TEST_ADMIN_DATABASE_URL;
@@ -172,6 +172,7 @@ describe('Research retrieval PostgreSQL integration', () => {
     expect(firstPage.hasMore).toBe(true);
     expect(firstPage.nextOffset).toBe(1);
     expect(secondPage.resultCount).toBe(1);
+    expect(secondPage.results[0]?.rank).toBe(2);
     expect(secondPage.hasMore).toBe(false);
     expect(secondPage.nextOffset).toBeNull();
     expect(firstPage.results[0]?.claim.id).not.toBe(secondPage.results[0]?.claim.id);

@@ -110,6 +110,20 @@ jobs:
             migrations/026_ai_action_binding_integrity.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
+          )
+
+          for migration in "${migrations[@]}"; do
+            echo "Applying $migration"
+            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+              -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
+          # The feature migrations seed their permissions onto ORG_ADMIN.
+          # Create that initial role before applying WP07/WP08 migrations.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/seed-dev-iam.sql
+
+          post_seed_migrations=(
             migrations/027_ai_operational_evaluation.sql
             migrations/028_ai_operational_forecast_accuracy.sql
             migrations/029_ai_operational_evaluation_policies.sql
@@ -119,8 +133,7 @@ jobs:
             migrations/033_research_claim_evidence_graph.sql
             migrations/034_research_retrieval_search_indexes.sql
           )
-
-          for migration in "${migrations[@]}"; do
+          for migration in "${post_seed_migrations[@]}"; do
             echo "Applying $migration"
             psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
               -v ON_ERROR_STOP=1 -f "$migration"
@@ -138,8 +151,6 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
 
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
-            -v ON_ERROR_STOP=1 -f scripts/seed-dev-iam.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
