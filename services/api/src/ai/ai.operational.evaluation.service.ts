@@ -723,8 +723,11 @@ export class AiOperationalEvaluationService {
       { tenantId, userId: actorUserId },
     );
 
-    const byVersion = new Map(
-      result.rows.map((row) => [row.model_version, row]),
+    const byVersion = new Map<
+      string,
+      (typeof result.rows)[number]
+    >(
+      result.rows.map((row) => [row.model_version, row] as const),
     );
 
     const toMetrics = (modelVersion: string) => {
