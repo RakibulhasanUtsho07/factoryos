@@ -18,6 +18,7 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
 import { CreateResearchSourceAssessmentDto } from './dto/create-research-source-assessment.dto';
+import { IngestResearchSourceTextDto } from './dto/ingest-research-source-text.dto';
 import { ResearchSourceRegistryService } from './research-source.registry.service';
 
 interface FactoryOsRequestContext {
@@ -116,6 +117,42 @@ export class ResearchSourceRegistryController {
       context.userId,
       sourceId,
       limit === undefined ? 25 : Number(limit),
+    );
+  }
+
+  @Post(':sourceId/content')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.sources.ingest')
+  @RequireFactoryScope()
+  async ingestPlainText(
+    @Req() request: FactoryOsRequest,
+    @Param('sourceId') sourceId: string,
+    @Body() body: IngestResearchSourceTextDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.sourceRegistry.ingestPlainText(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      sourceId,
+      body,
+    );
+  }
+
+  @Get(':sourceId/content')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.sources.content.read')
+  @RequireFactoryScope()
+  async getApprovedTextContent(
+    @Req() request: FactoryOsRequest,
+    @Param('sourceId') sourceId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.sourceRegistry.getApprovedTextContent(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      sourceId,
     );
   }
 
