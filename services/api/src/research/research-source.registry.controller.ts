@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,10 +8,13 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 
 import type { Request } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
@@ -20,6 +24,7 @@ import { CreateResearchSourceDto } from './dto/create-research-source.dto';
 import { CreateResearchSourceAssessmentDto } from './dto/create-research-source-assessment.dto';
 import { IngestResearchSourceTextDto } from './dto/ingest-research-source-text.dto';
 import { ResearchSourceRegistryService } from './research-source.registry.service';
+import { ResearchDocumentExtractionService } from './research-document-extraction.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -40,6 +45,7 @@ type FactoryOsRequest = Request & {
 export class ResearchSourceRegistryController {
   constructor(
     private readonly sourceRegistry: ResearchSourceRegistryService,
+    private readonly documentExtraction: ResearchDocumentExtractionService,
   ) {}
 
   @Post()
@@ -136,6 +142,43 @@ export class ResearchSourceRegistryController {
       context.userId,
       sourceId,
       body,
+    );
+  }
+
+  @Post(':sourceId/document')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.sources.ingest')
+  @RequireFactoryScope()
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: {
+        fileSize: 5 * 1024 * 1024,
+        files: 1,
+      },
+    }),
+  )
+  async ingestDocument(
+    @Req() request: FactoryOsRequest,
+    @Param('sourceId') sourceId: string,
+    @UploadedFile() file?: { buffer: Buffer; size: number; mimetype: string; originalname: string },
+  ) {
+    if (!file?.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('Upload a PDF or DOCX using multipart field "file"');
+    }
+
+    const context = this.getAuthenticatedFactoryContext(request);
+    const extracted = this.documentExtraction.extract(file.buffer);
+    return this.sourceRegistry.ingestPlainText(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      sourceId,
+      { content: extracted.text },
+      {
+        sourceFormat: extracted.format,
+        originalFileSha256: extracted.originalFileSha256,
+        parserVersion: 'factoryos-document-extractor-v1',
+      },
     );
   }
 
