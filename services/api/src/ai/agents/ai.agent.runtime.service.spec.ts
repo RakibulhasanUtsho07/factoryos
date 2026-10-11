@@ -1170,7 +1170,11 @@ describe(
         .mockResolvedValue(step);
       toolRegistry.getTool.mockResolvedValue(registeredTool);
       database.query.mockResolvedValueOnce({
-        rows: [{ max_number: null }],
+        rows: [],
+        rowCount: 0,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{ id: 'compensation-attempt-id' }],
         rowCount: 1,
       });
       database.query.mockResolvedValueOnce({
@@ -1217,6 +1221,34 @@ describe(
           action_token: 'compensation-token',
           tool_version: '1.0.0',
         }),
+      );
+      expect((service as any).recordAttempt).toHaveBeenNthCalledWith(
+        1,
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        'STARTED',
+        {},
+        undefined,
+        actionIntentId,
+      );
+      expect((service as any).recordAttempt).toHaveBeenNthCalledWith(
+        2,
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        'SUCCEEDED',
+        {},
+        'bf1a2222-2222-4222-8222-222222222222',
+        actionIntentId,
       );
       expect(result).toMatchObject({
         attempted: true,
@@ -1305,7 +1337,8 @@ describe(
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
       toolRegistry.getTool.mockResolvedValue(registeredTool);
-      database.query.mockResolvedValueOnce({ rows: [{ max_number: null }], rowCount: 1 });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      database.query.mockResolvedValueOnce({ rows: [{ id: 'compensation-attempt-id' }], rowCount: 1 });
       const payload = { reason: 'verified compensation retry' };
       const payloadHash = hashPayload(payload);
       aiRuntimeService.authorizeAction.mockResolvedValue({
@@ -1326,7 +1359,83 @@ describe(
       ).rejects.toThrow('AI execution record does not match the bound agent action');
 
       expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
-      expect((service as any).recordAttempt).not.toHaveBeenCalled();
+      expect((service as any).recordAttempt).toHaveBeenCalledTimes(1);
+      expect((service as any).recordAttempt).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        'STARTED',
+        {},
+        undefined,
+        actionIntentId,
+      );
+    });
+
+    it('blocks a new compensation attempt after an interrupted execution until claim reconciliation', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({ status: 'SUCCEEDED' });
+      const registeredTool = {
+        ...gatewayOutcome().tool,
+        rollback: {
+          type: 'COMPENSATION',
+          toolId: 'AI.RUNTIME.NOOP',
+          toolVersion: '1.0.0',
+          actionType: 'AI.RUNTIME.NOOP',
+        },
+      };
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      toolRegistry.getTool.mockResolvedValue(registeredTool);
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      database.query.mockResolvedValueOnce({ rows: [{ id: 'attempt-id' }], rowCount: 1 });
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          attempt_number: 1,
+          status: 'STARTED',
+          action_intent_id: actionIntentId,
+        }],
+        rowCount: 1,
+      });
+
+      const payload = { reason: 'resume after a network interruption' };
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action({ payload, payloadHash: hashPayload(payload) }),
+        actionToken: 'short-lived-compensation-token',
+      });
+      aiRuntimeService.executeAgentAction.mockRejectedValue(
+        new ConflictException('execution claim is active or requires reconciliation'),
+      );
+
+      await expect(
+        service.compensateStep(tenantId, factoryId, userId, taskId, stepId, payload),
+      ).rejects.toThrow('execution claim is active or requires reconciliation');
+
+      expect((service as any).recordAttempt).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        'STARTED',
+        {},
+        undefined,
+        actionIntentId,
+      );
+
+      await expect(
+        service.compensateStep(tenantId, factoryId, userId, taskId, stepId, payload),
+      ).rejects.toThrow(
+        'A previous compensation attempt is unresolved; reconcile its AI execution claim before retrying',
+      );
+
+      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledTimes(1);
+      expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
     });
 
     it('fails closed when a non-NONE rollback contract is incomplete', async () => {

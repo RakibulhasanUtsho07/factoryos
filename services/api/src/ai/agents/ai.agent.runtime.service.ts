@@ -1633,6 +1633,23 @@ export class AiAgentRuntimeService {
       );
     }
 
+    // Persist STARTED before the execution boundary. If the process or network
+    // fails after the tool may have run, the next request must not mint a new
+    // compensation key until the related durable execution claim is reconciled.
+    await this.recordAttempt(
+      tenantId,
+      factoryId,
+      actorUserId,
+      task.id,
+      step.id,
+      attemptNumber,
+      'COMPENSATION',
+      'STARTED',
+      {},
+      undefined,
+      action.id as string,
+    );
+
     const { outcome, executionRecordId } =
       await this.executeGovernedTool(
         tenantId,
@@ -1672,6 +1689,7 @@ export class AiAgentRuntimeService {
       outcome.status === 'SUCCEEDED' ? 'SUCCEEDED' : 'FAILED',
       outcome.error,
       executionRecordId,
+      action.id as string,
     );
 
     await this.audit(
@@ -2074,6 +2092,7 @@ export class AiAgentRuntimeService {
     status: 'STARTED' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'CANCELLED',
     error: Record<string, unknown> = {},
     executionRecordId?: string,
+    actionIntentId?: string,
   ): Promise<void> {
     // One statement makes the attempt identity safe under concurrent retries.
     // A late STARTED event must not reopen a terminal attempt, and conflicting
@@ -2082,12 +2101,12 @@ export class AiAgentRuntimeService {
       `
       INSERT INTO agent_action_attempts AS attempt_row (
         id, tenant_id, factory_id, task_id, step_id, attempt_number,
-        attempt_type, execution_record_id, status, error, finished_at
+        attempt_type, action_intent_id, execution_record_id, status, error, finished_at
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb,
         CASE
-          WHEN $9 IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+          WHEN $10 IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
             THEN NOW()
           ELSE NULL
         END
@@ -2099,6 +2118,10 @@ export class AiAgentRuntimeService {
             THEN attempt_row.status
           ELSE EXCLUDED.status
         END,
+        action_intent_id = COALESCE(
+          attempt_row.action_intent_id,
+          EXCLUDED.action_intent_id
+        ),
         execution_record_id = COALESCE(
           attempt_row.execution_record_id,
           EXCLUDED.execution_record_id
@@ -2124,6 +2147,11 @@ export class AiAgentRuntimeService {
           OR attempt_row.execution_record_id = EXCLUDED.execution_record_id
         )
         AND (
+          attempt_row.action_intent_id IS NULL
+          OR EXCLUDED.action_intent_id IS NULL
+          OR attempt_row.action_intent_id = EXCLUDED.action_intent_id
+        )
+        AND (
           attempt_row.status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
           OR EXCLUDED.status = 'STARTED'
           OR EXCLUDED.status = attempt_row.status
@@ -2138,6 +2166,7 @@ export class AiAgentRuntimeService {
         stepId,
         attemptNumber,
         attemptType,
+        actionIntentId ?? null,
         executionRecordId ?? null,
         status,
         JSON.stringify(error),
@@ -2163,22 +2192,36 @@ export class AiAgentRuntimeService {
     attemptType: 'EXECUTION' | 'COMPENSATION',
   ): Promise<number> {
     const result = await this.database.query<{
-      max_number: number | null;
+      attempt_number: number;
+      status: 'STARTED' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
+      action_intent_id: string | null;
     }>(
       `
-      SELECT MAX(attempt_number) AS max_number
+      SELECT
+        attempt_number,
+        status,
+        action_intent_id::text AS action_intent_id
       FROM agent_action_attempts
       WHERE tenant_id = $1
         AND factory_id = $2
         AND task_id = $3
         AND step_id = $4
         AND attempt_type = $5
+      ORDER BY attempt_number DESC, created_at DESC
+      LIMIT 1
       `,
       [tenantId, factoryId, taskId, stepId, attemptType],
       { tenantId },
     );
 
-    return Number(result.rows[0]?.max_number ?? 0) + 1;
+    const latest = result.rows[0];
+    if (attemptType === 'COMPENSATION' && latest?.status === 'STARTED') {
+      throw new ConflictException(
+        'A previous compensation attempt is unresolved; reconcile its AI execution claim before retrying',
+      );
+    }
+
+    return Number(latest?.attempt_number ?? 0) + 1;
   }
 
   private async updateTaskStateRaw(
