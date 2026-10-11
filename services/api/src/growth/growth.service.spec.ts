@@ -231,8 +231,8 @@ describe('GrowthService', () => {
     expect(result.learning_signal_id).toBe('0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38');
     expect(client.query.mock.calls[3][0]).toContain('INSERT INTO ai_learning_signals');
     expect(client.query.mock.calls[3][1][5]).toContain('"assessment":"POSITIVE"');
-    expect(client.query.mock.calls[4][0]).toContain('GROWTH.OPPORTUNITY_OUTCOME_RECORDED');
-    expect(client.query.mock.calls[5][0]).toContain('AI.LEARNING_SIGNAL_RECORDED');
+    expect(client.query.mock.calls[4][1][4]).toBe('GROWTH.OPPORTUNITY_OUTCOME_RECORDED');
+    expect(client.query.mock.calls[5][1][4]).toBe('AI.LEARNING_SIGNAL_RECORDED');
   });
 
 });
