@@ -713,6 +713,181 @@ describeWithPostgres(
     }, 30_000);
 
     it(
+      'keeps task and step definitions immutable while allowing execution state changes',
+      async () => {
+        const fixture = await createClaimFixture();
+        const db = await getTestPool().connect();
+        const taskId = randomUUID();
+        const stepId = randomUUID();
+        const parentTraceId = randomUUID();
+        const idempotencyKey = `B19.AGENT.CONTRACT.${randomUUID()}`;
+        const requestHash = 'c'.repeat(64);
+        let transactionOpen = false;
+
+        try {
+          await db.query('BEGIN');
+          transactionOpen = true;
+
+          await applyAppContext(
+            db,
+            tenantId,
+            actorUserId,
+            'b19_agent_task_contract_integrity',
+          );
+
+          await db.query(
+            `
+            INSERT INTO public.agent_tasks (
+              id, tenant_id, factory_id, decision_id, parent_trace_id,
+              actor_user_id, goal, max_steps, max_retries, max_tool_calls,
+              timeout_ms, deadline_at, idempotency_key, request_hash
+            )
+            VALUES (
+              $1, $2, $3, $4, $5, $6,
+              'Verify immutable agent task contract', 10, 2, 5,
+              60000, NOW() + INTERVAL '1 hour', $7, $8
+            )
+            `,
+            [
+              taskId,
+              tenantId,
+              factoryId,
+              fixture.decisionId,
+              parentTraceId,
+              actorUserId,
+              idempotencyKey,
+              requestHash,
+            ],
+          );
+
+          await db.query('SAVEPOINT task_deadline_mutation');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_tasks
+              SET deadline_at = deadline_at + INTERVAL '1 hour'
+              WHERE id = $1
+              `,
+              [taskId],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT task_deadline_mutation');
+
+          await db.query(
+            `
+            INSERT INTO public.agent_task_steps (
+              id, tenant_id, factory_id, task_id, step_key, step_index,
+              capability, input_schema, output_schema, tool_id, tool_version,
+              action_type, target, payload, risk_class, timeout_ms,
+              retry_limit, authority_level, depends_on
+            )
+            VALUES (
+              $1, $2, $3, $4, 'step-immutable', 0,
+              'deterministic-test', '{}'::jsonb, '{}'::jsonb,
+              'AI.RUNTIME.NOOP', '1.0.0', 'AI.RUNTIME.NOOP',
+              '{}'::jsonb, '{"original":true}'::jsonb, 'L0', 1000,
+              1, 'TASK_SCOPED', '[]'::jsonb
+            )
+            `,
+            [stepId, tenantId, factoryId, taskId],
+          );
+
+          await db.query('SAVEPOINT step_payload_mutation');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_task_steps
+              SET payload = '{"tampered":true}'::jsonb
+              WHERE id = $1
+              `,
+              [stepId],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT step_payload_mutation');
+
+          await db.query('SAVEPOINT step_tool_mutation');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_task_steps
+              SET tool_id = 'AI.RUNTIME.TAMPERED'
+              WHERE id = $1
+              `,
+              [stepId],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT step_tool_mutation');
+
+          // Runtime-owned lifecycle and counter fields remain mutable.
+          await db.query(
+            `
+            UPDATE public.agent_tasks
+            SET state = 'CANCELLED', cancel_requested_at = NOW(),
+                failure_code = 'TEST_CANCELLED', version = version + 1
+            WHERE id = $1
+            `,
+            [taskId],
+          );
+          await db.query(
+            `
+            UPDATE public.agent_task_steps
+            SET status = 'CANCELLED', finished_at = NOW(),
+                version = version + 1
+            WHERE id = $1
+            `,
+            [stepId],
+          );
+
+          const task = await db.query<{
+            state: string;
+            deadline_at: Date | string;
+            idempotency_key: string;
+            request_hash: string;
+          }>(
+            `
+            SELECT state, deadline_at, idempotency_key, request_hash
+            FROM public.agent_tasks
+            WHERE id = $1
+            `,
+            [taskId],
+          );
+          expect(task.rows[0]).toMatchObject({
+            state: 'CANCELLED',
+            idempotency_key: idempotencyKey,
+            request_hash: requestHash,
+          });
+
+          const step = await db.query<{
+            status: string;
+            tool_id: string;
+            payload: Record<string, unknown>;
+          }>(
+            `
+            SELECT status, tool_id, payload
+            FROM public.agent_task_steps
+            WHERE id = $1
+            `,
+            [stepId],
+          );
+          expect(step.rows[0]).toMatchObject({
+            status: 'CANCELLED',
+            tool_id: 'AI.RUNTIME.NOOP',
+            payload: { original: true },
+          });
+
+          await db.query('COMMIT');
+          transactionOpen = false;
+        } finally {
+          if (transactionOpen) {
+            await db.query('ROLLBACK').catch(() => undefined);
+          }
+          db.release();
+        }
+      },
+      30_000,
+    );
+
+    it(
       'keeps agent handoff contract fields immutable and terminal decisions one-way',
       async () => {
         const db = await getTestPool().connect();
