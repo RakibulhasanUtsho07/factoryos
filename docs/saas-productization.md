@@ -50,8 +50,16 @@ All endpoints require verified tenant/user context and the listed IAM permission
 
 Transitions require expected_version and idempotency_key. ACTIVATE, RESUME and RENEW require period bounds; upgrade/downgrade require a target plan whose configured rank is respectively greater/lower than the current rank. Future-dated transitions are rejected because a scheduler is not part of this slice. EXPIRE is accepted only when the trial or active billing period has reached its boundary. Stale versions and reuse of an idempotency key with a different request are rejected.
 
+## Subscription-aware entitlement enforcement
+
+Entitlement resolution and runtime feature-flag evaluation now consult the tenant's latest subscription record. Suspended, terminated, or expired subscriptions, expired trials, and active subscriptions outside their effective billing period cannot resolve an active entitlement or enabled feature flag. Feature-flag evaluation preserves the established safe default (disabled) when there is no effective row or evaluation fails.
+
+The governed AI Tool Gateway re-checks the current subscription immediately before usage metering and execution. If a subscription is not eligible, it rejects the action before tool side effects and before charging a tool-call usage event; non-critical workload budget controls remain an additional independent gate.
+
+**Migration compatibility:** a tenant that has no subscription record is temporarily treated as a legacy installation and keeps its existing entitlement/feature-flag behavior. This avoids unintentionally suspending existing tenants before their plans are onboarded. New subscription onboarding should make a plan/trial explicit; a future enforcement rollout can remove this compatibility mode after existing tenants are migrated. The runtime subscription gate is live-query based; it does not rely on a stale entitlement cache.
+
 ## Boundaries and remaining WP10 work
 
-These are the metering/FinOps and subscription-lifecycle backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes centralized entitlement evaluation/cache semantics tied to subscription state, synthetic/masked sandbox environments, staged module/agent release channels with rollback, deployment-profile administration, and tenant export/migration compatibility. Those capabilities must be delivered and tested as separate slices.
+These are the metering/FinOps and subscription-lifecycle backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, synthetic/masked sandbox environments, staged module/agent release channels with rollback, deployment-profile administration, and tenant export/migration compatibility. Those capabilities must be delivered and tested as separate slices.
 
 AI token counts must be emitted by the actual approved model/provider adapter once such calls execute; the Tool Gateway integration in this slice meters registered tool calls and does not fabricate token usage for deterministic code paths.
