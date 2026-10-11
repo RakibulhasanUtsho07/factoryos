@@ -2288,31 +2288,6 @@ export class AiAgentRuntimeService {
     }
   }
 
-  private async withTimeout<T>(
-    promise: Promise<T>,
-    timeoutMs: number,
-  ): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        reject(
-          new ConflictException(
-            `AI agent step execution exceeded timeout of ${timeoutMs}ms`,
-          ),
-        );
-      }, timeoutMs);
-    });
-
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
-    }
-  }
-
   private async countCompletedSteps(
     tenantId: string,
     factoryId: string,
