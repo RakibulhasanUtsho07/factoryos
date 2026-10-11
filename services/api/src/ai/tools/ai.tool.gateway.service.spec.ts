@@ -2,6 +2,8 @@ import {
   jest,
 } from '@jest/globals';
 
+import { ForbiddenException } from '@nestjs/common';
+
 import {
   createHash,
 } from 'node:crypto';
