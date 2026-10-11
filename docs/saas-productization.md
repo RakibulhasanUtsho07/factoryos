@@ -1,0 +1,39 @@
+# SaaS Productization — WP10 Backend Slice
+
+**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), and FR-PROD-04 (P0).  
+**Migration range:** 045–047.  
+**API base:** /v2/saas/usage.
+
+## Delivered in this slice
+
+- Tenant-scoped usage events for active users, role assignments, transactions, storage byte-hours, telemetry events, AI input/output tokens, AI tool calls, premium workloads, integration calls, and edge inference.
+- Effective-dated immutable rate cards. Event pricing selects the rate in effect at occurred_at and snapshots its version, currency, block size, and rate onto the event so later rate changes do not rewrite historical unit economics.
+- Idempotency keys and request fingerprints for usage, rate changes, adjustments, and invoice reconciliation. Reusing a key with a different request is a conflict rather than a second charge.
+- Usage reports, reconciliation reports against an external invoice, and explicit, reason-coded adjustments. Billing/invoicing remains an external commercial boundary; this API does not issue invoices or treat provider invoices as FactoryOS source-of-record financial facts.
+- Effective-dated tenant/factory budgets with soft/hard limits, anomaly checks, durable alerts, acknowledgement records, and controls restricted to non-critical workload classes.
+- Idempotent AI tool-call metering in the governed Tool Gateway. Tool workload classification comes from registered tool metadata, not caller-supplied request fields. Usage is recorded before the budget-control check; only registered non-critical classes can be paused by this mechanism. PRODUCTION and NON_AI workloads are not pause targets.
+- PostgreSQL row-level security and tenant/factory-scoped foreign keys on the metering, budget, alert, and provider-cost records.
+- api-postgres-ci.yml applies migrations 045–047 and runs the API unit and PostgreSQL integration suite.
+
+## API surface
+
+All routes require a verified request identity and the corresponding IAM permission.
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /rates and GET /rates | saas.rates.write / saas.usage.read | Create/list immutable effective-dated rates |
+| POST /events | saas.usage.write | Ingest an idempotent metering event |
+| GET /report | saas.usage.read | Summarize usage and priced/unpriced amounts |
+| POST /adjustments | saas.adjustments.write | Append an auditable usage/cost correction |
+| POST /reconciliations and GET /reconciliations | saas.reconciliation.write / saas.usage.read | Compare the internal usage ledger with an external invoice |
+| POST /budgets and GET /budgets | saas.budgets.write / saas.budgets.read | Version budget policies |
+| POST /budgets/evaluate and GET /budgets/evaluations | saas.budgets.read | Evaluate spend and list immutable results |
+| POST /workloads/control and GET /workloads/controls | saas.workloads.control / saas.budgets.read | Pause/resume only supported non-critical AI classes |
+| GET /alerts and POST /alerts/:alertId/acknowledgements | saas.alerts.read / saas.alerts.ack | List and acknowledge durable alerts |
+| POST /provider-costs/events and POST /provider-costs/reconciliations | saas.provider_costs.write / saas.provider_costs.reconcile | Record and reconcile provider-reported cost |
+
+## Boundaries and remaining WP10 work
+
+This is the metering/FinOps backend slice, not a claim that all of WP10 is complete. The full SRS also requires complete tenant lifecycle/subscription transitions, centralized entitlement cache semantics, synthetic/masked sandbox environments, staged module/agent release channels with rollback, deployment-profile administration, and tenant export/migration compatibility. Those capabilities must be delivered and tested as separate slices.
+
+AI token counts must be emitted by the actual approved model/provider adapter once such calls execute; the Tool Gateway integration in this slice meters registered tool calls and does not fabricate token usage for deterministic code paths.
