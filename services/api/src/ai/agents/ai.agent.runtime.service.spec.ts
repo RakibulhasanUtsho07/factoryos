@@ -1800,6 +1800,39 @@ describe(
       expect(database.query).not.toHaveBeenCalled();
     });
 
+    it('fails closed when handoff expiry passes before the insert reaches PostgreSQL', async () => {
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(
+        service.createHandoff(
+          tenantId,
+          factoryId,
+          userId,
+          {
+            sourceAgentId: 'AGENT.SENDER',
+            targetAgentId: 'AGENT.RECEIVER',
+            purpose: 'Create a short-lived inspection handoff',
+            allowedDataClasses: ['INTERNAL'],
+            permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            parentTraceId: traceId,
+            expectedArtifact: { type: 'inspection' },
+          },
+        ),
+      ).rejects.toThrow(
+        'AI agent handoff expiry elapsed before the record could be created',
+      );
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      expect(queryCalls).toHaveLength(1);
+      const sql = String(queryCalls[0]?.[0] ?? '');
+      expect(sql).toContain('INSERT INTO agent_handoffs');
+      expect(sql).toContain('WHERE $8::timestamptz > NOW()');
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
     it('creates a handoff only after source entitlement is verified', async () => {
       const handoff = {
         id: 'cf1a2222-2222-4222-8222-222222222222',
