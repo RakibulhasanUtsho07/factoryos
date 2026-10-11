@@ -198,7 +198,7 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  IF OLD.status = 'TRIAL' AND NEW.status NOT IN ('TRIAL','ACTIVE','SUSPENDED','TERMINATED','EXPIRED') THEN
+  IF OLD.status = 'TRIAL' AND NEW.status NOT IN ('TRIAL','ACTIVE','TERMINATED','EXPIRED') THEN
     RAISE EXCEPTION 'Invalid transition from TRIAL'
       USING ERRCODE = '23514';
   ELSIF OLD.status = 'ACTIVE' AND NEW.status NOT IN ('ACTIVE','SUSPENDED','TERMINATED','EXPIRED') THEN
@@ -227,20 +227,88 @@ CREATE OR REPLACE FUNCTION factoryos_require_saas_subscription_event()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  event_row saas_subscription_events%ROWTYPE;
+  old_rank INTEGER;
+  new_rank INTEGER;
+  expected_event_type VARCHAR(20);
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM saas_subscription_events e
-    WHERE e.tenant_id = NEW.tenant_id
-      AND e.subscription_id = NEW.id
-      AND e.subscription_version = NEW.version
-      AND e.to_status = NEW.status
-      AND e.plan_code = NEW.plan_code
-      AND e.plan_version = NEW.plan_version
-  ) THEN
+  SELECT *
+  INTO event_row
+  FROM saas_subscription_events e
+  WHERE e.tenant_id = NEW.tenant_id
+    AND e.subscription_id = NEW.id
+    AND e.subscription_version = NEW.version
+    AND e.to_status = NEW.status
+    AND e.plan_code = NEW.plan_code
+    AND e.plan_version = NEW.plan_version;
+
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'Subscription state must have a matching immutable lifecycle event'
       USING ERRCODE = '23514';
   END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF event_row.event_type <> 'TRIAL_STARTED' OR event_row.from_status IS NOT NULL THEN
+      RAISE EXCEPTION 'A new subscription must be explained by a TRIAL_STARTED event'
+        USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF event_row.from_status IS DISTINCT FROM OLD.status
+     OR event_row.prior_plan_code IS DISTINCT FROM OLD.plan_code
+     OR event_row.prior_plan_version IS DISTINCT FROM OLD.plan_version THEN
+    RAISE EXCEPTION 'Subscription lifecycle event does not match the prior state'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.status = 'TERMINATED' THEN
+    expected_event_type := 'TERMINATED';
+  ELSIF NEW.status = 'EXPIRED' THEN
+    expected_event_type := 'EXPIRED';
+  ELSIF OLD.status = 'TRIAL' AND NEW.status = 'ACTIVE' THEN
+    expected_event_type := 'ACTIVATED';
+  ELSIF OLD.status = 'ACTIVE' AND NEW.status = 'SUSPENDED' THEN
+    expected_event_type := 'SUSPENDED';
+  ELSIF OLD.status = 'SUSPENDED' AND NEW.status = 'ACTIVE' THEN
+    expected_event_type := 'RESUMED';
+  ELSIF OLD.status = 'ACTIVE' AND NEW.status = 'ACTIVE'
+        AND (NEW.plan_code, NEW.plan_version) IS DISTINCT FROM (OLD.plan_code, OLD.plan_version) THEN
+    SELECT tier_rank INTO old_rank
+    FROM saas_subscription_plans
+    WHERE tenant_id = OLD.tenant_id AND plan_code = OLD.plan_code AND version = OLD.plan_version;
+    SELECT tier_rank INTO new_rank
+    FROM saas_subscription_plans
+    WHERE tenant_id = NEW.tenant_id AND plan_code = NEW.plan_code AND version = NEW.plan_version;
+
+    IF old_rank IS NULL OR new_rank IS NULL OR old_rank = new_rank THEN
+      RAISE EXCEPTION 'Subscription plan changes require a different tier rank'
+        USING ERRCODE = '23514';
+    ELSIF new_rank > old_rank THEN
+      expected_event_type := 'UPGRADED';
+    ELSE
+      expected_event_type := 'DOWNGRADED';
+    END IF;
+  ELSIF OLD.status = 'ACTIVE' AND NEW.status = 'ACTIVE' THEN
+    expected_event_type := 'RENEWED';
+    IF NEW.current_period_start IS NOT DISTINCT FROM OLD.current_period_start
+       OR NEW.current_period_end IS NOT DISTINCT FROM OLD.current_period_end
+       OR (OLD.current_period_end IS NOT NULL AND NEW.current_period_start < OLD.current_period_end)
+       OR NEW.current_period_end <= NEW.current_period_start THEN
+      RAISE EXCEPTION 'Renewal must advance to a valid non-overlapping billing period'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'Subscription state update is not a supported lifecycle transition'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF event_row.event_type <> expected_event_type THEN
+    RAISE EXCEPTION 'Subscription lifecycle event type does not match the state transition'
+      USING ERRCODE = '23514';
+  END IF;
+
   RETURN NEW;
 END;
 $$;
