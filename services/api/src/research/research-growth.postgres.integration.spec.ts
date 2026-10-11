@@ -449,7 +449,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
 
       await client.query('SAVEPOINT protect_growth_learning_signal');
       await expect(client.query('UPDATE ai_learning_signals SET confidence = 0.1 WHERE id = $1', [signal.rows[0].id]))
-        .rejects.toMatchObject({ code: '55000' });
+        .rejects.toMatchObject({ code: 'P0001' });
       await client.query('ROLLBACK TO SAVEPOINT protect_growth_learning_signal');
     });
   });
