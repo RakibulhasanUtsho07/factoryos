@@ -19,6 +19,7 @@ import { AttestSaasTenantExportDto } from './dto/attest-saas-tenant-export.dto';
 import { ValidateSaasTenantMigrationDto } from './dto/validate-saas-tenant-migration.dto';
 import { TransitionSaasTenantMigrationDto } from './dto/transition-saas-tenant-migration.dto';
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
+import { SaasTenantDataTransferWorkerService } from './saas-tenant-data-transfer.worker';
 
 type DataTransferRequest = Request & {
   factoryos?: {
@@ -29,7 +30,10 @@ type DataTransferRequest = Request & {
 
 @Controller('v2/saas/data-transfers')
 export class SaasTenantDataTransferController {
-  constructor(private readonly service: SaasTenantDataTransferService) {}
+  constructor(
+    private readonly service: SaasTenantDataTransferService,
+    private readonly worker: SaasTenantDataTransferWorkerService,
+  ) {}
 
   @Post('compatibility-rules')
   @UseGuards(PermissionGuard)
@@ -58,6 +62,17 @@ export class SaasTenantDataTransferController {
     return this.service.createExport(context.tenantId, context.userId, body);
   }
 
+  @Post('exports/:transferId/process')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_transfers.execute')
+  async processExport(
+    @Req() request: DataTransferRequest,
+    @Param('transferId', new ParseUUIDPipe()) transferId: string,
+  ) {
+    const context = this.context(request);
+    return this.worker.processExport(context.tenantId, context.userId, transferId);
+  }
+
   @Post('exports/:transferId/attest')
   @UseGuards(PermissionGuard)
   @RequirePermission('saas.data_transfers.execute')
@@ -76,6 +91,17 @@ export class SaasTenantDataTransferController {
   async validateMigration(@Req() request: DataTransferRequest, @Body() body: ValidateSaasTenantMigrationDto) {
     const context = this.context(request);
     return this.service.validateMigration(context.tenantId, context.userId, body);
+  }
+
+  @Post('migrations/:transferId/process')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_transfers.execute')
+  async processMigration(
+    @Req() request: DataTransferRequest,
+    @Param('transferId', new ParseUUIDPipe()) transferId: string,
+  ) {
+    const context = this.context(request);
+    return this.worker.processMigration(context.tenantId, context.userId, transferId);
   }
 
   @Post('migrations/:transferId/transitions')
