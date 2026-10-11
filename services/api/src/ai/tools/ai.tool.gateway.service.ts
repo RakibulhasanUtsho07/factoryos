@@ -18,6 +18,10 @@ import {
 } from '../../saas/saas-usage.service';
 
 import {
+  SaasSubscriptionService,
+} from '../../saas/saas-subscription.service';
+
+import {
   AiToolRegistryService,
   aiToolRequiresApproval,
 } from './ai.tool.registry.service';
@@ -40,6 +44,9 @@ export class AiToolGatewayService {
 
     private readonly saasUsageService:
       SaasUsageService,
+
+    private readonly saasSubscriptionService:
+      SaasSubscriptionService,
   ) {}
 
   /* ==========================================================
@@ -74,6 +81,13 @@ export class AiToolGatewayService {
         action.factoryId,
       );
     }
+
+    // Re-check live subscription state at the last governed boundary before
+    // metering and execution. No long-lived entitlement cache can outlive
+    // suspension/expiry and a denied subscription attempt does not get billed.
+    await this.saasSubscriptionService.assertAiCapabilityAvailable(
+      action.tenantId,
+    );
 
     /*
      * WP10 / FR-PROD-04: workload class is registry metadata, never
