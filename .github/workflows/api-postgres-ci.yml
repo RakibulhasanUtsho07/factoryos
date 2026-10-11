@@ -129,6 +129,7 @@ jobs:
             migrations/045_saas_usage_metering_reconciliation.sql
             migrations/046_saas_budget_controls.sql
             migrations/047_saas_alerts_provider_costs.sql
+            migrations/048_saas_subscription_lifecycle.sql
           )
 
           for migration in "${migrations[@]}"; do
