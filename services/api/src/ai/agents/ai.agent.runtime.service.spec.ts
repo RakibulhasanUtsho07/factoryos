@@ -232,7 +232,9 @@ describe(
 
     const aiAgentCatalogueService = {
       assertToolEntitled: jest.fn<() => Promise<unknown>>(),
-    };const toolRegistry = {
+    };
+
+    const toolRegistry = {
       getTool: jest.fn<() => Promise<unknown>>(),
     };
 
