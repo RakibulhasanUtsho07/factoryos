@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { REQUIRED_TRANSFER_CATEGORIES } from './dto/create-saas-schema-compatibility-rule.dto';
 import { SaasTenantPostgresMigrationTargetAdapter, TenantExportTextReader } from './saas-tenant-postgres-migration-target.adapter';
 import type { SaasTenantTransferExportManifest } from './saas-tenant-data-transfer.adapters';
@@ -71,7 +71,7 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
       sourceBundle: chunksOf('{}', [2, 1]),
       sourceManifest: { AUDIT_LOG: manifest.AUDIT_LOG },
       requiredCategories: [...REQUIRED_TRANSFER_CATEGORIES],
-    })).rejects.toBeInstanceOf(BadRequestException);
+    })).rejects.toBeInstanceOf(ConflictException);
     expect(config.get).not.toHaveBeenCalled();
   });
 
