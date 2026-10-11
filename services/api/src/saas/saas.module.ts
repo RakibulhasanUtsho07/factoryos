@@ -4,11 +4,13 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 import { SaasUsageController } from './saas-usage.controller';
 import { SaasUsageService } from './saas-usage.service';
+import { SaasSubscriptionController } from './saas-subscription.controller';
+import { SaasSubscriptionService } from './saas-subscription.service';
 
 @Module({
  imports:[DatabaseModule,AuditModule,IamModule],
- controllers:[SaasUsageController],
- providers:[SaasUsageService],
- exports:[SaasUsageService],
+ controllers:[SaasUsageController,SaasSubscriptionController],
+ providers:[SaasUsageService,SaasSubscriptionService],
+ exports:[SaasUsageService,SaasSubscriptionService],
 })
 export class SaasModule {}
