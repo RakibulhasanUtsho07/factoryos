@@ -1170,6 +1170,7 @@ describe(
         .fn<() => Promise<unknown>>()
         .mockResolvedValue(step);
       toolRegistry.getTool.mockResolvedValue(registeredTool);
+      jest.spyOn(service as any, 'recordAttempt');
       database.query.mockResolvedValueOnce({
         rows: [],
         rowCount: 0,
@@ -1391,6 +1392,7 @@ describe(
       (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       toolRegistry.getTool.mockResolvedValue(registeredTool);
+      jest.spyOn(service as any, 'recordAttempt');
       // Reset any unused one-shot responses from neighboring failure-path tests.
       database.query.mockReset();
       database.query.mockResolvedValue({ rows: [], rowCount: 1 });
