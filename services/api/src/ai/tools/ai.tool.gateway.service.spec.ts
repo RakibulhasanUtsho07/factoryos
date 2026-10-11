@@ -2,6 +2,8 @@ import {
   jest,
 } from '@jest/globals';
 
+import { ForbiddenException } from '@nestjs/common';
+
 import {
   createHash,
 } from 'node:crypto';
@@ -75,6 +77,8 @@ describe(
     const saasUsageService = {
       assertWorkloadExecutionAllowed:
         jest.fn<(...args: unknown[]) => Promise<void>>(),
+      recordAiToolCall:
+        jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     };
 
     let gateway:
@@ -91,6 +95,9 @@ describe(
 
         saasUsageService.assertWorkloadExecutionAllowed
           .mockResolvedValue(undefined);
+
+        saasUsageService.recordAiToolCall
+          .mockResolvedValue({ idempotent: false, event: { id: 'usage-event' } });
 
         gateway =
           new AiToolGatewayService(
@@ -609,6 +616,7 @@ describe(
         const result = await gateway.execute(buildAction());
 
         expect(result.status).toBe('SUCCEEDED');
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledWith(tenantId,factoryId,actorUserId,expect.objectContaining({toolId:'AI.RUNTIME.NOOP',workloadClass:'PRODUCTION'}));
         expect(saasUsageService.assertWorkloadExecutionAllowed).not.toHaveBeenCalled();
       },
     );
@@ -624,6 +632,26 @@ describe(
           'Registered AI tool workloadClass metadata is unsupported',
         );
         expect(saasUsageService.assertWorkloadExecutionAllowed).not.toHaveBeenCalled();
+      },
+    );
+
+
+    it(
+      'meters a non-critical execution and returns a failed outcome when the budget gate blocks it',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({ metadata: { workloadClass: 'DEVELOPMENT' } }),
+        );
+        saasUsageService.assertWorkloadExecutionAllowed.mockRejectedValueOnce(
+          new ForbiddenException('Non-critical AI workload is paused by SaaS budget controls'),
+        );
+
+        const result = await gateway.execute(buildAction());
+
+        expect(result.status).toBe('FAILED');
+        expect(result.error.code).toBe('SAAS_WORKLOAD_PAUSED');
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledTimes(1);
+        expect(saasUsageService.assertWorkloadExecutionAllowed).toHaveBeenCalledTimes(1);
       },
     );
 

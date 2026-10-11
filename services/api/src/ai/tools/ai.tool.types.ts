@@ -557,6 +557,10 @@ export interface AiToolActionContext
    */
   actionToken:
     string;
+
+  /** Stable execution identity/time for once-per-execution billing metering. */
+  executionKey?: string;
+  executionClaimedAt?: string;
 }
 
 /* ============================================================
