@@ -82,7 +82,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
 
   it('forces RLS on every research and growth data surface', async () => {
     const names = [
-      'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases',
+      'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations',
       'research_relevance_mappings', 'growth_opportunities', 'growth_opportunity_evidence',
       'growth_scenarios', 'growth_experiments', 'growth_experiment_results', 'growth_opportunity_outcomes',
     ];
@@ -174,16 +174,39 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         [f.tenantId, 'approved-' + randomUUID().slice(0, 8), JSON.stringify([f.claimId]),
           JSON.stringify([{ title: 'Approved open research', doi: 'DOI' }]), f.userId],
       );
+      const evaluation = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_release_evaluations (
+          tenant_id, namespace, release_id, evaluation_version, status,
+          content_fingerprint, results, evaluated_by
+        )
+        VALUES (
+          $1, 'TENANT', $2, 'research-release-contract.v1', 'PASSED', $3,
+          '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true}'::jsonb,
+          $4
+        )
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, release.rows[0].id, 'a'.repeat(64), f.userId],
+      );
+      await client.query('SAVEPOINT protect_release_evaluation');
+      await expect(client.query(
+        'UPDATE research_release_evaluations SET status = $1 WHERE id = $2',
+        ['FAILED', evaluation.rows[0].id],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_release_evaluation');
+
       await client.query(
         `
         UPDATE research_knowledge_releases
-        SET status = 'PROMOTED',
-          validation_report = '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyReviewed":true}'::jsonb,
-          regression_evidence_ref = 'eval-run:research-regression-2',
-          reviewed_by = $1, reviewed_at = clock_timestamp(), effective_at = clock_timestamp()
-        WHERE id = $2
+        SET evaluation_id = $1,
+          status = 'PROMOTED',
+          validation_report = '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true,"safetyReviewed":true}'::jsonb,
+          regression_evidence_ref = 'external-regression:research-regression-2',
+          reviewed_by = $2, reviewed_at = clock_timestamp(), effective_at = clock_timestamp()
+        WHERE id = $3
         `,
-        [f.userId, release.rows[0].id],
+        [evaluation.rows[0].id, f.userId, release.rows[0].id],
       );
       await client.query('SAVEPOINT protect_promoted_release');
       await expect(client.query('UPDATE research_knowledge_releases SET title = $1 WHERE id = $2', ['tampered', release.rows[0].id]))
