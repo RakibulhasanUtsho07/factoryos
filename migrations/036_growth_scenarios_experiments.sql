@@ -129,6 +129,9 @@ BEGIN
  SELECT decision,decision_number INTO prior_decision,prior_number FROM growth_experiment_decisions
   WHERE tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND experiment_id=NEW.experiment_id
   ORDER BY decision_number DESC LIMIT 1;
+ IF EXISTS(SELECT 1 FROM growth_experiment_decisions WHERE tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND idempotency_key=NEW.idempotency_key) THEN
+  NEW.decision_number:=COALESCE(prior_number,0)+1; RETURN NEW;
+ END IF;
  IF prior_decision IS NULL THEN
   IF NEW.decision NOT IN('APPROVED','REJECTED','DEFERRED') THEN
    RAISE EXCEPTION USING ERRCODE='40001',MESSAGE='Invalid growth experiment decision transition';
@@ -182,6 +185,7 @@ CREATE OR REPLACE FUNCTION enforce_growth_experiment_measurement_stage() RETURNS
 DECLARE current_decision VARCHAR(20);
 BEGIN
  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.experiment_id::text,0));
+ IF EXISTS(SELECT 1 FROM growth_experiment_measurements WHERE tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND idempotency_key=NEW.idempotency_key) THEN RETURN NEW; END IF;
  IF NEW.measurement_stage='BASELINE' THEN RETURN NEW; END IF;
  SELECT decision INTO current_decision FROM growth_experiment_decisions
   WHERE tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND experiment_id=NEW.experiment_id
