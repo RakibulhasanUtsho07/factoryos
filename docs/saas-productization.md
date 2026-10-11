@@ -1,8 +1,8 @@
 # SaaS Productization — WP10 Backend Slice
 
-**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
-**Migration range:** 045–050.  
-**API bases:** /v2/saas/usage, /v2/saas/subscriptions, and /v2/saas/sandboxes.
+**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-SAAS2-07 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
+**Migration range:** 045–051.  
+**API bases:** /v2/saas/usage, /v2/saas/subscriptions, /v2/saas/sandboxes, /v2/saas/releases, and /v2/saas/deployment-profiles.
 
 ## Delivered in this slice
 
@@ -13,7 +13,7 @@
 - Effective-dated tenant/factory budgets with soft/hard limits, anomaly checks, durable alerts, acknowledgement records, and controls restricted to non-critical workload classes.
 - Idempotent AI tool-call metering in the governed Tool Gateway. Tool workload classification comes from registered tool metadata, not caller-supplied request fields. Usage is recorded before the budget-control check; only registered non-critical classes can be paused by this mechanism. PRODUCTION and NON_AI workloads are not pause targets.
 - PostgreSQL row-level security and tenant/factory-scoped foreign keys on the metering, budget, alert, and provider-cost records.
-- api-postgres-ci.yml applies migrations 045–050 and runs the API unit and PostgreSQL integration suite.
+- api-postgres-ci.yml applies migrations 045–051 and runs the API unit and PostgreSQL integration suite.
 - Versioned, tenant-scoped subscription plans use an explicitly configured tier_rank so the service can validate upgrade/downgrade direction without inventing plan prices. Deployment profile is recorded as control-plane metadata; billing remains external.
 - Subscription state is guarded by a database transition trigger and an immutable event ledger. A deferred constraint trigger prevents state/version updates from committing unless a matching lifecycle event is written in the same transaction. Terminal subscriptions cannot be reactivated; a new subscription can be started after termination/expiry.
 - Lifecycle operations use optimistic expected_version checks, tenant-row locking, idempotency request hashes, IAM authorization in both the controller and service, and best-effort audit records after the state/event transaction.
@@ -60,7 +60,24 @@ The governed AI Tool Gateway re-checks the current subscription immediately befo
 
 ## Boundaries and remaining WP10 work
 
-These are the metering/FinOps, subscription lifecycle, sandbox governance, and release-control backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, deployment-profile administration, tenant export/migration compatibility, and the physical sandbox provisioner/data adapter that creates truly isolated storage. Those capabilities must be delivered and tested as separate slices.
+These are the metering/FinOps, subscription lifecycle, sandbox governance, release-control, and deployment-profile backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, tenant export/migration compatibility, and the physical sandbox provisioner/data adapter that creates truly isolated storage. Those capabilities must be delivered and tested as separate slices.
+
+## Deployment profile administration
+
+Migration `051_saas_deployment_profiles.sql` implements **FR-SAAS2-07** as a separate, append-only deployment topology registry. It distinguishes `SHARED_SAAS`, `SINGLE_TENANT`, `DEDICATED_VPC`, and `HYBRID_EDGE_CLOUD`, with tenant-wide and factory-scoped assignments. Profile lifecycle snapshots are versioned with idempotency fingerprints, optimistic `expected_version` checks, tenant RLS, scoped factory foreign keys, database-enforced lifecycle transitions, and an immutable-row guard. Deployment references are opaque identifiers only; URLs, credentials, arbitrary paths and secret payloads are rejected.
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /v2/saas/deployment-profiles | saas.deployment_profiles.write | Register a tenant or factory deployment profile in PLANNED state |
+| GET /v2/saas/deployment-profiles | saas.deployment_profiles.read | List the latest profile snapshot for each scope |
+| GET /v2/saas/deployment-profiles/effective | saas.deployment_profiles.read | Resolve an ACTIVE factory profile first, then the active tenant profile |
+| GET /v2/saas/deployment-profiles/tenant/history | saas.deployment_profiles.read | Read tenant-wide profile history |
+| GET /v2/saas/deployment-profiles/factories/:factoryId/history | saas.deployment_profiles.read | Read factory-scoped profile history |
+| POST /v2/saas/deployment-profiles/tenant/transitions | saas.deployment_profiles.control | Provision, activate, pause, resume, fail, migrate or retire tenant profile |
+| POST /v2/saas/deployment-profiles/factories/:factoryId/transitions | saas.deployment_profiles.control | Apply the same lifecycle to a factory profile |
+
+Non-shared profiles require a non-secret `deployment_reference` before activation; hybrid edge-cloud profiles also require an `edge_site_code`. Migration is represented as a controlled state transition: a destination profile/reference is registered first, the assignment enters `MIGRATING`, and completion writes a new immutable active snapshot. Resolution returns only the latest ACTIVE assignment, prefers factory over tenant scope, and explicitly reports `tenantSemanticsChanged: false`. The profile registry is not an infrastructure provisioner or data-migration engine: an external orchestration adapter must perform and verify infrastructure changes before sending ACTIVATE or COMPLETE_MIGRATION. Tenant identity, auth context and RLS boundaries remain unchanged.
+
 
 AI token counts must be emitted by the actual approved model/provider adapter once such calls execute; the Tool Gateway integration in this slice meters registered tool calls and does not fabricate token usage for deterministic code paths.
 

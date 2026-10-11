@@ -132,6 +132,7 @@ jobs:
             migrations/048_saas_subscription_lifecycle.sql
             migrations/049_saas_sandbox_environments.sql
             migrations/050_saas_release_rollouts.sql
+            migrations/051_saas_deployment_profiles.sql
           )
 
           for migration in "${migrations[@]}"; do
