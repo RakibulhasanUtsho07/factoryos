@@ -444,6 +444,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
   private async assertDistinctDatabase(targetPool: Pool): Promise<void> {
     const sourceResult = await this.sourceDatabase.query<{
       database_name: string;
+      database_oid: string;
       server_address: string | null;
       server_port: number | null;
     }>(
@@ -452,10 +453,12 @@ export class SaasTenantPostgresMigrationTargetAdapter
     );
     const targetResult = await targetPool.query<{
       database_name: string;
+      database_oid: string;
       server_address: string | null;
       server_port: number | null;
     }>(
-      'SELECT current_database() AS database_name, inet_server_addr()::text AS server_address, inet_server_port() AS server_port',
+      'SELECT current_database() AS database_name, (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS database_oid, ' +
+        'inet_server_addr()::text AS server_address, inet_server_port() AS server_port',
     );
     const source = sourceResult.rows[0];
     const target = targetResult.rows[0];
