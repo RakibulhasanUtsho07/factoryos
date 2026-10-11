@@ -75,6 +75,8 @@ describe(
     const saasUsageService = {
       assertWorkloadExecutionAllowed:
         jest.fn<(...args: unknown[]) => Promise<void>>(),
+      recordAiToolCall:
+        jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     };
 
     let gateway:
@@ -91,6 +93,9 @@ describe(
 
         saasUsageService.assertWorkloadExecutionAllowed
           .mockResolvedValue(undefined);
+
+        saasUsageService.recordAiToolCall
+          .mockResolvedValue({ idempotent: false, event: { id: 'usage-event' } });
 
         gateway =
           new AiToolGatewayService(
@@ -609,6 +614,7 @@ describe(
         const result = await gateway.execute(buildAction());
 
         expect(result.status).toBe('SUCCEEDED');
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledWith(tenantId,factoryId,actorUserId,expect.objectContaining({toolId:'AI.RUNTIME.NOOP',workloadClass:'PRODUCTION'}));
         expect(saasUsageService.assertWorkloadExecutionAllowed).not.toHaveBeenCalled();
       },
     );

@@ -1869,6 +1869,8 @@ export class AiRuntimeService {
     idempotencyKey: action.idempotency_key,
     executorType: 'AI_TOOL_GATEWAY',
     actionToken,
+    executionKey,
+    executionClaimedAt: reservedClaim.claimed_at,
   };
 
   /*

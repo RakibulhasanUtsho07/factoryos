@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
 } from '@nestjs/common';
 
@@ -76,39 +77,72 @@ export class AiToolGatewayService {
 
 
     /*
-     * Workload class comes from the registry-owned tool contract.
-     * Only explicit non-critical classes consult the pause ledger.
+     * Workload classification is trusted registry metadata, never request input.
+     * Meter the governed attempt exactly once before budget evaluation; if it
+     * crosses a hard limit, a non-critical tool is blocked before side effects.
      */
-    const workloadClass = tool.metadata?.workloadClass;
+    const workloadClass = tool.metadata?.workloadClass ?? 'PRODUCTION';
 
-    if (workloadClass !== undefined) {
-      if (typeof workloadClass !== 'string') {
-        throw new ConflictException(
-          'Registered AI tool workloadClass metadata is invalid',
-        );
-      }
+    if (typeof workloadClass !== 'string') {
+      throw new ConflictException(
+        'Registered AI tool workloadClass metadata is invalid',
+      );
+    }
 
-      const nonCriticalClasses = new Set<string>([
-        'EVALUATION',
-        'RED_TEAM',
-        'SHADOW_MODE',
-        'DEVELOPMENT',
-      ]);
+    const nonCriticalClasses = new Set<string>([
+      'EVALUATION',
+      'RED_TEAM',
+      'SHADOW_MODE',
+      'DEVELOPMENT',
+    ]);
 
-      if (nonCriticalClasses.has(workloadClass)) {
+    if (
+      !nonCriticalClasses.has(workloadClass) &&
+      workloadClass !== 'PRODUCTION' &&
+      workloadClass !== 'NON_AI'
+    ) {
+      throw new ConflictException(
+        'Registered AI tool workloadClass metadata is unsupported',
+      );
+    }
+
+    await this.saasUsageService.recordAiToolCall(
+      action.tenantId,
+      action.factoryId,
+      action.actorUserId,
+      {
+        executionKey: action.executionKey ?? action.actionIntentId,
+        toolId: tool.toolId,
+        workloadClass,
+        occurredAt: action.executionClaimedAt,
+      },
+    );
+
+    if (nonCriticalClasses.has(workloadClass)) {
+      try {
         await this.saasUsageService.assertWorkloadExecutionAllowed(
           action.tenantId,
           action.factoryId,
           action.actorUserId,
           workloadClass,
         );
-      } else if (
-        workloadClass !== 'PRODUCTION' &&
-        workloadClass !== 'NON_AI'
-      ) {
-        throw new ConflictException(
-          'Registered AI tool workloadClass metadata is unsupported',
-        );
+      } catch (error) {
+        if (error instanceof ForbiddenException) {
+          return {
+            status: 'FAILED',
+            result: {},
+            error: {
+              code: 'SAAS_WORKLOAD_PAUSED',
+              message: 'Non-critical AI workload was blocked by SaaS budget controls',
+            },
+            tool,
+            executorType: action.executorType,
+            toolVersion: tool.version,
+            inputsHash: action.payloadHash,
+          };
+        }
+
+        throw error;
       }
     }
 
