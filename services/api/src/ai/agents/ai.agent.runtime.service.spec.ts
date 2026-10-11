@@ -1173,6 +1173,10 @@ describe(
         rows: [{ max_number: null }],
         rowCount: 1,
       });
+      database.query.mockResolvedValueOnce({
+        rows: [{ id: 'compensation-attempt-id' }],
+        rowCount: 1,
+      });
       const compensationPayload = { reason: 'verified compensation retry' };
       const compensationHash = hashPayload(compensationPayload);
       aiRuntimeService.authorizeAction.mockResolvedValue({
