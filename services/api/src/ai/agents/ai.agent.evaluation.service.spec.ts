@@ -41,7 +41,7 @@ function resultRow(overrides: Record<string, unknown> = {}) {
   return {
     id: '88888888-8888-4888-8888-888888888888', tenant_id: tenantId, factory_id: factoryId,
     case_id: caseId, simulation_run_id: runId, sandbox_id: sandboxId, status: 'PASS',
-    expected_summary: { caseKey: 'calls-noop' }, observed_summary: { observedCallCount: 1 },
+    expected_summary: { caseKey: 'calls-noop' }, observed_summary: { observedCallCount: 1, matchingStepIndices: [0] },
     created_by: userId, created_at: '2026-10-11T00:02:00.000Z', ...overrides,
   };
 }
@@ -165,7 +165,7 @@ describe('AiAgentEvaluationService', () => {
     expect(passing.status).toBe('PASS');
     expect(passing.observedSummary).toMatchObject({ refusalObserved: true, refusalReasonMatched: true });
     const failing = (service as any).compareCaseToRun(refusalCase, simulationRow({
-      plan: [{ toolId: 'AI.RUNTIME.NOOP', toolVersion: '1.0.0', actionType: 'AI.RUNTIME.NOOP', input: {} }],
+      plan: [{ toolId: 'AI.RUNTIME.NOOP', toolVersion: '1.0.0', actionType: 'AI.RUNTIME.NOOP', input: { orderId: 'ORD-1' } }],
       result: { outcome: 'REFUSED', refusal: { reason: 'Action not permitted' } },
     }));
     expect(failing.status).toBe('FAIL');
