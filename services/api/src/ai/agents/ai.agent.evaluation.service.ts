@@ -155,11 +155,11 @@ export class AiAgentEvaluationService {
 
     const runQuery = [
       'SELECT r.id::text AS id,r.sandbox_id::text AS sandbox_id,r.status,r.plan,',
-      'r.simulated_tool_responses,r.observations,r.result,s.agent_spec->>\\'agentId\\' AS sandbox_agent_id,',
-      's.agent_spec->>\\'version\\' AS sandbox_agent_version,s.mode AS sandbox_mode,',
+      'r.simulated_tool_responses,r.observations,r.result,s.agent_spec->>\'agentId\' AS sandbox_agent_id,',
+      's.agent_spec->>\'version\' AS sandbox_agent_version,s.mode AS sandbox_mode,',
       's.live_write_allowed,r.created_at::text AS created_at',
       'FROM simulation_runs r JOIN agent_sandboxes s ON s.id=r.sandbox_id AND s.tenant_id=r.tenant_id AND s.factory_id=r.factory_id',
-      'WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 AND r.mode=\\'SIMULATION\\' LIMIT 1',
+      'WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 AND r.mode=\'SIMULATION\' LIMIT 1',
     ].join('\n');
     const runResult = await this.database.query<SimulationRow>(
       runQuery, [simulationRunId, tenantId, factoryId], { tenantId, userId: actorUserId },
@@ -218,9 +218,9 @@ export class AiAgentEvaluationService {
       'FROM ai_agent_evaluation_cases c WHERE c.tenant_id=$1 AND c.factory_id=$2 AND c.agent_definition_id=$3',
       'ORDER BY c.case_key,c.case_version DESC)',
       'SELECT c.id::text AS case_id,c.case_key,c.case_version,c.name,c.kind,c.status AS case_status,',
-      'COUNT(e.id)::text AS evaluation_count,COUNT(e.id) FILTER (WHERE e.status=\\'PASS\\')::text AS pass_count,',
-      'COUNT(e.id) FILTER (WHERE e.status=\\'FAIL\\')::text AS fail_count,',
-      'COUNT(e.id) FILTER (WHERE e.status=\\'INCONCLUSIVE\\')::text AS inconclusive_count,',
+      'COUNT(e.id)::text AS evaluation_count,COUNT(e.id) FILTER (WHERE e.status=\'PASS\')::text AS pass_count,',
+      'COUNT(e.id) FILTER (WHERE e.status=\'FAIL\')::text AS fail_count,',
+      'COUNT(e.id) FILTER (WHERE e.status=\'INCONCLUSIVE\')::text AS inconclusive_count,',
       '(SELECT e2.status FROM ai_agent_evaluation_results e2 WHERE e2.case_id=c.id AND e2.tenant_id=$1 AND e2.factory_id=$2 ORDER BY e2.created_at DESC LIMIT 1) AS latest_status,',
       'MAX(e.created_at)::text AS last_evaluated_at',
       'FROM latest_cases c LEFT JOIN ai_agent_evaluation_results e ON e.case_id=c.id AND e.tenant_id=$1 AND e.factory_id=$2',
@@ -261,8 +261,10 @@ export class AiAgentEvaluationService {
   private compareCaseToRun(testCase: EvaluationCaseRow, run: SimulationRow) {
     const steps = Array.isArray(run.plan) ? run.plan : [];
     const observations = Array.isArray(run.observations) ? run.observations : [];
-    const matchingSteps = steps.map((step, index) => ({ step, index }))
-      .filter(({ step }) => this.matchesExpectedTool(testCase, step));
+    const matchingSteps = testCase.kind === 'EXPECTED_REFUSAL' && !testCase.expected_tool_id
+      ? []
+      : steps.map((step, index) => ({ step, index }))
+          .filter(({ step }) => this.matchesExpectedTool(testCase, step));
 
     if (testCase.kind === 'EXPECTED_TOOL_CALL') {
       if (run.status !== 'COMPLETED') {
