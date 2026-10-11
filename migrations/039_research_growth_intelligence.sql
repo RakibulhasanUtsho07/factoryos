@@ -191,6 +191,37 @@ CREATE TABLE research_claim_links (
   CONSTRAINT uq_research_claim_link UNIQUE (claim_a_id, claim_b_id, relation_type)
 );
 CREATE INDEX idx_research_link_claim_b ON research_claim_links (claim_b_id, relation_type);
+CREATE OR REPLACE FUNCTION factoryos_guard_research_claim_link()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  visible_claim_count INTEGER;
+BEGIN
+  SELECT COUNT(DISTINCT c.id) INTO visible_claim_count
+  FROM research_claims c
+  JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+  WHERE c.id = ANY(ARRAY[NEW.claim_a_id, NEW.claim_b_id])
+    AND c.namespace = NEW.namespace
+    AND c.tenant_id IS NOT DISTINCT FROM NEW.tenant_id
+    AND c.status = 'APPROVED'
+    AND s.access_status = 'APPROVED'
+    AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+    AND s.rights_basis IS NOT NULL
+    AND length(btrim(s.rights_basis)) > 0;
+
+  IF visible_claim_count <> 2 THEN
+    RAISE EXCEPTION 'Research claim links require two approved, visible claims with current source reuse rights'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER research_claim_link_rights_guard
+BEFORE INSERT ON research_claim_links
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_claim_link();
+
 
 CREATE TABLE research_knowledge_releases (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

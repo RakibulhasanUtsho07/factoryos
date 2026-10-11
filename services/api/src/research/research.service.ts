@@ -363,7 +363,8 @@ export class ResearchService {
         s.source_url, s.doi, s.license_status, s.access_status
       FROM research_claims c
       JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
-      WHERE (c.tenant_id = $1 OR (c.tenant_id IS NULL AND c.status = 'APPROVED' AND s.access_status = 'APPROVED'))
+      WHERE (c.tenant_id = $1 OR (c.tenant_id IS NULL AND c.status = 'APPROVED'))
+        AND s.access_status = 'APPROVED'
         AND ($2::text IS NULL OR c.status = $2)
         AND ($3::text IS NULL OR c.topic_tags @> jsonb_build_array($3::text))
       ORDER BY CASE WHEN c.tenant_id IS NULL THEN 0 ELSE 1 END, c.created_at DESC
@@ -474,8 +475,16 @@ export class ResearchService {
         const ids = [claimId, dto.related_claim_id];
         const rows = await client.query<{ id: string; status: string }>(
           `
-          SELECT id::text AS id, status FROM research_claims
-          WHERE id = ANY($1::uuid[]) AND tenant_id = $2
+          SELECT c.id::text AS id, c.status
+          FROM research_claims c
+          JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+          WHERE c.id = ANY($1::uuid[])
+            AND c.tenant_id = $2
+            AND c.status = 'APPROVED'
+            AND s.access_status = 'APPROVED'
+            AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+            AND s.rights_basis IS NOT NULL
+            AND length(btrim(s.rights_basis)) > 0
           `,
           [ids, tenantId],
         );
