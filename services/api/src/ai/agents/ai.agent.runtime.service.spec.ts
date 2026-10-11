@@ -1089,6 +1089,7 @@ describe(
         1,
         'COMPENSATION',
         null,
+        null,
         'STARTED',
         '{}',
       ]);
@@ -1390,6 +1391,9 @@ describe(
       (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       toolRegistry.getTool.mockResolvedValue(registeredTool);
+      // Reset any unused one-shot responses from neighboring failure-path tests.
+      database.query.mockReset();
+      database.query.mockResolvedValue({ rows: [], rowCount: 1 });
       database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
       database.query.mockResolvedValueOnce({ rows: [{ id: 'attempt-id' }], rowCount: 1 });
       database.query.mockResolvedValueOnce({
