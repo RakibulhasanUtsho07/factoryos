@@ -2,6 +2,8 @@ import {
   jest,
 } from '@jest/globals';
 
+import { ForbiddenException } from '@nestjs/common';
+
 import {
   createHash,
 } from 'node:crypto';
@@ -70,6 +72,13 @@ describe(
         >(),
     };
 
+    const saasUsageService = {
+      assertWorkloadExecutionAllowed:
+        jest.fn<(...args: unknown[]) => Promise<void>>(),
+      recordAiToolCall:
+        jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    };
+
     let gateway:
       AiToolGatewayService;
 
@@ -82,10 +91,17 @@ describe(
             undefined,
           );
 
+        saasUsageService.assertWorkloadExecutionAllowed
+          .mockResolvedValue(undefined);
+
+        saasUsageService.recordAiToolCall
+          .mockResolvedValue({ idempotent: false, event: { id: 'usage-event' } });
+
         gateway =
           new AiToolGatewayService(
             registry as never,
             iamService as never,
+            saasUsageService as never,
           );
       },
     );
@@ -539,6 +555,60 @@ describe(
         ).rejects.toThrow(
           '$.payload.count is required by the registered tool schema',
         );
+      },
+    );
+
+    it(
+      'records registry-classified AI tool usage before execution',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            metadata: {
+              workloadClass: 'DEVELOPMENT',
+            },
+          }),
+        );
+
+        await gateway.execute(buildAction());
+
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          actorUserId,
+          {
+            executionKey: actionIntentId,
+            toolId: 'AI.RUNTIME.NOOP',
+            workloadClass: 'DEVELOPMENT',
+          },
+        );
+        expect(saasUsageService.assertWorkloadExecutionAllowed).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          actorUserId,
+          'DEVELOPMENT',
+        );
+      },
+    );
+
+    it(
+      'fails closed before tool side effects when a non-critical workload is paused',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            metadata: {
+              workloadClass: 'SHADOW_MODE',
+            },
+          }),
+        );
+        saasUsageService.assertWorkloadExecutionAllowed.mockRejectedValueOnce(
+          new ForbiddenException('paused'),
+        );
+
+        const result = await gateway.execute(buildAction());
+
+        expect(result.status).toBe('FAILED');
+        expect(result.error.code).toBe('SAAS_WORKLOAD_PAUSED');
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledTimes(1);
       },
     );
 
