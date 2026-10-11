@@ -55,6 +55,7 @@ export class SaasTenantDataTransferWorkerService {
     }
 
     const requiredCategories = current.requiredCategories as SaasTransferDatasetCategory[];
+    this.validateCategories(requiredCategories);
     const schemaVersion = current.sourceSchemaVersion as string;
     const manifest: SaasTenantTransferExportManifest = {};
     const payload = this.exportPayload(
@@ -177,13 +178,7 @@ export class SaasTenantDataTransferWorkerService {
     manifest: SaasTenantTransferExportManifest,
   ): AsyncIterable<Buffer> {
     const uniqueCategories = [...new Set(categories)];
-    const required = REQUIRED_TRANSFER_CATEGORIES as readonly SaasTransferDatasetCategory[];
-    if (required.some((category) => !uniqueCategories.includes(category))) {
-      throw new BadRequestException('Export snapshot does not include the mandatory preservation categories');
-    }
-    if (uniqueCategories.some((category) => !Object.values(SaasTransferDatasetCategory).includes(category))) {
-      throw new BadRequestException('Export snapshot contains an unsupported dataset category');
-    }
+    this.validateCategories(uniqueCategories);
 
     const header = JSON.stringify({
       format: 'FACTORYOS_TENANT_EXPORT',
@@ -246,6 +241,17 @@ export class SaasTenantDataTransferWorkerService {
       return '{' + keys.map((key) => JSON.stringify(key) + ':' + this.canonicalJson(object[key], ancestors)).join(',') + '}';
     } finally {
       ancestors.delete(value);
+    }
+  }
+
+  private validateCategories(categories: SaasTransferDatasetCategory[]) {
+    const unique = [...new Set(categories)];
+    const required = REQUIRED_TRANSFER_CATEGORIES as readonly SaasTransferDatasetCategory[];
+    if (required.some((category) => !unique.includes(category))) {
+      throw new BadRequestException('Export snapshot does not include the mandatory preservation categories');
+    }
+    if (unique.some((category) => !Object.values(SaasTransferDatasetCategory).includes(category))) {
+      throw new BadRequestException('Export snapshot contains an unsupported dataset category');
     }
   }
 
