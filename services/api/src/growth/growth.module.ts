@@ -6,11 +6,13 @@ import { IamModule } from '../iam/iam.module';
 
 import { GrowthOpportunityController } from './growth-opportunity.controller';
 import { GrowthOpportunityService } from './growth-opportunity.service';
+import { GrowthScenarioExperimentController } from './growth-scenario-experiment.controller';
+import { GrowthScenarioExperimentService } from './growth-scenario-experiment.service';
 
 @Module({
   imports: [AuditModule, DatabaseModule, IamModule],
-  controllers: [GrowthOpportunityController],
-  providers: [GrowthOpportunityService],
-  exports: [GrowthOpportunityService],
+  controllers: [GrowthOpportunityController, GrowthScenarioExperimentController],
+  providers: [GrowthOpportunityService, GrowthScenarioExperimentService],
+  exports: [GrowthOpportunityService, GrowthScenarioExperimentService],
 })
 export class GrowthModule {}
