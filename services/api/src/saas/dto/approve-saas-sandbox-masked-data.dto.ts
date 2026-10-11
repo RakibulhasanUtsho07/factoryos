@@ -3,7 +3,7 @@ import { IsDateString, IsInt, IsString, Matches, Max, MaxLength, Min } from 'cla
 export class ApproveSaasSandboxMaskedDataDto {
   @IsInt()
   @Min(1)
-  @Max(9223372036854775000)
+  @Max(Number.MAX_SAFE_INTEGER)
   expected_version!: number;
 
   @IsString()
