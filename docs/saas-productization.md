@@ -60,6 +60,25 @@ The governed AI Tool Gateway re-checks the current subscription immediately befo
 
 ## Boundaries and remaining WP10 work
 
-These are the metering/FinOps and subscription-lifecycle backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, synthetic/masked sandbox environments, staged module/agent release channels with rollback, deployment-profile administration, and tenant export/migration compatibility. Those capabilities must be delivered and tested as separate slices.
+These are the metering/FinOps and subscription-lifecycle backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, staged module/agent release channels with rollback, deployment-profile administration, tenant export/migration compatibility, and the physical sandbox provisioner/data adapter that creates truly isolated storage. Those capabilities must be delivered and tested as separate slices.
 
 AI token counts must be emitted by the actual approved model/provider adapter once such calls execute; the Tool Gateway integration in this slice meters registered tool calls and does not fabricate token usage for deterministic code paths.
+
+
+## Sandbox environment governance
+
+Migration `049_saas_sandbox_environments.sql` adds a tenant-scoped sandbox control-plane registry for **FR-SAAS2-04**, **FR-PPX-01**, **FR-PPX-04** and **FR-PPX-05**. Definitions and provenance manifests are immutable; lifecycle versions are guarded by PostgreSQL and every change must commit with a matching append-only event. Both tables use forced tenant RLS and tenant-aware foreign keys.
+
+The `/v2/saas/sandboxes` API requires verified request identity and IAM authorization:
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /v2/saas/sandboxes | saas.sandboxes.write | Register a synthetic or masked-data sandbox definition |
+| GET /v2/saas/sandboxes | saas.sandboxes.read | List tenant-owned sandbox metadata |
+| GET /v2/saas/sandboxes/:id/events | saas.sandboxes.read | Read append-only lifecycle history |
+| POST /v2/saas/sandboxes/:id/approve-masked-data | saas.sandboxes.approve_masked_data | Approve or renew masked-data use with an expiry |
+| POST /v2/saas/sandboxes/:id/transitions | saas.sandboxes.control | Suspend, resume or retire an environment |
+
+Synthetic environments require a generator/version, schema version and record count; the registry rejects unrecognized manifest fields so customer rows cannot be posted into this API. Masked data requires an opaque dataset reference, schema version, masking-policy version, mask timestamp, SHA-256 checksum, a privacy assessment, reviewed field identifiers, and residual risk no higher than MEDIUM. Such environments start in `PENDING_APPROVAL`; a different user must approve them with a reason and an expiry no more than 90 days away. Approval expiry is evaluated by a live guard; an expired approval blocks access even if the stored lifecycle status still says ACTIVE. Idempotency keys, expected-version checks, IAM checks, audit events and an immutable lifecycle ledger protect state changes.
+
+**Provisioning boundary:** this commit implements the governed control-plane contract and its database integrity. It intentionally does not clone customer databases, copy source data, create separate schemas/instances, or run a synthetic-data generator. The sandbox provisioning/data adapter must call `SaasSandboxService.assertSandboxUsable(tenantId, environmentId)` before opening an environment and must provide the actual storage/network isolation. The registry stores manifests and opaque references only, never dataset rows or customer payloads.
