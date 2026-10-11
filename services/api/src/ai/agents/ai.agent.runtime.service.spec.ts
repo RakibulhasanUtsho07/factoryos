@@ -1207,6 +1207,7 @@ describe(
       };
       (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
       toolRegistry.getTool.mockResolvedValue(registeredTool);
       database.query.mockResolvedValueOnce({ rows: [{ max_number: null }], rowCount: 1 });
       const payload = { reason: 'wrongly bound compensation' };
@@ -1238,6 +1239,7 @@ describe(
       };
       (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
       toolRegistry.getTool.mockResolvedValue(registeredTool);
       database.query.mockResolvedValueOnce({ rows: [{ max_number: null }], rowCount: 1 });
       const payload = { reason: 'verified compensation retry' };
