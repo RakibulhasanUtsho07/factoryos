@@ -433,6 +433,41 @@ export class EntitlementService {
 
           AND e.status = 'ACTIVE'
 
+          -- A tenant with no subscription is temporarily treated as a legacy
+          -- installation. Once a subscription exists, its latest state and
+          -- effective period govern entitlement resolution immediately.
+          AND NOT EXISTS (
+            SELECT 1
+            FROM saas_subscriptions s
+            WHERE s.tenant_id = e.tenant_id
+              AND s.id = (
+                SELECT latest.id
+                FROM saas_subscriptions latest
+                WHERE latest.tenant_id = e.tenant_id
+                ORDER BY latest.created_at DESC, latest.id DESC
+                LIMIT 1
+              )
+              AND (
+                s.status IN ('SUSPENDED', 'TERMINATED', 'EXPIRED')
+                OR (
+                  s.status = 'TRIAL'
+                  AND (
+                    s.trial_ends_at IS NULL
+                    OR s.trial_ends_at <= COALESCE($4::timestamptz, now())
+                  )
+                )
+                OR (
+                  s.status = 'ACTIVE'
+                  AND (
+                    s.current_period_start IS NULL
+                    OR s.current_period_start > COALESCE($4::timestamptz, now())
+                    OR s.current_period_end IS NULL
+                    OR s.current_period_end <= COALESCE($4::timestamptz, now())
+                  )
+                )
+              )
+          )
+
           AND e.effective_from <=
             COALESCE(
               $4::timestamptz,
