@@ -1,8 +1,8 @@
 # SaaS Productization — WP10 Backend Slice
 
 **Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
-**Migration range:** 045–048.  
-**API bases:** /v2/saas/usage and /v2/saas/subscriptions.
+**Migration range:** 045–049.  
+**API bases:** /v2/saas/usage, /v2/saas/subscriptions, and /v2/saas/sandboxes.
 
 ## Delivered in this slice
 
@@ -79,6 +79,6 @@ The `/v2/saas/sandboxes` API requires verified request identity and IAM authoriz
 | POST /v2/saas/sandboxes/:id/approve-masked-data | saas.sandboxes.approve_masked_data | Approve or renew masked-data use with an expiry |
 | POST /v2/saas/sandboxes/:id/transitions | saas.sandboxes.control | Suspend, resume or retire an environment |
 
-Synthetic environments require a generator/version, schema version and record count; the registry rejects unrecognized manifest fields so customer rows cannot be posted into this API. Masked data requires an opaque dataset reference, schema version, masking-policy version, mask timestamp, SHA-256 checksum, a privacy assessment, reviewed field identifiers, and residual risk no higher than MEDIUM. Such environments start in `PENDING_APPROVAL`; a different user must approve them with a reason and an expiry no more than 90 days away. Approval expiry is evaluated by a live guard; an expired approval blocks access even if the stored lifecycle status still says ACTIVE. Idempotency keys, expected-version checks, IAM checks, audit events and an immutable lifecycle ledger protect state changes.
+Synthetic environments require a generator/version, schema version, deterministic seed and record count; the registry rejects unrecognized manifest fields so customer rows cannot be posted into this API. Masked data requires an opaque dataset reference, schema version, masking-policy version, mask timestamp, SHA-256 checksum, a privacy assessment, reviewed field identifiers, and residual risk no higher than MEDIUM. Such environments start in `PENDING_APPROVAL`; a different user must approve them with a reason and an expiry no more than 90 days away. Approval expiry is evaluated by a live guard; an expired approval blocks access even if the stored lifecycle status still says ACTIVE. Idempotency keys, expected-version checks, IAM checks, audit events and an immutable lifecycle ledger protect state changes.
 
 **Provisioning boundary:** this commit implements the governed control-plane contract and its database integrity. It intentionally does not clone customer databases, copy source data, create separate schemas/instances, or run a synthetic-data generator. The sandbox provisioning/data adapter must call `SaasSandboxService.assertSandboxUsable(tenantId, environmentId)` before opening an environment and must provide the actual storage/network isolation. The registry stores manifests and opaque references only, never dataset rows or customer payloads.
