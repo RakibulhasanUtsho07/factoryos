@@ -19,6 +19,7 @@ import { AiAgentRuntimeService } from './ai.agent.runtime.service';
 import {
   CreateAiAgentHandoffDto,
 } from './dto/create-ai-agent-handoff.dto';
+import { RejectAiAgentHandoffDto } from './dto/reject-ai-agent-handoff.dto';
 import {
   CreateAiAgentTaskDto,
 } from './dto/create-ai-agent-task.dto';
@@ -197,6 +198,7 @@ export class AiAgentController {
   async rejectHandoff(
     @Req() request: FactoryOsRequest,
     @Param('id', new ParseUUIDPipe()) handoffId: string,
+    @Body() body?: RejectAiAgentHandoffDto,
   ) {
     const context = this.getAuthenticatedFactoryContext(request);
 
@@ -205,6 +207,7 @@ export class AiAgentController {
       context.factoryId,
       context.userId,
       handoffId,
+      body?.reason,
     );
   }
 
