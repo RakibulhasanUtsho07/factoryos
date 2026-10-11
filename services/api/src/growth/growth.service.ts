@@ -1072,6 +1072,7 @@ export class GrowthService {
       };
     }
 
+    const projectedValues = projected as Record<string, unknown>;
     const capacity = root.capacity as Record<string, unknown>;
     const quality = root.quality as Record<string, unknown>;
     const cash = root.cash as Record<string, unknown>;
@@ -1095,34 +1096,39 @@ export class GrowthService {
       };
     }
 
-    const capacityActual = numeric(projected, 'capacity_utilization_pct')!;
-    const qualityActual = numeric(projected, 'quality_yield_pct')!;
-    const cashActual = numeric(projected, 'cash_after_investment')!;
-    const cashCurrency = text(projected, 'cash_currency')!.toUpperCase();
-    const backlogActual = numeric(projected, 'delivery_backlog_days')!;
+    const maxUtilizationValue = maxUtilization as number;
+    const minYieldValue = minYield as number;
+    const minCashValue = minCash as number;
+    const maxBacklogValue = maxBacklog as number;
+
+    const capacityActual = numeric(projectedValues, 'capacity_utilization_pct')!;
+    const qualityActual = numeric(projectedValues, 'quality_yield_pct')!;
+    const cashActual = numeric(projectedValues, 'cash_after_investment')!;
+    const cashCurrency = text(projectedValues, 'cash_currency')!.toUpperCase();
+    const backlogActual = numeric(projectedValues, 'delivery_backlog_days')!;
     const expectedCurrency = text(cash, 'currency')!.toUpperCase();
 
     checks.push({
       dimension: 'capacity',
-      passed: capacityActual <= maxUtilization,
+      passed: capacityActual <= maxUtilizationValue,
       projected: capacityActual,
-      maximumAllowed: maxUtilization,
+      maximumAllowed: maxUtilizationValue,
       sourceRef: text(capacity, 'source_ref'),
       asOf: text(capacity, 'as_of'),
     });
     checks.push({
       dimension: 'quality',
-      passed: qualityActual >= minYield,
+      passed: qualityActual >= minYieldValue,
       projected: qualityActual,
-      minimumAllowed: minYield,
+      minimumAllowed: minYieldValue,
       sourceRef: text(quality, 'source_ref'),
       asOf: text(quality, 'as_of'),
     });
     checks.push({
       dimension: 'cash',
-      passed: cashActual >= minCash && cashCurrency === expectedCurrency,
+      passed: cashActual >= minCashValue && cashCurrency === expectedCurrency,
       projected: cashActual,
-      minimumReserve: minCash,
+      minimumReserve: minCashValue,
       currency: cashCurrency,
       expectedCurrency,
       sourceRef: text(cash, 'source_ref'),
@@ -1130,9 +1136,9 @@ export class GrowthService {
     });
     checks.push({
       dimension: 'delivery',
-      passed: backlogActual <= maxBacklog,
+      passed: backlogActual <= maxBacklogValue,
       projected: backlogActual,
-      maximumAllowed: maxBacklog,
+      maximumAllowed: maxBacklogValue,
       sourceRef: text(delivery, 'source_ref'),
       asOf: text(delivery, 'as_of'),
     });

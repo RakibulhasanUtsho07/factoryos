@@ -1,5 +1,5 @@
 import {
-  IsIn, IsNotEmpty, IsOptional, IsString, MaxLength,
+  IsIn, IsOptional, IsString, MaxLength,
 } from 'class-validator';
 
 export class DecideGrowthValidationUnknownDto {
