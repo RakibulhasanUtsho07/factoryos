@@ -110,6 +110,12 @@ jobs:
             migrations/026_ai_action_binding_integrity.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
+            migrations/029_ai_agent_operational_controls.sql
+            migrations/030_ai_agent_language_owner.sql
+            migrations/031_ai_agent_evaluation_cases.sql
+            migrations/032_ai_agent_execution_evidence.sql
+            migrations/033_ai_agent_handoff_contract_immutability.sql
+            migrations/034_ai_agent_handoff_lifecycle.sql
           )
 
           for migration in "${migrations[@]}"; do
