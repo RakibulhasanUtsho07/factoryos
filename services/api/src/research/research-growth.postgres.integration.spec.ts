@@ -83,7 +83,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
   it('forces RLS on every research and growth data surface', async () => {
     const names = [
       'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations',
-      'research_relevance_mappings', 'growth_opportunities', 'growth_opportunity_evidence',
+      'research_relevance_mappings', 'growth_opportunities', 'growth_opportunity_evidence', 'growth_validation_unknowns',
       'growth_scenarios', 'growth_experiments', 'growth_experiment_results', 'growth_opportunity_outcomes',
     ];
     const result = await database.query<{
@@ -284,7 +284,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         `,
         [f.userId, opportunityId],
       );
-      const scenario = await client.query<{ id: string }>(
+      const scenario = await client.query<{ id: string; decision_ready: boolean }>(
         `
         INSERT INTO growth_scenarios (
           tenant_id, factory_id, opportunity_id, scenario_name, scenario_type, model_version,
@@ -293,14 +293,96 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         VALUES ($1, $2, $3, 'Base case', 'BASE', 'factoryos.growth.financial-sensitivity.v1',
           clock_timestamp(), 'quality-report:monthly-scrap', '{"baseline_revenue":1000}'::jsonb,
           '{"netImpactPoint":100}'::jsonb, $4, $5)
-        RETURNING id::text AS id
+        RETURNING id::text AS id, decision_ready
         `,
         [f.tenantId, f.factoryId, opportunityId, 'f'.repeat(64), f.userId],
       );
+      expect(scenario.rows[0].decision_ready).toBe(false);
+      await client.query('SAVEPOINT reject_forged_ready_scenario');
+      await expect(client.query(
+        `
+        INSERT INTO growth_scenarios (
+          tenant_id, factory_id, opportunity_id, scenario_name, scenario_type, model_version,
+          data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, created_by
+        )
+        VALUES ($1, $2, $3, 'Forged ready scenario', 'BASE', 'factoryos.growth.financial-sensitivity.v1',
+          clock_timestamp(), 'quality-report:monthly-scrap',
+          '{"constraints_snapshot":{},"projected_constraint_metrics":{"capacity_utilization_pct":50,"quality_yield_pct":99,"cash_after_investment":100000,"cash_currency":"BDT","delivery_backlog_days":3}}'::jsonb,
+          '{"constraintGate":{"status":"PASS","checks":[{"dimension":"capacity","passed":true,"projected":50},{"dimension":"quality","passed":true,"projected":99},{"dimension":"cash","passed":true,"projected":100000},{"dimension":"delivery","passed":true,"projected":3}]}}'::jsonb,
+          $4, $5)
+        `,
+        [f.tenantId, f.factoryId, opportunityId, 'e'.repeat(64), f.userId],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_forged_ready_scenario');
       await client.query('SAVEPOINT protect_scenario');
       await expect(client.query('UPDATE growth_scenarios SET scenario_name = $1 WHERE id = $2', ['tampered', scenario.rows[0].id]))
         .rejects.toMatchObject({ code: '55000' });
       await client.query('ROLLBACK TO SAVEPOINT protect_scenario');
     });
   });
+
+  it('ranks material decision unknowns and prevents mutation of their definition', async () => {
+    await withFixture(async (client, f) => {
+      const opportunity = await client.query<{ id: string }>(
+        `
+        INSERT INTO growth_opportunities (
+          tenant_id, factory_id, title, category, opportunity_statement, success_hypothesis,
+          assumptions, constraints_snapshot, affected_business_nodes, expected_value_low,
+          expected_value_high, currency, uncertainty_pct, effort, time_to_impact_days,
+          implementation_risk, owner_user_id, status, created_by
+        )
+        VALUES ($1, $2, 'Test uncertainty', 'COST_REDUCTION', 'Unknown scrap root cause',
+          'Validate root cause before investment', '["baseline may vary"]'::jsonb,
+          '{}'::jsonb, '[]'::jsonb, 0, 1000, 'BDT', 40, 'SMALL', 7, 'LOW',
+          $3, 'PROPOSED', $3)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.factoryId, f.userId],
+      );
+      const unknown = await client.query<{ id: string; priority_score: string }>(
+        `
+        INSERT INTO growth_validation_unknowns (
+          tenant_id, factory_id, opportunity_id, question, decision_variable,
+          impact_if_wrong, probability_unknown, validation_effort, validation_method,
+          owner_user_id, created_by
+        )
+        VALUES ($1, $2, $3, 'Will the supplier maintain 98% quality yield?',
+          'quality_yield_pct', 80, 0.75, 4, 'SUPPLIER_QUOTE', $4, $4)
+        RETURNING id::text AS id, priority_score::text AS priority_score
+        `,
+        [f.tenantId, f.factoryId, opportunity.rows[0].id, f.userId],
+      );
+      expect(Number(unknown.rows[0].priority_score)).toBe(15);
+
+      await client.query('SAVEPOINT protect_unknown_definition');
+      await expect(client.query(
+        'UPDATE growth_validation_unknowns SET impact_if_wrong = 5 WHERE id = $1',
+        [unknown.rows[0].id],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_unknown_definition');
+
+      await client.query('SAVEPOINT require_unknown_evidence');
+      await expect(client.query(
+        'UPDATE growth_validation_unknowns SET status = $1, updated_by = $2 WHERE id = $3',
+        ['RESOLVED', f.userId, unknown.rows[0].id],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT require_unknown_evidence');
+
+      await client.query(
+        'UPDATE growth_validation_unknowns SET status = $1, updated_by = $2 WHERE id = $3',
+        ['VALIDATING', f.userId, unknown.rows[0].id],
+      );
+      await client.query(
+        'UPDATE growth_validation_unknowns SET status = $1, updated_by = $2, resolution_evidence_ref = $3, resolution_notes = $4 WHERE id = $5',
+        ['RESOLVED', f.userId, 'supplier-quote:2026-10', 'Minimum order quality terms confirmed', unknown.rows[0].id],
+      );
+      const resolved = await client.query<{ status: string; priority_score: string }>(
+        'SELECT status, priority_score::text AS priority_score FROM growth_validation_unknowns WHERE id = $1',
+        [unknown.rows[0].id],
+      );
+      expect(resolved.rows[0].status).toBe('RESOLVED');
+      expect(Number(resolved.rows[0].priority_score)).toBe(15);
+    });
+  });
+
 });

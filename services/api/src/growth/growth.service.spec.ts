@@ -122,4 +122,75 @@ describe('GrowthService', () => {
     expect(client.query).toHaveBeenCalledTimes(1);
     expect(client.query.mock.calls[0][0]).toContain('SELECT status FROM growth_opportunities');
   });
+
+  it('keeps a sensitivity scenario exploratory when constraint snapshots or projections are missing', () => {
+    const evaluator = service as unknown as {
+      evaluateConstraintGate: (snapshot: Record<string, unknown>, projected?: Record<string, unknown>, refs?: Set<string>) => {
+        status: string; decisionReady: boolean; missingConstraints: string[]; missingProjectedMetrics: string[];
+      };
+    };
+    const gate = evaluator.evaluateConstraintGate({}, undefined, new Set());
+    expect(gate.status).toBe('REVIEW_REQUIRED');
+    expect(gate.decisionReady).toBe(false);
+    expect(gate.missingConstraints).toEqual(expect.arrayContaining(['capacity', 'quality', 'cash', 'delivery']));
+    expect(gate.missingProjectedMetrics).toContain('capacity_utilization_pct');
+  });
+
+  it('marks projections blocked when any declared factory limit would be breached', () => {
+    const evaluator = service as unknown as {
+      evaluateConstraintGate: (snapshot: Record<string, unknown>, projected: Record<string, unknown>, refs: Set<string>) => {
+        status: string; decisionReady: boolean; violations: string[];
+      };
+    };
+    const asOf = '2026-10-01T00:00:00.000Z';
+    const sources = {
+      capacity: { max_utilization_pct: 85, source_ref: 'capacity-report:sep', as_of: asOf },
+      quality: { min_yield_pct: 98, source_ref: 'quality-report:sep', as_of: asOf },
+      cash: { minimum_reserve: 50000, currency: 'BDT', source_ref: 'cash-forecast:oct', as_of: asOf },
+      delivery: { max_backlog_days: 7, source_ref: 'delivery-dashboard:sep', as_of: asOf },
+    };
+    const refs = new Set(['capacity-report:sep', 'quality-report:sep', 'cash-forecast:oct', 'delivery-dashboard:sep']);
+    const projection = {
+      capacity_utilization_pct: 92,
+      quality_yield_pct: 97,
+      cash_after_investment: 42000,
+      cash_currency: 'BDT',
+      delivery_backlog_days: 12,
+    };
+
+    const gate = evaluator.evaluateConstraintGate(sources, projection, refs);
+    expect(gate.status).toBe('BLOCKED');
+    expect(gate.decisionReady).toBe(false);
+    expect(gate.violations).toEqual(expect.arrayContaining(['capacity', 'quality', 'cash', 'delivery']));
+  });
+
+  it('allows decision-ready scenarios only when all four source-backed constraints pass', () => {
+    const evaluator = service as unknown as {
+      evaluateConstraintGate: (snapshot: Record<string, unknown>, projected: Record<string, unknown>, refs: Set<string>) => {
+        status: string; decisionReady: boolean; checks: Array<{ dimension: string; passed: boolean }>;
+      };
+    };
+    const asOf = '2026-10-01T00:00:00.000Z';
+    const sources = {
+      capacity: { max_utilization_pct: 85, source_ref: 'capacity-report:sep', as_of: asOf },
+      quality: { min_yield_pct: 98, source_ref: 'quality-report:sep', as_of: asOf },
+      cash: { minimum_reserve: 50000, currency: 'BDT', source_ref: 'cash-forecast:oct', as_of: asOf },
+      delivery: { max_backlog_days: 7, source_ref: 'delivery-dashboard:sep', as_of: asOf },
+    };
+    const refs = new Set(['capacity-report:sep', 'quality-report:sep', 'cash-forecast:oct', 'delivery-dashboard:sep']);
+    const projection = {
+      capacity_utilization_pct: 80,
+      quality_yield_pct: 99,
+      cash_after_investment: 100000,
+      cash_currency: 'BDT',
+      delivery_backlog_days: 4,
+    };
+
+    const gate = evaluator.evaluateConstraintGate(sources, projection, refs);
+    expect(gate.status).toBe('PASS');
+    expect(gate.decisionReady).toBe(true);
+    expect(gate.checks).toHaveLength(4);
+    expect(gate.checks.every(item => item.passed)).toBe(true);
+  });
+
 });
