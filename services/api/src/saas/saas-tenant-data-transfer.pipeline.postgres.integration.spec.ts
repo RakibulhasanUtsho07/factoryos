@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { jest, describe, expect, it } from '@jest/globals';
 import { Pool } from 'pg';
 import { DatabaseService } from '../database/database.service';
-import { REQUIRED_TRANSFER_CATEGORIES, SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
+import { REQUIRED_TRANSFER_CATEGORIES } from './dto/create-saas-schema-compatibility-rule.dto';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
 import type { SaasTenantMigrationTargetAdapter, SaasTenantTransferExportManifest } from './saas-tenant-data-transfer.adapters';
 import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';

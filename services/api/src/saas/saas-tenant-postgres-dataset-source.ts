@@ -3,7 +3,7 @@ import {
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import type { QueryResultRow } from 'pg';
+import type { QueryResult, QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 
@@ -135,7 +135,7 @@ export class SaasTenantPostgresDatasetSource {
         let afterId: string | null = null;
         while (true) {
           // Table identifiers can only originate from the reviewed constant allowlist.
-          const result = await client.query<TenantDatasetRow>(
+          const result: QueryResult<TenantDatasetRow> = await client.query<TenantDatasetRow>(
             'SELECT dataset_row.* FROM public.' +
               table +
               ' AS dataset_row ' +
