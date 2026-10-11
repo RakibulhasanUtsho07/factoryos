@@ -122,6 +122,7 @@ jobs:
             migrations/038_inventory_stock_ledger.sql
             migrations/039_research_growth_intelligence.sql
             migrations/040_growth_constraint_gate_unknowns.sql
+            migrations/041_growth_outcome_learning_signals.sql
           )
 
           for migration in "${migrations[@]}"; do

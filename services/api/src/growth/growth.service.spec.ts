@@ -193,4 +193,46 @@ describe('GrowthService', () => {
     expect(gate.checks.every(item => item.passed)).toBe(true);
   });
 
+
+  it('persists a factory-scoped AI learning signal atomically with an outcome', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'a08ea4b8-ed43-4fb9-8561-1ef47d43b041',
+          opportunity_id: OPPORTUNITY_ID,
+          experiment_result_id: null,
+          assessment: 'POSITIVE',
+          realized_metrics: { scrap_rate_delta_pct: -3.2 },
+          evidence_refs: ['quality-report:pilot-17'],
+          notes: null,
+          observed_at: '2026-10-11T10:00:00.000Z',
+          created_at: '2026-10-11T10:00:00.000Z',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: '0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.recordOpportunityOutcome(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
+      {
+        assessment: 'POSITIVE',
+        realized_metrics: { scrap_rate_delta_pct: -3.2 },
+        evidence_refs: ['quality-report:pilot-17'],
+        observed_at: '2026-10-11T10:00:00.000Z',
+        confidence: 0.8,
+      },
+      null,
+      null,
+    );
+
+    expect(result.learning_signal_id).toBe('0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38');
+    expect(client.query.mock.calls[3][0]).toContain('INSERT INTO ai_learning_signals');
+    expect(client.query.mock.calls[3][1][5]).toContain('"assessment":"POSITIVE"');
+    expect(client.query.mock.calls[4][0]).toContain('GROWTH.OPPORTUNITY_OUTCOME_RECORDED');
+    expect(client.query.mock.calls[5][0]).toContain('AI.LEARNING_SIGNAL_RECORDED');
+  });
+
 });

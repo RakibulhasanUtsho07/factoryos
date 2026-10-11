@@ -1,4 +1,4 @@
-import { ArrayMinSize, IsArray, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { ArrayMinSize, IsArray, IsDateString, IsIn, IsNumber, IsObject, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 
 export class RecordGrowthOpportunityOutcomeDto {
   @IsOptional()
@@ -21,6 +21,12 @@ export class RecordGrowthOpportunityOutcomeDto {
   @IsString()
   @MaxLength(4000)
   notes?: string;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  @Max(1)
+  confidence?: number;
 
   @IsDateString()
   observed_at!: string;

@@ -385,4 +385,73 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
     });
   });
 
+
+  it('links a realised growth outcome to an immutable factory-scoped learning signal', async () => {
+    await withFixture(async (client, f) => {
+      const opportunity = await client.query<{ id: string }>(
+        `
+        INSERT INTO growth_opportunities (
+          tenant_id, factory_id, title, category, opportunity_statement, success_hypothesis,
+          assumptions, constraints_snapshot, affected_business_nodes, expected_value_low,
+          expected_value_high, currency, uncertainty_pct, effort, time_to_impact_days,
+          implementation_risk, owner_user_id, status, created_by
+        )
+        VALUES ($1, $2, 'Outcome learning link', 'COST_REDUCTION', 'Baseline waste is measurable',
+          'A controlled pilot can reduce waste', '["monthly baseline is representative"]'::jsonb,
+          '{}'::jsonb, '[]'::jsonb, 50, 300, 'BDT', 30, 'SMALL', 21, 'LOW',
+          $3, 'IN_PROGRESS', $3)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.factoryId, f.userId],
+      );
+      const outcome = await client.query<{ id: string }>(
+        `
+        INSERT INTO growth_opportunity_outcomes (
+          tenant_id, factory_id, opportunity_id, assessment, realized_metrics,
+          evidence_refs, notes, observed_at, recorded_by
+        )
+        VALUES ($1, $2, $3, 'POSITIVE', '{"scrap_rate_delta_pct":-3.2}'::jsonb,
+          '["quality-report:pilot-17"]'::jsonb, 'Recorded pilot result',
+          clock_timestamp(), $4)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.factoryId, opportunity.rows[0].id, f.userId],
+      );
+      const signal = await client.query<{ id: string; tenant_scope: string; confidence: string }>(
+        `
+        INSERT INTO ai_learning_signals (
+          tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
+          source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
+        )
+        VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT',
+          'Growth outcome recorded: POSITIVE', 0.8, 'FACTORY',
+          '{"assessment":"POSITIVE","source":"GROWTH_OUTCOME"}'::jsonb, $4)
+        RETURNING id::text AS id, tenant_scope, confidence::text AS confidence
+        `,
+        [f.tenantId, f.factoryId, outcome.rows[0].id, f.userId],
+      );
+      expect(signal.rows[0].tenant_scope).toBe('FACTORY');
+      expect(Number(signal.rows[0].confidence)).toBe(0.8);
+
+      await client.query('SAVEPOINT reject_wrong_factory_learning_link');
+      await expect(client.query(
+        `
+        INSERT INTO ai_learning_signals (
+          tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
+          source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
+        )
+        VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT',
+          'Cross-factory signal', 0.8, 'FACTORY', '{}'::jsonb, $4)
+        `,
+        [f.tenantId, randomUUID(), outcome.rows[0].id, f.userId],
+      )).rejects.toMatchObject({ code: '23503' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_wrong_factory_learning_link');
+
+      await client.query('SAVEPOINT protect_growth_learning_signal');
+      await expect(client.query('UPDATE ai_learning_signals SET confidence = 0.1 WHERE id = $1', [signal.rows[0].id]))
+        .rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_growth_learning_signal');
+    });
+  });
+
 });

@@ -847,13 +847,53 @@ export class GrowthService {
             ['REALIZED', opportunityId, tenantId, factoryId, 'IN_PROGRESS'],
           );
         }
+        const signal = await client.query<{ id: string }>(
+          `
+          INSERT INTO ai_learning_signals (
+            tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
+            source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
+          )
+          VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT', $4, $5, 'FACTORY', $6::jsonb, $7)
+          RETURNING id::text AS id
+          `,
+          [
+            tenantId, factoryId, result.id, 'Growth outcome recorded: ' + dto.assessment,
+            dto.confidence ?? 0.5,
+            JSON.stringify({
+              source: 'GROWTH_OUTCOME',
+              opportunityId,
+              experimentResultId: dto.experiment_result_id ?? null,
+              assessment: dto.assessment,
+              realizedMetrics: dto.realized_metrics,
+              evidenceRefs: dto.evidence_refs.map(v => v.trim()),
+              observedAt: observedAt.toISOString(),
+              confidenceMeaning: 'Confidence recorded by the outcome submitter; not a calibrated probability of causal effect.',
+            }),
+            userId,
+          ],
+        );
+        const learningSignal = signal.rows[0];
+        if (!learningSignal) throw new Error('GROWTH_OUTCOME_LEARNING_SIGNAL_INSERT_FAILED');
+
         await this.insertOutbox(client, {
           tenantId, factoryId, userId, aggregateType: 'GROWTH_OUTCOME',
           aggregateId: result.id, eventType: 'GROWTH.OPPORTUNITY_OUTCOME_RECORDED',
           correlationId: this.correlationId(requestId, traceId),
-          payload: { outcome_id: result.id, opportunity_id: opportunityId, assessment: dto.assessment },
+          payload: {
+            outcome_id: result.id, opportunity_id: opportunityId, assessment: dto.assessment,
+            learning_signal_id: learningSignal.id,
+          },
         });
-        return result;
+        await this.insertOutbox(client, {
+          tenantId, factoryId, userId, aggregateType: 'AI_LEARNING_SIGNAL',
+          aggregateId: learningSignal.id, eventType: 'AI.LEARNING_SIGNAL_RECORDED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            signal_id: learningSignal.id, source_growth_outcome_id: result.id,
+            tenant_scope: 'FACTORY', signal_type: 'GROWTH_OUTCOME_ASSESSMENT',
+          },
+        });
+        return { ...result, learning_signal_id: learningSignal.id };
       },
     );
     await this.auditSafely({
