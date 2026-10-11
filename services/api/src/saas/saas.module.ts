@@ -10,7 +10,8 @@ import { SaasSandboxController } from './saas-sandbox.controller';
 import { SaasSandboxService } from './saas-sandbox.service';
 import { SaasTenantDataTransferController } from './saas-tenant-data-transfer.controller';
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
-import { SAAS_ENCRYPTED_TENANT_BUNDLE_STORE } from './saas-tenant-data-transfer.adapters';
+import { SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, SAAS_TENANT_TRANSFER_DATASET_SOURCE } from './saas-tenant-data-transfer.adapters';
+import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
 import { SaasTenantDataTransferWorkerService } from './saas-tenant-data-transfer.worker';
 import { SaasSubscriptionController } from './saas-subscription.controller';
@@ -35,6 +36,8 @@ import { SaasUsageService } from './saas-usage.service';
     SaasReleaseRolloutService,
     SaasDeploymentProfileService,
     SaasTenantDataTransferService,
+    SaasTenantPostgresDatasetSource,
+    { provide: SAAS_TENANT_TRANSFER_DATASET_SOURCE, useExisting: SaasTenantPostgresDatasetSource },
     SaasEncryptedTenantBundleStore,
     { provide: SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, useExisting: SaasEncryptedTenantBundleStore },
     SaasTenantDataTransferWorkerService,
