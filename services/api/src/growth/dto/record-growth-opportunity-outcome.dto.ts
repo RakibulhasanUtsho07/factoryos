@@ -1,4 +1,4 @@
-import { ArrayMinSize, IsArray, IsDateString, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { ArrayMinSize, IsArray, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class RecordGrowthOpportunityOutcomeDto {
   @IsOptional()

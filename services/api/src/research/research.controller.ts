@@ -38,7 +38,7 @@ export class ResearchController {
   @Post('sources')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.write')
-  createSource(@Req() req: FactoryOsRequest, @Body() body: CreateResearchSourceDto) {
+  createSource(@Req() req: FactoryOsRequest, @Body() body: CreateResearchSourceDto): Promise<unknown>  {
     const c = this.context(req);
     return this.research.createSource(c.userId, c.tenantId, body, c.requestId, c.traceId);
   }
@@ -51,7 +51,7 @@ export class ResearchController {
     @Query('search') search?: string,
     @Query('access_status') access_status?: string,
     @Query('limit') rawLimit?: string,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.listSources(c.tenantId, {
       search,
@@ -67,7 +67,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
     @Body() body: DecideResearchSourceDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.decideSource(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
   }
@@ -79,7 +79,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
     @Body() body: CreateResearchClaimDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.createClaim(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
   }
@@ -92,7 +92,7 @@ export class ResearchController {
     @Query('status') status?: string,
     @Query('topic') topic?: string,
     @Query('limit') rawLimit?: string,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.listClaims(c.tenantId, {
       status,
@@ -108,7 +108,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('claimId', new ParseUUIDPipe()) claimId: string,
     @Body() body: DecideResearchClaimDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.decideClaim(c.userId, c.tenantId, claimId, body, c.requestId, c.traceId);
   }
@@ -120,7 +120,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('claimId', new ParseUUIDPipe()) claimId: string,
     @Body() body: CreateResearchClaimLinkDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.linkClaims(c.userId, c.tenantId, claimId, body);
   }
@@ -128,7 +128,7 @@ export class ResearchController {
   @Post('releases')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.write')
-  createRelease(@Req() req: FactoryOsRequest, @Body() body: CreateResearchReleaseDto) {
+  createRelease(@Req() req: FactoryOsRequest, @Body() body: CreateResearchReleaseDto): Promise<unknown>  {
     const c = this.context(req);
     return this.research.createRelease(c.userId, c.tenantId, body, c.requestId, c.traceId);
   }
@@ -136,7 +136,7 @@ export class ResearchController {
   @Get('releases')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.read')
-  listReleases(@Req() req: FactoryOsRequest, @Query('limit') rawLimit?: string) {
+  listReleases(@Req() req: FactoryOsRequest, @Query('limit') rawLimit?: string): Promise<unknown>  {
     const c = this.context(req);
     return this.research.listReleases(c.tenantId, rawLimit === undefined ? 50 : Number(rawLimit));
   }
@@ -148,7 +148,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
     @Body() body: PromoteResearchReleaseDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.promoteRelease(c.userId, c.tenantId, releaseId, body, c.requestId, c.traceId);
   }
@@ -161,7 +161,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('claimId', new ParseUUIDPipe()) claimId: string,
     @Body() body: CreateResearchRelevanceDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.factoryContext(req);
     return this.research.createRelevance(c.userId, c.tenantId, c.factoryId, claimId, body, c.requestId, c.traceId);
   }
@@ -174,7 +174,7 @@ export class ResearchController {
     @Req() req: FactoryOsRequest,
     @Param('mappingId', new ParseUUIDPipe()) mappingId: string,
     @Body() body: DecideResearchRelevanceDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.factoryContext(req);
     return this.research.decideRelevance(
       c.userId, c.tenantId, c.factoryId, mappingId, body, c.requestId, c.traceId,
@@ -185,7 +185,7 @@ export class ResearchController {
   @UseGuards(PermissionGuard)
   @RequirePermission('research.read')
   @RequireFactoryScope()
-  listRelevance(@Req() req: FactoryOsRequest, @Query('limit') rawLimit?: string) {
+  listRelevance(@Req() req: FactoryOsRequest, @Query('limit') rawLimit?: string): Promise<unknown>  {
     const c = this.factoryContext(req);
     return this.research.listRelevance(c.tenantId, c.factoryId, rawLimit === undefined ? 50 : Number(rawLimit));
   }

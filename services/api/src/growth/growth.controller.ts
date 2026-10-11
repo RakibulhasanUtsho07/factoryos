@@ -36,7 +36,7 @@ export class GrowthController {
   @UseGuards(PermissionGuard)
   @RequirePermission('growth.write')
   @RequireFactoryScope()
-  createOpportunity(@Req() req: FactoryOsRequest, @Body() body: CreateGrowthOpportunityDto) {
+  createOpportunity(@Req() req: FactoryOsRequest, @Body() body: CreateGrowthOpportunityDto): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.createOpportunity(c.userId, c.tenantId, c.factoryId, body, c.requestId, c.traceId);
   }
@@ -50,7 +50,7 @@ export class GrowthController {
     @Query('status') status?: string,
     @Query('category') category?: string,
     @Query('limit') rawLimit?: string,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.listOpportunities(c.tenantId, c.factoryId, {
       status, category, limit: rawLimit === undefined ? 50 : Number(rawLimit),
@@ -64,7 +64,7 @@ export class GrowthController {
   getOpportunity(
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.getOpportunity(c.tenantId, c.factoryId, opportunityId);
   }
@@ -77,7 +77,7 @@ export class GrowthController {
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
     @Body() body: DecideGrowthOpportunityDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.decideOpportunity(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
   }
@@ -90,7 +90,7 @@ export class GrowthController {
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
     @Body() body: CreateGrowthScenarioDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.createScenario(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
   }
@@ -103,7 +103,7 @@ export class GrowthController {
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
     @Body() body: CreateGrowthExperimentDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.createExperiment(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
   }
@@ -115,7 +115,7 @@ export class GrowthController {
   startExperiment(
     @Req() req: FactoryOsRequest,
     @Param('experimentId', new ParseUUIDPipe()) experimentId: string,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.startExperiment(c.userId, c.tenantId, c.factoryId, experimentId, c.requestId, c.traceId);
   }
@@ -128,7 +128,7 @@ export class GrowthController {
     @Req() req: FactoryOsRequest,
     @Param('experimentId', new ParseUUIDPipe()) experimentId: string,
     @Body() body: RecordGrowthExperimentResultDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.recordExperimentResult(c.userId, c.tenantId, c.factoryId, experimentId, body, c.requestId, c.traceId);
   }
@@ -141,7 +141,7 @@ export class GrowthController {
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
     @Body() body: RecordGrowthOpportunityOutcomeDto,
-  ) {
+  ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.recordOpportunityOutcome(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
   }
