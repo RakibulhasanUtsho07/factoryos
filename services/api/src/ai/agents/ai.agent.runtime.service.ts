@@ -615,6 +615,8 @@ export class AiAgentRuntimeService {
       taskId,
       stepId,
     );
+    // Preserve the original binding across step-state row refreshes.
+    const boundAgentId = step.agent_id;
 
     if (step.status === 'SUCCEEDED') {
       return {
@@ -627,11 +629,11 @@ export class AiAgentRuntimeService {
     this.assertExecutable(task, step);
     await this.assertDependencies(tenantId, factoryId, task, step);
 
-    if (step.agent_id) {
+    if (boundAgentId) {
       await this.aiAgentCatalogueService.assertToolEntitled(
         tenantId,
         factoryId,
-        step.agent_id,
+        boundAgentId,
         step.tool_id,
         step.tool_version,
       );
@@ -839,13 +841,13 @@ export class AiAgentRuntimeService {
         'STARTED',
       );
 
-      if (step.agent_id) {
+      if (boundAgentId) {
         // Operational controls can change while action authorization runs.
         // Re-check immediately before crossing the side-effect boundary.
         await this.aiAgentCatalogueService.assertToolEntitled(
           tenantId,
           factoryId,
-          step.agent_id,
+          boundAgentId,
           step.tool_id,
           step.tool_version,
         );
