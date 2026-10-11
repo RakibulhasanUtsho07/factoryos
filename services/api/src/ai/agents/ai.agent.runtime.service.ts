@@ -312,7 +312,7 @@ export class AiAgentRuntimeService {
       result = await this.database.transaction(
         async (client) => {
           const taskId = randomUUID();
-  
+
           const inserted = await client.query<AgentTaskRow>(
             `
             INSERT INTO agent_tasks (
@@ -361,16 +361,16 @@ export class AiAgentRuntimeService {
               requestHash,
             ],
           );
-  
+
           const task = inserted.rows[0];
-  
+
           if (!task) {
             throw new Error('AI_AGENT_TASK_INSERT_FAILED');
           }
-  
+
           for (let index = 0; index < input.steps.length; index += 1) {
             const step = input.steps[index]!;
-  
+
             await client.query(
               `
               INSERT INTO agent_task_steps (
@@ -430,7 +430,7 @@ export class AiAgentRuntimeService {
               ],
             );
           }
-  
+
           return task;
         },
         {
@@ -438,8 +438,8 @@ export class AiAgentRuntimeService {
           userId: actorUserId,
         },
       );
-  
-  
+
+
     } catch (error: unknown) {
       const databaseError =
         error && typeof error === 'object'
