@@ -16,6 +16,7 @@ import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
 import { OrdersModule } from './orders/orders.module';
 import { OutboxModule } from './outbox/outbox.module';
 
@@ -64,6 +65,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     IamModule,
 
     OrdersModule,
+
+    MaintenanceModule,
 
     EntitlementsModule,
 
