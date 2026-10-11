@@ -1,0 +1,22 @@
+import { jest } from '@jest/globals';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { SaasUsageService } from './saas-usage.service';
+
+const tenant='faaab63d-c447-46ce-950d-deebdd7f5f30';
+const factory='24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
+const user='5e8d2d2b-4a11-4ac7-8db9-cda1eafaf001';
+function rate(extra:Record<string,unknown>={}){return {metric_code:'AI_INPUT_TOKEN',rate_version:1,rate_minor_per_block:40,block_quantity:1000,currency:'BDT',effective_from:'2026-10-01T00:00:00.000Z',idempotency_key:'rate-v1',...extra};}
+function event(extra:Record<string,unknown>={}){return {metric_code:'AI_INPUT_TOKEN',capability_code:'ai.runtime.inference',workload_class:'PRODUCTION',quantity:1250,occurred_at:'2026-10-10T12:00:00.000Z',source_system:'AI_GATEWAY',source_event_ref:'ai:request:1',idempotency_key:'event-v1',...extra};}
+describe('SaasUsageService',()=>{
+ const db={query:jest.fn<(q:string,v?:unknown[],c?:unknown)=>Promise<{rows:unknown[]}>>()};
+ const iam={authorize:jest.fn<(...a:unknown[])=>Promise<void>>()};
+ const audit={record:jest.fn<(...a:unknown[])=>Promise<string>>()};
+ let service:SaasUsageService;
+ beforeEach(()=>{jest.clearAllMocks();db.query.mockReset();iam.authorize.mockResolvedValue(undefined);audit.record.mockResolvedValue('audit');service=new SaasUsageService(db as never,iam as never,audit as never);});
+ it('authorizes metering writes before reading or writing rate/event records',async()=>{iam.authorize.mockRejectedValueOnce(new ForbiddenException('denied'));await expect(service.recordUsageEvent(tenant,factory,user,event() as never)).rejects.toBeInstanceOf(ForbiddenException);expect(db.query).not.toHaveBeenCalled();});
+ it('rejects invalid quantities without database access',async()=>{await expect(service.recordUsageEvent(tenant,factory,user,event({quantity:0}) as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
+ it('fails closed when an idempotency key is reused for a different usage event',async()=>{db.query.mockResolvedValueOnce({rows:[{id:'e',request_hash:'0'.repeat(64)}]});await expect(service.recordUsageEvent(tenant,factory,user,event() as never)).rejects.toBeInstanceOf(ConflictException);expect(db.query).toHaveBeenCalledTimes(1);});
+ it('prices metered usage from the rate effective at event time and records a source fingerprint',async()=>{db.query.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{id:'r',tenant_id:tenant,metric_code:'AI_INPUT_TOKEN',rate_version:1,rate_minor_per_block:'40',block_quantity:'1000.000000',currency:'BDT',effective_from:'2026-10-01T00:00:00.000Z',idempotency_key:'rate-v1',request_hash:'a'.repeat(64),created_by:user,created_at:'2026-10-01T00:00:00.000Z'}]}).mockResolvedValueOnce({rows:[{id:'e',tenant_id:tenant,factory_id:factory,metric_code:'AI_INPUT_TOKEN',capability_code:'ai.runtime.inference',workload_class:'PRODUCTION',quantity:'1250.000000',occurred_at:'2026-10-10T12:00:00.000Z',source_system:'AI_GATEWAY',source_event_ref:'ai:request:1',rate_card_id:'r',rate_version_snapshot:1,rate_minor_per_block_snapshot:'40',rate_block_quantity_snapshot:'1000',currency:'BDT',estimated_cost_minor:'50',request_hash:'b'.repeat(64),idempotency_key:'event-v1',recorded_by:user,created_at:'2026-10-10T12:00:01Z'}]});const result=await service.recordUsageEvent(tenant,factory,user,event() as never);expect(result.event.estimatedCostMinor).toBe('50');expect(result.event.billable).toBe(true);expect(db.query.mock.calls[2]?.[1]?.[14]).toBe(50);});
+ it('rejects adjustments that do not change quantity or cost before any database call',async()=>{await expect(service.createAdjustment(tenant,factory,user,{period_start:'2026-10-01T00:00:00Z',period_end:'2026-10-31T00:00:00Z',quantity_delta:0,cost_delta_minor:0,currency:'BDT',reason_code:'OTHER',reason:'No-op',idempotency_key:'adjustment-noop'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
+ it('requires a bounded reconciliation period',async()=>{await expect(service.reconcileInvoice(tenant,factory,user,{invoice_reference:'INV-1',reconciliation_version:1,period_start:'2026-01-01T00:00:00Z',period_end:'2026-03-01T00:00:00Z',currency:'BDT',invoiced_amount_minor:100,idempotency_key:'recon-too-long'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
+});
