@@ -282,7 +282,7 @@ export class SaasSubscriptionService {
           if (current.trial_ends_at && new Date(current.trial_ends_at).getTime() <= new Date(effectiveAt).getTime()) throw new ConflictException('Expired trials cannot be activated');
           nextStatus = 'ACTIVE'; nextPeriodStart = periodStart; nextPeriodEnd = periodEnd; break;
         case SaasSubscriptionTransitionAction.SUSPEND:
-          if (!['TRIAL','ACTIVE'].includes(current.status)) throw new ConflictException('Only TRIAL or ACTIVE subscriptions can be suspended');
+          if (current.status !== 'ACTIVE') throw new ConflictException('Only ACTIVE subscriptions can be suspended');
           nextStatus = 'SUSPENDED'; suspendedAt = effectiveAt; break;
         case SaasSubscriptionTransitionAction.RESUME:
           if (current.status !== 'SUSPENDED') throw new ConflictException('Only SUSPENDED subscriptions can be resumed');
