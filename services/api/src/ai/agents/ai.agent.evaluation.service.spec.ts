@@ -243,6 +243,33 @@ describe('AiAgentEvaluationService', () => {
   });
 
 
+  it('keeps failed simulation runs inconclusive even when their result claims a refusal', () => {
+    const service = makeService();
+    const refusalCase = {
+      ...caseRow,
+      kind: 'EXPECTED_REFUSAL',
+      expected_refusal_reason_contains: 'not permitted',
+    };
+    const evaluated = (service as any).compareCaseToRun(refusalCase, simulationRow({
+      status: 'FAILED',
+      plan: [],
+      result: {
+        outcome: 'REFUSED',
+        refusal: { reason: 'Action not permitted by policy' },
+      },
+    }));
+
+    expect(evaluated.status).toBe('INCONCLUSIVE');
+    expect(evaluated.observedSummary).toMatchObject({
+      runStatus: 'FAILED',
+      refusalObserved: true,
+      evidenceSource: 'SYNTHETIC_SIMULATION_RUN_RESULT',
+      executionEvidence: 'SIMULATION_ONLY_NO_AGENT_OR_TOOL_EXECUTION',
+      liveExecution: false,
+      reason: 'The simulation run failed; refusal-shaped result data is not conclusive policy evidence',
+    });
+  });
+
   it('does not confuse a caller-supplied simulated tool refusal with an agent refusal', () => {
     const service = makeService();
     const refusalCase = {
