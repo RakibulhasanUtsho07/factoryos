@@ -190,6 +190,24 @@ export class AiAgentController {
     );
   }
 
+  @Post('handoffs/:id/reject')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.authorize')
+  @RequireFactoryScope()
+  async rejectHandoff(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) handoffId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.rejectHandoff(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      handoffId,
+    );
+  }
+
   private getAuthenticatedFactoryContext(
     request: FactoryOsRequest,
   ): {

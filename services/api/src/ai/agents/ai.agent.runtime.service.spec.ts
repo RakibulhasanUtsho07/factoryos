@@ -1849,6 +1849,82 @@ describe(
       );
     });
 
+    it('rejects a pending handoff with an atomic expiry guard and audit event', async () => {
+      const handoff = {
+        id: 'cf1a2222-2222-4222-8222-222222222222',
+        tenantId,
+        factoryId,
+        sourceAgentId: 'AGENT.SENDER',
+        targetAgentId: 'AGENT.RECEIVER',
+        purpose: 'Check order recovery',
+        allowedDataClasses: ['INTERNAL'],
+        permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        parentTraceId: traceId,
+        expectedArtifact: { type: 'recovery-options' },
+        handoffHash: 'c'.repeat(64),
+        status: 'PENDING' as const,
+        acceptedBy: null,
+        acceptedAt: null,
+        createdAt: '2026-10-07T00:00:00.000Z',
+        updatedAt: '2026-10-07T00:00:00.000Z',
+      };
+      (service as any).getHandoff = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(handoff);
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          id: handoff.id,
+          tenant_id: tenantId,
+          factory_id: factoryId,
+          source_agent_id: handoff.sourceAgentId,
+          target_agent_id: handoff.targetAgentId,
+          purpose: handoff.purpose,
+          allowed_data_classes: handoff.allowedDataClasses,
+          permitted_tools: handoff.permittedTools,
+          expires_at: handoff.expiresAt,
+          parent_trace_id: handoff.parentTraceId,
+          expected_artifact: handoff.expectedArtifact,
+          handoff_hash: handoff.handoffHash,
+          status: 'REJECTED',
+          accepted_by: null,
+          accepted_at: null,
+          created_at: handoff.createdAt,
+          updated_at: handoff.updatedAt,
+        }],
+        rowCount: 1,
+      });
+
+      const result = await service.rejectHandoff(
+        tenantId,
+        factoryId,
+        userId,
+        handoff.id,
+        'Operator chose not to proceed',
+      );
+
+      expect(result.status).toBe('REJECTED');
+      expect(iamService.authorize).toHaveBeenCalledWith(
+        userId,
+        tenantId,
+        'ai.actions.authorize',
+        factoryId,
+      );
+      const sql = String((database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls[0]?.[0] ?? '');
+      expect(sql).toContain("SET status = 'REJECTED'");
+      expect(sql).toContain("AND status = 'PENDING'");
+      expect(sql).toContain('AND expires_at > NOW()');
+      expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'AI_AGENT_HANDOFF',
+        action: 'REJECT',
+        resourceId: handoff.id,
+        correlationId: traceId,
+        payload: { reason: 'Operator chose not to proceed' },
+      }));
+    });
+
     it('requires the handoff to remain unexpired in the atomic acceptance update', async () => {
       const handoff = {
         id: 'cf1a2222-2222-4222-8222-222222222222',

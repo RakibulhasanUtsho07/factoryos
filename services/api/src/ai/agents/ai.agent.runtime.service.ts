@@ -1502,6 +1502,122 @@ export class AiAgentRuntimeService {
     return this.mapHandoff(row);
   }
 
+  async rejectHandoff(
+    tenantId: string,
+    factoryId: string,
+    rejectingUserId: string,
+    handoffId: string,
+    reason = 'AI agent handoff rejected by actor',
+  ): Promise<AiAgentHandoffRecord> {
+    this.validateScope(tenantId, factoryId, rejectingUserId);
+    this.requiredUuid(handoffId, 'handoffId');
+
+    await this.iamService.authorize(
+      rejectingUserId,
+      tenantId,
+      'ai.actions.authorize',
+      factoryId,
+    );
+
+    const handoff = await this.getHandoff(
+      tenantId,
+      factoryId,
+      handoffId,
+    );
+
+    if (!handoff) {
+      throw new NotFoundException(
+        'AI agent handoff was not found for this factory',
+      );
+    }
+
+    if (handoff.status !== 'PENDING') {
+      throw new ConflictException(
+        `AI agent handoff is not pending: ${handoff.status}`,
+      );
+    }
+
+    const expiry = new Date(handoff.expiresAt).getTime();
+    if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+      await this.database.query(
+        `
+        UPDATE agent_handoffs
+        SET status = 'EXPIRED'
+        WHERE id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND status = 'PENDING'
+          AND expires_at <= NOW()
+        `,
+        [handoffId, tenantId, factoryId],
+        {
+          tenantId,
+          userId: rejectingUserId,
+        },
+      );
+
+      throw new ConflictException('AI agent handoff has expired');
+    }
+
+    const rejectionReason = this.requiredString(reason, 'reason', 2000);
+    const result = await this.database.query<AgentHandoffRow>(
+      `
+      UPDATE agent_handoffs
+      SET status = 'REJECTED'
+      WHERE
+        id = $1
+        AND tenant_id = $2
+        AND factory_id = $3
+        AND status = 'PENDING'
+        AND expires_at > NOW()
+      RETURNING
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        source_agent_id,
+        target_agent_id,
+        purpose,
+        allowed_data_classes,
+        permitted_tools,
+        expires_at::text AS expires_at,
+        parent_trace_id::text AS parent_trace_id,
+        expected_artifact,
+        handoff_hash,
+        status,
+        accepted_by::text AS accepted_by,
+        accepted_at::text AS accepted_at,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at
+      `,
+      [handoffId, tenantId, factoryId],
+      {
+        tenantId,
+        userId: rejectingUserId,
+      },
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new ConflictException(
+        'AI agent handoff rejection lost a concurrency race or the handoff expired',
+      );
+    }
+
+    await this.audit(
+      tenantId,
+      factoryId,
+      rejectingUserId,
+      'AI_AGENT_HANDOFF',
+      'REJECT',
+      'AGENT_HANDOFF',
+      row.id,
+      row.parent_trace_id,
+      { reason: rejectionReason },
+    );
+
+    return this.mapHandoff(row);
+  }
+
   async compensateStep(
     tenantId: string,
     factoryId: string,
