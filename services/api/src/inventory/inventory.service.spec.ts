@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { ConflictException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 

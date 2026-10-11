@@ -8,14 +8,14 @@ import {
 
 import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
-import type { PoolClient } from 'pg';
+import type { PoolClient, QueryResultRow } from 'pg';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { CreateStockMovementDto } from './dto/create-stock-movement.dto';
 
-interface InventoryItemRow {
+type InventoryItemRow = QueryResultRow & {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -26,9 +26,9 @@ interface InventoryItemRow {
   quantity_on_hand: string;
   version: string;
   created_at: string;
-}
+};
 
-interface InventoryMovementRow {
+type InventoryMovementRow = QueryResultRow & {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -44,11 +44,11 @@ interface InventoryMovementRow {
   created_by_user_id: string;
   correlation_id: string;
   created_at: string;
-}
+};
 
-interface InventoryMovementResult extends Omit<InventoryMovementRow, 'request_hash'> {
+type InventoryMovementResult = Omit<InventoryMovementRow, 'request_hash'> & {
   replayed: boolean;
-}
+};
 
 @Injectable()
 export class InventoryService {
