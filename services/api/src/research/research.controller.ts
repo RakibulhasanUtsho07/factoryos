@@ -133,6 +133,17 @@ export class ResearchController {
     return this.research.createRelease(c.userId, c.tenantId, body, c.requestId, c.traceId);
   }
 
+  @Post('releases/:releaseId/evaluate')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  evaluateRelease(
+    @Req() req: FactoryOsRequest,
+    @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.evaluateRelease(c.userId, c.tenantId, releaseId, c.requestId, c.traceId);
+  }
+
   @Get('releases')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.read')

@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
 
@@ -555,13 +555,161 @@ export class ResearchService {
     return created;
   }
 
+  async evaluateRelease(
+    userId: string,
+    tenantId: string,
+    releaseId: string,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(releaseId, 'releaseId');
+
+    const lookup = await this.database.query<{
+      id: string;
+      namespace: 'GLOBAL' | 'TENANT';
+      release_key: string;
+      version: number;
+      status: string;
+      claim_ids: string[];
+      source_list: Record<string, unknown>[];
+    }>(
+      `
+      SELECT id::text AS id, namespace, release_key, version, status,
+        claim_ids, source_list
+      FROM research_knowledge_releases
+      WHERE id = $1 AND tenant_id = $2
+      `,
+      [releaseId, tenantId],
+      { tenantId, userId },
+    );
+    const release = lookup.rows[0];
+    if (!release) throw new NotFoundException('Tenant research release not found');
+    if (release.status !== 'DRAFT') {
+      throw new ConflictException('Only draft research releases can be evaluated');
+    }
+
+    let status: 'PASSED' | 'FAILED' | 'REVIEW_REQUIRED' = 'FAILED';
+    let validation: Record<string, unknown>;
+    let sources: Record<string, unknown>[] = release.source_list ?? [];
+    let contentFingerprint: string;
+
+    try {
+      const report = await this.validateReleaseClaims(tenantId, release.claim_ids);
+      const safetyPassed = report.validation.safetyPassed === true;
+      status = safetyPassed ? 'PASSED' : 'REVIEW_REQUIRED';
+      validation = {
+        ...report.validation,
+        safetyPassed,
+        safetyReviewed: false,
+        automaticContractChecks: true,
+        evaluationVersion: 'research-release-contract.v1',
+      };
+      sources = report.sources;
+      contentFingerprint = report.contentFingerprint;
+    } catch (error) {
+      const failureReason = error instanceof Error ? error.message : 'Research release validation failed';
+      validation = {
+        consistencyPassed: false,
+        citationCoveragePassed: false,
+        rightsPassed: false,
+        safetyPassed: false,
+        safetyReviewed: false,
+        automaticContractChecks: true,
+        evaluationVersion: 'research-release-contract.v1',
+        claimCount: Array.isArray(release.claim_ids) ? release.claim_ids.length : 0,
+        failureReason,
+      };
+      contentFingerprint = createHash('sha256')
+        .update(JSON.stringify({
+          releaseId,
+          claimIds: release.claim_ids,
+          evaluationVersion: 'research-release-contract.v1',
+          failureReason,
+        }))
+        .digest('hex');
+      status = 'FAILED';
+    }
+
+    const evaluation = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const current = await client.query<{ status: string }>(
+          'SELECT status FROM research_knowledge_releases WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+          [releaseId, tenantId],
+        );
+        if (!current.rows[0]) throw new NotFoundException('Tenant research release not found');
+        if (current.rows[0].status !== 'DRAFT') {
+          throw new ConflictException('Research release changed before evaluation could be saved');
+        }
+
+        const inserted = await client.query<{
+          id: string;
+          status: string;
+          evaluation_version: string;
+          content_fingerprint: string;
+          results: Record<string, unknown>;
+          evaluated_at: string;
+        }>(
+          `
+          INSERT INTO research_release_evaluations (
+            tenant_id, namespace, release_id, evaluation_version, status,
+            content_fingerprint, results, evaluated_by
+          )
+          VALUES ($1, 'TENANT', $2, 'research-release-contract.v1', $3, $4, $5::jsonb, $6)
+          RETURNING id::text AS id, status, evaluation_version, content_fingerprint,
+            results, evaluated_at::text AS evaluated_at
+          `,
+          [tenantId, releaseId, status, contentFingerprint, JSON.stringify(validation), userId],
+        );
+        const row = inserted.rows[0];
+        if (!row) throw new Error('RESEARCH_RELEASE_EVALUATION_INSERT_FAILED');
+
+        await client.query(
+          `
+          UPDATE research_knowledge_releases
+          SET evaluation_id = $1, validation_report = $2::jsonb, source_list = $3::jsonb
+          WHERE id = $4 AND tenant_id = $5 AND status = 'DRAFT'
+          `,
+          [row.id, JSON.stringify(validation), JSON.stringify(sources), releaseId, tenantId],
+        );
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_RELEASE_EVALUATION',
+          aggregateId: row.id, eventType: 'RESEARCH.RELEASE_EVALUATED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            release_id: releaseId,
+            evaluation_id: row.id,
+            status: row.status,
+            evaluation_version: row.evaluation_version,
+            content_fingerprint: row.content_fingerprint,
+          },
+        });
+        return { ...row, release_id: releaseId };
+      },
+    );
+
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'RELEASE_EVALUATE',
+      resourceId: releaseId, requestId, traceId,
+      payload: {
+        evaluationId: evaluation.id,
+        status: evaluation.status,
+        contentFingerprint: evaluation.content_fingerprint,
+        evaluationVersion: evaluation.evaluation_version,
+      },
+    });
+    return evaluation;
+  }
+
   async listReleases(tenantId: string, limit?: number) {
     this.validateUuid(tenantId, 'tenantId');
     return (await this.database.query(
       `
       SELECT id::text AS id, tenant_id::text AS tenant_id, namespace, release_key, version,
         title, claim_ids, source_list, evidence_grade, status, validation_report,
-        regression_evidence_ref, reviewed_by::text AS reviewed_by, reviewed_at::text AS reviewed_at,
+        regression_evidence_ref, evaluation_id::text AS evaluation_id, reviewed_by::text AS reviewed_by, reviewed_at::text AS reviewed_at,
         effective_at::text AS effective_at, created_at::text AS created_at
       FROM research_knowledge_releases
       WHERE tenant_id = $1 OR (tenant_id IS NULL AND status = 'PROMOTED')
@@ -587,8 +735,9 @@ export class ResearchService {
     }
     const current = await this.database.query<{
       id: string; claim_ids: string[]; status: string; release_key: string; version: number;
+      namespace: 'GLOBAL' | 'TENANT'; evaluation_id: string | null;
     }>(
-      'SELECT id::text AS id, claim_ids, status, release_key, version FROM research_knowledge_releases WHERE id = $1 AND tenant_id = $2',
+      'SELECT id::text AS id, claim_ids, status, release_key, version, namespace, evaluation_id::text AS evaluation_id FROM research_knowledge_releases WHERE id = $1 AND tenant_id = $2',
       [releaseId, tenantId],
       { tenantId, userId },
     );
@@ -597,8 +746,29 @@ export class ResearchService {
     if (row.status !== 'DRAFT') throw new ConflictException('Only draft research releases may be promoted');
     const claimIds = Array.isArray(row.claim_ids) ? row.claim_ids : [];
     const report = await this.validateReleaseClaims(tenantId, claimIds);
-    if (!report.validation.consistencyPassed || !report.validation.citationCoveragePassed || !report.validation.rightsPassed) {
-      throw new ConflictException('Research release has failed consistency, citation, or source-rights checks');
+    if (!report.validation.consistencyPassed || !report.validation.citationCoveragePassed
+      || !report.validation.rightsPassed || !report.validation.safetyPassed) {
+      throw new ConflictException('Research release has failed consistency, citation, rights or content-safety checks');
+    }
+    if (!dto.evaluation_id || !isUUID(dto.evaluation_id)
+      || row.evaluation_id !== dto.evaluation_id) {
+      throw new ConflictException('A passing automated evaluation attached to the current draft is required before promotion');
+    }
+    const evaluationResult = await this.database.query<{
+      id: string; status: string; content_fingerprint: string; results: Record<string, unknown>;
+    }>(
+      `
+      SELECT id::text AS id, status, content_fingerprint, results
+      FROM research_release_evaluations
+      WHERE id = $1 AND release_id = $2 AND tenant_id = $3 AND namespace = $4
+      `,
+      [dto.evaluation_id, releaseId, tenantId, row.namespace],
+      { tenantId, userId },
+    );
+    const evaluation = evaluationResult.rows[0];
+    if (!evaluation || evaluation.status !== 'PASSED'
+      || evaluation.content_fingerprint !== report.contentFingerprint) {
+      throw new ConflictException('The attached research evaluation is absent, failed, or stale; evaluate the draft again');
     }
     const reviewSummary = dto.safety_review_summary.trim();
     const regressionRef = dto.regression_evidence_ref.trim();
@@ -626,7 +796,7 @@ export class ResearchService {
           `,
           [
             JSON.stringify(report.sources),
-            JSON.stringify({ ...report.validation, safetyReviewed: true, safetyReviewSummary: reviewSummary, regressionEvidenceRef: regressionRef }),
+            JSON.stringify({ ...report.validation, safetyPassed: true, safetyReviewed: true, safetyReviewSummary: reviewSummary, regressionEvidenceRef: regressionRef, evaluationId: dto.evaluation_id }),
             regressionRef, userId, dto.effective_at, releaseId, tenantId,
           ],
         );
@@ -793,21 +963,29 @@ export class ResearchService {
   private async validateReleaseClaims(tenantId: string, claimIds: string[]) {
     if (!claimIds.length) throw new BadRequestException('A research release requires approved claims');
     const result = await this.database.query<ResearchClaimRow & {
-      source_title: string; source_url: string | null; doi: string | null;
-      license_status: string; access_status: string; source_id: string;
+      source_title: string;
+      source_url: string | null;
+      doi: string | null;
+      license_status: string;
+      access_status: string;
+      rights_basis: string | null;
+      source_id: string;
+      stored_excerpt: string | null;
     }>(
       `
       SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.namespace,
         c.source_id::text AS source_id, c.claim_text, c.methodology, c.dataset_description,
         c.limitations, c.practical_implication, c.evidence_grade, c.evidence_strength,
-        c.topic_tags, c.provenance_ref, c.status, s.title AS source_title, s.source_url, s.doi,
-        s.license_status, s.access_status
+        c.topic_tags, c.provenance_ref, c.status, c.stored_excerpt,
+        s.title AS source_title, s.source_url, s.doi,
+        s.license_status, s.access_status, s.rights_basis
       FROM research_claims c
       JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
       WHERE c.id = ANY($1::uuid[])
         AND c.status = 'APPROVED'
         AND s.access_status = 'APPROVED'
         AND (c.tenant_id = $2 OR c.tenant_id IS NULL)
+      ORDER BY c.id ASC
       `,
       [claimIds, tenantId],
       { tenantId },
@@ -815,11 +993,20 @@ export class ResearchService {
     if (result.rows.length !== claimIds.length) {
       throw new ConflictException('Every knowledge-release claim must be approved and visible in the current tenant/global namespace');
     }
+
     const seen = new Set<string>();
     let consistencyPassed = true;
     let citationCoveragePassed = true;
     let rightsPassed = true;
     const sources = new Map<string, Record<string, unknown>>();
+    const unsafePatterns = [
+      /\bignore\s+(all|any|previous)\s+(system\s+)?instructions?\b/i,
+      /\b(disregard|override)\s+(all\s+|the\s+)?(system|developer|previous)\s+(prompt|instructions?)\b/i,
+      /\b(reveal|print|expose|exfiltrate)\s+(the\s+)?(system prompt|hidden instructions|secrets?)\b/i,
+      /\byou are now (chatgpt|an assistant|the system)\b/i,
+      /\bbegin\s+(system|developer)\s+prompt\b/i,
+    ];
+    const safetyFlags: string[] = [];
     for (const claim of result.rows) {
       const normalized = claim.claim_text.toLowerCase().replace(/\s+/g, ' ').trim();
       if (seen.has(normalized)) consistencyPassed = false;
@@ -831,9 +1018,12 @@ export class ResearchService {
       }) || (!claim.doi && !claim.source_url)) {
         citationCoveragePassed = false;
       }
-      if (!['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(claim.license_status)) {
+      if (!['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(claim.license_status)
+        || !claim.rights_basis?.trim()) {
         rightsPassed = false;
       }
+      const untrustedText = claim.claim_text + '\n' + (claim.stored_excerpt ?? '');
+      if (unsafePatterns.some(pattern => pattern.test(untrustedText))) safetyFlags.push(claim.id);
       sources.set(claim.source_id, {
         sourceId: claim.source_id,
         title: claim.source_title,
@@ -844,13 +1034,40 @@ export class ResearchService {
     if (!rightsPassed) throw new ForbiddenException('A knowledge release cannot cite a source without approved reuse rights');
     if (!consistencyPassed) throw new ConflictException('Duplicate research claim text was found in this release');
     if (!citationCoveragePassed) throw new ConflictException('Every research claim needs a source locator and source URL or DOI');
+
+    const claimsFingerprint = result.rows.map(claim => ({
+      id: claim.id,
+      namespace: claim.namespace,
+      claimText: claim.claim_text,
+      evidenceGrade: claim.evidence_grade,
+      evidenceStrength: claim.evidence_strength,
+      provenance: claim.provenance_ref,
+      storedExcerpt: claim.stored_excerpt,
+      sourceId: claim.source_id,
+      sourceTitle: claim.source_title,
+      sourceUrl: claim.source_url,
+      doi: claim.doi,
+      licenseStatus: claim.license_status,
+      accessStatus: claim.access_status,
+      rightsBasis: claim.rights_basis,
+    }));
+    const contentFingerprint = createHash('sha256')
+      .update(JSON.stringify(claimsFingerprint))
+      .digest('hex');
+
     return {
       sources: [...sources.values()],
+      contentFingerprint,
       validation: {
         consistencyPassed,
         citationCoveragePassed,
         rightsPassed,
+        safetyPassed: safetyFlags.length === 0,
+        safetyFlags,
+        safetyReviewRequired: safetyFlags.length > 0,
         safetyReviewed: false,
+        automaticContractChecks: true,
+        evaluationVersion: 'research-release-contract.v1',
         regressionRequired: true,
         claimCount: result.rows.length,
       },

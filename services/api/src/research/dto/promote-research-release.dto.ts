@@ -1,6 +1,9 @@
-import { IsDateString, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class PromoteResearchReleaseDto {
+  @IsUUID()
+  evaluation_id!: string;
+
   @IsString()
   @IsNotEmpty()
   @MaxLength(2000)
