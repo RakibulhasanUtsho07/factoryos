@@ -8,6 +8,8 @@ import { SaasReleaseRolloutController } from './saas-release-rollout.controller'
 import { SaasReleaseRolloutService } from './saas-release-rollout.service';
 import { SaasSandboxController } from './saas-sandbox.controller';
 import { SaasSandboxService } from './saas-sandbox.service';
+import { SaasTenantDataTransferController } from './saas-tenant-data-transfer.controller';
+import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
 import { SaasSubscriptionController } from './saas-subscription.controller';
 import { SaasSubscriptionService } from './saas-subscription.service';
 import { SaasUsageController } from './saas-usage.controller';
@@ -21,6 +23,7 @@ import { SaasUsageService } from './saas-usage.service';
     SaasSandboxController,
     SaasReleaseRolloutController,
     SaasDeploymentProfileController,
+    SaasTenantDataTransferController,
   ],
   providers: [
     SaasUsageService,
@@ -28,6 +31,7 @@ import { SaasUsageService } from './saas-usage.service';
     SaasSandboxService,
     SaasReleaseRolloutService,
     SaasDeploymentProfileService,
+    SaasTenantDataTransferService,
   ],
   exports: [
     SaasUsageService,
@@ -35,6 +39,7 @@ import { SaasUsageService } from './saas-usage.service';
     SaasSandboxService,
     SaasReleaseRolloutService,
     SaasDeploymentProfileService,
+    SaasTenantDataTransferService,
   ],
 })
 export class SaasModule {}
