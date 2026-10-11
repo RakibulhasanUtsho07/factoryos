@@ -1510,6 +1510,9 @@ export class AiAgentRuntimeService {
       );
     }
 
+    // Keep authorization and durable execution on the same stable retry key.
+    // A new key per request could mint a second action intent for one recovery
+    // attempt, obscuring whether an earlier compensation already ran.
     const authorization =
       await this.aiRuntimeService.authorizeAction(
         tenantId,
@@ -1524,7 +1527,7 @@ export class AiAgentRuntimeService {
           resource_id: step.resource_id,
           payload: compensationPayload,
           idempotency_key:
-            `agent:${task.id}:${step.id}:compensation:${randomUUID()}`,
+            executionKey,
           token_ttl_seconds: 600,
         },
       );
