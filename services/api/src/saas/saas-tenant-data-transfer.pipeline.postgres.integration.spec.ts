@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jest, describe, expect, it } from '@jest/globals';
+import { ConflictException } from '@nestjs/common';
 import { Pool } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import { REQUIRED_TRANSFER_CATEGORIES } from './dto/create-saas-schema-compatibility-rule.dto';
@@ -384,6 +385,44 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       expect(receipt.rowCount).toBe(1);
       expect(receipt.rows[0].target_manifest).toEqual(receipt.rows[0].source_manifest);
       expect(receipt.rows[0].target_snapshot_digest).toMatch(/^[a-f0-9]{64}$/);
+
+      // A retry after a successful import must return the existing immutable receipt,
+      // rather than trying to insert the same tenant rows again.
+      const replayed = await target.importBundle({
+        tenantId,
+        transferId: migrationId,
+        sourceSchemaVersion: '1.0.0',
+        targetSchemaVersion: '1.0.0',
+        sourceBundle: bundleStore.read(exported.artifact.reference, exported.artifact.digest),
+        sourceManifest: payload.manifest,
+        requiredCategories: [...REQUIRED_TRANSFER_CATEGORIES],
+      });
+      expect(replayed.targetBundleReference).toBe(imported.transfer.targetBundleReference);
+      expect(replayed.targetBundleDigest).toBe(receipt.rows[0].target_snapshot_digest);
+      expect(replayed.targetManifest).toEqual(receipt.rows[0].target_manifest);
+
+      const changedManifest = {
+        ...payload.manifest,
+        BUSINESS_DATA: {
+          ...payload.manifest.BUSINESS_DATA,
+          record_count: payload.manifest.BUSINESS_DATA.record_count + 1,
+        },
+      };
+      await expect(target.importBundle({
+        tenantId,
+        transferId: migrationId,
+        sourceSchemaVersion: '1.0.0',
+        targetSchemaVersion: '1.0.0',
+        sourceBundle: bundleStore.read(exported.artifact.reference, exported.artifact.digest),
+        sourceManifest: changedManifest,
+        requiredCategories: [...REQUIRED_TRANSFER_CATEGORIES],
+      })).rejects.toBeInstanceOf(ConflictException);
+
+      const replayedUsageCount = await targetAdminPool.query(
+        'SELECT COUNT(*)::int AS count FROM saas_usage_events WHERE tenant_id = $1::uuid AND id = $2::uuid',
+        [tenantId, usageEventId],
+      );
+      expect(replayedUsageCount.rows[0]?.count).toBe(1);
     }, 60000);
   });
 });
