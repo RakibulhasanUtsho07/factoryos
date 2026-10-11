@@ -292,9 +292,9 @@ export class SaasUsageService {
          AND (factory_id IS NULL OR factory_id=$2)
        ORDER BY factory_id,created_at DESC,id DESC
       )
-    ORDER BY (factory_id=$2) DESC,created_at DESC,id DESC`,
+    ORDER BY (factory_id=$2) DESC NULLS LAST,created_at DESC,id DESC`,
    [tenantId,factoryId,workloadClass],{tenantId,userId:actorUserId});
-  if(latest.rows.some(x=>x.control_state==='PAUSED'))throw new ForbiddenException('Non-critical AI workload is paused by a tenant/factory SaaS budget control');
+  if(latest.rows[0]?.control_state==='PAUSED')throw new ForbiddenException('Non-critical AI workload is paused by a tenant/factory SaaS budget control');
  }
 
  private async evaluateBudgetsInternal(tenantId:string,factoryId:string|null,actorUserId:string,asOf:string) {

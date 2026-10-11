@@ -27,4 +27,10 @@ describe('SaasUsageService',()=>{
  it('rejects unsafe provider invoice costs before touching the database',async()=>{await expect(service.recordProviderCostEvent(tenant,factory,user,{provider_code:'openai',metric_code:'AI_INPUT_TOKEN',workload_class:'PRODUCTION',quantity:1,currency:'USD',provider_cost_minor:9007199254740992,occurred_at:'2026-10-10T12:00:00Z',provider_invoice_reference:'INV-1',source_system:'PROVIDER_EXPORT',source_event_ref:'provider:1',idempotency_key:'provider-unsafe'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
  it('rejects malformed alert identifiers before querying acknowledgement records',async()=>{await expect(service.acknowledgeBudgetAlert(tenant,factory,user,'not-a-uuid',{idempotency_key:'ack-invalid'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
 
+ it('lets a factory-level resume override a tenant-level pause for the same non-critical class',async()=>{
+  db.query.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{control_state:'RESUMED',factory_id:factory},{control_state:'PAUSED',factory_id:null}]});
+  await expect(service.assertWorkloadExecutionAllowed(tenant,factory,user,'DEVELOPMENT')).resolves.toBeUndefined();
+  expect(db.query).toHaveBeenCalledTimes(2);
+ });
+
 });
