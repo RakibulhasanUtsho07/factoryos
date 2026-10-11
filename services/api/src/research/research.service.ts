@@ -16,6 +16,7 @@ import { CreateResearchClaimLinkDto } from './dto/create-research-claim-link.dto
 import { CreateResearchRelevanceDto } from './dto/create-research-relevance.dto';
 import { CreateResearchReleaseDto } from './dto/create-research-release.dto';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
+import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
@@ -720,6 +721,54 @@ export class ResearchService {
       tenantId, userId, factoryId, action: 'RELEVANCE_PROPOSE',
       resourceId: result.id, requestId, traceId,
       payload: { claimId, businessEntityId: dto.business_entity_id },
+    });
+    return result;
+  }
+
+  async decideRelevance(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    mappingId: string,
+    dto: DecideResearchRelevanceDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(mappingId, 'mappingId');
+    this.validateFactoryScope(tenantId, factoryId);
+    const next = dto.decision === 'ACCEPT' ? 'ACCEPTED' : 'REJECTED';
+    const reason = dto.reason.trim();
+    const result = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const updated = await client.query(
+          `
+          UPDATE research_relevance_mappings
+          SET status = $1, reviewed_by = $2, reviewed_at = clock_timestamp(),
+              review_reason = $3
+          WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND status = 'PROPOSED'
+          RETURNING id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id,
+            research_claim_id::text AS research_claim_id, business_entity_id::text AS business_entity_id,
+            relevance_rationale, client_evidence, counter_evidence, applicability_assumptions,
+            validation_plan, status, reviewed_by::text AS reviewed_by,
+            reviewed_at::text AS reviewed_at, review_reason, created_at::text AS created_at
+          `,
+          [next, userId, reason, mappingId, tenantId, factoryId],
+        );
+        const row = updated.rows[0];
+        if (!row) throw new ConflictException('Only proposed relevance mappings may be reviewed');
+        await this.insertOutbox(client, {
+          tenantId, factoryId, userId, aggregateType: 'RESEARCH_RELEVANCE',
+          aggregateId: mappingId, eventType: 'RESEARCH.RELEVANCE_' + next,
+          correlationId: this.correlationId(requestId, traceId),
+          payload: { mapping_id: mappingId, status: next, reason },
+        });
+        return row;
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId, action: 'RELEVANCE_' + next,
+      resourceId: mappingId, requestId, traceId, payload: { reason },
     });
     return result;
   }

@@ -13,6 +13,7 @@ import { CreateResearchClaimLinkDto } from './dto/create-research-claim-link.dto
 import { CreateResearchRelevanceDto } from './dto/create-research-relevance.dto';
 import { CreateResearchReleaseDto } from './dto/create-research-release.dto';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
+import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
@@ -163,6 +164,21 @@ export class ResearchController {
   ) {
     const c = this.factoryContext(req);
     return this.research.createRelevance(c.userId, c.tenantId, c.factoryId, claimId, body, c.requestId, c.traceId);
+  }
+
+  @Post('relevance/:mappingId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  @RequireFactoryScope()
+  decideRelevance(
+    @Req() req: FactoryOsRequest,
+    @Param('mappingId', new ParseUUIDPipe()) mappingId: string,
+    @Body() body: DecideResearchRelevanceDto,
+  ) {
+    const c = this.factoryContext(req);
+    return this.research.decideRelevance(
+      c.userId, c.tenantId, c.factoryId, mappingId, body, c.requestId, c.traceId,
+    );
   }
 
   @Get('relevance')
