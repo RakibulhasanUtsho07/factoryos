@@ -327,11 +327,11 @@ export class AiAgentRuntimeService {
               idempotency_key,
               request_hash
             )
-            VALUES (
+            SELECT
               $1, $2, $3, $4, $5, $6, $7,
               $8, $9, $10, $11, $12,
               $13, $14, $15, $16, $17
-            )
+            WHERE $12::timestamptz > NOW()
             RETURNING ${this.taskSelectColumns()}
             `,
             [
@@ -358,7 +358,9 @@ export class AiAgentRuntimeService {
           const task = inserted.rows[0];
 
           if (!task) {
-            throw new Error('AI_AGENT_TASK_INSERT_FAILED');
+            throw new ConflictException(
+              'AI agent task deadline elapsed before the record could be created',
+            );
           }
 
           for (let index = 0; index < input.steps.length; index += 1) {
