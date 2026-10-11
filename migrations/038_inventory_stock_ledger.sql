@@ -27,7 +27,6 @@ CREATE TABLE inventory_items (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   version BIGINT NOT NULL DEFAULT 1,
-  CONSTRAINT uq_inventory_items_factory_sku UNIQUE (tenant_id, factory_id, sku),
   CONSTRAINT uq_inventory_items_scope UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT fk_inventory_items_tenant FOREIGN KEY (tenant_id)
     REFERENCES tenants(id) ON DELETE RESTRICT,
@@ -41,6 +40,9 @@ CREATE TABLE inventory_items (
   CONSTRAINT chk_inventory_items_status CHECK (status IN ('ACTIVE', 'DISABLED')),
   CONSTRAINT chk_inventory_items_version CHECK (version > 0)
 );
+
+CREATE UNIQUE INDEX uq_inventory_items_factory_sku
+  ON inventory_items (tenant_id, factory_id, lower(sku));
 
 CREATE INDEX idx_inventory_items_factory_status
   ON inventory_items (tenant_id, factory_id, status, sku);

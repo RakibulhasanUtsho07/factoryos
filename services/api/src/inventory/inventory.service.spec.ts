@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals';
+import type { Mock } from 'jest-mock';
 import { ConflictException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -19,12 +20,12 @@ type QueryResponse = { rows: unknown[] };
 
 describe('InventoryService', () => {
   let service: InventoryService;
-  let client: { query: jest.Mock };
+  let client: { query: Mock };
   let database: {
-    transaction: jest.Mock;
-    query: jest.Mock;
+    transaction: Mock;
+    query: Mock;
   };
-  let audit: { record: jest.Mock };
+  let audit: { record: Mock };
 
   beforeEach(() => {
     client = { query: jest.fn() };
