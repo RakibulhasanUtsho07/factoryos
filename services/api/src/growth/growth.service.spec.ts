@@ -248,7 +248,7 @@ describe('GrowthService', () => {
             model_version: 'factoryos.growth.financial-sensitivity.v1',
             data_vintage: '2026-10-01 00:00:00+00',
             baseline_source_ref: 'finance-report:2026-09',
-            inputs: {},
+            inputs: { baseline_revenue: 100000, baseline_variable_cost: 50000, baseline_fixed_cost: 20000 },
             output_snapshot: {
               method: 'deterministic_sensitivity_not_a_forecast',
               impact: { netImpactPoint: 150, lowerBound: 130, upperBound: 170, investment: 50 },
@@ -265,7 +265,7 @@ describe('GrowthService', () => {
             model_version: 'factoryos.growth.financial-sensitivity.v1',
             data_vintage: '2026-10-01 00:00:00+00',
             baseline_source_ref: 'finance-report:2026-09',
-            inputs: {},
+            inputs: { baseline_revenue: 100000, baseline_variable_cost: 50000, baseline_fixed_cost: 20000 },
             output_snapshot: {
               method: 'deterministic_sensitivity_not_a_forecast',
               impact: { netImpactPoint: 80, lowerBound: 70, upperBound: 90, investment: 20 },
@@ -300,7 +300,7 @@ describe('GrowthService', () => {
             model_version: 'factoryos.growth.financial-sensitivity.v1',
             data_vintage: '2026-10-01 00:00:00+00',
             baseline_source_ref: 'finance-report:2026-09',
-            inputs: {},
+            inputs: { baseline_revenue: 100000, baseline_variable_cost: 50000, baseline_fixed_cost: 20000 },
             output_snapshot: { impact: { netImpactPoint: 150 }, constraintGate: { status: 'REVIEW_REQUIRED' } },
             input_hash: 'a'.repeat(64),
             decision_ready: false,
@@ -313,7 +313,7 @@ describe('GrowthService', () => {
             model_version: 'factoryos.growth.financial-sensitivity.v0',
             data_vintage: '2026-09-01 00:00:00+00',
             baseline_source_ref: 'finance-report:2026-08',
-            inputs: {},
+            inputs: { baseline_revenue: 120000, baseline_variable_cost: 55000, baseline_fixed_cost: 21000 },
             output_snapshot: { impact: { netImpactPoint: 80 }, constraintGate: { status: 'REVIEW_REQUIRED' } },
             input_hash: 'b'.repeat(64),
             decision_ready: false,
@@ -328,10 +328,53 @@ describe('GrowthService', () => {
     expect(result.ranking_enabled).toBe(false);
     expect(result.scenarios.every(s => s.impact_rank === null)).toBe(true);
     expect(result.comparability_reasons).toEqual(expect.arrayContaining([
-      'MODEL_VERSION_MISMATCH', 'BASELINE_SOURCE_MISMATCH', 'DATA_VINTAGE_MISMATCH',
+      'MODEL_VERSION_MISMATCH', 'BASELINE_SOURCE_MISMATCH', 'BASELINE_INPUTS_MISMATCH', 'DATA_VINTAGE_MISMATCH',
     ]));
     expect(result.ranking_blockers).toContain('SCENARIO_NOT_DECISION_READY');
     expect(result.scenario_type_coverage.missing).toEqual(expect.arrayContaining(['UPSIDE', 'STRESS']));
   });
+
+  it('does not compare scenarios that cite the same baseline source but use different baseline values', async () => {
+    database.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'ACCEPTED', currency: 'BDT' }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '7b16f2f4-cc37-452c-acad-7296fc9da8e8',
+            scenario_name: 'Base',
+            scenario_type: 'BASE',
+            model_version: 'factoryos.growth.financial-sensitivity.v1',
+            data_vintage: '2026-10-01 00:00:00+00',
+            baseline_source_ref: 'finance-report:2026-09',
+            inputs: { baseline_revenue: 100000, baseline_variable_cost: 50000, baseline_fixed_cost: 20000 },
+            output_snapshot: { impact: { netImpactPoint: 150 }, constraintGate: { status: 'PASS' } },
+            input_hash: 'a'.repeat(64),
+            decision_ready: true,
+            created_at: '2026-10-11 10:00:00+00',
+          },
+          {
+            id: 'a9f4a5f8-5b10-4c02-a46b-4d13c1f2a657',
+            scenario_name: 'Upside',
+            scenario_type: 'UPSIDE',
+            model_version: 'factoryos.growth.financial-sensitivity.v1',
+            data_vintage: '2026-10-01 00:00:00+00',
+            baseline_source_ref: 'finance-report:2026-09',
+            inputs: { baseline_revenue: 140000, baseline_variable_cost: 60000, baseline_fixed_cost: 25000 },
+            output_snapshot: { impact: { netImpactPoint: 250 }, constraintGate: { status: 'PASS' } },
+            input_hash: 'b'.repeat(64),
+            decision_ready: true,
+            created_at: '2026-10-11 09:00:00+00',
+          },
+        ],
+      });
+
+    const result = await service.compareScenarios(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
+
+    expect(result.comparable).toBe(false);
+    expect(result.comparability_reasons).toContain('BASELINE_INPUTS_MISMATCH');
+    expect(result.ranking_enabled).toBe(false);
+    expect(result.scenarios.every(s => s.impact_rank === null)).toBe(true);
+  });
+
 
 });

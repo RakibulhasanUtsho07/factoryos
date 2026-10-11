@@ -238,10 +238,19 @@ export class GrowthService {
         ? output.impact as Record<string, unknown> : {};
       const gateValue = output.constraintGate && typeof output.constraintGate === 'object'
         ? output.constraintGate as Record<string, unknown> : {};
+      const inputValues = row.inputs && typeof row.inputs === 'object'
+        ? row.inputs as Record<string, unknown> : {};
       const finiteNumber = (value: unknown) =>
         typeof value === 'number' && Number.isFinite(value) ? value : null;
+      const baselineValue = (key: string) => finiteNumber(inputValues[key]);
+      const baseline = {
+        revenue: baselineValue('baseline_revenue'),
+        variableCost: baselineValue('baseline_variable_cost'),
+        fixedCost: baselineValue('baseline_fixed_cost'),
+      };
       return {
         id: row.id,
+        baseline,
         scenario_name: row.scenario_name,
         scenario_type: row.scenario_type,
         model_version: row.model_version,
@@ -275,6 +284,20 @@ export class GrowthService {
     if (modelVersions.length > 1) comparabilityReasons.push('MODEL_VERSION_MISMATCH');
     if (baselineSources.length > 1) comparabilityReasons.push('BASELINE_SOURCE_MISMATCH');
     if (dataVintages.length > 1) comparabilityReasons.push('DATA_VINTAGE_MISMATCH');
+    const baselineFingerprints = scenarios.map(scenario => {
+      const values = [
+        scenario.baseline.revenue,
+        scenario.baseline.variableCost,
+        scenario.baseline.fixedCost,
+      ];
+      return values.every(value => value !== null) ? JSON.stringify(values) : null;
+    });
+    if (baselineFingerprints.some(value => value === null)) {
+      comparabilityReasons.push('BASELINE_INPUTS_MISSING');
+    }
+    if (new Set(baselineFingerprints.filter((value): value is string => value !== null)).size > 1) {
+      comparabilityReasons.push('BASELINE_INPUTS_MISMATCH');
+    }
 
     const rankingBlockers = scenarios.some(s => !s.constraintGate.decisionReady)
       ? ['SCENARIO_NOT_DECISION_READY'] : [];
