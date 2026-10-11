@@ -151,6 +151,13 @@ export class SaasTenantDataTransferWorkerService {
         throw new ConflictException('Migration source must be a completed export with an attested encrypted bundle');
       }
 
+      if (!this.datasetSource) {
+        throw new ServiceUnavailableException(
+          'Tenant migration requires a governed source adapter to verify IAM portability',
+        );
+      }
+      await this.datasetSource.assertIamMigrationReady(tenantId);
+
       const result = await this.migrationTarget.importBundle({
         tenantId,
         transferId: migrationId,

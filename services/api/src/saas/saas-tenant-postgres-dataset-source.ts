@@ -109,6 +109,70 @@ interface TenantDatasetRow extends QueryResultRow {
 export class SaasTenantPostgresDatasetSource {
   constructor(private readonly database: DatabaseService) {}
 
+  async assertIamMigrationReady(tenantId: string): Promise<void> {
+    if (!UUID_PATTERN.test(tenantId)) {
+      throw new BadRequestException('Tenant IAM scope must be a UUID');
+    }
+
+    const client = await this.database.getClient();
+    let transactionOpen = false;
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      transactionOpen = true;
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.user_id', $2, true)",
+        [tenantId, ''],
+      );
+
+      const result = await client.query<{
+        membership_count: string;
+        role_count: string;
+        user_role_count: string;
+        role_permission_count: string;
+      }>(
+        'SELECT ' +
+          '(SELECT COUNT(*)::text FROM public.tenant_memberships WHERE tenant_id = $1::uuid) AS membership_count, ' +
+          '(SELECT COUNT(*)::text FROM public.roles WHERE tenant_id = $1::uuid) AS role_count, ' +
+          '(SELECT COUNT(*)::text FROM public.user_roles ur ' +
+            'INNER JOIN public.tenant_memberships tm ON tm.id = ur.membership_id ' +
+            'WHERE tm.tenant_id = $1::uuid) AS user_role_count, ' +
+          '(SELECT COUNT(*)::text FROM public.role_permissions rp ' +
+            'INNER JOIN public.roles r ON r.id = rp.role_id ' +
+            'WHERE r.tenant_id = $1::uuid) AS role_permission_count',
+        [tenantId],
+      );
+
+      const counts = result.rows[0];
+      if (
+        result.rowCount !== 1 ||
+        !counts ||
+        [counts.membership_count, counts.role_count, counts.user_role_count, counts.role_permission_count]
+          .some((value) => !/^\d+$/.test(value))
+      ) {
+        throw new ServiceUnavailableException(
+          'Unable to verify tenant IAM portability; migration was blocked',
+        );
+      }
+
+      if (
+        [counts.membership_count, counts.role_count, counts.user_role_count, counts.role_permission_count]
+          .some((value) => BigInt(value) > 0n)
+      ) {
+        throw new ServiceUnavailableException(
+          'Tenant migration is blocked because IAM memberships/roles/grants exist and no reviewed IAM remapping adapter is registered',
+        );
+      }
+
+      await client.query('COMMIT');
+      transactionOpen = false;
+    } finally {
+      if (transactionOpen) {
+        await client.query('ROLLBACK').catch(() => undefined);
+      }
+      client.release();
+    }
+  }
+
   async withSnapshot<T>(
     tenantId: string,
     schemaVersion: string,

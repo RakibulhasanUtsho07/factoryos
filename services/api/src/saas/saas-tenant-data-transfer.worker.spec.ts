@@ -74,8 +74,10 @@ function sourceSnapshot(overrides: Record<string, unknown> = {}) {
 
 function createSnapshotSource(
   readDataset: (category: SaasTransferDatasetCategory) => AsyncIterable<unknown>,
+  assertIamMigrationReady: () => Promise<void> = async () => undefined,
 ): SaasTenantTransferDatasetSource {
   return {
+    assertIamMigrationReady,
     async withSnapshot<T>(
       _tenantId: string,
       _schemaVersion: string,
@@ -209,10 +211,11 @@ describe('SaasTenantDataTransferWorkerService', () => {
         };
       },
     };
+    const source = createSnapshotSource(async function* () { yield { id: 'unused' }; });
     worker = new SaasTenantDataTransferWorkerService(
       transfers as never,
       bundles as never,
-      undefined,
+      source,
       target,
     );
     transfers.history.mockResolvedValueOnce([migrationSnapshot()]).mockResolvedValueOnce([sourceSnapshot()]);
@@ -242,6 +245,36 @@ describe('SaasTenantDataTransferWorkerService', () => {
       }),
     );
     expect(completed.transfer.status).toBe('COMPLETED');
+  });
+
+  it('blocks migration before target import when IAM portability cannot be verified', async () => {
+    const target: SaasTenantMigrationTargetAdapter = {
+      importBundle: jest.fn(async () => ({
+        targetBundleReference: 'should-not-import',
+        targetBundleDigest: digest,
+        targetManifest: manifest,
+      })),
+    };
+    const source = createSnapshotSource(
+      async function* () { yield { id: 'unused' }; },
+      async () => { throw new ServiceUnavailableException('IAM rows are not portable yet'); },
+    );
+    worker = new SaasTenantDataTransferWorkerService(
+      transfers as never,
+      bundles as never,
+      source,
+      target,
+    );
+    transfers.history.mockResolvedValueOnce([migrationSnapshot()]).mockResolvedValueOnce([sourceSnapshot()]);
+    await expect(worker.processMigration(tenantId, actorUserId, migrationId))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(target.importBundle).not.toHaveBeenCalled();
+    expect(transfers.transitionMigration).toHaveBeenCalledWith(
+      tenantId,
+      actorUserId,
+      migrationId,
+      expect.objectContaining({ action: 'FAIL' }),
+    );
   });
 
   it('rejects any dataset row whose explicit tenant scope differs from the authenticated tenant', async () => {

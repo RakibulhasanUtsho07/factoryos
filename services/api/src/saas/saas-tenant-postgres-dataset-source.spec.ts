@@ -9,11 +9,22 @@ const otherTenantId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const orderId = '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 
 describe('SaasTenantPostgresDatasetSource', () => {
-  function createSource(rowTenantId?: string) {
+  function createSource(
+    rowTenantId?: string,
+    iamCounts = {
+      membership_count: '0',
+      role_count: '0',
+      user_role_count: '0',
+      role_permission_count: '0',
+    },
+  ) {
     const calls: Array<{ sql: string; values?: unknown[] }> = [];
     const client = {
       query: jest.fn(async (sql: string, values?: unknown[]) => {
         calls.push({ sql, values });
+        if (sql.includes('AS membership_count')) {
+          return { rows: [iamCounts], rowCount: 1 };
+        }
         if (sql.includes('FROM public.orders AS dataset_row')) {
           return {
             rows: rowTenantId
@@ -36,6 +47,38 @@ describe('SaasTenantPostgresDatasetSource', () => {
     } as unknown as DatabaseService;
     return { source: new SaasTenantPostgresDatasetSource(database), client, calls, database };
   }
+
+  it('permits migration preflight only when no unmapped tenant IAM rows exist', async () => {
+    const { source, client, calls } = createSource();
+    await source.assertIamMigrationReady(tenantId);
+    expect(calls[0]?.sql).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    expect(calls[1]?.sql).toContain("set_config('app.tenant_id', $1, true)");
+    expect(calls.find((item) => item.sql.includes('AS membership_count'))?.values).toEqual([tenantId]);
+    expect(calls.some((item) => item.sql === 'COMMIT')).toBe(true);
+    expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(false);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed and rolls back when memberships exist without a reviewed IAM adapter', async () => {
+    const { source, client, calls } = createSource(undefined, {
+      membership_count: '1',
+      role_count: '1',
+      user_role_count: '1',
+      role_permission_count: '2',
+    });
+    await expect(source.assertIamMigrationReady(tenantId))
+      .rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(calls.some((item) => item.sql === 'COMMIT')).toBe(false);
+    expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(true);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed tenant identifiers before opening an IAM preflight connection', async () => {
+    const { source, database } = createSource();
+    await expect(source.assertIamMigrationReady('not-a-uuid'))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(database.getClient).not.toHaveBeenCalled();
+  });
 
   it('uses a read-only repeatable-read transaction, tenant RLS context and explicit keyset predicates', async () => {
     const { source, client, calls } = createSource(tenantId);

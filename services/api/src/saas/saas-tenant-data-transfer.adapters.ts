@@ -11,6 +11,13 @@ export interface SaasTenantTransferDatasetSnapshot {
 
 export interface SaasTenantTransferDatasetSource {
   /**
+   * Fail closed when the tenant has memberships, role definitions, or grants
+   * that the current tenant-transfer bundle cannot preserve. This preflight is
+   * required before import until the dedicated IAM remapping adapter is wired.
+   */
+  assertIamMigrationReady(tenantId: string): Promise<void>;
+
+  /**
    * Run the callback against one tenant-scoped, repeatable-read snapshot.
    * The snapshot and its iterators are valid only until the callback settles.
    * Implementations must roll back if a reader is abandoned or the callback fails.
