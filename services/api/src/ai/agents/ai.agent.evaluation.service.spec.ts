@@ -55,6 +55,53 @@ describe('AiAgentEvaluationService', () => {
     auditService.record.mockResolvedValue('audit-id');
   });
 
+
+  it('creates versioned expected-call cases and records audit metadata', async () => {
+    const created = {
+      ...caseRow,
+      agent_id: 'AGENT.TEST',
+      agent_version: '1.0.0',
+    };
+    database.query.mockResolvedValueOnce({ rows: [{ id: definitionId, agent_id: 'AGENT.TEST', version: '1.0.0', status: 'DRAFT' }] })
+      .mockResolvedValueOnce({ rows: [created] });
+
+    const result = await makeService().createCase(tenantId, factoryId, userId, definitionId, {
+      caseKey: 'calls-noop', version: 1, name: 'Calls noop', kind: 'EXPECTED_TOOL_CALL',
+      expectedToolId: 'AI.RUNTIME.NOOP', expectedToolVersion: '1.0.0',
+      expectedActionType: 'AI.RUNTIME.NOOP', expectedInputSubset: { orderId: 'ORD-1' },
+    });
+
+    expect(result.caseKey).toBe('calls-noop');
+    expect(result.kind).toBe('EXPECTED_TOOL_CALL');
+    expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CREATE_EVALUATION_CASE',
+      resourceType: 'AI_AGENT_EVALUATION_CASE',
+    }));
+  });
+
+  it('aggregates per-agent reports without exposing raw simulation payloads', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{ id: definitionId, agent_id: 'AGENT.TEST', version: '1.0.0', status: 'DRAFT' }],
+    }).mockResolvedValueOnce({
+      rows: [{
+        case_id: caseId, case_key: 'calls-noop', case_version: 1,
+        name: 'Calls noop', kind: 'EXPECTED_TOOL_CALL', case_status: 'ACTIVE',
+        evaluation_count: '3', pass_count: '2', fail_count: '1',
+        inconclusive_count: '0', latest_status: 'PASS',
+        last_evaluated_at: '2026-10-11T00:02:00.000Z',
+      }],
+    });
+
+    const report = await makeService().getReport(tenantId, factoryId, userId, definitionId);
+
+    expect(report.summary).toMatchObject({
+      caseCount: 1, evaluationCount: 3, passCount: 2, failCount: 1,
+      inconclusiveCount: 0, passRatePercent: 66.67,
+    });
+    expect(report.cases[0]).toMatchObject({ caseKey: 'calls-noop', latestStatus: 'PASS' });
+    expect(report.cases[0]).not.toHaveProperty('rawSimulationResult');
+  });
+
   it('evaluates expected tool calls against a scoped simulation run', async () => {
     database.query.mockResolvedValueOnce({ rows: [caseRow] })
       .mockResolvedValueOnce({ rows: [simulationRow()] })

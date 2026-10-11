@@ -287,7 +287,7 @@ export class AiAgentEvaluationService {
       };
     }
 
-    const refusal = this.findRefusalEvidence({ result: run.result ?? {}, observations });
+    const refusal = this.findRefusalEvidence({ result: run.result ?? {}, observations, simulatedToolResponses: run.simulated_tool_responses ?? {} });
     const forbiddenCallObserved = matchingSteps.length > 0;
     const reasonMatched = !testCase.expected_refusal_reason_contains ||
       refusal.texts.some((value) => value.toLowerCase().includes(testCase.expected_refusal_reason_contains!.toLowerCase()));
