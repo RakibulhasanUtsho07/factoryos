@@ -1583,12 +1583,47 @@ export class AiRuntimeService {
   // ============================================================
 
   async executeAction(
-  tenantId: string,
-  factoryId: string,
-  actorUserId: string,
-  input: ExecuteAiActionDto,
-) {
-  this.validateScope(tenantId, factoryId);
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ExecuteAiActionDto,
+  ) {
+    return this.executeAuthorizedAction(
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      'AI_TOOL_GATEWAY',
+    );
+  }
+
+  /**
+   * Internal agent-runtime entry point. Unlike the public controller method,
+   * the executor identity is fixed by this method and cannot be caller-forged.
+   */
+  async executeAgentAction(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ExecuteAiActionDto,
+  ) {
+    return this.executeAuthorizedAction(
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      'AGENT_RUNTIME',
+    );
+  }
+
+  private async executeAuthorizedAction(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ExecuteAiActionDto,
+    executorType: 'AI_TOOL_GATEWAY' | 'AGENT_RUNTIME',
+  ) {
+    this.validateScope(tenantId, factoryId);
   this.validateUuid(actorUserId, 'actorUserId');
 
   await this.iamService.authorize(
@@ -1867,7 +1902,7 @@ export class AiRuntimeService {
     actionTokenHash: action.action_token_hash,
     tokenExpiresAt: action.token_expires_at,
     idempotencyKey: action.idempotency_key,
-    executorType: 'AI_TOOL_GATEWAY',
+    executorType,
     actionToken,
   };
 
