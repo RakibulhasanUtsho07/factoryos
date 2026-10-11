@@ -773,6 +773,19 @@ describeWithPostgres(
           ).rejects.toMatchObject({ code: '55000' });
           await db.query('ROLLBACK TO SAVEPOINT task_deadline_mutation');
 
+          await db.query('SAVEPOINT task_fingerprint_mutation');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_tasks
+              SET request_hash = $2
+              WHERE id = $1
+              `,
+              [taskId, 'd'.repeat(64)],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT task_fingerprint_mutation');
+
           await db.query(
             `
             INSERT INTO public.agent_task_steps (
