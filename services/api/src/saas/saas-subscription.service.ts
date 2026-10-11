@@ -48,6 +48,60 @@ export class SaasSubscriptionService {
     private readonly auditService: AuditService,
   ) {}
 
+  /**
+   * Runtime entitlement gate for premium AI execution.
+   *
+   * Legacy tenants without a subscription record are deliberately kept in
+   * compatibility mode while subscription onboarding is rolled out. If a
+   * tenant has a subscription, current state and effective billing/trial
+   * window are enforced on every tool execution (no stale cache).
+   */
+  async assertAiCapabilityAvailable(tenantId: string): Promise<void> {
+    this.assertUuid(tenantId, 'tenantId');
+    const result = await this.database.query<{
+      status: SubscriptionStatus;
+      trial_ends_at: string | null;
+      current_period_start: string | null;
+      current_period_end: string | null;
+    }>(
+      `SELECT status, trial_ends_at::text AS trial_ends_at,
+              current_period_start::text AS current_period_start,
+              current_period_end::text AS current_period_end
+       FROM saas_subscriptions
+       WHERE tenant_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [tenantId],
+      { tenantId },
+    );
+
+    const subscription = result.rows[0];
+    if (!subscription) return; // Legacy compatibility; see method contract above.
+
+    const now = Date.now();
+    if (
+      subscription.status === 'TRIAL' &&
+      subscription.trial_ends_at !== null &&
+      new Date(subscription.trial_ends_at).getTime() > now
+    ) {
+      return;
+    }
+
+    if (
+      subscription.status === 'ACTIVE' &&
+      subscription.current_period_start !== null &&
+      subscription.current_period_end !== null &&
+      new Date(subscription.current_period_start).getTime() <= now &&
+      new Date(subscription.current_period_end).getTime() > now
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException(
+      'Tenant subscription is suspended, expired, or outside its effective period; premium AI execution is disabled',
+    );
+  }
+
   async createPlan(tenantId: string, actorUserId: string, input: CreateSaasSubscriptionPlanDto) {
     this.scope(tenantId, actorUserId);
     await this.authorize(actorUserId, tenantId, 'saas.subscription_plans.write');
