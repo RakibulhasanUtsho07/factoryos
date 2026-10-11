@@ -1849,6 +1849,49 @@ describe(
       );
     });
 
+    it('requires the handoff to remain unexpired in the atomic acceptance update', async () => {
+      const handoff = {
+        id: 'cf1a2222-2222-4222-8222-222222222222',
+        tenantId,
+        factoryId,
+        sourceAgentId: 'AGENT.SENDER',
+        targetAgentId: 'AGENT.RECEIVER',
+        purpose: 'Check order recovery',
+        allowedDataClasses: ['INTERNAL'],
+        permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        parentTraceId: traceId,
+        expectedArtifact: { type: 'recovery-options' },
+        handoffHash: 'c'.repeat(64),
+        status: 'PENDING' as const,
+        acceptedBy: null,
+        acceptedAt: null,
+        createdAt: '2026-10-07T00:00:00.000Z',
+        updatedAt: '2026-10-07T00:00:00.000Z',
+      };
+
+      (service as any).getHandoff = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(handoff);
+      toolRegistry.getTool.mockResolvedValue({
+        requiredScopes: ['ai.actions.execute'],
+      });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(
+        service.acceptHandoff(tenantId, factoryId, userId, handoff.id),
+      ).rejects.toThrow('AI agent handoff acceptance lost a concurrency race or the handoff expired');
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      expect(queryCalls).toHaveLength(1);
+      const sql = String(queryCalls[0]?.[0] ?? '');
+      expect(sql).toContain("AND status = 'PENDING'");
+      expect(sql).toContain('AND expires_at > NOW()');
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
     it('re-checks receiving permissions for every permitted handoff tool', async () => {
       const handoff = {
         id: 'cf1a2222-2222-4222-8222-222222222222',

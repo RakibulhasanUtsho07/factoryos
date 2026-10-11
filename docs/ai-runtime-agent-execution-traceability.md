@@ -50,6 +50,10 @@ Evaluation-result persistence uses the database's unique case_id + simulation_ru
 
 Task deadlines are checked again by the atomic tool-call claim (`deadline_at > NOW()`) after authorization has completed. A deadline that expires during authorization therefore cannot reserve a new call and proceed into the governed Tool Gateway path; the same claim still enforces cancellation and the maximum tool-call budget. Unit coverage asserts that this database guard fails closed.
 
+## Handoff expiry is enforced at the acceptance write
+
+Handoff acceptance now requires `status = 'PENDING'` and `expires_at > NOW()` in the same database update. Expiry cleanup is also conditional on the handoff still being pending and already expired, so a delayed expiry path cannot overwrite a concurrently accepted or otherwise transitioned handoff.
+
 ## Retry scheduling is guarded by live task state
 
 A failed execution is returned to `PENDING` only when the step is still `RUNNING` and a correlated database predicate confirms its parent task remains executable, uncancelled, within deadline, and below its retry budget. The subsequent task retry transition independently re-checks cancellation and deadline. A stale retry path therefore cannot reopen a step after cancellation or schedule work beyond the persisted deadline.

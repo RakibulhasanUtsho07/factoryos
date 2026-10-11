@@ -1394,7 +1394,11 @@ export class AiAgentRuntimeService {
         `
         UPDATE agent_handoffs
         SET status = 'EXPIRED'
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+        WHERE id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND status = 'PENDING'
+          AND expires_at <= NOW()
         `,
         [handoffId, tenantId, factoryId],
         {
@@ -1446,6 +1450,7 @@ export class AiAgentRuntimeService {
         AND tenant_id = $2
         AND factory_id = $3
         AND status = 'PENDING'
+        AND expires_at > NOW()
       RETURNING
         id::text AS id,
         tenant_id::text AS tenant_id,
@@ -1475,7 +1480,7 @@ export class AiAgentRuntimeService {
     const row = result.rows[0];
     if (!row) {
       throw new ConflictException(
-        'AI agent handoff acceptance lost a concurrency race',
+        'AI agent handoff acceptance lost a concurrency race or the handoff expired',
       );
     }
 
