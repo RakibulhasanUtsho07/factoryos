@@ -244,6 +244,7 @@ BEGIN
     ) THEN
       IF NEW.approved_by IS NULL OR NEW.approved_by = NEW.created_by
         OR NEW.approved_at IS NULL OR NEW.approval_expires_at <= clock_timestamp()
+        OR NEW.approval_expires_at > clock_timestamp() + interval '90 days'
         OR NEW.approval_reason IS NULL THEN
         RAISE EXCEPTION 'Renewed masked-data approval is incomplete or expired'
           USING ERRCODE = '23514';
