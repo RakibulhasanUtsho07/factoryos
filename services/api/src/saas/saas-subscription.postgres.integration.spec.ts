@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import { SaasSubscriptionService } from './saas-subscription.service';
+import { EntitlementService } from '../entitlements/entitlement.service';
+import { FeatureFlagService } from '../entitlements/feature-flag.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -10,6 +12,8 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
   let adminPool: Pool;
   let database: DatabaseService;
   let service: SaasSubscriptionService;
+  let entitlementService: EntitlementService;
+  let featureFlagService: FeatureFlagService;
   const tenantIds: string[] = [];
   const userIds: string[] = [];
 
@@ -23,6 +27,8 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
     const iam = { authorize: async () => undefined };
     const audit = { record: async () => undefined };
     service = new SaasSubscriptionService(database, iam as never, audit as never);
+    entitlementService = new EntitlementService(database, audit as never);
+    featureFlagService = new FeatureFlagService(database, audit as never);
   }, 60000);
 
   afterAll(async () => {
@@ -30,7 +36,11 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
       await adminPool.query('ALTER TABLE saas_subscription_events DISABLE TRIGGER saas_subscription_events_immutable');
       await adminPool.query('ALTER TABLE saas_subscriptions DISABLE TRIGGER saas_subscription_no_delete');
       await adminPool.query('ALTER TABLE saas_subscription_plans DISABLE TRIGGER saas_subscription_plan_immutable');
+      await adminPool.query('ALTER TABLE entitlements DISABLE TRIGGER entitlements_immutable_version');
+      await adminPool.query('ALTER TABLE feature_flags DISABLE TRIGGER feature_flags_immutable_version');
       try {
+        await adminPool.query('DELETE FROM entitlements WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+        await adminPool.query('DELETE FROM feature_flags WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
         await adminPool.query('DELETE FROM saas_subscription_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
         await adminPool.query('DELETE FROM saas_subscriptions WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
         await adminPool.query('DELETE FROM saas_subscription_plans WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
@@ -38,6 +48,8 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
         await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
       } finally {
         await adminPool.query('ALTER TABLE saas_subscription_plans ENABLE TRIGGER saas_subscription_plan_immutable');
+        await adminPool.query('ALTER TABLE entitlements ENABLE TRIGGER entitlements_immutable_version');
+        await adminPool.query('ALTER TABLE feature_flags ENABLE TRIGGER feature_flags_immutable_version');
         await adminPool.query('ALTER TABLE saas_subscriptions ENABLE TRIGGER saas_subscription_no_delete');
         await adminPool.query('ALTER TABLE saas_subscription_events ENABLE TRIGGER saas_subscription_events_immutable');
       }
@@ -63,6 +75,23 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
       [userId, 'saas-life-' + userId, 'saas-life-' + userId + '@factoryos.test'],
     );
 
+    // Existing premium entitlements/flags are resolved through the live
+    // subscription state, not just their own ACTIVE/enabled columns.
+    await adminPool.query(
+      `INSERT INTO entitlements
+        (tenant_id, package, feature_key, limit_value, period, version, status, effective_from, config, created_by)
+       VALUES ($1, 'FACTORYOS_AI', 'ai.runtime.execute', NULL, NULL, 1, 'ACTIVE',
+               clock_timestamp() - interval '1 minute', '{}'::jsonb, $2)`,
+      [tenantId, userId],
+    );
+    await adminPool.query(
+      `INSERT INTO feature_flags
+        (tenant_id, key, version, enabled, config, owner, security_critical, effective_from, created_by)
+       VALUES ($1, 'ai.runtime.enabled', 1, true, '{}'::jsonb, 'SaaS Lifecycle Integration', false,
+               clock_timestamp() - interval '1 minute', $2)`,
+      [tenantId, userId],
+    );
+
     const starter = await service.createPlan(tenantId, userId, {
       plan_code: 'STARTER', display_name: 'Starter', tier_rank: 10, idempotency_key: 'starter-' + tenantId,
     });
@@ -77,6 +106,8 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
       plan_code: 'STARTER', trial_ends_at: trialEndsAt, idempotency_key: 'trial-' + tenantId,
     });
     expect(trial.subscription.status).toBe('TRIAL');
+    expect(await entitlementService.resolveEntitlement(tenantId, 'FACTORYOS_AI', 'ai.runtime.execute')).not.toBeNull();
+    expect((await featureFlagService.resolveFeatureFlag(tenantId, 'ai.runtime.enabled')).enabled).toBe(true);
     const replay = await service.startTrial(tenantId, userId, {
       plan_code: 'STARTER', trial_ends_at: trialEndsAt, idempotency_key: 'trial-' + tenantId,
     });
@@ -105,6 +136,9 @@ postgresDescribe('SaasSubscriptionService PostgreSQL lifecycle invariants', () =
       idempotency_key: 'suspend-' + tenantId,
     });
     expect(suspended.subscription.status).toBe('SUSPENDED');
+    expect(await entitlementService.resolveEntitlement(tenantId, 'FACTORYOS_AI', 'ai.runtime.execute')).toBeNull();
+    expect((await featureFlagService.resolveFeatureFlag(tenantId, 'ai.runtime.enabled')).enabled).toBe(false);
+    expect((await featureFlagService.resolveFeatureFlag(tenantId, 'ai.runtime.enabled')).safeDefault).toBe(true);
 
     const terminated = await service.transition(tenantId, userId, trial.subscription.id, {
       action: 'TERMINATE', expected_version: 4, reason: 'Customer contract ended',
