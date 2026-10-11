@@ -126,6 +126,9 @@ jobs:
             migrations/042_research_topic_watchlists.sql
             migrations/043_research_growth_iam_permissions.sql
             migrations/044_growth_outcome_result_link_integrity.sql
+            migrations/045_saas_usage_metering_reconciliation.sql
+            migrations/046_saas_budget_controls.sql
+            migrations/047_saas_alerts_provider_costs.sql
           )
 
           for migration in "${migrations[@]}"; do
