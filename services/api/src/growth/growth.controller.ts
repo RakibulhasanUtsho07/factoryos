@@ -9,6 +9,8 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 
 import { CreateGrowthExperimentDto } from './dto/create-growth-experiment.dto';
+import { CreateGrowthValidationUnknownDto } from './dto/create-growth-validation-unknown.dto';
+import { DecideGrowthValidationUnknownDto } from './dto/decide-growth-validation-unknown.dto';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
@@ -67,6 +69,51 @@ export class GrowthController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.getOpportunity(c.tenantId, c.factoryId, opportunityId);
+  }
+
+  @Post('opportunities/:opportunityId/unknowns')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  createValidationUnknown(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: CreateGrowthValidationUnknownDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.createValidationUnknown(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Get('opportunities/:opportunityId/unknowns')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  listValidationUnknowns(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Query('include_resolved') includeResolved?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.listValidationUnknowns(
+      c.tenantId, c.factoryId, opportunityId, includeResolved === 'true',
+    );
+  }
+
+  @Post('unknowns/:unknownId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.review')
+  @RequireFactoryScope()
+  decideValidationUnknown(
+    @Req() req: FactoryOsRequest,
+    @Param('unknownId', new ParseUUIDPipe()) unknownId: string,
+    @Body() body: DecideGrowthValidationUnknownDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.decideValidationUnknown(
+      c.userId, c.tenantId, c.factoryId, unknownId, body, c.requestId, c.traceId,
+    );
   }
 
   @Post('opportunities/:opportunityId/decision')

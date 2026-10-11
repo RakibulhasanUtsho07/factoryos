@@ -12,7 +12,9 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateGrowthExperimentDto } from './dto/create-growth-experiment.dto';
-import { CreateGrowthOpportunityDto, } from './dto/create-growth-opportunity.dto';
+import { CreateGrowthValidationUnknownDto } from './dto/create-growth-validation-unknown.dto';
+import { DecideGrowthValidationUnknownDto } from './dto/decide-growth-validation-unknown.dto';
+import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
@@ -209,7 +211,7 @@ export class GrowthService {
     );
     const row = opportunity.rows[0];
     if (!row) throw new NotFoundException('Growth opportunity not found');
-    const [evidence, scenarios, experiments, outcomes] = await Promise.all([
+    const [evidence, scenarios, experiments, outcomes, unknowns] = await Promise.all([
       this.database.query(
         'SELECT id::text AS id, evidence_type, origin_class, research_claim_id::text AS research_claim_id, business_entity_id::text AS business_entity_id, reference_ref, citation_url, description, confidence::text AS confidence, evidence_snapshot, captured_at::text AS captured_at FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY captured_at',
         [opportunityId, tenantId, factoryId],
@@ -230,8 +232,194 @@ export class GrowthService {
         [opportunityId, tenantId, factoryId],
         { tenantId },
       ),
+      this.database.query(
+        'SELECT id::text AS id, question, decision_variable, impact_if_wrong::text AS impact_if_wrong, probability_unknown::text AS probability_unknown, validation_effort::text AS validation_effort, priority_score::text AS priority_score, validation_method, owner_user_id::text AS owner_user_id, status, resolution_evidence_ref, resolution_notes, resolved_at::text AS resolved_at, created_at::text AS created_at FROM growth_validation_unknowns WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY CASE WHEN status IN (\'RESOLVED\', \'NOT_MATERIAL\') THEN 1 ELSE 0 END, priority_score DESC, created_at',
+        [opportunityId, tenantId, factoryId],
+        { tenantId },
+      ),
     ]);
-    return { ...row, evidence: evidence.rows, scenarios: scenarios.rows, experiments: experiments.rows, outcomes: outcomes.rows };
+    return { ...row, evidence: evidence.rows, scenarios: scenarios.rows, experiments: experiments.rows, outcomes: outcomes.rows, validation_unknowns: unknowns.rows };
+  }
+
+  async createValidationUnknown(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    opportunityId: string,
+    dto: CreateGrowthValidationUnknownDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    if (!dto.question.trim() || !dto.decision_variable.trim()) {
+      throw new BadRequestException('A growth unknown needs a question and the decision variable it affects');
+    }
+    if (!Number.isFinite(dto.impact_if_wrong) || dto.impact_if_wrong < 0 || dto.impact_if_wrong > 100
+      || !Number.isFinite(dto.probability_unknown) || dto.probability_unknown < 0 || dto.probability_unknown > 1
+      || !Number.isFinite(dto.validation_effort) || dto.validation_effort <= 0 || dto.validation_effort > 100) {
+      throw new BadRequestException('Unknown impact, probability and validation effort are outside supported bounds');
+    }
+
+    const unknown = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const opportunity = await client.query<{ status: string }>(
+          'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
+          [opportunityId, tenantId, factoryId],
+        );
+        if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+        if (!['PROPOSED', 'ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
+          throw new ConflictException('Validation unknowns can only be added to an open growth hypothesis');
+        }
+        const ownerUserId = dto.owner_user_id ?? userId;
+        await this.assertActiveTenantUser(client, tenantId, ownerUserId);
+        const inserted = await client.query(
+          `
+          INSERT INTO growth_validation_unknowns (
+            tenant_id, factory_id, opportunity_id, question, decision_variable,
+            impact_if_wrong, probability_unknown, validation_effort, validation_method,
+            owner_user_id, created_by
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          RETURNING id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id,
+            opportunity_id::text AS opportunity_id, question, decision_variable,
+            impact_if_wrong::text AS impact_if_wrong, probability_unknown::text AS probability_unknown,
+            validation_effort::text AS validation_effort, priority_score::text AS priority_score,
+            validation_method, owner_user_id::text AS owner_user_id, status,
+            created_by::text AS created_by, created_at::text AS created_at
+          `,
+          [
+            tenantId, factoryId, opportunityId, dto.question.trim(), dto.decision_variable.trim(),
+            dto.impact_if_wrong, dto.probability_unknown, dto.validation_effort,
+            dto.validation_method, ownerUserId, userId,
+          ],
+        );
+        const row = inserted.rows[0];
+        if (!row) throw new Error('GROWTH_VALIDATION_UNKNOWN_INSERT_FAILED');
+        await this.insertOutbox(client, {
+          tenantId, factoryId, userId, aggregateType: 'GROWTH_VALIDATION_UNKNOWN',
+          aggregateId: row.id, eventType: 'GROWTH.UNKNOWN_OPENED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            unknown_id: row.id, opportunity_id: opportunityId,
+            decision_variable: row.decision_variable, priority_score: row.priority_score,
+            validation_method: row.validation_method,
+          },
+        });
+        return row;
+      },
+    );
+    await this.auditSafely({
+      tenantId, factoryId, userId, action: 'UNKNOWN_OPEN',
+      resourceId: unknown.id, requestId, traceId,
+      payload: {
+        opportunityId, decisionVariable: unknown.decision_variable,
+        priorityScore: unknown.priority_score, validationMethod: unknown.validation_method,
+      },
+    });
+    return unknown;
+  }
+
+  async listValidationUnknowns(
+    tenantId: string,
+    factoryId: string,
+    opportunityId: string,
+    includeResolved = false,
+  ) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const result = await this.database.query(
+      `
+      SELECT id::text AS id, question, decision_variable,
+        impact_if_wrong::text AS impact_if_wrong,
+        probability_unknown::text AS probability_unknown,
+        validation_effort::text AS validation_effort,
+        priority_score::text AS priority_score, validation_method,
+        owner_user_id::text AS owner_user_id, status,
+        resolution_evidence_ref, resolution_notes, resolved_at::text AS resolved_at,
+        created_at::text AS created_at, updated_at::text AS updated_at
+      FROM growth_validation_unknowns
+      WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+        AND ($4::boolean OR status NOT IN ('RESOLVED', 'NOT_MATERIAL'))
+      ORDER BY CASE WHEN status IN ('RESOLVED', 'NOT_MATERIAL') THEN 1 ELSE 0 END,
+        priority_score DESC, created_at
+      `,
+      [opportunityId, tenantId, factoryId, includeResolved],
+      { tenantId },
+    );
+    return result.rows;
+  }
+
+  async decideValidationUnknown(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    unknownId: string,
+    dto: DecideGrowthValidationUnknownDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(unknownId, 'unknownId');
+    const next = dto.decision === 'START_VALIDATING' ? 'VALIDATING'
+      : dto.decision === 'RESOLVE' ? 'RESOLVED' : 'NOT_MATERIAL';
+    const evidenceRef = dto.resolution_evidence_ref?.trim() || null;
+    const notes = dto.resolution_notes?.trim() || null;
+    if (next === 'RESOLVED' || next === 'NOT_MATERIAL') {
+      if (!evidenceRef) throw new BadRequestException('Closing a material uncertainty requires a traceable evidence reference');
+    }
+
+    const result = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const current = await client.query<{ status: string; opportunity_id: string }>(
+          'SELECT status, opportunity_id::text AS opportunity_id FROM growth_validation_unknowns WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+          [unknownId, tenantId, factoryId],
+        );
+        const row = current.rows[0];
+        if (!row) throw new NotFoundException('Growth validation unknown not found');
+        const transitions: Record<string, string[]> = {
+          OPEN: ['VALIDATING', 'RESOLVED', 'NOT_MATERIAL'],
+          VALIDATING: ['RESOLVED', 'NOT_MATERIAL'],
+        };
+        if (!(transitions[row.status] ?? []).includes(next)) {
+          throw new ConflictException('Invalid or terminal growth unknown transition');
+        }
+        const updated = await client.query(
+          `
+          UPDATE growth_validation_unknowns
+          SET status = $1, resolution_evidence_ref = $2, resolution_notes = $3,
+              updated_by = $4
+          WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
+          RETURNING id::text AS id, opportunity_id::text AS opportunity_id,
+            question, decision_variable, priority_score::text AS priority_score,
+            status, resolution_evidence_ref, resolution_notes,
+            resolved_at::text AS resolved_at, updated_at::text AS updated_at
+          `,
+          [next, next === 'VALIDATING' ? null : evidenceRef,
+            next === 'VALIDATING' ? null : notes, userId, unknownId, tenantId, factoryId],
+        );
+        const updatedRow = updated.rows[0];
+        if (!updatedRow) throw new ConflictException('Growth unknown decision lost a concurrent update');
+        await this.insertOutbox(client, {
+          tenantId, factoryId, userId, aggregateType: 'GROWTH_VALIDATION_UNKNOWN',
+          aggregateId: unknownId, eventType: 'GROWTH.UNKNOWN_' + next,
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            unknown_id: unknownId, opportunity_id: row.opportunity_id,
+            status: next, evidence_ref: evidenceRef,
+          },
+        });
+        return updatedRow;
+      },
+    );
+    await this.auditSafely({
+      tenantId, factoryId, userId, action: 'UNKNOWN_' + next,
+      resourceId: unknownId, requestId, traceId,
+      payload: { status: next, evidenceRef, priorityScore: result.priority_score },
+    });
+    return result;
   }
 
   async decideOpportunity(
@@ -335,22 +523,35 @@ export class GrowthService {
     };
     const modelVersion = 'factoryos.growth.financial-sensitivity.v1';
     const output = this.runSensitivityModel(inputs);
-    const inputHash = createHash('sha256').update(JSON.stringify({
-      modelVersion, dataVintage: vintage.toISOString(),
-      baselineSourceRef: dto.baseline_source_ref.trim(), inputs,
-    })).digest('hex');
+    let inputHash = '';
 
     const result = await this.database.transaction(
       { tenantId, userId },
       async client => {
-        const opportunity = await client.query<{ status: string }>(
-          'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
+        const opportunity = await client.query<{ status: string; constraints_snapshot: Record<string, unknown> }>(
+          'SELECT status, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
           [opportunityId, tenantId, factoryId],
         );
         if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
         if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
           throw new ConflictException('Scenarios may only be run against accepted or in-progress hypotheses');
         }
+        const constraintGate = this.evaluateConstraintGate(
+          opportunity.rows[0].constraints_snapshot,
+          dto.projected_constraint_metrics as unknown as Record<string, unknown> | undefined,
+        );
+        const snapshotOutput = { ...output, constraintGate };
+        const fullInputs = {
+          ...inputs,
+          projected_constraint_metrics: dto.projected_constraint_metrics ?? null,
+        };
+        inputHash = createHash('sha256').update(JSON.stringify({
+          modelVersion, dataVintage: vintage.toISOString(),
+          baselineSourceRef: dto.baseline_source_ref.trim(),
+          inputs: fullInputs,
+          constraintsSnapshot: opportunity.rows[0].constraints_snapshot ?? {},
+          constraintGate,
+        })).digest('hex');
         const inserted = await client.query(
           `
           INSERT INTO growth_scenarios (
@@ -361,12 +562,12 @@ export class GrowthService {
           RETURNING id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id,
             opportunity_id::text AS opportunity_id, scenario_name, scenario_type, model_version,
             data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot,
-            input_hash, created_by::text AS created_by, created_at::text AS created_at
+            input_hash, decision_ready, created_by::text AS created_by, created_at::text AS created_at
           `,
           [
             tenantId, factoryId, opportunityId, dto.scenario_name.trim(), dto.scenario_type,
             modelVersion, vintage.toISOString(), dto.baseline_source_ref.trim(),
-            JSON.stringify(inputs), JSON.stringify(output), inputHash, userId,
+            JSON.stringify(fullInputs), JSON.stringify(snapshotOutput), inputHash, userId,
           ],
         );
         const row = inserted.rows[0];
@@ -383,7 +584,7 @@ export class GrowthService {
     await this.auditSafely({
       tenantId, factoryId, userId, action: 'SCENARIO_RUN',
       resourceId: result.id, requestId, traceId,
-      payload: { opportunityId, scenarioType: dto.scenario_type, modelVersion, inputHash },
+      payload: { opportunityId, scenarioType: dto.scenario_type, modelVersion, inputHash, decisionReady: result.decision_ready, constraintGate: (result.output_snapshot as Record<string, unknown>)?.constraintGate },
     });
     return result;
   }
@@ -797,6 +998,144 @@ export class GrowthService {
         'No causal inference, tax, working-capital, capacity, quality, delivery or accounting integration is implied.',
         'The input baseline is accepted as supplied and must be independently reconciled against the named baseline source.',
       ],
+    };
+  }
+
+  private evaluateConstraintGate(
+    snapshot: Record<string, unknown> | null | undefined,
+    projected: Record<string, unknown> | undefined,
+  ) {
+    const required = [
+      'capacity', 'quality', 'cash', 'delivery',
+    ] as const;
+    const missingConstraints: string[] = [];
+    const missingProjectedMetrics: string[] = [];
+    const violations: string[] = [];
+    const checks: Array<Record<string, unknown>> = [];
+    const root = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+      ? snapshot as Record<string, unknown> : {};
+
+    const numeric = (obj: Record<string, unknown>, key: string) =>
+      typeof obj[key] === 'number' && Number.isFinite(obj[key]) ? obj[key] as number : null;
+    const text = (obj: Record<string, unknown>, key: string) =>
+      typeof obj[key] === 'string' && (obj[key] as string).trim() ? (obj[key] as string).trim() : null;
+    const validSource = (obj: Record<string, unknown>) => {
+      const sourceRef = text(obj, 'source_ref');
+      const asOf = text(obj, 'as_of');
+      const time = asOf ? new Date(asOf).getTime() : Number.NaN;
+      return Boolean(sourceRef) && Number.isFinite(time) && time <= Date.now() + 5 * 60 * 1000;
+    };
+
+    for (const key of required) {
+      const value = root[key];
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        missingConstraints.push(key);
+        continue;
+      }
+      if (!validSource(value as Record<string, unknown>)) {
+        missingConstraints.push(key);
+      }
+    }
+
+    if (!projected || typeof projected !== 'object' || Array.isArray(projected)) {
+      missingProjectedMetrics.push('capacity_utilization_pct', 'quality_yield_pct', 'cash_after_investment', 'cash_currency', 'delivery_backlog_days');
+    } else {
+      for (const key of ['capacity_utilization_pct', 'quality_yield_pct', 'cash_after_investment', 'cash_currency', 'delivery_backlog_days']) {
+        const value = projected[key];
+        if ((typeof value === 'number' && Number.isFinite(value)) || (key === 'cash_currency' && typeof value === 'string' && /^[A-Za-z]{3}$/.test(value))) continue;
+        missingProjectedMetrics.push(key);
+      }
+    }
+
+    if (missingConstraints.length || missingProjectedMetrics.length) {
+      return {
+        status: 'REVIEW_REQUIRED',
+        decisionReady: false,
+        missingConstraints: [...new Set(missingConstraints)],
+        missingProjectedMetrics: [...new Set(missingProjectedMetrics)],
+        violations,
+        checks,
+        explanation: 'Scenario output is exploratory only until source-backed capacity, quality, cash and delivery constraints plus projected metrics are supplied.',
+      };
+    }
+
+    const capacity = root.capacity as Record<string, unknown>;
+    const quality = root.quality as Record<string, unknown>;
+    const cash = root.cash as Record<string, unknown>;
+    const delivery = root.delivery as Record<string, unknown>;
+
+    const maxUtilization = numeric(capacity, 'max_utilization_pct');
+    const minYield = numeric(quality, 'min_yield_pct');
+    const minCash = numeric(cash, 'minimum_reserve');
+    const maxBacklog = numeric(delivery, 'max_backlog_days');
+    if (maxUtilization === null || maxUtilization < 0 || maxUtilization > 1000) missingConstraints.push('capacity.max_utilization_pct');
+    if (minYield === null || minYield < 0 || minYield > 100) missingConstraints.push('quality.min_yield_pct');
+    if (minCash === null || minCash < 0) missingConstraints.push('cash.minimum_reserve');
+    if (!text(cash, 'currency') || !/^[A-Za-z]{3}$/.test(text(cash, 'currency') ?? '')) missingConstraints.push('cash.currency');
+    if (maxBacklog === null || maxBacklog < 0) missingConstraints.push('delivery.max_backlog_days');
+    if (missingConstraints.length) {
+      return {
+        status: 'REVIEW_REQUIRED', decisionReady: false,
+        missingConstraints: [...new Set(missingConstraints)],
+        missingProjectedMetrics: [], violations, checks,
+        explanation: 'Constraint snapshot is missing a valid limit or currency.',
+      };
+    }
+
+    const capacityActual = numeric(projected, 'capacity_utilization_pct')!;
+    const qualityActual = numeric(projected, 'quality_yield_pct')!;
+    const cashActual = numeric(projected, 'cash_after_investment')!;
+    const cashCurrency = text(projected, 'cash_currency')!.toUpperCase();
+    const backlogActual = numeric(projected, 'delivery_backlog_days')!;
+    const expectedCurrency = text(cash, 'currency')!.toUpperCase();
+
+    checks.push({
+      dimension: 'capacity',
+      passed: capacityActual <= maxUtilization,
+      projected: capacityActual,
+      maximumAllowed: maxUtilization,
+      sourceRef: text(capacity, 'source_ref'),
+      asOf: text(capacity, 'as_of'),
+    });
+    checks.push({
+      dimension: 'quality',
+      passed: qualityActual >= minYield,
+      projected: qualityActual,
+      minimumAllowed: minYield,
+      sourceRef: text(quality, 'source_ref'),
+      asOf: text(quality, 'as_of'),
+    });
+    checks.push({
+      dimension: 'cash',
+      passed: cashActual >= minCash && cashCurrency === expectedCurrency,
+      projected: cashActual,
+      minimumReserve: minCash,
+      currency: cashCurrency,
+      expectedCurrency,
+      sourceRef: text(cash, 'source_ref'),
+      asOf: text(cash, 'as_of'),
+    });
+    checks.push({
+      dimension: 'delivery',
+      passed: backlogActual <= maxBacklog,
+      projected: backlogActual,
+      maximumAllowed: maxBacklog,
+      sourceRef: text(delivery, 'source_ref'),
+      asOf: text(delivery, 'as_of'),
+    });
+    for (const check of checks) if (check.passed !== true) violations.push(String(check.dimension));
+
+    const status = violations.length ? 'BLOCKED' : 'PASS';
+    return {
+      status,
+      decisionReady: status === 'PASS',
+      missingConstraints: [],
+      missingProjectedMetrics: [],
+      violations,
+      checks,
+      explanation: status === 'PASS'
+        ? 'All four projected constraint checks passed against the supplied source-backed snapshot.'
+        : 'At least one projected constraint is outside its declared limit; this scenario must not be presented as decision-ready.',
     };
   }
 

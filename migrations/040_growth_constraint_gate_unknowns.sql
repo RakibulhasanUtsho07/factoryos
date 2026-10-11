@@ -127,6 +127,98 @@ CREATE TRIGGER growth_validation_unknown_guard
 BEFORE UPDATE OR DELETE ON growth_validation_unknowns
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_validation_unknown();
 
+CREATE OR REPLACE FUNCTION factoryos_guard_growth_scenario_constraints()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  constraint_snapshot JSONB;
+  projected JSONB;
+  capacity_limit NUMERIC;
+  quality_limit NUMERIC;
+  cash_reserve NUMERIC;
+  delivery_limit NUMERIC;
+  expected_currency TEXT;
+  status_text TEXT;
+BEGIN
+  status_text := NEW.output_snapshot #>> '{constraintGate,status}';
+  IF status_text IS DISTINCT FROM 'PASS' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT constraints_snapshot INTO constraint_snapshot
+  FROM growth_opportunities
+  WHERE id = NEW.opportunity_id
+    AND tenant_id = NEW.tenant_id
+    AND factory_id = NEW.factory_id
+  FOR SHARE;
+
+  projected := NEW.inputs -> 'projected_constraint_metrics';
+  IF constraint_snapshot IS NULL OR projected IS NULL THEN
+    RAISE EXCEPTION 'A decision-ready scenario requires constraints and projected metrics'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF jsonb_typeof(constraint_snapshot -> 'capacity') <> 'object'
+    OR jsonb_typeof(constraint_snapshot -> 'quality') <> 'object'
+    OR jsonb_typeof(constraint_snapshot -> 'cash') <> 'object'
+    OR jsonb_typeof(constraint_snapshot -> 'delivery') <> 'object' THEN
+    RAISE EXCEPTION 'A decision-ready scenario requires all four constraint dimensions'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF COALESCE(length(btrim(constraint_snapshot #>> '{capacity,source_ref}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{quality,source_ref}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{cash,source_ref}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{delivery,source_ref}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{capacity,as_of}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{quality,as_of}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{cash,as_of}')), 0) = 0
+    OR COALESCE(length(btrim(constraint_snapshot #>> '{delivery,as_of}')), 0) = 0 THEN
+    RAISE EXCEPTION 'A decision-ready scenario requires dated, referenced constraints'
+      USING ERRCODE = '23514';
+  END IF;
+
+  capacity_limit := (constraint_snapshot #>> '{capacity,max_utilization_pct}')::numeric;
+  quality_limit := (constraint_snapshot #>> '{quality,min_yield_pct}')::numeric;
+  cash_reserve := (constraint_snapshot #>> '{cash,minimum_reserve}')::numeric;
+  expected_currency := upper(constraint_snapshot #>> '{cash,currency}');
+  delivery_limit := (constraint_snapshot #>> '{delivery,max_backlog_days}')::numeric;
+
+  IF capacity_limit IS NULL OR quality_limit IS NULL OR cash_reserve IS NULL
+    OR expected_currency !~ '^[A-Z]{3}
+ALTER TABLE growth_validation_unknowns FORCE ROW LEVEL SECURITY;
+CREATE POLICY growth_validation_unknowns_tenant_isolation
+  ON growth_validation_unknowns
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
+INSERT INTO schema_migrations (version, checksum)
+VALUES ('040_growth_constraint_gate_unknowns', NULL)
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+ OR delivery_limit IS NULL THEN
+    RAISE EXCEPTION 'A decision-ready scenario has invalid constraint limits'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF (projected ->> 'capacity_utilization_pct')::numeric > capacity_limit
+    OR (projected ->> 'quality_yield_pct')::numeric < quality_limit
+    OR (projected ->> 'cash_after_investment')::numeric < cash_reserve
+    OR upper(projected ->> 'cash_currency') <> expected_currency
+    OR (projected ->> 'delivery_backlog_days')::numeric > delivery_limit THEN
+    RAISE EXCEPTION 'A scenario that violates capacity, quality, cash or delivery limits cannot be decision-ready'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER growth_scenario_constraint_guard
+BEFORE INSERT ON growth_scenarios
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_scenario_constraints();
+
 ALTER TABLE growth_validation_unknowns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE growth_validation_unknowns FORCE ROW LEVEL SECURITY;
 CREATE POLICY growth_validation_unknowns_tenant_isolation

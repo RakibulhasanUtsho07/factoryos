@@ -1,6 +1,8 @@
+import { Type } from 'class-transformer';
+import { ProjectedGrowthConstraintMetricsDto } from './projected-growth-constraint-metrics.dto';
 import {
-  IsDateString, IsIn, IsNotEmpty, IsNumber, IsString,
-  Max, MaxLength, Min,
+  IsDateString, IsIn, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString,
+  Max, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 
 export class CreateGrowthScenarioDto {
@@ -64,4 +66,10 @@ export class CreateGrowthScenarioDto {
   @Min(0)
   @Max(100)
   uncertainty_pct!: number;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => ProjectedGrowthConstraintMetricsDto)
+  projected_constraint_metrics?: ProjectedGrowthConstraintMetricsDto;
 }
