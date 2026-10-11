@@ -124,7 +124,7 @@ export class SaasEncryptedTenantBundleStore {
 
     const iv = header.subarray(MAGIC.length, HEADER_LENGTH);
     const decipher = createDecipheriv('aes-256-gcm', settings.key, iv);
-    let pending = Buffer.alloc(0);
+    let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     const tagSplitter = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         const combined = pending.length ? Buffer.concat([pending, chunk]) : chunk;

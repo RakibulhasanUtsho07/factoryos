@@ -17,6 +17,8 @@ import {
   SAAS_ENCRYPTED_TENANT_BUNDLE_STORE,
   SAAS_TENANT_MIGRATION_TARGET_ADAPTER,
   SAAS_TENANT_TRANSFER_DATASET_SOURCE,
+} from './saas-tenant-data-transfer.adapters';
+import type {
   SaasTenantEncryptedBundleStore,
   SaasTenantMigrationTargetAdapter,
   SaasTenantTransferDatasetSource,
