@@ -1,8 +1,8 @@
 # SaaS Productization — WP10 Backend Slice
 
-**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), and FR-PROD-04 (P0).  
-**Migration range:** 045–047.  
-**API base:** /v2/saas/usage.
+**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
+**Migration range:** 045–048.  
+**API bases:** /v2/saas/usage and /v2/saas/subscriptions.
 
 ## Delivered in this slice
 
@@ -13,7 +13,10 @@
 - Effective-dated tenant/factory budgets with soft/hard limits, anomaly checks, durable alerts, acknowledgement records, and controls restricted to non-critical workload classes.
 - Idempotent AI tool-call metering in the governed Tool Gateway. Tool workload classification comes from registered tool metadata, not caller-supplied request fields. Usage is recorded before the budget-control check; only registered non-critical classes can be paused by this mechanism. PRODUCTION and NON_AI workloads are not pause targets.
 - PostgreSQL row-level security and tenant/factory-scoped foreign keys on the metering, budget, alert, and provider-cost records.
-- api-postgres-ci.yml applies migrations 045–047 and runs the API unit and PostgreSQL integration suite.
+- api-postgres-ci.yml applies migrations 045–048 and runs the API unit and PostgreSQL integration suite.
+- Versioned, tenant-scoped subscription plans use an explicitly configured tier_rank so the service can validate upgrade/downgrade direction without inventing plan prices. Deployment profile is recorded as control-plane metadata; billing remains external.
+- Subscription state is guarded by a database transition trigger and an immutable event ledger. A deferred constraint trigger prevents state/version updates from committing unless a matching lifecycle event is written in the same transaction. Terminal subscriptions cannot be reactivated; a new subscription can be started after termination/expiry.
+- Lifecycle operations use optimistic expected_version checks, tenant-row locking, idempotency request hashes, IAM authorization in both the controller and service, and best-effort audit records after the state/event transaction.
 
 ## API surface
 
@@ -32,8 +35,23 @@ All routes require a verified request identity and the corresponding IAM permiss
 | GET /alerts and POST /alerts/:alertId/acknowledgements | saas.alerts.read / saas.alerts.ack | List and acknowledge durable alerts |
 | POST /provider-costs/events and POST /provider-costs/reconciliations | saas.provider_costs.write / saas.provider_costs.reconcile | Record and reconcile provider-reported cost |
 
+## Subscription lifecycle API
+
+All endpoints require verified tenant/user context and the listed IAM permission.
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /v2/saas/subscriptions/plans | saas.subscription_plans.write | Add an immutable version of a tenant plan |
+| GET /v2/saas/subscriptions/plans | saas.subscription_plans.read | List each plan's latest version |
+| POST /v2/saas/subscriptions | saas.subscriptions.write | Start a trial for an active plan |
+| GET /v2/saas/subscriptions/current | saas.subscriptions.read | Get the latest subscription record |
+| GET /v2/saas/subscriptions/:id/events | saas.subscriptions.read | Read append-only lifecycle history |
+| POST /v2/saas/subscriptions/:id/transitions | saas.subscriptions.write | Activate, suspend, resume, upgrade, downgrade, renew, terminate or expire |
+
+Transitions require expected_version and idempotency_key. ACTIVATE, RESUME and RENEW require period bounds; upgrade/downgrade require a target plan whose configured rank is respectively greater/lower than the current rank. Future-dated transitions are rejected because a scheduler is not part of this slice. EXPIRE is accepted only when the trial or active billing period has reached its boundary. Stale versions and reuse of an idempotency key with a different request are rejected.
+
 ## Boundaries and remaining WP10 work
 
-This is the metering/FinOps backend slice, not a claim that all of WP10 is complete. The full SRS also requires complete tenant lifecycle/subscription transitions, centralized entitlement cache semantics, synthetic/masked sandbox environments, staged module/agent release channels with rollback, deployment-profile administration, and tenant export/migration compatibility. Those capabilities must be delivered and tested as separate slices.
+These are the metering/FinOps and subscription-lifecycle backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes centralized entitlement evaluation/cache semantics tied to subscription state, synthetic/masked sandbox environments, staged module/agent release channels with rollback, deployment-profile administration, and tenant export/migration compatibility. Those capabilities must be delivered and tested as separate slices.
 
 AI token counts must be emitted by the actual approved model/provider adapter once such calls execute; the Tool Gateway integration in this slice meters registered tool calls and does not fabricate token usage for deterministic code paths.
