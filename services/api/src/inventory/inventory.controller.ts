@@ -1,0 +1,144 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  Req,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
+
+import type { Request } from 'express';
+
+import { PermissionGuard } from '../iam/guards/permission.guard';
+import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
+import { RequirePermission } from '../iam/require-permission.decorator';
+
+import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
+import { CreateStockMovementDto } from './dto/create-stock-movement.dto';
+import { InventoryService } from './inventory.service';
+
+interface FactoryOsRequestContext {
+  requestId: string;
+  traceId: string;
+  requestedTenantId: string | null;
+  requestedFactoryId: string | null;
+  userId: string | null;
+  tenantId: string | null;
+  factoryId: string | null;
+}
+
+type FactoryOsRequest = Request & {
+  factoryos?: FactoryOsRequestContext;
+};
+
+@Controller('inventory/items')
+export class InventoryController {
+  constructor(private readonly inventoryService: InventoryService) {}
+
+  @Post()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async create(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateInventoryItemDto,
+  ) {
+    const context = this.requireContext(request);
+    return this.inventoryService.createItem(
+      context.userId,
+      context.tenantId,
+      context.factoryId,
+      body,
+      context.requestId,
+      context.traceId,
+    );
+  }
+
+  @Get()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async list(
+    @Req() request: FactoryOsRequest,
+    @Query('search') search?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+    return this.inventoryService.listItems(
+      context.tenantId,
+      context.factoryId,
+      search,
+      limit,
+    );
+  }
+
+  @Post(':itemId/movements')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async createMovement(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: CreateStockMovementDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.inventoryService.createStockMovement(
+      context.userId,
+      context.tenantId,
+      context.factoryId,
+      itemId,
+      body,
+      idempotencyKey ?? null,
+      context.requestId,
+      context.traceId,
+    );
+  }
+
+  @Get(':itemId/movements')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listMovements(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+    return this.inventoryService.listMovements(
+      context.tenantId,
+      context.factoryId,
+      itemId,
+      limit,
+    );
+  }
+
+  private requireContext(request: FactoryOsRequest): {
+    userId: string;
+    tenantId: string;
+    factoryId: string;
+    requestId: string;
+    traceId: string;
+  } {
+    const context = request.factoryos;
+    if (!context?.userId || !context.tenantId || !context.factoryId) {
+      throw new UnauthorizedException(
+        'Authenticated user, tenant and factory context are required',
+      );
+    }
+    return {
+      userId: context.userId,
+      tenantId: context.tenantId,
+      factoryId: context.factoryId,
+      requestId: context.requestId,
+      traceId: context.traceId,
+    };
+  }
+}
