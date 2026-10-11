@@ -187,7 +187,7 @@ export class SaasUsageService {
  async createBudget(tenantId:string,requestFactoryId:string|null,actorUserId:string,input:CreateSaasUsageBudgetDto) {
   this.scope(tenantId,actorUserId,...(requestFactoryId?[requestFactoryId]:[]));
   const n=this.normalizeBudget(input,requestFactoryId);
-  await this.iamService.authorize(actorUserId,tenantId,'saas.budgets.write',n.factory_id??undefined);
+  await this.authorize(actorUserId,tenantId,'saas.budgets.write');
   const hash=this.hash({tenantId,...n.content,factory_id:n.factory_id});
   const prior=await this.database.query<BudgetRow>('SELECT '+this.budgetColumns()+' FROM saas_usage_budgets WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});
   if(prior.rows[0]) {if(prior.rows[0].request_hash!==hash)throw new ConflictException('Budget idempotency key was reused for different content');return {idempotent:true,budget:this.mapBudget(prior.rows[0])};}
@@ -231,7 +231,7 @@ export class SaasUsageService {
   const scopeLevel=this.enum(input.scope_level,new Set(['TENANT','FACTORY']),'scope_level');
   if(scopeLevel==='FACTORY'&&!requestFactoryId)throw new BadRequestException('A verified factory context is required for factory-scoped workload controls');
   const factoryId=scopeLevel==='FACTORY'?requestFactoryId:null;
-  await this.iamService.authorize(actorUserId,tenantId,'saas.workloads.control',factoryId??undefined);
+  await this.authorize(actorUserId,tenantId,'saas.workloads.control');
   const reasonCode=state==='PAUSED'?'ADMIN_PAUSE':'ADMIN_RESUME';
   const reason=this.str(input.reason,'reason',1000);
   const key=this.idem(input.idempotency_key);
