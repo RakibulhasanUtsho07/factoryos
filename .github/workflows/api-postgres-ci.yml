@@ -52,6 +52,7 @@ jobs:
       DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
       TEST_ADMIN_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
       B19_TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+      SAAS_TRANSFER_TARGET_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_transfer_target_test_ci
       JWT_SECRET: ci-only-not-a-production-secret
       NODE_ENV: test
       PORT: 3001
@@ -134,11 +135,21 @@ jobs:
             migrations/050_saas_release_rollouts.sql
             migrations/051_saas_deployment_profiles.sql
             migrations/052_saas_tenant_export_migration.sql
+            migrations/053_saas_tenant_import_receipts.sql
           )
 
           for migration in "${migrations[@]}"; do
             echo "Applying $migration"
             psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+              -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
+          # The target importer is tested against a distinct database with the same reviewed schema.
+          psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
+            'CREATE DATABASE factoryos_transfer_target_test_ci'
+          for migration in "${migrations[@]}"; do
+            echo "Applying target $migration"
+            psql "postgresql://postgres@127.0.0.1:5432/factoryos_transfer_target_test_ci" \
               -v ON_ERROR_STOP=1 -f "$migration"
           done
 
@@ -179,6 +190,7 @@ jobs:
           DATABASE_URL=postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
           TEST_ADMIN_DATABASE_URL=postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
           B19_TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+          SAAS_TRANSFER_TARGET_DATABASE_URL=postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_transfer_target_test_ci
           JWT_SECRET=ci-only-not-a-production-secret
           AUTH_MODE=dev
           DEV_AUTH_ENABLED=false
