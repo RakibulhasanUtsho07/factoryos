@@ -11,6 +11,9 @@ import { ReconcileSaasUsageDto } from './dto/reconcile-saas-usage.dto';
 import { RecordSaasUsageEventDto, SaasUsageSourceSystem, SaasWorkloadClass } from './dto/record-saas-usage-event.dto';
 import { CreateSaasUsageBudgetDto, SaasBudgetPeriodKind } from './dto/create-saas-usage-budget.dto';
 import { SetSaasWorkloadControlDto, SaasNonCriticalWorkloadClass } from './dto/set-saas-workload-control.dto';
+import { RecordSaasProviderCostEventDto } from './dto/record-saas-provider-cost-event.dto';
+import { ReconcileSaasProviderCostInvoiceDto } from './dto/reconcile-saas-provider-cost-invoice.dto';
+import { AcknowledgeSaasBudgetAlertDto } from './dto/acknowledge-saas-budget-alert.dto';
 
 type RateRow = QueryResultRow & {
  id:string; tenant_id:string; metric_code:SaasMeterMetric; rate_version:number; rate_minor_per_block:string|number;
@@ -51,6 +54,29 @@ type BudgetEvaluationRow = QueryResultRow & {
  anomaly_baseline_hourly_minor:string|number; status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY';
  report_hash:string; idempotency_key:string; request_hash:string; evaluated_by:string; created_at:string;
 };
+
+
+type ProviderCostRow = QueryResultRow & {
+ id:string; tenant_id:string; factory_id:string|null; provider_code:string; model_code:string|null;
+ metric_code:SaasMeterMetric; workload_class:SaasWorkloadClass; quantity:string|number; currency:string;
+ provider_cost_minor:string|number; occurred_at:string; provider_invoice_reference:string|null;
+ source_system:string; source_event_ref:string; request_hash:string; idempotency_key:string;
+ recorded_by:string; created_at:string;
+};
+type ProviderCostReconciliationRow = QueryResultRow & {
+ id:string; tenant_id:string; factory_id:string|null; provider_code:string; invoice_reference:string;
+ reconciliation_version:number; period_start:string; period_end:string; currency:string; event_count:string|number;
+ ledger_provider_cost_minor:string|number; invoiced_provider_cost_minor:string|number; variance_minor:string|number;
+ status:'MATCHED'|'VARIANCE'|'NO_PROVIDER_DATA'; report_hash:string; request_hash:string;
+ idempotency_key:string; recorded_by:string; created_at:string;
+};
+type BudgetAlertRow = QueryResultRow & {
+ id:string; tenant_id:string; factory_id:string|null; budget_id:string; budget_evaluation_id:string;
+ alert_type:string; severity:string; title:string; message_code:string; payload:Record<string,unknown>;
+ payload_hash:string; created_at:string; acknowledged_at:string|null;
+};
+const PROVIDER_COST_COLUMNS='id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,provider_code,model_code,metric_code,workload_class,quantity::text AS quantity,currency,provider_cost_minor::text AS provider_cost_minor,occurred_at::text AS occurred_at,provider_invoice_reference,source_system,source_event_ref,request_hash,idempotency_key,recorded_by::text AS recorded_by,created_at::text AS created_at';
+const PROVIDER_RECON_COLUMNS='id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,provider_code,invoice_reference,reconciliation_version,period_start::text AS period_start,period_end::text AS period_end,currency,event_count,ledger_provider_cost_minor::text AS ledger_provider_cost_minor,invoiced_provider_cost_minor::text AS invoiced_provider_cost_minor,variance_minor::text AS variance_minor,status,report_hash,request_hash,idempotency_key,recorded_by::text AS recorded_by,created_at::text AS created_at';
 
 const METRICS = new Set<string>(Object.values(SaasMeterMetric));
 const WORKLOADS = new Set<string>(Object.values(SaasWorkloadClass));
@@ -101,7 +127,7 @@ export class SaasUsageService {
   this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.usage.write');
   const n=this.normalizeEvent(input), hash=this.hash({tenantId,factoryId,...n.content});
   const existing=await this.database.query<UsageRow>('SELECT '+USAGE_COLUMNS+' FROM saas_usage_events WHERE tenant_id=$1 AND (idempotency_key=$2 OR (source_system=$3 AND source_event_ref=$4)) LIMIT 1',[tenantId,n.idempotency_key,n.content.source_system,n.content.source_event_ref],{tenantId,userId:actorUserId});
-  if(existing.rows[0]) {if(existing.rows[0].request_hash!==hash)throw new ConflictException('Usage idempotency key or source event reference was reused for different content');return {idempotent:true,event:this.mapUsage(existing.rows[0])};}
+  if(existing.rows[0]) {if(existing.rows[0].request_hash!==hash)throw new ConflictException('Usage idempotency key or source event reference was reused for different content');await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,existing.rows[0].occurred_at);return {idempotent:true,event:this.mapUsage(existing.rows[0])};}
   const effectiveRate=await this.database.query<RateRow>('SELECT '+RATE_COLUMNS+' FROM saas_usage_rate_cards WHERE tenant_id=$1 AND metric_code=$2 AND effective_from <= $3 ORDER BY effective_from DESC,rate_version DESC LIMIT 1',[tenantId,n.content.metric_code,n.content.occurred_at],{tenantId,userId:actorUserId});
   const rate=effectiveRate.rows[0]??null;
   let rateId:string|null=null, rateVersion:number|null=null, rateAmount:number|null=null, rateBlock:number|null=null, currency:string|null=null, cost:number|null=null;
@@ -120,6 +146,7 @@ export class SaasUsageService {
    row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Usage event was concurrently recorded with conflicting content');return {idempotent:true,event:this.mapUsage(row)};
   }
   await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_EVENT',action:'RECORD_USAGE_EVENT',resourceType:'SAAS_USAGE_EVENT',resourceId:row.id,payload:{metricCode:row.metric_code,capabilityCode:row.capability_code,workloadClass:row.workload_class,quantity:Number(row.quantity),currency:row.currency,estimatedCostMinor:row.estimated_cost_minor===null?null:String(row.estimated_cost_minor),sourceRefSha256:this.sha(row.source_event_ref),requestHash:hash}});
+  await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,row.occurred_at);
   return {idempotent:false,event:this.mapUsage(row)};
  }
 
@@ -315,6 +342,7 @@ export class SaasUsageService {
     evaluation=old.rows[0];if(!evaluation||evaluation.request_hash!==reqHash)throw new ConflictException('Budget evaluation idempotency key conflicts with different content');
    }
    output.push(this.mapBudgetEvaluation(evaluation));
+   if(status!=='SAFE') await this.persistBudgetAlert(tenantId,factoryScope,budget.id,evaluation.id,status,snapshot,actorUserId);
    if(status==='HARD_LIMIT'&&budget.pause_noncritical_on_hard_limit) {
     for(const cls of Object.values(SaasNonCriticalWorkloadClass)) {
      const reason='Budget '+budget.budget_code+' reached the configured hard limit for '+period.start;
@@ -378,6 +406,140 @@ export class SaasUsageService {
  private budgetEvaluationColumns(){return 'id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,budget_id::text AS budget_id,period_start::text AS period_start,period_end::text AS period_end,evaluated_at::text AS evaluated_at,event_count,unpriced_event_count,usage_cost_minor::text AS usage_cost_minor,soft_limit_minor::text AS soft_limit_minor,hard_limit_minor::text AS hard_limit_minor,anomaly_window_cost_minor::text AS anomaly_window_cost_minor,anomaly_baseline_hourly_minor::text AS anomaly_baseline_hourly_minor,status,report_hash,idempotency_key,request_hash,evaluated_by::text AS evaluated_by,created_at::text AS created_at';}
  private mapBudget(r:BudgetRow){return {id:r.id,factoryId:r.factory_id,budgetCode:r.budget_code,policyVersion:Number(r.policy_version),periodKind:r.period_kind,metricCode:r.metric_code,capabilityCode:r.capability_code,workloadClass:r.workload_class,currency:r.currency,softLimitMinor:String(r.soft_limit_minor),hardLimitMinor:String(r.hard_limit_minor),pauseNoncriticalOnHardLimit:r.pause_noncritical_on_hard_limit,anomalyMultiplier:String(r.anomaly_multiplier),anomalyMinEvents:Number(r.anomaly_min_events),effectiveFrom:r.effective_from,effectiveTo:r.effective_to,createdBy:r.created_by,createdAt:r.created_at};}
  private mapBudgetEvaluation(r:BudgetEvaluationRow){return {id:r.id,factoryId:r.factory_id,budgetId:r.budget_id,periodStart:r.period_start,periodEnd:r.period_end,evaluatedAt:r.evaluated_at,eventCount:Number(r.event_count),unpricedEventCount:Number(r.unpriced_event_count),usageCostMinor:String(r.usage_cost_minor),softLimitMinor:String(r.soft_limit_minor),hardLimitMinor:String(r.hard_limit_minor),anomalyWindowCostMinor:String(r.anomaly_window_cost_minor),anomalyBaselineHourlyMinor:String(r.anomaly_baseline_hourly_minor),status:r.status,reportHash:r.report_hash};}
+
+
+ async recordAiToolCall(tenantId:string,factoryId:string,actorUserId:string,input:{executionKey:string;toolId:string;workloadClass:string;occurredAt?:string}) {
+  const executionKey=this.str(input.executionKey,'executionKey',255);
+  const workloadClass=this.enum(input.workloadClass,WORKLOADS,'workloadClass') as SaasWorkloadClass;
+  const toolId=this.str(input.toolId,'toolId',180);
+  const capabilityCode='ai.tool.'+toolId.toLowerCase().replace(/[^a-z0-9._:-]/g,'-').slice(0,85);
+  const key='ai-tool-call:'+this.sha(executionKey);
+  const sourceRef='ai-tool-execution:'+this.sha(executionKey);
+  this.scope(tenantId,actorUserId,factoryId);
+  await this.authorize(actorUserId,tenantId,'saas.usage.write');
+  const existing=await this.database.query<UsageRow>('SELECT '+USAGE_COLUMNS+' FROM saas_usage_events WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,key],{tenantId,userId:actorUserId});
+  if(existing.rows[0]) {
+   const row=existing.rows[0];
+   if(row.metric_code!=='AI_TOOL_CALL'||row.capability_code!==capabilityCode||row.workload_class!==workloadClass||Number(row.quantity)!==1||row.source_event_ref!==sourceRef)throw new ConflictException('AI tool execution key was reused for different metering content');
+   await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,row.occurred_at);
+   return {idempotent:true,event:this.mapUsage(row)};
+  }
+  return this.recordUsageEvent(tenantId,factoryId,actorUserId,{
+   metric_code:SaasMeterMetric.AI_TOOL_CALL,capability_code:capabilityCode,workload_class:workloadClass,
+   quantity:1,occurred_at:this.timestamp(input.occurredAt??new Date().toISOString(),'occurred_at'),
+   source_system:SaasUsageSourceSystem.TOOL_GATEWAY,source_event_ref:sourceRef,idempotency_key:key,
+  } as RecordSaasUsageEventDto);
+ }
+
+ async listBudgetAlerts(tenantId:string,factoryId:string|null,actorUserId:string,limit=25,offset=0,unreadOnly=false) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.alerts.read');this.page(limit,offset);
+  const r=await this.database.query<BudgetAlertRow>(
+   'SELECT a.id::text AS id,a.tenant_id::text AS tenant_id,a.factory_id::text AS factory_id,a.budget_id::text AS budget_id,a.budget_evaluation_id::text AS budget_evaluation_id,a.alert_type,a.severity,a.title,a.message_code,a.payload,a.payload_hash,a.created_at::text AS created_at,ack.acknowledged_at::text AS acknowledged_at FROM saas_budget_alerts a LEFT JOIN saas_budget_alert_acknowledgements ack ON ack.tenant_id=a.tenant_id AND ack.alert_id=a.id AND ack.acknowledged_by=$3 WHERE a.tenant_id=$1 AND (a.factory_id IS NULL OR $2::uuid IS NULL OR a.factory_id=$2) AND (NOT $4::boolean OR ack.id IS NULL) ORDER BY a.created_at DESC,a.id DESC LIMIT $5 OFFSET $6',
+   [tenantId,factoryId,actorUserId,unreadOnly,limit,offset],{tenantId,userId:actorUserId});
+  return {count:r.rows.length,alerts:r.rows.map(x=>this.mapBudgetAlert(x)),limit,offset,unreadOnly};
+ }
+
+ async acknowledgeBudgetAlert(tenantId:string,factoryId:string|null,actorUserId:string,alertId:string,input:AcknowledgeSaasBudgetAlertDto) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));
+  if(!isUUID(alertId))throw new BadRequestException('alertId must be a UUID');
+  await this.authorize(actorUserId,tenantId,'saas.alerts.ack');
+  const visible=await this.database.query<QueryResultRow & {id:string}>('SELECT id::text AS id FROM saas_budget_alerts WHERE tenant_id=$1 AND id=$2 AND (factory_id IS NULL OR $3::uuid IS NULL OR factory_id=$3) LIMIT 1',[tenantId,alertId,factoryId],{tenantId,userId:actorUserId});
+  if(!visible.rows[0])throw new NotFoundException('SaaS budget alert was not found in the current tenant/factory scope');
+  const key=this.idem(input.idempotency_key), hash=this.hash({tenantId,alertId,actorUserId});
+  const prior=await this.database.query<QueryResultRow & {id:string;alert_id:string;request_hash:string;acknowledged_at:string}>('SELECT id::text AS id,alert_id::text AS alert_id,request_hash,acknowledged_at::text AS acknowledged_at FROM saas_budget_alert_acknowledgements WHERE tenant_id=$1 AND (idempotency_key=$2 OR (alert_id=$3 AND acknowledged_by=$4)) LIMIT 1',[tenantId,key,alertId,actorUserId],{tenantId,userId:actorUserId});
+  if(prior.rows[0]) {
+   if(prior.rows[0].request_hash!==hash||prior.rows[0].alert_id!==alertId)throw new ConflictException('Alert acknowledgement idempotency key was reused for different content');
+   return {idempotent:true,acknowledgement:{id:prior.rows[0].id,alertId,acknowledgedAt:prior.rows[0].acknowledged_at}};
+  }
+  const ins=await this.database.query<QueryResultRow & {id:string;acknowledged_at:string}>('INSERT INTO saas_budget_alert_acknowledgements(tenant_id,alert_id,acknowledged_by,idempotency_key,request_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING id::text AS id,acknowledged_at::text AS acknowledged_at',[tenantId,alertId,actorUserId,key,hash],{tenantId,userId:actorUserId});
+  if(!ins.rows[0]) {
+   const raced=await this.database.query<QueryResultRow & {id:string;alert_id:string;request_hash:string;acknowledged_at:string}>('SELECT id::text AS id,alert_id::text AS alert_id,request_hash,acknowledged_at::text AS acknowledged_at FROM saas_budget_alert_acknowledgements WHERE tenant_id=$1 AND (idempotency_key=$2 OR (alert_id=$3 AND acknowledged_by=$4)) LIMIT 1',[tenantId,key,alertId,actorUserId],{tenantId,userId:actorUserId});
+   if(!raced.rows[0]||raced.rows[0].request_hash!==hash||raced.rows[0].alert_id!==alertId)throw new ConflictException('Alert acknowledgement conflicts with a concurrent request');
+   return {idempotent:true,acknowledgement:{id:raced.rows[0].id,alertId,acknowledgedAt:raced.rows[0].acknowledged_at}};
+  }
+  await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_BUDGET_ALERT',action:'ACKNOWLEDGE_BUDGET_ALERT',resourceType:'SAAS_BUDGET_ALERT',resourceId:alertId,payload:{acknowledgementId:ins.rows[0].id,requestHash:hash}});
+  return {idempotent:false,acknowledgement:{id:ins.rows[0].id,alertId,acknowledgedAt:ins.rows[0].acknowledged_at}};
+ }
+
+ async recordProviderCostEvent(tenantId:string,requestFactoryId:string|null,actorUserId:string,input:RecordSaasProviderCostEventDto) {
+  this.scope(tenantId,actorUserId,...(requestFactoryId?[requestFactoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.provider_costs.write');
+  const n=this.normalizeProviderCost(input,requestFactoryId),hash=this.hash({tenantId,factoryId:n.factory_id,...n.content});
+  const existing=await this.database.query<ProviderCostRow>('SELECT '+PROVIDER_COST_COLUMNS+' FROM saas_provider_cost_events WHERE tenant_id=$1 AND (idempotency_key=$2 OR (provider_code=$3 AND source_system=$4 AND source_event_ref=$5)) LIMIT 1',[tenantId,n.idempotency_key,n.content.provider_code,n.content.source_system,n.content.source_event_ref],{tenantId,userId:actorUserId});
+  if(existing.rows[0]) {if(existing.rows[0].request_hash!==hash)throw new ConflictException('Provider cost event idempotency key/source reference conflicts with different content');return {idempotent:true,event:this.mapProviderCost(existing.rows[0])};}
+  const r=await this.database.query<ProviderCostRow>('INSERT INTO saas_provider_cost_events(tenant_id,factory_id,provider_code,model_code,metric_code,workload_class,quantity,currency,provider_cost_minor,occurred_at,provider_invoice_reference,source_system,source_event_ref,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT DO NOTHING RETURNING '+PROVIDER_COST_COLUMNS,
+   [tenantId,n.factory_id,n.content.provider_code,n.content.model_code,n.content.metric_code,n.content.workload_class,n.content.quantity,n.content.currency,n.content.provider_cost_minor,n.content.occurred_at,n.content.provider_invoice_reference,n.content.source_system,n.content.source_event_ref,hash,n.idempotency_key,actorUserId],{tenantId,userId:actorUserId});
+  let row=r.rows[0];
+  if(!row) {
+   const raced=await this.database.query<ProviderCostRow>('SELECT '+PROVIDER_COST_COLUMNS+' FROM saas_provider_cost_events WHERE tenant_id=$1 AND (idempotency_key=$2 OR (provider_code=$3 AND source_system=$4 AND source_event_ref=$5)) LIMIT 1',[tenantId,n.idempotency_key,n.content.provider_code,n.content.source_system,n.content.source_event_ref],{tenantId,userId:actorUserId});
+   row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Provider cost event was concurrently recorded with conflicting content');return {idempotent:true,event:this.mapProviderCost(row)};
+  }
+  await this.auditSafely({tenantId,factoryId:n.factory_id,actorUserId,eventType:'SAAS_PROVIDER_COST',action:'RECORD_PROVIDER_COST_EVENT',resourceType:'SAAS_PROVIDER_COST_EVENT',resourceId:row.id,payload:{providerCode:row.provider_code,modelCode:row.model_code,metricCode:row.metric_code,quantity:String(row.quantity),currency:row.currency,providerCostMinor:String(row.provider_cost_minor),sourceRefSha256:this.sha(row.source_event_ref),requestHash:hash}});
+  return {idempotent:false,event:this.mapProviderCost(row)};
+ }
+
+ async reconcileProviderCostInvoice(tenantId:string,factoryId:string|null,actorUserId:string,input:ReconcileSaasProviderCostInvoiceDto) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.provider_costs.reconcile');
+  const n=this.normalizeProviderReconciliation(input),hash=this.hash({tenantId,factoryId,...n.content});
+  const prior=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});
+  if(prior.rows[0]) {if(prior.rows[0].request_hash!==hash)throw new ConflictException('Provider reconciliation idempotency key conflicts with different content');return {idempotent:true,reconciliation:this.mapProviderReconciliation(prior.rows[0])};}
+  const totals=await this.database.query<QueryResultRow & {event_count:string|number;ledger_cost_minor:string|number}>('SELECT COUNT(*)::bigint AS event_count,COALESCE(SUM(provider_cost_minor),0)::bigint AS ledger_cost_minor FROM saas_provider_cost_events WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) AND provider_code=$3 AND currency=$4 AND occurred_at >= $5 AND occurred_at < $6 AND provider_invoice_reference=$7',
+   [tenantId,factoryId,n.content.provider_code,n.content.currency,n.content.period_start,n.content.period_end,n.content.invoice_reference],{tenantId,userId:actorUserId});
+  const eventCount=Number(totals.rows[0]?.event_count??0),ledger=Number(totals.rows[0]?.ledger_cost_minor??0),invoice=n.content.invoiced_provider_cost_minor,variance=invoice-ledger,status=eventCount===0?'NO_PROVIDER_DATA':variance===0?'MATCHED':'VARIANCE';
+  const snapshot={tenantId,factoryId,...n.content,eventCount,ledger,variance,status};
+  const reportHash=this.hash(snapshot);
+  const r=await this.database.query<ProviderCostReconciliationRow>('INSERT INTO saas_provider_cost_reconciliations(tenant_id,factory_id,provider_code,invoice_reference,reconciliation_version,period_start,period_end,currency,event_count,ledger_provider_cost_minor,invoiced_provider_cost_minor,variance_minor,status,report_hash,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT DO NOTHING RETURNING '+PROVIDER_RECON_COLUMNS,
+   [tenantId,factoryId,n.content.provider_code,n.content.invoice_reference,n.content.reconciliation_version,n.content.period_start,n.content.period_end,n.content.currency,eventCount,ledger,invoice,variance,status,reportHash,hash,n.idempotency_key,actorUserId],{tenantId,userId:actorUserId});
+  let row=r.rows[0];
+  if(!row) {const raced=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Provider invoice reconciliation conflicts with an existing snapshot');return {idempotent:true,reconciliation:this.mapProviderReconciliation(row)};}
+  await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_PROVIDER_COST_RECONCILIATION',action:'RECONCILE_PROVIDER_INVOICE',resourceType:'SAAS_PROVIDER_COST_RECONCILIATION',resourceId:row.id,payload:{providerCode:row.provider_code,invoiceRefSha256:this.sha(row.invoice_reference),reconciliationVersion:row.reconciliation_version,eventCount:Number(row.event_count),ledgerCostMinor:String(row.ledger_provider_cost_minor),invoicedCostMinor:String(row.invoiced_provider_cost_minor),varianceMinor:String(row.variance_minor),status:row.status,reportHash:row.report_hash}});
+  return {idempotent:false,reconciliation:this.mapProviderReconciliation(row)};
+ }
+
+ async listProviderCostReconciliations(tenantId:string,factoryId:string|null,actorUserId:string,limit=25,offset=0) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.provider_costs.read');this.page(limit,offset);
+  const r=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4',[tenantId,factoryId,limit,offset],{tenantId,userId:actorUserId});
+  return {count:r.rows.length,reconciliations:r.rows.map(x=>this.mapProviderReconciliation(x)),limit,offset};
+ }
+
+
+ private async persistBudgetAlert(tenantId:string,factoryId:string|null,budgetId:string,evaluationId:string,status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY',snapshot:Record<string,unknown>,actorUserId:string) {
+  const details=status==='WARNING'?{type:'WARNING',severity:'WARNING',title:'SaaS usage budget warning',message:'BUDGET_SOFT_LIMIT'}:status==='HARD_LIMIT'?{type:'HARD_LIMIT',severity:'CRITICAL',title:'SaaS usage budget hard limit reached',message:'BUDGET_HARD_LIMIT'}:status==='ANOMALY'?{type:'ANOMALY',severity:'CRITICAL',title:'Unusual SaaS spend detected',message:'SPEND_ANOMALY'}:{type:'UNPRICED_USAGE',severity:'WARNING',title:'Usage could not be priced',message:'USAGE_UNPRICED'};
+  const payload={status,periodStart:snapshot['periodStart']??null,periodEnd:snapshot['periodEnd']??null,eventCount:snapshot['eventCount']??0,unpricedEventCount:snapshot['unpriced']??0,usageCostMinor:snapshot['usageCostMinor']??0,softLimitMinor:snapshot['soft']??0,hardLimitMinor:snapshot['hard']??0,anomalyWindowCostMinor:snapshot['recentCost']??0,reportHash:this.hash(snapshot)};
+  const payloadHash=this.hash(payload);
+  await this.database.query('INSERT INTO saas_budget_alerts(tenant_id,factory_id,budget_id,budget_evaluation_id,alert_type,severity,title,message_code,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) ON CONFLICT DO NOTHING',[tenantId,factoryId,budgetId,evaluationId,details.type,details.severity,details.title,details.message,JSON.stringify(payload),payloadHash],{tenantId,userId:actorUserId});
+ }
+ private normalizeProviderCost(input:RecordSaasProviderCostEventDto,requestFactoryId:string|null) {
+  const provider_code=this.pattern(input.provider_code,'provider_code',/^[a-z][a-z0-9._:-]{0,59}$/);
+  const model_code=input.model_code==null?null:this.pattern(input.model_code,'model_code',/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/);
+  const metric_code=this.enum(input.metric_code,new Set(['AI_INPUT_TOKEN','AI_OUTPUT_TOKEN','AI_TOOL_CALL','PREMIUM_WORKLOAD','EDGE_INFERENCE','INTEGRATION_CALL']),'metric_code') as SaasMeterMetric;
+  const workload_class=this.enum(input.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass;
+  const quantity=this.num(input.quantity,'quantity');
+  if(quantity<=0||quantity>1000000000000)throw new BadRequestException('quantity must be positive and within the supported range');
+  const currency=this.pattern(input.currency,'currency',/^[A-Z]{3}$/);
+  const provider_cost_minor=this.num(input.provider_cost_minor,'provider_cost_minor');
+  if(!Number.isSafeInteger(provider_cost_minor)||provider_cost_minor<0||provider_cost_minor>9000000000000000)throw new BadRequestException('provider_cost_minor must be a supported non-negative minor-unit integer');
+  const occurred_at=this.timestamp(input.occurred_at,'occurred_at');
+  const provider_invoice_reference=input.provider_invoice_reference?this.str(input.provider_invoice_reference,'provider_invoice_reference',180):null;
+  const source_system=this.enum(input.source_system,new Set(['PROVIDER_EXPORT','PROVIDER_API','MANUAL']),'source_system');
+  const source_event_ref=this.str(input.source_event_ref,'source_event_ref',255);
+  const idempotency_key=this.idem(input.idempotency_key);
+  return {factory_id:requestFactoryId,idempotency_key,content:{provider_code,model_code,metric_code,workload_class,quantity,currency,provider_cost_minor,occurred_at,provider_invoice_reference,source_system,source_event_ref}};
+ }
+ private normalizeProviderReconciliation(input:ReconcileSaasProviderCostInvoiceDto) {
+  const provider_code=this.pattern(input.provider_code,'provider_code',/^[a-z][a-z0-9._:-]{0,59}$/);
+  const invoice_reference=this.str(input.invoice_reference,'invoice_reference',180);
+  const reconciliation_version=this.num(input.reconciliation_version,'reconciliation_version');
+  if(!Number.isInteger(reconciliation_version)||reconciliation_version<1||reconciliation_version>1000000)throw new BadRequestException('reconciliation_version must be between 1 and 1000000');
+  const period=this.normalizePeriod(input.period_start,input.period_end,35);
+  const currency=this.pattern(input.currency,'currency',/^[A-Z]{3}$/);
+  const invoiced_provider_cost_minor=this.num(input.invoiced_provider_cost_minor,'invoiced_provider_cost_minor');
+  if(!Number.isSafeInteger(invoiced_provider_cost_minor)||invoiced_provider_cost_minor<0||invoiced_provider_cost_minor>9000000000000000)throw new BadRequestException('invoiced_provider_cost_minor must be a supported non-negative minor-unit integer');
+  const idempotency_key=this.idem(input.idempotency_key);
+  return {idempotency_key,content:{provider_code,invoice_reference,reconciliation_version,period_start:period.start,period_end:period.end,currency,invoiced_provider_cost_minor}};
+ }
+ private mapBudgetAlert(r:BudgetAlertRow) {return {id:r.id,factoryId:r.factory_id,budgetId:r.budget_id,evaluationId:r.budget_evaluation_id,type:r.alert_type,severity:r.severity,title:r.title,messageCode:r.message_code,payload:r.payload,payloadHash:r.payload_hash,createdAt:r.created_at,acknowledgedAt:r.acknowledged_at};}
+ private mapProviderCost(r:ProviderCostRow) {return {id:r.id,factoryId:r.factory_id,providerCode:r.provider_code,modelCode:r.model_code,metricCode:r.metric_code,workloadClass:r.workload_class,quantity:String(r.quantity),currency:r.currency,providerCostMinor:String(r.provider_cost_minor),occurredAt:r.occurred_at,providerInvoiceReference:r.provider_invoice_reference,sourceSystem:r.source_system,sourceRefHash:this.sha(r.source_event_ref),recordedBy:r.recorded_by,createdAt:r.created_at};}
+ private mapProviderReconciliation(r:ProviderCostReconciliationRow) {return {id:r.id,factoryId:r.factory_id,providerCode:r.provider_code,invoiceReference:r.invoice_reference,reconciliationVersion:Number(r.reconciliation_version),periodStart:r.period_start,periodEnd:r.period_end,currency:r.currency,eventCount:Number(r.event_count),ledgerProviderCostMinor:String(r.ledger_provider_cost_minor),invoicedProviderCostMinor:String(r.invoiced_provider_cost_minor),varianceMinor:String(r.variance_minor),status:r.status,reportHash:r.report_hash,recordedBy:r.recorded_by,createdAt:r.created_at};}
 
  private normalizeRate(input:CreateSaasMeterRateDto) {
   const metric=this.enum(input?.metric_code,METRICS,'metric_code') as SaasMeterMetric;
