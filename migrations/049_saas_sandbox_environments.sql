@@ -63,6 +63,12 @@ CREATE TABLE saas_sandbox_environments (
     jsonb_typeof(privacy_assessment) = 'object'
     AND octet_length(privacy_assessment::text) <= 16384
   ),
+  CONSTRAINT chk_saas_sandbox_record_count CHECK(
+    CASE WHEN jsonb_typeof(dataset_manifest->'record_count') = 'number'
+      THEN (dataset_manifest->>'record_count')::numeric BETWEEN 0 AND 100000000
+      ELSE false
+    END
+  ),
   CONSTRAINT chk_saas_sandbox_manifest_mode CHECK(
     (data_mode = 'SYNTHETIC'
       AND dataset_manifest ? 'generator'
@@ -85,6 +91,8 @@ CREATE TABLE saas_sandbox_environments (
       privacy_assessment->>'data_minimization_status' = 'ASSESSED'
       AND privacy_assessment->>'residual_risk' IN ('LOW','MEDIUM')
       AND jsonb_typeof(privacy_assessment->'reviewed_fields') = 'array'
+      AND jsonb_array_length(privacy_assessment->'reviewed_fields') BETWEEN 1 AND 100
+      AND jsonb_typeof(privacy_assessment->'assessed_at') = 'string'
     )
   ),
   CONSTRAINT chk_saas_sandbox_approval CHECK(
@@ -291,7 +299,7 @@ BEGIN
     expected_event_type := 'SUSPENDED';
     expected_from_status := OLD.status;
   ELSIF NEW.status = 'ACTIVE' AND OLD.status = 'SUSPENDED'
-    AND NEW.data_mode = 'SYNTHETIC' THEN
+    AND (NEW.data_mode = 'SYNTHETIC' OR NEW.approved_at IS NOT DISTINCT FROM OLD.approved_at) THEN
     expected_event_type := 'RESUMED';
     expected_from_status := OLD.status;
   ELSIF NEW.status = 'ACTIVE' AND NEW.data_mode = 'MASKED'
