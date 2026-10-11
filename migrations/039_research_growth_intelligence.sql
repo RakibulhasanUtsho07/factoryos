@@ -324,7 +324,7 @@ CREATE INDEX idx_research_relevance_claim ON research_relevance_mappings (tenant
 CREATE OR REPLACE FUNCTION factoryos_guard_research_claim_approval()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   source_status TEXT;
   source_license TEXT;
@@ -354,7 +354,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER research_claim_approval_guard
 BEFORE INSERT OR UPDATE ON research_claims
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_claim_approval();
@@ -362,7 +362,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_claim_approval();
 CREATE OR REPLACE FUNCTION factoryos_guard_research_relevance()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   claim_status TEXT;
   source_status TEXT;
@@ -402,7 +402,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER research_relevance_guard
 BEFORE INSERT OR UPDATE ON research_relevance_mappings
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_relevance();
@@ -546,7 +546,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_growth_snapshot_mutation();
 CREATE OR REPLACE FUNCTION factoryos_guard_growth_evidence_scope()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   claim_ok BOOLEAN;
   entity_ok BOOLEAN;
@@ -580,7 +580,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER growth_evidence_scope_guard
 BEFORE INSERT ON growth_opportunity_evidence
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_evidence_scope();
