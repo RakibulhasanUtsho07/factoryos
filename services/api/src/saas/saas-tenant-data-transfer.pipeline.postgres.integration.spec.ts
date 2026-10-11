@@ -52,6 +52,8 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
     afterAll(async () => {
       if (adminPool && tenantIds.length > 0) {
         try {
+          // Immutable metering records may only be removed by test cleanup on this disposable CI database.
+          await adminPool.query('ALTER TABLE saas_usage_rate_cards DISABLE TRIGGER trg_saas_rate_cards_immutable');
           await adminPool.query('DELETE FROM audit_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           await adminPool.query('DELETE FROM business_evidence_links WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           await adminPool.query('DELETE FROM business_evidence WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
@@ -61,6 +63,7 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
           if (userIds.length > 0) await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
           await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
         } finally {
+          await adminPool.query('ALTER TABLE saas_usage_rate_cards ENABLE TRIGGER trg_saas_rate_cards_immutable');
           await adminPool.end();
         }
       } else if (adminPool) {
