@@ -580,6 +580,7 @@ describe(
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
       (service as any).failTask = jest.fn<() => Promise<unknown>>();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
 
       database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
       aiRuntimeService.authorizeAction.mockResolvedValue({
@@ -765,6 +766,7 @@ describe(
       (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
       (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
       (service as any).failTask = jest.fn<() => Promise<unknown>>();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
 
       database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
       aiRuntimeService.authorizeAction.mockResolvedValue({
