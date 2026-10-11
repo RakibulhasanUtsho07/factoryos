@@ -50,6 +50,10 @@ Evaluation-result persistence uses the database's unique case_id + simulation_ru
 
 Task deadlines are checked again by the atomic tool-call claim (`deadline_at > NOW()`) after authorization has completed. A deadline that expires during authorization therefore cannot reserve a new call and proceed into the governed Tool Gateway path; the same claim still enforces cancellation and the maximum tool-call budget. Unit coverage asserts that this database guard fails closed.
 
+## Cancellation remains terminal during delayed completion
+
+Task-state writes from asynchronous authorization/execution paths now use an atomic database predicate requiring the task to remain non-terminal and have no cancellation request. If cancellation wins the row-update race, a delayed completion, approval transition, or failure handler cannot replace the terminal state with an active or different terminal state; the stale update fails closed instead.
+
 ## Execution evidence and fail-closed correlation
 
 Agent task steps now expose a nullable, schema-versioned `executionEvidence` field backed by `agent_task_steps.execution_evidence`. When a durable execution returns, the runtime verifies its decision ID, action-intent ID, execution key, executor type, tool version, status and input hash against the authorization/step binding before treating the outcome as valid. The evidence records the task, step, decision, parent trace, action intent, execution record, execution key, tool/version, input hash, final status and a SHA-256 digest over the outcome status/result/error. Raw results remain in the existing `output` field; action tokens and payload contents are not copied into the evidence or its audit event.

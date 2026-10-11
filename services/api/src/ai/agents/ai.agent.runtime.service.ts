@@ -2424,6 +2424,8 @@ export class AiAgentRuntimeService {
         id = $1
         AND tenant_id = $2
         AND factory_id = $3
+        AND state NOT IN ('COMPLETED', 'BLOCKED', 'FAILED', 'CANCELLED')
+        AND cancel_requested_at IS NULL
       RETURNING ${this.taskSelectColumns()}
       `,
       [

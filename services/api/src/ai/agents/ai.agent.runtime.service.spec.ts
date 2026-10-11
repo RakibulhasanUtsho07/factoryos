@@ -604,6 +604,31 @@ describe(
       expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
+    it('does not let a delayed task-state update resurrect a cancelled task', async () => {
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(
+        (service as any).updateTaskStateRaw(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          'VERIFYING',
+          { completedStepCount: 1 },
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      const sql = String(queryCalls[0]?.[0] ?? '');
+      expect(sql).toContain(
+        "AND state NOT IN ('COMPLETED', 'BLOCKED', 'FAILED', 'CANCELLED')",
+      );
+      expect(sql).toContain('AND cancel_requested_at IS NULL');
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+    });
+
     it('rejects a concurrent step execution when its optimistic claim loses the race', async () => {
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow();
