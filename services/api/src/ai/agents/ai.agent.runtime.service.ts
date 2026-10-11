@@ -1606,7 +1606,11 @@ export class AiAgentRuntimeService {
       tenantId,
       factoryId,
       task.decision_id,
-      tool.rollback,
+      {
+        toolId: tool.rollback.toolId,
+        toolVersion: tool.rollback.toolVersion,
+        actionType: tool.rollback.actionType,
+      },
       step,
       compensationPayload,
     );
