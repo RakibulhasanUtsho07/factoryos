@@ -682,6 +682,16 @@ describe(
         .mockResolvedValue(verifyingTask);
       (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
 
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action({
+          authorizationStatus: 'AUTHORIZED',
+          approvalId,
+        }),
+        actionToken: 'short-lived-token',
+      });
+      aiRuntimeService.executeAgentAction.mockResolvedValue(agentExecutionResult());
+
       const result = await service.executeStep(
         tenantId,
         factoryId,
