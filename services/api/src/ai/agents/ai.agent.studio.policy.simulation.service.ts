@@ -201,7 +201,14 @@ export class AiAgentStudioPolicySimulationService {
           false,
       ).length;
 
+    const missingExpectedOutcomeCount =
+      cases.filter((item) => item.expectedOutcome === null).length;
+
+    const expectationsComplete =
+      missingExpectedOutcomeCount === 0;
+
     const allExpectedOutcomesMatched =
+      expectationsComplete &&
       expectedOutcomeDriftCount === 0;
 
     const allCasesNonDenied =
@@ -212,11 +219,14 @@ export class AiAgentStudioPolicySimulationService {
         ? 'POLICY_DRIFT_DETECTED'
         : deniedCount > 0
           ? 'DENIED_CASES_PRESENT'
-          : 'READY_FOR_REVIEW';
+          : !expectationsComplete
+            ? 'EXPECTATIONS_INCOMPLETE'
+            : 'READY_FOR_REVIEW';
 
     const status: 'COMPLETED' | 'BLOCKED' =
       expectedOutcomeDriftCount > 0 ||
-      deniedCount > 0
+      deniedCount > 0 ||
+      !expectationsComplete
         ? 'BLOCKED'
         : 'COMPLETED';
 
@@ -278,6 +288,8 @@ export class AiAgentStudioPolicySimulationService {
       deniedCount,
       expectedOutcomeMatches,
       expectedOutcomeDriftCount,
+      missingExpectedOutcomeCount,
+      expectationsComplete,
       allExpectedOutcomesMatched,
       allCasesNonDenied,
       recommendation,
@@ -395,6 +407,8 @@ export class AiAgentStudioPolicySimulationService {
       deniedCount,
       expectedOutcomeMatches,
       expectedOutcomeDriftCount,
+      missingExpectedOutcomeCount,
+      expectationsComplete,
       allExpectedOutcomesMatched,
       allCasesNonDenied,
       recommendation,
@@ -412,6 +426,8 @@ export class AiAgentStudioPolicySimulationService {
         status,
         recommendation,
         expectedOutcomeDriftCount,
+        missingExpectedOutcomeCount,
+        expectationsComplete,
         deniedCount,
         liveExecution: false,
       },

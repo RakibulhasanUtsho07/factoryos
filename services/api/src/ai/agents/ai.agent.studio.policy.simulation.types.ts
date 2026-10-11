@@ -41,11 +41,14 @@ export interface AiAgentStudioPolicySimulationResult {
   deniedCount: number;
   expectedOutcomeMatches: number;
   expectedOutcomeDriftCount: number;
+  missingExpectedOutcomeCount: number;
+  expectationsComplete: boolean;
   allExpectedOutcomesMatched: boolean;
   allCasesNonDenied: boolean;
   recommendation:
     | 'READY_FOR_REVIEW'
     | 'POLICY_DRIFT_DETECTED'
-    | 'DENIED_CASES_PRESENT';
+    | 'DENIED_CASES_PRESENT'
+    | 'EXPECTATIONS_INCOMPLETE';
   cases: AiAgentStudioPolicySimulationCaseResult[];
 }

@@ -212,6 +212,38 @@ describe(
       },
     );
 
+
+    it(
+      'does not recommend review readiness when expected outcomes are incomplete',
+      async () => {
+        const service = makeService();
+
+        const result =
+          await service.simulateHistoricalPolicies(
+            tenantId,
+            factoryId,
+            userId,
+            sandboxId,
+            traceId,
+            [
+              {
+                eventKey: 'event-without-baseline',
+                action: 'INVENTORY.ADJUST',
+                resourceType: 'INVENTORY_ITEM',
+                effectiveAt: '2026-01-01T00:00:00.000Z',
+              },
+            ],
+          );
+
+        expect(result.status).toBe('BLOCKED');
+        expect(result.recommendation).toBe('EXPECTATIONS_INCOMPLETE');
+        expect(result.expectationsComplete).toBe(false);
+        expect(result.missingExpectedOutcomeCount).toBe(1);
+        expect(result.allExpectedOutcomesMatched).toBe(false);
+        expect(policyService.evaluatePolicy).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it(
       'detects policy drift from an expected historical outcome',
       async () => {
