@@ -40,4 +40,18 @@ describe('SaasUsageService PostgreSQL integration',()=>{
   expect(result.reconciliation.expectedAmountMinor).toBe(null);
   expect(result.reconciliation.unpricedEventCount).toBe(1);
  });
+ it('creates immutable daily budgets, detects hard-limit spend and pauses only non-critical workloads',async()=>{
+  const n=randomUUID(),start='2026-10-01T00:00:00.000Z';
+  await service.createRateCard(tenantId,userId,{metric_code:'AI_TOOL_CALL' as never,rate_version:1,rate_minor_per_block:2,block_quantity:1,currency:'BDT',effective_from:start,idempotency_key:'budget-rate-'+n} as never);
+  const budget=await service.createBudget(tenantId,factoryId,userId,{budget_code:'ai-tool-daily-'+n,policy_version:1,period_kind:'DAILY',scope_level:'FACTORY',metric_code:'AI_TOOL_CALL',currency:'BDT',soft_limit_minor:20,hard_limit_minor:30,pause_noncritical_on_hard_limit:true,effective_from:start,idempotency_key:'budget-policy-'+n} as never);
+  expect(budget.budget.factoryId).toBe(factoryId);
+  await service.recordUsageEvent(tenantId,factoryId,userId,{metric_code:'AI_TOOL_CALL' as never,capability_code:'ai.runtime.tool',workload_class:'DEVELOPMENT' as never,quantity:20,occurred_at:new Date().toISOString(),source_system:'TOOL_GATEWAY' as never,source_event_ref:'tool:budget:'+n,idempotency_key:'budget-usage-'+n} as never);
+  const result=await service.evaluateBudgets(tenantId,factoryId,userId);
+  expect(result.evaluations.some((x:any)=>x.status==='HARD_LIMIT')).toBe(true);
+  const controls=await service.listWorkloadControls(tenantId,factoryId,userId);
+  expect(controls.controls.some((x:any)=>x.state==='PAUSED'&&x.workloadClass==='DEVELOPMENT')).toBe(true);
+  await expect(service.assertWorkloadExecutionAllowed(tenantId,factoryId,userId,'DEVELOPMENT')).rejects.toThrow('paused');
+  await expect(service.assertWorkloadExecutionAllowed(tenantId,factoryId,userId,'PRODUCTION')).rejects.toThrow();
+ });
+
 });
