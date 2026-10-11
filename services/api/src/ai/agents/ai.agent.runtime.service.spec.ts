@@ -1377,6 +1377,130 @@ describe(
       );
     });
 
+    it('closes a reconciled failed compensation attempt before allocating the next attempt number', async () => {
+      const payload = { reason: 'confirmed failed compensation' };
+      const inputsHash = hashPayload(payload);
+      const executionKey = `agent:${taskId}:${stepId}:compensation:1`;
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          attempt_number: 1,
+          status: 'STARTED',
+          action_intent_id: actionIntentId,
+        }],
+        rowCount: 1,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          claim_status: 'FAILED',
+          execution_key: executionKey,
+          tool_version: '1.0.0',
+          inputs_hash: inputsHash,
+          execution_record_id: 'bf1a2222-2222-4222-8222-222222222222',
+          execution_record_status: 'FAILED',
+          record_execution_key: executionKey,
+          record_tool_version: '1.0.0',
+          record_inputs_hash: inputsHash,
+          reconciliation_decision: 'CONFIRMED_FAILED',
+        }],
+        rowCount: 1,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{ id: 'attempt-id' }],
+        rowCount: 1,
+      });
+
+      const nextAttempt = await (service as any).nextAttemptNumber(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        'COMPENSATION',
+        '1.0.0',
+      );
+
+      expect(nextAttempt).toBe(2);
+      expect(database.query).toHaveBeenCalledTimes(3);
+      expect(database.query.mock.calls[2]?.[1]).toEqual([
+        expect.any(String),
+        tenantId,
+        factoryId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        actionIntentId,
+        'bf1a2222-2222-4222-8222-222222222222',
+        'FAILED',
+        JSON.stringify({
+          code: 'AI_EXECUTION_CLAIM_FAILED',
+          reconciliationDecision: 'CONFIRMED_FAILED',
+        }),
+      ]);
+    });
+
+    it('marks confirmed completed compensation and blocks duplicate rollback', async () => {
+      const payload = { reason: 'completed compensation recovery' };
+      const inputsHash = hashPayload(payload);
+      const executionKey = `agent:${taskId}:${stepId}:compensation:1`;
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          attempt_number: 1,
+          status: 'STARTED',
+          action_intent_id: actionIntentId,
+        }],
+        rowCount: 1,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          claim_status: 'COMPLETED',
+          execution_key: executionKey,
+          tool_version: '1.0.0',
+          inputs_hash: inputsHash,
+          execution_record_id: 'bf1a2222-2222-4222-8222-222222222222',
+          execution_record_status: 'SUCCEEDED',
+          record_execution_key: executionKey,
+          record_tool_version: '1.0.0',
+          record_inputs_hash: inputsHash,
+          reconciliation_decision: null,
+        }],
+        rowCount: 1,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{ id: 'attempt-id' }],
+        rowCount: 1,
+      });
+
+      await expect(
+        (service as any).nextAttemptNumber(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          stepId,
+          'COMPENSATION',
+          '1.0.0',
+        ),
+      ).rejects.toThrow(
+        'The previous compensation attempt is confirmed completed; duplicate compensation is blocked',
+      );
+
+      expect(database.query).toHaveBeenCalledTimes(3);
+      expect(database.query.mock.calls[2]?.[1]).toEqual([
+        expect.any(String),
+        tenantId,
+        factoryId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        actionIntentId,
+        'bf1a2222-2222-4222-8222-222222222222',
+        'SUCCEEDED',
+        '{}',
+      ]);
+    });
+
     it('blocks a new compensation attempt after an interrupted execution until claim reconciliation', async () => {
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow({ status: 'SUCCEEDED' });
@@ -1403,6 +1527,21 @@ describe(
           attempt_number: 1,
           status: 'STARTED',
           action_intent_id: actionIntentId,
+        }],
+        rowCount: 1,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          claim_status: 'CLAIMED',
+          execution_key: `agent:${taskId}:${stepId}:compensation:1`,
+          tool_version: '1.0.0',
+          inputs_hash: hashPayload({ reason: 'resume after a network interruption' }),
+          execution_record_id: null,
+          execution_record_status: null,
+          record_execution_key: null,
+          record_tool_version: null,
+          record_inputs_hash: null,
+          reconciliation_decision: null,
         }],
         rowCount: 1,
       });

@@ -1569,9 +1569,11 @@ export class AiAgentRuntimeService {
     const attemptNumber = await this.nextAttemptNumber(
       tenantId,
       factoryId,
+      actorUserId,
       task.id,
       step.id,
       'COMPENSATION',
+      tool.rollback.toolVersion,
     );
     const executionKey =
       `agent:${task.id}:${step.id}:compensation:${attemptNumber}`;
@@ -2187,9 +2189,11 @@ export class AiAgentRuntimeService {
   private async nextAttemptNumber(
     tenantId: string,
     factoryId: string,
+    actorUserId: string,
     taskId: string,
     stepId: string,
     attemptType: 'EXECUTION' | 'COMPENSATION',
+    expectedToolVersion?: string,
   ): Promise<number> {
     const result = await this.database.query<{
       attempt_number: number;
@@ -2211,17 +2215,164 @@ export class AiAgentRuntimeService {
       LIMIT 1
       `,
       [tenantId, factoryId, taskId, stepId, attemptType],
-      { tenantId },
+      { tenantId, userId: actorUserId },
     );
 
     const latest = result.rows[0];
-    if (attemptType === 'COMPENSATION' && latest?.status === 'STARTED') {
+    if (attemptType !== 'COMPENSATION' || !latest) {
+      return Number(latest?.attempt_number ?? 0) + 1;
+    }
+
+    if (latest.status === 'SUCCEEDED') {
+      throw new ConflictException(
+        'A compensation attempt already succeeded; duplicate compensation is blocked',
+      );
+    }
+
+    if (latest.status !== 'STARTED') {
+      return latest.attempt_number + 1;
+    }
+
+    if (!latest.action_intent_id) {
+      throw new ConflictException(
+        'A previous compensation attempt has no action-intent binding; manual investigation is required',
+      );
+    }
+
+    const claimResult = await this.database.query<{
+      claim_status: 'CLAIMED' | 'COMPLETED' | 'FAILED';
+      execution_key: string;
+      tool_version: string;
+      inputs_hash: string;
+      execution_record_id: string | null;
+      execution_record_status: 'SUCCEEDED' | 'FAILED' | null;
+      record_execution_key: string | null;
+      record_tool_version: string | null;
+      record_inputs_hash: string | null;
+      reconciliation_decision: 'CONFIRMED_COMPLETED' | 'CONFIRMED_FAILED' | null;
+    }>(
+      `
+      SELECT
+        c.status AS claim_status,
+        c.execution_key,
+        c.tool_version,
+        c.inputs_hash,
+        e.id::text AS execution_record_id,
+        e.status AS execution_record_status,
+        e.execution_key AS record_execution_key,
+        e.tool_version AS record_tool_version,
+        e.inputs_hash AS record_inputs_hash,
+        r.decision AS reconciliation_decision
+      FROM ai_execution_claims c
+      LEFT JOIN ai_execution_records e
+        ON e.tenant_id = c.tenant_id
+       AND e.factory_id = c.factory_id
+       AND e.action_intent_id = c.action_intent_id
+      LEFT JOIN ai_execution_claim_reconciliations r
+        ON r.tenant_id = c.tenant_id
+       AND r.factory_id = c.factory_id
+       AND r.claim_id = c.id
+      WHERE c.tenant_id = $1
+        AND c.factory_id = $2
+        AND c.action_intent_id = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, latest.action_intent_id],
+      { tenantId, userId: actorUserId },
+    );
+
+    const claim = claimResult.rows[0];
+    const expectedExecutionKey =
+      `agent:${taskId}:${stepId}:compensation:${latest.attempt_number}`;
+    if (
+      !claim ||
+      claim.execution_key !== expectedExecutionKey ||
+      (expectedToolVersion !== undefined && claim.tool_version !== expectedToolVersion)
+    ) {
+      throw new ConflictException(
+        'A previous compensation attempt has an unresolved or mismatched AI execution claim; manual investigation is required',
+      );
+    }
+
+    const hasExecutionRecord = claim.execution_record_id !== null;
+    const executionRecordBindingMatches =
+      !hasExecutionRecord ||
+      (
+        claim.record_execution_key === claim.execution_key &&
+        claim.record_tool_version === claim.tool_version &&
+        claim.record_inputs_hash === claim.inputs_hash
+      );
+    if (!executionRecordBindingMatches) {
+      throw new ConflictException(
+        'The reconciled compensation execution record does not match its durable claim; manual investigation is required',
+      );
+    }
+
+    if (claim.claim_status === 'CLAIMED') {
       throw new ConflictException(
         'A previous compensation attempt is unresolved; reconcile its AI execution claim before retrying',
       );
     }
 
-    return Number(latest?.attempt_number ?? 0) + 1;
+    if (claim.claim_status === 'COMPLETED') {
+      const completionIsConfirmed =
+        (hasExecutionRecord && claim.execution_record_status === 'SUCCEEDED') ||
+        (!hasExecutionRecord &&
+          claim.reconciliation_decision === 'CONFIRMED_COMPLETED');
+      if (!completionIsConfirmed) {
+        throw new ConflictException(
+          'The prior compensation claim is marked completed without matching completion evidence; manual investigation is required',
+        );
+      }
+
+      await this.recordAttempt(
+        tenantId,
+        factoryId,
+        actorUserId,
+        taskId,
+        stepId,
+        latest.attempt_number,
+        'COMPENSATION',
+        'SUCCEEDED',
+        {},
+        claim.execution_record_id ?? undefined,
+        latest.action_intent_id,
+      );
+      throw new ConflictException(
+        'The previous compensation attempt is confirmed completed; duplicate compensation is blocked',
+      );
+    }
+
+    // A terminally FAILED claim is not replayed with its old execution key.
+    // Persist that known terminal state, then the caller's explicit new request
+    // may allocate a fresh attempt key.
+    if (
+      hasExecutionRecord &&
+      claim.execution_record_status !== 'FAILED'
+    ) {
+      throw new ConflictException(
+        'The failed compensation claim conflicts with its execution record; manual investigation is required',
+      );
+    }
+
+    await this.recordAttempt(
+      tenantId,
+      factoryId,
+      actorUserId,
+      taskId,
+      stepId,
+      latest.attempt_number,
+      'COMPENSATION',
+      'FAILED',
+      {
+        code: 'AI_EXECUTION_CLAIM_FAILED',
+        reconciliationDecision: claim.reconciliation_decision,
+      },
+      claim.execution_record_id ?? undefined,
+      latest.action_intent_id,
+    );
+
+    return latest.attempt_number + 1;
   }
 
   private async updateTaskStateRaw(
