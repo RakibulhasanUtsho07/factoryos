@@ -120,6 +120,7 @@ jobs:
             migrations/036_ai_agent_task_request_hash.sql
             migrations/037_ai_agent_simulation_parent_scope.sql
             migrations/038_inventory_stock_ledger.sql
+            migrations/039_research_growth_intelligence.sql
           )
 
           for migration in "${migrations[@]}"; do
