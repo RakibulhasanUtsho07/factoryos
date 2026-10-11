@@ -42,6 +42,16 @@ export const SAAS_TENANT_DATASET_TABLES: Partial<
     'growth_opportunities',
     'growth_scenarios',
     'growth_experiments',
+    // SaaS commercial/usage history required for a tenant-preserving migration.
+    'saas_usage_events',
+    'saas_usage_adjustments',
+    'saas_usage_reconciliations',
+    'saas_budget_evaluations',
+    'saas_workload_control_events',
+    'saas_budget_alerts',
+    'saas_budget_alert_acknowledgements',
+    'saas_provider_cost_events',
+    'saas_provider_cost_reconciliations',
   ]),
   [SaasTransferDatasetCategory.AUDIT_LOG]: Object.freeze([
     'audit_events',

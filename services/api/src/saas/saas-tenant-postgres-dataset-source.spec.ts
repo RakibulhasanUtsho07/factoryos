@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
-import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
+import { SAAS_TENANT_DATASET_TABLES, SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { DatabaseService } from '../database/database.service';
 
 const tenantId = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -65,6 +65,24 @@ describe('SaasTenantPostgresDatasetSource', () => {
     expect(calls.some((item) => item.sql === 'COMMIT')).toBe(true);
     expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(false);
     expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes SaaS usage and budget governance records in the reviewed business-data allowlist', () => {
+    expect(SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.BUSINESS_DATA]).toEqual(
+      expect.arrayContaining([
+        'saas_usage_events',
+        'saas_usage_adjustments',
+        'saas_usage_reconciliations',
+        'saas_budget_evaluations',
+        'saas_workload_control_events',
+        'saas_budget_alerts',
+        'saas_budget_alert_acknowledgements',
+        'saas_provider_cost_events',
+        'saas_provider_cost_reconciliations',
+      ]),
+    );
+    expect(SAAS_TENANT_DATASET_TABLES[SaasTransferDatasetCategory.EFFECTIVE_DATED_MASTER_DATA])
+      .toEqual(expect.arrayContaining(['saas_usage_rate_cards', 'saas_usage_budgets']));
   });
 
   it('fails closed for integration metadata and file references until those schemas have explicit adapters', async () => {

@@ -54,20 +54,59 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
     }, 60000);
 
     afterAll(async () => {
+      const immutableTriggers = [
+        ['saas_usage_rate_cards', 'trg_saas_rate_cards_immutable'],
+        ['saas_usage_events', 'trg_saas_usage_events_immutable'],
+        ['saas_usage_adjustments', 'trg_saas_usage_adjustments_immutable'],
+        ['saas_usage_reconciliations', 'trg_saas_usage_reconciliations_immutable'],
+        ['saas_usage_budgets', 'trg_saas_usage_budgets_immutable'],
+        ['saas_budget_evaluations', 'trg_saas_budget_evaluations_immutable'],
+        ['saas_workload_control_events', 'trg_saas_workload_controls_immutable'],
+        ['saas_budget_alerts', 'trg_saas_budget_alerts_immutable'],
+        ['saas_budget_alert_acknowledgements', 'trg_saas_budget_alert_ack_immutable'],
+        ['saas_provider_cost_events', 'trg_saas_provider_cost_events_immutable'],
+        ['saas_provider_cost_reconciliations', 'trg_saas_provider_cost_recon_immutable'],
+        ['saas_tenant_import_receipts', 'saas_tenant_import_receipts_immutable'],
+      ] as const;
+
+      const cleanupDatabase = async (pool: Pool, isTarget: boolean) => {
+        for (const [table, trigger] of immutableTriggers) {
+          await pool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER ' + trigger);
+        }
+        try {
+          if (isTarget) {
+            await pool.query('DELETE FROM saas_tenant_import_receipts WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          }
+          await pool.query('DELETE FROM saas_budget_alert_acknowledgements WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_budget_alerts WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_workload_control_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_provider_cost_reconciliations WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_provider_cost_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_usage_reconciliations WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_usage_adjustments WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_usage_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_budget_evaluations WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_usage_budgets WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM saas_usage_rate_cards WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM audit_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM business_evidence_links WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM business_evidence WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM factories WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM legal_entities WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          if (userIds.length > 0) await pool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
+          await pool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
+        } finally {
+          for (const [table, trigger] of immutableTriggers.slice().reverse()) {
+            await pool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER ' + trigger);
+          }
+        }
+      };
+
       if (adminPool && tenantIds.length > 0) {
         try {
-          // Immutable metering records may only be removed by test cleanup on this disposable CI database.
-          await adminPool.query('ALTER TABLE saas_usage_rate_cards DISABLE TRIGGER trg_saas_rate_cards_immutable');
-          await adminPool.query('DELETE FROM audit_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
-          await adminPool.query('DELETE FROM business_evidence_links WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
-          await adminPool.query('DELETE FROM business_evidence WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
-          await adminPool.query('DELETE FROM saas_usage_rate_cards WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
-          await adminPool.query('DELETE FROM factories WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
-          await adminPool.query('DELETE FROM legal_entities WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
-          if (userIds.length > 0) await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
-          await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
+          await cleanupDatabase(adminPool, false);
+          if (targetAdminPool) await cleanupDatabase(targetAdminPool, true);
         } finally {
-          await adminPool.query('ALTER TABLE saas_usage_rate_cards ENABLE TRIGGER trg_saas_rate_cards_immutable');
           await adminPool.end();
         }
       } else if (adminPool) {
@@ -86,6 +125,17 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       const factoryId = randomUUID();
       const exportId = randomUUID();
       const migrationId = randomUUID();
+      const rateCardId = randomUUID();
+      const budgetId = randomUUID();
+      const evaluationId = randomUUID();
+      const alertId = randomUUID();
+      const usageEventId = randomUUID();
+      const adjustmentId = randomUUID();
+      const usageReconciliationId = randomUUID();
+      const workloadControlId = randomUUID();
+      const alertAcknowledgementId = randomUUID();
+      const providerCostEventId = randomUUID();
+      const providerCostReconciliationId = randomUUID();
       tenantIds.push(tenantId);
       userIds.push(userId);
       legalEntityIds.push(legalEntityId);
@@ -127,8 +177,48 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         [tenantId, factoryId, 'TEST_FIXTURE', 'tenant-transfer-fixture', 'VERIFIED', 'INTERNAL', userId],
       );
       await adminPool.query(
-        'INSERT INTO saas_usage_rate_cards (tenant_id, metric_code, rate_version, rate_minor_per_block, block_quantity, currency, effective_from, idempotency_key, request_hash, created_by) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)',
-        [tenantId, 'ACTIVE_USER', 1, 175, '1.000000', 'BDT', 'transfer-rate-' + tenantId, 'a'.repeat(64), userId],
+        'INSERT INTO saas_usage_rate_cards (id, tenant_id, metric_code, rate_version, rate_minor_per_block, block_quantity, currency, effective_from, idempotency_key, request_hash, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)',
+        [rateCardId, tenantId, 'ACTIVE_USER', 1, 175, '1.000000', 'BDT', 'transfer-rate-' + tenantId, 'a'.repeat(64), userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_usage_budgets (id, tenant_id, factory_id, budget_code, policy_version, period_kind, currency, soft_limit_minor, hard_limit_minor, effective_from, idempotency_key, request_hash, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW() - INTERVAL \'1 day\', $10, $11, $12)',
+        [budgetId, tenantId, factoryId, 'transfer-budget', 1, 'MONTHLY', 'BDT', 10000, 20000, 'transfer-budget-' + tenantId, 'b'.repeat(64), userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_usage_events (id, tenant_id, factory_id, metric_code, capability_code, workload_class, quantity, occurred_at, source_system, source_event_ref, rate_card_id, rate_version_snapshot, rate_minor_per_block_snapshot, rate_block_quantity_snapshot, currency, estimated_cost_minor, request_hash, idempotency_key, recorded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)',
+        [usageEventId, tenantId, factoryId, 'ACTIVE_USER', 'users.active', 'NON_AI', '1.000000', 'API', 'transfer-usage-' + tenantId, rateCardId, 1, 175, '1.000000', 'BDT', 175, 'c'.repeat(64), 'usage-' + tenantId, userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_usage_adjustments (id, tenant_id, factory_id, period_start, period_end, quantity_delta, cost_delta_minor, currency, reason_code, reason, reference_ref, request_hash, idempotency_key, created_by) VALUES ($1, $2, $3, NOW() - INTERVAL \'1 day\', NOW(), 0, -175, $4, $5, $6, $7, $8, $9, $10)',
+        [adjustmentId, tenantId, factoryId, 'BDT', 'CUSTOMER_CREDIT', 'Transfer fixture adjustment', 'transfer-adjustment-' + tenantId, 'd'.repeat(64), 'adjustment-' + tenantId, userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_usage_reconciliations (id, tenant_id, factory_id, invoice_reference, reconciliation_version, period_start, period_end, currency, event_count, unpriced_event_count, ledger_estimated_amount_minor, adjustment_amount_minor, expected_amount_minor, invoiced_amount_minor, variance_minor, status, report_hash, request_hash, idempotency_key, recorded_by) VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL \'1 day\', NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)',
+        [usageReconciliationId, tenantId, factoryId, 'transfer-invoice-' + tenantId, 1, 'BDT', 1, 0, 175, -175, 0, 0, 0, 'MATCHED', 'e'.repeat(64), 'f'.repeat(64), 'usage-reconciliation-' + tenantId, userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_budget_evaluations (id, tenant_id, factory_id, budget_id, period_start, period_end, event_count, unpriced_event_count, usage_cost_minor, soft_limit_minor, hard_limit_minor, status, report_hash, idempotency_key, request_hash, evaluated_by) VALUES ($1, $2, $3, $4, NOW() - INTERVAL \'1 day\', NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)',
+        [evaluationId, tenantId, factoryId, budgetId, 1, 0, 9000, 10000, 20000, 'WARNING', '1'.repeat(64), 'budget-evaluation-' + tenantId, '2'.repeat(64), userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_workload_control_events (id, tenant_id, factory_id, workload_class, control_state, source, reason_code, reason_hash, budget_id, budget_evaluation_id, idempotency_key, request_hash, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)',
+        [workloadControlId, tenantId, factoryId, 'EVALUATION', 'PAUSED', 'MANUAL', 'ADMIN_PAUSE', '3'.repeat(64), budgetId, evaluationId, 'workload-control-' + tenantId, '4'.repeat(64), userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_budget_alerts (id, tenant_id, factory_id, budget_id, budget_evaluation_id, alert_type, severity, title, message_code, payload, payload_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)',
+        [alertId, tenantId, factoryId, budgetId, evaluationId, 'WARNING', 'WARNING', 'Transfer fixture alert', 'BUDGET_SOFT_LIMIT', '{}', '5'.repeat(64)],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_budget_alert_acknowledgements (id, tenant_id, alert_id, acknowledged_by, idempotency_key, request_hash) VALUES ($1, $2, $3, $4, $5, $6)',
+        [alertAcknowledgementId, tenantId, alertId, userId, 'alert-ack-' + tenantId, '6'.repeat(64)],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_provider_cost_events (id, tenant_id, factory_id, provider_code, model_code, metric_code, workload_class, quantity, currency, provider_cost_minor, occurred_at, source_system, source_event_ref, request_hash, idempotency_key, recorded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11, $12, $13, $14, $15)',
+        [providerCostEventId, tenantId, factoryId, 'openai', 'gpt-6', 'AI_TOOL_CALL', 'EVALUATION', '1.000000', 'USD', 25, 'PROVIDER_API', 'transfer-provider-cost-' + tenantId, '7'.repeat(64), 'provider-cost-' + tenantId, userId],
+      );
+      await adminPool.query(
+        'INSERT INTO saas_provider_cost_reconciliations (id, tenant_id, factory_id, provider_code, invoice_reference, reconciliation_version, period_start, period_end, currency, event_count, ledger_provider_cost_minor, invoiced_provider_cost_minor, variance_minor, status, report_hash, request_hash, idempotency_key, recorded_by) VALUES ($1, $2, $3, $4, $5, $6, NOW() - INTERVAL \'1 day\', NOW(), $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
+        [providerCostReconciliationId, tenantId, factoryId, 'openai', 'transfer-provider-invoice-' + tenantId, 1, 'USD', 1, 25, 25, 0, 'MATCHED', '8'.repeat(64), '9'.repeat(64), 'provider-reconciliation-' + tenantId, userId],
       );
 
       let exportSnapshot: Record<string, unknown> = {
@@ -233,6 +323,16 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       expect(payload.datasets.AUDIT_LOG.some((row) => row.action === 'EXPORT_PIPELINE_INTEGRATION')).toBe(true);
       expect(payload.datasets.EVIDENCE.some((row) => row.__factoryos_table === 'business_evidence')).toBe(true);
       expect(payload.datasets.EFFECTIVE_DATED_MASTER_DATA.some((row) => row.__factoryos_table === 'saas_usage_rate_cards')).toBe(true);
+      expect(payload.datasets.EFFECTIVE_DATED_MASTER_DATA.some((row) => row.__factoryos_table === 'saas_usage_budgets' && row.id === budgetId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_usage_events' && row.id === usageEventId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_usage_adjustments' && row.id === adjustmentId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_usage_reconciliations' && row.id === usageReconciliationId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_budget_evaluations' && row.id === evaluationId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_workload_control_events' && row.id === workloadControlId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_budget_alerts' && row.id === alertId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_budget_alert_acknowledgements' && row.id === alertAcknowledgementId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_provider_cost_events' && row.id === providerCostEventId)).toBe(true);
+      expect(payload.datasets.BUSINESS_DATA.some((row) => row.__factoryos_table === 'saas_provider_cost_reconciliations' && row.id === providerCostReconciliationId)).toBe(true);
 
       const imported = await worker.processMigration(tenantId, userId, migrationId) as {
         transfer: { status: string; preservationVerified: boolean; targetBundleReference: string };
@@ -258,9 +358,29 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
           'FROM saas_tenant_import_receipts WHERE tenant_id = $1::uuid AND transfer_id = $2::uuid',
         [tenantId, migrationId],
       );
+      const targetUsage = await targetAdminPool.query(
+        'SELECT id FROM saas_usage_events WHERE tenant_id = $1::uuid AND id = $2::uuid',
+        [tenantId, usageEventId],
+      );
+      const targetAlertAck = await targetAdminPool.query(
+        'SELECT id FROM saas_budget_alert_acknowledgements WHERE tenant_id = $1::uuid AND id = $2::uuid',
+        [tenantId, alertAcknowledgementId],
+      );
+      const targetProviderReconciliation = await targetAdminPool.query(
+        'SELECT id FROM saas_provider_cost_reconciliations WHERE tenant_id = $1::uuid AND id = $2::uuid',
+        [tenantId, providerCostReconciliationId],
+      );
+      const targetControl = await targetAdminPool.query(
+        'SELECT id FROM saas_workload_control_events WHERE tenant_id = $1::uuid AND id = $2::uuid',
+        [tenantId, workloadControlId],
+      );
       expect(targetFactory.rowCount).toBe(1);
       expect(targetEvidence.rowCount).toBe(1);
       expect(targetAudit.rowCount).toBe(1);
+      expect(targetUsage.rowCount).toBe(1);
+      expect(targetAlertAck.rowCount).toBe(1);
+      expect(targetProviderReconciliation.rowCount).toBe(1);
+      expect(targetControl.rowCount).toBe(1);
       expect(receipt.rowCount).toBe(1);
       expect(receipt.rows[0].target_manifest).toEqual(receipt.rows[0].source_manifest);
       expect(receipt.rows[0].target_snapshot_digest).toMatch(/^[a-f0-9]{64}$/);
