@@ -112,7 +112,7 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
   it('routes canary cohorts, promotes safely, rolls back to a prior artifact and retains immutable history', async () => {
     const { tenantId, userId } = await seedTenantAndUser();
 
-    const org = await createOrganizationRelease(tenantId, userId, 'ORG-BASE', '1.0.0');
+    await createOrganizationRelease(tenantId, userId, 'ORG-BASE', '1.0.0');
     const orgCanary = await promote(tenantId, userId, 'ORG-BASE', 1, 'CANARY', 20);
     const orgProduction = await promote(tenantId, userId, 'ORG-BASE', 2, 'PRODUCTION', 100);
     expect(orgProduction.rollout.stage).toBe('PRODUCTION');

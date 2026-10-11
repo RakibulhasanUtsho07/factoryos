@@ -18,7 +18,6 @@ import { SaasReleaseTransitionAction, TransitionSaasReleaseRolloutDto } from './
 
 type ReleaseStage = 'DRAFT' | 'CANARY' | 'PRODUCTION' | 'PAUSED' | 'RETIRED';
 type ReleaseAction = 'REGISTER' | 'PROMOTE' | 'PAUSE' | 'RESUME' | 'ROLLBACK' | 'RETIRE';
-type LiveReleaseStage = 'CANARY' | 'PRODUCTION';
 
 interface ReleaseRow extends QueryResultRow {
   id: string;
@@ -422,7 +421,7 @@ export class SaasReleaseRolloutService {
           lastActiveStage = nextStage;
           break;
         case 'PAUSE':
-          if (!['CANARY', 'PRODUCTION'].includes(current.stage)) {
+          if (current.stage !== 'CANARY' && current.stage !== 'PRODUCTION') {
             throw new ConflictException('Only a canary or production release can be paused');
           }
           nextStage = 'PAUSED';
@@ -456,7 +455,7 @@ export class SaasReleaseRolloutService {
           if (!target || Number(target.version) !== input.targetVersion) {
             throw new ConflictException('Rollback target must reference the latest version of the chosen rollout');
           }
-          if (!['CANARY', 'PRODUCTION'].includes(target.stage) ||
+          if ((target.stage !== 'CANARY' && target.stage !== 'PRODUCTION') ||
             target.scope_type !== current.scope_type ||
             target.factory_id !== current.factory_id ||
             target.module_key !== current.module_key ||
