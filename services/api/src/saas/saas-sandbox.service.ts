@@ -504,14 +504,14 @@ export class SaasSandboxService {
       if (!Number.isSafeInteger(recordCount) || (recordCount as number) < 0 || (recordCount as number) > 100_000_000) {
         throw new BadRequestException('dataset_manifest.record_count must be an integer from 0 to 100000000');
       }
-      const manifest: Record<string, unknown> = {
+      const seed = this.requiredString(value.seed, 'dataset_manifest.seed', 128);
+      return {
         generator,
         generator_version: generatorVersion,
         schema_version: schemaVersion,
+        seed,
         record_count: recordCount,
       };
-      if (value.seed !== undefined) manifest.seed = this.requiredString(value.seed, 'dataset_manifest.seed', 128);
-      return manifest;
     }
 
     this.rejectUnknownKeys(
