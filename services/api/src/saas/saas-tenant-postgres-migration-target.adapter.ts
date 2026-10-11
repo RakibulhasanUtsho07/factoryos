@@ -311,7 +311,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
       if (tableColumnsInBundle.get('business_blueprints')?.includes('current_version_id')) {
         await client.query(
           'UPDATE public.business_blueprints AS target_row ' +
-            'SET current_version_id = staged.row_payload->>\'current_version_id\' ' +
+            'SET current_version_id = (staged.row_payload->>\'current_version_id\')::uuid ' +
             'FROM pg_temp.factoryos_transfer_stage AS staged ' +
             'WHERE staged.table_name = \'business_blueprints\' ' +
             'AND target_row.id = (staged.row_payload->>\'id\')::uuid ' +
@@ -447,7 +447,8 @@ export class SaasTenantPostgresMigrationTargetAdapter
       server_address: string | null;
       server_port: number | null;
     }>(
-      'SELECT current_database() AS database_name, inet_server_addr()::text AS server_address, inet_server_port() AS server_port',
+      'SELECT current_database() AS database_name, (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS database_oid, ' +
+        'inet_server_addr()::text AS server_address, inet_server_port() AS server_port',
     );
     const targetResult = await targetPool.query<{
       database_name: string;
@@ -461,8 +462,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
     if (!source || !target) {
       throw new ServiceUnavailableException('Could not verify target database isolation');
     }
-    const sameServer = source.server_address === target.server_address && source.server_port === target.server_port;
-    if (source.database_name === target.database_name && sameServer) {
+    if (source.database_name === target.database_name && source.database_oid === target.database_oid) {
       throw new ConflictException('Tenant migration target must be a different PostgreSQL database from the source');
     }
   }
