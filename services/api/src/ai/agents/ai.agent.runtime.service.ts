@@ -1730,14 +1730,17 @@ export class AiAgentRuntimeService {
     executionRecordId?: string,
     executionEvidence?: AiAgentExecutionEvidence,
   ): Promise<AiAgentStepExecutionResult> {
+    const deadlineAt = Date.parse(task.deadline_at);
     const canRetry =
       step.retry_count < step.retry_limit &&
       task.retry_count < task.max_retries &&
-      !task.cancel_requested_at;
+      !task.cancel_requested_at &&
+      Number.isFinite(deadlineAt) &&
+      deadlineAt > Date.now();
 
     if (canRetry) {
       const newRetryCount = step.retry_count + 1;
-      await this.database.query(
+      const retryStepClaim = await this.database.query(
         `
         UPDATE agent_task_steps
         SET
@@ -1748,7 +1751,23 @@ export class AiAgentRuntimeService {
           execution_evidence = COALESCE($7::jsonb, execution_evidence),
           finished_at = NOW(),
           version = version + 1
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+        WHERE
+          id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND status = 'RUNNING'
+          AND EXISTS (
+            SELECT 1
+            FROM agent_tasks parent_task
+            WHERE parent_task.id = agent_task_steps.task_id
+              AND parent_task.tenant_id = $2
+              AND parent_task.factory_id = $3
+              AND parent_task.state IN ('EXECUTING', 'AWAITING_AUTH')
+              AND parent_task.cancel_requested_at IS NULL
+              AND parent_task.deadline_at > NOW()
+              AND parent_task.retry_count < parent_task.max_retries
+          )
+        RETURNING id
         `,
         [
           step.id,
@@ -1765,6 +1784,19 @@ export class AiAgentRuntimeService {
         },
       );
 
+      if (retryStepClaim.rowCount !== 1) {
+        return this.failTask(
+          tenantId,
+          factoryId,
+          actorUserId,
+          task.id,
+          'AI_AGENT_RETRY_LIMIT_EXCEEDED',
+          this.errorMessageFromRecord(error),
+          step.id,
+          executionEvidence,
+        );
+      }
+
       const taskResult = await this.database.query<AgentTaskRow>(
         `
         UPDATE agent_tasks
@@ -1779,6 +1811,8 @@ export class AiAgentRuntimeService {
           AND tenant_id = $2
           AND factory_id = $3
           AND state IN ('EXECUTING', 'AWAITING_AUTH')
+          AND cancel_requested_at IS NULL
+          AND deadline_at > NOW()
           AND retry_count < max_retries
         RETURNING ${this.taskSelectColumns()}
         `,

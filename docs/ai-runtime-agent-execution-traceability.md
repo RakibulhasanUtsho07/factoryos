@@ -50,6 +50,10 @@ Evaluation-result persistence uses the database's unique case_id + simulation_ru
 
 Task deadlines are checked again by the atomic tool-call claim (`deadline_at > NOW()`) after authorization has completed. A deadline that expires during authorization therefore cannot reserve a new call and proceed into the governed Tool Gateway path; the same claim still enforces cancellation and the maximum tool-call budget. Unit coverage asserts that this database guard fails closed.
 
+## Retry scheduling is guarded by live task state
+
+A failed execution is returned to `PENDING` only when the step is still `RUNNING` and a correlated database predicate confirms its parent task remains executable, uncancelled, within deadline, and below its retry budget. The subsequent task retry transition independently re-checks cancellation and deadline. A stale retry path therefore cannot reopen a step after cancellation or schedule work beyond the persisted deadline.
+
 ## Cancellation remains terminal during delayed completion
 
 Task-state writes from asynchronous authorization/execution paths now use an atomic database predicate requiring the task to remain non-terminal and have no cancellation request. If cancellation wins the row-update race, a delayed completion, approval transition, or failure handler cannot replace the terminal state with an active or different terminal state; the stale update fails closed instead.

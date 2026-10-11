@@ -1059,6 +1059,61 @@ describe(
       );
     });
 
+    it('does not requeue a failed step when its atomic retry claim loses a cancellation race', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({ status: 'RUNNING', retry_count: 0, retry_limit: 1 });
+      (service as any).failTask = jest.fn<() => Promise<unknown>>().mockResolvedValue({});
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await (service as any).applyFailure(
+        tenantId,
+        factoryId,
+        userId,
+        task,
+        step,
+        { code: 'TRANSIENT', message: 'execution failed' },
+      );
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      expect(queryCalls).toHaveLength(1);
+      const sql = String(queryCalls[0]?.[0] ?? '');
+      expect(sql).toContain("AND status = 'RUNNING'");
+      expect(sql).toContain('FROM agent_tasks parent_task');
+      expect(sql).toContain('parent_task.cancel_requested_at IS NULL');
+      expect(sql).toContain('parent_task.deadline_at > NOW()');
+      expect((service as any).failTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('guards retry state transition against cancellation and deadline expiry', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({ status: 'RUNNING', retry_count: 0, retry_limit: 1 });
+      (service as any).failTask = jest.fn<() => Promise<unknown>>().mockResolvedValue({});
+      database.query
+        .mockResolvedValueOnce({ rows: [{ id: stepId }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await (service as any).applyFailure(
+        tenantId,
+        factoryId,
+        userId,
+        task,
+        step,
+        { code: 'TRANSIENT', message: 'execution failed' },
+      );
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      expect(queryCalls).toHaveLength(2);
+      const sql = String(queryCalls[1]?.[0] ?? '');
+      expect(sql).toContain('AND cancel_requested_at IS NULL');
+      expect(sql).toContain('AND deadline_at > NOW()');
+      expect(sql).toContain("state IN ('EXECUTING', 'AWAITING_AUTH')");
+      expect((service as any).failTask).toHaveBeenCalledTimes(1);
+    });
+
     it('does not automatically retry when durable execution reports an ambiguous claim', async () => {
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow();
