@@ -120,7 +120,7 @@ describe('GrowthService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
 
     expect(client.query).toHaveBeenCalledTimes(1);
-    expect(client.query.mock.calls[0][0]).toContain('SELECT status FROM growth_opportunities');
+    expect(client.query.mock.calls[0][0]).toContain('SELECT status, constraints_snapshot FROM growth_opportunities');
   });
 
   it('keeps a sensitivity scenario exploratory when constraint snapshots or projections are missing', () => {
