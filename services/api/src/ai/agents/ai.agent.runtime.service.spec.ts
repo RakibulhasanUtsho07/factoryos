@@ -183,6 +183,30 @@ function gatewayOutcome() {
   };
 }
 
+function agentExecutionResult(
+  outcome = gatewayOutcome(),
+) {
+  return {
+    idempotent: false,
+    execution: {
+      id: 'bf1a2222-2222-4222-8222-222222222222',
+      tenantId,
+      factoryId,
+      decisionId,
+      actionIntentId,
+      executionKey: 'agent:task:step:1',
+      executorType: 'AGENT_RUNTIME',
+      toolVersion: outcome.toolVersion,
+      inputsHash: outcome.inputsHash,
+      result: outcome.result,
+      error: outcome.error,
+      status: outcome.status,
+      startedAt: '2026-10-07T00:00:00.000Z',
+      finishedAt: '2026-10-07T00:00:01.000Z',
+    },
+  };
+}
+
 describe(
   'AiAgentRuntimeService',
   () => {
@@ -203,17 +227,12 @@ describe(
 
     const aiRuntimeService = {
       authorizeAction: jest.fn<() => Promise<unknown>>(),
+      executeAgentAction: jest.fn<() => Promise<unknown>>(),
     };
 
     const aiAgentCatalogueService = {
       assertToolEntitled: jest.fn<() => Promise<unknown>>(),
-    };
-
-    const toolGateway = {
-      execute: jest.fn<() => Promise<unknown>>(),
-    };
-
-    const toolRegistry = {
+    };const toolRegistry = {
       getTool: jest.fn<() => Promise<unknown>>(),
     };
 
@@ -223,6 +242,7 @@ describe(
       iamService.authorize.mockResolvedValue(undefined);
       auditService.record.mockResolvedValue('audit-id');
       aiAgentCatalogueService.assertToolEntitled.mockResolvedValue({});
+      aiRuntimeService.executeAgentAction.mockResolvedValue(agentExecutionResult());
 
       service = new AiAgentRuntimeService(
         database as never,
@@ -230,7 +250,6 @@ describe(
         iamService as never,
         aiRuntimeService as never,
         aiAgentCatalogueService as never,
-        toolGateway as never,
         toolRegistry as never,
       );
     });
@@ -476,7 +495,7 @@ describe(
       );
 
       expect(result.idempotent).toBe(true);
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
     it('stops a cancelled task before Tool Gateway execution', async () => {
@@ -500,7 +519,7 @@ describe(
       ).rejects.toBeInstanceOf(ConflictException);
 
       expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
     it('stops when the maximum tool-call budget is exhausted', async () => {
@@ -524,7 +543,28 @@ describe(
         ),
       ).rejects.toBeInstanceOf(ConflictException);
 
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a concurrent step execution when its optimistic claim loses the race', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+
+      database.query.mockResolvedValueOnce({
+        rows: [],
+        rowCount: 0,
+      });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
     it('moves a material step into AWAITING_APPROVAL when authorization requires approval', async () => {
@@ -558,9 +598,7 @@ describe(
         .fn<() => Promise<unknown>>()
         .mockResolvedValue(waitingStep);
 
-      database.query.mockResolvedValueOnce({
-        rows: [],
-      });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       aiRuntimeService.authorizeAction.mockResolvedValue({
         action: action({
@@ -581,10 +619,10 @@ describe(
       expect(result.waitingForApproval).toBe(true);
       expect(result.task.state).toBe('AWAITING_APPROVAL');
       expect(result.step.approvalId).toBe(approvalId);
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
-    it('re-checks the approval on resume and then executes through Tool Gateway', async () => {
+    it('re-checks the approval on resume and executes through durable claims', async () => {
       const task = taskRow({
         state: 'AWAITING_APPROVAL',
       });
@@ -639,24 +677,6 @@ describe(
         .fn<() => Promise<unknown>>()
         .mockResolvedValue(verifyingTask);
       (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
-      (service as any).persistExecutionRecord = jest
-        .fn<() => Promise<unknown>>()
-        .mockResolvedValue('bf1a2222-2222-4222-8222-222222222222');
-
-      database.query.mockResolvedValueOnce({
-        rows: [],
-      });
-
-      aiRuntimeService.authorizeAction.mockResolvedValue({
-        action: action({
-          authorizationStatus: 'AUTHORIZED',
-          approvalId,
-        }),
-        actionToken: 'short-lived-token',
-      });
-      toolGateway.execute.mockResolvedValue(
-        gatewayOutcome(),
-      );
 
       const result = await service.executeStep(
         tenantId,
@@ -686,7 +706,7 @@ describe(
           approval_id: approvalId,
         }),
       );
-      expect(toolGateway.execute).toHaveBeenCalledTimes(1);
+      expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
       expect(result.step.status).toBe('SUCCEEDED');
     });
 
@@ -714,7 +734,7 @@ describe(
         '1.0.0',
       );
       expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
       expect(database.query).not.toHaveBeenCalled();
     });
 
@@ -769,11 +789,6 @@ describe(
       (service as any).recordAttempt =
         jest.fn<() => Promise<unknown>>();
 
-      (service as any).persistExecutionRecord = jest
-        .fn<() => Promise<unknown>>()
-        .mockResolvedValue(
-          'bf1a2222-2222-4222-8222-222222222222',
-        );
 
       (service as any).countCompletedSteps = jest
         .fn<() => Promise<unknown>>()
@@ -787,16 +802,14 @@ describe(
         .fn<() => Promise<unknown>>()
         .mockResolvedValue(verifyingTask);
 
-      database.query.mockResolvedValueOnce({
-        rows: [],
-      });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       aiRuntimeService.authorizeAction.mockResolvedValue({
         action: action(),
         actionToken: 'token',
       });
 
-      toolGateway.execute.mockResolvedValue(
+      aiRuntimeService.executeAgentAction.mockResolvedValue(
         gatewayOutcome(),
       );
 
@@ -818,7 +831,7 @@ describe(
       ).toHaveBeenCalledTimes(1);
 
       expect(
-        toolGateway.execute,
+        aiRuntimeService.executeAgentAction,
       ).toHaveBeenCalledTimes(1);
 
       expect(result.step.status).toBe(
@@ -826,10 +839,8 @@ describe(
       );
     });
 
-    it('keeps gateway execution fail-closed when the gateway rejects', async () => {
-      const task = taskRow({
-        state: 'EXECUTING',
-      });
+    it('does not automatically retry when durable execution reports an ambiguous claim', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow();
 
       (service as any).requireTask = jest
@@ -849,43 +860,29 @@ describe(
           }),
         );
       (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
-      (service as any).applyFailure = jest.fn<() => Promise<unknown>>().mockResolvedValue({
-        idempotent: false,
-        task: {
-          ...task,
-          state: 'FAILED',
-        },
-        step: {
-          ...step,
-          status: 'FAILED',
-        },
-        error: {
-          code: 'AI_TOOL_GATEWAY_FAILURE',
-        },
-      });
+      (service as any).failTask = jest.fn<() => Promise<unknown>>().mockResolvedValue({});
+      (service as any).applyFailure = jest.fn<() => Promise<unknown>>();
 
       database.query.mockResolvedValueOnce({
         rows: [],
+        rowCount: 1,
       });
 
       aiRuntimeService.authorizeAction.mockResolvedValue({
         action: action(),
         actionToken: 'token',
       });
-      toolGateway.execute.mockRejectedValue(
-        new ConflictException('gateway failure'),
+      aiRuntimeService.executeAgentAction.mockRejectedValue(
+        new ConflictException('execution claim is active or requires reconciliation'),
       );
 
-      const result = await service.executeStep(
-        tenantId,
-        factoryId,
-        userId,
-        taskId,
-        stepId,
-      );
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
 
-      expect(result.error?.code).toBe('AI_TOOL_GATEWAY_FAILURE');
-      expect(toolGateway.execute).toHaveBeenCalledTimes(1);
+      expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
+      expect((service as any).applyFailure).not.toHaveBeenCalled();
+      expect((service as any).failTask).toHaveBeenCalledTimes(1);
     });
 
     it('does not execute compensation when the registered tool declares NONE rollback', async () => {
@@ -915,7 +912,7 @@ describe(
 
       expect(result.attempted).toBe(false);
       expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
     it('fails closed when a non-NONE rollback contract is incomplete', async () => {
@@ -946,7 +943,7 @@ describe(
       ).rejects.toBeInstanceOf(ConflictException);
 
       expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
-      expect(toolGateway.execute).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
     it('requires the source agent to be entitled to every permitted handoff tool', async () => {
