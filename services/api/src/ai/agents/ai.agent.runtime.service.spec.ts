@@ -1892,6 +1892,46 @@ describe(
       expect(auditService.record).not.toHaveBeenCalled();
     });
 
+    it('expires only a still-pending handoff whose database expiry has passed', async () => {
+      const handoff = {
+        id: 'cf1a2222-2222-4222-8222-222222222222',
+        tenantId,
+        factoryId,
+        sourceAgentId: 'AGENT.SENDER',
+        targetAgentId: 'AGENT.RECEIVER',
+        purpose: 'Check order recovery',
+        allowedDataClasses: ['INTERNAL'],
+        permittedTools: ['AI.RUNTIME.NOOP@1.0.0'],
+        expiresAt: '2000-01-01T00:00:00.000Z',
+        parentTraceId: traceId,
+        expectedArtifact: { type: 'recovery-options' },
+        handoffHash: 'c'.repeat(64),
+        status: 'PENDING' as const,
+        acceptedBy: null,
+        acceptedAt: null,
+        createdAt: '1999-12-31T00:00:00.000Z',
+        updatedAt: '1999-12-31T00:00:00.000Z',
+      };
+      (service as any).getHandoff = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(handoff);
+
+      await expect(
+        service.acceptHandoff(tenantId, factoryId, userId, handoff.id),
+      ).rejects.toThrow('AI agent handoff has expired');
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      expect(queryCalls).toHaveLength(1);
+      const sql = String(queryCalls[0]?.[0] ?? '');
+      expect(sql).toContain("SET status = 'EXPIRED'");
+      expect(sql).toContain("AND status = 'PENDING'");
+      expect(sql).toContain('AND expires_at <= NOW()');
+      expect(aiAgentCatalogueService.assertToolEntitled).not.toHaveBeenCalled();
+      expect(iamService.authorize).not.toHaveBeenCalled();
+    });
+
     it('re-checks receiving permissions for every permitted handoff tool', async () => {
       const handoff = {
         id: 'cf1a2222-2222-4222-8222-222222222222',
