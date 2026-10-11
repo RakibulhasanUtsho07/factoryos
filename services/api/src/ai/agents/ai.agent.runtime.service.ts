@@ -653,7 +653,7 @@ export class AiAgentRuntimeService {
     const authorizationIdempotencyKey =
       `agent:${task.id}:${step.id}:auth:${authorizationAttempt}`;
 
-    await this.database.query(
+    const stepClaim = await this.database.query(
       `
       UPDATE agent_task_steps
       SET
@@ -663,13 +663,28 @@ export class AiAgentRuntimeService {
         id = $1
         AND tenant_id = $2
         AND factory_id = $3
+        AND status = $5
+        AND version = $6
       `,
-      [step.id, tenantId, factoryId, authorizationAttempt],
+      [
+        step.id,
+        tenantId,
+        factoryId,
+        authorizationAttempt,
+        step.status,
+        step.version,
+      ],
       {
         tenantId,
         userId: actorUserId,
       },
     );
+
+    if (stepClaim.rowCount !== 1) {
+      throw new ConflictException(
+        'AI agent task step was changed or claimed by another execution request',
+      );
+    }
 
     try {
       const authorization =
