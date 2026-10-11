@@ -336,6 +336,84 @@ describe(
       expect(database.transaction).not.toHaveBeenCalled();
     });
 
+    it('replays the winning task when concurrent creates race on the same idempotency key', async () => {
+      const input = buildTaskRequest();
+      const requestHash = hashTaskRequest(input);
+
+      (service as any).getTaskByIdempotencyKey = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(taskRow({ request_hash: requestHash }));
+
+      const uniqueConflict = Object.assign(
+        new Error('duplicate key violates unique constraint'),
+        {
+          code: '23505',
+          constraint: 'uq_agent_tasks_tenant_idempotency',
+        },
+      );
+      database.transaction.mockRejectedValueOnce(uniqueConflict);
+
+      const result = await service.createTask(
+        tenantId,
+        factoryId,
+        userId,
+        input,
+      );
+
+      expect(result.idempotent).toBe(true);
+      expect(result.task.id).toBe(taskId);
+      expect((service as any).getTaskByIdempotencyKey).toHaveBeenCalledTimes(2);
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    it('rejects a concurrent idempotency-key race when the winning request fingerprint differs', async () => {
+      const input = buildTaskRequest();
+
+      (service as any).getTaskByIdempotencyKey = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(taskRow({ request_hash: 'f'.repeat(64) }));
+
+      database.transaction.mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), {
+          code: '23505',
+          constraint: 'uq_agent_tasks_tenant_idempotency',
+        }),
+      );
+
+      await expect(
+        service.createTask(tenantId, factoryId, userId, input),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect((service as any).getTaskByIdempotencyKey).toHaveBeenCalledTimes(2);
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
+    it('does not reinterpret unrelated unique-constraint failures as idempotent replays', async () => {
+      (service as any).getTaskByIdempotencyKey = jest
+        .fn()
+        .mockResolvedValueOnce(null);
+
+      const uniqueConflict = Object.assign(
+        new Error('duplicate step key'),
+        {
+          code: '23505',
+          constraint: 'uq_agent_task_steps_task_key',
+        },
+      );
+      database.transaction.mockRejectedValueOnce(uniqueConflict);
+
+      await expect(
+        service.createTask(
+          tenantId,
+          factoryId,
+          userId,
+          buildTaskRequest(),
+        ),
+      ).rejects.toBe(uniqueConflict);
+      expect((service as any).getTaskByIdempotencyKey).toHaveBeenCalledTimes(1);
+    });
+
     it('accepts the canonical CREATED -> CONTEXT_READY transition', async () => {
       const oldTask = taskRow({
         state: 'CREATED',
