@@ -192,6 +192,130 @@ export class GrowthService {
     return result.rows;
   }
 
+  async compareScenarios(tenantId: string, factoryId: string, opportunityId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const opportunityResult = await this.database.query<{
+      id: string; status: string; currency: string;
+    }>(
+      'SELECT id::text AS id, status, currency FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3',
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    const opportunity = opportunityResult.rows[0];
+    if (!opportunity) throw new NotFoundException('Growth opportunity not found');
+
+    const query = await this.database.query<{
+      id: string;
+      scenario_name: string;
+      scenario_type: string;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      output_snapshot: Record<string, unknown>;
+      input_hash: string;
+      decision_ready: boolean;
+      created_at: string;
+    }>(
+      `
+      SELECT id::text AS id, scenario_name, scenario_type, model_version,
+        data_vintage::text AS data_vintage, baseline_source_ref, inputs,
+        output_snapshot, input_hash, decision_ready, created_at::text AS created_at
+      FROM growth_scenarios
+      WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+      ORDER BY created_at DESC
+      LIMIT 100
+      `,
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+
+    const scenarios = query.rows.map(row => {
+      const output = row.output_snapshot && typeof row.output_snapshot === 'object'
+        ? row.output_snapshot : {};
+      const impactValue = output.impact && typeof output.impact === 'object'
+        ? output.impact as Record<string, unknown> : {};
+      const gateValue = output.constraintGate && typeof output.constraintGate === 'object'
+        ? output.constraintGate as Record<string, unknown> : {};
+      const finiteNumber = (value: unknown) =>
+        typeof value === 'number' && Number.isFinite(value) ? value : null;
+      return {
+        id: row.id,
+        scenario_name: row.scenario_name,
+        scenario_type: row.scenario_type,
+        model_version: row.model_version,
+        data_vintage: row.data_vintage,
+        baseline_source_ref: row.baseline_source_ref,
+        input_hash: row.input_hash,
+        created_at: row.created_at,
+        method: typeof output.method === 'string' ? output.method : 'unknown',
+        impact: {
+          netImpactPoint: finiteNumber(impactValue.netImpactPoint),
+          lowerBound: finiteNumber(impactValue.lowerBound),
+          upperBound: finiteNumber(impactValue.upperBound),
+          investment: finiteNumber(impactValue.investment),
+        },
+        constraintGate: {
+          status: typeof gateValue.status === 'string' ? gateValue.status : 'REVIEW_REQUIRED',
+          decisionReady: row.decision_ready === true,
+          violations: Array.isArray(gateValue.violations) ? gateValue.violations : [],
+          missingConstraints: Array.isArray(gateValue.missingConstraints) ? gateValue.missingConstraints : [],
+          missingProjectedMetrics: Array.isArray(gateValue.missingProjectedMetrics) ? gateValue.missingProjectedMetrics : [],
+        },
+      };
+    });
+
+    const uniqueValues = (values: string[]) => [...new Set(values)];
+    const modelVersions = uniqueValues(scenarios.map(s => s.model_version));
+    const baselineSources = uniqueValues(scenarios.map(s => s.baseline_source_ref));
+    const dataVintages = uniqueValues(scenarios.map(s => s.data_vintage));
+    const comparabilityReasons: string[] = [];
+    if (scenarios.length < 2) comparabilityReasons.push('AT_LEAST_TWO_SCENARIOS_REQUIRED');
+    if (modelVersions.length > 1) comparabilityReasons.push('MODEL_VERSION_MISMATCH');
+    if (baselineSources.length > 1) comparabilityReasons.push('BASELINE_SOURCE_MISMATCH');
+    if (dataVintages.length > 1) comparabilityReasons.push('DATA_VINTAGE_MISMATCH');
+
+    const rankingBlockers = scenarios.some(s => !s.constraintGate.decisionReady)
+      ? ['SCENARIO_NOT_DECISION_READY'] : [];
+    const rankingEnabled = comparabilityReasons.length === 0 && rankingBlockers.length === 0;
+    const score = (scenario: typeof scenarios[number]) =>
+      scenario.impact.netImpactPoint ?? Number.NEGATIVE_INFINITY;
+    const ranked = [...scenarios].sort((a, b) => score(b) - score(a));
+    const ranks = new Map<string, number>();
+    if (rankingEnabled) ranked.forEach((scenario, index) => ranks.set(scenario.id, index + 1));
+
+    const scenarioTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'] as const;
+    const availableTypes = new Set(scenarios.map(s => s.scenario_type));
+    return {
+      opportunity: {
+        id: opportunity.id,
+        status: opportunity.status,
+        currency: opportunity.currency,
+      },
+      comparison_method: 'deterministic_sensitivity_side_by_side',
+      comparable: comparabilityReasons.length === 0,
+      comparability_reasons: comparabilityReasons,
+      ranking_enabled: rankingEnabled,
+      ranking_blockers: rankingBlockers,
+      model_versions: modelVersions,
+      baseline_sources: baselineSources,
+      data_vintages: dataVintages,
+      scenario_type_coverage: {
+        required: [...scenarioTypes],
+        present: scenarioTypes.filter(type => availableTypes.has(type)),
+        missing: scenarioTypes.filter(type => !availableTypes.has(type)),
+      },
+      ranking_basis: rankingEnabled
+        ? 'netImpactPoint descending from the same deterministic sensitivity model; not a forecast or causal estimate'
+        : null,
+      scenarios: scenarios.map(scenario => ({
+        ...scenario,
+        impact_rank: ranks.get(scenario.id) ?? null,
+      })),
+    };
+  }
+
   async getOpportunity(tenantId: string, factoryId: string, opportunityId: string) {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');

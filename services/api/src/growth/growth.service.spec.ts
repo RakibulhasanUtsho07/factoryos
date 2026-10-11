@@ -235,4 +235,103 @@ describe('GrowthService', () => {
     expect(client.query.mock.calls[5][1][4]).toBe('AI.LEARNING_SIGNAL_RECORDED');
   });
 
+
+  it('ranks scenario comparisons only when model, baseline, vintage and constraint gates match', async () => {
+    database.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'ACCEPTED', currency: 'BDT' }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '7b16f2f4-cc37-452c-acad-7296fc9da8e8',
+            scenario_name: 'Upside',
+            scenario_type: 'UPSIDE',
+            model_version: 'factoryos.growth.financial-sensitivity.v1',
+            data_vintage: '2026-10-01 00:00:00+00',
+            baseline_source_ref: 'finance-report:2026-09',
+            inputs: {},
+            output_snapshot: {
+              method: 'deterministic_sensitivity_not_a_forecast',
+              impact: { netImpactPoint: 150, lowerBound: 130, upperBound: 170, investment: 50 },
+              constraintGate: { status: 'PASS', decisionReady: true, violations: [] },
+            },
+            input_hash: 'a'.repeat(64),
+            decision_ready: true,
+            created_at: '2026-10-11 10:00:00+00',
+          },
+          {
+            id: 'a9f4a5f8-5b10-4c02-a46b-4d13c1f2a657',
+            scenario_name: 'Base',
+            scenario_type: 'BASE',
+            model_version: 'factoryos.growth.financial-sensitivity.v1',
+            data_vintage: '2026-10-01 00:00:00+00',
+            baseline_source_ref: 'finance-report:2026-09',
+            inputs: {},
+            output_snapshot: {
+              method: 'deterministic_sensitivity_not_a_forecast',
+              impact: { netImpactPoint: 80, lowerBound: 70, upperBound: 90, investment: 20 },
+              constraintGate: { status: 'PASS', decisionReady: true, violations: [] },
+            },
+            input_hash: 'b'.repeat(64),
+            decision_ready: true,
+            created_at: '2026-10-11 09:00:00+00',
+          },
+        ],
+      });
+
+    const result = await service.compareScenarios(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
+
+    expect(result.comparable).toBe(true);
+    expect(result.ranking_enabled).toBe(true);
+    expect(result.comparability_reasons).toEqual([]);
+    expect(result.scenarios.find(s => s.scenario_type === 'UPSIDE')?.impact_rank).toBe(1);
+    expect(result.scenarios.find(s => s.scenario_type === 'BASE')?.impact_rank).toBe(2);
+    expect(result.ranking_basis).toContain('not a forecast');
+  });
+
+  it('does not rank scenarios across model, baseline or data-vintage mismatches', async () => {
+    database.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'ACCEPTED', currency: 'BDT' }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: '7b16f2f4-cc37-452c-acad-7296fc9da8e8',
+            scenario_name: 'Current',
+            scenario_type: 'BASE',
+            model_version: 'factoryos.growth.financial-sensitivity.v1',
+            data_vintage: '2026-10-01 00:00:00+00',
+            baseline_source_ref: 'finance-report:2026-09',
+            inputs: {},
+            output_snapshot: { impact: { netImpactPoint: 150 }, constraintGate: { status: 'REVIEW_REQUIRED' } },
+            input_hash: 'a'.repeat(64),
+            decision_ready: false,
+            created_at: '2026-10-11 10:00:00+00',
+          },
+          {
+            id: 'a9f4a5f8-5b10-4c02-a46b-4d13c1f2a657',
+            scenario_name: 'Older model',
+            scenario_type: 'DOWNSIDE',
+            model_version: 'factoryos.growth.financial-sensitivity.v0',
+            data_vintage: '2026-09-01 00:00:00+00',
+            baseline_source_ref: 'finance-report:2026-08',
+            inputs: {},
+            output_snapshot: { impact: { netImpactPoint: 80 }, constraintGate: { status: 'REVIEW_REQUIRED' } },
+            input_hash: 'b'.repeat(64),
+            decision_ready: false,
+            created_at: '2026-10-11 09:00:00+00',
+          },
+        ],
+      });
+
+    const result = await service.compareScenarios(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
+
+    expect(result.comparable).toBe(false);
+    expect(result.ranking_enabled).toBe(false);
+    expect(result.scenarios.every(s => s.impact_rank === null)).toBe(true);
+    expect(result.comparability_reasons).toEqual(expect.arrayContaining([
+      'MODEL_VERSION_MISMATCH', 'BASELINE_SOURCE_MISMATCH', 'DATA_VINTAGE_MISMATCH',
+    ]));
+    expect(result.ranking_blockers).toContain('SCENARIO_NOT_DECISION_READY');
+    expect(result.scenario_type_coverage.missing).toEqual(expect.arrayContaining(['UPSIDE', 'STRESS']));
+  });
+
 });

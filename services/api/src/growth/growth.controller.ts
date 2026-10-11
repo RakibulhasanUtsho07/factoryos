@@ -59,6 +59,18 @@ export class GrowthController {
     });
   }
 
+  @Get('opportunities/:opportunityId/scenario-comparison')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  compareScenarios(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.compareScenarios(c.tenantId, c.factoryId, opportunityId);
+  }
+
   @Get('opportunities/:opportunityId')
   @UseGuards(PermissionGuard)
   @RequirePermission('growth.read')
