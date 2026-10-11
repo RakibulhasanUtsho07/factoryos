@@ -383,6 +383,8 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       expect(targetProviderReconciliation.rowCount).toBe(1);
       expect(targetControl.rowCount).toBe(1);
       expect(receipt.rowCount).toBe(1);
+      expect(receipt.rows[0].source_manifest).toEqual(payload.manifest);
+      expect(receipt.rows[0].target_manifest).toEqual(payload.manifest);
       expect(receipt.rows[0].target_manifest).toEqual(receipt.rows[0].source_manifest);
       expect(receipt.rows[0].target_snapshot_digest).toMatch(/^[a-f0-9]{64}$/);
 
