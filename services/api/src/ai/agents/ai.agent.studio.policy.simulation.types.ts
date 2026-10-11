@@ -16,6 +16,8 @@ export interface AiAgentStudioHistoricalEvent {
 
 export interface AiAgentStudioPolicySimulationCaseResult {
   eventKey: string;
+  inputFingerprint: string;
+  evidenceSource: 'POLICY_SERVICE';
   action: string;
   resourceType: string | null;
   effectiveAt: string;
