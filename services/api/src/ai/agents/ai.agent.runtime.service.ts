@@ -1513,6 +1513,16 @@ export class AiAgentRuntimeService {
     // Keep authorization and durable execution on the same stable retry key.
     // A new key per request could mint a second action intent for one recovery
     // attempt, obscuring whether an earlier compensation already ran.
+    const attemptNumber = await this.nextAttemptNumber(
+      tenantId,
+      factoryId,
+      task.id,
+      step.id,
+      'COMPENSATION',
+    );
+    const executionKey =
+      `agent:${task.id}:${step.id}:compensation:${attemptNumber}`;
+
     const authorization =
       await this.aiRuntimeService.authorizeAction(
         tenantId,
@@ -1545,16 +1555,6 @@ export class AiAgentRuntimeService {
         'Authorized compensation action did not return an action token',
       );
     }
-
-    const attemptNumber = await this.nextAttemptNumber(
-      tenantId,
-      factoryId,
-      task.id,
-      step.id,
-      'COMPENSATION',
-    );
-    const executionKey =
-      `agent:${task.id}:${step.id}:compensation:${attemptNumber}`;
 
     const { outcome, executionRecordId } =
       await this.executeGovernedTool(
