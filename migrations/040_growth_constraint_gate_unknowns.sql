@@ -3,7 +3,7 @@ BEGIN;
 -- FR-GRO-09 / FR-EXP2-07: decision readiness and ranked validation unknowns.
 ALTER TABLE growth_scenarios
   ADD COLUMN decision_ready BOOLEAN GENERATED ALWAYS AS (
-    (output_snapshot #>> '{constraintGate,status}') = 'PASS'
+    COALESCE((output_snapshot #>> '{constraintGate,status}') = 'PASS', FALSE)
   ) STORED;
 
 CREATE TABLE growth_validation_unknowns (
@@ -130,7 +130,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_validation_unknown();
 CREATE OR REPLACE FUNCTION factoryos_guard_growth_scenario_constraints()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   constraint_snapshot JSONB;
   projected JSONB;
@@ -154,15 +154,16 @@ BEGIN
   FOR SHARE;
 
   projected := NEW.inputs -> 'projected_constraint_metrics';
-  IF constraint_snapshot IS NULL OR projected IS NULL THEN
+  IF constraint_snapshot IS NULL OR projected IS NULL
+    OR jsonb_typeof(projected) IS DISTINCT FROM 'object' THEN
     RAISE EXCEPTION 'A decision-ready scenario requires constraints and projected metrics'
       USING ERRCODE = '23514';
   END IF;
 
-  IF jsonb_typeof(constraint_snapshot -> 'capacity') <> 'object'
-    OR jsonb_typeof(constraint_snapshot -> 'quality') <> 'object'
-    OR jsonb_typeof(constraint_snapshot -> 'cash') <> 'object'
-    OR jsonb_typeof(constraint_snapshot -> 'delivery') <> 'object' THEN
+  IF jsonb_typeof(constraint_snapshot -> 'capacity') IS DISTINCT FROM 'object'
+    OR jsonb_typeof(constraint_snapshot -> 'quality') IS DISTINCT FROM 'object'
+    OR jsonb_typeof(constraint_snapshot -> 'cash') IS DISTINCT FROM 'object'
+    OR jsonb_typeof(constraint_snapshot -> 'delivery') IS DISTINCT FROM 'object' THEN
     RAISE EXCEPTION 'A decision-ready scenario requires all four constraint dimensions'
       USING ERRCODE = '23514';
   END IF;
@@ -179,26 +180,39 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
+  IF jsonb_typeof(projected -> 'capacity_utilization_pct') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(projected -> 'quality_yield_pct') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(projected -> 'cash_after_investment') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(projected -> 'cash_currency') IS DISTINCT FROM 'string'
+    OR jsonb_typeof(projected -> 'delivery_backlog_days') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(constraint_snapshot #> '{capacity,max_utilization_pct}') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(constraint_snapshot #> '{quality,min_yield_pct}') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(constraint_snapshot #> '{cash,minimum_reserve}') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(constraint_snapshot #> '{cash,currency}') IS DISTINCT FROM 'string'
+    OR jsonb_typeof(constraint_snapshot #> '{delivery,max_backlog_days}') IS DISTINCT FROM 'number' THEN
+    RAISE EXCEPTION 'A decision-ready scenario requires valid numeric inputs and constraint limits'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF (constraint_snapshot #>> '{capacity,as_of}')::timestamptz > clock_timestamp() + interval '5 minutes'
+    OR (constraint_snapshot #>> '{quality,as_of}')::timestamptz > clock_timestamp() + interval '5 minutes'
+    OR (constraint_snapshot #>> '{cash,as_of}')::timestamptz > clock_timestamp() + interval '5 minutes'
+    OR (constraint_snapshot #>> '{delivery,as_of}')::timestamptz > clock_timestamp() + interval '5 minutes' THEN
+    RAISE EXCEPTION 'Constraint snapshot timestamps cannot be in the future'
+      USING ERRCODE = '23514';
+  END IF;
+
   capacity_limit := (constraint_snapshot #>> '{capacity,max_utilization_pct}')::numeric;
   quality_limit := (constraint_snapshot #>> '{quality,min_yield_pct}')::numeric;
   cash_reserve := (constraint_snapshot #>> '{cash,minimum_reserve}')::numeric;
   expected_currency := upper(constraint_snapshot #>> '{cash,currency}');
   delivery_limit := (constraint_snapshot #>> '{delivery,max_backlog_days}')::numeric;
 
-  IF capacity_limit IS NULL OR quality_limit IS NULL OR cash_reserve IS NULL
-    OR expected_currency !~ '^[A-Z]{3}
-ALTER TABLE growth_validation_unknowns FORCE ROW LEVEL SECURITY;
-CREATE POLICY growth_validation_unknowns_tenant_isolation
-  ON growth_validation_unknowns
-  USING (tenant_id = factoryos_current_tenant_id())
-  WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-INSERT INTO schema_migrations (version, checksum)
-VALUES ('040_growth_constraint_gate_unknowns', NULL)
-ON CONFLICT (version) DO NOTHING;
-
-COMMIT;
- OR delivery_limit IS NULL THEN
+  IF capacity_limit IS NULL OR capacity_limit < 0 OR capacity_limit > 1000
+    OR quality_limit IS NULL OR quality_limit < 0 OR quality_limit > 100
+    OR cash_reserve IS NULL OR cash_reserve < 0
+    OR expected_currency !~ '^[A-Z]{3}$'
+    OR delivery_limit IS NULL OR delivery_limit < 0 THEN
     RAISE EXCEPTION 'A decision-ready scenario has invalid constraint limits'
       USING ERRCODE = '23514';
   END IF;
@@ -214,7 +228,7 @@ COMMIT;
 
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER growth_scenario_constraint_guard
 BEFORE INSERT ON growth_scenarios
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_scenario_constraints();
