@@ -95,6 +95,9 @@ CREATE TABLE saas_subscriptions (
     (current_period_start IS NULL AND current_period_end IS NULL)
     OR (current_period_start IS NOT NULL AND current_period_end IS NOT NULL AND current_period_end > current_period_start)
   ),
+  CONSTRAINT chk_saas_trial_has_expiry CHECK(status <> 'TRIAL' OR trial_ends_at IS NOT NULL),
+  CONSTRAINT chk_saas_active_period CHECK(status <> 'ACTIVE' OR (current_period_start IS NOT NULL AND current_period_end IS NOT NULL)),
+  CONSTRAINT chk_saas_suspended_period CHECK(status <> 'SUSPENDED' OR (current_period_start IS NOT NULL AND current_period_end IS NOT NULL)),
   CONSTRAINT chk_saas_subscription_termination CHECK(
     (status = 'TERMINATED' AND terminated_at IS NOT NULL)
     OR (status <> 'TERMINATED' AND terminated_at IS NULL)
@@ -263,15 +266,39 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
+  IF event_row.effective_at > clock_timestamp() THEN
+    RAISE EXCEPTION 'Future subscription lifecycle events require a scheduler and are not accepted'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF NEW.status = 'TERMINATED' THEN
     expected_event_type := 'TERMINATED';
   ELSIF NEW.status = 'EXPIRED' THEN
+    IF NOT (
+      (OLD.status = 'TRIAL' AND OLD.trial_ends_at IS NOT NULL AND OLD.trial_ends_at <= event_row.effective_at)
+      OR (OLD.status = 'ACTIVE' AND OLD.current_period_end IS NOT NULL AND OLD.current_period_end <= event_row.effective_at)
+    ) THEN
+      RAISE EXCEPTION 'Subscription cannot expire before its trial or billing period boundary'
+        USING ERRCODE = '23514';
+    END IF;
     expected_event_type := 'EXPIRED';
   ELSIF OLD.status = 'TRIAL' AND NEW.status = 'ACTIVE' THEN
+    IF OLD.trial_ends_at IS NULL OR OLD.trial_ends_at <= event_row.effective_at
+       OR NEW.current_period_start > event_row.effective_at
+       OR NEW.current_period_end <= event_row.effective_at THEN
+      RAISE EXCEPTION 'Trial activation requires an unexpired trial and a currently effective billing period'
+        USING ERRCODE = '23514';
+    END IF;
     expected_event_type := 'ACTIVATED';
   ELSIF OLD.status = 'ACTIVE' AND NEW.status = 'SUSPENDED' THEN
     expected_event_type := 'SUSPENDED';
   ELSIF OLD.status = 'SUSPENDED' AND NEW.status = 'ACTIVE' THEN
+    IF NEW.current_period_start > event_row.effective_at
+       OR NEW.current_period_end <= event_row.effective_at
+       OR (OLD.current_period_end IS NOT NULL AND NEW.current_period_start < OLD.current_period_end) THEN
+      RAISE EXCEPTION 'Resuming a subscription requires a currently effective non-overlapping billing period'
+        USING ERRCODE = '23514';
+    END IF;
     expected_event_type := 'RESUMED';
   ELSIF OLD.status = 'ACTIVE' AND NEW.status = 'ACTIVE'
         AND (NEW.plan_code, NEW.plan_version) IS DISTINCT FROM (OLD.plan_code, OLD.plan_version) THEN
@@ -296,6 +323,9 @@ BEGIN
        OR NEW.current_period_start IS NOT DISTINCT FROM OLD.current_period_start
        OR NEW.current_period_end IS NOT DISTINCT FROM OLD.current_period_end
        OR (OLD.current_period_end IS NOT NULL AND NEW.current_period_start < OLD.current_period_end)
+       OR NEW.current_period_start > event_row.effective_at
+       OR NEW.current_period_end <= event_row.effective_at
+       OR (OLD.current_period_end IS NOT NULL AND OLD.current_period_end > event_row.effective_at)
        OR NEW.current_period_end <= NEW.current_period_start THEN
       RAISE EXCEPTION 'Renewal must advance to a valid non-overlapping billing period'
         USING ERRCODE = '23514';
