@@ -810,7 +810,7 @@ describe(
       });
 
       aiRuntimeService.executeAgentAction.mockResolvedValue(
-        gatewayOutcome(),
+        agentExecutionResult(),
       );
 
       const result =
