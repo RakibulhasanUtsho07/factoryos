@@ -334,6 +334,38 @@ describe(
         contextHash: null,
       });
 
+    it('rejects task creation when the deadline expires before the database insert', async () => {
+      const insertQuery = jest
+        .fn<(...args: unknown[]) => Promise<unknown>>()
+        .mockResolvedValue({ rows: [] });
+
+      (database.transaction as any).mockImplementationOnce(
+        async (
+          work: (
+            client: {
+              query: (...args: unknown[]) => Promise<unknown>;
+            },
+          ) => Promise<unknown>,
+        ) => work({ query: insertQuery }),
+      );
+
+      await expect(
+        service.createTask(
+          tenantId,
+          factoryId,
+          userId,
+          buildTaskRequest(),
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(insertQuery).toHaveBeenCalledTimes(1);
+      const [sql, values] = insertQuery.mock.calls[0] ?? [];
+      expect(sql).toContain('WHERE $12::timestamptz > NOW()');
+      expect(Array.isArray(values)).toBe(true);
+      expect((values as unknown[])[11]).toEqual(expect.any(String));
+      expect(auditService.record).not.toHaveBeenCalled();
+    });
+
     it('replays a task only when the idempotency key matches the request fingerprint', async () => {
       const input = buildTaskRequest();
       const requestHash = hashTaskRequest(input);
