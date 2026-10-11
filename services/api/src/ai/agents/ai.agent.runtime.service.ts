@@ -1294,9 +1294,9 @@ export class AiAgentRuntimeService {
         expected_artifact,
         handoff_hash
       )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11
-      )
+      SELECT
+        $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10::jsonb, $11
+      WHERE $8::timestamptz > NOW()
       RETURNING
         id::text AS id,
         tenant_id::text AS tenant_id,
@@ -1337,7 +1337,9 @@ export class AiAgentRuntimeService {
 
     const row = result.rows[0];
     if (!row) {
-      throw new Error('AI_AGENT_HANDOFF_INSERT_FAILED');
+      throw new ConflictException(
+        'AI agent handoff expiry elapsed before the record could be created',
+      );
     }
 
     await this.audit(
