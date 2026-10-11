@@ -839,6 +839,18 @@ export class AiAgentRuntimeService {
         'STARTED',
       );
 
+      if (step.agent_id) {
+        // Operational controls can change while action authorization runs.
+        // Re-check immediately before crossing the side-effect boundary.
+        await this.aiAgentCatalogueService.assertToolEntitled(
+          tenantId,
+          factoryId,
+          step.agent_id,
+          step.tool_id,
+          step.tool_version,
+        );
+      }
+
       const { outcome, executionRecordId } =
         await this.executeGovernedTool(
           tenantId,
@@ -1553,6 +1565,17 @@ export class AiAgentRuntimeService {
     if (typeof actionToken !== 'string') {
       throw new ConflictException(
         'Authorized compensation action did not return an action token',
+      );
+    }
+
+    if (step.agent_id) {
+      // A pause/restriction may arrive during compensation authorization.
+      await this.aiAgentCatalogueService.assertToolEntitled(
+        tenantId,
+        factoryId,
+        step.agent_id,
+        tool.rollback.toolId,
+        tool.rollback.toolVersion,
       );
     }
 

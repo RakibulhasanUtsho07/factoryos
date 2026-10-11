@@ -16,6 +16,8 @@ describe('AiAgentCatalogueController', () => {
   const getAgentMock = jest.fn();
   const grantToolMock = jest.fn();
   const revokeToolMock = jest.fn();
+  const getAgentOperationalControlMock = jest.fn();
+  const setAgentOperationalControlMock = jest.fn();
 
   const service = {
     createAgentDefinition:
@@ -28,6 +30,10 @@ describe('AiAgentCatalogueController', () => {
       grantToolMock,
     revokeToolGrant:
       revokeToolMock,
+    getAgentOperationalControlState:
+      getAgentOperationalControlMock,
+    setAgentOperationalControl:
+      setAgentOperationalControlMock,
   };
 
   const controller =
@@ -85,6 +91,17 @@ describe('AiAgentCatalogueController', () => {
         '66666666-6666-4666-8666-666666666666',
       status: 'REVOKED',
     });
+    getAgentOperationalControlMock.mockResolvedValue({
+      agentDefinitionId: '66666666-6666-4666-8666-666666666666',
+      agentId: 'graph-reasoner',
+      catalogueStatus: 'ACTIVE',
+      control: null,
+    });
+    setAgentOperationalControlMock.mockResolvedValue({
+      id: '88888888-8888-4888-8888-888888888888',
+      revision: '1',
+      status: 'PAUSED',
+    });
   });
 
   it('maps agent definition creation into runtime input', async () => {
@@ -126,6 +143,49 @@ describe('AiAgentCatalogueController', () => {
       request.factoryos.tenantId,
       request.factoryos.factoryId,
       request.factoryos.userId,
+    );
+  });
+
+
+  it('reads operational control state in the authenticated factory scope', async () => {
+    const definitionId = '66666666-6666-4666-8666-666666666666';
+
+    await controller.getAgentOperationalControl(
+      request as never,
+      definitionId,
+    );
+
+    expect(getAgentOperationalControlMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      definitionId,
+    );
+  });
+
+  it('records an operational pause without mutating the definition version', async () => {
+    const definitionId = '66666666-6666-4666-8666-666666666666';
+
+    await controller.setAgentOperationalControl(
+      request as never,
+      definitionId,
+      {
+        status: 'PAUSED',
+        execution_scopes: [],
+        reason: 'Incident response',
+      },
+    );
+
+    expect(setAgentOperationalControlMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      definitionId,
+      {
+        status: 'PAUSED',
+        executionScopes: [],
+        reason: 'Incident response',
+      },
     );
   });
 

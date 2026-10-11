@@ -42,6 +42,10 @@ import {
   CreateAiAgentToolGrantDto,
 } from './dto/create-ai-agent-tool-grant.dto';
 
+import {
+  CreateAiAgentOperationalControlDto,
+} from './dto/create-ai-agent-operational-control.dto';
+
 interface FactoryOsRequestContext {
   requestId: string;
   traceId: string;
@@ -127,6 +131,48 @@ export class AiAgentCatalogueController {
       context.factoryId,
       context.userId,
       id,
+    );
+  }
+
+  @Get(':id/control')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.agents.read')
+  @RequireFactoryScope()
+  async getAgentOperationalControl(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) definitionId: string,
+  ) {
+    const context = this.getContext(request);
+
+    return this.catalogueService.getAgentOperationalControlState(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      definitionId,
+    );
+  }
+
+  @Post(':id/control')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.agents.control')
+  @RequireFactoryScope()
+  async setAgentOperationalControl(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) definitionId: string,
+    @Body() body: CreateAiAgentOperationalControlDto,
+  ) {
+    const context = this.getContext(request);
+
+    return this.catalogueService.setAgentOperationalControl(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      definitionId,
+      {
+        status: body.status,
+        executionScopes: body.execution_scopes,
+        reason: body.reason,
+      },
     );
   }
 
