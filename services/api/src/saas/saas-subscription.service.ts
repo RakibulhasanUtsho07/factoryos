@@ -236,7 +236,7 @@ export class SaasSubscriptionService {
     if (['ACTIVATE','RESUME','RENEW'].includes(action) && (!periodStart || !periodEnd)) throw new BadRequestException(`${action} requires period_start and period_end`);
     if (['UPGRADE','DOWNGRADE'].includes(action) && !targetPlanCode) throw new BadRequestException(`${action} requires target_plan_code`);
     if (!['UPGRADE','DOWNGRADE'].includes(action) && targetPlanCode) throw new BadRequestException('target_plan_code is only valid for UPGRADE or DOWNGRADE');
-    if (!['ACTIVATE','RESUME','RENEW','UPGRADE','DOWNGRADE'].includes(action) && periodStart) throw new BadRequestException(`period dates are not valid for ${action}`);
+    if (!['ACTIVATE','RESUME','RENEW'].includes(action) && periodStart) throw new BadRequestException(`period dates are not valid for ${action}`);
 
     const idempotencyKey = this.requiredIdempotencyKey(input.idempotency_key);
     const requestHash = this.hash({
@@ -280,12 +280,15 @@ export class SaasSubscriptionService {
         case SaasSubscriptionTransitionAction.ACTIVATE:
           if (current.status !== 'TRIAL') throw new ConflictException('Only a TRIAL subscription can be activated');
           if (current.trial_ends_at && new Date(current.trial_ends_at).getTime() <= new Date(effectiveAt).getTime()) throw new ConflictException('Expired trials cannot be activated');
+          if (new Date(periodStart!).getTime() > new Date(effectiveAt).getTime() || new Date(periodEnd!).getTime() <= new Date(effectiveAt).getTime()) throw new BadRequestException('Activation period must include effective_at');
           nextStatus = 'ACTIVE'; nextPeriodStart = periodStart; nextPeriodEnd = periodEnd; break;
         case SaasSubscriptionTransitionAction.SUSPEND:
           if (current.status !== 'ACTIVE') throw new ConflictException('Only ACTIVE subscriptions can be suspended');
           nextStatus = 'SUSPENDED'; suspendedAt = effectiveAt; break;
         case SaasSubscriptionTransitionAction.RESUME:
           if (current.status !== 'SUSPENDED') throw new ConflictException('Only SUSPENDED subscriptions can be resumed');
+          if (current.current_period_end && new Date(periodStart!).getTime() < new Date(current.current_period_end).getTime()) throw new ConflictException('Resume period cannot overlap the previous billing period');
+          if (new Date(periodStart!).getTime() > new Date(effectiveAt).getTime() || new Date(periodEnd!).getTime() <= new Date(effectiveAt).getTime()) throw new BadRequestException('Resume period must include effective_at');
           nextStatus = 'ACTIVE'; suspendedAt = null; nextPeriodStart = periodStart; nextPeriodEnd = periodEnd; break;
         case SaasSubscriptionTransitionAction.UPGRADE:
         case SaasSubscriptionTransitionAction.DOWNGRADE: {
@@ -307,12 +310,13 @@ export class SaasSubscriptionService {
           if (action === 'UPGRADE' && targetRank <= nextPlanRank) throw new ConflictException('UPGRADE target must have a greater tier_rank than the current plan');
           if (action === 'DOWNGRADE' && targetRank >= nextPlanRank) throw new ConflictException('DOWNGRADE target must have a lower tier_rank than the current plan');
           nextPlanCode = target.plan_code; nextPlanVersion = Number(target.version); nextPlanRank = targetRank;
-          if (periodStart) { nextPeriodStart = periodStart; nextPeriodEnd = periodEnd; }
           break;
         }
         case SaasSubscriptionTransitionAction.RENEW:
           if (current.status !== 'ACTIVE') throw new ConflictException('Only ACTIVE subscriptions can be renewed');
-          if (current.current_period_end && new Date(periodStart!).getTime() < new Date(current.current_period_end).getTime()) throw new ConflictException('Renewal period cannot start before the current period ends');
+          if (!current.current_period_end || new Date(current.current_period_end).getTime() > new Date(effectiveAt).getTime()) throw new ConflictException('A renewal can only be recorded when the current billing period has ended');
+          if (new Date(periodStart!).getTime() < new Date(current.current_period_end).getTime()) throw new ConflictException('Renewal period cannot start before the current period ends');
+          if (new Date(periodStart!).getTime() > new Date(effectiveAt).getTime() || new Date(periodEnd!).getTime() <= new Date(effectiveAt).getTime()) throw new BadRequestException('Renewal period must include effective_at');
           nextPeriodStart = periodStart; nextPeriodEnd = periodEnd; break;
         case SaasSubscriptionTransitionAction.TERMINATE:
           nextStatus = 'TERMINATED'; terminatedAt = effectiveAt; suspendedAt = null; break;
