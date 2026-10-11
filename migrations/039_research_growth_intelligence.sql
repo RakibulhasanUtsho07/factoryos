@@ -207,6 +207,7 @@ CREATE TABLE research_knowledge_releases (
   status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
   validation_report JSONB NOT NULL DEFAULT '{}'::jsonb,
   regression_evidence_ref TEXT,
+  evaluation_id UUID,
   reviewed_by UUID,
   reviewed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -234,6 +235,7 @@ CREATE TABLE research_knowledge_releases (
       AND reviewed_by IS NOT NULL
       AND reviewed_at IS NOT NULL
       AND effective_at IS NOT NULL
+      AND evaluation_id IS NOT NULL
     )
   )
 );
@@ -245,6 +247,77 @@ CREATE UNIQUE INDEX uq_research_release_global_version
   WHERE tenant_id IS NULL;
 CREATE INDEX idx_research_release_scope_status
   ON research_knowledge_releases (tenant_id, namespace, status, created_at DESC);
+CREATE TABLE research_release_evaluations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID,
+  namespace VARCHAR(20) NOT NULL,
+  release_id UUID NOT NULL,
+  evaluation_version VARCHAR(100) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  content_fingerprint VARCHAR(64) NOT NULL,
+  results JSONB NOT NULL,
+  evaluated_by UUID NOT NULL,
+  evaluated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT uq_research_release_eval_owner UNIQUE (id, release_id),
+  CONSTRAINT fk_research_release_eval_release FOREIGN KEY (release_id, tenant_id, namespace)
+    REFERENCES research_knowledge_releases(id, tenant_id, namespace) ON DELETE RESTRICT,
+  CONSTRAINT fk_research_release_eval_actor FOREIGN KEY (evaluated_by)
+    REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_research_release_eval_scope CHECK (
+    (namespace = 'GLOBAL' AND tenant_id IS NULL)
+    OR (namespace = 'TENANT' AND tenant_id IS NOT NULL)
+  ),
+  CONSTRAINT chk_research_release_eval_status CHECK (status IN ('PASSED', 'FAILED', 'REVIEW_REQUIRED')),
+  CONSTRAINT chk_research_release_eval_version CHECK (length(btrim(evaluation_version)) > 0),
+  CONSTRAINT chk_research_release_eval_fingerprint CHECK (content_fingerprint ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT chk_research_release_eval_results CHECK (jsonb_typeof(results) = 'object'),
+  CONSTRAINT chk_research_release_eval_passed_report CHECK (
+    status <> 'PASSED'
+    OR results @> '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true}'::jsonb
+  )
+);
+
+ALTER TABLE research_knowledge_releases
+  ADD CONSTRAINT fk_research_release_evaluation_owner
+  FOREIGN KEY (evaluation_id, id)
+  REFERENCES research_release_evaluations(id, release_id)
+  ON DELETE RESTRICT;
+
+CREATE INDEX idx_research_release_evaluation_history
+  ON research_release_evaluations (tenant_id, namespace, release_id, evaluated_at DESC);
+
+CREATE OR REPLACE FUNCTION factoryos_guard_research_release_evaluation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  release_status TEXT;
+BEGIN
+  IF TG_OP = 'UPDATE' OR TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Research release evaluations are immutable'
+      USING ERRCODE = '55000';
+  END IF;
+
+  SELECT status INTO release_status
+  FROM research_knowledge_releases
+  WHERE id = NEW.release_id
+    AND (tenant_id IS NOT DISTINCT FROM NEW.tenant_id)
+    AND namespace = NEW.namespace
+  FOR SHARE;
+
+  IF NOT FOUND OR release_status <> 'DRAFT' THEN
+    RAISE EXCEPTION 'Evaluations can only be recorded for a draft research release'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER research_release_evaluations_guard
+BEFORE INSERT OR UPDATE OR DELETE ON research_release_evaluations
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_release_evaluation();
+
 
 CREATE OR REPLACE FUNCTION factoryos_guard_research_release()
 RETURNS trigger
@@ -267,15 +340,34 @@ BEGIN
   END IF;
 
   IF NEW.status = 'PROMOTED' THEN
+    IF NEW.evaluation_id IS NULL OR NOT EXISTS (
+      SELECT 1
+      FROM research_release_evaluations e
+      WHERE e.id = NEW.evaluation_id
+        AND e.release_id = NEW.id
+        AND e.tenant_id IS NOT DISTINCT FROM NEW.tenant_id
+        AND e.namespace = NEW.namespace
+        AND e.status = 'PASSED'
+        AND e.results @> '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true}'::jsonb
+    ) THEN
+      RAISE EXCEPTION 'Research release requires a passing, attached automated evaluation'
+        USING ERRCODE = '23514';
+    END IF;
+
     SELECT COUNT(*) INTO invalid_claim_count
     FROM jsonb_array_elements_text(NEW.claim_ids) AS ids(claim_id)
     LEFT JOIN research_claims c ON c.id = ids.claim_id::uuid
+    LEFT JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
     WHERE c.id IS NULL
        OR c.status <> 'APPROVED'
-       OR NOT (c.tenant_id IS NULL OR c.tenant_id = NEW.tenant_id);
+       OR NOT (c.tenant_id IS NULL OR c.tenant_id = NEW.tenant_id)
+       OR s.access_status <> 'APPROVED'
+       OR s.license_status NOT IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+       OR s.rights_basis IS NULL
+       OR length(btrim(s.rights_basis)) = 0;
 
     IF invalid_claim_count > 0 THEN
-      RAISE EXCEPTION 'Research release can only include approved visible claims'
+      RAISE EXCEPTION 'Research release can only include approved visible claims whose sources still have approved reuse rights'
         USING ERRCODE = '23514';
     END IF;
   END IF;
@@ -755,7 +847,7 @@ DECLARE
   table_name TEXT;
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
-    'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases'
+    'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);
