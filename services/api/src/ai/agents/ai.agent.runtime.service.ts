@@ -727,6 +727,16 @@ export class AiAgentRuntimeService {
         );
       }
 
+      if (authStatus === 'APPROVAL_REQUIRED' || authStatus === 'AUTHORIZED') {
+        this.assertAuthorizationMatchesStep(
+          action,
+          tenantId,
+          factoryId,
+          task.decision_id,
+          step,
+        );
+      }
+
       if (authStatus === 'APPROVAL_REQUIRED') {
         const waitingTask = await this.updateTaskStateRaw(
           tenantId,
@@ -2170,6 +2180,46 @@ export class AiAgentRuntimeService {
     }
 
     return row;
+  }
+
+  private assertAuthorizationMatchesStep(
+    action: Record<string, unknown>,
+    tenantId: string,
+    factoryId: string,
+    decisionId: string,
+    step: AgentTaskStepRow,
+  ): void {
+    const payloadMatches =
+      action.payload !== null &&
+      typeof action.payload === 'object' &&
+      !Array.isArray(action.payload) &&
+      this.computeHash(action.payload) === this.computeHash(step.payload);
+    const targetMatches =
+      action.target !== null &&
+      typeof action.target === 'object' &&
+      !Array.isArray(action.target) &&
+      this.computeHash(action.target) === this.computeHash(step.target);
+
+    const bindingMatches =
+      typeof action.id === 'string' &&
+      action.id.length > 0 &&
+      action.tenantId === tenantId &&
+      action.factoryId === factoryId &&
+      action.decisionId === decisionId &&
+      action.actionType === step.action_type &&
+      action.toolId === step.tool_id &&
+      action.toolVersion === step.tool_version &&
+      (action.resourceType ?? null) === (step.resource_type ?? null) &&
+      (action.resourceId ?? null) === (step.resource_id ?? null) &&
+      payloadMatches &&
+      targetMatches &&
+      (step.risk_class === null || action.riskClass === step.risk_class);
+
+    if (!bindingMatches) {
+      throw new ConflictException(
+        'AI action authorization does not match the bound agent task step',
+      );
+    }
   }
 
   private async updateStep(

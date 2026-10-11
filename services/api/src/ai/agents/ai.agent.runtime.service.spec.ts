@@ -123,6 +123,8 @@ function action(overrides: Record<string, unknown> = {}) {
     factoryId,
     decisionId,
     actionType: 'AI.RUNTIME.NOOP',
+    toolId: 'AI.RUNTIME.NOOP',
+    toolVersion: '1.0.0',
     target: {},
     resourceType: null,
     resourceId: null,
@@ -571,6 +573,38 @@ describe(
       expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
+    it('fails closed when an authorized action intent is bound to another tool version', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      (service as any).failTask = jest.fn<() => Promise<unknown>>();
+
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action({ authorizationStatus: 'AUTHORIZED', toolVersion: '9.9.9' }),
+        actionToken: 'short-lived-token',
+      });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledTimes(1);
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+      expect((service as any).claimToolCall).not.toHaveBeenCalled();
+      expect((service as any).failTask).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        'AI_AGENT_EXECUTION_FAILURE',
+        'AI action authorization does not match the bound agent task step',
+        stepId,
+      );
+    });
+
     it('moves a material step into AWAITING_APPROVAL when authorization requires approval', async () => {
       const task = taskRow({
         state: 'EXECUTING',
@@ -722,6 +756,31 @@ describe(
       );
       expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
       expect(result.step.status).toBe('SUCCEEDED');
+    });
+
+    it('does not execute when an authorized action intent payload differs from the step', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      (service as any).failTask = jest.fn<() => Promise<unknown>>();
+
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action({
+          authorizationStatus: 'AUTHORIZED',
+          payload: { sample: 'different-value' },
+        }),
+        actionToken: 'short-lived-token',
+      });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+      expect((service as any).claimToolCall).not.toHaveBeenCalled();
     });
 
     it('fails closed when the agent tool entitlement is denied', async () => {
