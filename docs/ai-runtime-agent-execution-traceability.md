@@ -42,6 +42,10 @@ Before compensation execution, an atomic attempt record is persisted as `STARTED
 
 Agent action attempts are now persisted with one atomic `INSERT ... ON CONFLICT DO UPDATE`, using the existing unique attempt identity. Concurrent requests can no longer race through a separate SELECT-then-INSERT path. A late `STARTED` event cannot reopen a terminal attempt; a conflicting execution-record ID, tenant/factory scope, or conflicting terminal outcome returns a conflict rather than overwriting the ledger. This strengthens the per-attempt audit record. Compensation now records `STARTED` before execution and retains the action-intent ID; an unresolved `STARTED` compensation blocks later attempt-key allocation until the linked AI execution claim is manually reconciled. Ambiguous side effects remain manual-reconciliation cases, never automatic retries.
 
+## Concurrent agent-evaluation replay
+
+Evaluation-result persistence uses the database's unique case_id + simulation_run_id identity as the atomic concurrency arbiter. If another request wins between the initial lookup and insert, the loser re-reads and returns the already-stored immutable result without emitting a second evaluation audit event. If the winner cannot be read back within the same tenant/factory scope, the request fails with a conflict rather than reporting an unpersisted evaluation.
+
 ## Execution evidence and fail-closed correlation
 
 Agent task steps now expose a nullable, schema-versioned `executionEvidence` field backed by `agent_task_steps.execution_evidence`. When a durable execution returns, the runtime verifies its decision ID, action-intent ID, execution key, executor type, tool version, status and input hash against the authorization/step binding before treating the outcome as valid. The evidence records the task, step, decision, parent trace, action intent, execution record, execution key, tool/version, input hash, final status and a SHA-256 digest over the outcome status/result/error. Raw results remain in the existing `output` field; action tokens and payload contents are not copied into the evidence or its audit event.

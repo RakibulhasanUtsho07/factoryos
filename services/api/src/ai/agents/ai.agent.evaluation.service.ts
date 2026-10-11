@@ -187,6 +187,7 @@ export class AiAgentEvaluationService {
     const insertedQuery = [
       'INSERT INTO ai_agent_evaluation_results (tenant_id,factory_id,case_id,simulation_run_id,sandbox_id,status,expected_summary,observed_summary,created_by)',
       'VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)',
+      'ON CONFLICT (case_id, simulation_run_id) DO NOTHING',
       'RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,',
       'case_id::text AS case_id,simulation_run_id::text AS simulation_run_id,sandbox_id::text AS sandbox_id,',
       'status,expected_summary,observed_summary,created_by::text AS created_by,created_at::text AS created_at',
@@ -198,7 +199,22 @@ export class AiAgentEvaluationService {
       { tenantId, userId: actorUserId },
     );
     const row = inserted.rows[0];
-    if (!row) throw new BadRequestException('AI agent evaluation result insert returned no row');
+    if (!row) {
+      // A concurrent request may have won the unique case/run identity after
+      // our first lookup. Re-read its immutable result instead of leaking a
+      // unique-constraint error or emitting a duplicate audit event.
+      const concurrent = await this.database.query<EvaluationResultRow>(
+        priorQuery, [tenantId, factoryId, caseId, simulationRunId],
+        { tenantId, userId: actorUserId },
+      );
+      const concurrentRow = concurrent.rows[0];
+      if (!concurrentRow) {
+        throw new ConflictException(
+          'AI agent evaluation result was concurrently claimed but could not be loaded in this factory scope',
+        );
+      }
+      return this.mapResult(concurrentRow);
+    }
     const mapped = this.mapResult(row);
     await this.safeAudit({
       tenantId, factoryId, actorUserId, action: 'EVALUATE_AGENT_CASE',

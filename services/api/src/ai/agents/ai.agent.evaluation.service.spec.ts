@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import {
-  BadRequestException, ForbiddenException, NotFoundException,
+  BadRequestException, ConflictException, ForbiddenException, NotFoundException,
 } from '@nestjs/common';
 
 import { AiAgentEvaluationService } from './ai.agent.evaluation.service';
@@ -132,6 +132,44 @@ describe('AiAgentEvaluationService', () => {
     }));
   });
 
+
+  it('replays the stored evaluation when concurrent requests race to persist the same case/run result', async () => {
+    const persisted = resultRow({
+      id: '99999999-9999-4999-8999-999999999999',
+      status: 'FAIL',
+      observed_summary: { statusAtFirstEvaluation: 'FAIL' },
+    });
+    database.query.mockResolvedValueOnce({ rows: [caseRow] })
+      .mockResolvedValueOnce({ rows: [simulationRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [persisted] });
+
+    const result = await makeService().evaluateCase(tenantId, factoryId, userId, definitionId, caseId, runId);
+
+    expect(result.id).toBe(persisted.id);
+    expect(result.status).toBe('FAIL');
+    expect(result.observedSummary).toEqual(persisted.observed_summary);
+    expect(database.query).toHaveBeenCalledTimes(5);
+    const queryCalls = (database.query as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(String(queryCalls[3]?.[0])).toContain(
+      'ON CONFLICT (case_id, simulation_run_id) DO NOTHING',
+    );
+    expect(auditService.record).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a concurrent evaluation conflict cannot be read back', async () => {
+    database.query.mockResolvedValueOnce({ rows: [caseRow] })
+      .mockResolvedValueOnce({ rows: [simulationRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      makeService().evaluateCase(tenantId, factoryId, userId, definitionId, caseId, runId),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(auditService.record).not.toHaveBeenCalled();
+  });
 
   it('does not pass a plan-only tool call when response-backed observation evidence is missing', async () => {
     database.query.mockResolvedValueOnce({ rows: [caseRow] })
