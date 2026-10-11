@@ -425,6 +425,28 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         [tenantId, usageEventId],
       );
       expect(replayedUsageCount.rows[0]?.count).toBe(1);
+
+      // Simulate out-of-band target drift on the disposable test database.
+      // The normal immutable ledger trigger remains enabled outside this fixture.
+      await targetAdminPool.query('ALTER TABLE saas_usage_events DISABLE TRIGGER trg_saas_usage_events_immutable');
+      try {
+        await targetAdminPool.query(
+          'UPDATE saas_usage_events SET quantity = quantity + 1 WHERE tenant_id = $1::uuid AND id = $2::uuid',
+          [tenantId, usageEventId],
+        );
+      } finally {
+        await targetAdminPool.query('ALTER TABLE saas_usage_events ENABLE TRIGGER trg_saas_usage_events_immutable');
+      }
+
+      await expect(target.importBundle({
+        tenantId,
+        transferId: migrationId,
+        sourceSchemaVersion: '1.0.0',
+        targetSchemaVersion: '1.0.0',
+        sourceBundle: bundleStore.read(exported.artifact.reference, exported.artifact.digest),
+        sourceManifest: payload.manifest,
+        requiredCategories: [...REQUIRED_TRANSFER_CATEGORIES],
+      })).rejects.toBeInstanceOf(ConflictException);
     }, 60000);
   });
 });

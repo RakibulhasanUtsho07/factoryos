@@ -124,12 +124,29 @@ export class SaasTenantPostgresMigrationTargetAdapter
             'A target import receipt exists for this transfer with a different source manifest',
           );
         }
+        // A receipt proves what was imported once, not that mutable target rows
+        // still match that import. Re-measure on every retry before returning success.
+        const replayManifest = await this.measureTargetManifest(client, input.tenantId, categoryTables);
+        this.assertManifestMatchesInput(replayManifest, receipt.target_manifest, input.requiredCategories);
+        const replayDigest = createHash('sha256').update(this.canonicalJson({
+          tenantId: input.tenantId,
+          transferId: input.transferId,
+          sourceSchemaVersion: input.sourceSchemaVersion,
+          targetSchemaVersion: input.targetSchemaVersion,
+          manifest: replayManifest,
+        })).digest('hex');
+        if (replayDigest !== receipt.target_snapshot_digest) {
+          throw new ConflictException(
+            'Target tenant data changed after the recorded import; refusing to attest a replay',
+          );
+        }
+
         await client.query('COMMIT');
         transactionOpen = false;
         return {
           targetBundleReference: 'pgimport:' + receipt.id,
-          targetBundleDigest: receipt.target_snapshot_digest,
-          targetManifest: receipt.target_manifest,
+          targetBundleDigest: replayDigest,
+          targetManifest: replayManifest,
         };
       }
 
