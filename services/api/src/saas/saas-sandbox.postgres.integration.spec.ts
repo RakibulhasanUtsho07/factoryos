@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { SaasSandboxDataMode, SaasSandboxPurpose } from './dto/create-saas-sandbox-environment.dto';
 import { SaasSandboxTransitionAction } from './dto/transition-saas-sandbox-environment.dto';
@@ -30,17 +29,24 @@ describeWithPostgres('SaasSandboxService PostgreSQL integration', () => {
 
   afterAll(async () => {
     if (adminPool) {
-      for (const tenantId of tenantIds) {
-        await adminPool.query('DELETE FROM saas_sandbox_environment_events WHERE tenant_id = $1', [tenantId]);
-        await adminPool.query('DELETE FROM saas_sandbox_environments WHERE tenant_id = $1', [tenantId]);
+      try {
+        // The production event ledger rejects UPDATE/DELETE; test cleanup temporarily disables
+        // that immutable trigger only on the dedicated integration database.
+        await adminPool.query('ALTER TABLE saas_sandbox_environment_events DISABLE TRIGGER saas_sandbox_environment_events_immutable');
+        for (const tenantId of tenantIds) {
+          await adminPool.query('DELETE FROM saas_sandbox_environment_events WHERE tenant_id = $1', [tenantId]);
+          await adminPool.query('DELETE FROM saas_sandbox_environments WHERE tenant_id = $1', [tenantId]);
+        }
+        if (userIds.length > 0) {
+          await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
+        }
+        if (tenantIds.length > 0) {
+          await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
+        }
+      } finally {
+        await adminPool.query('ALTER TABLE saas_sandbox_environment_events ENABLE TRIGGER saas_sandbox_environment_events_immutable');
+        await adminPool.end();
       }
-      if (userIds.length > 0) {
-        await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
-      }
-      if (tenantIds.length > 0) {
-        await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
-      }
-      await adminPool.end();
     }
     if (database) await database.onModuleDestroy();
   }, 60000);
