@@ -109,11 +109,35 @@ describe('AiAgentEvaluationService', () => {
       .mockResolvedValueOnce({ rows: [resultRow()] });
     const result = await makeService().evaluateCase(tenantId, factoryId, userId, definitionId, caseId, runId);
     expect(result.status).toBe('PASS');
-    expect(result.observedSummary).toMatchObject({ observedCallCount: 1, matchingStepIndices: [0] });
+    expect(result.observedSummary).toMatchObject({
+      observedCallCount: 1,
+      matchingPlanCallCount: 1,
+      matchingStepIndices: [0],
+      evidenceSource: 'SYNTHETIC_SANDBOX_PLAN_AND_SUPPLIED_RESPONSE',
+      executionEvidence: 'SIMULATION_ONLY_NO_AGENT_OR_TOOL_EXECUTION',
+      liveExecution: false,
+    });
     expect(database.query).toHaveBeenCalledTimes(4);
     expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'EVALUATE_AGENT_CASE', resourceType: 'AI_AGENT_EVALUATION_RESULT',
     }));
+  });
+
+
+  it('does not pass a plan-only tool call when response-backed observation evidence is missing', async () => {
+    database.query.mockResolvedValueOnce({ rows: [caseRow] })
+      .mockResolvedValueOnce({ rows: [simulationRow({ observations: [] })] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [resultRow({
+        status: 'INCONCLUSIVE',
+        observed_summary: {
+          matchingPlanCallCount: 1,
+          observedCallCount: 0,
+          reason: 'No response-backed observation',
+        },
+      })] });
+    const result = await makeService().evaluateCase(tenantId, factoryId, userId, definitionId, caseId, runId);
+    expect(result.status).toBe('INCONCLUSIVE');
   });
 
   it('fails a completed run when an expected call was omitted', async () => {
@@ -169,6 +193,30 @@ describe('AiAgentEvaluationService', () => {
       result: { outcome: 'REFUSED', refusal: { reason: 'Action not permitted' } },
     }));
     expect(failing.status).toBe('FAIL');
+  });
+
+
+  it('does not confuse a caller-supplied simulated tool refusal with an agent refusal', () => {
+    const service = makeService();
+    const refusalCase = {
+      ...caseRow,
+      kind: 'EXPECTED_REFUSAL',
+      expected_refusal_reason_contains: 'not permitted',
+    };
+    const evaluated = (service as any).compareCaseToRun(refusalCase, simulationRow({
+      simulated_tool_responses: {
+        'AI.RUNTIME.NOOP@1.0.0': { refused: true, reason: 'Action not permitted' },
+      },
+      result: { outcome: 'SIMULATION_COMPLETE', liveExecution: false },
+    }));
+    expect(evaluated.status).toBe('FAIL');
+    expect(evaluated.observedSummary).toMatchObject({
+      refusalObserved: false,
+      evidenceSource: 'NO_AGENT_REFUSAL_EVIDENCE',
+      executionEvidence: 'SIMULATION_ONLY_NO_AGENT_OR_TOOL_EXECUTION',
+      liveExecution: false,
+      forbiddenCallPlanned: false,
+    });
   });
 
   it('returns not found when a simulation run is outside the factory scope', async () => {
