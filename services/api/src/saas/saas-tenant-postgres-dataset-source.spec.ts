@@ -40,13 +40,11 @@ describe('SaasTenantPostgresDatasetSource', () => {
   it('uses a read-only repeatable-read transaction, tenant RLS context and explicit keyset predicates', async () => {
     const { source, client, calls } = createSource(tenantId);
     const rows: unknown[] = [];
-    for await (const row of source.readDataset(
-      tenantId,
-      '1.0.0',
-      SaasTransferDatasetCategory.BUSINESS_DATA,
-    )) {
-      rows.push(row);
-    }
+    await source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
+        rows.push(row);
+      }
+    });
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({
@@ -71,53 +69,69 @@ describe('SaasTenantPostgresDatasetSource', () => {
 
   it('fails closed for integration metadata and file references until those schemas have explicit adapters', async () => {
     const { source, database } = createSource();
-    await expect(async () => {
-      for await (const _row of source.readDataset(
-        tenantId,
-        '1.0.0',
-        SaasTransferDatasetCategory.FILE_REFERENCES,
-      )) {
+    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.FILE_REFERENCES)) {
         // The unsupported category must fail before producing records.
       }
-    }).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(database.getClient).not.toHaveBeenCalled();
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(database.getClient).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a row whose tenant scope violates the explicit query scope', async () => {
     const { source, client } = createSource(otherTenantId);
-    await expect(async () => {
-      for await (const _row of source.readDataset(
-        tenantId,
-        '1.0.0',
-        SaasTransferDatasetCategory.BUSINESS_DATA,
-      )) {
+    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
         // The mocked database simulates a broken RLS/query invariant.
       }
-    }).rejects.toBeInstanceOf(BadRequestException);
+    })).rejects.toBeInstanceOf(BadRequestException);
     expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+
+  it('reads multiple categories through exactly one PostgreSQL connection and transaction', async () => {
+    const { source, client, calls, database } = createSource(tenantId);
+    const categories: SaasTransferDatasetCategory[] = [];
+    await source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
+        // Drain the business category.
+      }
+      categories.push(SaasTransferDatasetCategory.BUSINESS_DATA);
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.AUDIT_LOG)) {
+        // Drain the audit category on the same transaction snapshot.
+      }
+      categories.push(SaasTransferDatasetCategory.AUDIT_LOG);
+    });
+    expect(categories).toEqual([
+      SaasTransferDatasetCategory.BUSINESS_DATA,
+      SaasTransferDatasetCategory.AUDIT_LOG,
+    ]);
+    expect(database.getClient).toHaveBeenCalledTimes(1);
+    expect(calls.filter((item) => item.sql === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')).toHaveLength(1);
+    expect(calls.filter((item) => item.sql === 'COMMIT')).toHaveLength(1);
+    expect(calls.filter((item) => item.sql === 'ROLLBACK')).toHaveLength(0);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back and releases the snapshot when a category reader is cancelled early', async () => {
+    const { source, client, calls } = createSource(tenantId);
+    await expect(source.withSnapshot(tenantId, '1.0.0', async (snapshot) => {
+      for await (const _row of snapshot.readDataset(SaasTransferDatasetCategory.BUSINESS_DATA)) {
+        break;
+      }
+      return 'incomplete';
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(calls.some((item) => item.sql === 'COMMIT')).toBe(false);
+    expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(true);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
   it('rejects malformed tenant and schema identifiers before opening a connection', async () => {
     const { source, database } = createSource();
-    await expect(async () => {
-      for await (const _row of source.readDataset(
-        'not-a-uuid',
-        '1.0.0',
-        SaasTransferDatasetCategory.AUDIT_LOG,
-      )) {
-        // No row should be emitted.
-      }
-    }).rejects.toBeInstanceOf(BadRequestException);
-    await expect(async () => {
-      for await (const _row of source.readDataset(
-        tenantId,
-        'latest',
-        SaasTransferDatasetCategory.AUDIT_LOG,
-      )) {
-        // No row should be emitted.
-      }
-    }).rejects.toBeInstanceOf(BadRequestException);
+    await expect(source.withSnapshot('not-a-uuid', '1.0.0', async () => undefined))
+      .rejects.toBeInstanceOf(BadRequestException);
+    await expect(source.withSnapshot(tenantId, 'latest', async () => undefined))
+      .rejects.toBeInstanceOf(BadRequestException);
     expect(database.getClient).not.toHaveBeenCalled();
   });
 });

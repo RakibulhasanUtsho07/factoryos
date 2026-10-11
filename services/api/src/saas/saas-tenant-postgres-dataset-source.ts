@@ -87,21 +87,23 @@ interface TenantDatasetRow extends QueryResultRow {
 }
 
 /**
- * Read a tenant dataset from the live FactoryOS schema.
+ * Read a tenant export from one live PostgreSQL snapshot.
  *
- * Every category runs in a repeatable-read, read-only transaction with RLS
- * context installed on the same PostgreSQL connection. Explicit tenant
- * predicates complement RLS, and UUID keyset pagination avoids offset scans.
+ * A single callback owns a single read-only REPEATABLE READ transaction for
+ * all requested categories. Tenant RLS context is installed on that same
+ * connection; explicit tenant predicates and UUID keyset pagination remain
+ * defense-in-depth. The session is invalidated before its connection is
+ * returned to the pool.
  */
 @Injectable()
 export class SaasTenantPostgresDatasetSource {
   constructor(private readonly database: DatabaseService) {}
 
-  async *readDataset(
+  async withSnapshot<T>(
     tenantId: string,
     schemaVersion: string,
-    category: SaasTransferDatasetCategory,
-  ): AsyncIterable<unknown> {
+    callback: (snapshot: import('./saas-tenant-data-transfer.adapters').SaasTenantTransferDatasetSnapshot) => Promise<T>,
+  ): Promise<T> {
     if (!UUID_PATTERN.test(tenantId)) {
       throw new BadRequestException('Tenant dataset scope must be a UUID');
     }
@@ -109,15 +111,10 @@ export class SaasTenantPostgresDatasetSource {
       throw new BadRequestException('Dataset source schema version is invalid');
     }
 
-    const tables = SAAS_TENANT_DATASET_TABLES[category];
-    if (!tables || tables.length === 0) {
-      throw new ServiceUnavailableException(
-        'Tenant transfer category ' + category + ' has no reviewed PostgreSQL source adapter',
-      );
-    }
-
     const client = await this.database.getClient();
     let transactionOpen = false;
+    let active = true;
+    let abandonedReader = false;
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       transactionOpen = true;
@@ -126,46 +123,96 @@ export class SaasTenantPostgresDatasetSource {
         [tenantId, ''],
       );
 
-      for (const table of tables) {
-        let afterId: string | null = null;
-        while (true) {
-          // Table identifiers can only originate from the reviewed constant allowlist.
-          const result: QueryResult<TenantDatasetRow> = await client.query<TenantDatasetRow>(
-            'SELECT dataset_row.* FROM public.' +
-              table +
-              ' AS dataset_row ' +
-              'WHERE dataset_row.tenant_id = $1::uuid ' +
-              'AND ($2::uuid IS NULL OR dataset_row.id > $2::uuid) ' +
-              'ORDER BY dataset_row.id ASC LIMIT $3',
-            [tenantId, afterId, PAGE_SIZE],
-          );
-
-          for (const row of result.rows) {
-            if (
-              typeof row.id !== 'string' ||
-              !UUID_PATTERN.test(row.id) ||
-              row.tenant_id !== tenantId
-            ) {
-              throw new BadRequestException(
-                'Tenant dataset source returned a row outside the requested tenant scope',
-              );
+      const snapshot = {
+        readDataset: (category: SaasTransferDatasetCategory): AsyncIterable<unknown> => {
+          return (async function* (source: SaasTenantPostgresDatasetSource) {
+            let completed = false;
+            try {
+              if (!active) {
+                throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+              }
+              yield* source.readDatasetOnClient(client, tenantId, category, () => active);
+              completed = true;
+            } finally {
+              if (!completed) abandonedReader = true;
             }
+          })(this);
+        },
+      };
 
-            afterId = row.id;
-            yield { ...row, __factoryos_table: table };
-          }
-
-          if (result.rows.length < PAGE_SIZE) break;
-        }
+      const result = await callback(snapshot);
+      if (abandonedReader) {
+        throw new ServiceUnavailableException(
+          'Tenant export snapshot was abandoned before a dataset category was fully read',
+        );
       }
 
+      active = false;
       await client.query('COMMIT');
       transactionOpen = false;
+      return result;
     } finally {
+      active = false;
       if (transactionOpen) {
         await client.query('ROLLBACK').catch(() => undefined);
       }
       client.release();
+    }
+  }
+
+  private async *readDatasetOnClient(
+    client: Awaited<ReturnType<DatabaseService['getClient']>>,
+    tenantId: string,
+    category: SaasTransferDatasetCategory,
+    isActive: () => boolean,
+  ): AsyncIterable<unknown> {
+    if (!isActive()) {
+      throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+    }
+    const tables = SAAS_TENANT_DATASET_TABLES[category];
+    if (!tables || tables.length === 0) {
+      throw new ServiceUnavailableException(
+        'Tenant transfer category ' + category + ' has no reviewed PostgreSQL source adapter',
+      );
+    }
+
+    for (const table of tables) {
+      let afterId: string | null = null;
+      while (true) {
+        if (!isActive()) {
+          throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+        }
+        // Table identifiers can only originate from the reviewed constant allowlist.
+        const result: QueryResult<TenantDatasetRow> = await client.query<TenantDatasetRow>(
+          'SELECT dataset_row.* FROM public.' +
+            table +
+            ' AS dataset_row ' +
+            'WHERE dataset_row.tenant_id = $1::uuid ' +
+            'AND ($2::uuid IS NULL OR dataset_row.id > $2::uuid) ' +
+            'ORDER BY dataset_row.id ASC LIMIT $3',
+          [tenantId, afterId, PAGE_SIZE],
+        );
+
+        for (const row of result.rows) {
+          if (!isActive()) {
+            throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+          }
+          if (
+            typeof row.id !== 'string' ||
+            !UUID_PATTERN.test(row.id) ||
+            row.tenant_id !== tenantId
+          ) {
+            throw new BadRequestException(
+              'Tenant dataset source returned a row outside the requested tenant scope',
+            );
+          }
+
+          afterId = row.id;
+          yield { ...row, __factoryos_table: table };
+        }
+
+        if (result.rows.length < PAGE_SIZE) break;
+      }
     }
   }
 }

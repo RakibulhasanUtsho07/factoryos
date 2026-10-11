@@ -5,17 +5,21 @@ export const SAAS_ENCRYPTED_TENANT_BUNDLE_STORE = Symbol('SAAS_ENCRYPTED_TENANT_
 export const SAAS_TENANT_TRANSFER_DATASET_SOURCE = Symbol('SAAS_TENANT_TRANSFER_DATASET_SOURCE');
 export const SAAS_TENANT_MIGRATION_TARGET_ADAPTER = Symbol('SAAS_TENANT_MIGRATION_TARGET_ADAPTER');
 
+export interface SaasTenantTransferDatasetSnapshot {
+  readDataset(category: SaasTransferDatasetCategory): AsyncIterable<unknown>;
+}
+
 export interface SaasTenantTransferDatasetSource {
   /**
-   * Return an authorised, tenant-filtered, consistent-read snapshot for one
-   * category. Adapters must not yield rows from another tenant, secrets,
-   * credentials, connection strings, or raw binary blobs.
+   * Run the callback against one tenant-scoped, repeatable-read snapshot.
+   * The snapshot and its iterators are valid only until the callback settles.
+   * Implementations must roll back if a reader is abandoned or the callback fails.
    */
-  readDataset(
+  withSnapshot<T>(
     tenantId: string,
     schemaVersion: string,
-    category: SaasTransferDatasetCategory,
-  ): AsyncIterable<unknown>;
+    callback: (snapshot: SaasTenantTransferDatasetSnapshot) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface SaasTenantTransferExportManifest {

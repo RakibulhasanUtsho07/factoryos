@@ -58,14 +58,31 @@ export class SaasTenantDataTransferWorkerService {
     this.validateCategories(requiredCategories);
     const schemaVersion = current.sourceSchemaVersion as string;
     const manifest: SaasTenantTransferExportManifest = {};
-    const payload = this.exportPayload(
-      tenantId,
-      current.transferId as string,
-      schemaVersion,
-      requiredCategories,
-      manifest,
-    );
-    const stored = await this.bundles.put(payload);
+    let storedArtifact: { reference: string; digest: string; bytes: number } | undefined;
+    let payloadCompleted = false;
+    try {
+      await this.datasetSource.withSnapshot(tenantId, schemaVersion, async (snapshot) => {
+        storedArtifact = await this.bundles.put(this.exportPayload(
+          tenantId,
+          current.transferId as string,
+          schemaVersion,
+          requiredCategories,
+          manifest,
+          snapshot,
+          () => { payloadCompleted = true; },
+        ));
+        if (!payloadCompleted) {
+          throw new ServiceUnavailableException('Encrypted bundle store stopped before consuming the complete export');
+        }
+      });
+      if (!storedArtifact || !payloadCompleted) {
+        throw new ServiceUnavailableException('Tenant export did not produce a complete bundle');
+      }
+    } catch (error) {
+      if (storedArtifact) await this.bundles.remove(storedArtifact.reference).catch(() => undefined);
+      throw error;
+    }
+    const stored = storedArtifact;
     try {
       const completed = await this.transfers.attestExport(tenantId, actorUserId, current.transferId as string, {
         expected_version: Number(current.version),
@@ -176,6 +193,8 @@ export class SaasTenantDataTransferWorkerService {
     schemaVersion: string,
     categories: SaasTransferDatasetCategory[],
     manifest: SaasTenantTransferExportManifest,
+    snapshot: import('./saas-tenant-data-transfer.adapters').SaasTenantTransferDatasetSnapshot,
+    onComplete: () => void,
   ): AsyncIterable<Buffer> {
     const uniqueCategories = [...new Set(categories)];
     this.validateCategories(uniqueCategories);
@@ -197,7 +216,7 @@ export class SaasTenantDataTransferWorkerService {
 
       const categoryHash = createHash('sha256');
       let count = 0;
-      for await (const row of this.datasetSource!.readDataset(tenantId, schemaVersion, category)) {
+      for await (const row of snapshot.readDataset(category)) {
         this.assertTenantScope(row, tenantId, category);
         const canonical = this.canonicalJson(row);
         if (count > 0) yield Buffer.from(',', 'utf8');
@@ -212,6 +231,7 @@ export class SaasTenantDataTransferWorkerService {
     }
 
     yield Buffer.from('},"manifest":' + JSON.stringify(manifest) + '}', 'utf8');
+    onComplete();
   }
 
   private canonicalJson(value: unknown, ancestors = new WeakSet<object>()): string {
