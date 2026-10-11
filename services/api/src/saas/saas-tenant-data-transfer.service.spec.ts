@@ -27,7 +27,7 @@ function transferRow(overrides: Record<string, unknown> = {}) {
     compatibility_rule_key: null,
     compatibility_rule_version: null,
     compatibility_decision: null,
-    required_categories: [...REQUIRED_TRANSFER_CATEGORIES],
+    required_categories: [...REQUIRED_TRANSFER_CATEGORIES].sort(),
     source_transfer_id: null,
     source_transfer_version: null,
     source_bundle_reference: 'bundle-export-001',
