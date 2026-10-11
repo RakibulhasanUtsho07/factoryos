@@ -280,6 +280,53 @@ describe(
     });
 
     it(
+      'pins executor attribution for internal agent execution without trusting DTO metadata',
+      async () => {
+        const delegate = jest
+          .fn<(...args: unknown[]) => Promise<unknown>>()
+          .mockResolvedValue({ delegated: true });
+        (service as any).executeAuthorizedAction = delegate;
+
+        const input = {
+          action_token: 'agent-action-token',
+          execution_key: 'agent:task:step:1',
+          tool_version: '1.0.0',
+          executor_type: 'CALLER_FORGED_EXECUTOR',
+        };
+
+        await service.executeAgentAction(
+          tenantId,
+          factoryId,
+          userId,
+          input,
+        );
+        await service.executeAction(
+          tenantId,
+          factoryId,
+          userId,
+          input,
+        );
+
+        expect(delegate).toHaveBeenNthCalledWith(
+          1,
+          tenantId,
+          factoryId,
+          userId,
+          input,
+          'AGENT_RUNTIME',
+        );
+        expect(delegate).toHaveBeenNthCalledWith(
+          2,
+          tenantId,
+          factoryId,
+          userId,
+          input,
+          'AI_TOOL_GATEWAY',
+        );
+      },
+    );
+
+    it(
       'authorizes an allowed action and mints a scoped token',
       async () => {
         /*
