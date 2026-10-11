@@ -41,7 +41,16 @@ function resultRow(overrides: Record<string, unknown> = {}) {
   return {
     id: '88888888-8888-4888-8888-888888888888', tenant_id: tenantId, factory_id: factoryId,
     case_id: caseId, simulation_run_id: runId, sandbox_id: sandboxId, status: 'PASS',
-    expected_summary: { caseKey: 'calls-noop' }, observed_summary: { observedCallCount: 1, matchingStepIndices: [0] },
+    expected_summary: { caseKey: 'calls-noop' },
+    observed_summary: {
+      evidenceSource: 'SYNTHETIC_SANDBOX_PLAN_AND_SUPPLIED_RESPONSE',
+      executionEvidence: 'SIMULATION_ONLY_NO_AGENT_OR_TOOL_EXECUTION',
+      liveExecution: false,
+      matchingPlanCallCount: 1,
+      observedCallCount: 1,
+      matchingStepIndices: [0],
+      completedObservations: 1,
+    },
     created_by: userId, created_at: '2026-10-11T00:02:00.000Z', ...overrides,
   };
 }
@@ -178,7 +187,7 @@ describe('AiAgentEvaluationService', () => {
     })).toThrow(BadRequestException);
   });
 
-  it('counts an explicit refusal only when the forbidden tool was not invoked', () => {
+  it('counts an explicit refusal only when the forbidden tool is not planned', () => {
     const service = makeService();
     const refusalCase = { ...caseRow, kind: 'EXPECTED_REFUSAL',
       expected_refusal_reason_contains: 'not permitted' };
@@ -204,6 +213,7 @@ describe('AiAgentEvaluationService', () => {
       expected_refusal_reason_contains: 'not permitted',
     };
     const evaluated = (service as any).compareCaseToRun(refusalCase, simulationRow({
+      plan: [],
       simulated_tool_responses: {
         'AI.RUNTIME.NOOP@1.0.0': { refused: true, reason: 'Action not permitted' },
       },
