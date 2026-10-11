@@ -119,6 +119,7 @@ jobs:
             migrations/035_ai_agent_task_contract_immutability.sql
             migrations/036_ai_agent_task_request_hash.sql
             migrations/037_ai_agent_simulation_parent_scope.sql
+            migrations/038_inventory_stock_ledger.sql
           )
 
           for migration in "${migrations[@]}"; do
