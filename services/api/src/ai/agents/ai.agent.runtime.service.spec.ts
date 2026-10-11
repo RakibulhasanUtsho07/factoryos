@@ -1056,6 +1056,66 @@ describe(
       expect((service as any).failTask).toHaveBeenCalledTimes(1);
     });
 
+    it('upserts agent attempts atomically without reopening a terminal attempt', async () => {
+      database.query.mockResolvedValueOnce({
+        rows: [{ id: 'attempt-row-id' }],
+        rowCount: 1,
+      });
+
+      await (service as any).recordAttempt(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        'STARTED',
+      );
+
+      expect(database.query).toHaveBeenCalledTimes(1);
+      const sql = String(database.query.mock.calls[0]?.[0]);
+      expect(sql).toContain('ON CONFLICT (task_id, step_id, attempt_number, attempt_type)');
+      expect(sql).toContain("WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')");
+      expect(sql).toContain("OR EXCLUDED.status = 'STARTED'");
+      expect(sql).toContain('attempt_row.execution_record_id = EXCLUDED.execution_record_id');
+      expect(sql).toContain('attempt_row.tenant_id = EXCLUDED.tenant_id');
+      expect(database.query.mock.calls[0]?.[1]).toEqual([
+        expect.any(String),
+        tenantId,
+        factoryId,
+        taskId,
+        stepId,
+        1,
+        'COMPENSATION',
+        null,
+        'STARTED',
+        '{}',
+      ]);
+    });
+
+    it('fails closed when an attempt upsert conflicts with the recorded execution binding', async () => {
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(
+        (service as any).recordAttempt(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          stepId,
+          1,
+          'COMPENSATION',
+          'SUCCEEDED',
+          {},
+          'bf1a2222-2222-4222-8222-222222222222',
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(database.query).toHaveBeenCalledTimes(1);
+      expect(String(database.query.mock.calls[0]?.[0])).toContain('ON CONFLICT');
+    });
+
     it('does not execute compensation when the registered tool declares NONE rollback', async () => {
       const task = taskRow({
         state: 'EXECUTING',

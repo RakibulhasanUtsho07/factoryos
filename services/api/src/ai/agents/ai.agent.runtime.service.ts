@@ -2075,79 +2075,14 @@ export class AiAgentRuntimeService {
     error: Record<string, unknown> = {},
     executionRecordId?: string,
   ): Promise<void> {
-    const existing = await this.database.query<{ id: string }>(
+    // One statement makes the attempt identity safe under concurrent retries.
+    // A late STARTED event must not reopen a terminal attempt, and conflicting
+    // terminal outcomes or execution-record bindings require reconciliation.
+    const result = await this.database.query<{ id: string }>(
       `
-      SELECT id::text AS id
-      FROM agent_action_attempts
-      WHERE
-        tenant_id = $1
-        AND factory_id = $2
-        AND task_id = $3
-        AND step_id = $4
-        AND attempt_number = $5
-        AND attempt_type = $6
-      LIMIT 1
-      `,
-      [
-        tenantId,
-        factoryId,
-        taskId,
-        stepId,
-        attemptNumber,
-        attemptType,
-      ],
-      {
-        tenantId,
-        userId: actorUserId,
-      },
-    );
-
-    if (existing.rows[0]) {
-      await this.database.query(
-        `
-        UPDATE agent_action_attempts
-        SET
-          status = $5,
-          execution_record_id = COALESCE($6, execution_record_id),
-          error = $7::jsonb,
-          finished_at = CASE
-            WHEN $5 IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
-              THEN NOW()
-            ELSE finished_at
-          END
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-        `,
-        [
-          existing.rows[0].id,
-          tenantId,
-          factoryId,
-          attemptNumber,
-          status,
-          executionRecordId ?? null,
-          JSON.stringify(error),
-        ],
-        {
-          tenantId,
-          userId: actorUserId,
-        },
-      );
-      return;
-    }
-
-    await this.database.query(
-      `
-      INSERT INTO agent_action_attempts (
-        id,
-        tenant_id,
-        factory_id,
-        task_id,
-        step_id,
-        attempt_number,
-        attempt_type,
-        execution_record_id,
-        status,
-        error,
-        finished_at
+      INSERT INTO agent_action_attempts AS attempt_row (
+        id, tenant_id, factory_id, task_id, step_id, attempt_number,
+        attempt_type, execution_record_id, status, error, finished_at
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
@@ -2157,6 +2092,43 @@ export class AiAgentRuntimeService {
           ELSE NULL
         END
       )
+      ON CONFLICT (task_id, step_id, attempt_number, attempt_type)
+      DO UPDATE SET
+        status = CASE
+          WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN attempt_row.status
+          ELSE EXCLUDED.status
+        END,
+        execution_record_id = COALESCE(
+          attempt_row.execution_record_id,
+          EXCLUDED.execution_record_id
+        ),
+        error = CASE
+          WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN attempt_row.error
+          ELSE EXCLUDED.error
+        END,
+        finished_at = CASE
+          WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN attempt_row.finished_at
+          WHEN EXCLUDED.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN NOW()
+          ELSE attempt_row.finished_at
+        END
+      WHERE
+        attempt_row.tenant_id = EXCLUDED.tenant_id
+        AND attempt_row.factory_id = EXCLUDED.factory_id
+        AND (
+          attempt_row.execution_record_id IS NULL
+          OR EXCLUDED.execution_record_id IS NULL
+          OR attempt_row.execution_record_id = EXCLUDED.execution_record_id
+        )
+        AND (
+          attempt_row.status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+          OR EXCLUDED.status = 'STARTED'
+          OR EXCLUDED.status = attempt_row.status
+        )
+      RETURNING id::text AS id
       `,
       [
         randomUUID(),
@@ -2175,6 +2147,12 @@ export class AiAgentRuntimeService {
         userId: actorUserId,
       },
     );
+
+    if (!result.rows[0]) {
+      throw new ConflictException(
+        'Agent action attempt is bound to a conflicting scope, execution record, or terminal outcome',
+      );
+    }
   }
 
   private async nextAttemptNumber(
