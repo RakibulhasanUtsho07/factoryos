@@ -174,7 +174,6 @@ export class GrowthScenarioExperimentService {
  private sha256(v:unknown,f:string){if(typeof v!=='string'||!/^[a-fA-F0-9]{64}$/.test(v))throw new BadRequestException(f+' must be a 64-character SHA-256 digest');return v.toLowerCase();}
  private uuid(v:unknown,f:string){if(typeof v!=='string'||!isUUID(v))throw new BadRequestException(f+' must be a valid UUID');return v;}
  private timestamp(v:unknown,f:string){if(typeof v!=='string'||!v.trim()||Number.isNaN(Date.parse(v)))throw new BadRequestException(f+' must be a valid timestamp');return new Date(v).toISOString();}
- private sha256(v:unknown,field:string){if(typeof v!=='string'||!/^[a-fA-F0-9]{64}$/.test(v))throw new BadRequestException(field+' must be a 64-character SHA-256 digest');return v.toLowerCase();}
  private sha(v:string){return createHash('sha256').update(v,'utf8').digest('hex');}
  private hash(v:Record<string,unknown>){return this.sha(JSON.stringify(v));}
  private mapScenario(r:ScenarioRow){return {id:r.id,opportunityId:r.opportunity_id,scenarioKey:r.scenario_key,scenarioVersion:r.scenario_version,scenarioType:r.scenario_type,modelVersion:r.model_version,dataVintageAt:r.data_vintage_at,inputSnapshotSha256:r.input_snapshot_sha256,sourceSnapshotRefs:r.source_snapshot_refs,assumptions:r.assumptions,impactBands:r.impact_bands,constraintsViolated:r.constraints_violated,validationQuestions:r.validation_questions,uncertainty:r.uncertainty,createdBy:r.created_by,createdAt:r.created_at,semantics:'SIMULATION_NOT_REALIZED_PERFORMANCE'};}
