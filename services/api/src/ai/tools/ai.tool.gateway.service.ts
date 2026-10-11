@@ -13,6 +13,10 @@ import {
 } from '../../iam/iam.service';
 
 import {
+  SaasUsageService,
+} from '../../saas/saas-usage.service';
+
+import {
   AiToolRegistryService,
   aiToolRequiresApproval,
 } from './ai.tool.registry.service';
@@ -32,6 +36,9 @@ export class AiToolGatewayService {
 
     private readonly iamService:
       IamService,
+
+    private readonly saasUsageService:
+      SaasUsageService,
   ) {}
 
   /* ==========================================================
@@ -65,6 +72,44 @@ export class AiToolGatewayService {
         permission,
         action.factoryId,
       );
+    }
+
+
+    /*
+     * Workload class comes from the registry-owned tool contract.
+     * Only explicit non-critical classes consult the pause ledger.
+     */
+    const workloadClass = tool.metadata?.workloadClass;
+
+    if (workloadClass !== undefined) {
+      if (typeof workloadClass !== 'string') {
+        throw new ConflictException(
+          'Registered AI tool workloadClass metadata is invalid',
+        );
+      }
+
+      const nonCriticalClasses = new Set<string>([
+        'EVALUATION',
+        'RED_TEAM',
+        'SHADOW_MODE',
+        'DEVELOPMENT',
+      ]);
+
+      if (nonCriticalClasses.has(workloadClass)) {
+        await this.saasUsageService.assertWorkloadExecutionAllowed(
+          action.tenantId,
+          action.factoryId,
+          action.actorUserId,
+          workloadClass,
+        );
+      } else if (
+        workloadClass !== 'PRODUCTION' &&
+        workloadClass !== 'NON_AI'
+      ) {
+        throw new ConflictException(
+          'Registered AI tool workloadClass metadata is unsupported',
+        );
+      }
     }
 
     /*

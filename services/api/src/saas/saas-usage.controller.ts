@@ -6,6 +6,8 @@ import { CreateSaasMeterRateDto } from './dto/create-saas-meter-rate.dto';
 import { CreateSaasUsageAdjustmentDto } from './dto/create-saas-usage-adjustment.dto';
 import { ReconcileSaasUsageDto } from './dto/reconcile-saas-usage.dto';
 import { RecordSaasUsageEventDto } from './dto/record-saas-usage-event.dto';
+import { CreateSaasUsageBudgetDto } from './dto/create-saas-usage-budget.dto';
+import { SetSaasWorkloadControlDto } from './dto/set-saas-workload-control.dto';
 import { SaasUsageService } from './saas-usage.service';
 
 type SaasRequest = Request & { factoryos?: { userId:string|null; tenantId:string|null; factoryId:string|null } };
@@ -26,5 +28,17 @@ export class SaasUsageController {
  async reconcile(@Req() req:SaasRequest,@Body() body:ReconcileSaasUsageDto){const c=this.context(req);return this.service.reconcileInvoice(c.tenantId,c.factoryId,c.userId,body);}
  @Get('reconciliations') @UseGuards(PermissionGuard) @RequirePermission('saas.usage.read')
  async listReconciliations(@Req() req:SaasRequest,@Query('limit') l?:string,@Query('offset') o?:string){const c=this.context(req);return this.service.listReconciliations(c.tenantId,c.factoryId,c.userId,l===undefined?25:Number(l),o===undefined?0:Number(o));}
+ @Post('budgets') @UseGuards(PermissionGuard) @RequirePermission('saas.budgets.write')
+ async createBudget(@Req() req:SaasRequest,@Body() body:CreateSaasUsageBudgetDto){const c=this.context(req);return this.service.createBudget(c.tenantId,c.factoryId,c.userId,body);}
+ @Get('budgets') @UseGuards(PermissionGuard) @RequirePermission('saas.budgets.read')
+ async listBudgets(@Req() req:SaasRequest){const c=this.context(req);return this.service.listBudgets(c.tenantId,c.factoryId,c.userId);}
+ @Post('budgets/evaluate') @UseGuards(PermissionGuard) @RequirePermission('saas.budgets.read')
+ async evaluateBudgets(@Req() req:SaasRequest,@Query('as_of') asOf?:string){const c=this.context(req);return this.service.evaluateBudgets(c.tenantId,c.factoryId,c.userId,asOf);}
+ @Get('budgets/evaluations') @UseGuards(PermissionGuard) @RequirePermission('saas.budgets.read')
+ async listBudgetEvaluations(@Req() req:SaasRequest,@Query('limit') l?:string,@Query('offset') o?:string){const c=this.context(req);return this.service.listBudgetEvaluations(c.tenantId,c.factoryId,c.userId,l===undefined?25:Number(l),o===undefined?0:Number(o));}
+ @Post('workloads/control') @UseGuards(PermissionGuard) @RequirePermission('saas.workloads.control')
+ async workloadControl(@Req() req:SaasRequest,@Body() body:SetSaasWorkloadControlDto){const c=this.context(req);return this.service.setWorkloadControl(c.tenantId,c.factoryId,c.userId,body);}
+ @Get('workloads/controls') @UseGuards(PermissionGuard) @RequirePermission('saas.budgets.read')
+ async workloadControls(@Req() req:SaasRequest){const c=this.context(req);return this.service.listWorkloadControls(c.tenantId,c.factoryId,c.userId);}
  private context(req:SaasRequest):{tenantId:string;userId:string;factoryId:string|null}{const tenantId=req.factoryos?.tenantId??null,userId=req.factoryos?.userId??null,factoryId=req.factoryos?.factoryId??null;if(!tenantId||!userId)throw new UnauthorizedException('Authenticated SaaS tenant context is missing');return {tenantId,userId,factoryId};}
 }

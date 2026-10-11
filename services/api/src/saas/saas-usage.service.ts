@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { QueryResultRow } from 'pg';
@@ -9,6 +9,8 @@ import { CreateSaasMeterRateDto, SaasMeterMetric } from './dto/create-saas-meter
 import { CreateSaasUsageAdjustmentDto, SaasAdjustmentReasonCode } from './dto/create-saas-usage-adjustment.dto';
 import { ReconcileSaasUsageDto } from './dto/reconcile-saas-usage.dto';
 import { RecordSaasUsageEventDto, SaasUsageSourceSystem, SaasWorkloadClass } from './dto/record-saas-usage-event.dto';
+import { CreateSaasUsageBudgetDto, SaasBudgetPeriodKind } from './dto/create-saas-usage-budget.dto';
+import { SetSaasWorkloadControlDto, SaasNonCriticalWorkloadClass } from './dto/set-saas-workload-control.dto';
 
 type RateRow = QueryResultRow & {
  id:string; tenant_id:string; metric_code:SaasMeterMetric; rate_version:number; rate_minor_per_block:string|number;
@@ -33,6 +35,21 @@ type ReconciliationRow = QueryResultRow & {
  ledger_estimated_amount_minor:string|number|null; adjustment_amount_minor:string|number; expected_amount_minor:string|number|null;
  invoiced_amount_minor:string|number; variance_minor:string|number|null; status:'MATCHED'|'VARIANCE'|'UNPRICED_USAGE';
  report_hash:string; request_hash:string; idempotency_key:string; recorded_by:string; created_at:string;
+};
+
+type BudgetRow = QueryResultRow & {
+ id:string; tenant_id:string; factory_id:string|null; budget_code:string; policy_version:number; period_kind:SaasBudgetPeriodKind;
+ metric_code:SaasMeterMetric|null; capability_code:string|null; workload_class:SaasWorkloadClass|null; currency:string;
+ soft_limit_minor:string|number; hard_limit_minor:string|number; pause_noncritical_on_hard_limit:boolean;
+ anomaly_multiplier:string|number; anomaly_min_events:number; effective_from:string; effective_to:string|null;
+ idempotency_key:string; request_hash:string; created_by:string; created_at:string;
+};
+type BudgetEvaluationRow = QueryResultRow & {
+ id:string; tenant_id:string; factory_id:string|null; budget_id:string; period_start:string; period_end:string; evaluated_at:string;
+ event_count:string|number; unpriced_event_count:string|number; usage_cost_minor:string|number;
+ soft_limit_minor:string|number; hard_limit_minor:string|number; anomaly_window_cost_minor:string|number;
+ anomaly_baseline_hourly_minor:string|number; status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY';
+ report_hash:string; idempotency_key:string; request_hash:string; evaluated_by:string; created_at:string;
 };
 
 const METRICS = new Set<string>(Object.values(SaasMeterMetric));
@@ -165,6 +182,202 @@ export class SaasUsageService {
   const r=await this.database.query<ReconciliationRow>('SELECT '+RECONCILIATION_COLUMNS+' FROM saas_usage_reconciliations WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4',[tenantId,factoryId,limit+1,offset],{tenantId,userId:actorUserId});
   const more=r.rows.length>limit,rows=r.rows.slice(0,limit);return {limit,offset,resultCount:rows.length,hasMore:more,nextOffset:more?offset+rows.length:null,reconciliations:rows.map(x=>this.mapReconciliation(x))};
  }
+
+
+ async createBudget(tenantId:string,requestFactoryId:string|null,actorUserId:string,input:CreateSaasUsageBudgetDto) {
+  this.scope(tenantId,actorUserId,...(requestFactoryId?[requestFactoryId]:[]));
+  const n=this.normalizeBudget(input,requestFactoryId);
+  await this.authorize(actorUserId,tenantId,'saas.budgets.write');
+  const hash=this.hash({tenantId,...n.content,factory_id:n.factory_id});
+  const prior=await this.database.query<BudgetRow>('SELECT '+this.budgetColumns()+' FROM saas_usage_budgets WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});
+  if(prior.rows[0]) {if(prior.rows[0].request_hash!==hash)throw new ConflictException('Budget idempotency key was reused for different content');return {idempotent:true,budget:this.mapBudget(prior.rows[0])};}
+  const ins=await this.database.query<BudgetRow>(
+   'INSERT INTO saas_usage_budgets(tenant_id,factory_id,budget_code,policy_version,period_kind,metric_code,capability_code,workload_class,currency,soft_limit_minor,hard_limit_minor,pause_noncritical_on_hard_limit,anomaly_multiplier,anomaly_min_events,effective_from,effective_to,idempotency_key,request_hash,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT DO NOTHING RETURNING '+this.budgetColumns(),
+   [tenantId,n.factory_id,n.content.budget_code,n.content.policy_version,n.content.period_kind,n.content.metric_code,n.content.capability_code,n.content.workload_class,n.content.currency,n.content.soft_limit_minor,n.content.hard_limit_minor,n.content.pause_noncritical_on_hard_limit,n.content.anomaly_multiplier,n.content.anomaly_min_events,n.content.effective_from,n.content.effective_to,n.idempotency_key,hash,actorUserId],{tenantId,userId:actorUserId});
+  let row=ins.rows[0];
+  if(!row) {
+   const raced=await this.database.query<BudgetRow>('SELECT '+this.budgetColumns()+' FROM saas_usage_budgets WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});
+   row=raced.rows[0];
+   if(!row||row.request_hash!==hash)throw new ConflictException('Budget policy conflicts with an existing scope/version');
+   return {idempotent:true,budget:this.mapBudget(row)};
+  }
+  await this.auditSafely({tenantId,factoryId:n.factory_id,actorUserId,eventType:'SAAS_BUDGET_POLICY',action:'CREATE_BUDGET_POLICY',resourceType:'SAAS_USAGE_BUDGET',resourceId:row.id,payload:{budgetCode:row.budget_code,policyVersion:row.policy_version,periodKind:row.period_kind,currency:row.currency,softLimitMinor:String(row.soft_limit_minor),hardLimitMinor:String(row.hard_limit_minor),pauseNoncriticalOnHardLimit:row.pause_noncritical_on_hard_limit,requestHash:hash}});
+  return {idempotent:false,budget:this.mapBudget(row)};
+ }
+
+ async listBudgets(tenantId:string,factoryId:string|null,actorUserId:string) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');
+  const r=await this.database.query<BudgetRow>('SELECT '+this.budgetColumns()+' FROM saas_usage_budgets WHERE tenant_id=$1 AND (factory_id IS NULL OR ($2::uuid IS NOT NULL AND factory_id=$2)) ORDER BY effective_from DESC,budget_code,policy_version DESC',[tenantId,factoryId],{tenantId,userId:actorUserId});
+  return {count:r.rows.length,budgets:r.rows.map(x=>this.mapBudget(x))};
+ }
+
+ async evaluateBudgets(tenantId:string,factoryId:string|null,actorUserId:string,asOf?:string) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');
+  const evaluatedAt=this.timestamp(asOf??new Date().toISOString(),'as_of');
+  const evaluations=await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,evaluatedAt);
+  return {evaluatedAt,budgetCount:evaluations.length,evaluations,semantics:'USAGE_COST_ESTIMATE_NOT_AN_INVOICE'};
+ }
+
+ async listBudgetEvaluations(tenantId:string,factoryId:string|null,actorUserId:string,limit=25,offset=0) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');this.page(limit,offset);
+  const r=await this.database.query<BudgetEvaluationRow>('SELECT '+this.budgetEvaluationColumns()+' FROM saas_budget_evaluations WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) ORDER BY evaluated_at DESC,id DESC LIMIT $3 OFFSET $4',[tenantId,factoryId,limit,offset],{tenantId,userId:actorUserId});
+  return {count:r.rows.length,evaluations:r.rows.map(x=>this.mapBudgetEvaluation(x)),limit,offset};
+ }
+
+ async setWorkloadControl(tenantId:string,requestFactoryId:string|null,actorUserId:string,input:SetSaasWorkloadControlDto) {
+  this.scope(tenantId,actorUserId,...(requestFactoryId?[requestFactoryId]:[]));
+  const workloadClass=this.enum(input.workload_class,new Set(Object.values(SaasNonCriticalWorkloadClass)),'workload_class') as SaasNonCriticalWorkloadClass;
+  const state=this.enum(input.control_state,new Set(['PAUSED','RESUMED']),'control_state') as 'PAUSED'|'RESUMED';
+  const scopeLevel=this.enum(input.scope_level,new Set(['TENANT','FACTORY']),'scope_level');
+  if(scopeLevel==='FACTORY'&&!requestFactoryId)throw new BadRequestException('A verified factory context is required for factory-scoped workload controls');
+  const factoryId=scopeLevel==='FACTORY'?requestFactoryId:null;
+  await this.authorize(actorUserId,tenantId,'saas.workloads.control');
+  const reasonCode=state==='PAUSED'?'ADMIN_PAUSE':'ADMIN_RESUME';
+  const reason=this.str(input.reason,'reason',1000);
+  const key=this.idem(input.idempotency_key);
+  const content={tenantId,factoryId,workloadClass,state,reasonCode,reason};
+  const hash=this.hash(content);
+  const result=await this.recordWorkloadControlInternal({tenantId,factoryId,actorUserId,workloadClass,state,source:'MANUAL',reasonCode,reason,idempotencyKey:key,requestHash:hash});
+  return {idempotent:result.idempotent,control:result.control};
+ }
+
+ async listWorkloadControls(tenantId:string,factoryId:string|null,actorUserId:string) {
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');
+  const q=await this.database.query<QueryResultRow & {id:string;factory_id:string|null;workload_class:string;control_state:string;source:string;reason_code:string;created_at:string}>(
+   'SELECT DISTINCT ON (factory_id,workload_class) id::text AS id,factory_id::text AS factory_id,workload_class,control_state,source,reason_code,created_at::text AS created_at FROM saas_workload_control_events WHERE tenant_id=$1 AND (factory_id IS NULL OR ($2::uuid IS NOT NULL AND factory_id=$2)) ORDER BY factory_id,workload_class,created_at DESC,id DESC',
+   [tenantId,factoryId],{tenantId,userId:actorUserId});
+  return {controls:q.rows.map(x=>({id:x.id,factoryId:x.factory_id,workloadClass:x.workload_class,state:x.control_state,source:x.source,reasonCode:x.reason_code,createdAt:x.created_at}))};
+ }
+
+ /** Runtime guard: only explicit non-critical AI classes can reach the pause gate. */
+ async assertWorkloadExecutionAllowed(tenantId:string,factoryId:string,actorUserId:string,workloadClass:string):Promise<void> {
+  this.scope(tenantId,actorUserId,factoryId);
+  const allowed=new Set<string>(Object.values(SaasNonCriticalWorkloadClass));
+  if(!allowed.has(workloadClass))throw new ConflictException('Only an explicitly non-critical AI workload may use the budget pause gate');
+  await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,new Date().toISOString());
+  const latest=await this.database.query<QueryResultRow & {control_state:string;factory_id:string|null}>(
+   `SELECT control_state,factory_id::text AS factory_id FROM saas_workload_control_events
+    WHERE tenant_id=$1 AND control_key='AI.NONCRITICAL' AND workload_class=$3
+      AND (factory_id IS NULL OR factory_id=$2)
+      AND id IN (
+       SELECT DISTINCT ON (factory_id) id FROM saas_workload_control_events
+       WHERE tenant_id=$1 AND control_key='AI.NONCRITICAL' AND workload_class=$3
+         AND (factory_id IS NULL OR factory_id=$2)
+       ORDER BY factory_id,created_at DESC,id DESC
+      )
+    ORDER BY (factory_id=$2) DESC,created_at DESC,id DESC`,
+   [tenantId,factoryId,workloadClass],{tenantId,userId:actorUserId});
+  if(latest.rows.some(x=>x.control_state==='PAUSED'))throw new ForbiddenException('Non-critical AI workload is paused by a tenant/factory SaaS budget control');
+ }
+
+ private async evaluateBudgetsInternal(tenantId:string,factoryId:string|null,actorUserId:string,asOf:string) {
+  const budgets=await this.database.query<BudgetRow>(
+   'SELECT '+this.budgetColumns()+' FROM saas_usage_budgets WHERE tenant_id=$1 AND effective_from <= $2 AND (effective_to IS NULL OR effective_to > $2) AND (factory_id IS NULL OR ($3::uuid IS NOT NULL AND factory_id=$3)) ORDER BY (factory_id IS NOT NULL) DESC,budget_code,policy_version DESC',
+   [tenantId,asOf,factoryId],{tenantId,userId:actorUserId});
+  const output:Record<string,unknown>[]=[];
+  for(const budget of budgets.rows) {
+   const period=this.budgetPeriod(budget.period_kind,asOf);
+   const factoryScope=budget.factory_id;
+   const scoped=[tenantId,period.start,period.end,factoryScope,budget.metric_code,budget.capability_code,budget.workload_class,budget.currency];
+   const usage=await this.database.query<QueryResultRow & {event_count:string|number;unpriced_count:string|number;cost_minor:string|number}>(
+    `SELECT COUNT(*) FILTER(WHERE currency=$8 OR estimated_cost_minor IS NULL)::bigint AS event_count,
+       COUNT(*) FILTER(WHERE estimated_cost_minor IS NULL)::bigint AS unpriced_count,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE currency=$8),0)::bigint AS cost_minor
+     FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2 AND occurred_at < $3
+       AND ($4::uuid IS NULL OR factory_id=$4) AND ($5::varchar IS NULL OR metric_code=$5)
+       AND ($6::varchar IS NULL OR capability_code=$6) AND ($7::varchar IS NULL OR workload_class=$7)`,
+    scoped,{tenantId,userId:actorUserId});
+   const recent=await this.database.query<QueryResultRow & {recent_count:string|number;recent_cost:string|number;baseline_count:string|number;baseline_cost:string|number}>(
+    `SELECT COUNT(*) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS recent_count,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS recent_cost,
+       COUNT(*) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS baseline_count,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS baseline_cost
+     FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2::timestamptz - INTERVAL '24 hours' AND occurred_at < $2
+       AND ($3::uuid IS NULL OR factory_id=$3) AND ($4::varchar IS NULL OR metric_code=$4)
+       AND ($5::varchar IS NULL OR capability_code=$5) AND ($6::varchar IS NULL OR workload_class=$6)`,
+    [tenantId,asOf,factoryScope,budget.metric_code,budget.capability_code,budget.workload_class,budget.currency],{tenantId,userId:actorUserId});
+   const eventCount=Number(usage.rows[0]?.event_count??0),unpriced=Number(usage.rows[0]?.unpriced_count??0),cost=Number(usage.rows[0]?.cost_minor??0);
+   const recentCount=Number(recent.rows[0]?.recent_count??0),recentCost=Number(recent.rows[0]?.recent_cost??0),baselineCount=Number(recent.rows[0]?.baseline_count??0),baselineCost=Number(recent.rows[0]?.baseline_cost??0);
+   const baselineHourly=baselineCost/23;
+   const anomaly=recentCount>=Number(budget.anomaly_min_events)&&baselineCount>=Number(budget.anomaly_min_events)&&baselineHourly>0&&recentCost>baselineHourly*Number(budget.anomaly_multiplier);
+   const soft=Number(budget.soft_limit_minor),hard=Number(budget.hard_limit_minor);
+   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=cost>=hard&&(hard>0||cost>0)?'HARD_LIMIT':unpriced>0?'UNPRICED_USAGE':anomaly?'ANOMALY':soft>0&&cost>=soft?'WARNING':'SAFE';
+   const snapshot={budgetId:budget.id,tenantId,factoryId:factoryScope,periodStart:period.start,periodEnd:period.end,eventCount,unpriced,usageCostMinor:cost,soft,hard,recentCost,baselineHourly,status};
+   const reportHash=this.hash(snapshot);
+   const key=this.idem('ev:'+budget.id+':'+this.hash(snapshot));
+   const reqHash=this.hash({...snapshot,idempotencyKey:key});
+   const inserted=await this.database.query<BudgetEvaluationRow>(
+    'INSERT INTO saas_budget_evaluations(tenant_id,factory_id,budget_id,period_start,period_end,evaluated_at,event_count,unpriced_event_count,usage_cost_minor,soft_limit_minor,hard_limit_minor,anomaly_window_cost_minor,anomaly_baseline_hourly_minor,status,report_hash,idempotency_key,request_hash,evaluated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT DO NOTHING RETURNING '+this.budgetEvaluationColumns(),
+    [tenantId,factoryScope,budget.id,period.start,period.end,asOf,eventCount,unpriced,cost,soft,hard,recentCost,baselineHourly,status,reportHash,key,reqHash,actorUserId],{tenantId,userId:actorUserId});
+   let evaluation=inserted.rows[0];
+   if(!evaluation) {
+    const old=await this.database.query<BudgetEvaluationRow>('SELECT '+this.budgetEvaluationColumns()+' FROM saas_budget_evaluations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,key],{tenantId,userId:actorUserId});
+    evaluation=old.rows[0];if(!evaluation||evaluation.request_hash!==reqHash)throw new ConflictException('Budget evaluation idempotency key conflicts with different content');
+   }
+   output.push(this.mapBudgetEvaluation(evaluation));
+   if(status==='HARD_LIMIT'&&budget.pause_noncritical_on_hard_limit) {
+    for(const cls of Object.values(SaasNonCriticalWorkloadClass)) {
+     const reason='Budget '+budget.budget_code+' reached the configured hard limit for '+period.start;
+     const controlKey=this.idem('budgetpause:'+evaluation.id+':'+cls);
+     await this.recordWorkloadControlInternal({tenantId,factoryId:factoryScope,actorUserId,workloadClass:cls,state:'PAUSED',source:'BUDGET',reasonCode:'BUDGET_HARD_LIMIT',reason,budgetId:budget.id,budgetEvaluationId:evaluation.id,idempotencyKey:controlKey,requestHash:this.hash({budgetId:budget.id,evaluationId:evaluation.id,cls,state:'PAUSED'})});
+    }
+   }
+  }
+  return output;
+ }
+
+ private async recordWorkloadControlInternal(i:{tenantId:string;factoryId:string|null;actorUserId:string;workloadClass:SaasNonCriticalWorkloadClass;state:'PAUSED'|'RESUMED';source:'MANUAL'|'BUDGET'|'ANOMALY';reasonCode:'ADMIN_PAUSE'|'ADMIN_RESUME'|'BUDGET_HARD_LIMIT'|'SPEND_ANOMALY'|'BUDGET_RECOVERED';reason:string;budgetId?:string;budgetEvaluationId?:string;idempotencyKey:string;requestHash:string}) {
+  const prior=await this.database.query<QueryResultRow & {id:string;request_hash:string;control_state:string;created_at:string}>('SELECT id::text AS id,request_hash,control_state,created_at::text AS created_at FROM saas_workload_control_events WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[i.tenantId,i.idempotencyKey],{tenantId:i.tenantId,userId:i.actorUserId});
+  if(prior.rows[0]) {if(prior.rows[0].request_hash!==i.requestHash)throw new ConflictException('Workload control idempotency key conflicts with different content');return {idempotent:true,control:{id:prior.rows[0].id,workloadClass:i.workloadClass,state:prior.rows[0].control_state,createdAt:prior.rows[0].created_at}};}
+  const latest=await this.database.query<QueryResultRow & {control_state:string}>('SELECT control_state FROM saas_workload_control_events WHERE tenant_id=$1 AND factory_id IS NOT DISTINCT FROM $2::uuid AND control_key=$3 AND workload_class=$4 ORDER BY created_at DESC,id DESC LIMIT 1',[i.tenantId,i.factoryId,'AI.NONCRITICAL',i.workloadClass],{tenantId:i.tenantId,userId:i.actorUserId});
+  if(latest.rows[0]?.control_state===i.state) return {idempotent:true,control:{id:null,workloadClass:i.workloadClass,state:i.state,createdAt:null}};
+  const reasonHash=this.sha(i.reason);
+  const r=await this.database.query<QueryResultRow & {id:string;created_at:string}>(
+   'INSERT INTO saas_workload_control_events(tenant_id,factory_id,control_key,workload_class,control_state,source,reason_code,reason_hash,budget_id,budget_evaluation_id,idempotency_key,request_hash,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING RETURNING id::text AS id,created_at::text AS created_at',
+   [i.tenantId,i.factoryId,'AI.NONCRITICAL',i.workloadClass,i.state,i.source,i.reasonCode,reasonHash,i.budgetId??null,i.budgetEvaluationId??null,i.idempotencyKey,i.requestHash,i.actorUserId],{tenantId:i.tenantId,userId:i.actorUserId});
+  if(!r.rows[0]) {
+   const same=await this.database.query<QueryResultRow & {id:string;request_hash:string;control_state:string;created_at:string}>('SELECT id::text AS id,request_hash,control_state,created_at::text AS created_at FROM saas_workload_control_events WHERE tenant_id=$1 AND idempotency_key=$2',[i.tenantId,i.idempotencyKey],{tenantId:i.tenantId,userId:i.actorUserId});
+   if(!same.rows[0]||same.rows[0].request_hash!==i.requestHash)throw new ConflictException('Workload control was concurrently recorded with conflicting content');
+   return {idempotent:true,control:{id:same.rows[0].id,workloadClass:i.workloadClass,state:same.rows[0].control_state,createdAt:same.rows[0].created_at}};
+  }
+  await this.auditSafely({tenantId:i.tenantId,factoryId:i.factoryId,actorUserId:i.actorUserId,eventType:'SAAS_WORKLOAD_CONTROL',action:i.state==='PAUSED'?'PAUSE_NONCRITICAL_AI_WORKLOAD':'RESUME_NONCRITICAL_AI_WORKLOAD',resourceType:'SAAS_WORKLOAD_CONTROL',resourceId:r.rows[0].id,payload:{workloadClass:i.workloadClass,state:i.state,source:i.source,reasonCode:i.reasonCode,reasonSha256:reasonHash,budgetId:i.budgetId??null,budgetEvaluationId:i.budgetEvaluationId??null,requestHash:i.requestHash}});
+  return {idempotent:false,control:{id:r.rows[0].id,workloadClass:i.workloadClass,state:i.state,createdAt:r.rows[0].created_at}};
+ }
+
+ private normalizeBudget(input:CreateSaasUsageBudgetDto,requestFactoryId:string|null) {
+  const budget_code=this.pattern(input.budget_code,'budget_code',/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/);
+  const policy_version=this.num(input.policy_version,'policy_version');
+  const period_kind=this.enum(input.period_kind,new Set(Object.values(SaasBudgetPeriodKind)),'period_kind') as SaasBudgetPeriodKind;
+  const scope_level=this.enum(input.scope_level,new Set(['TENANT','FACTORY']),'scope_level');
+  if(!Number.isInteger(policy_version)||policy_version<1||policy_version>1000000)throw new BadRequestException('policy_version must be an integer between 1 and 1000000');
+  if(scope_level==='FACTORY'&&!requestFactoryId)throw new BadRequestException('A verified factory context is required for factory-scoped budgets');
+  const factory_id=scope_level==='FACTORY'?requestFactoryId:null;
+  const metric_code=input.metric_code==null?null:this.enum(input.metric_code,METRICS,'metric_code') as SaasMeterMetric;
+  const capability_code=input.capability_code==null?null:this.pattern(input.capability_code,'capability_code',/^[a-z][a-z0-9._:-]{0,99}$/);
+  const workload_class=input.workload_class==null?null:this.enum(input.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass;
+  const currency=this.pattern(input.currency,'currency',/^[A-Z]{3}$/);
+  const soft_limit_minor=this.num(input.soft_limit_minor,'soft_limit_minor'),hard_limit_minor=this.num(input.hard_limit_minor,'hard_limit_minor');
+  if(!Number.isSafeInteger(soft_limit_minor)||!Number.isSafeInteger(hard_limit_minor)||soft_limit_minor<0||hard_limit_minor<soft_limit_minor||hard_limit_minor>9000000000000000)throw new BadRequestException('Budget limits must be safe non-negative minor-unit integers and hard limit must be >= soft limit');
+  const pause=input.pause_noncritical_on_hard_limit??false;
+  if(typeof pause!=='boolean')throw new BadRequestException('pause_noncritical_on_hard_limit must be a boolean');
+  const anomaly_multiplier=this.num(input.anomaly_multiplier??3,'anomaly_multiplier'),anomaly_min_events=this.num(input.anomaly_min_events??10,'anomaly_min_events');
+  if(anomaly_multiplier<1.5||anomaly_multiplier>100||!Number.isInteger(anomaly_min_events)||anomaly_min_events<3||anomaly_min_events>100000)throw new BadRequestException('Anomaly settings are outside supported bounds');
+  const effective_from=this.timestamp(input.effective_from,'effective_from'),effective_to=input.effective_to?this.timestamp(input.effective_to,'effective_to'):null;
+  if(effective_to&&Date.parse(effective_to)<=Date.parse(effective_from))throw new BadRequestException('effective_to must be later than effective_from');
+  const idempotency_key=this.idem(input.idempotency_key);
+  return {factory_id,idempotency_key,content:{budget_code,policy_version,period_kind,metric_code,capability_code,workload_class,currency,soft_limit_minor,hard_limit_minor,pause_noncritical_on_hard_limit:pause,anomaly_multiplier,anomaly_min_events,effective_from,effective_to}};
+ }
+
+ private budgetPeriod(kind:SaasBudgetPeriodKind,asOf:string) {
+  const d=new Date(asOf);
+  const start=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),kind==='DAILY'?d.getUTCDate():1));
+  const end=kind==='DAILY'?new Date(start.getTime()+86400000):new Date(Date.UTC(start.getUTCFullYear(),start.getUTCMonth()+1,1));
+  return {start:start.toISOString(),end:end.toISOString()};
+ }
+ private budgetColumns(){return 'id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,budget_code,policy_version,period_kind,metric_code,capability_code,workload_class,currency,soft_limit_minor::text AS soft_limit_minor,hard_limit_minor::text AS hard_limit_minor,pause_noncritical_on_hard_limit,anomaly_multiplier::text AS anomaly_multiplier,anomaly_min_events,effective_from::text AS effective_from,effective_to::text AS effective_to,idempotency_key,request_hash,created_by::text AS created_by,created_at::text AS created_at';}
+ private budgetEvaluationColumns(){return 'id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,budget_id::text AS budget_id,period_start::text AS period_start,period_end::text AS period_end,evaluated_at::text AS evaluated_at,event_count,unpriced_event_count,usage_cost_minor::text AS usage_cost_minor,soft_limit_minor::text AS soft_limit_minor,hard_limit_minor::text AS hard_limit_minor,anomaly_window_cost_minor::text AS anomaly_window_cost_minor,anomaly_baseline_hourly_minor::text AS anomaly_baseline_hourly_minor,status,report_hash,idempotency_key,request_hash,evaluated_by::text AS evaluated_by,created_at::text AS created_at';}
+ private mapBudget(r:BudgetRow){return {id:r.id,factoryId:r.factory_id,budgetCode:r.budget_code,policyVersion:Number(r.policy_version),periodKind:r.period_kind,metricCode:r.metric_code,capabilityCode:r.capability_code,workloadClass:r.workload_class,currency:r.currency,softLimitMinor:String(r.soft_limit_minor),hardLimitMinor:String(r.hard_limit_minor),pauseNoncriticalOnHardLimit:r.pause_noncritical_on_hard_limit,anomalyMultiplier:String(r.anomaly_multiplier),anomalyMinEvents:Number(r.anomaly_min_events),effectiveFrom:r.effective_from,effectiveTo:r.effective_to,createdBy:r.created_by,createdAt:r.created_at};}
+ private mapBudgetEvaluation(r:BudgetEvaluationRow){return {id:r.id,factoryId:r.factory_id,budgetId:r.budget_id,periodStart:r.period_start,periodEnd:r.period_end,evaluatedAt:r.evaluated_at,eventCount:Number(r.event_count),unpricedEventCount:Number(r.unpriced_event_count),usageCostMinor:String(r.usage_cost_minor),softLimitMinor:String(r.soft_limit_minor),hardLimitMinor:String(r.hard_limit_minor),anomalyWindowCostMinor:String(r.anomaly_window_cost_minor),anomalyBaselineHourlyMinor:String(r.anomaly_baseline_hourly_minor),status:r.status,reportHash:r.report_hash};}
 
  private normalizeRate(input:CreateSaasMeterRateDto) {
   const metric=this.enum(input?.metric_code,METRICS,'metric_code') as SaasMeterMetric;

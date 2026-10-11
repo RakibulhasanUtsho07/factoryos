@@ -10,6 +10,7 @@ import {
   AiToolGatewayService,
 } from './ai.tool.gateway.service';
 
+
 import type {
   AiToolActionContext,
   AiToolDefinition,
@@ -70,6 +71,12 @@ describe(
         >(),
     };
 
+
+    const saasUsageService = {
+      assertWorkloadExecutionAllowed:
+        jest.fn<(...args: unknown[]) => Promise<void>>(),
+    };
+
     let gateway:
       AiToolGatewayService;
 
@@ -82,10 +89,14 @@ describe(
             undefined,
           );
 
+        saasUsageService.assertWorkloadExecutionAllowed
+          .mockResolvedValue(undefined);
+
         gateway =
           new AiToolGatewayService(
             registry as never,
             iamService as never,
+            saasUsageService as never,
           );
       },
     );
@@ -565,5 +576,56 @@ describe(
         ).not.toHaveBeenCalled();
       },
     );
+
+    it(
+      'checks budget control before executing a registry-classified non-critical workload',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({ metadata: { workloadClass: 'DEVELOPMENT' } }),
+        );
+        saasUsageService.assertWorkloadExecutionAllowed.mockRejectedValueOnce(
+          new Error('non-critical AI workload is paused'),
+        );
+
+        await expect(gateway.execute(buildAction())).rejects.toThrow(
+          'non-critical AI workload is paused',
+        );
+        expect(saasUsageService.assertWorkloadExecutionAllowed).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          actorUserId,
+          'DEVELOPMENT',
+        );
+      },
+    );
+
+    it(
+      'does not route production workload through the non-critical pause gate',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({ metadata: { workloadClass: 'PRODUCTION' } }),
+        );
+
+        const result = await gateway.execute(buildAction());
+
+        expect(result.status).toBe('SUCCEEDED');
+        expect(saasUsageService.assertWorkloadExecutionAllowed).not.toHaveBeenCalled();
+      },
+    );
+
+    it(
+      'fails closed for an unsupported registry workload classification',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({ metadata: { workloadClass: 'SOMETHING_UNKNOWN' } }),
+        );
+
+        await expect(gateway.execute(buildAction())).rejects.toThrow(
+          'Registered AI tool workloadClass metadata is unsupported',
+        );
+        expect(saasUsageService.assertWorkloadExecutionAllowed).not.toHaveBeenCalled();
+      },
+    );
+
   },
 );
