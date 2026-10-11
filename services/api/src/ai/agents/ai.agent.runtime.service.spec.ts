@@ -929,6 +929,73 @@ describe(
       expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
+    it('uses the same attempt key for compensation authorization and durable execution', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({
+        status: 'SUCCEEDED',
+        execution_record_id: 'bf1a2222-2222-4222-8222-222222222222',
+      });
+      const registeredTool = {
+        ...gatewayOutcome().tool,
+        rollback: {
+          type: 'COMPENSATION',
+          toolId: 'AI.RUNTIME.NOOP',
+          toolVersion: '1.0.0',
+          actionType: 'AI.RUNTIME.NOOP',
+        },
+      };
+
+      (service as any).requireTask = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(task);
+      (service as any).requireStep = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(step);
+      toolRegistry.getTool.mockResolvedValue(registeredTool);
+      database.query.mockResolvedValueOnce({
+        rows: [{ max_number: null }],
+        rowCount: 1,
+      });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action(),
+        actionToken: 'compensation-token',
+      });
+      aiRuntimeService.executeAgentAction.mockResolvedValue(agentExecutionResult());
+
+      const result = await service.compensateStep(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        { reason: 'verified compensation retry' },
+      );
+
+      const expectedKey = `agent:${taskId}:${stepId}:compensation:1`;
+      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        expect.objectContaining({
+          idempotency_key: expectedKey,
+        }),
+      );
+      expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        expect.objectContaining({
+          execution_key: expectedKey,
+          action_token: 'compensation-token',
+          tool_version: '1.0.0',
+        }),
+      );
+      expect(result).toMatchObject({
+        attempted: true,
+        status: 'SUCCEEDED',
+      });
+    });
+
     it('fails closed when a non-NONE rollback contract is incomplete', async () => {
       const task = taskRow({
         state: 'EXECUTING',
