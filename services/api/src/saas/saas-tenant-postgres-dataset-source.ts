@@ -39,7 +39,6 @@ export const SAAS_TENANT_DATASET_TABLES: Partial<
     'business_change_proposals',
     'business_conflicts',
     'business_feedback',
-    'business_acl',
     'growth_opportunities',
     'growth_scenarios',
     'growth_experiments',
@@ -72,10 +71,6 @@ export const SAAS_TENANT_DATASET_TABLES: Partial<
     'research_relevance_mappings',
   ]),
   [SaasTransferDatasetCategory.LEARNING_EVALUATION]: Object.freeze([
-    'ai_outcome_links',
-    'ai_learning_signals',
-    'ai_agent_evaluation_cases',
-    'ai_agent_evaluation_results',
     'research_release_evaluations',
     'growth_experiment_results',
     'growth_opportunity_outcomes',

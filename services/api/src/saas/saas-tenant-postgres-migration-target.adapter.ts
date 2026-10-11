@@ -496,16 +496,16 @@ export class SaasTenantPostgresMigrationTargetAdapter
       'orders', 'order_lines', 'order_event_projections',
       'inventory_items', 'inventory_stock_balances', 'inventory_movements',
       'growth_opportunities', 'growth_scenarios', 'growth_experiments',
-      'business_evidence', 'business_evidence_links', 'growth_opportunity_evidence',
       'risk_classes', 'policies', 'approvals',
       'saas_usage_rate_cards', 'saas_usage_budgets',
       'ai_decision_envelopes', 'ai_context_packages', 'ai_verification_runs',
       'research_sources', 'research_claims', 'research_claim_links',
       'research_knowledge_releases', 'research_relevance_mappings',
-      'research_release_evaluations', 'growth_experiment_results', 'growth_opportunity_outcomes',
+      'research_release_evaluations',
+      'business_evidence', 'business_evidence_links', 'growth_opportunity_evidence',
+      'growth_experiment_results', 'growth_opportunity_outcomes',
       'audit_events',
-    ];
-    const ordered = preferred.filter((table) => tables.includes(table));
+    ];    const ordered = preferred.filter((table) => tables.includes(table));
     for (const table of tables) if (!ordered.includes(table)) ordered.push(table);
     return ordered;
   }
