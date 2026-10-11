@@ -206,7 +206,7 @@ export class SaasUsageService {
  }
 
  async listBudgets(tenantId:string,factoryId:string|null,actorUserId:string) {
-  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read',factoryId??undefined);
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');
   const r=await this.database.query<BudgetRow>('SELECT '+this.budgetColumns()+' FROM saas_usage_budgets WHERE tenant_id=$1 AND (factory_id IS NULL OR ($2::uuid IS NOT NULL AND factory_id=$2)) ORDER BY effective_from DESC,budget_code,policy_version DESC',[tenantId,factoryId],{tenantId,userId:actorUserId});
   return {count:r.rows.length,budgets:r.rows.map(x=>this.mapBudget(x))};
  }
