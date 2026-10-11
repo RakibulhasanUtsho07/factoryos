@@ -1,8 +1,8 @@
 # SaaS Productization — WP10 Backend Slice
 
-**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-SAAS2-07 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
-**Migration range:** 045–051.  
-**API bases:** /v2/saas/usage, /v2/saas/subscriptions, /v2/saas/sandboxes, /v2/saas/releases, and /v2/saas/deployment-profiles.
+**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-SAAS2-07 (P1), FR-SAAS2-08 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
+**Migration range:** 045–052.  
+**API bases:** /v2/saas/usage, /v2/saas/subscriptions, /v2/saas/sandboxes, /v2/saas/releases, /v2/saas/deployment-profiles, and /v2/saas/data-transfers.
 
 ## Delivered in this slice
 
@@ -13,7 +13,7 @@
 - Effective-dated tenant/factory budgets with soft/hard limits, anomaly checks, durable alerts, acknowledgement records, and controls restricted to non-critical workload classes.
 - Idempotent AI tool-call metering in the governed Tool Gateway. Tool workload classification comes from registered tool metadata, not caller-supplied request fields. Usage is recorded before the budget-control check; only registered non-critical classes can be paused by this mechanism. PRODUCTION and NON_AI workloads are not pause targets.
 - PostgreSQL row-level security and tenant/factory-scoped foreign keys on the metering, budget, alert, and provider-cost records.
-- api-postgres-ci.yml applies migrations 045–051 and runs the API unit and PostgreSQL integration suite.
+- api-postgres-ci.yml applies migrations 045–052 and runs the API unit and PostgreSQL integration suite.
 - Versioned, tenant-scoped subscription plans use an explicitly configured tier_rank so the service can validate upgrade/downgrade direction without inventing plan prices. Deployment profile is recorded as control-plane metadata; billing remains external.
 - Subscription state is guarded by a database transition trigger and an immutable event ledger. A deferred constraint trigger prevents state/version updates from committing unless a matching lifecycle event is written in the same transaction. Terminal subscriptions cannot be reactivated; a new subscription can be started after termination/expiry.
 - Lifecycle operations use optimistic expected_version checks, tenant-row locking, idempotency request hashes, IAM authorization in both the controller and service, and best-effort audit records after the state/event transaction.
@@ -60,7 +60,29 @@ The governed AI Tool Gateway re-checks the current subscription immediately befo
 
 ## Boundaries and remaining WP10 work
 
-These are the metering/FinOps, subscription lifecycle, sandbox governance, release-control, and deployment-profile backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, tenant export/migration compatibility, and the physical sandbox provisioner/data adapter that creates truly isolated storage. Those capabilities must be delivered and tested as separate slices.
+These are the metering/FinOps, subscription lifecycle, sandbox governance, release-control, deployment-profile, and tenant export/migration compatibility backend slices, not a claim that all of WP10 is complete. Remaining SRS scope includes subscription cache semantics and explicit tenant migration from legacy compatibility mode, the physical sandbox provisioner/data adapter that creates truly isolated storage, and actual infrastructure orchestration behind deployment-profile transitions. Those capabilities must be delivered and tested as separate slices.
+
+## Tenant export and migration compatibility
+
+Migration `052_saas_tenant_export_migration.sql` implements **FR-SAAS2-08** as a tenant-scoped export/compatibility control plane. It records versioned export requests, immutable worker-attested bundle manifests, explicit source/target schema compatibility rules, migration validation decisions, and append-only migration lifecycle snapshots. Tenant RLS, idempotency fingerprints, schema-version checks, audit records and optimistic expected-version checks apply throughout.
+
+Every export requires the following dataset categories: `BUSINESS_DATA`, `AUDIT_LOG`, `EVIDENCE`, `APPROVALS`, and `EFFECTIVE_DATED_MASTER_DATA`. Tenants may also request `AI_CONTEXT`, `LEARNING_EVALUATION`, `INTEGRATION_METADATA`, and `FILE_REFERENCES`. Each category manifest contains a record count and SHA-256 digest. Artifact references are opaque identifiers only; the API rejects URLs, paths, credential fields and raw data payloads.
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /v2/saas/data-transfers/compatibility-rules | saas.data_transfers.write | Register a versioned source/target schema compatibility decision |
+| GET /v2/saas/data-transfers/compatibility-rules | saas.data_transfers.read | List the latest compatibility rule for each schema pair |
+| POST /v2/saas/data-transfers/exports | saas.data_transfers.write | Request an export with mandatory preservation categories |
+| POST /v2/saas/data-transfers/exports/:transferId/attest | saas.data_transfers.execute | Attach an export bundle reference, digest, and category manifest |
+| POST /v2/saas/data-transfers/migrations/validate | saas.data_transfers.write | Compare the completed export's schema to the target and persist VALIDATED/BLOCKED outcome |
+| POST /v2/saas/data-transfers/migrations/:transferId/transitions | saas.data_transfers.execute | Start, complete, fail, or cancel a validated migration |
+| GET /v2/saas/data-transfers | saas.data_transfers.read | List the latest export/migration snapshot |
+| GET /v2/saas/data-transfers/:transferId/history | saas.data_transfers.read | Read immutable transfer history |
+
+A target schema is accepted only when the schema version is identical or a latest ACTIVE compatibility rule explicitly declares it COMPATIBLE. Missing rules fail closed; INCOMPATIBLE or TRANSFORM_REQUIRED mappings are persisted as BLOCKED until a separately governed transformation path exists. Before migration completion, the target manifest must include all required categories, and record counts for audit logs, evidence, approvals, and effective-dated master data must match the source manifest. The target bundle must have a SHA-256 digest and an explicit preservation attestation.
+
+**Data adapter boundary:** this slice governs metadata and migration validation; it does not itself stream database rows or upload archive files. A controlled export/migration worker must read tenant-scoped authoritative stores, construct and encrypt the actual bundle, calculate the category/bundle digests, verify the target contents, and only then call the attest/transition routes. Bundle storage, key management, backups, actual schema transformations, and cross-infrastructure transfer remain adapter responsibilities. This avoids pretending that a manifest alone is the exported customer data.
+
 
 ## Deployment profile administration
 
