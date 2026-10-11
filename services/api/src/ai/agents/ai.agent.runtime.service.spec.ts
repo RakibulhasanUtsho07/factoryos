@@ -1441,6 +1441,51 @@ describe(
       ]);
     });
 
+    it('requires operator confirmation before retrying a failed compensation claim without a record', async () => {
+      const executionKey = `agent:${taskId}:${stepId}:compensation:1`;
+      database.query.mockReset();
+      database.query.mockResolvedValue({ rows: [], rowCount: 1 });
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          attempt_number: 1,
+          status: 'STARTED',
+          action_intent_id: actionIntentId,
+        }],
+        rowCount: 1,
+      });
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          claim_status: 'FAILED',
+          execution_key: executionKey,
+          tool_version: '1.0.0',
+          inputs_hash: hashPayload({ reason: 'claim failure with unknown outcome' }),
+          execution_record_id: null,
+          execution_record_status: null,
+          record_execution_key: null,
+          record_tool_version: null,
+          record_inputs_hash: null,
+          reconciliation_decision: null,
+        }],
+        rowCount: 1,
+      });
+
+      await expect(
+        (service as any).nextAttemptNumber(
+          tenantId,
+          factoryId,
+          userId,
+          taskId,
+          stepId,
+          'COMPENSATION',
+          '1.0.0',
+        ),
+      ).rejects.toThrow(
+        'A failed compensation claim without an execution record requires operator confirmation before retrying',
+      );
+
+      expect(database.query).toHaveBeenCalledTimes(2);
+    });
+
     it('marks confirmed completed compensation and blocks duplicate rollback', async () => {
       const payload = { reason: 'completed compensation recovery' };
       const inputsHash = hashPayload(payload);

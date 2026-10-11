@@ -2354,6 +2354,14 @@ export class AiAgentRuntimeService {
         'The failed compensation claim conflicts with its execution record; manual investigation is required',
       );
     }
+    if (
+      !hasExecutionRecord &&
+      claim.reconciliation_decision !== 'CONFIRMED_FAILED'
+    ) {
+      throw new ConflictException(
+        'A failed compensation claim without an execution record requires operator confirmation before retrying',
+      );
+    }
 
     await this.recordAttempt(
       tenantId,
