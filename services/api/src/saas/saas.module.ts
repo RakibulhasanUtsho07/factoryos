@@ -14,6 +14,8 @@ import { SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, SAAS_TENANT_TRANSFER_DATASET_SOURCE
 import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
 import { SaasTenantDataTransferWorkerService } from './saas-tenant-data-transfer.worker';
+import { SAAS_TENANT_MIGRATION_TARGET_ADAPTER } from './saas-tenant-data-transfer.adapters';
+import { SaasTenantPostgresMigrationTargetAdapter } from './saas-tenant-postgres-migration-target.adapter';
 import { SaasSubscriptionController } from './saas-subscription.controller';
 import { SaasSubscriptionService } from './saas-subscription.service';
 import { SaasUsageController } from './saas-usage.controller';
@@ -38,6 +40,8 @@ import { SaasUsageService } from './saas-usage.service';
     SaasTenantDataTransferService,
     SaasTenantPostgresDatasetSource,
     { provide: SAAS_TENANT_TRANSFER_DATASET_SOURCE, useExisting: SaasTenantPostgresDatasetSource },
+    SaasTenantPostgresMigrationTargetAdapter,
+    { provide: SAAS_TENANT_MIGRATION_TARGET_ADAPTER, useExisting: SaasTenantPostgresMigrationTargetAdapter },
     SaasEncryptedTenantBundleStore,
     { provide: SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, useExisting: SaasEncryptedTenantBundleStore },
     SaasTenantDataTransferWorkerService,
