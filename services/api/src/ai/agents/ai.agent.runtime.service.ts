@@ -44,6 +44,7 @@ import {
 
 import type {
   AiAgentState,
+  AiToolExecutionOutcome,
 } from '../tools/ai.tool.types';
 
 import type {
@@ -845,6 +846,7 @@ export class AiAgentRuntimeService {
           actorUserId,
           actionToken,
           executionKey,
+          step.tool_id,
           step.tool_version,
         );
 
@@ -1541,14 +1543,6 @@ export class AiAgentRuntimeService {
       );
     }
 
-    const compensationStep = {
-      ...step,
-      tool_id: tool.rollback.toolId,
-      tool_version: tool.rollback.toolVersion,
-      action_type: tool.rollback.actionType,
-      payload: compensationPayload,
-    };
-
     const attemptNumber = await this.nextAttemptNumber(
       tenantId,
       factoryId,
@@ -1566,6 +1560,7 @@ export class AiAgentRuntimeService {
         actorUserId,
         actionToken,
         executionKey,
+        tool.rollback.toolId,
         tool.rollback.toolVersion,
       );
 
@@ -1868,8 +1863,21 @@ export class AiAgentRuntimeService {
     actorUserId: string,
     actionToken: string,
     executionKey: string,
+    toolId: string,
     toolVersion: string,
-  ) {
+  ): Promise<{
+    outcome: AiToolExecutionOutcome;
+    executionRecordId: string;
+  }> {
+    // Resolve the immutable tool contract before side effects. The central
+    // runtime remains responsible for claims, execution persistence and audit.
+    const tool = await this.toolRegistry.getTool(
+      tenantId,
+      factoryId,
+      toolId,
+      toolVersion,
+    );
+
     const result = await this.aiRuntimeService.executeAgentAction(
       tenantId,
       factoryId,
@@ -1882,7 +1890,10 @@ export class AiAgentRuntimeService {
     );
 
     return {
-      outcome: result.execution,
+      outcome: {
+        ...result.execution,
+        tool,
+      },
       executionRecordId: result.execution.id,
     };
   }
