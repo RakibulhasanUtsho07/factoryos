@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Query,
+  Body, Controller, Get, Param, ParseUUIDPipe, Post, Query,
   Req, UnauthorizedException, UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
