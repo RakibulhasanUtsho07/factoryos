@@ -2508,6 +2508,490 @@ export class AiAgentRuntimeService {
     }
   }
 
+  private computeTaskRequestHash(args: {
+    tenantId: string;
+    factoryId: string;
+    actorUserId: string;
+    input: CreateAiAgentTaskInput;
+    decisionId: string;
+    parentTraceId: string;
+    goal: string;
+    limits: {
+      maxSteps: number;
+      maxRetries: number;
+      maxToolCalls: number;
+      timeoutMs: number;
+    };
+    deadlineAt: string;
+    contextVersion: string | null;
+    planVersion: string | null;
+    contextHash: string | null;
+  }): string {
+    const {
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      deadlineAt,
+      contextVersion,
+      planVersion,
+      contextHash,
+    } = args;
+
+    return this.computeHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      // Do not fingerprint the generated deadline when callers omit it:
+      // otherwise an identical retry would hash differently on every attempt.
+      requestedDeadlineAt: input.deadlineAt ? deadlineAt : null,
+      contextVersion,
+      planVersion,
+      contextHash,
+      steps: input.steps.map((step, index) => ({
+        stepKey: step.stepKey.trim(),
+        stepIndex: index,
+        agentId: step.agentId ?? null,
+        capability: step.capability.trim(),
+        inputSchema: step.inputSchema ?? {},
+        outputSchema: step.outputSchema ?? {},
+        toolId: step.toolId.trim(),
+        toolVersion: step.toolVersion.trim(),
+        actionType: step.actionType.trim(),
+        target: step.target ?? {},
+        payload: step.payload ?? {},
+        resourceType: step.resourceType ?? null,
+        resourceId: step.resourceId ?? null,
+        riskClass: step.riskClass ?? null,
+        timeoutMs: step.timeoutMs ?? 1000,
+        retryLimit: step.retryLimit ?? 0,
+        authorityLevel: step.authorityLevel?.trim() ?? 'TASK_SCOPED',
+        dependsOn: step.dependsOn ?? [],
+      })),
+    });
+  }
+
+  private validateStepDefinition(
+    step: AiAgentStepDefinition,
+    index: number,
+  ): void {
+    for (const [field, value] of [
+      ['stepKey', step.stepKey],
+      ['capability', step.capability],
+      ['toolId', step.toolId],
+      ['toolVersion', step.toolVersion],
+      ['actionType', step.actionType],
+    ] as const) {
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new BadRequestException(
+          `steps[${index}].${field} is required`,
+        );
+      }
+    }
+
+    if (step.actionType.trim() !== step.toolId.trim()) {
+      throw new BadRequestException(
+        `steps[${index}].actionType must equal steps[${index}].toolId for Tool Gateway execution`,
+      );
+    }
+
+    if (
+      step.target !== undefined &&
+      !this.isObject(step.target)
+    ) {
+      throw new BadRequestException(
+        `steps[${index}].target must be an object`,
+      );
+    }
+
+    if (
+      step.payload !== undefined &&
+      !this.isObject(step.payload)
+    ) {
+      throw new BadRequestException(
+        `steps[${index}].payload must be an object`,
+      );
+    }
+
+    if (
+      step.inputSchema !== undefined &&
+      !this.isObject(step.inputSchema)
+    ) {
+      throw new BadRequestException(
+        `steps[${index}].inputSchema must be an object`,
+      );
+    }
+
+    if (
+      step.outputSchema !== undefined &&
+      !this.isObject(step.outputSchema)
+    ) {
+      throw new BadRequestException(
+        `steps[${index}].outputSchema must be an object`,
+      );
+    }
+
+    if (
+      step.timeoutMs !== undefined &&
+      (!Number.isInteger(step.timeoutMs) ||
+        step.timeoutMs < 100 ||
+        step.timeoutMs > 60_000)
+    ) {
+      throw new BadRequestException(
+        `steps[${index}].timeoutMs is outside the bounded range`,
+      );
+    }
+
+    if (
+      step.retryLimit !== undefined &&
+      (!Number.isInteger(step.retryLimit) ||
+        step.retryLimit < 0 ||
+        step.retryLimit > MAX_LIMITS.maxRetries)
+    ) {
+      throw new BadRequestException(
+        `steps[${index}].retryLimit is outside the bounded range`,
+      );
+    }
+  }
+
+  private normalizeLimits(
+    input?: Partial<{
+      maxSteps: number;
+      maxRetries: number;
+      maxToolCalls: number;
+      timeoutMs: number;
+    }>,
+  ) {
+    const limits = {
+      maxSteps: input?.maxSteps ?? DEFAULT_LIMITS.maxSteps,
+      maxRetries: input?.maxRetries ?? DEFAULT_LIMITS.maxRetries,
+      maxToolCalls:
+        input?.maxToolCalls ?? DEFAULT_LIMITS.maxToolCalls,
+      timeoutMs: input?.timeoutMs ?? DEFAULT_LIMITS.timeoutMs,
+    };
+
+    if (
+      !Number.isInteger(limits.maxSteps) ||
+      limits.maxSteps < 1 ||
+      limits.maxSteps > MAX_LIMITS.maxSteps
+    ) {
+      throw new BadRequestException(
+        'maxSteps is outside the bounded range',
+      );
+    }
+
+    if (
+      !Number.isInteger(limits.maxRetries) ||
+      limits.maxRetries < 0 ||
+      limits.maxRetries > MAX_LIMITS.maxRetries
+    ) {
+      throw new BadRequestException(
+        'maxRetries is outside the bounded range',
+      );
+    }
+
+    if (
+      !Number.isInteger(limits.maxToolCalls) ||
+      limits.maxToolCalls < 1 ||
+      limits.maxToolCalls > MAX_LIMITS.maxToolCalls
+    ) {
+      throw new BadRequestException(
+        'maxToolCalls is outside the bounded range',
+      );
+    }
+
+    if (
+      !Number.isInteger(limits.timeoutMs) ||
+      limits.timeoutMs < 100 ||
+      limits.timeoutMs > MAX_LIMITS.timeoutMs
+    ) {
+      throw new BadRequestException(
+        'timeoutMs is outside the bounded range',
+      );
+    }
+
+    return limits;
+  }
+
+  private resolveDeadline(
+    deadlineAt: string | null | undefined,
+    timeoutMs: number,
+  ): string {
+    if (deadlineAt) {
+      const normalized = this.futureTimestamp(
+        deadlineAt,
+        'deadlineAt',
+      );
+      if (
+        new Date(normalized).getTime() >
+        Date.now() + timeoutMs
+      ) {
+        throw new BadRequestException(
+          'deadlineAt cannot exceed the configured task timeout window',
+        );
+      }
+      return normalized;
+    }
+
+    return new Date(Date.now() + timeoutMs).toISOString();
+  }
+
+  private futureTimestamp(
+    value: string,
+    field: string,
+  ): string {
+    if (typeof value !== 'string') {
+      throw new BadRequestException(`${field} is required`);
+    }
+
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+      throw new BadRequestException(
+        `${field} must be a valid timestamp`,
+      );
+    }
+
+    if (date.getTime() <= Date.now()) {
+      throw new ConflictException(`${field} has already expired`);
+    }
+
+    return date.toISOString();
+  }
+
+  private normalizeStrings(
+    values: string[],
+    field: string,
+  ): string[] {
+    if (!Array.isArray(values)) {
+      throw new BadRequestException(`${field} must be an array`);
+    }
+
+    return Array.from(
+      new Set(
+        values.map((value) => {
+          if (
+            typeof value !== 'string' ||
+            value.trim().length === 0
+          ) {
+            throw new BadRequestException(
+              `${field} must contain only non-empty strings`,
+            );
+          }
+          return value.trim();
+        }),
+      ),
+    );
+  }
+
+  private normalizePermittedTools(
+    values: string[],
+  ): string[] {
+    const normalized = this.normalizeStrings(values, 'permittedTools');
+    if (normalized.length === 0) {
+      throw new BadRequestException(
+        'permittedTools must contain at least one TOOL_ID@VERSION entry',
+      );
+    }
+
+    for (const reference of normalized) {
+      this.parseToolReference(reference);
+    }
+
+    return normalized;
+  }
+
+  private parseToolReference(value: string): {
+    toolId: string;
+    version: string;
+  } {
+    const index = value.lastIndexOf('@');
+    if (index <= 0 || index === value.length - 1) {
+      throw new BadRequestException(
+        `permitted tool must use TOOL_ID@VERSION format: ${value}`,
+      );
+    }
+
+    return {
+      toolId: value.slice(0, index).trim(),
+      version: value.slice(index + 1).trim(),
+    };
+  }
+
+  private mapTask(row: AgentTaskRow): AiAgentTask {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      decisionId: row.decision_id,
+      parentTraceId: row.parent_trace_id,
+      actorUserId: row.actor_user_id,
+      goal: row.goal,
+      state: row.state,
+      maxSteps: row.max_steps,
+      maxRetries: row.max_retries,
+      maxToolCalls: row.max_tool_calls,
+      timeoutMs: row.timeout_ms,
+      deadlineAt: row.deadline_at,
+      retryCount: row.retry_count,
+      toolCallCount: row.tool_call_count,
+      completedStepCount: row.completed_step_count,
+      currentStepId: row.current_step_id,
+      contextVersion: row.context_version,
+      planVersion: row.plan_version,
+      contextHash: row.context_hash,
+      cancelRequestedAt: row.cancel_requested_at,
+      failureCode: row.failure_code,
+      failureReason: row.failure_reason,
+      idempotencyKey: row.idempotency_key,
+      version: row.version,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private mapStep(row: AgentTaskStepRow): AiAgentTaskStep {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      taskId: row.task_id,
+      stepKey: row.step_key,
+      stepIndex: row.step_index,
+      agentId: row.agent_id,
+      capability: row.capability,
+      inputSchema: row.input_schema,
+      outputSchema: row.output_schema,
+      toolId: row.tool_id,
+      toolVersion: row.tool_version,
+      actionType: row.action_type,
+      target: row.target,
+      payload: row.payload,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      riskClass: row.risk_class,
+      timeoutMs: row.timeout_ms,
+      retryLimit: row.retry_limit,
+      authorityLevel: row.authority_level,
+      dependsOn: row.depends_on.map(String),
+      status: row.status,
+      retryCount: row.retry_count,
+      authorizationAttempt: row.authorization_attempt,
+      actionIntentId: row.action_intent_id,
+      approvalId: row.approval_id,
+      executionRecordId: row.execution_record_id,
+      output: row.output,
+      error: row.error,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      version: row.version,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private mapHandoff(row: AgentHandoffRow): AiAgentHandoffRecord {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      sourceAgentId: row.source_agent_id,
+      targetAgentId: row.target_agent_id,
+      purpose: row.purpose,
+      allowedDataClasses: row.allowed_data_classes,
+      permittedTools: row.permitted_tools,
+      expiresAt: row.expires_at,
+      parentTraceId: row.parent_trace_id,
+      expectedArtifact: row.expected_artifact,
+      handoffHash: row.handoff_hash,
+      status: row.status,
+      acceptedBy: row.accepted_by,
+      acceptedAt: row.accepted_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private taskSelectColumns(): string {
+    return `
+      id::text AS id,
+      tenant_id::text AS tenant_id,
+      factory_id::text AS factory_id,
+      decision_id::text AS decision_id,
+      parent_trace_id::text AS parent_trace_id,
+      actor_user_id::text AS actor_user_id,
+      goal,
+      state,
+      max_steps,
+      max_retries,
+      max_tool_calls,
+      timeout_ms,
+      deadline_at::text AS deadline_at,
+      retry_count,
+      tool_call_count,
+      completed_step_count,
+      current_step_id::text AS current_step_id,
+      context_version,
+      plan_version,
+      context_hash,
+      cancel_requested_at::text AS cancel_requested_at,
+      failure_code,
+      failure_reason,
+      idempotency_key,
+      request_hash,
+      version,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+    `;
+  }
+
+  private taskStepSelectColumns(): string {
+    return `
+      id::text AS id,
+      tenant_id::text AS tenant_id,
+      factory_id::text AS factory_id,
+      task_id::text AS task_id,
+      step_key,
+      step_index,
+      agent_id,
+      capability,
+      input_schema,
+      output_schema,
+      tool_id,
+      tool_version,
+      action_type,
+      target,
+      payload,
+      resource_type,
+      resource_id,
+      risk_class,
+      timeout_ms,
+      retry_limit,
+      authority_level,
+      depends_on,
+      status,
+      retry_count,
+      authorization_attempt,
+      action_intent_id::text AS action_intent_id,
+      approval_id::text AS approval_id,
+      execution_record_id::text AS execution_record_id,
+      output,
+      error,
+      started_at::text AS started_at,
+      finished_at::text AS finished_at,
+      version,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+    `;
+  }
+
   private validateScope(
     tenantId: string,
     factoryId: string,
