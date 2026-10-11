@@ -141,7 +141,8 @@ BEGIN
   IF NEW.version = 1 THEN
     IF NEW.action <> 'REGISTER' OR NEW.stage <> 'DRAFT'
       OR NEW.last_active_stage <> 'DRAFT' OR NEW.rollout_percentage <> 0
-      OR NEW.previous_version IS NOT NULL OR NEW.rollback_target_key IS NOT NULL
+      OR NEW.previous_version IS NOT NULL
+      OR NEW.rollback_target_key IS NOT NULL
       OR NEW.rollback_target_version IS NOT NULL THEN
       RAISE EXCEPTION 'A new release rollout must begin as a DRAFT registration'
         USING ERRCODE = '23514';
@@ -155,12 +156,15 @@ BEGIN
   ORDER BY version DESC
   LIMIT 1;
 
-  IF NOT FOUND OR NEW.version <> prior_row.version + 1
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'A later release version requires an existing predecessor'
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.version <> prior_row.version + 1
     OR NEW.previous_version IS DISTINCT FROM prior_row.version THEN
     RAISE EXCEPTION 'Release rollout versions must be appended consecutively'
       USING ERRCODE = '23514';
   END IF;
-
   IF ROW(NEW.scope_type, NEW.factory_id, NEW.module_key, NEW.agent_key, NEW.release_channel, NEW.evaluation_reference)
     IS DISTINCT FROM
      ROW(prior_row.scope_type, prior_row.factory_id, prior_row.module_key, prior_row.agent_key, prior_row.release_channel, prior_row.evaluation_reference) THEN
@@ -184,27 +188,32 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
   ELSIF NEW.action = 'PAUSE' THEN
-    IF prior_row.stage NOT IN ('CANARY','PRODUCTION')
-      OR NEW.stage <> 'PAUSED'
-      OR NEW.last_active_stage <> prior_row.stage
-      OR NEW.rollout_percentage <> prior_row.rollout_percentage
-      OR ROW(NEW.artifact_version, NEW.artifact_digest)
-        IS DISTINCT FROM ROW(prior_row.artifact_version, prior_row.artifact_digest) THEN
+    IF prior_row.stage <> 'CANARY' AND prior_row.stage <> 'PRODUCTION' THEN
       RAISE EXCEPTION 'Only a live canary/production rollout can be paused'
         USING ERRCODE = '23514';
     END IF;
+    IF NEW.stage <> 'PAUSED' OR NEW.last_active_stage <> prior_row.stage
+      OR NEW.rollout_percentage <> prior_row.rollout_percentage
+      OR ROW(NEW.artifact_version, NEW.artifact_digest)
+        IS DISTINCT FROM ROW(prior_row.artifact_version, prior_row.artifact_digest) THEN
+      RAISE EXCEPTION 'Pause must preserve the artifact and previous live stage'
+        USING ERRCODE = '23514';
+    END IF;
   ELSIF NEW.action = 'RESUME' THEN
-    IF prior_row.stage <> 'PAUSED'
-      OR NEW.stage <> prior_row.last_active_stage
+    IF prior_row.stage <> 'PAUSED' THEN
+      RAISE EXCEPTION 'Only a paused rollout can be resumed'
+        USING ERRCODE = '23514';
+    END IF;
+    IF NEW.stage <> prior_row.last_active_stage
       OR NEW.last_active_stage <> prior_row.last_active_stage
       OR NEW.rollout_percentage <> prior_row.rollout_percentage
       OR ROW(NEW.artifact_version, NEW.artifact_digest)
         IS DISTINCT FROM ROW(prior_row.artifact_version, prior_row.artifact_digest) THEN
-      RAISE EXCEPTION 'A paused rollout can only resume its recorded stage and artifact'
+      RAISE EXCEPTION 'Resume must restore the recorded stage and artifact'
         USING ERRCODE = '23514';
     END IF;
   ELSIF NEW.action = 'ROLLBACK' THEN
-    IF prior_row.stage NOT IN ('CANARY','PRODUCTION','PAUSED') THEN
+    IF prior_row.stage <> 'CANARY' AND prior_row.stage <> 'PRODUCTION' AND prior_row.stage <> 'PAUSED' THEN
       RAISE EXCEPTION 'Only a deployed rollout can be rolled back'
         USING ERRCODE = '23514';
     END IF;
@@ -213,8 +222,12 @@ BEGIN
     WHERE tenant_id = NEW.tenant_id AND rollout_key = NEW.rollback_target_key
     ORDER BY version DESC
     LIMIT 1;
-    IF NOT FOUND OR target_row.version <> NEW.rollback_target_version
-      OR target_row.stage NOT IN ('CANARY','PRODUCTION')
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Rollback target does not exist'
+        USING ERRCODE = '23514';
+    END IF;
+    IF target_row.version <> NEW.rollback_target_version
+      OR (target_row.stage <> 'CANARY' AND target_row.stage <> 'PRODUCTION')
       OR ROW(target_row.scope_type, target_row.factory_id, target_row.module_key, target_row.agent_key, target_row.release_channel)
         IS DISTINCT FROM ROW(NEW.scope_type, NEW.factory_id, NEW.module_key, NEW.agent_key, NEW.release_channel)
       OR ROW(NEW.artifact_version, NEW.artifact_digest, NEW.stage, NEW.rollout_percentage, NEW.last_active_stage)
@@ -223,11 +236,22 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
   ELSIF NEW.action = 'RETIRE' THEN
-    IF prior_row.stage = 'RETIRED' OR NEW.stage <> 'RETIRED'
-      OR NEW.last_active_stage <> CASE WHEN prior_row.stage = 'PAUSED' THEN prior_row.last_active_stage ELSE prior_row.stage END
-      OR ROW(NEW.artifact_version, NEW.artifact_digest)
-        IS DISTINCT FROM ROW(prior_row.artifact_version, prior_row.artifact_digest) THEN
-      RAISE EXCEPTION 'Retirement must preserve artifact provenance and prior stage'
+    IF prior_row.stage = 'RETIRED' OR NEW.stage <> 'RETIRED' THEN
+      RAISE EXCEPTION 'A release can only be retired once'
+        USING ERRCODE = '23514';
+    END IF;
+    IF prior_row.stage = 'PAUSED' THEN
+      IF NEW.last_active_stage <> prior_row.last_active_stage THEN
+        RAISE EXCEPTION 'Retirement must preserve the prior active stage'
+          USING ERRCODE = '23514';
+      END IF;
+    ELSIF NEW.last_active_stage <> prior_row.stage THEN
+      RAISE EXCEPTION 'Retirement must preserve the prior stage'
+        USING ERRCODE = '23514';
+    END IF;
+    IF ROW(NEW.artifact_version, NEW.artifact_digest)
+      IS DISTINCT FROM ROW(prior_row.artifact_version, prior_row.artifact_digest) THEN
+      RAISE EXCEPTION 'Retirement cannot change artifact provenance'
         USING ERRCODE = '23514';
     END IF;
   ELSE
