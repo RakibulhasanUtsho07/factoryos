@@ -48,6 +48,7 @@ import type {
 } from '../tools/ai.tool.types';
 
 import type {
+  AiAgentExecutionEvidence,
   AiAgentHandoffRecord,
   AiAgentTask,
   AiAgentTaskStep,
@@ -117,6 +118,7 @@ interface AgentTaskStepRow extends QueryResultRow {
   action_intent_id: string | null;
   approval_id: string | null;
   execution_record_id: string | null;
+  execution_evidence: Record<string, unknown>;
   output: Record<string, unknown>;
   error: Record<string, unknown>;
   started_at: string | null;
@@ -872,7 +874,20 @@ export class AiAgentRuntimeService {
           executionKey,
           step.tool_id,
           step.tool_version,
+          {
+            decisionId: task.decision_id,
+            actionIntentId: action.id as string,
+            inputsHash: action.payloadHash as string,
+          },
         );
+      const executionEvidence = this.buildExecutionEvidence({
+        task,
+        step,
+        actionIntentId: action.id as string,
+        executionRecordId,
+        executionKey,
+        outcome,
+      });
 
       if (outcome.status === 'SUCCEEDED') {
         await this.recordAttempt(
@@ -896,10 +911,23 @@ export class AiAgentRuntimeService {
           {
             status: 'SUCCEEDED',
             executionRecordId,
+            executionEvidence,
             output: outcome.result,
             error: {},
             finishedAt: new Date().toISOString(),
           },
+        );
+
+        await this.audit(
+          tenantId,
+          factoryId,
+          actorUserId,
+          'AI_AGENT_STEP_EXECUTION',
+          'SUCCEEDED',
+          'AGENT_TASK_STEP',
+          step.id,
+          task.parent_trace_id,
+          { executionEvidence: { ...executionEvidence } },
         );
 
         const completedCount =
@@ -970,6 +998,7 @@ export class AiAgentRuntimeService {
         step,
         failure,
         executionRecordId,
+        executionEvidence,
       );
     } catch (error) {
       const failure = {
@@ -1600,6 +1629,11 @@ export class AiAgentRuntimeService {
         executionKey,
         tool.rollback.toolId,
         tool.rollback.toolVersion,
+        {
+          decisionId: task.decision_id,
+          actionIntentId: action.id as string,
+          inputsHash: action.payloadHash as string,
+        },
       );
 
     await this.recordAttempt(
@@ -1647,6 +1681,7 @@ export class AiAgentRuntimeService {
     step: AgentTaskStepRow,
     error: Record<string, unknown>,
     executionRecordId?: string,
+    executionEvidence?: AiAgentExecutionEvidence,
   ): Promise<AiAgentStepExecutionResult> {
     const canRetry =
       step.retry_count < step.retry_limit &&
@@ -1663,6 +1698,7 @@ export class AiAgentRuntimeService {
           retry_count = $4,
           execution_record_id = COALESCE($5, execution_record_id),
           error = $6::jsonb,
+          execution_evidence = COALESCE($7::jsonb, execution_evidence),
           finished_at = NOW(),
           version = version + 1
         WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
@@ -1674,6 +1710,7 @@ export class AiAgentRuntimeService {
           newRetryCount,
           executionRecordId ?? null,
           JSON.stringify(error),
+          executionEvidence ? JSON.stringify(executionEvidence) : null,
         ],
         {
           tenantId,
@@ -1726,6 +1763,7 @@ export class AiAgentRuntimeService {
           {
             retryCount: retryStep.retry_count,
             error,
+            executionEvidence: executionEvidence ?? null,
           },
         );
 
@@ -1746,6 +1784,7 @@ export class AiAgentRuntimeService {
       'AI_AGENT_RETRY_LIMIT_EXCEEDED',
       this.errorMessageFromRecord(error),
       step.id,
+      executionEvidence,
     );
   }
 
@@ -1757,6 +1796,7 @@ export class AiAgentRuntimeService {
     code: string,
     reason: string,
     stepId?: string,
+    executionEvidence?: AiAgentExecutionEvidence,
   ): Promise<AiAgentStepExecutionResult> {
     const task = await this.requireTask(tenantId, factoryId, taskId);
 
@@ -1802,6 +1842,7 @@ export class AiAgentRuntimeService {
         code,
         reason,
         stepId: stepId ?? null,
+        executionEvidence: executionEvidence ?? null,
       },
     );
 
@@ -1817,6 +1858,7 @@ export class AiAgentRuntimeService {
             code,
             message: reason,
           },
+          executionEvidence,
           finishedAt: new Date().toISOString(),
         },
       );
@@ -1903,6 +1945,11 @@ export class AiAgentRuntimeService {
     executionKey: string,
     toolId: string,
     toolVersion: string,
+    expectedBinding: {
+      decisionId: string;
+      actionIntentId: string;
+      inputsHash: string;
+    },
   ): Promise<{
     outcome: AiToolExecutionOutcome;
     executionRecordId: string;
@@ -1926,6 +1973,23 @@ export class AiAgentRuntimeService {
         tool_version: toolVersion,
       },
     );
+    const execution = result.execution;
+    const executionBindingMatches =
+      typeof execution.id === 'string' &&
+      execution.id.length > 0 &&
+      execution.decisionId === expectedBinding.decisionId &&
+      execution.actionIntentId === expectedBinding.actionIntentId &&
+      execution.executionKey === executionKey &&
+      execution.toolVersion === toolVersion &&
+      execution.inputsHash === expectedBinding.inputsHash &&
+      execution.executorType === 'AGENT_RUNTIME' &&
+      (execution.status === 'SUCCEEDED' || execution.status === 'FAILED');
+
+    if (!executionBindingMatches) {
+      throw new ConflictException(
+        'AI execution record does not match the bound agent action',
+      );
+    }
 
     return {
       outcome: {
@@ -2182,6 +2246,36 @@ export class AiAgentRuntimeService {
     return row;
   }
 
+  private buildExecutionEvidence(input: {
+    task: AgentTaskRow;
+    step: AgentTaskStepRow;
+    actionIntentId: string;
+    executionRecordId: string;
+    executionKey: string;
+    outcome: AiToolExecutionOutcome;
+  }): AiAgentExecutionEvidence {
+    return {
+      schemaVersion: 1,
+      taskId: input.task.id,
+      stepId: input.step.id,
+      decisionId: input.task.decision_id,
+      parentTraceId: input.task.parent_trace_id,
+      actionIntentId: input.actionIntentId,
+      executionRecordId: input.executionRecordId,
+      executionKey: input.executionKey,
+      toolId: input.step.tool_id,
+      toolVersion: input.outcome.toolVersion,
+      executorType: input.outcome.executorType,
+      inputsHash: input.outcome.inputsHash,
+      outcomeStatus: input.outcome.status,
+      outcomeHash: this.computeHash({
+        status: input.outcome.status,
+        result: input.outcome.result,
+        error: input.outcome.error,
+      }),
+    };
+  }
+
   private assertAuthorizationMatchesStep(
     action: Record<string, unknown>,
     tenantId: string,
@@ -2213,6 +2307,7 @@ export class AiAgentRuntimeService {
       (action.resourceId ?? null) === (step.resource_id ?? null) &&
       payloadMatches &&
       targetMatches &&
+      action.payloadHash === this.computeHash(step.payload) &&
       (step.risk_class === null || action.riskClass === step.risk_class);
 
     if (!bindingMatches) {
@@ -2232,6 +2327,7 @@ export class AiAgentRuntimeService {
       actionIntentId?: string | null;
       approvalId?: string | null;
       executionRecordId?: string | null;
+      executionEvidence?: AiAgentExecutionEvidence;
       output?: Record<string, unknown>;
       error?: Record<string, unknown>;
       startedAt?: string | null;
@@ -2250,6 +2346,7 @@ export class AiAgentRuntimeService {
         error = COALESCE($9::jsonb, error),
         started_at = COALESCE($10, started_at),
         finished_at = COALESCE($11, finished_at),
+        execution_evidence = COALESCE($12::jsonb, execution_evidence),
         version = version + 1
       WHERE
         id = $1
@@ -2269,6 +2366,7 @@ export class AiAgentRuntimeService {
         fields.error ? JSON.stringify(fields.error) : null,
         fields.startedAt ?? null,
         fields.finishedAt ?? null,
+        fields.executionEvidence ? JSON.stringify(fields.executionEvidence) : null,
       ],
       {
         tenantId,
@@ -2976,6 +3074,10 @@ export class AiAgentRuntimeService {
       actionIntentId: row.action_intent_id,
       approvalId: row.approval_id,
       executionRecordId: row.execution_record_id,
+      executionEvidence:
+        row.execution_evidence && Object.keys(row.execution_evidence).length > 0
+          ? row.execution_evidence as unknown as AiAgentExecutionEvidence
+          : null,
       output: row.output,
       error: row.error,
       startedAt: row.started_at,
@@ -3071,6 +3173,7 @@ export class AiAgentRuntimeService {
       action_intent_id::text AS action_intent_id,
       approval_id::text AS approval_id,
       execution_record_id::text AS execution_record_id,
+      execution_evidence,
       output,
       error,
       started_at::text AS started_at,

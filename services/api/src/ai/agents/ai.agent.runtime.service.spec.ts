@@ -1,4 +1,8 @@
 import {
+  createHash,
+} from 'node:crypto';
+
+import {
   jest,
 } from '@jest/globals';
 
@@ -30,6 +34,24 @@ const actionIntentId =
   '9f1a2222-2222-4222-8222-222222222222';
 const approvalId =
   'af1a2222-2222-4222-8222-222222222222';
+
+function hashPayload(value: unknown): string {
+  const canonicalize = (current: unknown): unknown => {
+    if (Array.isArray(current)) {
+      return current.map(canonicalize);
+    }
+    if (current !== null && typeof current === 'object') {
+      const object = current as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(object).sort().map((key) => [key, canonicalize(object[key])]),
+      );
+    }
+    return current;
+  };
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalize(value)), 'utf8')
+    .digest('hex');
+}
 
 function taskRow(
   overrides: Record<string, unknown> = {},
@@ -105,6 +127,7 @@ function stepRow(
     action_intent_id: null,
     approval_id: null,
     execution_record_id: null,
+    execution_evidence: {},
     output: {},
     error: {},
     started_at: null,
@@ -117,6 +140,12 @@ function stepRow(
 }
 
 function action(overrides: Record<string, unknown> = {}) {
+  const payload =
+    overrides.payload !== null &&
+    typeof overrides.payload === 'object' &&
+    !Array.isArray(overrides.payload)
+      ? overrides.payload as Record<string, unknown>
+      : { sample: 'value' };
   return {
     id: actionIntentId,
     tenantId,
@@ -128,10 +157,8 @@ function action(overrides: Record<string, unknown> = {}) {
     target: {},
     resourceType: null,
     resourceId: null,
-    payload: {
-      sample: 'value',
-    },
-    payloadHash: 'b'.repeat(64),
+    payload,
+    payloadHash: hashPayload(payload),
     riskClass: 'L0',
     authorizationStatus: 'AUTHORIZED',
     approvalId: null,
@@ -141,7 +168,7 @@ function action(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function gatewayOutcome() {
+function gatewayOutcome(inputsHash = hashPayload({ sample: 'value' })) {
   return {
     status: 'SUCCEEDED' as const,
     result: {
@@ -181,12 +208,13 @@ function gatewayOutcome() {
     },
     executorType: 'AGENT_RUNTIME',
     toolVersion: '1.0.0',
-    inputsHash: 'b'.repeat(64),
+    inputsHash,
   };
 }
 
 function agentExecutionResult(
   outcome = gatewayOutcome(),
+  executionKey = `agent:${taskId}:${stepId}:1`,
 ) {
   return {
     idempotent: false,
@@ -196,7 +224,7 @@ function agentExecutionResult(
       factoryId,
       decisionId,
       actionIntentId,
-      executionKey: 'agent:task:step:1',
+      executionKey,
       executorType: 'AGENT_RUNTIME',
       toolVersion: outcome.toolVersion,
       inputsHash: outcome.inputsHash,
@@ -757,6 +785,74 @@ describe(
       );
       expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
       expect(result.step.status).toBe('SUCCEEDED');
+      const successFields = (service as any).updateStep.mock.calls[1][4];
+      expect(successFields.executionEvidence).toMatchObject({
+        schemaVersion: 1,
+        taskId,
+        stepId,
+        decisionId,
+        parentTraceId: traceId,
+        actionIntentId,
+        executionRecordId: 'bf1a2222-2222-4222-8222-222222222222',
+        executionKey: `agent:${taskId}:${stepId}:1`,
+        toolId: 'AI.RUNTIME.NOOP',
+        toolVersion: '1.0.0',
+        executorType: 'AGENT_RUNTIME',
+        inputsHash: hashPayload({ sample: 'value' }),
+        outcomeStatus: 'SUCCEEDED',
+      });
+      expect(successFields.executionEvidence.outcomeHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(successFields.executionEvidence)).not.toContain('short-lived-token');
+      expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'AI_AGENT_STEP_EXECUTION',
+        action: 'SUCCEEDED',
+        correlationId: traceId,
+        payload: expect.objectContaining({
+          executionEvidence: expect.objectContaining({
+            actionIntentId,
+            executionRecordId: 'bf1a2222-2222-4222-8222-222222222222',
+          }),
+        }),
+      }));
+    });
+
+    it('rejects an execution record that does not match the authorized action binding', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
+      (service as any).failTask = jest.fn<() => Promise<unknown>>().mockResolvedValue({});
+      (service as any).updateStep = jest.fn<() => Promise<unknown>>()
+        .mockResolvedValue(stepRow({ status: 'RUNNING', action_intent_id: actionIntentId }));
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action(),
+        actionToken: 'short-lived-token',
+      });
+      const execution = agentExecutionResult().execution;
+      aiRuntimeService.executeAgentAction.mockResolvedValue({
+        idempotent: false,
+        execution: { ...execution, actionIntentId: 'af1a2222-2222-4222-8222-222222222222' },
+      });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
+      expect((service as any).updateStep).toHaveBeenCalledTimes(1);
+      expect((service as any).failTask).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        'AI_AGENT_EXECUTION_FAILURE',
+        'AI execution record does not match the bound agent action',
+        stepId,
+      );
     });
 
     it('does not execute when an authorized action intent payload differs from the step', async () => {
@@ -1017,11 +1113,18 @@ describe(
         rows: [{ max_number: null }],
         rowCount: 1,
       });
+      const compensationPayload = { reason: 'verified compensation retry' };
+      const compensationHash = hashPayload(compensationPayload);
       aiRuntimeService.authorizeAction.mockResolvedValue({
-        action: action(),
+        action: action({ payload: compensationPayload, payloadHash: compensationHash }),
         actionToken: 'compensation-token',
       });
-      aiRuntimeService.executeAgentAction.mockResolvedValue(agentExecutionResult());
+      aiRuntimeService.executeAgentAction.mockResolvedValue(
+        agentExecutionResult(
+          gatewayOutcome(compensationHash),
+          `agent:${taskId}:${stepId}:compensation:1`,
+        ),
+      );
 
       const result = await service.compensateStep(
         tenantId,
@@ -1029,7 +1132,7 @@ describe(
         userId,
         taskId,
         stepId,
-        { reason: 'verified compensation retry' },
+        compensationPayload,
       );
 
       const expectedKey = `agent:${taskId}:${stepId}:compensation:1`;

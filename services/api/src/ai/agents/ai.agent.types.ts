@@ -117,6 +117,27 @@ export interface AiAgentTask {
 }
 
 /* ============================================================
+ * EXECUTION EVIDENCE
+ * ============================================================ */
+
+export interface AiAgentExecutionEvidence {
+  schemaVersion: 1;
+  taskId: string;
+  stepId: string;
+  decisionId: string;
+  parentTraceId: string;
+  actionIntentId: string;
+  executionRecordId: string;
+  executionKey: string;
+  toolId: string;
+  toolVersion: string;
+  executorType: string;
+  inputsHash: string;
+  outcomeStatus: 'SUCCEEDED' | 'FAILED';
+  outcomeHash: string;
+}
+
+/* ============================================================
  * STEP RECORD
  * ============================================================ */
 
@@ -171,6 +192,7 @@ export interface AiAgentTaskStep {
   actionIntentId: string | null;
   approvalId: string | null;
   executionRecordId: string | null;
+  executionEvidence: AiAgentExecutionEvidence | null;
 
   output: Record<string, unknown>;
   error: Record<string, unknown>;
