@@ -1381,6 +1381,8 @@ describe(
       const payload = { reason: 'confirmed failed compensation' };
       const inputsHash = hashPayload(payload);
       const executionKey = `agent:${taskId}:${stepId}:compensation:1`;
+      database.query.mockReset();
+      database.query.mockResolvedValue({ rows: [], rowCount: 1 });
       database.query.mockResolvedValueOnce({
         rows: [{
           attempt_number: 1,
@@ -1443,6 +1445,8 @@ describe(
       const payload = { reason: 'completed compensation recovery' };
       const inputsHash = hashPayload(payload);
       const executionKey = `agent:${taskId}:${stepId}:compensation:1`;
+      database.query.mockReset();
+      database.query.mockResolvedValue({ rows: [], rowCount: 1 });
       database.query.mockResolvedValueOnce({
         rows: [{
           attempt_number: 1,
