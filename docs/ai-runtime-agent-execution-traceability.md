@@ -46,6 +46,10 @@ Agent action attempts are now persisted with one atomic `INSERT ... ON CONFLICT 
 
 Evaluation-result persistence uses the database's unique case_id + simulation_run_id identity as the atomic concurrency arbiter. If another request wins between the initial lookup and insert, the loser re-reads and returns the already-stored immutable result without emitting a second evaluation audit event. If the winner cannot be read back within the same tenant/factory scope, the request fails with a conflict rather than reporting an unpersisted evaluation.
 
+## Agent task deadline at the execution boundary
+
+Task deadlines are checked again by the atomic tool-call claim (`deadline_at > NOW()`) after authorization has completed. A deadline that expires during authorization therefore cannot reserve a new call and proceed into the governed Tool Gateway path; the same claim still enforces cancellation and the maximum tool-call budget. Unit coverage asserts that this database guard fails closed.
+
 ## Execution evidence and fail-closed correlation
 
 Agent task steps now expose a nullable, schema-versioned `executionEvidence` field backed by `agent_task_steps.execution_evidence`. When a durable execution returns, the runtime verifies its decision ID, action-intent ID, execution key, executor type, tool version, status and input hash against the authorization/step binding before treating the outcome as valid. The evidence records the task, step, decision, parent trace, action intent, execution record, execution key, tool/version, input hash, final status and a SHA-256 digest over the outcome status/result/error. Raw results remain in the existing `output` field; action tokens and payload contents are not copied into the evidence or its audit event.

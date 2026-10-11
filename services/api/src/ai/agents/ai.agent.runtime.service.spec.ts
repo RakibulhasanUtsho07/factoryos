@@ -580,6 +580,30 @@ describe(
       expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
+    it('conditions the final tool-call claim on an unexpired database deadline', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(
+        (service as any).claimToolCall(
+          tenantId,
+          factoryId,
+          userId,
+          task,
+          stepId,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      const queryCalls = (database.query as unknown as {
+        mock: { calls: unknown[][] };
+      }).mock.calls;
+      const sql = String(queryCalls[0]?.[0] ?? '');
+      expect(sql).toContain('AND deadline_at > NOW()');
+      expect(sql).toContain('AND cancel_requested_at IS NULL');
+      expect(sql).toContain('AND tool_call_count < max_tool_calls');
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+    });
+
     it('rejects a concurrent step execution when its optimistic claim loses the race', async () => {
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow();

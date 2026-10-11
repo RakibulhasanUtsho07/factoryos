@@ -2067,6 +2067,7 @@ export class AiAgentRuntimeService {
         AND factory_id = $3
         AND state = 'EXECUTING'
         AND cancel_requested_at IS NULL
+        AND deadline_at > NOW()
         AND tool_call_count < max_tool_calls
       `,
       [task.id, tenantId, factoryId, stepId],
@@ -2078,7 +2079,7 @@ export class AiAgentRuntimeService {
 
     if (result.rowCount !== 1) {
       throw new ConflictException(
-        'AI agent maximum-tool-call budget exceeded or task was cancelled before Tool Gateway execution',
+        'AI agent maximum-tool-call budget exceeded, task cancelled, or deadline expired before Tool Gateway execution',
       );
     }
   }
