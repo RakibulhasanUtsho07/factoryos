@@ -252,7 +252,7 @@ export class SaasUsageService {
  /** Runtime guard: only explicit non-critical AI classes can reach the pause gate. */
  async assertWorkloadExecutionAllowed(tenantId:string,factoryId:string,actorUserId:string,workloadClass:string):Promise<void> {
   this.scope(tenantId,actorUserId,factoryId);
-  const allowed=new Set(Object.values(SaasNonCriticalWorkloadClass));
+  const allowed=new Set<string>(Object.values(SaasNonCriticalWorkloadClass));
   if(!allowed.has(workloadClass))throw new ConflictException('Only an explicitly non-critical AI workload may use the budget pause gate');
   await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,new Date().toISOString());
   const latest=await this.database.query<QueryResultRow & {control_state:string;factory_id:string|null}>(
@@ -288,23 +288,23 @@ export class SaasUsageService {
        AND ($6::varchar IS NULL OR capability_code=$6) AND ($7::varchar IS NULL OR workload_class=$7)`,
     scoped,{tenantId,userId:actorUserId});
    const recent=await this.database.query<QueryResultRow & {recent_count:string|number;recent_cost:string|number;baseline_count:string|number;baseline_cost:string|number}>(
-    `SELECT COUNT(*) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$8)::bigint AS recent_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$8),0)::bigint AS recent_cost,
-       COUNT(*) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$8)::bigint AS baseline_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$8),0)::bigint AS baseline_cost
+    `SELECT COUNT(*) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS recent_count,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS recent_cost,
+       COUNT(*) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS baseline_count,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS baseline_cost
      FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2::timestamptz - INTERVAL '24 hours' AND occurred_at < $2
-       AND ($4::uuid IS NULL OR factory_id=$4) AND ($5::varchar IS NULL OR metric_code=$5)
-       AND ($6::varchar IS NULL OR capability_code=$6) AND ($7::varchar IS NULL OR workload_class=$7)`,
-    [tenantId,asOf,period.end,factoryScope,budget.metric_code,budget.capability_code,budget.workload_class,budget.currency],{tenantId,userId:actorUserId});
+       AND ($3::uuid IS NULL OR factory_id=$3) AND ($4::varchar IS NULL OR metric_code=$4)
+       AND ($5::varchar IS NULL OR capability_code=$5) AND ($6::varchar IS NULL OR workload_class=$6)`,
+    [tenantId,asOf,factoryScope,budget.metric_code,budget.capability_code,budget.workload_class,budget.currency],{tenantId,userId:actorUserId});
    const eventCount=Number(usage.rows[0]?.event_count??0),unpriced=Number(usage.rows[0]?.unpriced_count??0),cost=Number(usage.rows[0]?.cost_minor??0);
    const recentCount=Number(recent.rows[0]?.recent_count??0),recentCost=Number(recent.rows[0]?.recent_cost??0),baselineCount=Number(recent.rows[0]?.baseline_count??0),baselineCost=Number(recent.rows[0]?.baseline_cost??0);
    const baselineHourly=baselineCost/23;
    const anomaly=recentCount>=Number(budget.anomaly_min_events)&&baselineCount>=Number(budget.anomaly_min_events)&&baselineHourly>0&&recentCost>baselineHourly*Number(budget.anomaly_multiplier);
    const soft=Number(budget.soft_limit_minor),hard=Number(budget.hard_limit_minor);
-   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=unpriced>0?'UNPRICED_USAGE':cost>=hard?'HARD_LIMIT':anomaly?'ANOMALY':soft>0&&cost>=soft?'WARNING':'SAFE';
-   const snapshot={budgetId:budget.id,tenantId,factoryId:factoryScope,periodStart:period.start,periodEnd:period.end,evaluatedAt:asOf,eventCount,unpriced,usageCostMinor:cost,soft,hard,recentCost,baselineHourly,status};
+   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=cost>=hard&&(hard>0||cost>0)?'HARD_LIMIT':unpriced>0?'UNPRICED_USAGE':anomaly?'ANOMALY':soft>0&&cost>=soft?'WARNING':'SAFE';
+   const snapshot={budgetId:budget.id,tenantId,factoryId:factoryScope,periodStart:period.start,periodEnd:period.end,eventCount,unpriced,usageCostMinor:cost,soft,hard,recentCost,baselineHourly,status};
    const reportHash=this.hash(snapshot);
-   const key=this.idem('ev:'+budget.id+':'+new Date(period.start).getTime()+':'+status+':'+cost+':'+eventCount+':'+unpriced+':'+recentCost);
+   const key=this.idem('ev:'+budget.id+':'+this.hash(snapshot));
    const reqHash=this.hash({...snapshot,idempotencyKey:key});
    const inserted=await this.database.query<BudgetEvaluationRow>(
     'INSERT INTO saas_budget_evaluations(tenant_id,factory_id,budget_id,period_start,period_end,evaluated_at,event_count,unpriced_event_count,usage_cost_minor,soft_limit_minor,hard_limit_minor,anomaly_window_cost_minor,anomaly_baseline_hourly_minor,status,report_hash,idempotency_key,request_hash,evaluated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT DO NOTHING RETURNING '+this.budgetEvaluationColumns(),

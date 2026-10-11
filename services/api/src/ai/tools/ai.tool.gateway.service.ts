@@ -88,7 +88,7 @@ export class AiToolGatewayService {
         );
       }
 
-      const nonCriticalClasses = new Set([
+      const nonCriticalClasses = new Set<string>([
         'EVALUATION',
         'RED_TEAM',
         'SHADOW_MODE',

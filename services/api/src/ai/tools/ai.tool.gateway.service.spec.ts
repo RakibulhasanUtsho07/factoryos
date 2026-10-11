@@ -10,9 +10,6 @@ import {
   AiToolGatewayService,
 } from './ai.tool.gateway.service';
 
-import {
-  SaasUsageService,
-} from '../../saas/saas-usage.service';
 
 import type {
   AiToolActionContext,
