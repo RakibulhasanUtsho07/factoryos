@@ -158,15 +158,25 @@ The export worker now registers a concrete `SaasTenantPostgresDatasetSource`. It
 
 The current reviewed relation coverage is:
 
-- `BUSINESS_DATA`: legal entities, factories, orders/order lines/event projections, inventory items/balances/movements, CBB blueprints/versions/entities/relations/processes/steps/rules/terms/exceptions/change proposals/conflicts/feedback/ACL, and growth opportunities/scenarios/experiments.
+- `BUSINESS_DATA`: legal entities, factories, orders/order lines/event projections, inventory items/balances/movements, CBB blueprints/versions/entities/relations/processes/steps/rules/terms/exceptions/change proposals/conflicts/feedback, and growth opportunities/scenarios/experiments. IAM role/ACL grants are excluded and must be provisioned separately.
 - `AUDIT_LOG`: `audit_events`.
 - `EVIDENCE`: CBB evidence and evidence links plus growth-opportunity evidence.
 - `APPROVALS`: `approvals`.
 - `EFFECTIVE_DATED_MASTER_DATA`: risk classes, policies, usage rate cards, and usage budgets.
 - `AI_CONTEXT`: AI decision envelopes/context packages/verification runs and research sources/claims/claim links/knowledge releases/relevance mappings.
-- `LEARNING_EVALUATION`: AI outcome/learning signals and agent evaluation cases/results plus research-release evaluations and growth experiment/outcome results.
+- `LEARNING_EVALUATION`: research-release evaluations and growth experiment/outcome results. AI action execution/outcome-learning records and agent evaluation cases/results are excluded until their full dependency sets have reviewed export/import adapters.
 
 Auth identities, user credential material, message-queue internals, and the export/migration control-plane ledger are intentionally not copied as business rows. `INTEGRATION_METADATA` and `FILE_REFERENCES` remain valid optional category names but have no reviewed source adapter yet; requesting either category returns a service-unavailable error rather than claiming a successful empty export. The explicit allowlist must be reviewed whenever tenant-owned schema tables are added or changed.
 
 The PostgreSQL pipeline integration test seeds a disposable tenant with live factory, audit, evidence and effective-dated rate data, runs the real source through the AES-256-GCM/GZIP encrypted bundle store, recomputes all required category counts and hashes after authenticated decryption, and streams the verified payload through a test target-adapter implementation. This verifies the source/store/worker contract; it does **not** mean a production target database importer is registered. Migration execution still fails closed until a deployment supplies a governed target adapter that imports into the isolated target and returns an independently measured manifest. A local spool directory is not shared storage for multi-replica production deployments.
+
+### PostgreSQL target importer and immutable import receipts
+
+The concrete target adapter is now registered as SAAS_TENANT_MIGRATION_TARGET_ADAPTER. Configure SAAS_TRANSFER_TARGET_DATABASE_URL with a dedicated PostgreSQL target database; the adapter refuses to run when the setting is missing, checks that source and target are not the same database, and requires migration 053_saas_tenant_import_receipts on the target.
+
+The importer streams the canonical bundle one JSON row at a time into a transaction-local staging table, then inserts staged rows in reviewed foreign-key dependency order within a single target transaction. It uses tenant RLS context, explicit tenant predicates, an advisory lock per tenant/transfer, and an immutable receipt keyed by tenant and transfer. A retry with an existing matching receipt returns that receipt; a changed manifest for the same transfer conflicts. For a new receipt, the target's rows are read back independently and every available category count and SHA-256 digest must match the source manifest before receipt and data commit. Any import or verification failure rolls back the target transaction. Existing target rows in the selected relations are rejected rather than overwritten.
+
+This adapter intentionally supports exact-schema copies only: source_schema_version and target_schema_version must match. Cross-version COMPATIBLE rules still need an explicit transformation adapter; this implementation does not guess column transformations. The destination tenant and referenced user identities must be provisioned before import. It does not copy identity credentials, IAM roles/ACL grants, action-token hashes, integration secrets, file blobs, or unreviewed AI execution/evaluation dependencies. INTEGRATION_METADATA and FILE_REFERENCES still fail closed until adapters are implemented.
+
+The value returned as targetBundleReference is an opaque PostgreSQL import receipt reference, not a physical database backup. targetBundleDigest is the deterministic digest of the independently measured target snapshot manifest. Production disaster recovery must separately configure a database backup/snapshot service, shared encrypted object storage and KMS-managed key lifecycle; the import receipt is verification metadata, not a substitute for those facilities.
 
