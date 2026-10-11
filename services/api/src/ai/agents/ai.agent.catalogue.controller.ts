@@ -86,6 +86,8 @@ export class AiAgentCatalogueController {
         version: body.version,
         name: body.name,
         description: body.description ?? null,
+        language: body.language,
+        ownerUserId: body.owner_user_id ?? null,
         capability: body.capability,
         typicalOutput: body.typical_output,
         authority: body.authority,

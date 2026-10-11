@@ -56,6 +56,8 @@ interface AgentDefinitionRow extends QueryResultRow {
   version: string;
   name: string;
   description: string | null;
+  language: string;
+  owner_user_id: string | null;
   capability: string;
   typical_output: string;
   authority: string;
@@ -137,6 +139,34 @@ export class AiAgentCatalogueService {
     );
 
     const normalized = this.normalizeAgentDefinition(input);
+    const ownerUserId = input.ownerUserId ?? actorUserId;
+    this.validateUuid(ownerUserId, 'ownerUserId');
+
+    if (ownerUserId !== actorUserId) {
+      const ownerMembership = await this.database.query<{
+        user_id: string;
+      }>(
+        `
+        SELECT tm.user_id::text AS user_id
+        FROM tenant_memberships tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE
+          tm.tenant_id = $1
+          AND tm.user_id = $2
+          AND tm.status = 'ACTIVE'
+          AND u.status = 'ACTIVE'
+        LIMIT 1
+        `,
+        [tenantId, ownerUserId],
+        { tenantId, userId: actorUserId },
+      );
+
+      if (!ownerMembership.rows[0]) {
+        throw new ForbiddenException(
+          'Agent owner must be an active member of the same tenant',
+        );
+      }
+    }
 
     try {
       const result =
@@ -149,6 +179,8 @@ export class AiAgentCatalogueService {
             version,
             name,
             description,
+            language,
+            owner_user_id,
             capability,
             typical_output,
             authority,
@@ -180,7 +212,9 @@ export class AiAgentCatalogueService {
             $15,
             $16,
             $17,
-            $18
+            $18,
+            $19,
+            $20
           )
           RETURNING
             id::text AS id,
@@ -190,6 +224,8 @@ export class AiAgentCatalogueService {
             version,
             name,
             description,
+            language,
+            owner_user_id::text AS owner_user_id,
             capability,
             typical_output,
             authority,
@@ -212,6 +248,8 @@ export class AiAgentCatalogueService {
             normalized.version,
             normalized.name,
             normalized.description,
+            normalized.language,
+            ownerUserId,
             normalized.capability,
             normalized.typicalOutput,
             normalized.authority,
@@ -251,6 +289,8 @@ export class AiAgentCatalogueService {
           agentId: mapped.agentId,
           version: mapped.version,
           status: mapped.status,
+          language: mapped.language,
+          ownerUserId: mapped.ownerUserId,
           riskCeiling: mapped.riskCeiling,
           executionScopes: mapped.executionScopes,
           result: 'CREATED',
@@ -296,6 +336,8 @@ export class AiAgentCatalogueService {
           d.version,
           d.name,
           d.description,
+          d.language,
+          d.owner_user_id::text AS owner_user_id,
           d.capability,
           d.typical_output,
           d.authority,
@@ -569,6 +611,8 @@ export class AiAgentCatalogueService {
           d.version,
           d.name,
           d.description,
+          d.language,
+          d.owner_user_id::text AS owner_user_id,
           d.capability,
           d.typical_output,
           d.authority,
@@ -643,6 +687,8 @@ export class AiAgentCatalogueService {
           d.version,
           d.name,
           d.description,
+          d.language,
+          d.owner_user_id::text AS owner_user_id,
           d.capability,
           d.typical_output,
           d.authority,
@@ -1484,6 +1530,7 @@ export class AiAgentCatalogueService {
               'description',
               2000,
             ),
+      language: this.normalizeLanguage(input.language),
       capability: this.requiredString(
         input.capability,
         'capability',
@@ -1590,6 +1637,8 @@ export class AiAgentCatalogueService {
       version: row.version,
       name: row.name,
       description: row.description,
+      language: row.language ?? 'en',
+      ownerUserId: row.owner_user_id ?? null,
       capability: row.capability,
       typicalOutput: row.typical_output,
       authority: row.authority,
@@ -1683,6 +1732,33 @@ export class AiAgentCatalogueService {
         `${field} must be a valid UUID`,
       );
     }
+  }
+
+  private normalizeLanguage(value: unknown): string {
+    const raw = value === undefined || value === null ? 'en' : value;
+
+    if (typeof raw !== 'string') {
+      throw new BadRequestException('language must be a BCP 47 language tag');
+    }
+
+    const language = raw.trim();
+    if (
+      language.length > 35 ||
+      !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)
+    ) {
+      throw new BadRequestException(
+        'language must be a BCP 47 language tag such as en or bn-BD',
+      );
+    }
+
+    return language.split('-').map((part, index) => {
+      if (index === 0) return part.toLowerCase();
+      if (part.length === 2 && /^[A-Za-z]+$/.test(part)) return part.toUpperCase();
+      if (part.length === 4 && /^[A-Za-z]+$/.test(part)) {
+        return part[0]!.toUpperCase() + part.slice(1).toLowerCase();
+      }
+      return part.toLowerCase();
+    }).join('-');
   }
 
   private normalizeExecutionScopes(

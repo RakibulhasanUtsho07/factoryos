@@ -114,6 +114,8 @@ describe('AiAgentCatalogueController', () => {
         capability: 'Context reasoning',
         typical_output: 'FACT / EXPLANATION',
         authority: 'No write',
+        language: 'bn-BD',
+        owner_user_id: '33333333-3333-4333-8333-333333333333',
       },
     );
 
@@ -126,6 +128,8 @@ describe('AiAgentCatalogueController', () => {
       expect.objectContaining({
         agentId: 'graph-reasoner',
         version: '1.0.0',
+        language: 'bn-BD',
+        ownerUserId: '33333333-3333-4333-8333-333333333333',
         riskCeiling: undefined,
         status: undefined,
       }),

@@ -3,6 +3,7 @@ import {
 } from '@jest/globals';
 
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -432,6 +433,68 @@ describe('AiAgentCatalogueService', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
 
     expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+  });
+
+
+  it('stores a normalized language and defaults ownership to the authenticated creator', async () => {
+    authorizeMock.mockResolvedValue(undefined);
+    databaseQueryMock.mockResolvedValueOnce({
+      rows: [{
+        id: agentDefinitionId, tenant_id: tenantId, factory_id: factoryId,
+        agent_id: 'graph-reasoner', version: '2.0.0', name: 'Graph Reasoner',
+        description: null, language: 'bn-BD', owner_user_id: userId,
+        capability: 'Context reasoning', typical_output: 'FACT / EXPLANATION',
+        authority: 'No write', risk_ceiling: 'L0', execution_scopes: [],
+        status: 'DRAFT', max_steps: 20, max_retries: 3, max_tool_calls: 20,
+        timeout_ms: 60000, config: {}, created_by: userId,
+        created_at: '2026-10-11T00:00:00.000Z', updated_at: '2026-10-11T00:00:00.000Z',
+      }],
+    });
+
+    const result = await service.createAgentDefinition(tenantId, factoryId, userId, {
+      agentId: 'graph-reasoner', version: '2.0.0', name: 'Graph Reasoner',
+      description: null, language: 'bn-bd', capability: 'Context reasoning',
+      typicalOutput: 'FACT / EXPLANATION', authority: 'No write',
+    });
+
+    expect(result.language).toBe('bn-BD');
+    expect(result.ownerUserId).toBe(userId);
+    expect(databaseQueryMock).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO ai_agent_definitions'),
+      expect.arrayContaining(['bn-BD', userId]),
+      expect.objectContaining({ tenantId, userId }),
+    );
+    expect(auditRecordMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CREATE_VERSION',
+      payload: expect.objectContaining({ language: 'bn-BD', ownerUserId: userId }),
+    }));
+  });
+
+  it('rejects an owner who is not an active member of the same tenant', async () => {
+    authorizeMock.mockResolvedValue(undefined);
+    databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    await expect(service.createAgentDefinition(tenantId, factoryId, userId, {
+      agentId: 'graph-reasoner', version: '2.0.0', name: 'Graph Reasoner',
+      language: 'en', ownerUserId: '66666666-6666-4666-8666-666666666666',
+      capability: 'Context reasoning', typicalOutput: 'FACT / EXPLANATION',
+      authority: 'No write',
+    })).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+    expect(databaseQueryMock.mock.calls[0]?.[0]).toContain('FROM tenant_memberships tm');
+  });
+
+  it('rejects malformed language tags instead of silently storing them', async () => {
+    authorizeMock.mockResolvedValue(undefined);
+
+    await expect(service.createAgentDefinition(tenantId, factoryId, userId, {
+      agentId: 'graph-reasoner', version: '2.0.0', name: 'Graph Reasoner',
+      language: 'english!', capability: 'Context reasoning',
+      typicalOutput: 'FACT / EXPLANATION', authority: 'No write',
+    })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(databaseQueryMock).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate versioned agent definitions as conflict', async () => {

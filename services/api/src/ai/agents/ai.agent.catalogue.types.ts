@@ -42,6 +42,8 @@ export interface CreateAiAgentDefinitionInput {
   version: string;
   name: string;
   description?: string | null;
+  language?: string;
+  ownerUserId?: string | null;
   capability: string;
   typicalOutput: string;
   authority: string;
@@ -63,6 +65,8 @@ export interface AiAgentDefinition {
   version: string;
   name: string;
   description: string | null;
+  language: string;
+  ownerUserId: string | null;
   capability: string;
   typicalOutput: string;
   authority: string;
