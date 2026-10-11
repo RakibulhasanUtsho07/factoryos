@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,11 +7,12 @@ import { Pool } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import { REQUIRED_TRANSFER_CATEGORIES } from './dto/create-saas-schema-compatibility-rule.dto';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
-import type { SaasTenantMigrationTargetAdapter, SaasTenantTransferExportManifest } from './saas-tenant-data-transfer.adapters';
+import type { SaasTenantTransferExportManifest } from './saas-tenant-data-transfer.adapters';
+import { SaasTenantPostgresMigrationTargetAdapter } from './saas-tenant-postgres-migration-target.adapter';
 import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { SaasTenantDataTransferWorkerService } from './saas-tenant-data-transfer.worker';
 
-const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL && process.env.DATABASE_URL ? describe : describe.skip;
+const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL && process.env.DATABASE_URL && process.env.SAAS_TRANSFER_TARGET_DATABASE_URL ? describe : describe.skip;
 
 interface ParsedExportBundle {
   format: string;
@@ -23,7 +24,9 @@ interface ParsedExportBundle {
 describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
   postgresDescribe('live PostgreSQL source plus encrypted artifact and target-adapter contract', () => {
     let adminPool: Pool;
+    let targetAdminPool: Pool;
     let database: DatabaseService;
+    let targetAdapter: SaasTenantPostgresMigrationTargetAdapter;
     let bundleStore: SaasEncryptedTenantBundleStore;
     let bundleDirectory: string;
     let encryptionKey: string;
@@ -34,6 +37,7 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
 
     beforeAll(async () => {
       adminPool = new Pool({ connectionString: process.env.TEST_ADMIN_DATABASE_URL });
+      targetAdminPool = new Pool({ connectionString: process.env.SAAS_TRANSFER_TARGET_DATABASE_URL });
       database = new DatabaseService({
         get: (key: string) => key === 'DATABASE_URL' ? process.env.DATABASE_URL : undefined,
       } as never);
@@ -69,6 +73,8 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       } else if (adminPool) {
         await adminPool.end();
       }
+      if (targetAdapter) await targetAdapter.onModuleDestroy();
+      if (targetAdminPool) await targetAdminPool.end();
       if (database) await database.onModuleDestroy();
       if (bundleDirectory) await rm(bundleDirectory, { recursive: true, force: true });
     }, 60000);
@@ -90,6 +96,17 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         [tenantId, 'xfer-' + tenantId.slice(0, 8), 'Transfer Integration Tenant', 'ACTIVE', 'Asia/Dhaka', 'en-BD'],
       );
       await adminPool.query(
+        'INSERT INTO users (id, external_subject, email, display_name, status) VALUES ($1, $2, $3, $4, $5)',
+        [userId, 'xfer-' + userId, 'xfer-' + userId + '@factoryos.test', 'Transfer integration actor', 'ACTIVE'],
+      );
+
+      // The target is a separate database. Pre-provision only tenant and identity rows;
+      // all selected tenant domain data must be imported by the production adapter.
+      await targetAdminPool.query(
+        'INSERT INTO tenants (id, slug, name, status, timezone, default_locale) VALUES ($1, $2, $3, $4, $5, $6)',
+        [tenantId, 'xfer-' + tenantId.slice(0, 8), 'Transfer Integration Tenant', 'ACTIVE', 'Asia/Dhaka', 'en-BD'],
+      );
+      await targetAdminPool.query(
         'INSERT INTO users (id, external_subject, email, display_name, status) VALUES ($1, $2, $3, $4, $5)',
         [userId, 'xfer-' + userId, 'xfer-' + userId + '@factoryos.test', 'Transfer integration actor', 'ACTIVE'],
       );
@@ -187,37 +204,12 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       };
 
       const source = new SaasTenantPostgresDatasetSource(database);
-      const target: SaasTenantMigrationTargetAdapter = {
-        async importBundle(input) {
-          const chunks: Buffer[] = [];
-          for await (const chunk of input.sourceBundle) chunks.push(Buffer.from(chunk));
-          const bytes = Buffer.concat(chunks);
-          const parsed = JSON.parse(bytes.toString('utf8')) as ParsedExportBundle;
-          expect(parsed.format).toBe('FACTORYOS_TENANT_EXPORT');
-          expect(parsed.tenantId).toBe(tenantId);
-
-          for (const category of input.requiredCategories) {
-            const rows = parsed.datasets[category];
-            expect(Array.isArray(rows)).toBe(true);
-            const hash = createHash('sha256');
-            for (const row of rows) {
-              hash.update(JSON.stringify(row), 'utf8');
-              hash.update('\n', 'utf8');
-            }
-            expect(input.sourceManifest[category]?.record_count).toBe(rows.length);
-            expect(input.sourceManifest[category]?.sha256).toBe(hash.digest('hex'));
-          }
-
-          const targetArtifact = await bundleStore.put((async function* () {
-            yield bytes;
-          })());
-          return {
-            targetBundleReference: targetArtifact.reference,
-            targetBundleDigest: targetArtifact.digest,
-            targetManifest: input.sourceManifest,
-          };
-        },
-      };
+      targetAdapter = new SaasTenantPostgresMigrationTargetAdapter({
+        get: (key: string) => key === 'SAAS_TRANSFER_TARGET_DATABASE_URL'
+          ? process.env.SAAS_TRANSFER_TARGET_DATABASE_URL
+          : undefined,
+      } as never, database);
+      const target = targetAdapter;
 
       const worker = new SaasTenantDataTransferWorkerService(
         transferLedger as never,
@@ -247,8 +239,31 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       };
       expect(imported.transfer.status).toBe('COMPLETED');
       expect(imported.transfer.preservationVerified).toBe(true);
-      expect(imported.transfer.targetBundleReference).toMatch(/^bundle-/);
+      expect(imported.transfer.targetBundleReference).toMatch(/^pgimport:/);
       expect(transferLedger.transitionMigration).toHaveBeenCalledTimes(2);
+      const targetFactory = await targetAdminPool.query(
+        'SELECT id FROM factories WHERE tenant_id = $1::uuid AND id = $2::uuid',
+        [tenantId, factoryId],
+      );
+      const targetEvidence = await targetAdminPool.query(
+        'SELECT id FROM business_evidence WHERE tenant_id = $1::uuid',
+        [tenantId],
+      );
+      const targetAudit = await targetAdminPool.query(
+        'SELECT id FROM audit_events WHERE tenant_id = $1::uuid AND action = $2',
+        [tenantId, 'EXPORT_PIPELINE_INTEGRATION'],
+      );
+      const receipt = await targetAdminPool.query(
+        'SELECT tenant_id, transfer_id, source_manifest, target_manifest, target_snapshot_digest ' +
+          'FROM saas_tenant_import_receipts WHERE tenant_id = $1::uuid AND transfer_id = $2::uuid',
+        [tenantId, migrationId],
+      );
+      expect(targetFactory.rowCount).toBe(1);
+      expect(targetEvidence.rowCount).toBe(1);
+      expect(targetAudit.rowCount).toBe(1);
+      expect(receipt.rowCount).toBe(1);
+      expect(receipt.rows[0].target_manifest).toEqual(receipt.rows[0].source_manifest);
+      expect(receipt.rows[0].target_snapshot_digest).toMatch(/^[a-f0-9]{64}$/);
     }, 60000);
   });
 });
