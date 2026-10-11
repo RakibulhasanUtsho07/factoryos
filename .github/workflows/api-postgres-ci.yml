@@ -132,6 +132,8 @@ jobs:
             migrations/032_research_source_text_content.sql
             migrations/033_research_claim_evidence_graph.sql
             migrations/034_research_retrieval_search_indexes.sql
+            migrations/035_growth_opportunity_registry.sql
+            migrations/036_growth_scenarios_experiments.sql
           )
           for migration in "${post_seed_migrations[@]}"; do
             echo "Applying $migration"
