@@ -292,7 +292,8 @@ BEGIN
     END IF;
   ELSIF OLD.status = 'ACTIVE' AND NEW.status = 'ACTIVE' THEN
     expected_event_type := 'RENEWED';
-    IF NEW.current_period_start IS NOT DISTINCT FROM OLD.current_period_start
+    IF NEW.current_period_start IS NULL OR NEW.current_period_end IS NULL
+       OR NEW.current_period_start IS NOT DISTINCT FROM OLD.current_period_start
        OR NEW.current_period_end IS NOT DISTINCT FROM OLD.current_period_end
        OR (OLD.current_period_end IS NOT NULL AND NEW.current_period_start < OLD.current_period_end)
        OR NEW.current_period_end <= NEW.current_period_start THEN
