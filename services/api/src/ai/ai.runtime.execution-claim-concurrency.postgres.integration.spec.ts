@@ -713,6 +713,125 @@ describeWithPostgres(
     }, 30_000);
 
     it(
+      'rejects simulation lineage that crosses sandbox scope',
+      async () => {
+        const db = await getTestPool().connect();
+        const parentSandboxId = randomUUID();
+        const childSandboxId = randomUUID();
+        const parentRunId = randomUUID();
+        const childRunId = randomUUID();
+        let transactionOpen = false;
+
+        try {
+          await db.query('BEGIN');
+          transactionOpen = true;
+          await applyAppContext(
+            db,
+            tenantId,
+            actorUserId,
+            'b19_simulation_parent_scope',
+          );
+
+          await db.query(
+            `
+            INSERT INTO public.agent_sandboxes (
+              id, tenant_id, factory_id, name, agent_spec, created_by
+            )
+            VALUES
+              ($1, $3, $4, 'Parent sandbox scope test',
+               '{"agentId":"AGENT.TEST","version":"1.0.0"}'::jsonb, $5),
+              ($2, $3, $4, 'Child sandbox scope test',
+               '{"agentId":"AGENT.TEST","version":"1.0.0"}'::jsonb, $5)
+            `,
+            [
+              parentSandboxId,
+              childSandboxId,
+              tenantId,
+              factoryId,
+              actorUserId,
+            ],
+          );
+
+          await db.query(
+            `
+            INSERT INTO public.simulation_runs (
+              id, tenant_id, factory_id, sandbox_id
+            )
+            VALUES ($1, $2, $3, $4)
+            `,
+            [parentRunId, tenantId, factoryId, parentSandboxId],
+          );
+
+          await db.query('SAVEPOINT cross_sandbox_child');
+          await expect(
+            db.query(
+              `
+              INSERT INTO public.simulation_runs (
+                id, tenant_id, factory_id, sandbox_id, parent_run_id
+              )
+              VALUES ($1, $2, $3, $4, $5)
+              `,
+              [
+                childRunId,
+                tenantId,
+                factoryId,
+                childSandboxId,
+                parentRunId,
+              ],
+            ),
+          ).rejects.toMatchObject({ code: '23503' });
+          await db.query('ROLLBACK TO SAVEPOINT cross_sandbox_child');
+
+          // Replay and branch children in the same sandbox remain valid.
+          await db.query(
+            `
+            INSERT INTO public.simulation_runs (
+              id, tenant_id, factory_id, sandbox_id, parent_run_id
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            `,
+            [
+              childRunId,
+              tenantId,
+              factoryId,
+              parentSandboxId,
+              parentRunId,
+            ],
+          );
+
+          const lineage = await db.query<{
+            id: string;
+            sandbox_id: string;
+            parent_run_id: string | null;
+          }>(
+            `
+            SELECT id::text AS id, sandbox_id::text AS sandbox_id,
+                   parent_run_id::text AS parent_run_id
+            FROM public.simulation_runs
+            WHERE id IN ($1, $2)
+            ORDER BY created_at, id
+            `,
+            [parentRunId, childRunId],
+          );
+          expect(lineage.rows).toHaveLength(2);
+          expect(lineage.rows.find((row) => row.id === childRunId)).toMatchObject({
+            sandbox_id: parentSandboxId,
+            parent_run_id: parentRunId,
+          });
+
+          await db.query('COMMIT');
+          transactionOpen = false;
+        } finally {
+          if (transactionOpen) {
+            await db.query('ROLLBACK').catch(() => undefined);
+          }
+          db.release();
+        }
+      },
+      30_000,
+    );
+
+    it(
       'keeps task and step definitions immutable while allowing execution state changes',
       async () => {
         const fixture = await createClaimFixture();
