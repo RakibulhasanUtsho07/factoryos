@@ -264,7 +264,29 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  IF (projected ->> 'capacity_utilization_pct')::numeric > capacity_limit
+  IF NEW.output_snapshot #>> '{constraintGate,decisionReady}' IS DISTINCT FROM 'true'
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,0,maximumAllowed}')::numeric IS DISTINCT FROM capacity_limit
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,1,minimumAllowed}')::numeric IS DISTINCT FROM quality_limit
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,2,minimumReserve}')::numeric IS DISTINCT FROM cash_reserve
+    OR upper(NEW.output_snapshot #>> '{constraintGate,checks,2,expectedCurrency}') IS DISTINCT FROM expected_currency
+    OR upper(NEW.output_snapshot #>> '{constraintGate,checks,2,currency}') IS DISTINCT FROM upper(projected ->> 'cash_currency')
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,3,maximumAllowed}')::numeric IS DISTINCT FROM delivery_limit
+    OR NEW.output_snapshot #>> '{constraintGate,checks,0,sourceRef}' IS DISTINCT FROM constraint_snapshot #>> '{capacity,source_ref}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,1,sourceRef}' IS DISTINCT FROM constraint_snapshot #>> '{quality,source_ref}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,2,sourceRef}' IS DISTINCT FROM constraint_snapshot #>> '{cash,source_ref}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,3,sourceRef}' IS DISTINCT FROM constraint_snapshot #>> '{delivery,source_ref}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,0,asOf}' IS DISTINCT FROM constraint_snapshot #>> '{capacity,as_of}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,1,asOf}' IS DISTINCT FROM constraint_snapshot #>> '{quality,as_of}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,2,asOf}' IS DISTINCT FROM constraint_snapshot #>> '{cash,as_of}'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,3,asOf}' IS DISTINCT FROM constraint_snapshot #>> '{delivery,as_of}'
+    OR (projected ->> 'capacity_utilization_pct')::numeric < 0
+    OR (projected ->> 'capacity_utilization_pct')::numeric > 1000
+    OR (projected ->> 'quality_yield_pct')::numeric < 0
+    OR (projected ->> 'quality_yield_pct')::numeric > 100
+    OR abs((projected ->> 'cash_after_investment')::numeric) > 1000000000000
+    OR (projected ->> 'delivery_backlog_days')::numeric < 0
+    OR (projected ->> 'delivery_backlog_days')::numeric > 36500
+    OR (projected ->> 'capacity_utilization_pct')::numeric > capacity_limit
     OR (projected ->> 'quality_yield_pct')::numeric < quality_limit
     OR (projected ->> 'cash_after_investment')::numeric < cash_reserve
     OR upper(projected ->> 'cash_currency') <> expected_currency
