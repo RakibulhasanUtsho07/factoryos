@@ -117,6 +117,7 @@ jobs:
             migrations/033_ai_agent_handoff_contract_immutability.sql
             migrations/034_ai_agent_handoff_lifecycle.sql
             migrations/035_ai_agent_task_contract_immutability.sql
+            migrations/036_ai_agent_task_request_hash.sql
           )
 
           for migration in "${migrations[@]}"; do
