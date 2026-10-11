@@ -1601,6 +1601,15 @@ export class AiAgentRuntimeService {
         'Compensation action was not authorized',
       );
     }
+    this.assertAuthorizationMatchesCompensation(
+      action,
+      tenantId,
+      factoryId,
+      task.decision_id,
+      tool.rollback,
+      step,
+      compensationPayload,
+    );
 
     const actionToken = authorization.actionToken;
     if (typeof actionToken !== 'string') {
@@ -1635,6 +1644,18 @@ export class AiAgentRuntimeService {
           inputsHash: action.payloadHash as string,
         },
       );
+    const compensationEvidence = this.buildExecutionEvidence({
+      task,
+      step,
+      actionIntentId: action.id as string,
+      executionRecordId,
+      executionKey,
+      outcome,
+      toolId: tool.rollback.toolId,
+      executionKind: 'COMPENSATION',
+      sourceExecutionRecordId: step.execution_record_id,
+      attemptNumber,
+    });
 
     await this.recordAttempt(
       tenantId,
@@ -1663,6 +1684,7 @@ export class AiAgentRuntimeService {
         rollbackToolId: tool.rollback.toolId,
         rollbackVersion: tool.rollback.toolVersion,
         rollbackActionType: tool.rollback.actionType,
+        compensationEvidence,
       },
     );
 
@@ -1670,6 +1692,7 @@ export class AiAgentRuntimeService {
       attempted: true,
       status: outcome.status,
       outcome,
+      executionEvidence: compensationEvidence,
     };
   }
 
@@ -2253,9 +2276,14 @@ export class AiAgentRuntimeService {
     executionRecordId: string;
     executionKey: string;
     outcome: AiToolExecutionOutcome;
+    toolId?: string;
+    executionKind?: AiAgentExecutionEvidence['executionKind'];
+    sourceExecutionRecordId?: string | null;
+    attemptNumber?: number;
   }): AiAgentExecutionEvidence {
     return {
       schemaVersion: 1,
+      executionKind: input.executionKind ?? 'STEP',
       taskId: input.task.id,
       stepId: input.step.id,
       decisionId: input.task.decision_id,
@@ -2263,7 +2291,7 @@ export class AiAgentRuntimeService {
       actionIntentId: input.actionIntentId,
       executionRecordId: input.executionRecordId,
       executionKey: input.executionKey,
-      toolId: input.step.tool_id,
+      toolId: input.toolId ?? input.step.tool_id,
       toolVersion: input.outcome.toolVersion,
       executorType: input.outcome.executorType,
       inputsHash: input.outcome.inputsHash,
@@ -2273,7 +2301,55 @@ export class AiAgentRuntimeService {
         result: input.outcome.result,
         error: input.outcome.error,
       }),
+      ...(input.executionKind === 'COMPENSATION'
+        ? {
+            sourceExecutionRecordId: input.sourceExecutionRecordId ?? null,
+            attemptNumber: input.attemptNumber,
+          }
+        : {}),
     };
+  }
+
+  private assertAuthorizationMatchesCompensation(
+    action: Record<string, unknown>,
+    tenantId: string,
+    factoryId: string,
+    decisionId: string,
+    rollback: { toolId: string; toolVersion: string; actionType: string },
+    step: AgentTaskStepRow,
+    payload: Record<string, unknown>,
+  ): void {
+    const actionPayloadMatches =
+      action.payload !== null &&
+      typeof action.payload === 'object' &&
+      !Array.isArray(action.payload) &&
+      this.computeHash(action.payload) === this.computeHash(payload);
+    const targetMatches =
+      action.target !== null &&
+      typeof action.target === 'object' &&
+      !Array.isArray(action.target) &&
+      this.computeHash(action.target) === this.computeHash(step.target);
+
+    const bindingMatches =
+      typeof action.id === 'string' &&
+      action.id.length > 0 &&
+      action.tenantId === tenantId &&
+      action.factoryId === factoryId &&
+      action.decisionId === decisionId &&
+      action.actionType === rollback.actionType &&
+      action.toolId === rollback.toolId &&
+      action.toolVersion === rollback.toolVersion &&
+      (action.resourceType ?? null) === (step.resource_type ?? null) &&
+      (action.resourceId ?? null) === (step.resource_id ?? null) &&
+      actionPayloadMatches &&
+      targetMatches &&
+      action.payloadHash === this.computeHash(payload);
+
+    if (!bindingMatches) {
+      throw new ConflictException(
+        'Compensation authorization does not match the registered rollback contract',
+      );
+    }
   }
 
   private assertAuthorizationMatchesStep(

@@ -1157,7 +1157,110 @@ describe(
       expect(result).toMatchObject({
         attempted: true,
         status: 'SUCCEEDED',
+        executionEvidence: {
+          schemaVersion: 1,
+          executionKind: 'COMPENSATION',
+          taskId,
+          stepId,
+          decisionId,
+          parentTraceId: traceId,
+          actionIntentId,
+          executionRecordId: 'bf1a2222-2222-4222-8222-222222222222',
+          executionKey: expectedKey,
+          toolId: 'AI.RUNTIME.NOOP',
+          toolVersion: '1.0.0',
+          executorType: 'AGENT_RUNTIME',
+          inputsHash: compensationHash,
+          outcomeStatus: 'SUCCEEDED',
+          sourceExecutionRecordId: 'bf1a2222-2222-4222-8222-222222222222',
+          attemptNumber: 1,
+        },
       });
+      expect(JSON.stringify(result.executionEvidence)).not.toContain('compensation-token');
+      expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'AI_AGENT_COMPENSATION',
+        action: 'SUCCEEDED',
+        resourceId: stepId,
+        correlationId: traceId,
+        payload: expect.objectContaining({
+          compensationEvidence: expect.objectContaining({
+            actionIntentId,
+            executionKey: expectedKey,
+            executionRecordId: 'bf1a2222-2222-4222-8222-222222222222',
+            sourceExecutionRecordId: 'bf1a2222-2222-4222-8222-222222222222',
+          }),
+        }),
+      }));
+    });
+
+    it('rejects compensation authorization bound to a different rollback tool', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({ status: 'SUCCEEDED' });
+      const registeredTool = {
+        ...gatewayOutcome().tool,
+        rollback: {
+          type: 'COMPENSATION',
+          toolId: 'AI.RUNTIME.NOOP',
+          toolVersion: '1.0.0',
+          actionType: 'AI.RUNTIME.NOOP',
+        },
+      };
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      toolRegistry.getTool.mockResolvedValue(registeredTool);
+      database.query.mockResolvedValueOnce({ rows: [{ max_number: null }], rowCount: 1 });
+      const payload = { reason: 'wrongly bound compensation' };
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action({ payload, payloadHash: hashPayload(payload), toolId: 'AI.RUNTIME.OTHER' }),
+        actionToken: 'compensation-token',
+      });
+
+      await expect(
+        service.compensateStep(tenantId, factoryId, userId, taskId, stepId, payload),
+      ).rejects.toThrow('Compensation authorization does not match the registered rollback contract');
+
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+      expect((service as any).recordAttempt).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the compensation execution record is bound to another action intent', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const sourceExecutionId = 'bf1a2222-2222-4222-8222-222222222222';
+      const step = stepRow({ status: 'SUCCEEDED', execution_record_id: sourceExecutionId });
+      const registeredTool = {
+        ...gatewayOutcome().tool,
+        rollback: {
+          type: 'COMPENSATION',
+          toolId: 'AI.RUNTIME.NOOP',
+          toolVersion: '1.0.0',
+          actionType: 'AI.RUNTIME.NOOP',
+        },
+      };
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      toolRegistry.getTool.mockResolvedValue(registeredTool);
+      database.query.mockResolvedValueOnce({ rows: [{ max_number: null }], rowCount: 1 });
+      const payload = { reason: 'verified compensation retry' };
+      const payloadHash = hashPayload(payload);
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action({ payload, payloadHash }),
+        actionToken: 'compensation-token',
+      });
+      const execution = agentExecutionResult(
+        gatewayOutcome(payloadHash),
+        `agent:${taskId}:${stepId}:compensation:1`,
+      ).execution;
+      aiRuntimeService.executeAgentAction.mockResolvedValue({
+        idempotent: false,
+        execution: { ...execution, actionIntentId: 'af1a2222-2222-4222-8222-222222222222' },
+      });
+
+      await expect(
+        service.compensateStep(tenantId, factoryId, userId, taskId, stepId, payload),
+      ).rejects.toThrow('AI execution record does not match the bound agent action');
+
+      expect(aiRuntimeService.executeAgentAction).toHaveBeenCalledTimes(1);
+      expect((service as any).recordAttempt).not.toHaveBeenCalled();
     });
 
     it('fails closed when a non-NONE rollback contract is incomplete', async () => {

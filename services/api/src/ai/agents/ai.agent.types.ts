@@ -122,6 +122,7 @@ export interface AiAgentTask {
 
 export interface AiAgentExecutionEvidence {
   schemaVersion: 1;
+  executionKind: 'STEP' | 'COMPENSATION';
   taskId: string;
   stepId: string;
   decisionId: string;
@@ -135,6 +136,8 @@ export interface AiAgentExecutionEvidence {
   inputsHash: string;
   outcomeStatus: 'SUCCEEDED' | 'FAILED';
   outcomeHash: string;
+  sourceExecutionRecordId?: string | null;
+  attemptNumber?: number;
 }
 
 /* ============================================================
