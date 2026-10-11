@@ -151,3 +151,22 @@ Migration `050_saas_release_rollouts.sql` adds the **FR-SAAS2-05** control plane
 Canary assignment is deterministic from a SHA-256 hash of the rollout key and a caller-supplied stable subject key; raw subject keys are not persisted. Resolution prefers agent, module, factory, then organization scope. A subject outside a canary cohort falls back to production at the same scope when available, then to broader scopes. Pausing removes a rollout from resolution; resuming restores its last live stage; rollback adds a new immutable version rather than rewriting any prior release.
 
 The resolver is a **control-plane API**, not proof that every application path has switched versions: each runtime/module/agent adapter must call `resolveEffectiveRelease` at its execution boundary and implement the resulting artifact routing. This slice does not deploy binaries/models by itself. AI-agent publication already has its own simulation-gated CANARY/PRODUCTION workflow; this SaaS release registry covers the broader organization/factory/module/agent target hierarchy.
+
+### PostgreSQL dataset adapters and transfer pipeline verification
+
+The export worker now registers a concrete `SaasTenantPostgresDatasetSource`. It uses a reviewed table allowlist and selects the live FactoryOS tenant-owned rows directly from PostgreSQL. Each category is read in a read-only `REPEATABLE READ` transaction, with transaction-local `app.tenant_id` / `app.user_id` context, an explicit `tenant_id` predicate, and UUID keyset pagination (500 rows per page). Returned records carry a `__factoryos_table` discriminator so a target adapter can map data to reviewed relations without trusting caller-supplied table names. PostgreSQL `NUMERIC` fields remain strings rather than being rounded through JSON-number parsing.
+
+The current reviewed relation coverage is:
+
+- `BUSINESS_DATA`: legal entities, factories, orders/order lines/event projections, inventory items/balances/movements, CBB blueprints/versions/entities/relations/processes/steps/rules/terms/exceptions/change proposals/conflicts/feedback/ACL, and growth opportunities/scenarios/experiments.
+- `AUDIT_LOG`: `audit_events`.
+- `EVIDENCE`: CBB evidence and evidence links plus growth-opportunity evidence.
+- `APPROVALS`: `approvals`.
+- `EFFECTIVE_DATED_MASTER_DATA`: risk classes, policies, usage rate cards, and usage budgets.
+- `AI_CONTEXT`: AI decision envelopes/context packages/verification runs and research sources/claims/claim links/knowledge releases/relevance mappings.
+- `LEARNING_EVALUATION`: AI outcome/learning signals and agent evaluation cases/results plus research-release evaluations and growth experiment/outcome results.
+
+Auth identities, user credential material, message-queue internals, and the export/migration control-plane ledger are intentionally not copied as business rows. `INTEGRATION_METADATA` and `FILE_REFERENCES` remain valid optional category names but have no reviewed source adapter yet; requesting either category returns a service-unavailable error rather than claiming a successful empty export. The explicit allowlist must be reviewed whenever tenant-owned schema tables are added or changed.
+
+The PostgreSQL pipeline integration test seeds a disposable tenant with live factory, audit, evidence and effective-dated rate data, runs the real source through the AES-256-GCM/GZIP encrypted bundle store, recomputes all required category counts and hashes after authenticated decryption, and streams the verified payload through a test target-adapter implementation. This verifies the source/store/worker contract; it does **not** mean a production target database importer is registered. Migration execution still fails closed until a deployment supplies a governed target adapter that imports into the isolated target and returns an independently measured manifest. A local spool directory is not shared storage for multi-replica production deployments.
+
