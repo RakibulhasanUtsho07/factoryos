@@ -212,14 +212,14 @@ export class SaasUsageService {
  }
 
  async evaluateBudgets(tenantId:string,factoryId:string|null,actorUserId:string,asOf?:string) {
-  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read',factoryId??undefined);
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');
   const evaluatedAt=this.timestamp(asOf??new Date().toISOString(),'as_of');
   const evaluations=await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,evaluatedAt);
   return {evaluatedAt,budgetCount:evaluations.length,evaluations,semantics:'USAGE_COST_ESTIMATE_NOT_AN_INVOICE'};
  }
 
  async listBudgetEvaluations(tenantId:string,factoryId:string|null,actorUserId:string,limit=25,offset=0) {
-  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read',factoryId??undefined);this.page(limit,offset);
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');this.page(limit,offset);
   const r=await this.database.query<BudgetEvaluationRow>('SELECT '+this.budgetEvaluationColumns()+' FROM saas_budget_evaluations WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) ORDER BY evaluated_at DESC,id DESC LIMIT $3 OFFSET $4',[tenantId,factoryId,limit,offset],{tenantId,userId:actorUserId});
   return {count:r.rows.length,evaluations:r.rows.map(x=>this.mapBudgetEvaluation(x)),limit,offset};
  }
@@ -242,7 +242,7 @@ export class SaasUsageService {
  }
 
  async listWorkloadControls(tenantId:string,factoryId:string|null,actorUserId:string) {
-  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read',factoryId??undefined);
+  this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.budgets.read');
   const q=await this.database.query<QueryResultRow & {id:string;factory_id:string|null;workload_class:string;control_state:string;source:string;reason_code:string;created_at:string}>(
    'SELECT DISTINCT ON (factory_id,workload_class) id::text AS id,factory_id::text AS factory_id,workload_class,control_state,source,reason_code,created_at::text AS created_at FROM saas_workload_control_events WHERE tenant_id=$1 AND (factory_id IS NULL OR ($2::uuid IS NOT NULL AND factory_id=$2)) ORDER BY factory_id,workload_class,created_at DESC,id DESC',
    [tenantId,factoryId],{tenantId,userId:actorUserId});
