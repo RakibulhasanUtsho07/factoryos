@@ -692,7 +692,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
   }
 }
 
-class TenantExportTextReader {
+export class TenantExportTextReader {
   private readonly iterator: AsyncIterator<Buffer>;
   private buffer = '';
   private offset = 0;
