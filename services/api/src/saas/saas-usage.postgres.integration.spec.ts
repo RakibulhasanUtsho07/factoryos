@@ -52,6 +52,28 @@ describe('SaasUsageService PostgreSQL integration',()=>{
   expect(controls.controls.some((x:any)=>x.state==='PAUSED'&&x.workloadClass==='DEVELOPMENT')).toBe(true);
   await expect(service.assertWorkloadExecutionAllowed(tenantId,factoryId,userId,'DEVELOPMENT')).rejects.toThrow('paused');
   await expect(service.assertWorkloadExecutionAllowed(tenantId,factoryId,userId,'PRODUCTION')).rejects.toThrow();
+  const inbox=await service.listBudgetAlerts(tenantId,factoryId,userId,25,0,true);
+  const hardAlert=inbox.alerts.find((a:any)=>a.type==='HARD_LIMIT');
+  expect(hardAlert).toBeDefined();
+  await service.acknowledgeBudgetAlert(tenantId,factoryId,userId,hardAlert.id,{idempotency_key:'alert-ack-'+n} as never);
+  const unread=await service.listBudgetAlerts(tenantId,factoryId,userId,25,0,true);
+  expect(unread.alerts.some((a:any)=>a.id===hardAlert.id)).toBe(false);
+ });
+
+ it('records provider-reported AI costs idempotently and reconciles them to a provider invoice',async()=>{
+  const n=randomUUID(),now=new Date(),start=new Date(now);start.setUTCHours(0,0,0,0);const end=new Date(start.getTime()+86400000);
+  const occurredAt=now.toISOString(),periodStart=start.toISOString(),periodEnd=end.toISOString(),invoice='OPENAI-'+n;
+  const input={provider_code:'openai',model_code:'gpt-test',metric_code:'AI_INPUT_TOKEN' as never,workload_class:'PRODUCTION' as never,quantity:3000,currency:'USD',provider_cost_minor:150,occurred_at:occurredAt,provider_invoice_reference:invoice,source_system:'PROVIDER_EXPORT' as never,source_event_ref:'provider-event:'+n,idempotency_key:'provider-cost-'+n};
+  const first=await service.recordProviderCostEvent(tenantId,factoryId,userId,input as never);
+  expect(first.event.providerCostMinor).toBe('150');
+  const duplicate=await service.recordProviderCostEvent(tenantId,factoryId,userId,input as never);
+  expect(duplicate.idempotent).toBe(true);
+  const reconciled=await service.reconcileProviderCostInvoice(tenantId,factoryId,userId,{provider_code:'openai',invoice_reference:invoice,reconciliation_version:1,period_start:periodStart,period_end:periodEnd,currency:'USD',invoiced_provider_cost_minor:150,idempotency_key:'provider-reconcile-'+n} as never);
+  expect(reconciled.reconciliation.status).toBe('MATCHED');
+  expect(reconciled.reconciliation.varianceMinor).toBe('0');
+  const differentInvoiceTotal=await service.reconcileProviderCostInvoice(tenantId,factoryId,userId,{provider_code:'openai',invoice_reference:invoice,reconciliation_version:2,period_start:periodStart,period_end:periodEnd,currency:'USD',invoiced_provider_cost_minor:175,idempotency_key:'provider-reconcile-var-'+n} as never);
+  expect(differentInvoiceTotal.reconciliation.status).toBe('VARIANCE');
+  expect(differentInvoiceTotal.reconciliation.varianceMinor).toBe('25');
  });
 
 });

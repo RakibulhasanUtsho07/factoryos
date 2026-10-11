@@ -633,5 +633,25 @@ describe(
       },
     );
 
+
+    it(
+      'meters a non-critical execution and returns a failed outcome when the budget gate blocks it',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({ metadata: { workloadClass: 'DEVELOPMENT' } }),
+        );
+        saasUsageService.assertWorkloadExecutionAllowed.mockRejectedValueOnce(
+          new ForbiddenException('Non-critical AI workload is paused by SaaS budget controls'),
+        );
+
+        const result = await gateway.execute(buildAction());
+
+        expect(result.status).toBe('FAILED');
+        expect(result.error.code).toBe('SAAS_WORKLOAD_PAUSED');
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledTimes(1);
+        expect(saasUsageService.assertWorkloadExecutionAllowed).toHaveBeenCalledTimes(1);
+      },
+    );
+
   },
 );
