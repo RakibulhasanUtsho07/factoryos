@@ -172,6 +172,24 @@ export class AiAgentController {
     );
   }
 
+  @Post('handoffs/:id/accept')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.authorize')
+  @RequireFactoryScope()
+  async acceptHandoff(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) handoffId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.acceptHandoff(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      handoffId,
+    );
+  }
+
   private getAuthenticatedFactoryContext(
     request: FactoryOsRequest,
   ): {

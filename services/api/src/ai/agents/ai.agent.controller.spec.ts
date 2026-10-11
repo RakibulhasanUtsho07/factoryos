@@ -8,12 +8,14 @@ describe('AiAgentController', () => {
   const getTaskMock = jest.fn();
   const cancelTaskMock = jest.fn();
   const createHandoffMock = jest.fn();
+  const acceptHandoffMock = jest.fn();
 
   const runtime = {
     createTask: createTaskMock,
     getTask: getTaskMock,
     cancelTask: cancelTaskMock,
     createHandoff: createHandoffMock,
+    acceptHandoff: acceptHandoffMock,
   };
 
   const controller = new AiAgentController(runtime as never);
@@ -37,6 +39,7 @@ describe('AiAgentController', () => {
     getTaskMock.mockResolvedValue({ task: { id: 'task-1' }, steps: [] });
     cancelTaskMock.mockResolvedValue({ id: 'task-1', state: 'CANCELLED' });
     createHandoffMock.mockResolvedValue({ id: 'handoff-1' });
+    acceptHandoffMock.mockResolvedValue({ id: 'handoff-1', status: 'ACCEPTED' });
   });
 
   it('creates a task using authenticated trace context and mapped DTO fields', async () => {
@@ -129,6 +132,19 @@ describe('AiAgentController', () => {
         targetAgentId: 'target-agent-1',
         parentTraceId: request.factoryos.traceId,
       }),
+    );
+  });
+
+  it('accepts a handoff in the authenticated factory scope', async () => {
+    const handoffId = '99999999-9999-4999-8999-999999999999';
+
+    await controller.acceptHandoff(request as never, handoffId);
+
+    expect(acceptHandoffMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      handoffId,
     );
   });
 
