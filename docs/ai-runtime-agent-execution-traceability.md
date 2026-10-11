@@ -50,6 +50,10 @@ Evaluation-result persistence uses the database's unique case_id + simulation_ru
 
 Task deadlines are checked again by the atomic tool-call claim (`deadline_at > NOW()`) after authorization has completed. A deadline that expires during authorization therefore cannot reserve a new call and proceed into the governed Tool Gateway path; the same claim still enforces cancellation and the maximum tool-call budget. Unit coverage asserts that this database guard fails closed.
 
+## Task creation deadline is checked at the insert boundary
+
+Task creation resolves its deadline before opening the database transaction, so authorization, lookups, and transaction scheduling can consume some of that time. The task INSERT now uses `INSERT ... SELECT ... WHERE deadline_at > NOW()` and returns no row if the deadline has elapsed by the time PostgreSQL attempts to create the task. The runtime converts that condition to a conflict and rolls back the transaction, preventing step rows or a creation audit from being produced for an already-expired task. The unit regression test covers the no-row branch and checks that the time predicate is part of the INSERT.
+
 ## Persisted handoff contract and lifecycle integrity
 
 PostgreSQL now rejects updates to the handoff's identity, source/target agents, purpose, allowed data classes, permitted tools, expiry, trace, expected artifact, content hash, and creation timestamp. Lifecycle updates are constrained to a single transition from `PENDING` to `ACCEPTED`, `REJECTED`, or `EXPIRED`; acceptance metadata may only be established together with `PENDING -> ACCEPTED`. The PostgreSQL integration test verifies contract/hash mutation failures and rejects reopening an accepted handoff.
