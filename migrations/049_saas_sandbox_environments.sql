@@ -55,6 +55,7 @@ CREATE TABLE saas_sandbox_environments (
   CONSTRAINT chk_saas_sandbox_mode CHECK(data_mode IN ('SYNTHETIC','MASKED')),
   CONSTRAINT chk_saas_sandbox_status CHECK(status IN ('PENDING_APPROVAL','ACTIVE','SUSPENDED','RETIRED')),
   CONSTRAINT chk_saas_sandbox_version CHECK(version BETWEEN 1 AND 9223372036854775807),
+  CONSTRAINT chk_saas_sandbox_requester CHECK(approval_requested_by = created_by),
   CONSTRAINT chk_saas_sandbox_manifest CHECK(
     jsonb_typeof(dataset_manifest) = 'object'
     AND octet_length(dataset_manifest::text) <= 16384
@@ -74,6 +75,7 @@ CREATE TABLE saas_sandbox_environments (
       AND dataset_manifest ? 'generator'
       AND dataset_manifest ? 'generator_version'
       AND dataset_manifest ? 'schema_version'
+      AND dataset_manifest ? 'seed'
       AND jsonb_typeof(dataset_manifest->'record_count') = 'number'
       AND status IN ('ACTIVE','SUSPENDED','RETIRED'))
     OR
@@ -110,13 +112,15 @@ CREATE TABLE saas_sandbox_environments (
         OR
         (approved_by IS NOT NULL AND approved_by <> created_by
           AND approval_reason IS NOT NULL AND length(btrim(approval_reason)) BETWEEN 1 AND 1000
-          AND approved_at IS NOT NULL AND approval_expires_at > approved_at)
+          AND approved_at IS NOT NULL AND approval_expires_at > approved_at
+          AND approval_expires_at <= approved_at + interval '90 days')
       ))
     OR
     (data_mode = 'MASKED' AND status IN ('ACTIVE','SUSPENDED')
       AND approved_by IS NOT NULL AND approved_by <> created_by
       AND approval_reason IS NOT NULL AND length(btrim(approval_reason)) BETWEEN 1 AND 1000
-      AND approved_at IS NOT NULL AND approval_expires_at > approved_at)
+      AND approved_at IS NOT NULL AND approval_expires_at > approved_at
+      AND approval_expires_at <= approved_at + interval '90 days')
   ),
   CONSTRAINT chk_saas_sandbox_idempotency CHECK(idempotency_key ~ '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$'),
   CONSTRAINT chk_saas_sandbox_request_hash CHECK(request_hash ~ '^[a-f0-9]{64}$')
@@ -218,6 +222,7 @@ BEGIN
     AND NEW.approved_by <> NEW.created_by
     AND NEW.approved_at IS NOT NULL
     AND NEW.approval_expires_at > clock_timestamp()
+    AND NEW.approval_expires_at <= clock_timestamp() + interval '90 days'
     AND NEW.approval_reason IS NOT NULL THEN
     RETURN NEW;
   ELSIF OLD.status = 'PENDING_APPROVAL' AND NEW.status = 'RETIRED' THEN
@@ -256,6 +261,7 @@ BEGIN
     AND NEW.approved_by IS NOT NULL
     AND NEW.approved_by <> NEW.created_by
     AND NEW.approval_expires_at > clock_timestamp()
+    AND NEW.approval_expires_at <= clock_timestamp() + interval '90 days'
     AND NEW.approved_at IS NOT NULL
     AND NEW.approval_reason IS NOT NULL
     AND NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
