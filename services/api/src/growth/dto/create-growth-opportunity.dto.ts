@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayMinSize, IsArray, IsIn, IsNotEmpty, IsNumber, IsObject,
+  ArrayMinSize, IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject,
   IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 import { CreateOpportunityEvidenceDto } from './create-opportunity-evidence.dto';
@@ -67,7 +67,7 @@ export class CreateGrowthOpportunityDto {
   effort!: string;
 
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @Min(0)
   @Max(3650)
   time_to_impact_days!: number;

@@ -1,5 +1,5 @@
 import {
-  IsArray, IsBoolean, IsIn, IsNotEmpty, IsObject, IsOptional,
+  IsArray, IsBoolean, IsDateString, IsIn, IsNotEmpty, IsObject, IsOptional,
   IsString, IsUrl, MaxLength,
 } from 'class-validator';
 
@@ -22,7 +22,7 @@ export class CreateResearchSourceDto {
   authors?: string[];
 
   @IsOptional()
-  @IsString()
+  @IsDateString()
   publication_date?: string;
 
   @IsOptional()

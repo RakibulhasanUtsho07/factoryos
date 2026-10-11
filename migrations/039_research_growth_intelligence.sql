@@ -261,7 +261,7 @@ BEGIN
     RETURN OLD;
   END IF;
 
-  IF OLD.status = 'PROMOTED' THEN
+  IF TG_OP = 'UPDATE' AND OLD.status = 'PROMOTED' THEN
     RAISE EXCEPTION 'Promoted research knowledge releases are immutable'
       USING ERRCODE = '55000';
   END IF;
@@ -284,7 +284,7 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER research_knowledge_releases_guard
-BEFORE UPDATE OR DELETE ON research_knowledge_releases
+BEFORE INSERT OR UPDATE OR DELETE ON research_knowledge_releases
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_release();
 
 CREATE TABLE research_relevance_mappings (
@@ -302,6 +302,7 @@ CREATE TABLE research_relevance_mappings (
   created_by UUID NOT NULL,
   reviewed_by UUID,
   reviewed_at TIMESTAMPTZ,
+  review_reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_research_relevance_scope UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT fk_research_relevance_factory FOREIGN KEY (factory_id, tenant_id)
@@ -310,6 +311,7 @@ CREATE TABLE research_relevance_mappings (
     REFERENCES research_claims(id) ON DELETE RESTRICT,
   CONSTRAINT fk_research_relevance_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_research_relevance_reviewer FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_research_relevance_review CHECK ((status = 'PROPOSED' AND reviewed_by IS NULL AND reviewed_at IS NULL) OR (status <> 'PROPOSED' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)),
   CONSTRAINT chk_research_relevance_rationale CHECK (length(btrim(relevance_rationale)) > 0),
   CONSTRAINT chk_research_relevance_client_evidence CHECK (jsonb_typeof(client_evidence) = 'array'),
   CONSTRAINT chk_research_relevance_counter_evidence CHECK (jsonb_typeof(counter_evidence) = 'array'),
@@ -318,6 +320,92 @@ CREATE TABLE research_relevance_mappings (
   CONSTRAINT chk_research_relevance_status CHECK (status IN ('PROPOSED', 'ACCEPTED', 'REJECTED'))
 );
 CREATE INDEX idx_research_relevance_claim ON research_relevance_mappings (tenant_id, factory_id, research_claim_id);
+
+CREATE OR REPLACE FUNCTION factoryos_guard_research_claim_approval()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  source_status TEXT;
+  source_license TEXT;
+  source_rights TEXT;
+BEGIN
+  IF NEW.status = 'APPROVED' THEN
+    IF NEW.evidence_grade = 'UNASSESSED'
+      OR NEW.reviewed_by IS NULL OR NEW.reviewed_at IS NULL
+      OR jsonb_typeof(NEW.provenance_ref) <> 'object'
+      OR NEW.provenance_ref = '{}'::jsonb THEN
+      RAISE EXCEPTION 'Research claims require an evidence grade, citation locator and reviewer before approval'
+        USING ERRCODE = '23514';
+    END IF;
+
+    SELECT access_status, license_status, rights_basis
+      INTO source_status, source_license, source_rights
+    FROM research_sources
+    WHERE id = NEW.source_id AND namespace = NEW.namespace
+      AND (tenant_id IS NOT DISTINCT FROM NEW.tenant_id);
+
+    IF NOT FOUND OR source_status <> 'APPROVED'
+      OR source_license NOT IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+      OR source_rights IS NULL OR length(btrim(source_rights)) = 0 THEN
+      RAISE EXCEPTION 'Research claims require an approved source with documented reuse rights'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER research_claim_approval_guard
+BEFORE INSERT OR UPDATE ON research_claims
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_claim_approval();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_research_relevance()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  claim_status TEXT;
+  source_status TEXT;
+  entity_state TEXT;
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status THEN
+    IF OLD.status <> 'PROPOSED' OR NEW.status NOT IN ('ACCEPTED', 'REJECTED') THEN
+      RAISE EXCEPTION 'Invalid research relevance decision transition'
+        USING ERRCODE = '23514';
+    END IF;
+    IF NEW.reviewed_by IS NULL OR NEW.reviewed_at IS NULL THEN
+      RAISE EXCEPTION 'Research relevance decisions require a reviewer'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
+  SELECT c.status, s.access_status
+    INTO claim_status, source_status
+  FROM research_claims c
+  JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+  WHERE c.id = NEW.research_claim_id
+    AND (c.tenant_id IS NULL OR c.tenant_id = NEW.tenant_id);
+
+  IF NOT FOUND OR claim_status <> 'APPROVED' OR source_status <> 'APPROVED' THEN
+    RAISE EXCEPTION 'Research relevance mappings require an approved visible research claim'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT state INTO entity_state FROM business_entities
+  WHERE id = NEW.business_entity_id AND tenant_id = NEW.tenant_id
+    AND factory_id = NEW.factory_id AND state IN ('VERIFIED', 'INFERRED');
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Research relevance mapping must target a visible verified or inferred CBB node'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER research_relevance_guard
+BEFORE INSERT OR UPDATE ON research_relevance_mappings
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_relevance();
 
 CREATE TABLE growth_opportunities (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -455,6 +543,48 @@ CREATE TRIGGER growth_opportunity_evidence_immutable
 BEFORE UPDATE OR DELETE ON growth_opportunity_evidence
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_growth_snapshot_mutation();
 
+CREATE OR REPLACE FUNCTION factoryos_guard_growth_evidence_scope()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  claim_ok BOOLEAN;
+  entity_ok BOOLEAN;
+BEGIN
+  IF NEW.evidence_type = 'RESEARCH_CLAIM' THEN
+    SELECT EXISTS (
+      SELECT 1
+      FROM research_claims c
+      JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+      WHERE c.id = NEW.research_claim_id
+        AND c.status = 'APPROVED'
+        AND s.access_status = 'APPROVED'
+        AND (c.tenant_id IS NULL OR c.tenant_id = NEW.tenant_id)
+    ) INTO claim_ok;
+    IF NOT claim_ok THEN
+      RAISE EXCEPTION 'Growth research evidence must be an approved, visible, rights-cleared claim'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF NEW.evidence_type = 'CBB_ENTITY' THEN
+    SELECT EXISTS (
+      SELECT 1 FROM business_entities
+      WHERE id = NEW.business_entity_id
+        AND tenant_id = NEW.tenant_id
+        AND factory_id = NEW.factory_id
+        AND state IN ('VERIFIED', 'INFERRED')
+    ) INTO entity_ok;
+    IF NOT entity_ok THEN
+      RAISE EXCEPTION 'Growth CBB evidence must be visible and verified/inferred'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER growth_evidence_scope_guard
+BEFORE INSERT ON growth_opportunity_evidence
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_evidence_scope();
+
 CREATE TABLE growth_experiments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -511,6 +641,7 @@ CREATE TABLE growth_experiment_results (
   CONSTRAINT fk_growth_result_experiment FOREIGN KEY (experiment_id, tenant_id, factory_id)
     REFERENCES growth_experiments(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_growth_result_actor FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT uq_growth_experiment_result_scope UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT chk_growth_result_pre CHECK (jsonb_typeof(pre_measurements) = 'object'),
   CONSTRAINT chk_growth_result_post CHECK (jsonb_typeof(post_measurements) = 'object'),
   CONSTRAINT chk_growth_result_assessment CHECK (assessment IN ('POSITIVE', 'NEUTRAL', 'NEGATIVE', 'INCONCLUSIVE')),
@@ -533,7 +664,7 @@ CREATE TABLE growth_opportunity_outcomes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT fk_growth_outcome_opportunity FOREIGN KEY (opportunity_id, tenant_id, factory_id)
     REFERENCES growth_opportunities(id, tenant_id, factory_id) ON DELETE RESTRICT,
-  CONSTRAINT fk_growth_outcome_result FOREIGN KEY (experiment_result_id) REFERENCES growth_experiment_results(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_growth_outcome_result FOREIGN KEY (experiment_result_id, tenant_id, factory_id) REFERENCES growth_experiment_results(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_growth_outcome_actor FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_growth_outcome_assessment CHECK (assessment IN ('POSITIVE', 'NEUTRAL', 'NEGATIVE', 'INCONCLUSIVE')),
   CONSTRAINT chk_growth_outcome_metrics CHECK (jsonb_typeof(realized_metrics) = 'object'),

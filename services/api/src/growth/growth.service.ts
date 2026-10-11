@@ -106,6 +106,8 @@ export class GrowthService {
           if (!node.rows[0]) throw new BadRequestException('Every affected business-model node must be visible in this factory and verified/inferred');
         }
 
+        const ownerUserId = dto.owner_user_id ?? userId;
+        await this.assertActiveTenantUser(client, tenantId, ownerUserId);
         const inserted = await client.query<OpportunityRow>(
           `
           INSERT INTO growth_opportunities (
@@ -132,7 +134,7 @@ export class GrowthService {
             JSON.stringify(dto.constraints_snapshot ?? {}), JSON.stringify(affectedNodes),
             dto.expected_value_low, dto.expected_value_high, currency, dto.uncertainty_pct,
             dto.effort, dto.time_to_impact_days, dto.implementation_risk,
-            dto.owner_user_id ?? userId, userId,
+            ownerUserId, userId,
           ],
         );
         const created = inserted.rows[0];
@@ -411,6 +413,8 @@ export class GrowthService {
         if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
           throw new ConflictException('Experiments require an accepted or in-progress growth opportunity');
         }
+        const ownerUserId = dto.owner_user_id ?? userId;
+        await this.assertActiveTenantUser(client, tenantId, ownerUserId);
         const inserted = await client.query(
           `
           INSERT INTO growth_experiments (
@@ -428,7 +432,7 @@ export class GrowthService {
           [
             tenantId, factoryId, opportunityId, dto.name.trim(), dto.objective.trim(),
             dto.hypothesis.trim(), JSON.stringify(dto.leading_indicators.map(v => v.trim())),
-            dto.duration_days, dto.owner_user_id ?? userId, JSON.stringify(dto.baseline_measurements),
+            dto.duration_days, ownerUserId, JSON.stringify(dto.baseline_measurements),
             JSON.stringify(dto.stop_conditions.map(v => v.trim())), userId,
           ],
         );
@@ -794,6 +798,20 @@ export class GrowthService {
         'The input baseline is accepted as supplied and must be independently reconciled against the named baseline source.',
       ],
     };
+  }
+
+  private async assertActiveTenantUser(
+    client: PoolClient,
+    tenantId: string,
+    userId: string,
+  ) {
+    const membership = await client.query<{ user_id: string }>(
+      'SELECT u.id::text AS user_id FROM users u JOIN tenant_memberships tm ON tm.user_id = u.id WHERE u.id = $1 AND tm.tenant_id = $2 AND tm.status = $3 AND u.status = $4 LIMIT 1',
+      [userId, tenantId, 'ACTIVE', 'ACTIVE'],
+    );
+    if (!membership.rows[0]) {
+      throw new ForbiddenException('Owner must be an active user in the current tenant');
+    }
   }
 
   private async insertOutbox(
