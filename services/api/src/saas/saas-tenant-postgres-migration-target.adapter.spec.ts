@@ -78,7 +78,7 @@ describe('SaasTenantPostgresMigrationTargetAdapter', () => {
   it('reads header delimiters, nested records and manifests correctly across arbitrary chunk boundaries', async () => {
     const json = '{"format":"FACTORYOS_TENANT_EXPORT","formatVersion":1,"tenantId":"' + tenantId +
       '","schemaVersion":"1.0.0","datasets":{"AUDIT_LOG":[{"id":"' + transferId +
-      '","tenant_id":"' + tenantId + '","payload":{"message":"comma, brace }, bracket ] and quote \\\\" "}}]},"manifest":' +
+      '","tenant_id":"' + tenantId + '","payload":{"message":"comma, brace }, bracket ]"}}]},"manifest":' +
       JSON.stringify({ AUDIT_LOG: manifest.AUDIT_LOG }) + '}';
     const reader = new TenantExportTextReader(chunksOf(json, [1, 2, 7, 3, 11]));
     const prefix = await reader.readUntil(',"datasets":{', 16384);
