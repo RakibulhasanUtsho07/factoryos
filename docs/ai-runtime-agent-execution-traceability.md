@@ -54,6 +54,10 @@ Task deadlines are checked again by the atomic tool-call claim (`deadline_at > N
 
 Task creation resolves its deadline before opening the database transaction, so authorization, lookups, and transaction scheduling can consume some of that time. The task INSERT now uses `INSERT ... SELECT ... WHERE deadline_at > NOW()` and returns no row if the deadline has elapsed by the time PostgreSQL attempts to create the task. The runtime converts that condition to a conflict and rolls back the transaction, preventing step rows or a creation audit from being produced for an already-expired task. The unit regression test covers the no-row branch and checks that the time predicate is part of the INSERT.
 
+## Task and step execution contracts are immutable
+
+The database now rejects updates to task-defining fields after creation, including the tenant/factory/decision/actor binding, task goal and budgets, deadline, context/plan fingerprints, idempotency key, request fingerprint, and creation timestamp. It also rejects edits to step identity, capability and schemas, selected tool/version, action type, target/payload, resource/risk bindings, timeout/retry budget, authority level, dependencies, and creation timestamp. Runtime-owned fields—such as task/step state, retry and tool-call counters, approval references, execution evidence, output/error, timestamps, and version—remain available for controlled lifecycle updates. PostgreSQL integration coverage proves attempts to extend a task deadline or rewrite step payload/tool are rejected, while ordinary cancellation state updates still succeed.
+
 ## Persisted handoff contract and lifecycle integrity
 
 PostgreSQL now rejects updates to the handoff's identity, source/target agents, purpose, allowed data classes, permitted tools, expiry, trace, expected artifact, content hash, and creation timestamp. Lifecycle updates are constrained to a single transition from `PENDING` to `ACCEPTED`, `REJECTED`, or `EXPIRED`; acceptance metadata may only be established together with `PENDING -> ACCEPTED`. The PostgreSQL integration test verifies contract/hash mutation failures and rejects reopening an accepted handoff.
