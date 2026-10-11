@@ -153,6 +153,11 @@ BEGIN
     AND factory_id = NEW.factory_id
   FOR SHARE;
 
+  IF NEW.inputs -> 'constraints_snapshot' IS DISTINCT FROM constraint_snapshot THEN
+    RAISE EXCEPTION 'Scenario constraints snapshot must equal the opportunity snapshot used at run time'
+      USING ERRCODE = '23514';
+  END IF;
+
   projected := NEW.inputs -> 'projected_constraint_metrics';
   IF constraint_snapshot IS NULL OR projected IS NULL
     OR jsonb_typeof(projected) IS DISTINCT FROM 'object' THEN
@@ -177,6 +182,30 @@ BEGIN
     OR COALESCE(length(btrim(constraint_snapshot #>> '{cash,as_of}')), 0) = 0
     OR COALESCE(length(btrim(constraint_snapshot #>> '{delivery,as_of}')), 0) = 0 THEN
     RAISE EXCEPTION 'A decision-ready scenario requires dated, referenced constraints'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NOT EXISTS (
+      SELECT 1 FROM growth_opportunity_evidence e
+      WHERE e.opportunity_id = NEW.opportunity_id AND e.tenant_id = NEW.tenant_id AND e.factory_id = NEW.factory_id
+        AND (e.reference_ref = constraint_snapshot #>> '{capacity,source_ref}' OR e.citation_url = constraint_snapshot #>> '{capacity,source_ref}')
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM growth_opportunity_evidence e
+      WHERE e.opportunity_id = NEW.opportunity_id AND e.tenant_id = NEW.tenant_id AND e.factory_id = NEW.factory_id
+        AND (e.reference_ref = constraint_snapshot #>> '{quality,source_ref}' OR e.citation_url = constraint_snapshot #>> '{quality,source_ref}')
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM growth_opportunity_evidence e
+      WHERE e.opportunity_id = NEW.opportunity_id AND e.tenant_id = NEW.tenant_id AND e.factory_id = NEW.factory_id
+        AND (e.reference_ref = constraint_snapshot #>> '{cash,source_ref}' OR e.citation_url = constraint_snapshot #>> '{cash,source_ref}')
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM growth_opportunity_evidence e
+      WHERE e.opportunity_id = NEW.opportunity_id AND e.tenant_id = NEW.tenant_id AND e.factory_id = NEW.factory_id
+        AND (e.reference_ref = constraint_snapshot #>> '{delivery,source_ref}' OR e.citation_url = constraint_snapshot #>> '{delivery,source_ref}')
+    ) THEN
+    RAISE EXCEPTION 'Each constraint must reference evidence attached to this opportunity'
       USING ERRCODE = '23514';
   END IF;
 
@@ -214,6 +243,24 @@ BEGIN
     OR expected_currency !~ '^[A-Z]{3}$'
     OR delivery_limit IS NULL OR delivery_limit < 0 THEN
     RAISE EXCEPTION 'A decision-ready scenario has invalid constraint limits'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF jsonb_typeof(NEW.output_snapshot #> '{constraintGate,checks}') IS DISTINCT FROM 'array'
+    OR jsonb_array_length(NEW.output_snapshot #> '{constraintGate,checks}') <> 4
+    OR NEW.output_snapshot #>> '{constraintGate,checks,0,dimension}' IS DISTINCT FROM 'capacity'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,1,dimension}' IS DISTINCT FROM 'quality'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,2,dimension}' IS DISTINCT FROM 'cash'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,3,dimension}' IS DISTINCT FROM 'delivery'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,0,passed}' IS DISTINCT FROM 'true'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,1,passed}' IS DISTINCT FROM 'true'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,2,passed}' IS DISTINCT FROM 'true'
+    OR NEW.output_snapshot #>> '{constraintGate,checks,3,passed}' IS DISTINCT FROM 'true'
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,0,projected}')::numeric IS DISTINCT FROM (projected ->> 'capacity_utilization_pct')::numeric
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,1,projected}')::numeric IS DISTINCT FROM (projected ->> 'quality_yield_pct')::numeric
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,2,projected}')::numeric IS DISTINCT FROM (projected ->> 'cash_after_investment')::numeric
+    OR (NEW.output_snapshot #>> '{constraintGate,checks,3,projected}')::numeric IS DISTINCT FROM (projected ->> 'delivery_backlog_days')::numeric THEN
+    RAISE EXCEPTION 'A decision-ready scenario must persist four passing checks for the exact projected inputs'
       USING ERRCODE = '23514';
   END IF;
 

@@ -218,7 +218,7 @@ export class GrowthService {
         { tenantId },
       ),
       this.database.query(
-        'SELECT id::text AS id, scenario_name, scenario_type, model_version, data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, created_at::text AS created_at FROM growth_scenarios WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
+        'SELECT id::text AS id, scenario_name, scenario_type, model_version, data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, decision_ready, created_at::text AS created_at FROM growth_scenarios WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
         [opportunityId, tenantId, factoryId],
         { tenantId },
       ),
@@ -344,6 +344,7 @@ export class GrowthService {
         AND ($4::boolean OR status NOT IN ('RESOLVED', 'NOT_MATERIAL'))
       ORDER BY CASE WHEN status IN ('RESOLVED', 'NOT_MATERIAL') THEN 1 ELSE 0 END,
         priority_score DESC, created_at
+      LIMIT 100
       `,
       [opportunityId, tenantId, factoryId, includeResolved],
       { tenantId },
@@ -536,14 +537,25 @@ export class GrowthService {
         if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
           throw new ConflictException('Scenarios may only be run against accepted or in-progress hypotheses');
         }
+        const evidenceResult = await client.query<{ reference_ref: string | null; citation_url: string | null }>(
+          'SELECT reference_ref, citation_url FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
+          [opportunityId, tenantId, factoryId],
+        );
+        const evidenceReferences = new Set(
+          evidenceResult.rows.flatMap(item => [item.reference_ref, item.citation_url])
+            .filter((ref): ref is string => typeof ref === 'string' && ref.trim().length > 0)
+            .map(ref => ref.trim()),
+        );
         const constraintGate = this.evaluateConstraintGate(
           opportunity.rows[0].constraints_snapshot,
           dto.projected_constraint_metrics as unknown as Record<string, unknown> | undefined,
+          evidenceReferences,
         );
         const snapshotOutput = { ...output, constraintGate };
         const fullInputs = {
           ...inputs,
           projected_constraint_metrics: dto.projected_constraint_metrics ?? null,
+          constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
         };
         inputHash = createHash('sha256').update(JSON.stringify({
           modelVersion, dataVintage: vintage.toISOString(),
@@ -1004,6 +1016,7 @@ export class GrowthService {
   private evaluateConstraintGate(
     snapshot: Record<string, unknown> | null | undefined,
     projected: Record<string, unknown> | undefined,
+    evidenceReferences: Set<string> = new Set<string>(),
   ) {
     const required = [
       'capacity', 'quality', 'cash', 'delivery',
@@ -1023,7 +1036,7 @@ export class GrowthService {
       const sourceRef = text(obj, 'source_ref');
       const asOf = text(obj, 'as_of');
       const time = asOf ? new Date(asOf).getTime() : Number.NaN;
-      return Boolean(sourceRef) && Number.isFinite(time) && time <= Date.now() + 5 * 60 * 1000;
+      return Boolean(sourceRef) && evidenceReferences.has(sourceRef!) && Number.isFinite(time) && time <= Date.now() + 5 * 60 * 1000;
     };
 
     for (const key of required) {
