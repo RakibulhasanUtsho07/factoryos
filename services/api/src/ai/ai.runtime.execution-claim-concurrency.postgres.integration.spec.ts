@@ -713,6 +713,146 @@ describeWithPostgres(
     }, 30_000);
 
     it(
+      'keeps agent handoff contract fields immutable and terminal decisions one-way',
+      async () => {
+        const db = await getTestPool().connect();
+        const handoffId = randomUUID();
+        const parentTraceId = randomUUID();
+        const originalHash = 'a'.repeat(64);
+        let transactionOpen = false;
+
+        try {
+          await db.query('BEGIN');
+          transactionOpen = true;
+
+          await applyAppContext(
+            db,
+            tenantId,
+            actorUserId,
+            'b19_agent_handoff_integrity',
+          );
+
+          await db.query(
+            `
+            INSERT INTO public.agent_handoffs (
+              id,
+              tenant_id,
+              factory_id,
+              source_agent_id,
+              target_agent_id,
+              purpose,
+              allowed_data_classes,
+              permitted_tools,
+              expires_at,
+              parent_trace_id,
+              expected_artifact,
+              handoff_hash
+            )
+            VALUES (
+              $1, $2, $3, 'AGENT.TEST.SOURCE', 'AGENT.TEST.TARGET',
+              'Verify handoff integrity', ARRAY['INTERNAL']::text[],
+              ARRAY['AI.RUNTIME.NOOP@1.0.0']::text[],
+              NOW() + INTERVAL '1 hour', $4, '{"type":"integrity-test"}'::jsonb, $5
+            )
+            `,
+            [handoffId, tenantId, factoryId, parentTraceId, originalHash],
+          );
+
+          await db.query('SAVEPOINT handoff_contract_mutation');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_handoffs
+              SET permitted_tools = ARRAY['AI.RUNTIME.TAMPERED@1.0.0']::text[]
+              WHERE id = $1
+              `,
+              [handoffId],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT handoff_contract_mutation');
+
+          await db.query('SAVEPOINT handoff_hash_mutation');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_handoffs
+              SET handoff_hash = $2
+              WHERE id = $1
+              `,
+              [handoffId, 'f'.repeat(64)],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT handoff_hash_mutation');
+
+          const unchanged = await db.query<{
+            permitted_tools: string[];
+            handoff_hash: string;
+            status: string;
+          }>(
+            `
+            SELECT permitted_tools, handoff_hash, status
+            FROM public.agent_handoffs
+            WHERE id = $1
+            `,
+            [handoffId],
+          );
+          expect(unchanged.rows[0]).toMatchObject({
+            permitted_tools: ['AI.RUNTIME.NOOP@1.0.0'],
+            handoff_hash: originalHash,
+            status: 'PENDING',
+          });
+
+          await db.query(
+            `
+            UPDATE public.agent_handoffs
+            SET status = 'ACCEPTED', accepted_by = $2, accepted_at = NOW()
+            WHERE id = $1
+            `,
+            [handoffId, actorUserId],
+          );
+
+          await db.query('SAVEPOINT handoff_terminal_reversal');
+          await expect(
+            db.query(
+              `
+              UPDATE public.agent_handoffs
+              SET status = 'PENDING'
+              WHERE id = $1
+              `,
+              [handoffId],
+            ),
+          ).rejects.toMatchObject({ code: '55000' });
+          await db.query('ROLLBACK TO SAVEPOINT handoff_terminal_reversal');
+
+          const accepted = await db.query<{
+            status: string;
+            accepted_by: string;
+            accepted_at: Date | string;
+          }>(
+            `
+            SELECT status, accepted_by::text AS accepted_by, accepted_at
+            FROM public.agent_handoffs
+            WHERE id = $1
+            `,
+            [handoffId],
+          );
+          expect(accepted.rows[0]?.status).toBe('ACCEPTED');
+          expect(accepted.rows[0]?.accepted_by).toBe(actorUserId);
+          expect(accepted.rows[0]?.accepted_at).toBeTruthy();
+
+          await db.query('COMMIT');
+          transactionOpen = false;
+        } finally {
+          if (transactionOpen) {
+            await db.query('ROLLBACK').catch(() => undefined);
+          }
+          db.release();
+        }
+      },
+      30_000,
+    );
+
+    it(
       'does not reconcile a claim after the execution transaction completes it',
       async () => {
         const fixture = await createClaimFixture();
