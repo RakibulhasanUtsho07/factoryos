@@ -290,7 +290,11 @@ export class SaasTenantPostgresMigrationTargetAdapter
         const keys = tableColumnsInBundle.get(table);
         if (!keys) continue;
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
-        const projectionSql = keys.map((key) => 'target_row.' + this.quoteIdentifier(key)).join(', ');
+        const projectionSql = keys.map((key) =>
+          table === 'business_blueprints' && key === 'current_version_id'
+            ? 'NULL AS ' + this.quoteIdentifier(key)
+            : 'target_row.' + this.quoteIdentifier(key),
+        ).join(', ');
         await client.query(
           'INSERT INTO public.' + this.quoteIdentifier(table) + ' (' + columnSql + ') ' +
           'SELECT ' + projectionSql + ' ' +
@@ -299,6 +303,19 @@ export class SaasTenantPostgresMigrationTargetAdapter
           ', staged.row_payload) AS target_row ' +
           'WHERE staged.table_name = $1 ORDER BY staged.sequence',
           [table],
+        );
+      }
+
+      // business_blueprints and business_blueprint_versions have a circular, immediate FK.
+      // Insert blueprints with a null current pointer, insert versions, then restore the pointer.
+      if (tableColumnsInBundle.get('business_blueprints')?.includes('current_version_id')) {
+        await client.query(
+          'UPDATE public.business_blueprints AS target_row ' +
+            'SET current_version_id = staged.row_payload->>\'current_version_id\' ' +
+            'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+            'WHERE staged.table_name = \'business_blueprints\' ' +
+            'AND target_row.id = (staged.row_payload->>\'id\')::uuid ' +
+            'AND staged.row_payload->>\'current_version_id\' IS NOT NULL',
         );
       }
 
