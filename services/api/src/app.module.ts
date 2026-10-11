@@ -19,6 +19,7 @@ import { IamModule } from './iam/iam.module';
 import { OrdersModule } from './orders/orders.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { ResearchModule } from './research/research.module';
+import { GrowthModule } from './growth/growth.module';
 import { OutboxModule } from './outbox/outbox.module';
 
 import { PolicyModule } from './policy/policy.module';
@@ -70,6 +71,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     InventoryModule,
 
     ResearchModule,
+
+    GrowthModule,
 
     EntitlementsModule,
 
