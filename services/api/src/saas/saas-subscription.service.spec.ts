@@ -27,6 +27,43 @@ describe('SaasSubscriptionService', () => {
     service = new SaasSubscriptionService(database as never, iam as never, audit as never);
   });
 
+  it('allows a tenant with no subscription record in documented legacy compatibility mode', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).resolves.toBeUndefined();
+    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(database.query.mock.calls[0]?.[1]).toEqual([tenantId]);
+  });
+
+  it('fails closed for a suspended subscription at the runtime AI boundary', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      status: 'SUSPENDED',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2026-11-01T00:00:00.000Z',
+    }] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('blocks a trial after the stored trial end even if the lifecycle worker has not marked it expired', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      status: 'TRIAL',
+      trial_ends_at: '2020-01-01T00:00:00.000Z',
+      current_period_start: null,
+      current_period_end: null,
+    }] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('blocks an active subscription outside the current billing window', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2020-01-01T00:00:00.000Z',
+      current_period_end: '2020-02-01T00:00:00.000Z',
+    }] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
   it('requires a non-empty verified tenant and actor UUID before touching IAM or storage', async () => {
     await expect(service.listPlans('spoofed-tenant', actorUserId)).rejects.toBeInstanceOf(BadRequestException);
     expect(iam.authorize).not.toHaveBeenCalled();
