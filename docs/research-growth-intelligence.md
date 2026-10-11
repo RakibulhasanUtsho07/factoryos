@@ -44,6 +44,10 @@ Evidence origin is explicit: external research, client-private CBB, operational 
 - Opportunity, experiment and scenario writes are factory-authorized via IAM and emit transactional outbox events; writes are audited separately through the platform audit service.
 - The sensitivity engine is deterministic arithmetic, not an AI forecast or causal model. It explicitly discloses the assumptions it uses.
 
+## IAM permissions
+
+The API permission catalog defines `research.read/write/review` and `growth.read/write/review`. The migration registers the codes without automatically granting access to production roles. Tenant administrators must grant these permissions to the appropriate roles; the local `ORG_ADMIN` seed grants them for development/testing.
+
 ## Explicit remaining gaps before claiming full SRS completion
 
 This implementation does not by itself deliver DOI/publisher crawling, customer-file parsing/OCR, external content-fetching workers, automated claim extraction, prompt-injection classifier, robust evidence-quality calibration, global research curator tooling, automatically executed regression/evaluation suites, supersession-aware retrieval/ranking, a full research knowledge graph/search index, CBB/finance/order data adapters that automatically populate authoritative business constraints, AI-generated growth hypotheses from live business data, multi-model strategy simulations, ROI/capacity/quality/cash integrated forecasts, scheduled opportunity discovery, experiment instrumentation connectors, or production dashboard/SLO/DR evidence. The contract evaluator runs automatically on request and stores an immutable pass/fail/review-required record. The external regression-evidence reference remains separate: this release-evaluation engine does not itself prove model-answer quality or run a full AI benchmark. These capabilities remain separate work and require dedicated integrations and acceptance suites. Realised growth outcomes now feed the existing governed evaluation-signal store, but they do not automatically alter prompts, models, or production recommendations.

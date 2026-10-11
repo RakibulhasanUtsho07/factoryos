@@ -80,6 +80,18 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
     )).rejects.toThrow(ROLLBACK_MARKER);
   }
 
+  it('registers every permission required by the Research and Growth controllers', async () => {
+    const required = [
+      'research.read', 'research.write', 'research.review',
+      'growth.read', 'growth.write', 'growth.review',
+    ];
+    const result = await database.query<{ code: string }>(
+      'SELECT code FROM permissions WHERE code = ANY($1::text[]) ORDER BY code',
+      [required],
+    );
+    expect(result.rows.map(row => row.code).sort()).toEqual([...required].sort());
+  });
+
   it('forces RLS on every research and growth data surface', async () => {
     const names = [
       'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations', 'research_topic_watchlists',
