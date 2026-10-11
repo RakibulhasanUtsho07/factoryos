@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import { Pool, PoolClient } from 'pg';
+import type { QueryResult, QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import type {
   SaasTenantMigrationTargetAdapter,
@@ -521,7 +522,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
       for (const table of entry.tables) {
         let afterId: string | null = null;
         while (true) {
-          const result = await client.query(
+          const result: QueryResult<QueryResultRow> = await client.query(
             'SELECT * FROM public.' + this.quoteIdentifier(table) +
               ' WHERE tenant_id = $1::uuid AND ($2::uuid IS NULL OR id > $2::uuid)' +
               ' ORDER BY id ASC LIMIT $3',
