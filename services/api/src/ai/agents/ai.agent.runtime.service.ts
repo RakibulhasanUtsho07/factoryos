@@ -306,135 +306,173 @@ export class AiAgentRuntimeService {
       }
     }
 
-    const result = await this.database.transaction(
-      async (client) => {
-        const taskId = randomUUID();
+    let result: AgentTaskRow;
 
-        const inserted = await client.query<AgentTaskRow>(
-          `
-          INSERT INTO agent_tasks (
-            id,
-            tenant_id,
-            factory_id,
-            decision_id,
-            parent_trace_id,
-            actor_user_id,
-            goal,
-            max_steps,
-            max_retries,
-            max_tool_calls,
-            timeout_ms,
-            deadline_at,
-            context_version,
-            plan_version,
-            context_hash,
-            idempotency_key,
-            request_hash
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12,
-            $13, $14, $15, $16, $17
-          )
-          RETURNING ${this.taskSelectColumns()}
-          `,
-          [
-            taskId,
-            tenantId,
-            factoryId,
-            decisionId,
-            parentTraceId,
-            actorUserId,
-            goal,
-            limits.maxSteps,
-            limits.maxRetries,
-            limits.maxToolCalls,
-            limits.timeoutMs,
-            deadlineAt,
-            contextVersion,
-            planVersion,
-            contextHash,
-            idempotencyKey,
-            requestHash,
-          ],
-        );
-
-        const task = inserted.rows[0];
-
-        if (!task) {
-          throw new Error('AI_AGENT_TASK_INSERT_FAILED');
-        }
-
-        for (let index = 0; index < input.steps.length; index += 1) {
-          const step = input.steps[index]!;
-
-          await client.query(
+    try {
+      result = await this.database.transaction(
+        async (client) => {
+          const taskId = randomUUID();
+  
+          const inserted = await client.query<AgentTaskRow>(
             `
-            INSERT INTO agent_task_steps (
+            INSERT INTO agent_tasks (
               id,
               tenant_id,
               factory_id,
-              task_id,
-              step_key,
-              step_index,
-              agent_id,
-              capability,
-              input_schema,
-              output_schema,
-              tool_id,
-              tool_version,
-              action_type,
-              target,
-              payload,
-              resource_type,
-              resource_id,
-              risk_class,
+              decision_id,
+              parent_trace_id,
+              actor_user_id,
+              goal,
+              max_steps,
+              max_retries,
+              max_tool_calls,
               timeout_ms,
-              retry_limit,
-              authority_level,
-              depends_on
+              deadline_at,
+              context_version,
+              plan_version,
+              context_hash,
+              idempotency_key,
+              request_hash
             )
             VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8,
-              $9::jsonb, $10::jsonb, $11, $12, $13,
-              $14::jsonb, $15::jsonb, $16, $17, $18,
-              $19, $20, $21, $22::jsonb
+              $1, $2, $3, $4, $5, $6, $7,
+              $8, $9, $10, $11, $12,
+              $13, $14, $15, $16, $17
             )
+            RETURNING ${this.taskSelectColumns()}
             `,
             [
-              randomUUID(),
+              taskId,
               tenantId,
               factoryId,
-              task.id,
-              step.stepKey.trim(),
-              index,
-              step.agentId ?? null,
-              step.capability.trim(),
-              JSON.stringify(step.inputSchema ?? {}),
-              JSON.stringify(step.outputSchema ?? {}),
-              step.toolId.trim(),
-              step.toolVersion.trim(),
-              step.actionType.trim(),
-              JSON.stringify(step.target ?? {}),
-              JSON.stringify(step.payload ?? {}),
-              step.resourceType ?? null,
-              step.resourceId ?? null,
-              step.riskClass ?? null,
-              step.timeoutMs ?? 1000,
-              step.retryLimit ?? 0,
-              step.authorityLevel?.trim() ?? 'TASK_SCOPED',
-              JSON.stringify(step.dependsOn ?? []),
+              decisionId,
+              parentTraceId,
+              actorUserId,
+              goal,
+              limits.maxSteps,
+              limits.maxRetries,
+              limits.maxToolCalls,
+              limits.timeoutMs,
+              deadlineAt,
+              contextVersion,
+              planVersion,
+              contextHash,
+              idempotencyKey,
+              requestHash,
             ],
           );
-        }
+  
+          const task = inserted.rows[0];
+  
+          if (!task) {
+            throw new Error('AI_AGENT_TASK_INSERT_FAILED');
+          }
+  
+          for (let index = 0; index < input.steps.length; index += 1) {
+            const step = input.steps[index]!;
+  
+            await client.query(
+              `
+              INSERT INTO agent_task_steps (
+                id,
+                tenant_id,
+                factory_id,
+                task_id,
+                step_key,
+                step_index,
+                agent_id,
+                capability,
+                input_schema,
+                output_schema,
+                tool_id,
+                tool_version,
+                action_type,
+                target,
+                payload,
+                resource_type,
+                resource_id,
+                risk_class,
+                timeout_ms,
+                retry_limit,
+                authority_level,
+                depends_on
+              )
+              VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9::jsonb, $10::jsonb, $11, $12, $13,
+                $14::jsonb, $15::jsonb, $16, $17, $18,
+                $19, $20, $21, $22::jsonb
+              )
+              `,
+              [
+                randomUUID(),
+                tenantId,
+                factoryId,
+                task.id,
+                step.stepKey.trim(),
+                index,
+                step.agentId ?? null,
+                step.capability.trim(),
+                JSON.stringify(step.inputSchema ?? {}),
+                JSON.stringify(step.outputSchema ?? {}),
+                step.toolId.trim(),
+                step.toolVersion.trim(),
+                step.actionType.trim(),
+                JSON.stringify(step.target ?? {}),
+                JSON.stringify(step.payload ?? {}),
+                step.resourceType ?? null,
+                step.resourceId ?? null,
+                step.riskClass ?? null,
+                step.timeoutMs ?? 1000,
+                step.retryLimit ?? 0,
+                step.authorityLevel?.trim() ?? 'TASK_SCOPED',
+                JSON.stringify(step.dependsOn ?? []),
+              ],
+            );
+          }
+  
+          return task;
+        },
+        {
+          tenantId,
+          userId: actorUserId,
+        },
+      );
+  
+  
+    } catch (error: unknown) {
+      const databaseError =
+        error && typeof error === 'object'
+          ? (error as { code?: unknown; constraint?: unknown })
+          : null;
 
-        return task;
-      },
-      {
+      if (
+        !idempotencyKey ||
+        databaseError?.code !== '23505' ||
+        databaseError?.constraint !== 'uq_agent_tasks_tenant_idempotency'
+      ) {
+        throw error;
+      }
+
+      // Another API instance may have inserted the same key after the
+      // initial lookup. Replay only after validating its stored fingerprint.
+      const concurrentTask = await this.getTaskByIdempotencyKey(
         tenantId,
-        userId: actorUserId,
-      },
-    );
+        factoryId,
+        idempotencyKey,
+      );
+
+      if (!concurrentTask || concurrentTask.request_hash !== requestHash) {
+        throw new ConflictException(
+          'The idempotency key was concurrently claimed for a different or unverifiable AI agent task request',
+        );
+      }
+
+      return {
+        idempotent: true,
+        task: this.mapTask(concurrentTask),
+      };
+    }
 
     await this.audit(
       tenantId,
