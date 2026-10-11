@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
+import { SaasDeploymentProfileController } from './saas-deployment-profile.controller';
+import { SaasDeploymentProfileService } from './saas-deployment-profile.service';
 import { SaasReleaseRolloutController } from './saas-release-rollout.controller';
 import { SaasReleaseRolloutService } from './saas-release-rollout.service';
 import { SaasSandboxController } from './saas-sandbox.controller';
@@ -18,18 +20,21 @@ import { SaasUsageService } from './saas-usage.service';
     SaasSubscriptionController,
     SaasSandboxController,
     SaasReleaseRolloutController,
+    SaasDeploymentProfileController,
   ],
   providers: [
     SaasUsageService,
     SaasSubscriptionService,
     SaasSandboxService,
     SaasReleaseRolloutService,
+    SaasDeploymentProfileService,
   ],
   exports: [
     SaasUsageService,
     SaasSubscriptionService,
     SaasSandboxService,
     SaasReleaseRolloutService,
+    SaasDeploymentProfileService,
   ],
 })
 export class SaasModule {}
