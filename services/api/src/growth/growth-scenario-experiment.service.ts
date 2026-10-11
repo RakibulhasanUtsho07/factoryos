@@ -141,8 +141,8 @@ export class GrowthScenarioExperimentService {
  }
 
  private normalizeExperiment(i:CreateGrowthExperimentDto):Record<string,unknown> {
-  const section=(v:unknown,name:string)=>{ if(!v||typeof v!=='object'||Array.isArray(v)) throw new BadRequestException(name+' must be an object'); const src=v as Record<string,unknown>, out:Record<string,unknown>={description:this.str(src.description,name+'.description',2000)}; for(const k of ['design_rules','guardrails']) if(src[k]!==undefined) out[k]=this.arr(src[k],name+'.'+k,0,50,500); this.rejectSecrets(out,name); return out; };
-  const sample=i?.sample_scope as unknown as Record<string,unknown>; if(!sample||typeof sample!=='object'||Array.isArray(sample)) throw new BadRequestException('sample_scope must be an object');
+  const section=(v:unknown,name:string)=>{ if(!v||typeof v!=='object'||Array.isArray(v)) throw new BadRequestException(name+' must be an object'); this.rejectSecrets(v,name); const src=v as Record<string,unknown>, out:Record<string,unknown>={description:this.str(src.description,name+'.description',2000)}; for(const k of ['design_rules','guardrails']) if(src[k]!==undefined) out[k]=this.arr(src[k],name+'.'+k,0,50,500); this.rejectSecrets(out,name); return out; };
+  const sample=i?.sample_scope as unknown as Record<string,unknown>; if(!sample||typeof sample!=='object'||Array.isArray(sample)) throw new BadRequestException('sample_scope must be an object'); this.rejectSecrets(sample,'sample_scope');
   const scope:Record<string,unknown>={description:this.str(sample.description,'sample_scope.description',1000)};
   for(const k of ['factory_line_refs','product_refs','shift_refs','inclusion_rules','exclusion_rules']) if(sample[k]!==undefined) scope[k]=this.arr(sample[k],'sample_scope.'+k,0,100,500);
   this.rejectSecrets(scope,'sample_scope');
