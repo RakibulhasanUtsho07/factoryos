@@ -159,6 +159,109 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
     });
   });
 
+  it('stops exposing a promoted release after a linked source right is revoked', async () => {
+    await withFixture(async (client, f) => {
+      const release = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_knowledge_releases (
+          tenant_id, namespace, release_key, version, title, claim_ids,
+          source_list, evidence_grade, owner_user_id, validation_report
+        )
+        VALUES ($1, 'TENANT', $2, 1, 'Revocation visibility test', $3::jsonb,
+          '[]'::jsonb, 'B', $4, '{}'::jsonb)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, 'rights-' + randomUUID().slice(0, 8), JSON.stringify([f.claimId]), f.userId],
+      );
+      const evaluation = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_release_evaluations (
+          tenant_id, namespace, release_id, evaluation_version, status,
+          content_fingerprint, results, evaluated_by
+        )
+        VALUES ($1, 'TENANT', $2, 'research-release-contract.v1', 'PASSED', $3,
+          '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true}'::jsonb,
+          $4)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, release.rows[0].id, 'c'.repeat(64), f.userId],
+      );
+      await client.query(
+        `
+        UPDATE research_knowledge_releases
+        SET evaluation_id = $1, status = 'PROMOTED',
+          validation_report = '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true,"safetyReviewed":true}'::jsonb,
+          regression_evidence_ref = 'external-regression:rights-visibility',
+          reviewed_by = $2, reviewed_at = clock_timestamp(), effective_at = clock_timestamp()
+        WHERE id = $3
+        `,
+        [evaluation.rows[0].id, f.userId, release.rows[0].id],
+      );
+
+      const visibleBeforeRevocation = await client.query<{ id: string }>(
+        `
+        SELECT r.id::text AS id
+        FROM research_knowledge_releases r
+        WHERE (r.tenant_id = $1 OR (r.tenant_id IS NULL AND r.status = 'PROMOTED'))
+          AND (
+            r.status <> 'PROMOTED'
+            OR NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements_text(r.claim_ids) AS release_claim(claim_id)
+              WHERE NOT EXISTS (
+                SELECT 1
+                FROM research_claims c
+                JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+                WHERE c.id::text = release_claim.claim_id
+                  AND c.status = 'APPROVED'
+                  AND (c.tenant_id = $1 OR c.tenant_id IS NULL)
+                  AND s.access_status = 'APPROVED'
+                  AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+                  AND NULLIF(BTRIM(s.rights_basis), '') IS NOT NULL
+              )
+            )
+          )
+          AND r.id = $2
+        `,
+        [f.tenantId, release.rows[0].id],
+      );
+      expect(visibleBeforeRevocation.rows).toHaveLength(1);
+
+      await client.query(
+        'UPDATE research_sources SET access_status = $1, review_reason = $2, reviewed_by = $3, reviewed_at = clock_timestamp() WHERE id = $4',
+        ['REVOKED', 'Source license withdrawn by rights holder', f.userId, f.sourceId],
+      );
+      const visibleAfterRevocation = await client.query<{ id: string }>(
+        `
+        SELECT r.id::text AS id
+        FROM research_knowledge_releases r
+        WHERE (r.tenant_id = $1 OR (r.tenant_id IS NULL AND r.status = 'PROMOTED'))
+          AND (
+            r.status <> 'PROMOTED'
+            OR NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements_text(r.claim_ids) AS release_claim(claim_id)
+              WHERE NOT EXISTS (
+                SELECT 1
+                FROM research_claims c
+                JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+                WHERE c.id::text = release_claim.claim_id
+                  AND c.status = 'APPROVED'
+                  AND (c.tenant_id = $1 OR c.tenant_id IS NULL)
+                  AND s.access_status = 'APPROVED'
+                  AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+                  AND NULLIF(BTRIM(s.rights_basis), '') IS NOT NULL
+              )
+            )
+          )
+          AND r.id = $2
+        `,
+        [f.tenantId, release.rows[0].id],
+      );
+      expect(visibleAfterRevocation.rows).toHaveLength(0);
+    });
+  });
+
   it('keeps promoted knowledge releases immutable after the approval gate', async () => {
     await withFixture(async (client, f) => {
       const release = await client.query<{ id: string }>(

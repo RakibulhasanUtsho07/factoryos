@@ -721,7 +721,25 @@ export class ResearchService {
         regression_evidence_ref, evaluation_id::text AS evaluation_id, reviewed_by::text AS reviewed_by, reviewed_at::text AS reviewed_at,
         effective_at::text AS effective_at, created_at::text AS created_at
       FROM research_knowledge_releases
-      WHERE tenant_id = $1 OR (tenant_id IS NULL AND status = 'PROMOTED')
+      WHERE (tenant_id = $1 OR (tenant_id IS NULL AND status = 'PROMOTED'))
+        AND (
+          status <> 'PROMOTED'
+          OR NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(research_knowledge_releases.claim_ids) AS release_claim(claim_id)
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM research_claims c
+              JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+              WHERE c.id::text = release_claim.claim_id
+                AND c.status = 'APPROVED'
+                AND (c.tenant_id = $1 OR c.tenant_id IS NULL)
+                AND s.access_status = 'APPROVED'
+                AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+                AND NULLIF(BTRIM(s.rights_basis), '') IS NOT NULL
+            )
+          )
+        )
       ORDER BY CASE WHEN tenant_id IS NULL THEN 0 ELSE 1 END, version DESC, created_at DESC
       LIMIT $2
       `,

@@ -38,6 +38,20 @@ describe('ResearchService', () => {
     );
   });
 
+  it('hides promoted releases if any linked claim no longer has current approved rights', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.listReleases(TENANT_ID, 10);
+
+    expect(result).toEqual([]);
+    const query = database.query.mock.calls[0][0] as string;
+    expect(query).toContain("status <> 'PROMOTED'");
+    expect(query).toContain('jsonb_array_elements_text(research_knowledge_releases.claim_ids)');
+    expect(query).toContain("s.access_status = 'APPROVED'");
+    expect(query).toContain("s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')");
+    expect(query).toContain("NULLIF(BTRIM(s.rights_basis), '') IS NOT NULL");
+  });
+
   it('fails closed when full-text retention is requested without explicit rights', async () => {
     const dto = {
       source_type: 'CUSTOMER_PROVIDED',
