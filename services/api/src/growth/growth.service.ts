@@ -962,6 +962,13 @@ export class GrowthService {
             [dto.experiment_result_id, opportunityId, tenantId, factoryId],
           );
           if (!experimentResult.rows[0]) throw new BadRequestException('Experiment result must belong to this opportunity');
+          const existingOutcome = await client.query<{ id: string }>(
+            'SELECT id::text AS id FROM growth_opportunity_outcomes WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1',
+            [dto.experiment_result_id, tenantId, factoryId],
+          );
+          if (existingOutcome.rows[0]) {
+            throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
+          }
         }
         const inserted = await client.query(
           `

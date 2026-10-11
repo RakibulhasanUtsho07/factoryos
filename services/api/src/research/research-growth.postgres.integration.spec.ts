@@ -560,6 +560,99 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
   });
 
 
+  it('binds an experiment result to its original opportunity and prevents duplicate realized outcomes', async () => {
+    await withFixture(async (client, f) => {
+      const opportunityInsert = `
+        INSERT INTO growth_opportunities (
+          tenant_id, factory_id, title, category, opportunity_statement, success_hypothesis,
+          assumptions, constraints_snapshot, affected_business_nodes, expected_value_low,
+          expected_value_high, currency, uncertainty_pct, effort, time_to_impact_days,
+          implementation_risk, owner_user_id, status, created_by
+        )
+        VALUES ($1, $2, $3, 'COST_REDUCTION', 'Test opportunity result linkage',
+          'The pilot outcome reflects the original hypothesis', '["baseline is current"]'::jsonb,
+          '{}'::jsonb, '[]'::jsonb, 0, 100, 'BDT', 20, 'SMALL', 14, 'LOW', $4,
+          'PROPOSED', $4)
+        RETURNING id::text AS id
+      `;
+      const original = await client.query<{ id: string }>(
+        opportunityInsert,
+        [f.tenantId, f.factoryId, 'Original opportunity', f.userId],
+      );
+      const unrelated = await client.query<{ id: string }>(
+        opportunityInsert,
+        [f.tenantId, f.factoryId, 'Unrelated opportunity', f.userId],
+      );
+
+      const experiment = await client.query<{ id: string }>(
+        `
+        INSERT INTO growth_experiments (
+          tenant_id, factory_id, opportunity_id, name, objective, hypothesis,
+          leading_indicators, duration_days, owner_user_id, baseline_measurements,
+          stop_conditions, created_by
+        )
+        VALUES ($1, $2, $3, 'Original pilot', 'Validate scrap reduction',
+          'Scrap will decline without reducing quality', '["scrap_rate"]'::jsonb,
+          14, $4, '{"scrap_rate":8.5}'::jsonb, '["quality yield falls"]'::jsonb, $4)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.factoryId, original.rows[0].id, f.userId],
+      );
+      const result = await client.query<{ id: string }>(
+        `
+        INSERT INTO growth_experiment_results (
+          tenant_id, factory_id, experiment_id, pre_measurements, post_measurements,
+          assessment, stop_condition_triggered, evidence_refs, observed_at, recorded_by
+        )
+        VALUES ($1, $2, $3, '{"scrap_rate":8.5}'::jsonb, '{"scrap_rate":6.2}'::jsonb,
+          'POSITIVE', FALSE, '["pilot-report:17"]'::jsonb, clock_timestamp(), $4)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.factoryId, experiment.rows[0].id, f.userId],
+      );
+
+      await client.query('SAVEPOINT reject_cross_opportunity_result');
+      await expect(client.query(
+        `
+        INSERT INTO growth_opportunity_outcomes (
+          tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
+          realized_metrics, evidence_refs, observed_at, recorded_by
+        )
+        VALUES ($1, $2, $3, $4, 'POSITIVE', '{"scrap_rate_delta_pct":-2.3}'::jsonb,
+          '["pilot-report:17"]'::jsonb, clock_timestamp(), $5)
+        `,
+        [f.tenantId, f.factoryId, unrelated.rows[0].id, result.rows[0].id, f.userId],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_cross_opportunity_result');
+
+      await client.query(
+        `
+        INSERT INTO growth_opportunity_outcomes (
+          tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
+          realized_metrics, evidence_refs, observed_at, recorded_by
+        )
+        VALUES ($1, $2, $3, $4, 'POSITIVE', '{"scrap_rate_delta_pct":-2.3}'::jsonb,
+          '["pilot-report:17"]'::jsonb, clock_timestamp(), $5)
+        `,
+        [f.tenantId, f.factoryId, original.rows[0].id, result.rows[0].id, f.userId],
+      );
+
+      await client.query('SAVEPOINT reject_duplicate_result_link');
+      await expect(client.query(
+        `
+        INSERT INTO growth_opportunity_outcomes (
+          tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
+          realized_metrics, evidence_refs, observed_at, recorded_by
+        )
+        VALUES ($1, $2, $3, $4, 'POSITIVE', '{"scrap_rate_delta_pct":-2.3}'::jsonb,
+          '["pilot-report:17"]'::jsonb, clock_timestamp(), $5)
+        `,
+        [f.tenantId, f.factoryId, original.rows[0].id, result.rows[0].id, f.userId],
+      )).rejects.toMatchObject({ code: '23505' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_duplicate_result_link');
+    });
+  });
+
   it('links a realised growth outcome to an immutable factory-scoped learning signal', async () => {
     await withFixture(async (client, f) => {
       const opportunity = await client.query<{ id: string }>(

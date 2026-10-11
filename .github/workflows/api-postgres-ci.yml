@@ -125,6 +125,7 @@ jobs:
             migrations/041_growth_outcome_learning_signals.sql
             migrations/042_research_topic_watchlists.sql
             migrations/043_research_growth_iam_permissions.sql
+            migrations/044_growth_outcome_result_link_integrity.sql
           )
 
           for migration in "${migrations[@]}"; do
