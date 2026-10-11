@@ -103,6 +103,7 @@ describe('ResearchService', () => {
         provenance_ref: {}, status: 'APPROVED', source_title: 'Research Paper',
         source_url: 'https://example.org/paper', doi: null,
         license_status: 'OPEN_ACCESS', access_status: 'APPROVED',
+        rights_basis: 'Open-access reuse terms verified',
       }],
     });
 
