@@ -243,6 +243,8 @@ describe(
       auditService.record.mockResolvedValue('audit-id');
       aiAgentCatalogueService.assertToolEntitled.mockResolvedValue({});
       aiRuntimeService.executeAgentAction.mockResolvedValue(agentExecutionResult());
+      database.query.mockResolvedValue({ rows: [], rowCount: 1 });
+      toolRegistry.getTool.mockResolvedValue(gatewayOutcome().tool);
 
       service = new AiAgentRuntimeService(
         database as never,
