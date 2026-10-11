@@ -16,6 +16,8 @@ import { CreateResearchClaimLinkDto } from './dto/create-research-claim-link.dto
 import { CreateResearchRelevanceDto } from './dto/create-research-relevance.dto';
 import { CreateResearchReleaseDto } from './dto/create-research-release.dto';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
+import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto';
+import { DecideResearchWatchlistDto } from './dto/decide-research-watchlist.dto';
 import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
@@ -157,6 +159,191 @@ export class ResearchService {
       payload: { sourceType: source.source_type, licenseStatus: source.license_status, accessStatus: source.access_status },
     });
     return source;
+  }
+
+  async createWatchlist(
+    userId: string,
+    tenantId: string,
+    dto: CreateResearchWatchlistDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    const key = dto.watchlist_key.trim().toLowerCase();
+    const title = dto.title.trim();
+    const topicTerms = this.normalizeWatchlistTerms(dto.topic_terms, 'topic_terms', 25, true);
+    const inclusionTerms = this.normalizeWatchlistTerms(dto.inclusion_terms ?? [], 'inclusion_terms', 50, false);
+    const exclusionTerms = this.normalizeWatchlistTerms(dto.exclusion_terms ?? [], 'exclusion_terms', 50, false);
+    const sourceTypes = [...new Set((dto.source_types ?? []).map(value => value.trim()))];
+    const allowedSourceTypes = new Set([
+      'DOI_METADATA', 'OPEN_ACCESS_REPOSITORY', 'PUBLISHER_FEED',
+      'INSTITUTIONAL_REPOSITORY', 'CUSTOMER_PROVIDED', 'STANDARD',
+      'VENDOR_MATERIAL', 'SURVEY', 'PREPRINT', 'OPINION',
+    ]);
+    if (!key || !title || !sourceTypes.length || sourceTypes.some(value => !allowedSourceTypes.has(value))) {
+      throw new BadRequestException('Watchlist key, title and supported source types are required');
+    }
+    if (!['SECTOR', 'TECHNOLOGY', 'PROCESS', 'MARKET', 'SUSTAINABILITY', 'STRATEGIC_QUESTION'].includes(dto.topic_type)) {
+      throw new BadRequestException('Unsupported research watchlist topic type');
+    }
+
+    let row: Record<string, unknown>;
+    try {
+      row = await this.database.transaction(
+        { tenantId, userId },
+        async client => {
+          const inserted = await client.query(
+            `
+            INSERT INTO research_topic_watchlists (
+              tenant_id, watchlist_key, title, topic_type, description,
+              topic_terms, inclusion_terms, exclusion_terms, source_types, created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10)
+            RETURNING id::text AS id, tenant_id::text AS tenant_id, watchlist_key, title,
+              topic_type, description, topic_terms, inclusion_terms, exclusion_terms,
+              source_types, status, status_reason, created_by::text AS created_by,
+              created_at::text AS created_at, updated_at::text AS updated_at
+            `,
+            [
+              tenantId, key, title, dto.topic_type, dto.description?.trim() || null,
+              JSON.stringify(topicTerms), JSON.stringify(inclusionTerms),
+              JSON.stringify(exclusionTerms), JSON.stringify(sourceTypes), userId,
+            ],
+          );
+          const created = inserted.rows[0];
+          if (!created) throw new Error('RESEARCH_WATCHLIST_INSERT_FAILED');
+          await this.insertOutbox(client, {
+            tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_TOPIC_WATCHLIST',
+            aggregateId: String(created.id), eventType: 'RESEARCH.WATCHLIST_CREATED',
+            correlationId: this.correlationId(requestId, traceId),
+            payload: {
+              watchlist_id: created.id, watchlist_key: created.watchlist_key,
+              topic_type: created.topic_type, status: created.status,
+              source_types: created.source_types, crawler_enabled: false,
+            },
+          });
+          return created as Record<string, unknown>;
+        },
+      );
+    } catch (error) {
+      if (this.errorCode(error) === '23505') {
+        throw new ConflictException('An active watchlist with this key already exists in the tenant');
+      }
+      throw error;
+    }
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'WATCHLIST_CREATE',
+      resourceId: String(row.id), requestId, traceId,
+      payload: { watchlistKey: key, topicType: dto.topic_type, sourceTypes, status: row.status },
+    });
+    return row;
+  }
+
+  async listWatchlists(tenantId: string, query: { status?: string; limit?: number }) {
+    this.validateUuid(tenantId, 'tenantId');
+    const limit = this.limit(query.limit);
+    const status = query.status ?? null;
+    if (status !== null && !['ACTIVE', 'PAUSED', 'RETIRED'].includes(status)) {
+      throw new BadRequestException('Unsupported research watchlist status filter');
+    }
+    const result = await this.database.query(
+      `
+      SELECT id::text AS id, tenant_id::text AS tenant_id, watchlist_key, title,
+        topic_type, description, topic_terms, inclusion_terms, exclusion_terms,
+        source_types, status, status_reason, created_by::text AS created_by,
+        updated_by::text AS updated_by, created_at::text AS created_at, updated_at::text AS updated_at
+      FROM research_topic_watchlists
+      WHERE tenant_id = $1 AND ($2::text IS NULL OR status = $2)
+      ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'PAUSED' THEN 1 ELSE 2 END,
+        updated_at DESC, id
+      LIMIT $3
+      `,
+      [tenantId, status, limit],
+      { tenantId },
+    );
+    return result.rows;
+  }
+
+  async decideWatchlist(
+    userId: string,
+    tenantId: string,
+    watchlistId: string,
+    dto: DecideResearchWatchlistDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(watchlistId, 'watchlistId');
+    const reason = dto.reason.trim();
+    if (!reason) throw new BadRequestException('A watchlist lifecycle reason is required');
+    const next = dto.decision === 'ACTIVATE' ? 'ACTIVE'
+      : dto.decision === 'PAUSE' ? 'PAUSED' : 'RETIRED';
+
+    const row = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const current = await client.query<{ status: string; watchlist_key: string }>(
+          'SELECT status, watchlist_key FROM research_topic_watchlists WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+          [watchlistId, tenantId],
+        );
+        const existing = current.rows[0];
+        if (!existing) throw new NotFoundException('Research topic watchlist not found');
+        const transitions: Record<string, string[]> = {
+          ACTIVE: ['PAUSED', 'RETIRED'],
+          PAUSED: ['ACTIVE', 'RETIRED'],
+        };
+        if (!(transitions[existing.status] ?? []).includes(next)) {
+          throw new ConflictException('Invalid or terminal research watchlist transition');
+        }
+        const updated = await client.query(
+          `
+          UPDATE research_topic_watchlists
+          SET status = $1, status_reason = $2, updated_by = $3
+          WHERE id = $4 AND tenant_id = $5 AND status = $6
+          RETURNING id::text AS id, tenant_id::text AS tenant_id, watchlist_key,
+            title, topic_type, status, status_reason, updated_by::text AS updated_by,
+            updated_at::text AS updated_at
+          `,
+          [next, reason, userId, watchlistId, tenantId, existing.status],
+        );
+        const result = updated.rows[0];
+        if (!result) throw new ConflictException('Research watchlist decision lost a concurrent update');
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_TOPIC_WATCHLIST',
+          aggregateId: watchlistId, eventType: 'RESEARCH.WATCHLIST_' + next,
+          correlationId: this.correlationId(requestId, traceId),
+          payload: { watchlist_id: watchlistId, watchlist_key: existing.watchlist_key, status: next, reason },
+        });
+        return result;
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'WATCHLIST_' + next,
+      resourceId: watchlistId, requestId, traceId, payload: { reason, status: next },
+    });
+    return row;
+  }
+
+  private normalizeWatchlistTerms(
+    input: string[],
+    field: string,
+    maximum: number,
+    required: boolean,
+  ): string[] {
+    if (!Array.isArray(input) || input.length > maximum || (required && input.length === 0)) {
+      throw new BadRequestException(field + ' must contain ' + (required ? '1-' : '0-') + maximum + ' entries');
+    }
+    const cleaned = input.map(value => typeof value === 'string' ? value.trim() : '');
+    if (cleaned.some(value => !value || value.length > 200)) {
+      throw new BadRequestException(field + ' entries must be non-empty strings no longer than 200 characters');
+    }
+    const distinct = [...new Map(cleaned.map(value => [value.toLowerCase(), value])).values()];
+    if (distinct.length !== cleaned.length) {
+      throw new BadRequestException(field + ' must not contain duplicate terms');
+    }
+    return distinct;
   }
 
   async listSources(tenantId: string, query: {

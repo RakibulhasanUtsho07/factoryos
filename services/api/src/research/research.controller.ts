@@ -13,6 +13,8 @@ import { CreateResearchClaimLinkDto } from './dto/create-research-claim-link.dto
 import { CreateResearchRelevanceDto } from './dto/create-research-relevance.dto';
 import { CreateResearchReleaseDto } from './dto/create-research-release.dto';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
+import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto';
+import { DecideResearchWatchlistDto } from './dto/decide-research-watchlist.dto';
 import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
@@ -34,6 +36,45 @@ type FactoryOsRequest = Request & { factoryos?: FactoryOsRequestContext };
 @Controller('research')
 export class ResearchController {
   constructor(private readonly research: ResearchService) {}
+
+  @Post('watchlists')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  createWatchlist(
+    @Req() req: FactoryOsRequest,
+    @Body() body: CreateResearchWatchlistDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.createWatchlist(c.userId, c.tenantId, body, c.requestId, c.traceId);
+  }
+
+  @Get('watchlists')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listWatchlists(
+    @Req() req: FactoryOsRequest,
+    @Query('status') status?: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.listWatchlists(c.tenantId, {
+      status, limit: rawLimit === undefined ? 50 : Number(rawLimit),
+    });
+  }
+
+  @Post('watchlists/:watchlistId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideWatchlist(
+    @Req() req: FactoryOsRequest,
+    @Param('watchlistId', new ParseUUIDPipe()) watchlistId: string,
+    @Body() body: DecideResearchWatchlistDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.decideWatchlist(
+      c.userId, c.tenantId, watchlistId, body, c.requestId, c.traceId,
+    );
+  }
 
   @Post('sources')
   @UseGuards(PermissionGuard)

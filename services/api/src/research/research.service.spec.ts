@@ -6,6 +6,7 @@ import { DatabaseService } from '../database/database.service';
 import { ResearchService } from './research.service';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
 import { CreateResearchClaimDto } from './dto/create-research-claim.dto';
+import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -36,6 +37,62 @@ describe('ResearchService', () => {
       database as unknown as DatabaseService,
       audit as unknown as AuditService,
     );
+  });
+
+  it('requires concrete watchlist search terms before creating configuration', async () => {
+    await expect(service.createWatchlist(USER_ID, TENANT_ID, {
+      watchlist_key: 'quality',
+      title: 'Quality intelligence',
+      topic_type: 'TECHNOLOGY',
+      topic_terms: [],
+      source_types: ['DOI_METADATA'],
+    } as CreateResearchWatchlistDto, null, null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('creates a tenant watchlist and writes a bounded, crawler-disabled outbox event', async () => {
+    client.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'e5cbab29-4cf8-4fd5-9f6b-07aa4ff3f4db',
+          tenant_id: TENANT_ID,
+          watchlist_key: 'quality-processes',
+          title: 'Quality process watchlist',
+          topic_type: 'PROCESS',
+          topic_terms: ['fabric inspection', 'defect detection'],
+          inclusion_terms: ['textile'],
+          exclusion_terms: ['consumer reviews'],
+          source_types: ['DOI_METADATA', 'OPEN_ACCESS_REPOSITORY'],
+          status: 'ACTIVE',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.createWatchlist(USER_ID, TENANT_ID, {
+      watchlist_key: 'Quality-Processes',
+      title: ' Quality process watchlist ',
+      topic_type: 'PROCESS',
+      topic_terms: [' fabric inspection ', 'defect detection'],
+      inclusion_terms: [' textile '],
+      exclusion_terms: [' consumer reviews '],
+      source_types: ['DOI_METADATA', 'OPEN_ACCESS_REPOSITORY'],
+    } as CreateResearchWatchlistDto, null, null);
+
+    expect(result).toMatchObject({ status: 'ACTIVE', watchlist_key: 'quality-processes' });
+    expect(client.query.mock.calls[0][0]).toContain('INSERT INTO research_topic_watchlists');
+    expect(client.query.mock.calls[1][0]).toContain('INSERT INTO outbox_events');
+    expect(client.query.mock.calls[1][1][4]).toBe('RESEARCH.WATCHLIST_CREATED');
+    expect(client.query.mock.calls[1][1][8]).toContain('"crawler_enabled":false');
+  });
+
+  it('lists watchlists only within the requested tenant and validates status filters', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+    expect(await service.listWatchlists(TENANT_ID, { status: 'ACTIVE', limit: 12 })).toEqual([]);
+    expect(database.query.mock.calls[0][0]).toContain('FROM research_topic_watchlists');
+    expect(database.query.mock.calls[0][0]).toContain('WHERE tenant_id = $1');
+    expect(database.query.mock.calls[0][1]).toEqual([TENANT_ID, 'ACTIVE', 12]);
+
+    await expect(service.listWatchlists(TENANT_ID, { status: 'APPROVED' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('hides promoted releases if any linked claim no longer has current approved rights', async () => {

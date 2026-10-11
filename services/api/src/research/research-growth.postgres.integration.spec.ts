@@ -82,7 +82,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
 
   it('forces RLS on every research and growth data surface', async () => {
     const names = [
-      'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations',
+      'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations', 'research_topic_watchlists',
       'research_relevance_mappings', 'growth_opportunities', 'growth_opportunity_evidence', 'growth_validation_unknowns',
       'growth_scenarios', 'growth_experiments', 'growth_experiment_results', 'growth_opportunity_outcomes',
     ];
@@ -97,6 +97,65 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
       expect(row.relrowsecurity).toBe(true);
       expect(row.relforcerowsecurity).toBe(true);
     }
+  });
+
+  it('enforces the tenant watchlist lifecycle and retains retired configuration history', async () => {
+    await withFixture(async (client, f) => {
+      const watchlist = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_topic_watchlists (
+          tenant_id, watchlist_key, title, topic_type, description,
+          topic_terms, inclusion_terms, exclusion_terms, source_types, created_by
+        )
+        VALUES ($1, 'textile-quality', 'Textile quality technologies', 'TECHNOLOGY',
+          'Track quality improvements', '["fabric inspection", "defect detection"]'::jsonb,
+          '["manufacturing"]'::jsonb, '["consumer reviews"]'::jsonb,
+          '["DOI_METADATA","OPEN_ACCESS_REPOSITORY"]'::jsonb, $2)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.userId],
+      );
+      await client.query(
+        'UPDATE research_topic_watchlists SET status = $1, status_reason = $2, updated_by = $3 WHERE id = $4',
+        ['PAUSED', 'Pause while source scope is reviewed', f.userId, watchlist.rows[0].id],
+      );
+      const paused = await client.query<{ status: string }>(
+        'SELECT status FROM research_topic_watchlists WHERE id = $1',
+        [watchlist.rows[0].id],
+      );
+      expect(paused.rows[0].status).toBe('PAUSED');
+
+      await client.query(
+        'UPDATE research_topic_watchlists SET status = $1, status_reason = $2, updated_by = $3 WHERE id = $4',
+        ['RETIRED', 'Replace with a revised topic query', f.userId, watchlist.rows[0].id],
+      );
+      await client.query('SAVEPOINT reject_retired_watchlist_mutation');
+      await expect(client.query(
+        'UPDATE research_topic_watchlists SET status = $1, status_reason = $2, updated_by = $3 WHERE id = $4',
+        ['ACTIVE', 'reactivation attempt', f.userId, watchlist.rows[0].id],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_retired_watchlist_mutation');
+
+      const replacement = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_topic_watchlists (
+          tenant_id, watchlist_key, title, topic_type, topic_terms, source_types, created_by
+        )
+        VALUES ($1, 'textile-quality', 'Revised textile quality watchlist', 'TECHNOLOGY',
+          '["fabric metrology"]'::jsonb, '["PUBLISHER_FEED"]'::jsonb, $2)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.userId],
+      );
+      expect(replacement.rows[0].id).not.toBe(watchlist.rows[0].id);
+
+      await client.query('SAVEPOINT protect_watchlist_definition');
+      await expect(client.query(
+        'UPDATE research_topic_watchlists SET title = $1 WHERE id = $2',
+        ['tampered', replacement.rows[0].id],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_watchlist_definition');
+    });
   });
 
   it('prevents approving claims against a source whose rights are not approved', async () => {

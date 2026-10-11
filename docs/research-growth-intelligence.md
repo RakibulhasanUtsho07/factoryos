@@ -4,6 +4,8 @@
 
 ## Research API
 
+- `POST /watchlists`, `GET /watchlists` and `POST /watchlists/:watchlistId/decision` manage tenant-scoped topic watchlists for sectors, technologies, processes, markets, sustainability and strategic questions. Query terms, inclusion/exclusion terms, and allowed source types are stored under forced RLS; activation/pause/retire events are auditable. Watchlists are configuration only and do not imply that an external crawler worker is running.
+
 The tenant-scoped endpoints are under `/research`:
 
 - `POST /sources` registers source metadata and rights/access claims. It starts `PENDING`; source text is always untrusted.
