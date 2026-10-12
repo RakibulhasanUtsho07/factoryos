@@ -63,7 +63,7 @@ interface EdgeAuditContext {
   correlationId?: string | null;
 }
 
-interface SyncSummary {
+export interface SyncSummary {
   id: string;
   batchKey: string;
   observationsReceived: number;
