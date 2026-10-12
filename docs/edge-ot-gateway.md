@@ -1,4 +1,4 @@
-# WP11-A/B/C/D — Edge/OT device gateway, health reporting, and offline recovery
+# WP11-A/B/C/D/E — Edge/OT gateway, offline recovery, health reporting, and protocol adapters
 
 This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
@@ -14,7 +14,7 @@ Human-admin and history-read endpoints require a verified user identity, tenant 
 | POST | `/api/v2/edge/devices/:deviceId/sync` | `edge.telemetry.ingest` | Synchronize a bounded batch of edge-buffered observations |
 | GET | `/api/v2/edge/devices/:deviceId/observations?limit=25&offset=0` | `edge.telemetry.read` | Read the device observation timeline |\n| POST | `/api/v2/edge/device-health/:deviceId` | Active device bearer credential | Append a device-agent health/model/drift report |\n| GET | `/api/v2/edge/devices/:deviceId/health?limit=25&offset=0` | `edge.devices.health.read` | Read health-report history with model versions, queue state, and reported drift |
 
-Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. These values identify the intended transport; this slice does not implement or claim a live OPC UA, MQTT, or Modbus connection.
+Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. The protocol adapter layer below normalizes allow-listed MQTT/OPC UA sample callbacks into the durable spool. A deployment must supply a pre-authorized transport/client bridge; this slice does not open live broker/session connections or implement the Modbus driver.
 
 ## Device credential lifecycle
 
@@ -45,18 +45,54 @@ Reported model versions and drift signals are **device assertions**, not a verif
 
 Health reporting is best-effort and does not delete/alter the observation queue on failure. The agent reports a stable non-secret error code locally, retries on the next health interval, and separately continues the observation retry/ack flow. Last successful sync time is persisted in the local agent state file and restored on restart. The cloud's last received health report timestamp is useful for offline/staleness monitoring; when WAN access is down, the server cannot receive a new report until reconnect.
 
+## WP11-E — MQTT and OPC UA adapter normalization
+
+The adapter code lives under `services/api/src/edge/protocol-adapters/`:
+
+- `MqttEdgeProtocolAdapter` subscribes only to exact, configured MQTT topics (wildcards and whitespace are rejected). Every mapping requires an explicit JSON value path and source timestamp path; source ID/sequence/quality paths are optional. If the message does not carry mapped quality, it is recorded as `UNCERTAIN`, not guessed as `GOOD`.
+- `OpcUaEdgeProtocolAdapter` subscribes only to exact configured NodeIds and preserves the OPC UA source timestamp and mapped `GOOD`/`UNCERTAIN`/`BAD` quality.
+- Both adapters require explicit signal key, unit, and sampling interval mappings, allow only bounded scalar values, and write one stable event into the same `DurableEdgeSpool`. Deterministic UUIDv5 identities include protocol, source identifier, optional source sequence, signal key, timestamp, value and quality. A retransmitted source sample therefore uses the same local batch/event identity.
+- The supervisor starts bindings in order and rolls back earlier subscriptions if a later binding fails. It shuts subscriptions down in reverse order and routes message/queue failures to the host-provided error callback.
+
+Example mapping configuration (the transport clients themselves are injected by the deployment):
+
+```ts
+const mqttMappings = [{
+  topic: 'factory-a/line-1/temperature',
+  signalKey: 'line-1.temperature',
+  unit: 'degC',
+  samplingIntervalMs: 1000,
+  valueField: 'reading.value',
+  timestampField: 'reading.timestamp',
+  sourceIdentifierField: 'device_id',
+  sourceSequenceField: 'sequence',
+  qualityField: 'reading.quality',
+}];
+
+const opcUaMappings = [{
+  nodeId: 'ns=2;s=Factory.Line1.MotorTemperature',
+  signalKey: 'line-1.motor-temperature',
+  unit: 'degC',
+  samplingIntervalMs: 500,
+}];
+```
+
+The adapter contracts deliberately do not call `mqtt.connect`, create an OPC UA session, resolve arbitrary endpoint URLs, or handle private keys. A transport bridge must enforce TLS/certificate validation, topic/node authorization, OT network segmentation, timeouts, and least-privilege credentials before passing messages to these adapters. The host must provide a truthful current source-mode callback and monitor adapter errors; the adapter does not infer that a sample was offline merely because cloud sync later failed.
+
+This is the protocol-neutral adapter/normalization slice for **FR-IOT-03/04/05**. Hardware-in-the-loop tests, production MQTT broker and OPC UA server sessions, certificate-bound mTLS, and deployment wiring are intentionally still exit criteria rather than claimed as complete live connectivity.
+
 ## Safety and isolation
 
 Device operations are bound to the verified tenant and factory context, re-authorized by IAM in the service, and protected by PostgreSQL tenant RLS plus composite tenant/factory foreign keys. Device status controls block new ingestion while paused or revoked; a revoked device cannot be reactivated. Credential-like fields are rejected from capability and observation JSON, and audit payloads retain hashes and counts rather than raw telemetry.
 
-The authenticated user API is not a device-credential protocol. Before production deployment with direct device connectivity, certificate-bound device identity, real transport adapters, key rotation/revocation operations, and network-level allow-lists must be implemented.
+The authenticated user API is not a device-credential protocol. Before production deployment with direct device connectivity, certificate-bound device identity, reviewed MQTT/OPC UA client bindings, key rotation/revocation operations, and network-level allow-lists must be implemented.
 
 ## SRS traceability and boundaries
 
 - **FR-EDG-03:** preserves the submitted observation quality/time and a source-mode label; it does not fabricate absent live values.
-- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.\n- **FR-EDG-08:** reports local queue health, agent version, model versions, bounded drift signals, last successful sync, and capability metadata; device-reported model/drift values remain unverified telemetry.\n- **FR-IOT-05:** stores telemetry quality plus optional-compatible top-level unit/sampling metadata; new local-agent batches require both fields, and older persisted batches can replay without invented metadata.
+- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.\n- **FR-EDG-08:** reports local queue health, agent version, model versions, bounded drift signals, last successful sync, and capability metadata; device-reported model/drift values remain unverified telemetry.\n- **FR-IOT-05:** stores telemetry quality plus optional-compatible top-level unit/sampling metadata; new local-agent batches require both fields, and older persisted batches can replay without invented metadata.\n- **FR-IOT-04:** provides exact topic/node allow-listing, deterministic sample normalization, source-timestamp/quality preservation, and adapter lifecycle contracts for MQTT/OPC UA; production driver/session integration remains deployment-owned.
 - **FR-EDG-07:** restricts the API to IAM-authorized factory scopes and rejects credential material in payloads; OS/network sandboxing for an edge agent remains follow-up work.
-- **FR-EDG-08:** exposes fleet status and last successful synchronization timestamps through the device list. Model version, drift, and package health reporting remain follow-up work.
+- **FR-EDG-08:** exposes fleet status and last successful synchronization timestamps, with latest model version/drift summary through the device list and append-only per-device health history.
 - **FR-EDG-12:** supports factory-scoped pause/resume/revoke status. Device-group and use-case package revocation remain follow-up work.
 
 Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. Migration `041_edge_device_credentials.sql` adds hashed machine credentials and identity-linked telemetry; migration `042_edge_device_health_and_stream_metadata.sql` adds health/drift history, stream unit and sampling fields, RLS, and the immutable health ledger. PostgreSQL CI applies the migrations after the WP10 migrations.
