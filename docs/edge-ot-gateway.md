@@ -39,12 +39,12 @@ Use HTTPS only and store the device token in an OS-protected secret store on the
 
 Device operations are bound to the verified tenant and factory context, re-authorized by IAM in the service, and protected by PostgreSQL tenant RLS plus composite tenant/factory foreign keys. Device status controls block new ingestion while paused or revoked; a revoked device cannot be reactivated. Credential-like fields are rejected from capability and observation JSON, and audit payloads retain hashes and counts rather than raw telemetry.
 
-The authenticated user API is not a device-credential protocol. Before production deployment with direct device connectivity, a separate device authentication scheme (for example certificate-bound identity), transport adapters, key rotation/revocation handling, and network-level allow-lists must be implemented.
+The authenticated user API is not a device-credential protocol. Before production deployment with direct device connectivity, certificate-bound device identity, real transport adapters, key rotation/revocation operations, and network-level allow-lists must be implemented.
 
 ## SRS traceability and boundaries
 
 - **FR-EDG-03:** preserves the submitted observation quality/time and a source-mode label; it does not fabricate absent live values.
-- **FR-EDG-04:** implements the cloud-side durable synchronization ledger and deterministic deduplication needed by reconnecting clients. A local edge spool/queue and edge-runtime persistence remain follow-up work.
+- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.
 - **FR-EDG-07:** restricts the API to IAM-authorized factory scopes and rejects credential material in payloads; OS/network sandboxing for an edge agent remains follow-up work.
 - **FR-EDG-08:** exposes fleet status and last successful synchronization timestamps through the device list. Model version, drift, and package health reporting remain follow-up work.
 - **FR-EDG-12:** supports factory-scoped pause/resume/revoke status. Device-group and use-case package revocation remain follow-up work.
