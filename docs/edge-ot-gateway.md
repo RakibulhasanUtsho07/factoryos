@@ -1,4 +1,4 @@
-# WP11-A/B/C/D/E — Edge/OT gateway, offline recovery, health reporting, and protocol adapters
+# WP11-A/B/C/D/E/F — Edge/OT gateway, offline recovery, health reporting, and protocol adapters
 
 This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
@@ -100,3 +100,12 @@ The authenticated user API is not a device-credential protocol. Before productio
 - **FR-EDG-12:** supports factory-scoped pause/resume/revoke status. Device-group and use-case package revocation remain follow-up work.
 
 Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. Migration `041_edge_device_credentials.sql` adds hashed machine credentials and identity-linked telemetry; migration `042_edge_device_health_and_stream_metadata.sql` adds health/drift history, stream unit and sampling fields, RLS, and the immutable health ledger. PostgreSQL CI applies the migrations after the WP10 migrations.
+
+
+## WP11-F — graceful adapter shutdown and source timestamp validity
+
+The MQTT and OPC UA adapter lifecycle now tracks each accepted asynchronous source callback through normalization and its durable-spool enqueue. `stop()` first releases subscriptions, then drains in-flight ingestion operations before returning. Hosts should stop protocol adapters before closing their durable spool, so an already accepted source sample is not raced against spool shutdown.
+
+The shared timestamp normalizer requires an explicit timezone and validates the actual calendar components before accepting the timestamp. This prevents runtime date parsing from silently rolling an impossible date such as February 30 into a different timestamp, which would change the identity and meaning of the source event. The existing maximum-future-time bound remains in force.
+
+Regression tests cover impossible source calendar dates and a deliberately blocked spool enqueue for both MQTT and OPC UA: adapter shutdown must remain pending until the enqueue settles. Transport drivers, broker credentials, OPC UA certificate/session creation and hardware-in-loop behavior remain outside this slice.
