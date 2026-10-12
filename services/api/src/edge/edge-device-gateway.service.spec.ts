@@ -250,9 +250,21 @@ describe('EdgeDeviceGatewayService', () => {
   });
 
   it('returns the stored summary for an identical batch replay without reinserting events', async () => {
+    const normalized = (
+      service as unknown as { normalizeBatch: (value: never) => { batchKey: string; observations: unknown[] } }
+    ).normalizeBatch(syncInput() as never);
+    const requestHash = (
+      service as unknown as { hash: (value: unknown) => string }
+    ).hash({
+      tenantId,
+      factoryId,
+      deviceId,
+      batchKey: normalized.batchKey,
+      observations: normalized.observations,
+    });
     client.query
       .mockResolvedValueOnce({ rows: [deviceRow({ status: EdgeDeviceStatus.PAUSED })] })
-      .mockResolvedValueOnce({ rows: [batchRow()] });
+      .mockResolvedValueOnce({ rows: [batchRow({ request_hash: requestHash })] });
 
     const result = await service.syncObservations(
       tenantId,
