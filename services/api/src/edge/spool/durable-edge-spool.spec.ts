@@ -109,8 +109,11 @@ describe('DurableEdgeSpool', () => {
   });
 
   it('rejects credential material before it is written to disk', async () => {
-    const batch = firstBatch();
-    batch.observations[0].payload = { api_token: 'never-store-this' };
+    const sample = firstBatch();
+    const batch = {
+      batch_key: 'credential-01',
+      observations: [{ ...sample.observations[0], payload: { api_token: 'never-store-this' } }],
+    };
     await expect(spool.enqueue(batch)).rejects.toMatchObject({ code: 'INVALID_BATCH' });
     expect((await spool.status()).pendingBatches).toBe(0);
   });
