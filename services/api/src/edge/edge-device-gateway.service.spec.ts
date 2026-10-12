@@ -249,6 +249,45 @@ describe('EdgeDeviceGatewayService', () => {
     );
   });
 
+  it('deduplicates an identical event replayed in a different batch', async () => {
+    const payload = syncInput({ batch_key: 'reconnect-20261012-002' });
+    const normalized = (
+      service as unknown as { normalizeBatch: (value: never) => { batchKey: string; observations: Array<Record<string, unknown>> } }
+    ).normalizeBatch(payload as never);
+    const event = normalized.observations[0];
+    if (!event) throw new Error('Expected normalized event');
+    const eventHash = (
+      service as unknown as { hash: (value: unknown) => string }
+    ).hash({ tenantId, factoryId, deviceId, ...event });
+
+    client.query
+      .mockResolvedValueOnce({ rows: [deviceRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ request_hash: eventHash }] })
+      .mockResolvedValueOnce({
+        rows: [batchRow({
+          batch_key: 'reconnect-20261012-002',
+          observations_inserted: 0,
+          observations_deduplicated: 1,
+        })],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.syncObservations(
+      tenantId,
+      factoryId,
+      userId,
+      deviceId,
+      payload as never,
+    );
+
+    expect(result.idempotent).toBe(false);
+    expect(result.summary.observationsInserted).toBe(0);
+    expect(result.summary.observationsDeduplicated).toBe(1);
+    expect(client.query).toHaveBeenCalledTimes(6);
+  });
+
   it('returns the stored summary for an identical batch replay without reinserting events', async () => {
     const normalized = (
       service as unknown as { normalizeBatch: (value: never) => { batchKey: string; observations: unknown[] } }
