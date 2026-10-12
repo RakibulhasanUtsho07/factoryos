@@ -194,3 +194,12 @@ It polls `GET /api/v2/edge/device-package-controls/:deviceId/effective` with its
 The local decision contract is fail-closed: a package that is not configured, has never received a successful control decision, reports PAUSED/REVOKED, encounters an invalid/error response, or has stale state is not allowed to execute. A REVOKED result is latched for the life of the agent process; remote control decisions are shown in the loopback-only `/healthz` response without including operator reason text. A deployment-owned model/policy host must consult `isPackageExecutionAllowed(packageId, version, useCaseId)` at the execution boundary; no model runtime or package auto-launcher is claimed. Cloud connectivity loss causes an UNKNOWN decision and blocks governed execution until a successful poll recovers it. This does not stop telemetry spool/replay, which remains independent.
 
 Validation adds runtime tests for authenticated scope polling, explicit package allow-listing, fail-closed behavior on HTTP failure, and terminal local revoke latching. This covers the agent-polling/decision-contract portion of **FR-EDG-12**; actual model-runtime kill-switch integration, durable revoke-latch persistence across process restart, cloud signer-key injection into local manifest verification, and hardware-in-loop acceptance remain open.
+
+
+## WP11-L — durable local package-control revocation
+
+The edge agent now stores its package-control decision ledger at `package-controls.json` in the same private local spool directory. State updates use a temporary file, fsync, atomic rename and directory sync; the file is mode-restricted where the operating system supports POSIX permissions. Concurrent package polls serialize updates to avoid losing another package's latest state.
+
+On restart, only a persisted `REVOKED` decision is restored as an immediate execution denial. Previously cached ACTIVE/PAUSED decisions are deliberately treated as UNKNOWN until the control endpoint is reached successfully again. Malformed, oversized, symlinked, or structurally invalid state files prevent startup rather than being silently reset. A poll whose result cannot be durably saved cannot authorize execution.
+
+The restart regression test revokes a package, closes the first runtime, then starts a second runtime on the same spool directory while the mock server reports ACTIVE. The package remains denied. This is local defense-in-depth; server-side terminal revocation remains the authority, and OS-level protection/backup of the spool directory is still required.

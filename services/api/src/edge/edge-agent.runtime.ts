@@ -6,6 +6,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { DurableEdgeSpool, EdgeSpoolError } from './spool/durable-edge-spool.js';
+import { EdgePackageControlStateStore } from './edge-package-control-state.store.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEVICE_TOKEN_PATTERN =
@@ -134,6 +135,7 @@ function getBearerToken(request: IncomingMessage): string | null {
 
 export class EdgeAgentRuntime {
   private readonly spool: DurableEdgeSpool;
+  private readonly packageControlStateStore: EdgePackageControlStateStore;
   private readonly apiBaseUrl: URL;
   private readonly expectedLocalToken: Buffer;
   private server: Server | null = null;
@@ -192,6 +194,7 @@ export class EdgeAgentRuntime {
     for (const managedPackage of managedPackages) {
       if (!managedPackage || typeof managedPackage !== 'object' ||
           !PACKAGE_ID_PATTERN.test(managedPackage.packageId) ||
+          managedPackage.version.length > 128 ||
           !PACKAGE_VERSION_PATTERN.test(managedPackage.version) ||
           (managedPackage.useCaseId !== undefined &&
             !USE_CASE_ID_PATTERN.test(managedPackage.useCaseId))) {
@@ -222,6 +225,7 @@ export class EdgeAgentRuntime {
     this.spool = new DurableEdgeSpool(config.spoolDir, {
       maxPendingBytes: config.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES,
     });
+    this.packageControlStateStore = new EdgePackageControlStateStore(config.spoolDir);
   }
 
   get listenPort(): number | null {
@@ -233,6 +237,26 @@ export class EdgeAgentRuntime {
     if (this.started) return;
     await this.spool.initialize();
     try {
+      const persistedControlStates = await this.packageControlStateStore.initialize(
+        this.managedPackages.map((managedPackage) => ({
+          packageId: managedPackage.packageId,
+          packageVersion: managedPackage.version,
+          useCaseId: managedPackage.useCaseId ?? null,
+        })),
+      );
+      for (const managedPackage of this.managedPackages) {
+        const persisted = persistedControlStates.find((state) =>
+          state.packageId === managedPackage.packageId &&
+          state.packageVersion === managedPackage.version &&
+          state.useCaseId === (managedPackage.useCaseId ?? null));
+        // Active/pause decisions must be refreshed after every process start;
+        // only a durable REVOKED latch survives startup and can never be undone.
+        if (persisted?.status === 'REVOKED') {
+          this.packageControlStates.set(packageControlKey(managedPackage), {
+            ...persisted,
+          });
+        }
+      }
       this.lastSyncAt = (await this.spool.status()).lastSuccessfulSyncAt;
       this.server = createServer((request, response) => {
         void this.handleRequest(request, response).catch(() => {
@@ -420,7 +444,7 @@ export class EdgeAgentRuntime {
       const reportedStatus = responseValue.status as Exclude<EdgePackageControlStatus, 'UNKNOWN'>;
       const latchedRevocation = previous?.status === 'REVOKED';
       const status: EdgePackageControlStatus = latchedRevocation ? 'REVOKED' : reportedStatus;
-      this.packageControlStates.set(key, {
+      const nextState: EdgePackageControlSnapshot = {
         packageId: managedPackage.packageId,
         packageVersion: managedPackage.version,
         useCaseId: managedPackage.useCaseId ?? null,
@@ -430,8 +454,22 @@ export class EdgeAgentRuntime {
         ),
         checkedAt: new Date().toISOString(),
         lastErrorCode: null,
-      });
-      return true;
+      };
+      try {
+        await this.packageControlStateStore.save(nextState);
+        this.packageControlStates.set(key, nextState);
+        return true;
+      } catch {
+        // Never authorize from a decision that could not be durably recorded.
+        this.packageControlStates.set(key, {
+          ...nextState,
+          status: status === 'REVOKED' ? 'REVOKED' : 'UNKNOWN',
+          checkedAt: previous?.checkedAt ?? null,
+          lastErrorCode: 'STATE_PERSIST_FAILED',
+          reason: status === 'REVOKED' ? nextState.reason : null,
+        });
+        return false;
+      }
     } catch (error) {
       return markFailure(
         error instanceof Error && error.name === 'TimeoutError'

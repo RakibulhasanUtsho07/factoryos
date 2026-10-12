@@ -282,6 +282,52 @@ describe('EdgeAgentRuntime', () => {
     expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
   });
 
+  it('keeps a REVOKED package blocked after an agent restart even if the server later says ACTIVE', async () => {
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      autoSync: false,
+      managedPackages: [{ packageId: 'quality-defect', version: '1.2.0' }],
+    });
+    await runtime.start();
+    packageControlStatus = 'REVOKED';
+    await expect(runtime.pollPackageControlsOnce()).resolves.toBe(1);
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
+    await runtime.stop();
+    runtime = null;
+
+    packageControlStatus = 'ACTIVE';
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      autoSync: false,
+      managedPackages: [{ packageId: 'quality-defect', version: '1.2.0' }],
+    });
+    await runtime.start();
+
+    // The persisted revoke is effective before any new cloud round trip.
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
+    await expect(runtime.pollPackageControlsOnce()).resolves.toBe(1);
+    expect(runtime.getPackageControlState('quality-defect', '1.2.0')).toMatchObject({
+      status: 'REVOKED',
+      reason: 'Package revoked by operator',
+      lastErrorCode: null,
+    });
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
+  });
+
   it('rejects device credentials that are not bound to the configured device', () => {
     expect(() => new EdgeAgentRuntime({
       spoolDir: rootDir,
