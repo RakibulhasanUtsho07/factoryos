@@ -11,7 +11,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const EDGE_SPOOL_MAX_BATCH_BYTES = 64 * 1024;
 const DEFAULT_MAX_PENDING_BYTES = 512 * 1024 * 1024;
@@ -72,6 +72,7 @@ export interface EdgeSpoolStatus {
   pendingBatches: number;
   pendingBytes: number;
   oldestPendingAt: string | null;
+  lastSuccessfulSyncAt: string | null;
 }
 
 export type EdgeSpoolErrorCode =
@@ -258,6 +259,8 @@ export class DurableEdgeSpool {
   private readonly pendingDir: string;
   private readonly tempDir: string;
   private readonly lockPath: string;
+  private readonly statePath: string;
+  private lastSuccessfulSyncAt: string | null = null;
   private readonly maxPendingBytes: number;
   private readonly maxPendingBatches: number;
   private readonly retryBaseMs: number;
@@ -273,6 +276,7 @@ export class DurableEdgeSpool {
     this.pendingDir = join(rootDir, 'pending');
     this.tempDir = join(rootDir, '.tmp');
     this.lockPath = join(rootDir, '.edge-agent.lock');
+    this.statePath = join(rootDir, 'agent-state.json');
     this.maxPendingBytes = limits.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
     this.maxPendingBatches = limits.maxPendingBatches ?? DEFAULT_MAX_PENDING_BATCHES;
     this.retryBaseMs = limits.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
@@ -308,6 +312,7 @@ export class DurableEdgeSpool {
       for (const entry of await readdir(this.tempDir)) {
         await rm(join(this.tempDir, entry), { force: true, recursive: false });
       }
+      await this.loadAgentState();
       this.initialized = true;
     } catch (error) {
       await this.releaseProcessLock();
@@ -319,6 +324,26 @@ export class DurableEdgeSpool {
     if (!this.initialized && !this.lockNonce) return;
     this.initialized = false;
     await this.releaseProcessLock();
+  }
+
+  async markSuccessfulSync(at = new Date().toISOString()): Promise<void> {
+    await this.withMutationLock(async () => {
+      this.ensureInitialized();
+      const timestamp = Date.parse(at);
+      if (!Number.isFinite(timestamp)) {
+        throw new EdgeSpoolError('SPOOL_CORRUPT', 'Successful-sync timestamp must be a valid date');
+      }
+      const normalized = new Date(timestamp).toISOString();
+      if (this.lastSuccessfulSyncAt && Date.parse(this.lastSuccessfulSyncAt) > timestamp) {
+        return;
+      }
+      const nextState = JSON.stringify({
+        schema_version: 1,
+        last_successful_sync_at: normalized,
+      });
+      await this.writeAtomic(this.statePath, nextState);
+      this.lastSuccessfulSyncAt = normalized;
+    });
   }
 
   async enqueue(input: unknown, now = Date.now()): Promise<{ idempotent: boolean; batchKey: string }> {
@@ -441,8 +466,44 @@ export class DurableEdgeSpool {
         pendingBatches: usage.pendingBatches,
         pendingBytes: usage.pendingBytes,
         oldestPendingAt: rows[0]?.created_at ?? null,
+        lastSuccessfulSyncAt: this.lastSuccessfulSyncAt,
       };
     });
+  }
+
+  private async loadAgentState(): Promise<void> {
+    let raw: string;
+    try {
+      const details = await lstat(this.statePath);
+      if (!details.isFile() || details.isSymbolicLink()) {
+        throw new EdgeSpoolError('SPOOL_CORRUPT', 'Agent state must be a regular file');
+      }
+      raw = await readFile(this.statePath, 'utf8');
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+      this.lastSuccessfulSyncAt = null;
+      await this.writeAtomic(
+        this.statePath,
+        JSON.stringify({ schema_version: 1, last_successful_sync_at: null }),
+      );
+      return;
+    }
+
+    try {
+      const state = JSON.parse(raw) as {
+        schema_version?: unknown;
+        last_successful_sync_at?: unknown;
+      };
+      if (state.schema_version !== 1 ||
+          !(state.last_successful_sync_at === null ||
+            (typeof state.last_successful_sync_at === 'string' &&
+             Number.isFinite(Date.parse(state.last_successful_sync_at))))) {
+        throw new Error('Invalid agent state envelope');
+      }
+      this.lastSuccessfulSyncAt = state.last_successful_sync_at as string | null;
+    } catch {
+      throw new EdgeSpoolError('SPOOL_CORRUPT', 'Agent state failed integrity validation');
+    }
   }
 
   private async measurePending(): Promise<{ pendingBatches: number; pendingBytes: number }> {
@@ -513,7 +574,7 @@ export class DurableEdgeSpool {
       await handle.close();
       handle = undefined;
       await rename(temporaryPath, destination);
-      await this.syncDirectory(this.pendingDir);
+      await this.syncDirectory(dirname(destination));
       await this.syncDirectory(this.tempDir);
     } catch (error) {
       if (handle) await handle.close().catch(() => undefined);
