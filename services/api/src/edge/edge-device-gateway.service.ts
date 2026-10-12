@@ -305,19 +305,30 @@ export class EdgeDeviceGatewayService {
   async syncObservations(
     tenantId: string,
     factoryId: string,
-    actorUserId: string,
+    actorUserId: string | null,
     deviceId: string,
     input: SyncEdgeObservationsDto,
     auditContext: EdgeAuditContext = {},
+    deviceCredentialId: string | null = null,
   ) {
-    this.validateScope(tenantId, factoryId, actorUserId);
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(factoryId, 'factoryId');
     this.validateUuid(deviceId, 'deviceId');
-    await this.iamService.authorize(
-      actorUserId,
-      tenantId,
-      'edge.telemetry.ingest',
-      factoryId,
-    );
+    if (deviceCredentialId) {
+      this.validateUuid(deviceCredentialId, 'deviceCredentialId');
+      if (actorUserId !== null) {
+        throw new BadRequestException('Device credential ingestion cannot impersonate a user');
+      }
+    } else {
+      if (!actorUserId) throw new ForbiddenException('An authenticated ingest principal is required');
+      this.validateScope(tenantId, factoryId, actorUserId);
+      await this.iamService.authorize(
+        actorUserId,
+        tenantId,
+        'edge.telemetry.ingest',
+        factoryId,
+      );
+    }
 
     const normalized = this.normalizeBatch(input);
     const requestHash = this.hash({
@@ -341,6 +352,22 @@ export class EdgeDeviceGatewayService {
         );
         const device = selectedDevice.rows[0];
         if (!device) throw new NotFoundException('Edge device not found');
+
+        if (deviceCredentialId) {
+          const activeCredential = await client.query<{ id: string }>(
+            `
+            SELECT id::text AS id
+            FROM edge_device_credentials
+            WHERE tenant_id = $1 AND factory_id = $2 AND device_id = $3
+              AND id = $4 AND status = 'ACTIVE' AND expires_at > NOW()
+            FOR UPDATE
+            `,
+            [tenantId, factoryId, deviceId, deviceCredentialId],
+          );
+          if (!activeCredential.rows[0]) {
+            throw new ForbiddenException('Device credential was revoked or expired before ingest completed');
+          }
+        }
 
         const priorBatch = await client.query<EdgeSyncBatchRow>(
           `
@@ -387,10 +414,10 @@ export class EdgeDeviceGatewayService {
             INSERT INTO edge_observations (
               tenant_id, factory_id, device_id, event_id, signal_key,
               observed_at, source_mode, quality, payload, payload_hash,
-              request_hash, recorded_by
+              request_hash, recorded_by, recorded_by_credential_id
             )
             VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12
+              $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13
             )
             ON CONFLICT (tenant_id, device_id, event_id) DO NOTHING
             RETURNING id::text AS id
@@ -408,6 +435,7 @@ export class EdgeDeviceGatewayService {
               payloadHash,
               itemHash,
               actorUserId,
+              deviceCredentialId,
             ],
           );
 
@@ -439,9 +467,9 @@ export class EdgeDeviceGatewayService {
           INSERT INTO edge_sync_batches (
             tenant_id, factory_id, device_id, batch_key, request_hash,
             observations_received, observations_inserted,
-            observations_deduplicated, recorded_by
+            observations_deduplicated, recorded_by, recorded_by_credential_id
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           RETURNING id::text AS id, batch_key, request_hash,
                     observations_received, observations_inserted,
                     observations_deduplicated, received_at::text AS received_at
@@ -456,6 +484,7 @@ export class EdgeDeviceGatewayService {
             insertedCount,
             deduplicatedCount,
             actorUserId,
+            deviceCredentialId,
           ],
         );
         const batch = batchResult.rows[0];
