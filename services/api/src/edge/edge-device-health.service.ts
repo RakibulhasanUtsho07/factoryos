@@ -410,7 +410,7 @@ export class EdgeDeviceHealthService {
       seen.add(signalId);
 
       const modelKey = this.requiredString(entry.model_key, `drift_signals[${index}].model_key`, 80);
-      if (!MODEL_KEY_PATTERN.test(modelKey) || !(modelKey in modelVersions)) {
+      if (!MODEL_KEY_PATTERN.test(modelKey) || !Object.hasOwn(modelVersions, modelKey)) {
         throw new BadRequestException(`drift_signals[${index}].model_key must refer to a reported model version`);
       }
       if (!Object.values(EdgeDriftSignalType).includes(entry.signal_type as EdgeDriftSignalType)) {
