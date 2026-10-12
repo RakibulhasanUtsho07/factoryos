@@ -141,6 +141,41 @@ export function readJsonPath(object: Record<string, unknown>, path: string, labe
   return current;
 }
 
+/**
+ * Tracks asynchronous source callbacks so adapter shutdown can wait for every
+ * accepted message to finish normalizing and reaching the durable spool.
+ */
+export function trackProtocolOperation(
+  pending: Set<Promise<void>>,
+  operation: () => Promise<unknown>,
+  onError: (error: Error) => void,
+  fallbackMessage: string,
+): void {
+  let task!: Promise<void>;
+  task = Promise.resolve()
+    .then(operation)
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      // A host callback must not turn a handled source failure into an
+      // unhandled rejection or prevent the shutdown drain from completing.
+      try {
+        onError(error instanceof Error ? error : new Error(fallbackMessage));
+      } catch {
+        // Preserve the adapter's lifecycle even if the observer callback fails.
+      }
+    })
+    .finally(() => {
+      pending.delete(task);
+    });
+  pending.add(task);
+}
+
+export async function drainProtocolOperations(pending: Set<Promise<void>>): Promise<void> {
+  while (pending.size > 0) {
+    await Promise.all([...pending]);
+  }
+}
+
 export async function queueNormalizedSample(
   sink: EdgeProtocolBatchSink,
   args: {
