@@ -136,4 +136,8 @@ CREATE TRIGGER edge_sync_batches_immutable
  BEFORE UPDATE OR DELETE ON edge_sync_batches
  FOR EACH ROW EXECUTE FUNCTION edge_reject_ledger_mutation();
 
+INSERT INTO schema_migrations(version,checksum)
+VALUES('040_edge_ot_device_gateway',NULL)
+ON CONFLICT(version) DO NOTHING;
+
 COMMIT;
