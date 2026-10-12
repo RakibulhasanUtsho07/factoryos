@@ -14,6 +14,8 @@ const firstBatch = () => ({
       observed_at: '2026-10-12T01:02:03.000Z',
       source_mode: 'EDGE_OFFLINE',
       quality: 'GOOD',
+      unit: 'degC',
+      sampling_interval_ms: 1000,
       payload: { celsius: 41.7, unit: 'C' },
     },
   ],
