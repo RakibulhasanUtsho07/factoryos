@@ -7,7 +7,6 @@ import {
 } from '../spool/durable-edge-spool.js';
 import type { EdgeProtocolQuality, EdgeProtocolSourceMode, EdgeProtocolBatchSink, EdgeProtocolIngestResult } from './edge-protocol-adapter.types.js';
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SIGNAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/;
 const UNIT_PATTERN = /^[A-Za-z0-9%._/-]{1,32}$/;
 const CREDENTIAL_FIELD_PATTERN = /(?:secret|password|credential|private.?key|api.?key|api.?token|access.?token|refresh.?token|authorization|bearer)/i;
@@ -47,9 +46,13 @@ export function normalizeObservedAt(value: unknown): string {
   if (!(value instanceof Date) && typeof value !== 'string') {
     throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO date string or Date');
   }
-  if (typeof value === 'string' &&
-      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
-    throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO-8601 timestamp with an explicit timezone');
+  if (typeof value === 'string') {
+    if (!value.trim() || !Number.isFinite(Date.parse(value))) {
+      throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp is missing or invalid');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+      throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO-8601 timestamp with an explicit timezone');
+    }
   }
   const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(timestamp)) {
