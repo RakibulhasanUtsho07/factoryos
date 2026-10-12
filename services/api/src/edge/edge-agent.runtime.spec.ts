@@ -87,6 +87,8 @@ describe('EdgeAgentRuntime', () => {
           observed_at: '2026-10-12T01:02:03.000Z',
           source_mode: 'EDGE_OFFLINE',
           quality: 'GOOD',
+          unit: 'rpm',
+          sampling_interval_ms: 1000,
           payload: { rpm: 900 },
         },
       ],
