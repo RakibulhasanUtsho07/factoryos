@@ -32,6 +32,7 @@ interface HealthReportRow extends QueryResultRow {
   drift_signals: Array<Record<string, unknown>>;
   capabilities: Record<string, unknown>;
   received_at: string;
+  request_hash: string;
 }
 
 interface DeviceStatusRow extends QueryResultRow {
@@ -72,7 +73,8 @@ const HEALTH_REPORT_COLUMNS = `
   model_versions,
   drift_signals,
   capabilities,
-  received_at::text AS received_at
+  received_at::text AS received_at,
+  request_hash
 `;
 
 const MODEL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
