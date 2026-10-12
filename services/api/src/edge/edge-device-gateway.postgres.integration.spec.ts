@@ -4,6 +4,7 @@ import { Pool, type PoolClient } from 'pg';
 
 import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
 import { EdgeDeviceCredentialService } from './edge-device-credential.service';
+import { EdgeDeviceHealthService } from './edge-device-health.service';
 import { EdgeDeviceProtocol } from './dto/register-edge-device.dto';
 import {
   EdgeObservationQuality,
@@ -21,6 +22,7 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
   let client!: PoolClient;
   let service!: EdgeDeviceGatewayService;
   let credentialService!: EdgeDeviceCredentialService;
+  let healthService!: EdgeDeviceHealthService;
   let tenantId!: string;
   let factoryId!: string;
   let userId!: string;
@@ -80,6 +82,7 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
     };
     service = new EdgeDeviceGatewayService(database as never, iam as never, audit as never);
     credentialService = new EdgeDeviceCredentialService(database as never, iam as never, audit as never);
+    healthService = new EdgeDeviceHealthService(database as never, iam as never, audit as never);
   }, 60000);
 
   afterAll(async () => {
@@ -131,6 +134,8 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
       observed_at: new Date().toISOString(),
       source_mode: 'EDGE_OFFLINE',
       quality: 'GOOD',
+      unit: 'degC',
+      sampling_interval_ms: 5000,
       payload: { value: 30.2, unit: 'C' },
     };
     const synced = await service.syncObservations(
@@ -143,6 +148,35 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
       authenticated.credentialId,
     );
     expect(synced.summary.observationsInserted).toBe(1);
+
+    const healthEventId = randomUUID();
+    const health = await healthService.recordReport(
+      tenantId,
+      factoryId,
+      device.device.id,
+      issued.credential.id,
+      {
+        health_event_id: healthEventId,
+        reported_at: new Date().toISOString(),
+        agent_version: '1.0.0',
+        runtime_status: 'HEALTHY',
+        pending_batches: 0,
+        pending_bytes: 0,
+        last_successful_sync_at: new Date().toISOString(),
+        model_versions: { 'quality-defect': '1.2.0' },
+        drift_signals: [],
+        capabilities: { cpu: 'test-runner', memory_mb: 512 },
+      } as never,
+    );
+    expect(health.idempotent).toBe(false);
+    expect(health.report.modelVersions).toEqual({ 'quality-defect': '1.2.0' });
+    const history = await healthService.listReports(
+      tenantId,
+      factoryId,
+      userId,
+      device.device.id,
+    );
+    expect(history.reports[0]?.healthEventId).toBe(healthEventId);
 
     const revoked = await credentialService.revokeCredential(
       tenantId,
@@ -183,6 +217,8 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
       observed_at: new Date().toISOString(),
       source_mode: EdgeObservationSourceMode.EDGE_OFFLINE,
       quality: EdgeObservationQuality.GOOD,
+      unit: 'degC',
+      sampling_interval_ms: 1000,
       payload: { value: 27.5, unit: 'C' },
     };
     const batch = {
@@ -215,6 +251,11 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
       [tenantId, created.device.id],
     );
     expect(count.rows[0]?.count).toBe('1');
+    const streamMetadata = await client.query<{ unit: string; sampling_interval_ms: number }>(
+      `SELECT unit, sampling_interval_ms FROM edge_observations WHERE tenant_id = $1 AND device_id = $2`,
+      [tenantId, created.device.id],
+    );
+    expect(streamMetadata.rows[0]).toEqual({ unit: 'degC', sampling_interval_ms: 1000 });
 
     await client.query('SAVEPOINT edge_observation_immutable');
     await expect(
