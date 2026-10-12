@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 import { Pool, type PoolClient } from 'pg';
 
 import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
+import { EdgeDeviceCredentialService } from './edge-device-credential.service';
 import { EdgeDeviceProtocol } from './dto/register-edge-device.dto';
 import {
   EdgeObservationQuality,
@@ -19,6 +20,7 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
   let pool!: Pool;
   let client!: PoolClient;
   let service!: EdgeDeviceGatewayService;
+  let credentialService!: EdgeDeviceCredentialService;
   let tenantId!: string;
   let factoryId!: string;
   let userId!: string;
@@ -77,6 +79,7 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
       record: jest.fn<(...args: unknown[]) => Promise<string>>().mockResolvedValue('audit-id'),
     };
     service = new EdgeDeviceGatewayService(database as never, iam as never, audit as never);
+    credentialService = new EdgeDeviceCredentialService(database as never, iam as never, audit as never);
   }, 60000);
 
   afterAll(async () => {
@@ -85,6 +88,77 @@ describe('EdgeDeviceGatewayService PostgreSQL integration', () => {
       client.release();
     }
     if (pool) await pool.end();
+  });
+
+  it('issues hashed machine credentials and rejects their use after revocation', async () => {
+    const unique = randomUUID();
+    const device = await service.registerDevice(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        device_key: `credential-edge-${unique}`,
+        display_name: 'Credential CI device',
+        protocol: 'GENERIC',
+        capability_profile: { runtime: 'integration-test' },
+      } as never,
+    );
+
+    const issued = await credentialService.issueCredential(
+      tenantId,
+      factoryId,
+      userId,
+      device.device.id,
+      { valid_for_days: 1 },
+    );
+    expect(issued.secretReturnedOnce).toBe(true);
+    expect(issued.credential.token).toContain(device.device.id);
+
+    const authenticated = await credentialService.authenticateDeviceToken(
+      `Bearer ${issued.credential.token}`,
+      device.device.id,
+    );
+    expect(authenticated).toEqual({
+      credentialId: issued.credential.id,
+      tenantId,
+      factoryId,
+      deviceId: device.device.id,
+    });
+
+    const event = {
+      event_id: randomUUID(),
+      signal_key: 'line.temperature',
+      observed_at: new Date().toISOString(),
+      source_mode: 'EDGE_OFFLINE',
+      quality: 'GOOD',
+      payload: { value: 30.2, unit: 'C' },
+    };
+    const synced = await service.syncObservations(
+      authenticated.tenantId,
+      authenticated.factoryId,
+      null,
+      authenticated.deviceId,
+      { batch_key: `credential-sync-${unique}`, observations: [event] } as never,
+      {},
+      authenticated.credentialId,
+    );
+    expect(synced.summary.observationsInserted).toBe(1);
+
+    const revoked = await credentialService.revokeCredential(
+      tenantId,
+      factoryId,
+      userId,
+      device.device.id,
+      issued.credential.id,
+    );
+    expect(revoked.credential.status).toBe('REVOKED');
+
+    await expect(
+      credentialService.authenticateDeviceToken(
+        `Bearer ${issued.credential.token}`,
+        device.device.id,
+      ),
+    ).rejects.toThrow('Device credential is invalid, expired, revoked, or paused');
   });
 
   it('persists device registration, reconnect deduplication, and append-only telemetry', async () => {
