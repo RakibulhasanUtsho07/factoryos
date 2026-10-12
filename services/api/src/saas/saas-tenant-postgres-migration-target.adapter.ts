@@ -716,7 +716,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
             "INNER JOIN public.tenant_memberships tm ON tm.id = ur.membership_id AND tm.tenant_id = $1::uuid AND tm.status = 'ACTIVE' " +
             'INNER JOIN public.roles r ON r.id = ur.role_id AND r.tenant_id = $1::uuid INNER JOIN public.role_permissions rp ON rp.role_id = r.id ' +
             'INNER JOIN public.permissions p ON p.id = rp.permission_id LEFT JOIN public.factories f ON f.id = ur.factory_id AND f.tenant_id = $1::uuid ' +
-            'WHERE tm.user_id = ANY($2::uuid[]) AND (ur.factory_id IS NULL OR f.id IS NOT NULL) ORDER BY tm.user_id ASC, p.code ASC, f.code ASC NULLS FIRST',
+            'WHERE tm.user_id = ANY($2::uuid[]) AND (ur.factory_id IS NULL OR f.id IS NOT NULL) ORDER BY user_id ASC, permission_code ASC, factory_code ASC NULLS FIRST',
           [tenantId, memberIds],
         )).rows : [];
     assertSaasTenantIamEffectiveAccess(plan.expectedEffectiveAccess, access.map((row) => ({

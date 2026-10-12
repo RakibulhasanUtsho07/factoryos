@@ -113,7 +113,7 @@ postgresDescribe('SaasTenantDataTransferService PostgreSQL control-plane invaria
     } as AttestSaasTenantExportDto);
     expect(completedExport.transfer.version).toBe(2);
     expect(completedExport.transfer.status).toBe('COMPLETED');
-    expect(Object.keys(completedExport.transfer.sourceManifest)).toHaveLength(5);
+    expect(Object.keys(completedExport.transfer.sourceManifest)).toHaveLength(REQUIRED_TRANSFER_CATEGORIES.length);
 
     const validation = await service.validateMigration(source.tenantId, source.userId, {
       source_transfer_id: created.transfer.transferId,
