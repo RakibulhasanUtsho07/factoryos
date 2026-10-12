@@ -9,12 +9,14 @@ import type {
   MqttSignalMapping,
 } from './edge-protocol-adapter.types.js';
 import {
+  drainProtocolOperations,
   normalizeObservedAt,
   normalizeQuality,
   normalizeScalar,
   queueNormalizedSample,
   readJsonPath,
   validateSourceMode,
+  trackProtocolOperation,
   validateStreamMapping,
 } from './edge-protocol-adapter.utils.js';
 
@@ -25,6 +27,7 @@ export class MqttEdgeProtocolAdapter implements EdgeAdapterLifecycle {
   private readonly mappingsByTopic = new Map<string, MqttSignalMapping>();
   private readonly unsubscribers: Array<() => void | Promise<void>> = [];
   private started = false;
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     mappings: readonly MqttSignalMapping[],
@@ -125,9 +128,12 @@ export class MqttEdgeProtocolAdapter implements EdgeAdapterLifecycle {
     try {
       for (const mapping of this.mappingsByTopic.values()) {
         const unsubscribe = await transport.subscribe(mapping.topic, (message) => {
-          void Promise.resolve()
-            .then(() => this.ingestMessage(message, sourceModeProvider()))
-            .catch((error: unknown) => onError(error instanceof Error ? error : new Error('MQTT adapter failed')));
+          trackProtocolOperation(
+            this.inFlight,
+            () => this.ingestMessage(message, sourceModeProvider()),
+            onError,
+            'MQTT adapter failed',
+          );
         });
         this.unsubscribers.push(unsubscribe);
       }
@@ -146,6 +152,7 @@ export class MqttEdgeProtocolAdapter implements EdgeAdapterLifecycle {
         errors.push(error instanceof Error ? error : new Error('MQTT unsubscribe failed'));
       }
     }
+    await drainProtocolOperations(this.inFlight);
     this.started = false;
     if (errors.length) throw new AggregateError(errors, 'One or more MQTT subscriptions could not be stopped');
   }
