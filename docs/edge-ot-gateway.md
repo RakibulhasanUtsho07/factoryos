@@ -16,6 +16,16 @@ All endpoints require a verified user identity, tenant membership, an authorized
 
 Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. These values identify the intended transport; this slice does not implement or claim a live OPC UA, MQTT, or Modbus connection.
 
+## Device credential lifecycle
+
+Human admins issue or rotate a device credential through `POST /api/v2/edge/devices/:deviceId/credentials` with the `edge.devices.credentials.manage` permission. The API returns a high-entropy bearer token once; PostgreSQL stores only its SHA-256 hash. The token includes the tenant and device identifiers as routing scope, but authorization comes only from a hash match against an ACTIVE, non-expired credential joined to an ACTIVE device. Its secret portion contains 256 bits of random entropy.
+
+A new issue rotates away any previous active credential in the same transaction. Explicit revocation is available at `POST /api/v2/edge/devices/:deviceId/credentials/:credentialId/revoke`. Credential lifecycle events are append-only; raw tokens are excluded from audit records. If the one-time response is lost, rotate again rather than expecting the original token to be recoverable.
+
+Machines send `Authorization: Bearer <device-token>` to `POST /api/v2/edge/device-ingest/:deviceId`. This separate route does not trust user identity headers or human JWT claims. It resolves tenant/factory/device from the token scope, checks the hashed active credential, then re-checks credential status inside the telemetry transaction to close a revoke-versus-ingest race. Telemetry rows identify the machine credential, rather than attributing machine writes to the human who enrolled the device.
+
+Use HTTPS only and store the device token in an OS-protected secret store on the gateway. This implementation provides an opaque shared-secret identity; certificate-bound mTLS, per-device network policy and automated secret-store integration remain future hardening work.
+
 ## Reconnect and replay contract
 
 - Each batch includes a stable `batch_key` and 1–100 observations. The normalized batch is limited to 64 KiB.
