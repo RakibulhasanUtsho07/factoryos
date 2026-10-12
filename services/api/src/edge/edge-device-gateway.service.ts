@@ -37,6 +37,19 @@ interface EdgeDeviceRow extends QueryResultRow {
   last_sync_at: string | null;
   created_at: string;
   updated_at: string;
+  latest_health?: {
+    healthEventId: string;
+    reportedAt: string;
+    receivedAt: string;
+    runtimeStatus: string;
+    agentVersion: string;
+    pendingBatches: number;
+    pendingBytes: number;
+    lastSuccessfulSyncAt: string | null;
+    modelVersions: Record<string, string>;
+    driftSignals: Array<Record<string, unknown>>;
+    capabilities: Record<string, unknown>;
+  } | null;
 }
 
 interface EdgeSyncBatchRow extends QueryResultRow {
@@ -55,6 +68,8 @@ interface NormalizedObservation {
   observedAt: string;
   sourceMode: EdgeObservationSourceMode;
   quality: EdgeObservationQuality;
+  unit?: string;
+  samplingIntervalMs?: number;
   payload: Record<string, unknown>;
 }
 
@@ -209,7 +224,28 @@ export class EdgeDeviceGatewayService {
 
     const result = await this.database.query<EdgeDeviceRow>(
       `
-      SELECT ${DEVICE_COLUMNS}
+      SELECT ${DEVICE_COLUMNS},
+        (
+          SELECT jsonb_build_object(
+            'healthEventId', h.health_event_id::text,
+            'reportedAt', h.reported_at::text,
+            'receivedAt', h.received_at::text,
+            'runtimeStatus', h.runtime_status,
+            'agentVersion', h.agent_version,
+            'pendingBatches', h.pending_batches,
+            'pendingBytes', h.pending_bytes,
+            'lastSuccessfulSyncAt', h.last_successful_sync_at::text,
+            'modelVersions', h.model_versions,
+            'driftSignals', h.drift_signals,
+            'capabilities', h.capabilities
+          )
+          FROM edge_device_health_reports h
+          WHERE h.tenant_id = edge_devices.tenant_id
+            AND h.factory_id = edge_devices.factory_id
+            AND h.device_id = edge_devices.id
+          ORDER BY h.received_at DESC, h.id DESC
+          LIMIT 1
+        ) AS latest_health
       FROM edge_devices
       WHERE tenant_id = $1 AND factory_id = $2
       ORDER BY created_at DESC, id DESC
@@ -413,11 +449,12 @@ export class EdgeDeviceGatewayService {
             `
             INSERT INTO edge_observations (
               tenant_id, factory_id, device_id, event_id, signal_key,
-              observed_at, source_mode, quality, payload, payload_hash,
-              request_hash, recorded_by, recorded_by_credential_id
+              observed_at, source_mode, quality, unit, sampling_interval_ms,
+              payload, payload_hash, request_hash, recorded_by, recorded_by_credential_id
             )
             VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb,
+              $12, $13, $14, $15
             )
             ON CONFLICT (tenant_id, device_id, event_id) DO NOTHING
             RETURNING id::text AS id
@@ -431,6 +468,8 @@ export class EdgeDeviceGatewayService {
               observation.observedAt,
               observation.sourceMode,
               observation.quality,
+              observation.unit ?? null,
+              observation.samplingIntervalMs ?? null,
               JSON.stringify(observation.payload),
               payloadHash,
               itemHash,
@@ -564,14 +603,16 @@ export class EdgeDeviceGatewayService {
       observed_at: string;
       source_mode: EdgeObservationSourceMode;
       quality: EdgeObservationQuality;
+      unit: string | null;
+      sampling_interval_ms: number | null;
       payload: Record<string, unknown>;
       payload_hash: string;
       ingested_at: string;
     }>(
       `
       SELECT id::text AS id, event_id::text AS event_id, signal_key,
-             observed_at::text AS observed_at, source_mode, quality, payload,
-             payload_hash, ingested_at::text AS ingested_at
+             observed_at::text AS observed_at, source_mode, quality,
+             unit, sampling_interval_ms, payload, payload_hash, ingested_at::text AS ingested_at
       FROM edge_observations
       WHERE tenant_id = $1 AND factory_id = $2 AND device_id = $3
       ORDER BY observed_at DESC, id DESC
@@ -593,6 +634,8 @@ export class EdgeDeviceGatewayService {
         observedAt: row.observed_at,
         sourceMode: row.source_mode,
         quality: row.quality,
+        unit: row.unit,
+        samplingIntervalMs: row.sampling_interval_ms,
         payload: row.payload,
         payloadHash: row.payload_hash,
         ingestedAt: row.ingested_at,
@@ -671,6 +714,23 @@ export class EdgeDeviceGatewayService {
       if (!Object.values(EdgeObservationQuality).includes(observation.quality)) {
         throw new BadRequestException(`observations[${index}].quality is invalid`);
       }
+      const hasUnit = observation.unit !== undefined;
+      const hasSamplingInterval = observation.sampling_interval_ms !== undefined;
+      if (hasUnit !== hasSamplingInterval) {
+        throw new BadRequestException(`observations[${index}] must supply both unit and sampling_interval_ms`);
+      }
+      let unit: string | undefined;
+      let samplingIntervalMs: number | undefined;
+      if (hasUnit && hasSamplingInterval) {
+        unit = this.requiredString(observation.unit, `observations[${index}].unit`, 32);
+        if (!/^[A-Za-z0-9%._/-]{1,32}$/.test(unit)) {
+          throw new BadRequestException(`observations[${index}].unit contains unsupported characters`);
+        }
+        samplingIntervalMs = observation.sampling_interval_ms;
+        if (!Number.isInteger(samplingIntervalMs) || samplingIntervalMs < 0 || samplingIntervalMs > 86400000) {
+          throw new BadRequestException(`observations[${index}].sampling_interval_ms must be between 0 and 86400000`);
+        }
+      }
       const payload = this.normalizeJsonObject(
         observation.payload,
         `observations[${index}].payload`,
@@ -682,6 +742,7 @@ export class EdgeDeviceGatewayService {
         observedAt: new Date(observedTimestamp).toISOString(),
         sourceMode: observation.source_mode,
         quality: observation.quality,
+        ...(unit !== undefined ? { unit, samplingIntervalMs } : {}),
         payload,
       } satisfies NormalizedObservation;
     });
@@ -794,6 +855,7 @@ export class EdgeDeviceGatewayService {
       status: row.status,
       lastSeenAt: row.last_seen_at,
       lastSyncAt: row.last_sync_at,
+      latestHealth: row.latest_health ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
