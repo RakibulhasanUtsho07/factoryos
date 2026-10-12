@@ -50,7 +50,7 @@ export function normalizeObservedAt(value: unknown): string {
     if (!value.trim() || !Number.isFinite(Date.parse(value))) {
       throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp is missing or invalid');
     }
-    const match = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,9}))?(Z|([+-])(\\d{2}):(\\d{2}))$/i.exec(value);
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/i.exec(value);
     if (!match) {
       throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO-8601 timestamp with an explicit timezone');
     }
