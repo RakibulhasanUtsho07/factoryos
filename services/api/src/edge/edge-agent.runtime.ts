@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   createServer,
   type IncomingMessage,
@@ -23,6 +23,11 @@ export interface EdgeAgentRuntimeConfig {
   requestTimeoutMs: number;
   maxPendingBytes?: number;
   autoSync?: boolean;
+  agentVersion?: string;
+  healthReportIntervalMs?: number;
+  modelVersions?: Record<string, string>;
+  capabilities?: Record<string, unknown>;
+  driftSignals?: Array<Record<string, unknown>>;
 }
 
 export interface EdgeAgentHealth {
@@ -32,6 +37,9 @@ export interface EdgeAgentHealth {
   oldestPendingAt: string | null;
   lastSyncAt: string | null;
   lastDeliveryErrorCode: string | null;
+  agentVersion: string;
+  lastHealthReportAt: string | null;
+  lastHealthErrorCode: string | null;
 }
 
 export interface EdgeAgentFlushResult {
@@ -95,6 +103,9 @@ export class EdgeAgentRuntime {
   private stopping = false;
   private started = false;
   private lastSyncAt: string | null = null;
+  private lastHealthAttemptAt = 0;
+  private lastHealthReportAt: string | null = null;
+  private lastHealthErrorCode: string | null = null;
   private lastDeliveryErrorCode: string | null = null;
 
   constructor(private readonly config: EdgeAgentRuntimeConfig) {
@@ -117,6 +128,15 @@ export class EdgeAgentRuntime {
     if (!Number.isInteger(config.requestTimeoutMs) || config.requestTimeoutMs < 500 ||
         config.requestTimeoutMs > 60_000) {
       throw new Error('EDGE_SYNC_TIMEOUT_MS must be between 500 and 60000');
+    }
+    const agentVersion = config.agentVersion ?? '1.0.0';
+    if (!/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$/.test(agentVersion)) {
+      throw new Error('EDGE_AGENT_VERSION is invalid');
+    }
+    const healthReportIntervalMs = config.healthReportIntervalMs ?? 30_000;
+    if (!Number.isInteger(healthReportIntervalMs) || healthReportIntervalMs < 10_000 ||
+        healthReportIntervalMs > 3_600_000) {
+      throw new Error('EDGE_HEALTH_REPORT_INTERVAL_MS must be between 10000 and 3600000');
     }
 
     this.apiBaseUrl = new URL(config.apiBaseUrl);
@@ -202,6 +222,62 @@ export class EdgeAgentRuntime {
     this.started = false;
   }
 
+  async reportHealthOnce(): Promise<boolean> {
+    this.lastHealthAttemptAt = Date.now();
+    try {
+      const spoolStatus = await this.spool.status();
+      const reportTime = new Date().toISOString();
+      const maxPendingBytes = this.config.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
+      const highWatermark = spoolStatus.pendingBatches >= 9_000 ||
+        spoolStatus.pendingBytes >= Math.floor(maxPendingBytes * 0.9);
+      const report = {
+        health_event_id: randomUUID(),
+        reported_at: reportTime,
+        agent_version: this.config.agentVersion ?? '1.0.0',
+        runtime_status: highWatermark ? 'DEGRADED' : 'HEALTHY',
+        pending_batches: spoolStatus.pendingBatches,
+        pending_bytes: spoolStatus.pendingBytes,
+        last_successful_sync_at: this.lastSyncAt,
+        model_versions: this.config.modelVersions ?? {},
+        drift_signals: this.config.driftSignals ?? [],
+        capabilities: this.config.capabilities ?? {
+          runtime: 'node',
+          os: process.platform,
+          architecture: process.arch,
+        },
+      };
+      const url = new URL(
+        `/api/v2/edge/device-health/${encodeURIComponent(this.config.deviceId)}`,
+        this.apiBaseUrl,
+      );
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.config.deviceToken}`,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify(report),
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+        redirect: 'error',
+      });
+      await response.body?.cancel().catch(() => undefined);
+      if (!response.ok) {
+        this.lastHealthErrorCode = `HTTP_${response.status}`;
+        return false;
+      }
+      this.lastHealthReportAt = reportTime;
+      this.lastHealthErrorCode = null;
+      return true;
+    } catch (error) {
+      this.lastHealthErrorCode =
+        error instanceof Error && error.name === 'TimeoutError'
+          ? 'REQUEST_TIMEOUT'
+          : 'NETWORK_ERROR';
+      return false;
+    }
+  }
+
   async flushOnce(): Promise<EdgeAgentFlushResult> {
     const ready = await this.spool.listReady(10);
     let attempted = 0;
@@ -268,6 +344,9 @@ export class EdgeAgentRuntime {
         ...status,
         lastSyncAt: this.lastSyncAt,
         lastDeliveryErrorCode: this.lastDeliveryErrorCode,
+        agentVersion: this.config.agentVersion ?? '1.0.0',
+        lastHealthReportAt: this.lastHealthReportAt,
+        lastHealthErrorCode: this.lastHealthErrorCode,
       };
       sendJson(response, 200, health);
       return;
@@ -330,6 +409,10 @@ export class EdgeAgentRuntime {
         await this.flushOnce();
       } catch {
         this.lastDeliveryErrorCode = 'SPOOL_ERROR';
+      }
+      const healthInterval = this.config.healthReportIntervalMs ?? 30_000;
+      if (!this.stopping && Date.now() - this.lastHealthAttemptAt >= healthInterval) {
+        await this.reportHealthOnce();
       }
       if (this.stopping) break;
       await new Promise<void>((resolve) => setTimeout(resolve, this.config.pollIntervalMs));
