@@ -6,8 +6,6 @@ import { EdgeProtocolAdapterSupervisor } from './edge-protocol-adapter.superviso
 import { MqttEdgeProtocolAdapter } from './mqtt-edge-protocol.adapter.js';
 import { OpcUaEdgeProtocolAdapter } from './opcua-edge-protocol.adapter.js';
 
-const timestamp = new Date(Date.now() - 1000).toISOString();
-
 function sink() {
   return {
     enqueue: jest.fn(async (input: unknown) => {
