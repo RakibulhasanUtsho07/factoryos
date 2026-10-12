@@ -12,7 +12,9 @@ Human-admin and history-read endpoints require a verified user identity, tenant 
 | GET | `/api/v2/edge/devices?limit=25&offset=0` | `edge.devices.read` | Read the factory-scoped fleet and last-sync state |
 | POST | `/api/v2/edge/devices/:deviceId/status` | `edge.devices.control` | Pause, resume a paused device, or permanently revoke it |
 | POST | `/api/v2/edge/devices/:deviceId/sync` | `edge.telemetry.ingest` | Synchronize a bounded batch of edge-buffered observations |
-| GET | `/api/v2/edge/devices/:deviceId/observations?limit=25&offset=0` | `edge.telemetry.read` | Read the device observation timeline |\n| POST | `/api/v2/edge/device-health/:deviceId` | Active device bearer credential | Append a device-agent health/model/drift report |\n| GET | `/api/v2/edge/devices/:deviceId/health?limit=25&offset=0` | `edge.devices.health.read` | Read health-report history with model versions, queue state, and reported drift |
+| GET | `/api/v2/edge/devices/:deviceId/observations?limit=25&offset=0` | `edge.telemetry.read` | Read the device observation timeline |
+| POST | `/api/v2/edge/device-health/:deviceId` | Active device bearer credential | Append a device-agent health/model/drift report |
+| GET | `/api/v2/edge/devices/:deviceId/health?limit=25&offset=0` | `edge.devices.health.read` | Read health-report history with model versions, queue state, and reported drift |
 
 Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. The protocol adapter layer below normalizes allow-listed MQTT/OPC UA sample callbacks into the durable spool. A deployment must supply a pre-authorized transport/client bridge; this slice does not open live broker/session connections or implement the Modbus driver.
 
@@ -90,9 +92,11 @@ The authenticated user API is not a device-credential protocol. Before productio
 ## SRS traceability and boundaries
 
 - **FR-EDG-03:** preserves the submitted observation quality/time and a source-mode label; it does not fabricate absent live values.
-- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.\n- **FR-EDG-08:** reports local queue health, agent version, model versions, bounded drift signals, last successful sync, and capability metadata; device-reported model/drift values remain unverified telemetry.\n- **FR-IOT-05:** stores telemetry quality plus optional-compatible top-level unit/sampling metadata; new local-agent batches require both fields, and older persisted batches can replay without invented metadata.\n- **FR-IOT-04:** provides exact topic/node allow-listing, deterministic sample normalization, source-timestamp/quality preservation, and adapter lifecycle contracts for MQTT/OPC UA; production driver/session integration remains deployment-owned.
+- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.
+- **FR-IOT-05:** stores telemetry quality plus optional-compatible top-level unit/sampling metadata; new local-agent batches require both fields, and older persisted batches can replay without invented metadata.
+- **FR-IOT-04:** provides exact topic/node allow-listing, deterministic sample normalization, source-timestamp/quality preservation, and adapter lifecycle contracts for MQTT/OPC UA; production driver/session integration remains deployment-owned.
 - **FR-EDG-07:** restricts the API to IAM-authorized factory scopes and rejects credential material in payloads; OS/network sandboxing for an edge agent remains follow-up work.
-- **FR-EDG-08:** exposes fleet status and last successful synchronization timestamps, with latest model version/drift summary through the device list and append-only per-device health history.
+- **FR-EDG-08:** exposes fleet status/last-sync state, agent and model versions, queue health, reported drift signals, and append-only per-device health history; values sent by a device remain unverified telemetry.
 - **FR-EDG-12:** supports factory-scoped pause/resume/revoke status. Device-group and use-case package revocation remain follow-up work.
 
 Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. Migration `041_edge_device_credentials.sql` adds hashed machine credentials and identity-linked telemetry; migration `042_edge_device_health_and_stream_metadata.sql` adds health/drift history, stream unit and sampling fields, RLS, and the immutable health ledger. PostgreSQL CI applies the migrations after the WP10 migrations.
