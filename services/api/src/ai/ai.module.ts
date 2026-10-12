@@ -26,6 +26,7 @@ import { AiAgentStudioTemplateController } from './agents/ai.agent.studio.templa
 import { AiAgentStudioTemplateService } from './agents/ai.agent.studio.template.service';
 import { AiController } from './ai.controller';
 import { AiRuntimeService } from './ai.runtime.service';
+import { AiOperationalEvaluationService } from './ai.operational.evaluation.service';
 import { AiToolModule } from './ai.tool.module';
 
 @Module({
@@ -51,6 +52,7 @@ import { AiToolModule } from './ai.tool.module';
   ],
   providers: [
     AiRuntimeService,
+    AiOperationalEvaluationService,
     AiAgentRuntimeService,
     AiAgentCatalogueService,
     AiAgentEvaluationService,
@@ -63,6 +65,7 @@ import { AiToolModule } from './ai.tool.module';
   ],
   exports: [
     AiRuntimeService,
+    AiOperationalEvaluationService,
     AiAgentRuntimeService,
     AiAgentCatalogueService,
     AiAgentEvaluationService,
