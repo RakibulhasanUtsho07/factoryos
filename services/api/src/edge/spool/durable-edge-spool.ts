@@ -179,7 +179,7 @@ function normalizeBatch(input: unknown, allowLegacy = false): { batch: EdgeSpool
       'signal_key',
       'source_mode',
     ];
-    const currentKeys = [...legacyKeys, 'sampling_interval_ms', 'unit'];
+    const currentKeys = [...legacyKeys, 'sampling_interval_ms', 'unit'].sort();
     const actualKeys = Object.keys(item).sort();
     const isLegacy = actualKeys.length === legacyKeys.length &&
       legacyKeys.every((key, index) => actualKeys[index] === key);
