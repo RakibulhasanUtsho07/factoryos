@@ -13,6 +13,7 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
+    "start:edge-agent": "node dist/edge/edge-agent.main.js",
     "lint": "oxlint src/ test/",
     "test": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs",
     "test:watch": "jest --watch",
