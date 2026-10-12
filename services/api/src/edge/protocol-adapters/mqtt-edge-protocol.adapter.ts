@@ -19,7 +19,7 @@ import {
 } from './edge-protocol-adapter.utils.js';
 
 const DEFAULT_MAX_MQTT_PAYLOAD_BYTES = 64 * 1024;
-const MQTT_TOPIC_PATTERN = /^[^\u0000\s+#]+$/;
+const MQTT_TOPIC_PATTERN = /^[^\s+#]+$/;
 
 export class MqttEdgeProtocolAdapter implements EdgeAdapterLifecycle {
   private readonly mappingsByTopic = new Map<string, MqttSignalMapping>();
@@ -152,7 +152,7 @@ export class MqttEdgeProtocolAdapter implements EdgeAdapterLifecycle {
 
   private validateMapping(mapping: MqttSignalMapping): void {
     if (!mapping || typeof mapping.topic !== 'string' || mapping.topic.length > 256 ||
-        !MQTT_TOPIC_PATTERN.test(mapping.topic)) {
+        mapping.topic.includes('\0') || !MQTT_TOPIC_PATTERN.test(mapping.topic)) {
       throw new EdgeSpoolError('INVALID_BATCH', 'MQTT topic must be an explicit topic without wildcards or whitespace');
     }
     validateStreamMapping(mapping, 'MQTT mapping');
