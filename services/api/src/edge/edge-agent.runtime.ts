@@ -167,6 +167,7 @@ export class EdgeAgentRuntime {
     if (this.started) return;
     await this.spool.initialize();
     try {
+      this.lastSyncAt = (await this.spool.status()).lastSuccessfulSyncAt;
       this.server = createServer((request, response) => {
         void this.handleRequest(request, response).catch(() => {
           if (!response.headersSent) {
@@ -314,8 +315,10 @@ export class EdgeAgentRuntime {
           break;
         }
 
+        const successfulSyncAt = new Date().toISOString();
+        await this.spool.markSuccessfulSync(successfulSyncAt);
         await this.spool.acknowledge(batchKey);
-        this.lastSyncAt = new Date().toISOString();
+        this.lastSyncAt = successfulSyncAt;
         this.lastDeliveryErrorCode = null;
         delivered += 1;
       } catch (error) {
