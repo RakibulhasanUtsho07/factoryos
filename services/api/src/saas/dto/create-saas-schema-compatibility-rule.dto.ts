@@ -55,7 +55,7 @@ export class CreateSaasSchemaCompatibilityRuleDto {
   @IsArray()
   @ArrayUnique()
   @ArrayMinSize(5)
-  @ArrayMaxSize(9)
+  @ArrayMaxSize(10)
   @IsEnum(SaasTransferDatasetCategory, { each: true })
   required_categories!: SaasTransferDatasetCategory[];
 

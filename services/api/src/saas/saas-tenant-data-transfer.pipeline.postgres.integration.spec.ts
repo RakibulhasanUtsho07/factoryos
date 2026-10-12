@@ -447,6 +447,44 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       expect(replayed.targetBundleDigest).toBe(receipt.rows[0].target_snapshot_digest);
       expect(replayed.targetManifest).toEqual(receipt.rows[0].target_manifest);
 
+      // IAM is part of the logical target manifest too: a replay after an
+      // assignment's factory scope drifts must not return the old receipt as success.
+      const targetAssignment = await targetAdminPool.query<{
+        id: string;
+        factory_id: string;
+      }>(
+        'SELECT ur.id::text AS id, ur.factory_id::text AS factory_id ' +
+          'FROM user_roles ur JOIN tenant_memberships tm ON tm.id = ur.membership_id ' +
+          'JOIN roles r ON r.id = ur.role_id ' +
+          'WHERE tm.tenant_id = $1::uuid AND tm.user_id = $2::uuid AND r.code = $3',
+        [tenantId, userId, 'transfer.integration.operator'],
+      );
+      expect(targetAssignment.rowCount).toBe(1);
+      const mappedAssignment = targetAssignment.rows[0];
+      expect(mappedAssignment?.factory_id).toBe(factoryId);
+      if (!mappedAssignment) throw new Error('Expected the mapped IAM assignment to exist');
+
+      try {
+        await targetAdminPool.query(
+          'UPDATE user_roles SET factory_id = NULL WHERE id = $1::uuid',
+          [mappedAssignment.id],
+        );
+        await expect(target.importBundle({
+          tenantId,
+          transferId: migrationId,
+          sourceSchemaVersion: '1.0.0',
+          targetSchemaVersion: '1.0.0',
+          sourceBundle: bundleStore.read(exported.artifact.reference, exported.artifact.digest),
+          sourceManifest: payload.manifest,
+          requiredCategories: [...REQUIRED_TRANSFER_CATEGORIES],
+        })).rejects.toBeInstanceOf(ConflictException);
+      } finally {
+        await targetAdminPool.query(
+          'UPDATE user_roles SET factory_id = $2::uuid WHERE id = $1::uuid',
+          [mappedAssignment.id, mappedAssignment.factory_id],
+        );
+      }
+
       const changedManifest = {
         ...payload.manifest,
         BUSINESS_DATA: {
