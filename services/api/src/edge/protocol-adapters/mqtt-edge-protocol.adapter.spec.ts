@@ -155,6 +155,49 @@ describe('MqttEdgeProtocolAdapter', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('waits for an in-flight durable enqueue before stop resolves', async () => {
+    const { sink } = createSink();
+    const adapter = new MqttEdgeProtocolAdapter([mapping], sink);
+    const callbacks = new Map<string, (next: EdgeMqttMessage) => void>();
+    const unsubscribe = jest.fn<() => void>();
+    const transport = {
+      subscribe: jest.fn(async (topic: string, handler: (message: EdgeMqttMessage) => void) => {
+        callbacks.set(topic, handler);
+        return unsubscribe;
+      }),
+    };
+    let enteredEnqueue!: () => void;
+    const enqueueEntered = new Promise<void>((resolve) => {
+      enteredEnqueue = resolve;
+    });
+    let releaseEnqueue!: () => void;
+    const enqueueGate = new Promise<void>((resolve) => {
+      releaseEnqueue = resolve;
+    });
+    sink.enqueue.mockImplementation(async (input: unknown) => {
+      const batch = input as EdgeSpoolBatch;
+      enteredEnqueue();
+      await enqueueGate;
+      return { idempotent: false, batchKey: batch.batch_key };
+    });
+
+    await adapter.start(transport, () => 'EDGE_OFFLINE', () => undefined);
+    callbacks.get(mapping.topic)?.(message());
+    await enqueueEntered;
+
+    let stopped = false;
+    const stopping = adapter.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseEnqueue();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects duplicate mappings and unsupported sample value types before enqueue', async () => {
     const { sink, enqueue } = createSink();
     expect(() => new MqttEdgeProtocolAdapter([mapping, mapping], sink)).toThrow('Duplicate MQTT topic');
