@@ -44,7 +44,10 @@ export function normalizeQuality(value: unknown, fallback: EdgeProtocolQuality =
 }
 
 export function normalizeObservedAt(value: unknown): string {
-  const timestamp = value instanceof Date ? value.getTime() : Date.parse(String(value ?? ''));
+  if (!(value instanceof Date) && typeof value !== 'string') {
+    throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO date string or Date');
+  }
+  const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(timestamp)) {
     throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp is missing or invalid');
   }
