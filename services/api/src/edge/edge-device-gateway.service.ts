@@ -726,10 +726,12 @@ export class EdgeDeviceGatewayService {
         if (!/^[A-Za-z0-9%._/-]{1,32}$/.test(unit)) {
           throw new BadRequestException(`observations[${index}].unit contains unsupported characters`);
         }
-        samplingIntervalMs = observation.sampling_interval_ms;
-        if (!Number.isInteger(samplingIntervalMs) || samplingIntervalMs < 0 || samplingIntervalMs > 86400000) {
+        const samplingInterval = observation.sampling_interval_ms;
+        if (typeof samplingInterval !== 'number' || !Number.isInteger(samplingInterval) ||
+            samplingInterval < 0 || samplingInterval > 86400000) {
           throw new BadRequestException(`observations[${index}].sampling_interval_ms must be between 0 and 86400000`);
         }
+        samplingIntervalMs = samplingInterval;
       }
       const payload = this.normalizeJsonObject(
         observation.payload,
