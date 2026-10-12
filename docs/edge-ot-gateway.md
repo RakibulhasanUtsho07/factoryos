@@ -1,10 +1,10 @@
-# WP11-A — Edge/OT device gateway foundation
+# WP11-A/B/C/D — Edge/OT device gateway, health reporting, and offline recovery
 
-This backend slice establishes the cloud-side identity and replay boundary for edge gateways. It is intentionally read-first: it stores device metadata and observations, but does not issue machine commands or connect to physical PLCs.
+This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
 ## API
 
-All endpoints require a verified user identity, tenant membership, an authorized factory scope, and the relevant IAM permission.
+Human-admin and history-read endpoints require a verified user identity, tenant membership, an authorized factory scope, and the relevant IAM permission. Device-ingest and health-report endpoints instead resolve tenant/factory/device from an active device bearer credential and re-check it inside the write transaction.
 
 | Method | Endpoint | Permission | Purpose |
 | --- | --- | --- | --- |
@@ -12,7 +12,7 @@ All endpoints require a verified user identity, tenant membership, an authorized
 | GET | `/api/v2/edge/devices?limit=25&offset=0` | `edge.devices.read` | Read the factory-scoped fleet and last-sync state |
 | POST | `/api/v2/edge/devices/:deviceId/status` | `edge.devices.control` | Pause, resume a paused device, or permanently revoke it |
 | POST | `/api/v2/edge/devices/:deviceId/sync` | `edge.telemetry.ingest` | Synchronize a bounded batch of edge-buffered observations |
-| GET | `/api/v2/edge/devices/:deviceId/observations?limit=25&offset=0` | `edge.telemetry.read` | Read the device observation timeline |
+| GET | `/api/v2/edge/devices/:deviceId/observations?limit=25&offset=0` | `edge.telemetry.read` | Read the device observation timeline |\n| POST | `/api/v2/edge/device-health/:deviceId` | Active device bearer credential | Append a device-agent health/model/drift report |\n| GET | `/api/v2/edge/devices/:deviceId/health?limit=25&offset=0` | `edge.devices.health.read` | Read health-report history with model versions, queue state, and reported drift |
 
 Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. These values identify the intended transport; this slice does not implement or claim a live OPC UA, MQTT, or Modbus connection.
 
@@ -29,11 +29,21 @@ Use HTTPS only and store the device token in an OS-protected secret store on the
 ## Reconnect and replay contract
 
 - Each batch includes a stable `batch_key` and 1–100 observations. The normalized batch is limited to 64 KiB.
-- Each observation has a stable UUID `event_id`, signal key, event time, source-mode declaration, quality, and bounded JSON payload.
+- Each observation has a stable UUID `event_id`, signal key, event time, source-mode declaration, quality, and bounded JSON payload. New local-agent intake also requires a top-level `unit` and `sampling_interval_ms` (0 means event-driven; positive values represent the periodic sample interval). Both values are persisted separately from the payload. The cloud endpoint accepts both metadata fields together or neither field for backward-compatible replay of pre-metadata spool files; historical records without metadata retain `NULL` rather than fabricated values.
 - Replaying the same batch key with the same content returns the original summary. Reusing the key with different content returns a conflict.
 - Replaying an observation under a different batch is accepted as a duplicate only when its event ID and normalized content hash match. Conflicting reuse fails the entire transaction.
 - Observation and synchronization records are append-only. A failed item aborts the whole batch so callers can safely retry the stable event identities.
 - The `source_mode` value is reported edge metadata, not cryptographic proof that an event was captured offline. Ingested event time and server ingest time are both retained.
+
+## Edge-agent health, model versions, drift, and stream metadata
+
+The edge agent posts an authenticated health report to `POST /api/v2/edge/device-health/:deviceId` on a 30-second default interval. Configure `EDGE_HEALTH_REPORT_INTERVAL_MS` between 10 seconds and one hour. `EDGE_AGENT_VERSION` defaults to `1.0.0`; optional `EDGE_MODEL_VERSIONS_JSON` supplies model-key/version pairs, and `EDGE_CAPABILITIES_JSON` overrides the default runtime/OS/architecture description.
+
+Each report carries a stable UUID event key, the device-reported timestamp, runtime status, local queue depth/bytes, last successful cloud sync time, model-version map, bounded structured drift signals, and a bounded capabilities object. The server preserves both reported time and receive time. Event-ID replay with identical content is idempotent; reuse with different content conflicts. The append-only report ledger is tenant/factory/device scoped and linked to the credential that reported it. The fleet list includes the newest health snapshot for each device; admins with `edge.devices.health.read` can inspect the per-device history.
+
+Reported model versions and drift signals are **device assertions**, not a verification result, calibrated drift determination, or permission to deploy a model. Drift signals must reference a model key present in the same report. Credential-like fields, unknown drift fields, unknown model references, oversize reports, and invalid values are rejected. Audit records contain queue counts, status and counts of models/signals, not model payloads or credentials.
+
+Health reporting is best-effort and does not delete/alter the observation queue on failure. The agent reports a stable non-secret error code locally, retries on the next health interval, and separately continues the observation retry/ack flow. Last successful sync time is persisted in the local agent state file and restored on restart. The cloud's last received health report timestamp is useful for offline/staleness monitoring; when WAN access is down, the server cannot receive a new report until reconnect.
 
 ## Safety and isolation
 
@@ -44,9 +54,9 @@ The authenticated user API is not a device-credential protocol. Before productio
 ## SRS traceability and boundaries
 
 - **FR-EDG-03:** preserves the submitted observation quality/time and a source-mode label; it does not fabricate absent live values.
-- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.
+- **FR-EDG-04:** implements both the cloud-side immutable synchronization ledger and the edge agent's bounded durable local queue, restart recovery, capped retry scheduling, and deterministic replay boundary.\n- **FR-EDG-08:** reports local queue health, agent version, model versions, bounded drift signals, last successful sync, and capability metadata; device-reported model/drift values remain unverified telemetry.\n- **FR-IOT-05:** stores telemetry quality plus optional-compatible top-level unit/sampling metadata; new local-agent batches require both fields, and older persisted batches can replay without invented metadata.
 - **FR-EDG-07:** restricts the API to IAM-authorized factory scopes and rejects credential material in payloads; OS/network sandboxing for an edge agent remains follow-up work.
 - **FR-EDG-08:** exposes fleet status and last successful synchronization timestamps through the device list. Model version, drift, and package health reporting remain follow-up work.
 - **FR-EDG-12:** supports factory-scoped pause/resume/revoke status. Device-group and use-case package revocation remain follow-up work.
 
-Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. PostgreSQL CI applies the migration after the WP10 migrations.
+Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. Migration `041_edge_device_credentials.sql` adds hashed machine credentials and identity-linked telemetry; migration `042_edge_device_health_and_stream_metadata.sql` adds health/drift history, stream unit and sampling fields, RLS, and the immutable health ledger. PostgreSQL CI applies the migrations after the WP10 migrations.
