@@ -15,6 +15,8 @@ import type {
   SaasTenantTransferExportManifest,
 } from './saas-tenant-data-transfer.adapters';
 import { SAAS_TENANT_DATASET_TABLES } from './saas-tenant-postgres-dataset-source';
+import { assertSaasTenantIamEffectiveAccess, buildSaasTenantIamRemappingPlan } from './saas-tenant-iam-remapping.plan';
+import type { SaasTenantIamPortableSnapshot, SaasTenantIamTargetDirectory, SaasIamTransferStatus, SaasTenantMembershipStatus } from './saas-tenant-iam-remapping.plan';
 import {
   REQUIRED_TRANSFER_CATEGORIES,
   SaasTransferDatasetCategory,
@@ -28,6 +30,7 @@ const MAX_ROW_BYTES = 16 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 65_536;
 const STAGE_BATCH_SIZE = 100;
 const PAGE_SIZE = 500;
+const IAM_TABLES = new Set(['iam_memberships', 'iam_roles', 'iam_user_roles', 'iam_role_permissions']);
 
 type BundleEvent =
   | { kind: 'header'; value: Record<string, unknown> }
@@ -219,7 +222,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
           headerSeen = true;
           if (
             event.value.format !== 'FACTORYOS_TENANT_EXPORT' ||
-            event.value.formatVersion !== 1 ||
+            event.value.formatVersion !== 2 ||
             event.value.tenantId !== input.tenantId ||
             event.value.schemaVersion !== input.sourceSchemaVersion
           ) {
@@ -248,24 +251,35 @@ export class SaasTenantPostgresMigrationTargetAdapter
           throw new BadRequestException('Source bundle row appeared before its category declaration');
         }
 
+        const row = event.value;
+        const payload = { ...row };
+        delete payload.__factoryos_table;
+        if (row.tenant_id !== input.tenantId) {
+          throw new BadRequestException('Source bundle contains a row without the authenticated tenant scope');
+        }
+        const keys = Object.keys(payload).sort();
+        for (const key of keys) this.assertSafeField(key);
+
+        if (event.category === SaasTransferDatasetCategory.IAM_ACCESS) {
+          if (!IAM_TABLES.has(event.table)) {
+            throw new ServiceUnavailableException('No reviewed IAM remapper is registered for ' + event.table);
+          }
+          this.validateIamPortableRow(event.table, payload, input.tenantId);
+          batch.push({ category: event.category, table: event.table, payload });
+          if (batch.length >= STAGE_BATCH_SIZE) await flushStage();
+          continue;
+        }
+
         const approvedTables = SAAS_TENANT_DATASET_TABLES[event.category];
         if (!approvedTables?.includes(event.table)) {
           throw new ServiceUnavailableException(
             'No reviewed target importer is registered for ' + event.category + '/' + event.table,
           );
         }
-        const row = event.value;
-        if (
-          row.tenant_id !== input.tenantId ||
-          typeof row.id !== 'string' ||
-          !UUID_PATTERN.test(row.id)
-        ) {
-          throw new BadRequestException('Source bundle contains a row without the authenticated tenant scope');
+        if (typeof row.id !== 'string' || !UUID_PATTERN.test(row.id)) {
+          throw new BadRequestException('Source bundle contains a row without a valid logical row ID');
         }
-
-        const keys = Object.keys(row).filter((key) => key !== '__factoryos_table').sort();
         for (const key of keys) {
-          this.assertSafeField(key);
           if (!columns.get(event.table)?.has(key)) {
             throw new ConflictException(
               'Source relation ' + event.table +
@@ -278,8 +292,6 @@ export class SaasTenantPostgresMigrationTargetAdapter
           throw new ConflictException('Source rows have inconsistent field sets in relation ' + event.table);
         }
         tableColumnsInBundle.set(event.table, keys);
-        const payload = { ...row };
-        delete payload.__factoryos_table;
         batch.push({ category: event.category, table: event.table, payload });
         if (batch.length >= STAGE_BATCH_SIZE) await flushStage();
       }
@@ -334,6 +346,10 @@ export class SaasTenantPostgresMigrationTargetAdapter
             'AND target_row.id = (staged.row_payload->>\'id\')::uuid ' +
             'AND staged.row_payload->>\'current_version_id\' IS NOT NULL',
         );
+      }
+
+      if (categoriesSeen.has(SaasTransferDatasetCategory.IAM_ACCESS)) {
+        await this.applyIamAccess(client, input.tenantId);
       }
 
       const targetManifest = await this.measureTargetManifest(client, input.tenantId, categoryTables);
@@ -424,6 +440,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
 
   private resolveCategoryTables(categories: SaasTransferDatasetCategory[]) {
     return categories.map((category) => {
+      if (category === SaasTransferDatasetCategory.IAM_ACCESS) return { category, tables: [] as readonly string[] };
       const tables = SAAS_TENANT_DATASET_TABLES[category];
       if (!tables?.length) {
         throw new ServiceUnavailableException(
@@ -550,6 +567,178 @@ export class SaasTenantPostgresMigrationTargetAdapter
     return ordered;
   }
 
+  private validateIamPortableRow(table: string, row: Record<string, unknown>, tenantId: string): void {
+    if (row.tenant_id !== tenantId) throw new BadRequestException('IAM portable record is outside the requested tenant scope');
+    const expectedFields: Record<string, string[]> = {
+      iam_memberships: ['status', 'tenant_id', 'user_id'],
+      iam_roles: ['code', 'description', 'is_system', 'name', 'status', 'tenant_id'],
+      iam_user_roles: ['factory_code', 'role_code', 'tenant_id', 'user_id'],
+      iam_role_permissions: ['permission_code', 'role_code', 'tenant_id'],
+    };
+    const expected = expectedFields[table];
+    if (!expected || this.canonicalJson(Object.keys(row).sort()) !== this.canonicalJson(expected)) {
+      throw new BadRequestException('IAM portable record has an unexpected field set for ' + table);
+    }
+    if (table === 'iam_memberships') {
+      if (typeof row.user_id !== 'string' || !UUID_PATTERN.test(row.user_id) ||
+          !['ACTIVE', 'INVITED', 'SUSPENDED', 'REMOVED'].includes(String(row.status))) {
+        throw new BadRequestException('IAM portable membership is invalid');
+      }
+      return;
+    }
+    if (table === 'iam_roles') {
+      if (typeof row.code !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.code) ||
+          typeof row.name !== 'string' || row.name.trim().length === 0 || row.name.length > 200 ||
+          (row.description !== null && (typeof row.description !== 'string' || row.description.length > 2000)) ||
+          typeof row.is_system !== 'boolean' || row.status !== 'ACTIVE') {
+        throw new BadRequestException('IAM portable role definition is invalid');
+      }
+      return;
+    }
+    if (table === 'iam_user_roles') {
+      if (typeof row.user_id !== 'string' || !UUID_PATTERN.test(row.user_id) ||
+          typeof row.role_code !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.role_code) ||
+          (row.factory_code !== null && (typeof row.factory_code !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.factory_code)))) {
+        throw new BadRequestException('IAM portable user-role assignment is invalid');
+      }
+      return;
+    }
+    if (typeof row.role_code !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.role_code) ||
+        typeof row.permission_code !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(row.permission_code)) {
+      throw new BadRequestException('IAM portable permission grant is invalid');
+    }
+  }
+
+  private async applyIamAccess(client: PoolClient, tenantId: string): Promise<void> {
+    const staged = await client.query<{ table_name: string; row_payload: Record<string, unknown> }>(
+      'SELECT table_name, row_payload FROM pg_temp.factoryos_transfer_stage WHERE category = $1 ORDER BY sequence ASC',
+      [SaasTransferDatasetCategory.IAM_ACCESS],
+    );
+    const source: SaasTenantIamPortableSnapshot = { memberships: [], roles: [], userRoles: [], rolePermissions: [] };
+    for (const { table_name, row_payload: row } of staged.rows) {
+      switch (table_name) {
+        case 'iam_memberships':
+          source.memberships.push({ userId: row.user_id as string, status: row.status as SaasTenantMembershipStatus });
+          break;
+        case 'iam_roles':
+          source.roles.push({
+            code: row.code as string, name: row.name as string, description: row.description as string | null,
+            isSystem: row.is_system as boolean, status: row.status as SaasIamTransferStatus,
+          });
+          break;
+        case 'iam_user_roles':
+          source.userRoles.push({ userId: row.user_id as string, roleCode: row.role_code as string, factoryCode: row.factory_code as string | null });
+          break;
+        case 'iam_role_permissions':
+          source.rolePermissions.push({ roleCode: row.role_code as string, permissionCode: row.permission_code as string });
+          break;
+        default:
+          throw new BadRequestException('Staged IAM record has an unrecognized logical relation');
+      }
+    }
+    const memberIds = [...new Set(source.memberships.map((row) => row.userId))];
+    const roleCodes = [...new Set(source.roles.map((row) => row.code))];
+    const factoryCodes = [...new Set(source.userRoles.flatMap((row) => row.factoryCode ? [row.factoryCode] : []))];
+    const permissionCodes = [...new Set(source.rolePermissions.map((row) => row.permissionCode))];
+    const users = memberIds.length
+      ? (await client.query<{ user_id: string; status: string }>('SELECT id::text AS user_id, status FROM public.users WHERE id = ANY($1::uuid[])', [memberIds])).rows : [];
+    const memberships = memberIds.length
+      ? (await client.query<{ id: string; user_id: string; status: string }>(
+          'SELECT id::text AS id, user_id::text AS user_id, status FROM public.tenant_memberships WHERE tenant_id = $1::uuid AND user_id = ANY($2::uuid[])',
+          [tenantId, memberIds],
+        )).rows : [];
+    const roles = roleCodes.length
+      ? (await client.query<{ id: string; code: string; name: string; description: string | null; is_system: boolean; status: string }>(
+          "SELECT id::text AS id, code, name, description, is_system, 'ACTIVE'::text AS status FROM public.roles WHERE tenant_id = $1::uuid AND code = ANY($2::text[])",
+          [tenantId, roleCodes],
+        )).rows : [];
+    const factories = factoryCodes.length
+      ? (await client.query<{ id: string; code: string; status: string }>(
+          'SELECT id::text AS id, code, status FROM public.factories WHERE tenant_id = $1::uuid AND code = ANY($2::text[])',
+          [tenantId, factoryCodes],
+        )).rows : [];
+    const permissions = permissionCodes.length
+      ? (await client.query<{ id: string; code: string }>('SELECT id::text AS id, code FROM public.permissions WHERE code = ANY($1::text[])', [permissionCodes])).rows.map((row) => ({ ...row, status: 'ACTIVE' as const })) : [];
+
+    await this.assertIamRelationshipsConsistent(client, tenantId);
+    const userRoles = memberIds.length
+      ? (await client.query<{ user_id: string; role_code: string; factory_code: string | null }>(
+          'SELECT tm.user_id::text AS user_id, r.code AS role_code, f.code AS factory_code ' +
+            'FROM public.user_roles ur INNER JOIN public.tenant_memberships tm ON tm.id = ur.membership_id AND tm.tenant_id = $1::uuid ' +
+            'INNER JOIN public.roles r ON r.id = ur.role_id AND r.tenant_id = $1::uuid LEFT JOIN public.factories f ON f.id = ur.factory_id AND f.tenant_id = $1::uuid ' +
+            'WHERE tm.user_id = ANY($2::uuid[]) ORDER BY tm.user_id ASC, r.code ASC, f.code ASC NULLS FIRST',
+          [tenantId, memberIds],
+        )).rows : [];
+    const rolePermissions = roleCodes.length
+      ? (await client.query<{ role_code: string; permission_code: string }>(
+          'SELECT r.code AS role_code, p.code AS permission_code FROM public.role_permissions rp INNER JOIN public.roles r ON r.id = rp.role_id AND r.tenant_id = $1::uuid ' +
+            'INNER JOIN public.permissions p ON p.id = rp.permission_id WHERE r.code = ANY($2::text[]) ORDER BY r.code ASC, p.code ASC',
+          [tenantId, roleCodes],
+        )).rows : [];
+    const target: SaasTenantIamTargetDirectory = {
+      users: users.map((row) => ({ userId: row.user_id, status: row.status as SaasIamTransferStatus })),
+      memberships: memberships.map((row) => ({ id: row.id, userId: row.user_id, status: row.status as SaasTenantMembershipStatus })),
+      roles: roles.map((row) => ({ id: row.id, code: row.code, name: row.name, description: row.description, isSystem: row.is_system, status: row.status as SaasIamTransferStatus })),
+      factories: factories.map((row) => ({ id: row.id, code: row.code, status: row.status as SaasIamTransferStatus })),
+      permissions,
+      userRoles: userRoles.map((row) => ({ userId: row.user_id, roleCode: row.role_code, factoryCode: row.factory_code })),
+      rolePermissions: rolePermissions.map((row) => ({ roleCode: row.role_code, permissionCode: row.permission_code })),
+    };
+    const plan = buildSaasTenantIamRemappingPlan(source, target);
+    for (const membership of plan.membershipsToCreate) {
+      const result = await client.query('INSERT INTO public.tenant_memberships (id, tenant_id, user_id, status) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3)', [tenantId, membership.userId, membership.status]);
+      if (result.rowCount !== 1) throw new ConflictException('Could not create a remapped tenant membership');
+    }
+    for (const role of plan.rolesToCreate) {
+      const result = await client.query('INSERT INTO public.roles (id, tenant_id, code, name, description, is_system) VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, $5)', [tenantId, role.code, role.name, role.description, role.isSystem]);
+      if (result.rowCount !== 1) throw new ConflictException('Could not create a remapped tenant role');
+    }
+    for (const assignment of plan.userRolesToCreate) {
+      const result = await client.query(
+        'INSERT INTO public.user_roles (id, membership_id, role_id, factory_id) SELECT gen_random_uuid(), tm.id, r.id, f.id ' +
+          'FROM public.tenant_memberships tm INNER JOIN public.roles r ON r.tenant_id = $1::uuid AND r.code = $3 ' +
+          'LEFT JOIN public.factories f ON f.tenant_id = $1::uuid AND f.code = $4 ' +
+          'WHERE tm.tenant_id = $1::uuid AND tm.user_id = $2::uuid AND (($4::text IS NULL AND f.id IS NULL) OR f.id IS NOT NULL)',
+        [tenantId, assignment.userId, assignment.roleCode, assignment.factoryCode],
+      );
+      if (result.rowCount !== 1) throw new ConflictException('Could not create a remapped user-role assignment');
+    }
+    for (const grant of plan.rolePermissionsToCreate) {
+      const result = await client.query(
+        'INSERT INTO public.role_permissions (role_id, permission_id) SELECT r.id, p.id FROM public.roles r CROSS JOIN public.permissions p WHERE r.tenant_id = $1::uuid AND r.code = $2 AND p.code = $3',
+        [tenantId, grant.roleCode, grant.permissionCode],
+      );
+      if (result.rowCount !== 1) throw new ConflictException('Could not create a remapped role-permission grant');
+    }
+    const access = memberIds.length
+      ? (await client.query<{ user_id: string; permission_code: string; factory_code: string | null }>(
+          "SELECT DISTINCT tm.user_id::text AS user_id, p.code AS permission_code, f.code AS factory_code FROM public.user_roles ur " +
+            "INNER JOIN public.tenant_memberships tm ON tm.id = ur.membership_id AND tm.tenant_id = $1::uuid AND tm.status = 'ACTIVE' " +
+            'INNER JOIN public.roles r ON r.id = ur.role_id AND r.tenant_id = $1::uuid INNER JOIN public.role_permissions rp ON rp.role_id = r.id ' +
+            'INNER JOIN public.permissions p ON p.id = rp.permission_id LEFT JOIN public.factories f ON f.id = ur.factory_id AND f.tenant_id = $1::uuid ' +
+            'WHERE tm.user_id = ANY($2::uuid[]) AND (ur.factory_id IS NULL OR f.id IS NOT NULL) ORDER BY tm.user_id ASC, p.code ASC, f.code ASC NULLS FIRST',
+          [tenantId, memberIds],
+        )).rows : [];
+    assertSaasTenantIamEffectiveAccess(plan.expectedEffectiveAccess, access.map((row) => ({
+      userId: row.user_id, permissionCode: row.permission_code, factoryCode: row.factory_code,
+    })));
+  }
+
+  private async assertIamRelationshipsConsistent(client: PoolClient, tenantId: string): Promise<void> {
+    const result = await client.query<{ invalid_assignment_count: string }>(
+      'SELECT COUNT(*)::text AS invalid_assignment_count FROM public.user_roles ur ' +
+        'LEFT JOIN public.tenant_memberships tm ON tm.id = ur.membership_id LEFT JOIN public.roles r ON r.id = ur.role_id ' +
+        'LEFT JOIN public.factories f ON f.id = ur.factory_id WHERE (tm.tenant_id = $1::uuid OR r.tenant_id = $1::uuid OR f.tenant_id = $1::uuid) ' +
+        'AND (tm.tenant_id IS DISTINCT FROM $1::uuid OR r.tenant_id IS DISTINCT FROM $1::uuid OR (ur.factory_id IS NOT NULL AND f.tenant_id IS DISTINCT FROM $1::uuid))',
+      [tenantId],
+    );
+    const invalidCount = result.rows[0]?.invalid_assignment_count;
+    if (result.rowCount !== 1 || !invalidCount || !/^\d+$/.test(invalidCount)) {
+      throw new ServiceUnavailableException('Unable to verify tenant IAM relationship integrity');
+    }
+    if (BigInt(invalidCount) > 0n) throw new ConflictException('Target IAM contains a cross-tenant or unresolved assignment');
+  }
+
   private async measureTargetManifest(
     client: PoolClient,
     tenantId: string,
@@ -557,6 +746,10 @@ export class SaasTenantPostgresMigrationTargetAdapter
   ): Promise<SaasTenantTransferExportManifest> {
     const manifest: SaasTenantTransferExportManifest = {};
     for (const entry of categoryTables) {
+      if (entry.category === SaasTransferDatasetCategory.IAM_ACCESS) {
+        manifest[entry.category] = await this.measureIamAccessManifest(client, tenantId);
+        continue;
+      }
       const hash = createHash('sha256');
       let count = 0;
       for (const table of entry.tables) {
@@ -581,6 +774,41 @@ export class SaasTenantPostgresMigrationTargetAdapter
       manifest[entry.category] = { record_count: count, sha256: hash.digest('hex') };
     }
     return manifest;
+  }
+
+  private async measureIamAccessManifest(client: PoolClient, tenantId: string): Promise<{ record_count: number; sha256: string }> {
+    await this.assertIamRelationshipsConsistent(client, tenantId);
+    const hash = createHash('sha256');
+    let count = 0;
+    const addRows = (table: string, rows: Array<Record<string, unknown>>) => {
+      for (const row of rows) {
+        hash.update(this.canonicalJson({ ...row, __factoryos_table: table }), 'utf8');
+        hash.update('\n', 'utf8');
+        count += 1;
+      }
+    };
+    const memberships = await client.query<{ tenant_id: string; user_id: string; status: string }>(
+      'SELECT tenant_id::text AS tenant_id, user_id::text AS user_id, status FROM public.tenant_memberships WHERE tenant_id = $1::uuid ORDER BY user_id ASC', [tenantId],
+    );
+    addRows('iam_memberships', memberships.rows as Array<Record<string, unknown>>);
+    const roles = await client.query<{ tenant_id: string; code: string; name: string; description: string | null; is_system: boolean; status: string }>(
+      "SELECT tenant_id::text AS tenant_id, code, name, description, is_system, 'ACTIVE'::text AS status FROM public.roles WHERE tenant_id = $1::uuid ORDER BY code ASC", [tenantId],
+    );
+    addRows('iam_roles', roles.rows as Array<Record<string, unknown>>);
+    const assignments = await client.query<{ tenant_id: string; user_id: string; role_code: string; factory_code: string | null }>(
+      'SELECT tm.tenant_id::text AS tenant_id, tm.user_id::text AS user_id, r.code AS role_code, f.code AS factory_code ' +
+        'FROM public.user_roles ur INNER JOIN public.tenant_memberships tm ON tm.id = ur.membership_id AND tm.tenant_id = $1::uuid ' +
+        'INNER JOIN public.roles r ON r.id = ur.role_id AND r.tenant_id = $1::uuid LEFT JOIN public.factories f ON f.id = ur.factory_id AND f.tenant_id = $1::uuid ' +
+        'WHERE (ur.factory_id IS NULL OR f.id IS NOT NULL) ORDER BY tm.user_id ASC, r.code ASC, f.code ASC NULLS FIRST', [tenantId],
+    );
+    addRows('iam_user_roles', assignments.rows as Array<Record<string, unknown>>);
+    const grants = await client.query<{ tenant_id: string; role_code: string; permission_code: string }>(
+      'SELECT r.tenant_id::text AS tenant_id, r.code AS role_code, p.code AS permission_code FROM public.role_permissions rp ' +
+        'INNER JOIN public.roles r ON r.id = rp.role_id AND r.tenant_id = $1::uuid INNER JOIN public.permissions p ON p.id = rp.permission_id ORDER BY r.code ASC, p.code ASC', [tenantId],
+    );
+    addRows('iam_role_permissions', grants.rows as Array<Record<string, unknown>>);
+    if (!Number.isSafeInteger(count)) throw new ConflictException('IAM record count exceeds the supported limit');
+    return { record_count: count, sha256: hash.digest('hex') };
   }
 
   private assertManifestMatchesInput(

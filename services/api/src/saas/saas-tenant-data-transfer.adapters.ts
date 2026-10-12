@@ -11,9 +11,8 @@ export interface SaasTenantTransferDatasetSnapshot {
 
 export interface SaasTenantTransferDatasetSource {
   /**
-   * Fail closed when the tenant has memberships, role definitions, or grants
-   * that the current tenant-transfer bundle cannot preserve. This preflight is
-   * required before import until the dedicated IAM remapping adapter is wired.
+   * Validate tenant IAM scope before import. IAM records travel as logical IAM_ACCESS
+   * rows and are remapped by the PostgreSQL target adapter in the import transaction.
    */
   assertIamMigrationReady(tenantId: string): Promise<void>;
 

@@ -20,6 +20,7 @@ export enum SaasTransferDatasetCategory {
   LEARNING_EVALUATION = 'LEARNING_EVALUATION',
   INTEGRATION_METADATA = 'INTEGRATION_METADATA',
   FILE_REFERENCES = 'FILE_REFERENCES',
+  IAM_ACCESS = 'IAM_ACCESS',
 }
 
 export const REQUIRED_TRANSFER_CATEGORIES = [
@@ -28,6 +29,7 @@ export const REQUIRED_TRANSFER_CATEGORIES = [
   SaasTransferDatasetCategory.EVIDENCE,
   SaasTransferDatasetCategory.APPROVALS,
   SaasTransferDatasetCategory.EFFECTIVE_DATED_MASTER_DATA,
+  SaasTransferDatasetCategory.IAM_ACCESS,
 ] as const;
 
 export enum SaasSchemaCompatibilityDecision {

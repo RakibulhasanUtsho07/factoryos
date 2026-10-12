@@ -48,7 +48,7 @@ describe('SaasTenantPostgresDatasetSource', () => {
     return { source: new SaasTenantPostgresDatasetSource(database), client, calls, database };
   }
 
-  it('permits migration preflight only when no unmapped tenant IAM rows exist', async () => {
+  it('runs tenant-scoped IAM preflight in a read-only repeatable-read transaction', async () => {
     const { source, client, calls } = createSource();
     await source.assertIamMigrationReady(tenantId);
     expect(calls[0]?.sql).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -59,17 +59,13 @@ describe('SaasTenantPostgresDatasetSource', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  it('fails closed and rolls back when memberships exist without a reviewed IAM adapter', async () => {
+  it('allows non-empty tenant IAM because stable-code remapping is registered', async () => {
     const { source, client, calls } = createSource(undefined, {
-      membership_count: '1',
-      role_count: '1',
-      user_role_count: '1',
-      role_permission_count: '2',
+      membership_count: '2', role_count: '3', user_role_count: '2', role_permission_count: '4',
     });
-    await expect(source.assertIamMigrationReady(tenantId))
-      .rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(calls.some((item) => item.sql === 'COMMIT')).toBe(false);
-    expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(true);
+    await expect(source.assertIamMigrationReady(tenantId)).resolves.toBeUndefined();
+    expect(calls.some((item) => item.sql === 'COMMIT')).toBe(true);
+    expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(false);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 

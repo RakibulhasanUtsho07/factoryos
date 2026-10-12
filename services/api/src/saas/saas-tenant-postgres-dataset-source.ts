@@ -154,15 +154,6 @@ export class SaasTenantPostgresDatasetSource {
         );
       }
 
-      if (
-        [counts.membership_count, counts.role_count, counts.user_role_count, counts.role_permission_count]
-          .some((value) => BigInt(value) > 0n)
-      ) {
-        throw new ServiceUnavailableException(
-          'Tenant migration is blocked because IAM memberships/roles/grants exist and no reviewed IAM remapping adapter is registered',
-        );
-      }
-
       await client.query('COMMIT');
       transactionOpen = false;
     } finally {
@@ -234,6 +225,75 @@ export class SaasTenantPostgresDatasetSource {
     }
   }
 
+  private async *readIamDatasetOnClient(
+    client: Awaited<ReturnType<DatabaseService['getClient']>>,
+    tenantId: string,
+    isActive: () => boolean,
+  ): AsyncIterable<unknown> {
+    const integrity = await client.query<{ invalid_assignment_count: string }>(
+      'SELECT COUNT(*)::text AS invalid_assignment_count FROM public.user_roles ur ' +
+        'LEFT JOIN public.tenant_memberships tm ON tm.id = ur.membership_id ' +
+        'LEFT JOIN public.roles r ON r.id = ur.role_id LEFT JOIN public.factories f ON f.id = ur.factory_id ' +
+        'WHERE (tm.tenant_id = $1::uuid OR r.tenant_id = $1::uuid OR f.tenant_id = $1::uuid) ' +
+        'AND (tm.tenant_id IS DISTINCT FROM $1::uuid OR r.tenant_id IS DISTINCT FROM $1::uuid ' +
+        'OR (ur.factory_id IS NOT NULL AND f.tenant_id IS DISTINCT FROM $1::uuid))',
+      [tenantId],
+    );
+    const invalidCount = integrity.rows[0]?.invalid_assignment_count;
+    if (integrity.rowCount !== 1 || !invalidCount || !/^\d+$/.test(invalidCount)) {
+      throw new ServiceUnavailableException('Unable to verify tenant IAM relationship integrity');
+    }
+    if (BigInt(invalidCount) > 0n) throw new ServiceUnavailableException('Tenant IAM contains a cross-tenant or unresolved assignment');
+
+    if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+    const memberships = await client.query<{ user_id: string; status: string }>(
+      'SELECT user_id::text AS user_id, status FROM public.tenant_memberships WHERE tenant_id = $1::uuid ORDER BY user_id ASC',
+      [tenantId],
+    );
+    for (const row of memberships.rows) {
+      if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+      if (!['ACTIVE', 'INVITED', 'SUSPENDED', 'REMOVED'].includes(row.status)) throw new ServiceUnavailableException('Tenant membership has an unsupported lifecycle status');
+      yield { tenant_id: tenantId, user_id: row.user_id, status: row.status, __factoryos_table: 'iam_memberships' };
+    }
+
+    if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+    const roles = await client.query<{ code: string; name: string; description: string | null; is_system: boolean }>(
+      'SELECT code, name, description, is_system FROM public.roles WHERE tenant_id = $1::uuid ORDER BY code ASC',
+      [tenantId],
+    );
+    for (const row of roles.rows) {
+      if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+      yield { tenant_id: tenantId, code: row.code, name: row.name, description: row.description, is_system: row.is_system, status: 'ACTIVE', __factoryos_table: 'iam_roles' };
+    }
+
+    if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+    const assignments = await client.query<{ user_id: string; role_code: string; factory_code: string | null }>(
+      'SELECT tm.user_id::text AS user_id, r.code AS role_code, f.code AS factory_code ' +
+        'FROM public.user_roles ur INNER JOIN public.tenant_memberships tm ON tm.id = ur.membership_id ' +
+        'INNER JOIN public.roles r ON r.id = ur.role_id AND r.tenant_id = $1::uuid ' +
+        'LEFT JOIN public.factories f ON f.id = ur.factory_id AND f.tenant_id = $1::uuid ' +
+        'WHERE tm.tenant_id = $1::uuid AND (ur.factory_id IS NULL OR f.id IS NOT NULL) ' +
+        'ORDER BY tm.user_id ASC, r.code ASC, f.code ASC NULLS FIRST',
+      [tenantId],
+    );
+    for (const row of assignments.rows) {
+      if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+      yield { tenant_id: tenantId, user_id: row.user_id, role_code: row.role_code, factory_code: row.factory_code, __factoryos_table: 'iam_user_roles' };
+    }
+
+    if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+    const grants = await client.query<{ role_code: string; permission_code: string }>(
+      'SELECT r.code AS role_code, p.code AS permission_code FROM public.role_permissions rp ' +
+        'INNER JOIN public.roles r ON r.id = rp.role_id AND r.tenant_id = $1::uuid ' +
+        'INNER JOIN public.permissions p ON p.id = rp.permission_id ORDER BY r.code ASC, p.code ASC',
+      [tenantId],
+    );
+    for (const row of grants.rows) {
+      if (!isActive()) throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+      yield { tenant_id: tenantId, role_code: row.role_code, permission_code: row.permission_code, __factoryos_table: 'iam_role_permissions' };
+    }
+  }
+
   private async *readDatasetOnClient(
     client: Awaited<ReturnType<DatabaseService['getClient']>>,
     tenantId: string,
@@ -243,6 +303,11 @@ export class SaasTenantPostgresDatasetSource {
     if (!isActive()) {
       throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
     }
+    if (category === SaasTransferDatasetCategory.IAM_ACCESS) {
+      yield* this.readIamDatasetOnClient(client, tenantId, isActive);
+      return;
+    }
+
     const tables = SAAS_TENANT_DATASET_TABLES[category];
     if (!tables || tables.length === 0) {
       throw new ServiceUnavailableException(

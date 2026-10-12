@@ -208,7 +208,7 @@ export class SaasTenantDataTransferWorkerService {
 
     const header = JSON.stringify({
       format: 'FACTORYOS_TENANT_EXPORT',
-      formatVersion: 1,
+      formatVersion: 2,
       tenantId,
       transferId,
       schemaVersion,

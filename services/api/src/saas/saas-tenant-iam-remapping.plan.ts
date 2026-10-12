@@ -3,10 +3,11 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STABLE_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
-export type SaasIamTransferStatus = 'ACTIVE' | 'INACTIVE' | 'DISABLED' | 'RETIRED';
+export type SaasIamTransferStatus = 'ACTIVE' | 'INACTIVE' | 'DISABLED' | 'RETIRED' | 'INVITED' | 'SUSPENDED' | 'REMOVED' | 'ARCHIVED';
+export type SaasTenantMembershipStatus = 'ACTIVE' | 'INVITED' | 'SUSPENDED' | 'REMOVED';
 
 export interface SaasTenantIamPortableSnapshot {
-  memberships: Array<{ userId: string; status: 'ACTIVE' | 'INACTIVE' }>;
+  memberships: Array<{ userId: string; status: SaasTenantMembershipStatus }>;
   roles: Array<{
     code: string;
     name: string;
@@ -20,7 +21,7 @@ export interface SaasTenantIamPortableSnapshot {
 
 export interface SaasTenantIamTargetDirectory {
   users: Array<{ userId: string; status: SaasIamTransferStatus }>;
-  memberships: Array<{ id: string; userId: string; status: 'ACTIVE' | 'INACTIVE' }>;
+  memberships: Array<{ id: string; userId: string; status: SaasTenantMembershipStatus }>;
   roles: Array<{ id: string; code: string; name: string; description: string | null; isSystem: boolean; status: SaasIamTransferStatus }>;
   factories: Array<{ id: string; code: string; status: SaasIamTransferStatus }>;
   permissions: Array<{ id: string; code: string; status: SaasIamTransferStatus }>;
@@ -29,7 +30,7 @@ export interface SaasTenantIamTargetDirectory {
 }
 
 export interface SaasTenantIamRemappingPlan {
-  membershipsToCreate: Array<{ userId: string; status: 'ACTIVE' | 'INACTIVE' }>;
+  membershipsToCreate: Array<{ userId: string; status: SaasTenantMembershipStatus }>;
   rolesToCreate: SaasTenantIamPortableSnapshot['roles'];
   userRolesToCreate: SaasTenantIamPortableSnapshot['userRoles'];
   rolePermissionsToCreate: SaasTenantIamPortableSnapshot['rolePermissions'];
@@ -228,8 +229,10 @@ function assertStatus(value: unknown, label: string): asserts value is SaasIamTr
   }
 }
 
-function assertMembershipStatus(value: unknown, label: string): asserts value is 'ACTIVE' | 'INACTIVE' {
-  if (value !== 'ACTIVE' && value !== 'INACTIVE') throw new BadRequestException(label + ' is invalid');
+function assertMembershipStatus(value: unknown, label: string): asserts value is SaasTenantMembershipStatus {
+  if (!['ACTIVE', 'INVITED', 'SUSPENDED', 'REMOVED'].includes(value as string)) {
+    throw new BadRequestException(label + ' is invalid');
+  }
 }
 
 function assertUnique<T>(items: T[], keyOf: (item: T) => string, label: string): void {

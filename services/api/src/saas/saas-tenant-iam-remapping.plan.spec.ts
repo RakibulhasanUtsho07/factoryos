@@ -16,7 +16,7 @@ function sourceSnapshot(): SaasTenantIamPortableSnapshot {
   return {
     memberships: [
       { userId: userA, status: 'ACTIVE' },
-      { userId: userB, status: 'INACTIVE' },
+      { userId: userB, status: 'REMOVED' },
     ],
     roles: [
       { code: 'factory.operator', name: 'Factory Operator', description: null, isSystem: false, status: 'ACTIVE' },
@@ -65,7 +65,7 @@ describe('SaaS tenant IAM remapping plan', () => {
   it('maps by stable codes, creates missing memberships/roles and preserves factory scope', () => {
     const plan = buildSaasTenantIamRemappingPlan(sourceSnapshot(), targetDirectory());
 
-    expect(plan.membershipsToCreate).toEqual([{ userId: userB, status: 'INACTIVE' }]);
+    expect(plan.membershipsToCreate).toEqual([{ userId: userB, status: 'REMOVED' }]);
     expect(plan.rolesToCreate).toEqual([
       { code: 'legacy.viewer', name: 'Legacy Viewer', description: 'Retained but disabled', isSystem: false, status: 'INACTIVE' },
     ]);

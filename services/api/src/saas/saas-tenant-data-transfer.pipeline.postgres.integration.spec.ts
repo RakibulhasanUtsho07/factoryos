@@ -151,6 +151,15 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         [userId, 'xfer-' + userId, 'xfer-' + userId + '@factoryos.test', 'Transfer integration actor', 'ACTIVE'],
       );
 
+      await adminPool.query(
+        'INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, $3)',
+        [tenantId, userId, 'ACTIVE'],
+      );
+      await adminPool.query(
+        'INSERT INTO permissions (code, description) VALUES ($1, $2) ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description',
+        ['transfer.integration.orders.read', 'Transfer integration IAM permission'],
+      );
+
       // The target is a separate database. Pre-provision only tenant and identity rows;
       // all selected tenant domain data must be imported by the production adapter.
       await targetAdminPool.query(
@@ -161,6 +170,11 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         'INSERT INTO users (id, external_subject, email, display_name, status) VALUES ($1, $2, $3, $4, $5)',
         [userId, 'xfer-' + userId, 'xfer-' + userId + '@factoryos.test', 'Transfer integration actor', 'ACTIVE'],
       );
+
+      await targetAdminPool.query(
+        'INSERT INTO permissions (code, description) VALUES ($1, $2) ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description',
+        ['transfer.integration.orders.read', 'Transfer integration IAM permission'],
+      );
       await adminPool.query(
         'INSERT INTO legal_entities (id, tenant_id, code, name, country_code, status) VALUES ($1, $2, $3, $4, $5, $6)',
         [legalEntityId, tenantId, 'XFER-' + tenantId.slice(0, 8), 'Transfer Legal Entity', 'BD', 'ACTIVE'],
@@ -168,6 +182,19 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       await adminPool.query(
         'INSERT INTO factories (id, tenant_id, legal_entity_id, code, name, status, timezone) VALUES ($1, $2, $3, $4, $5, $6, $7)',
         [factoryId, tenantId, legalEntityId, 'XFER-' + factoryId.slice(0, 8), 'Transfer Test Factory', 'ACTIVE', 'Asia/Dhaka'],
+      );
+
+      await adminPool.query(
+        'INSERT INTO roles (tenant_id, code, name, description, is_system) VALUES ($1, $2, $3, $4, $5)',
+        [tenantId, 'transfer.integration.operator', 'Transfer Integration Operator', null, false],
+      );
+      await adminPool.query(
+        'INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r CROSS JOIN permissions p WHERE r.tenant_id = $1::uuid AND r.code = $2 AND p.code = $3',
+        [tenantId, 'transfer.integration.operator', 'transfer.integration.orders.read'],
+      );
+      await adminPool.query(
+        'INSERT INTO user_roles (membership_id, role_id, factory_id) SELECT tm.id, r.id, f.id FROM tenant_memberships tm CROSS JOIN roles r CROSS JOIN factories f WHERE tm.tenant_id = $1::uuid AND tm.user_id = $2::uuid AND r.tenant_id = $1::uuid AND r.code = $3 AND f.tenant_id = $1::uuid AND f.id = $4::uuid',
+        [tenantId, userId, 'transfer.integration.operator', factoryId],
       );
       await adminPool.query(
         'INSERT INTO audit_events (tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)',
@@ -341,6 +368,23 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
       expect(imported.transfer.status).toBe('COMPLETED');
       expect(imported.transfer.preservationVerified).toBe(true);
       expect(imported.transfer.targetBundleReference).toMatch(/^pgimport:/);
+      const mappedAccess = await targetAdminPool.query<{
+        membership_status: string; role_code: string; permission_code: string; factory_code: string | null;
+      }>(
+        'SELECT tm.status AS membership_status, r.code AS role_code, p.code AS permission_code, f.code AS factory_code ' +
+          'FROM tenant_memberships tm JOIN user_roles ur ON ur.membership_id = tm.id ' +
+          'JOIN roles r ON r.id = ur.role_id JOIN role_permissions rp ON rp.role_id = r.id ' +
+          'JOIN permissions p ON p.id = rp.permission_id LEFT JOIN factories f ON f.id = ur.factory_id ' +
+          'WHERE tm.tenant_id = $1::uuid AND tm.user_id = $2::uuid',
+        [tenantId, userId],
+      );
+      expect(mappedAccess.rows).toEqual([{
+        membership_status: 'ACTIVE',
+        role_code: 'transfer.integration.operator',
+        permission_code: 'transfer.integration.orders.read',
+        factory_code: 'XFER-' + factoryId.slice(0, 8),
+      }]);
+
       expect(transferLedger.transitionMigration).toHaveBeenCalledTimes(2);
       const targetFactory = await targetAdminPool.query(
         'SELECT id FROM factories WHERE tenant_id = $1::uuid AND id = $2::uuid',
