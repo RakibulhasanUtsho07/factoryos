@@ -7,6 +7,7 @@ import {
   edgePackageSigningPayload,
   verifyEdgePackage,
   type EdgePackageManifestV1,
+  type EdgePackageVerificationPolicy,
   type SignedEdgePackageInput,
 } from './edge-package-manifest-verifier.js';
 
@@ -66,7 +67,7 @@ function signedPackage(
   };
 }
 
-function policy(overrides: Record<string, unknown> = {}) {
+function policy(overrides: Partial<EdgePackageVerificationPolicy> = {}): EdgePackageVerificationPolicy {
   return {
     tenantId,
     factoryId,
