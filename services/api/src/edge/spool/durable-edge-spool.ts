@@ -22,7 +22,7 @@ const BATCH_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SIGNAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CREDENTIAL_FIELD_PATTERN =
-  /(?:secret|password|credential|private.?key|api.?key|access.?token|refresh.?token|authorization|bearer)/i;
+  /(?:secret|password|credential|private.?key|api.?key|api.?token|access.?token|refresh.?token|authorization|bearer)/i;
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export type EdgeObservationSourceMode = 'EDGE_OFFLINE' | 'CLOUD_CONNECTED';
@@ -481,6 +481,7 @@ export class DurableEdgeSpool {
       handle = undefined;
       await rename(temporaryPath, destination);
       await this.syncDirectory(this.pendingDir);
+      await this.syncDirectory(this.tempDir);
     } catch (error) {
       if (handle) await handle.close().catch(() => undefined);
       await unlink(temporaryPath).catch(() => undefined);
