@@ -50,8 +50,28 @@ export function normalizeObservedAt(value: unknown): string {
     if (!value.trim() || !Number.isFinite(Date.parse(value))) {
       throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp is missing or invalid');
     }
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+    const match = /^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,9}))?(Z|([+-])(\\d{2}):(\\d{2}))$/i.exec(value);
+    if (!match) {
       throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO-8601 timestamp with an explicit timezone');
+    }
+
+    // Date.parse normalizes impossible calendar dates (for example February 30)
+    // on some runtimes. Reject those source values rather than silently changing
+    // the timestamp that becomes part of the durable event identity.
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = Number(match[6]);
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [
+      31, leapYear ? 29 : 28, 31, 30, 31, 30,
+      31, 31, 30, 31, 30, 31,
+    ][month - 1] ?? 0;
+    if (month < 1 || month > 12 || day < 1 || day > daysInMonth ||
+        hour > 23 || minute > 59 || second > 59) {
+      throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp is missing or invalid');
     }
   }
   const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
@@ -63,7 +83,6 @@ export function normalizeObservedAt(value: unknown): string {
   }
   return new Date(timestamp).toISOString();
 }
-
 export function normalizeScalar(value: unknown): string | number | boolean {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.length <= 2048) return value;
