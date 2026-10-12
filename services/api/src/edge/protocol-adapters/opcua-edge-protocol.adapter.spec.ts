@@ -103,6 +103,10 @@ describe('OpcUaEdgeProtocolAdapter', () => {
       'EDGE_OFFLINE',
     )).rejects.toThrow('explicit timezone');
     await expect(adapter.ingestDataValue(
+      sample({ sourceTimestamp: '2026-02-30T08:00:00Z' }),
+      'EDGE_OFFLINE',
+    )).rejects.toThrow('timestamp is missing or invalid');
+    await expect(adapter.ingestDataValue(
       sample({ quality: 'MAYBE' as never }),
       'EDGE_OFFLINE',
     )).rejects.toThrow('Source quality');
@@ -111,6 +115,49 @@ describe('OpcUaEdgeProtocolAdapter', () => {
       'EDGE_OFFLINE',
     )).rejects.toThrow('finite number, boolean, or bounded string');
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('waits for an in-flight durable enqueue before stop resolves', async () => {
+    const { sink } = createSink();
+    const adapter = new OpcUaEdgeProtocolAdapter([mapping], sink);
+    const callbacks = new Map<string, (value: EdgeOpcUaDataValue) => void>();
+    const unsubscribe = jest.fn<() => void>();
+    const transport = {
+      subscribe: jest.fn(async (nodeId: string, handler: (value: EdgeOpcUaDataValue) => void) => {
+        callbacks.set(nodeId, handler);
+        return unsubscribe;
+      }),
+    };
+    let enteredEnqueue!: () => void;
+    const enqueueEntered = new Promise<void>((resolve) => {
+      enteredEnqueue = resolve;
+    });
+    let releaseEnqueue!: () => void;
+    const enqueueGate = new Promise<void>((resolve) => {
+      releaseEnqueue = resolve;
+    });
+    sink.enqueue.mockImplementation(async (input: unknown) => {
+      const batch = input as EdgeSpoolBatch;
+      enteredEnqueue();
+      await enqueueGate;
+      return { idempotent: false, batchKey: batch.batch_key };
+    });
+
+    await adapter.start(transport, () => 'EDGE_OFFLINE', () => undefined);
+    callbacks.get(mapping.nodeId)?.(sample());
+    await enqueueEntered;
+
+    let stopped = false;
+    const stopping = adapter.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseEnqueue();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it('requires explicit valid unique node mappings', async () => {
