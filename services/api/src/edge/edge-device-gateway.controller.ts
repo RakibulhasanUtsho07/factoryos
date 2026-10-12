@@ -19,8 +19,10 @@ import { RegisterEdgeDeviceDto } from './dto/register-edge-device.dto';
 import { IssueEdgeDeviceCredentialDto } from './dto/issue-edge-device-credential.dto';
 import { SetEdgeDeviceStatusDto } from './dto/set-edge-device-status.dto';
 import { SyncEdgeObservationsDto } from './dto/sync-edge-observations.dto';
+import { EdgeDeviceHealthReportDto } from './dto/edge-device-health.dto';
 import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
 import { EdgeDeviceCredentialService } from './edge-device-credential.service';
+import { EdgeDeviceHealthService } from './edge-device-health.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -42,6 +44,7 @@ export class EdgeDeviceGatewayController {
   constructor(
     private readonly edgeService: EdgeDeviceGatewayService,
     private readonly credentialService: EdgeDeviceCredentialService,
+    private readonly healthService: EdgeDeviceHealthService,
   ) {}
 
   @Post('devices')
@@ -130,6 +133,55 @@ export class EdgeDeviceGatewayController {
         correlationId: request.factoryos?.traceId ?? null,
       },
       authenticated.credentialId,
+    );
+  }
+
+  /**
+   * Device-signed operational report. All model/drift fields are treated as
+   * telemetry asserted by the edge runtime, never as verified model decisions.
+   */
+  @Post('device-health/:deviceId')
+  async reportDeviceHealth(
+    @Req() request: FactoryOsRequest,
+    @Headers('authorization') authorization: string | undefined,
+    @Param('deviceId') deviceId: string,
+    @Body() body: EdgeDeviceHealthReportDto,
+  ) {
+    const authenticated = await this.credentialService.authenticateDeviceToken(
+      authorization,
+      deviceId,
+    );
+    return this.healthService.recordReport(
+      authenticated.tenantId,
+      authenticated.factoryId,
+      authenticated.deviceId,
+      authenticated.credentialId,
+      body,
+      {
+        requestId: request.factoryos?.requestId ?? null,
+        correlationId: request.factoryos?.traceId ?? null,
+      },
+    );
+  }
+
+  @Get('devices/:deviceId/health')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.devices.health.read')
+  @RequireFactoryScope()
+  async listDeviceHealth(
+    @Req() request: FactoryOsRequest,
+    @Param('deviceId') deviceId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.healthService.listReports(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      deviceId,
+      limit === undefined ? 25 : Number(limit),
+      offset === undefined ? 0 : Number(offset),
     );
   }
 
