@@ -99,6 +99,10 @@ describe('OpcUaEdgeProtocolAdapter', () => {
       'EDGE_OFFLINE',
     )).rejects.toThrow('timestamp is missing or invalid');
     await expect(adapter.ingestDataValue(
+      sample({ sourceTimestamp: '2026-10-12T08:00:00' }),
+      'EDGE_OFFLINE',
+    )).rejects.toThrow('explicit timezone');
+    await expect(adapter.ingestDataValue(
       sample({ quality: 'MAYBE' as never }),
       'EDGE_OFFLINE',
     )).rejects.toThrow('Source quality');
@@ -118,6 +122,9 @@ describe('OpcUaEdgeProtocolAdapter', () => {
     expect(() => new OpcUaEdgeProtocolAdapter([
       { ...mapping, samplingIntervalMs: 86400001 },
     ], sink)).toThrow('samplingIntervalMs');
+    expect(() => new OpcUaEdgeProtocolAdapter([
+      { ...mapping, nodeId: 'nsu=urn:factoryos:plant-a;s=Line1.Temperature' },
+    ], sink)).not.toThrow();
   });
 
   it('binds only allow-listed nodes and unsubscribes cleanly', async () => {
