@@ -75,5 +75,13 @@ export interface EdgeAdapterLifecycle {
   stop(): Promise<void>;
 }
 
+export interface EdgeProtocolStartableAdapter extends EdgeAdapterLifecycle {
+  start(
+    transport: EdgeMqttTransport | EdgeOpcUaTransport,
+    sourceModeProvider: () => EdgeProtocolSourceMode,
+    onError: (error: Error) => void,
+  ): Promise<void>;
+}
+
 export type NormalizedEdgeProtocolObservation = EdgeSpoolObservation;
 export type NormalizedEdgeProtocolBatch = EdgeSpoolBatch;
