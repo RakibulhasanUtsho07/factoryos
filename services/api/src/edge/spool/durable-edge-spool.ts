@@ -100,13 +100,17 @@ function canonicalJson(value: unknown, depth = 0): string {
     throw new EdgeSpoolError('INVALID_BATCH', 'Batch payload nesting exceeds the limit');
   }
   if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return JSON.stringify(value);
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new EdgeSpoolError('INVALID_BATCH', 'Value is not valid JSON');
+    return encoded;
   }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
       throw new EdgeSpoolError('INVALID_BATCH', 'Batch values must be finite JSON numbers');
     }
-    return JSON.stringify(value);
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new EdgeSpoolError('INVALID_BATCH', 'Value is not valid JSON');
+    return encoded;
   }
   if (Array.isArray(value)) {
     return `[${value.map((item) => canonicalJson(item, depth + 1)).join(',')}]`;
@@ -320,6 +324,9 @@ export class DurableEdgeSpool {
         last_error_code: null,
       };
       const serialized = JSON.stringify(preview);
+      if (serialized === undefined) {
+        throw new EdgeSpoolError('INVALID_BATCH', 'Could not serialize the queued batch');
+      }
       if (usage.pendingBatches + 1 > this.maxPendingBatches ||
           usage.pendingBytes + Buffer.byteLength(serialized, 'utf8') > this.maxPendingBytes) {
         throw new EdgeSpoolError('CAPACITY_EXCEEDED', 'Local edge spool is full; no queued data was discarded');
