@@ -520,6 +520,12 @@ export class EdgeDeviceHealthService {
     };
   }
 
+  private validateUuid(value: string, field: string): void {
+    if (!isUUID(value)) {
+      throw new BadRequestException(`${field} must be a valid UUID`);
+    }
+  }
+
   private validateScope(...values: string[]): void {
     for (const [index, value] of values.entries()) {
       if (!isUUID(value)) {
