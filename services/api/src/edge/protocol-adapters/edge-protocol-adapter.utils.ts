@@ -48,7 +48,7 @@ export function normalizeObservedAt(value: unknown): string {
     throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO date string or Date');
   }
   if (typeof value === 'string' &&
-      !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(value)) {
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
     throw new EdgeSpoolError('INVALID_BATCH', 'Source timestamp must be an ISO-8601 timestamp with an explicit timezone');
   }
   const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
