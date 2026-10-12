@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Headers,
   Get,
   Param,
   Post,
@@ -15,9 +16,11 @@ import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import { RegisterEdgeDeviceDto } from './dto/register-edge-device.dto';
+import { IssueEdgeDeviceCredentialDto } from './dto/issue-edge-device-credential.dto';
 import { SetEdgeDeviceStatusDto } from './dto/set-edge-device-status.dto';
 import { SyncEdgeObservationsDto } from './dto/sync-edge-observations.dto';
 import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
+import { EdgeDeviceCredentialService } from './edge-device-credential.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -36,7 +39,10 @@ type FactoryOsRequest = Request & {
 
 @Controller('v2/edge')
 export class EdgeDeviceGatewayController {
-  constructor(private readonly edgeService: EdgeDeviceGatewayService) {}
+  constructor(
+    private readonly edgeService: EdgeDeviceGatewayService,
+    private readonly credentialService: EdgeDeviceCredentialService,
+  ) {}
 
   @Post('devices')
   @UseGuards(PermissionGuard)
@@ -53,6 +59,77 @@ export class EdgeDeviceGatewayController {
       context.userId,
       body,
       context.auditContext,
+    );
+  }
+
+  @Post('devices/:deviceId/credentials')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.devices.credentials.manage')
+  @RequireFactoryScope()
+  async issueDeviceCredential(
+    @Req() request: FactoryOsRequest,
+    @Param('deviceId') deviceId: string,
+    @Body() body: IssueEdgeDeviceCredentialDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.credentialService.issueCredential(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      deviceId,
+      body,
+      context.auditContext,
+    );
+  }
+
+  @Post('devices/:deviceId/credentials/:credentialId/revoke')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.devices.credentials.manage')
+  @RequireFactoryScope()
+  async revokeDeviceCredential(
+    @Req() request: FactoryOsRequest,
+    @Param('deviceId') deviceId: string,
+    @Param('credentialId') credentialId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.credentialService.revokeCredential(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      deviceId,
+      credentialId,
+      context.auditContext,
+    );
+  }
+
+  /**
+   * Machine-to-machine ingress. It deliberately does not use the human
+   * permission guard: the opaque device token determines tenant, factory,
+   * device, and credential identity; the service re-checks credential status
+   * within the ingestion transaction.
+   */
+  @Post('device-ingest/:deviceId')
+  async ingestAsDevice(
+    @Req() request: FactoryOsRequest,
+    @Headers('authorization') authorization: string | undefined,
+    @Param('deviceId') deviceId: string,
+    @Body() body: SyncEdgeObservationsDto,
+  ) {
+    const authenticated = await this.credentialService.authenticateDeviceToken(
+      authorization,
+      deviceId,
+    );
+    return this.edgeService.syncObservations(
+      authenticated.tenantId,
+      authenticated.factoryId,
+      null,
+      authenticated.deviceId,
+      body,
+      {
+        requestId: request.factoryos?.requestId ?? null,
+        correlationId: request.factoryos?.traceId ?? null,
+      },
+      authenticated.credentialId,
     );
   }
 
