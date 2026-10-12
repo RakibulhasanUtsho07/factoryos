@@ -1,4 +1,4 @@
-# WP11-A/B/C/D/E/F/G — Edge/OT gateway, offline recovery, health reporting, and protocol adapters
+# WP11-A/B/C/D/E/F/G/H — Edge/OT gateway, offline recovery, health reporting, protocol adapters, and signed package verification
 
 This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
@@ -124,3 +124,16 @@ Supported read shapes:
 
 The adapter depends on an injected transport bridge that performs authorized register polling and presents read snapshots. It does not open TCP sockets, parse arbitrary endpoint configuration, create credentials, or claim native Modbus TCP/RTU connectivity. The deployment bridge remains responsible for network segmentation, device access policy, transport timeouts, client lifecycle, and hardware-in-loop verification. Supervisor tests cover startup/rollback; Modbus decoding and shutdown-drain tests cover the adapter data contract.
 
+
+
+## WP11-H — signed edge package manifest verification
+
+The services/api/src/edge/packages module verifies the signed package envelope before a deployment-specific installer is allowed to consume its files:
+
+- Manifest schema v1 binds package/version, tenant and factory, issue/expiry timestamps, model version, policy-bundle version, the package tool allow-list, artifact paths and SHA-256 digests, and rollback target metadata.
+- The release signature uses Ed25519 and a trusted public-key registry supplied by the host. Missing/revoked keys and non-Ed25519 keys fail closed; private signing keys never belong in the API or edge package.
+- Verification enforces the exact target tenant/factory, an explicit host tool allow-list, strict timezone/calendar timestamp validation, a maximum validity window, unique safe relative artifact paths, exact artifact-set membership, declared byte lengths, and SHA-256 content hashes.
+- Unknown manifest fields are rejected, so a package cannot smuggle credentials or unreviewed execution settings through additional JSON properties. Artifact paths containing traversal, absolute-path, drive-letter, hidden-path, or backslash forms are rejected.
+- The verifier returns the normalized manifest, manifest digest, and aggregate artifact byte count. It does not extract archives, install model files, execute model code, update an active release pointer, or perform a rollback itself.
+
+This is the signed metadata and artifact-integrity gate for FR-EDG-02 / FR-EDG-05 and the signed-release-integrity aspect of NFR-AI-05. The deployment installer still needs an atomic activation store, persisted previous-release pointer, signature-key rotation workflow, device/group/use-case revocation, and hardware/runtime acceptance tests before signed model/policy installation and operational rollback can be considered complete.
