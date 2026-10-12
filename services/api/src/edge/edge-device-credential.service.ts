@@ -2,7 +2,6 @@ import { randomBytes, createHash } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
