@@ -230,7 +230,8 @@ export class EdgeAgentRuntime {
       const reportTime = new Date().toISOString();
       const maxPendingBytes = this.config.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
       const highWatermark = spoolStatus.pendingBatches >= 9_000 ||
-        spoolStatus.pendingBytes >= Math.floor(maxPendingBytes * 0.9);
+        (spoolStatus.pendingBytes > 0 &&
+          spoolStatus.pendingBytes >= Math.max(1, Math.floor(maxPendingBytes * 0.9)));
       const report = {
         health_event_id: randomUUID(),
         reported_at: reportTime,
