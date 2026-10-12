@@ -216,6 +216,37 @@ describe('EdgeDeviceGatewayService', () => {
     expect(database.query).not.toHaveBeenCalled();
   });
 
+  it('normalizes telemetry unit and sampling metadata as a paired stream contract', async () => {
+    const normalized = (
+      service as unknown as {
+        normalizeBatch: (value: never) => {
+          observations: Array<Record<string, unknown>>;
+        };
+      }
+    ).normalizeBatch(syncInput({
+      observations: [observation({
+        unit: 'degC',
+        sampling_interval_ms: 500,
+      })],
+    }) as never);
+
+    expect(normalized.observations[0]).toMatchObject({
+      unit: 'degC',
+      samplingIntervalMs: 500,
+    });
+
+    await expect(
+      service.syncObservations(
+        tenantId,
+        factoryId,
+        userId,
+        deviceId,
+        syncInput({ observations: [observation({ unit: 'degC' })] }) as never,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('synchronizes offline observations atomically and deduplicates stable event identities', async () => {
     client.query
       .mockResolvedValueOnce({ rows: [deviceRow()] })
@@ -374,8 +405,8 @@ describe('EdgeDeviceGatewayService', () => {
 
     expect(result.idempotent).toBe(false);
     expect(client.query.mock.calls[3]?.[0]).toContain('recorded_by_credential_id');
-    expect(client.query.mock.calls[3]?.[1]?.[11]).toBeNull();
-    expect(client.query.mock.calls[3]?.[1]?.[12]).toBe('5c04a5f9-c131-422a-a488-d3d2e22f8f3d');
+    expect(client.query.mock.calls[3]?.[1]?.[13]).toBeNull();
+    expect(client.query.mock.calls[3]?.[1]?.[14]).toBe('5c04a5f9-c131-422a-a488-d3d2e22f8f3d');
     expect(client.query.mock.calls[4]?.[0]).toContain('recorded_by_credential_id');
     expect(client.query.mock.calls[4]?.[1]?.[8]).toBeNull();
     expect(client.query.mock.calls[4]?.[1]?.[9]).toBe('5c04a5f9-c131-422a-a488-d3d2e22f8f3d');
