@@ -137,6 +137,7 @@ jobs:
             migrations/037_saas_usage_metering_reconciliation.sql
             migrations/038_saas_budget_controls.sql
             migrations/039_saas_alerts_provider_costs.sql
+            migrations/040_edge_ot_device_gateway.sql
           )
           for migration in "${post_seed_migrations[@]}"; do
             echo "Applying $migration"
