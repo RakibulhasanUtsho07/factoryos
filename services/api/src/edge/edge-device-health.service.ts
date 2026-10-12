@@ -14,6 +14,7 @@ import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import {
   EdgeDeviceHealthReportDto,
+  EdgeDriftSignalDto,
   EdgeDriftSeverity,
   EdgeDriftSignalType,
   EdgeRuntimeHealthStatus,
@@ -476,8 +477,10 @@ export class EdgeDeviceHealthService {
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value) &&
-      Object.getPrototypeOf(value) === Object.prototype;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    // class-transformer may supply nested EdgeDriftSignalDto instances at the API boundary.
+    return prototype === Object.prototype || prototype === EdgeDriftSignalDto.prototype;
   }
 
   private canonicalJson(value: unknown): string {
