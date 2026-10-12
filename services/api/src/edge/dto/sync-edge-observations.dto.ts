@@ -5,10 +5,14 @@ import {
   IsDateString,
   IsEnum,
   IsObject,
+  IsOptional,
+  IsInt,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -41,6 +45,23 @@ export class EdgeObservationDto {
 
   @IsEnum(EdgeObservationQuality)
   quality!: EdgeObservationQuality;
+
+  /**
+   * Optional on the cloud endpoint for backward-compatible replay of legacy
+   * spool files; new local agent intake requires both stream metadata fields.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  @Matches(/^[A-Za-z0-9%._/-]{1,32}$/)
+  unit?: string;
+
+  /** 0 means event-driven; positive values are periodic sampling intervals. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(86400000)
+  sampling_interval_ms?: number;
 
   @IsObject()
   payload!: Record<string, unknown>;
