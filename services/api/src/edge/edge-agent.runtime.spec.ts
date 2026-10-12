@@ -142,6 +142,29 @@ describe('EdgeAgentRuntime', () => {
       pendingBatches: 0,
       lastSyncAt: expect.any(String),
       lastDeliveryErrorCode: null,
+      agentVersion: '1.0.0',
+      lastHealthReportAt: null,
+      lastHealthErrorCode: null,
+    });
+
+    await expect(runtime.reportHealthOnce()).resolves.toBe(true);
+    expect(receivedAuthorization).toBe(`Bearer ${DEVICE_TOKEN}`);
+    expect(receivedUrl).toBe(`/api/v2/edge/device-health/${DEVICE_ID}`);
+    expect(receivedBatch).toMatchObject({
+      health_event_id: expect.any(String),
+      agent_version: '1.0.0',
+      runtime_status: 'HEALTHY',
+      pending_batches: 0,
+      pending_bytes: 0,
+      last_successful_sync_at: expect.any(String),
+      model_versions: {},
+      drift_signals: [],
+    });
+
+    const afterReport = await fetch(`http://127.0.0.1:${localPort}/healthz`);
+    await expect(afterReport.json()).resolves.toMatchObject({
+      lastHealthReportAt: expect.any(String),
+      lastHealthErrorCode: null,
     });
   });
 
