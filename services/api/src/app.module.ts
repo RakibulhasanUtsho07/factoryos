@@ -25,6 +25,7 @@ import { AiModule } from './ai/ai.module';
 import { ResearchModule } from './research/research.module';
 import { GrowthModule } from './growth/growth.module';
 import { SaasModule } from './saas/saas.module';
+import { EdgeModule } from './edge/edge.module';
 
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
@@ -81,6 +82,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     GrowthModule,
 
     SaasModule,
+
+    EdgeModule,
 
     // ----------------------------------------------------------
     // Transactional Outbox
