@@ -103,7 +103,7 @@ The authenticated user API is not a device-credential protocol. Before productio
 - **FR-IOT-04:** provides exact topic/node allow-listing, deterministic sample normalization, source-timestamp/quality preservation, and adapter lifecycle contracts for MQTT/OPC UA; production driver/session integration remains deployment-owned.
 - **FR-EDG-07:** restricts the API to IAM-authorized factory scopes and rejects credential material in payloads; OS/network sandboxing for an edge agent remains follow-up work.
 - **FR-EDG-08:** exposes fleet status/last-sync state, agent and model versions, queue health, reported drift signals, and append-only per-device health history; values sent by a device remain unverified telemetry.
-- **FR-EDG-12:** the control-plane API now stores pause/resume/revoke rules scoped to a factory, registered device, registered device group, or supplied use-case ID. A device-token endpoint resolves effective controls for a package/version; the edge-agent polling loop and actual model-runtime enforcement are not yet wired, so full remote pause/revoke acceptance is still outstanding.
+- **FR-EDG-12:** the control-plane API stores pause/resume/revoke rules scoped to a factory, registered device, registered device group, or supplied use-case ID. WP11-K adds device-token polling and a fail-closed execution-decision contract in the edge agent. An actual model-runtime kill-switch integration is still outstanding; a deployment-owned host must call the decision contract at the execution boundary.
 
 Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. Migration `041_edge_device_credentials.sql` adds hashed machine credentials and identity-linked telemetry; migration `042_edge_device_health_and_stream_metadata.sql` adds health/drift history, stream unit and sampling fields, RLS, and the immutable health ledger. PostgreSQL CI applies the migrations after the WP10 migrations.
 
@@ -156,7 +156,7 @@ The services/api/src/edge/packages/EdgePackageActivationStore implements a local
 - A newly activated manifest that enables rollback must name the currently active version as its rollback target. Rollback re-verifies the current and previous signed releases and their stored artifacts, then atomically swaps the pointer only when the signed rollback target matches the persisted previous release.
 - A missing, tampered, expired, untrusted, or revoked previous release fails closed and leaves the active pointer unchanged. State files use restrictive POSIX modes where supported.
 
-This store requires a trusted local root directory on a filesystem with atomic same-volume rename semantics and a **single writer** per package. The implementation does not unpack archives, start model runtimes, or execute policy/tool code. WP11-J adds the cloud signer registry and control plane, but OS-level service sandboxing, local verifier trust injection, agent polling/enforcement, and hardware-in-loop acceptance remain follow-up gates.
+This store requires a trusted local root directory on a filesystem with atomic same-volume rename semantics and a **single writer** per package. The implementation does not unpack archives, start model runtimes, or execute policy/tool code. WP11-J adds the cloud signer registry and control plane; WP11-K adds agent polling/decision contracts. OS-level service sandboxing, local verifier trust injection, integration with an actual model runtime, and hardware-in-loop acceptance remain follow-up gates.
 
 
 ## WP11-J — signer rotation/revocation and remote package controls
@@ -176,4 +176,21 @@ POST /api/v2/edge/package-controls accepts package ID, package_version (* or a s
 
 GET /api/v2/edge/device-package-controls/:deviceId/effective authenticates a device bearer credential and resolves matching rules for the device, its registered group, the factory, and an optional use-case ID. Any matching REVOKED rule wins over PAUSED; any PAUSED rule wins over ACTIVE. Narrower scopes cannot override a broader revocation. Package-control state changes and their append-only event records commit in one database transaction.
 
-These are cloud-side trust/control-plane primitives aligned to FR-EDG-05 / NFR-AI-05 and the remote-scope management intent of FR-EDG-12. The local activation store still receives its verifier policy from its host, and the edge-agent does not yet poll this endpoint or prevent model execution based on its result. Public-key rollout into the local verifier, agent polling/backoff, kill-switch enforcement at the runtime boundary, device-group/use-case package assignment semantics, key rollover grace policy, and online/offline hardware acceptance remain release gates.
+These are cloud-side trust/control-plane primitives aligned to FR-EDG-05 / NFR-AI-05 and the remote-scope management intent of FR-EDG-12. WP11-K adds authenticated edge-agent polling and a fail-closed local decision contract for explicitly configured packages. Since this repository does not yet launch model/policy runtimes, deployment hosts must call `isPackageExecutionAllowed(packageId, version, useCaseId)` immediately before starting or continuing package execution; the agent's spool/telemetry worker does not pretend to be a model runtime. Public-key rollout into the local verifier, integration with an actual model runtime, device-group/use-case package assignment semantics, key rollover grace policy, and online/offline hardware acceptance remain release gates.
+
+
+## WP11-K — edge-agent package-control polling and execution gate
+
+The local edge agent can be configured with `EDGE_MANAGED_PACKAGES_JSON`, an array of exact package scopes, for example:
+
+```json
+[
+  { "package_id": "quality-defect", "package_version": "1.2.0", "use_case_id": "inspection" }
+]
+```
+
+It polls `GET /api/v2/edge/device-package-controls/:deviceId/effective` with its device bearer credential and exact package/version/use-case query. `EDGE_PACKAGE_CONTROL_POLL_INTERVAL_MS` defaults to 30 seconds (allowed range 5 seconds–1 hour); at most ten explicit package scopes are accepted to bound polling fan-out. The API remains the authority for tenant/factory/device scope and matching control precedence.
+
+The local decision contract is fail-closed: a package that is not configured, has never received a successful control decision, reports PAUSED/REVOKED, encounters an invalid/error response, or has stale state is not allowed to execute. A REVOKED result is latched for the life of the agent process; remote control decisions are shown in the loopback-only `/healthz` response without including operator reason text. A deployment-owned model/policy host must consult `isPackageExecutionAllowed(packageId, version, useCaseId)` at the execution boundary; no model runtime or package auto-launcher is claimed. Cloud connectivity loss causes an UNKNOWN decision and blocks governed execution until a successful poll recovers it. This does not stop telemetry spool/replay, which remains independent.
+
+Validation adds runtime tests for authenticated scope polling, explicit package allow-listing, fail-closed behavior on HTTP failure, and terminal local revoke latching. This covers the agent-polling/decision-contract portion of **FR-EDG-12**; actual model-runtime kill-switch integration, durable revoke-latch persistence across process restart, cloud signer-key injection into local manifest verification, and hardware-in-loop acceptance remain open.

@@ -31,13 +31,41 @@ describe('EdgeAgentRuntime', () => {
   let receivedAuthorization: string | undefined;
   let receivedUrl: string | undefined;
   let receivedBatch: unknown;
+  let packageControlStatus: 'ACTIVE' | 'PAUSED' | 'REVOKED' = 'ACTIVE';
+  let packageControlFailureStatus: number | null = null;
+  let packageControlRequestCount = 0;
 
   beforeEach(async () => {
     rootDir = await mkdtemp(join(tmpdir(), 'factoryos-edge-agent-'));
     receivedAuthorization = undefined;
     receivedUrl = undefined;
     receivedBatch = undefined;
+    packageControlStatus = 'ACTIVE';
+    packageControlFailureStatus = null;
+    packageControlRequestCount = 0;
     cloudServer = createServer((request, response) => {
+      const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (request.method === 'GET' && requestUrl.pathname.includes('/device-package-controls/')) {
+        packageControlRequestCount += 1;
+        receivedAuthorization = request.headers.authorization;
+        receivedUrl = request.url;
+        if (packageControlFailureStatus !== null) {
+          response.writeHead(packageControlFailureStatus, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'temporary failure' }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          packageId: requestUrl.searchParams.get('package_id'),
+          packageVersion: requestUrl.searchParams.get('package_version'),
+          status: packageControlStatus,
+          reason: packageControlStatus === 'PAUSED' ? 'Factory safety review' :
+            packageControlStatus === 'REVOKED' ? 'Package revoked by operator' : null,
+          checkedAt: new Date().toISOString(),
+          matchedControls: [],
+        }));
+        return;
+      }
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
       request.on('end', () => {
@@ -166,6 +194,92 @@ describe('EdgeAgentRuntime', () => {
       lastHealthReportAt: expect.any(String),
       lastHealthErrorCode: null,
     });
+  });
+
+  it('polls the scoped remote package control and allows only a fresh ACTIVE configured package', async () => {
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      autoSync: false,
+      managedPackages: [{ packageId: 'quality-defect', version: '1.2.0', useCaseId: 'inspection' }],
+      packageControlPollIntervalMs: 30_000,
+    });
+    await runtime.start();
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0', 'inspection')).toBe(false);
+
+    await expect(runtime.pollPackageControlsOnce()).resolves.toBe(1);
+    expect(packageControlRequestCount).toBe(1);
+    expect(receivedAuthorization).toBe(`Bearer ${DEVICE_TOKEN}`);
+    expect(receivedUrl).toContain('/api/v2/edge/device-package-controls/' + DEVICE_ID + '/effective?');
+    expect(receivedUrl).toContain('package_id=quality-defect');
+    expect(receivedUrl).toContain('package_version=1.2.0');
+    expect(receivedUrl).toContain('use_case_id=inspection');
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0', 'inspection')).toBe(true);
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.1', 'inspection')).toBe(false);
+    expect(runtime.getPackageControlState('quality-defect', '1.2.0', 'inspection')).toMatchObject({
+      status: 'ACTIVE',
+      lastErrorCode: null,
+      checkedAt: expect.any(String),
+    });
+  });
+
+  it('fails closed when the package control endpoint becomes unavailable', async () => {
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      autoSync: false,
+      managedPackages: [{ packageId: 'quality-defect', version: '1.2.0' }],
+    });
+    await runtime.start();
+    await runtime.pollPackageControlsOnce();
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(true);
+
+    packageControlFailureStatus = 503;
+    await expect(runtime.pollPackageControlsOnce()).resolves.toBe(0);
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
+    expect(runtime.getPackageControlState('quality-defect', '1.2.0')).toMatchObject({
+      status: 'UNKNOWN',
+      lastErrorCode: 'HTTP_503',
+    });
+  });
+
+  it('latches a REVOKED package control and does not allow a later ACTIVE response to restore it', async () => {
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      autoSync: false,
+      managedPackages: [{ packageId: 'quality-defect', version: '1.2.0' }],
+    });
+    await runtime.start();
+    packageControlStatus = 'REVOKED';
+    await expect(runtime.pollPackageControlsOnce()).resolves.toBe(1);
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
+
+    packageControlStatus = 'ACTIVE';
+    await expect(runtime.pollPackageControlsOnce()).resolves.toBe(1);
+    expect(runtime.getPackageControlState('quality-defect', '1.2.0')).toMatchObject({
+      status: 'REVOKED',
+      reason: 'Package revoked by operator',
+    });
+    expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
   });
 
   it('rejects device credentials that are not bound to the configured device', () => {

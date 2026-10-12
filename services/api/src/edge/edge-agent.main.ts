@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { EdgeAgentRuntime } from './edge-agent.runtime.js';
+import { EdgeAgentRuntime, type EdgeManagedPackage } from './edge-agent.runtime.js';
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -45,6 +45,39 @@ function modelVersionsEnvironment(): Record<string, string> {
   return raw as Record<string, string>;
 }
 
+function managedPackagesEnvironment(): EdgeManagedPackage[] {
+  const raw = process.env.EDGE_MANAGED_PACKAGES_JSON?.trim();
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error('EDGE_MANAGED_PACKAGES_JSON must contain valid JSON');
+  }
+  if (!Array.isArray(parsed) || parsed.length > 10) {
+    throw new Error('EDGE_MANAGED_PACKAGES_JSON must be an array with no more than 10 entries');
+  }
+  return parsed.map((value): EdgeManagedPackage => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('EDGE_MANAGED_PACKAGES_JSON entries must be objects');
+    }
+    const entry = value as Record<string, unknown>;
+    if (
+      typeof entry.package_id !== 'string' ||
+      typeof entry.package_version !== 'string' ||
+      (entry.use_case_id !== undefined && typeof entry.use_case_id !== 'string') ||
+      Object.keys(entry).some((key) => !['package_id', 'package_version', 'use_case_id'].includes(key))
+    ) {
+      throw new Error('EDGE_MANAGED_PACKAGES_JSON entries require package_id/package_version and optional use_case_id');
+    }
+    return {
+      packageId: entry.package_id,
+      version: entry.package_version,
+      ...(typeof entry.use_case_id === 'string' ? { useCaseId: entry.use_case_id } : {}),
+    };
+  });
+}
+
 async function startEdgeAgent(): Promise<void> {
   const runtime = new EdgeAgentRuntime({
     spoolDir: process.env.EDGE_SPOOL_DIR?.trim() ||
@@ -59,6 +92,8 @@ async function startEdgeAgent(): Promise<void> {
     maxPendingBytes: integerEnvironment('EDGE_SPOOL_MAX_BYTES', 512 * 1024 * 1024),
     agentVersion: process.env.EDGE_AGENT_VERSION?.trim() || '1.0.0',
     healthReportIntervalMs: integerEnvironment('EDGE_HEALTH_REPORT_INTERVAL_MS', 30_000),
+    packageControlPollIntervalMs: integerEnvironment('EDGE_PACKAGE_CONTROL_POLL_INTERVAL_MS', 30_000),
+    managedPackages: managedPackagesEnvironment(),
     modelVersions: modelVersionsEnvironment(),
     capabilities: objectEnvironment('EDGE_CAPABILITIES_JSON', {
       runtime: 'node',

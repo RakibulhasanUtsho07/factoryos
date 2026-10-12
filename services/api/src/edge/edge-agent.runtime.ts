@@ -11,6 +11,40 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const DEVICE_TOKEN_PATTERN =
   /^fos_edge_([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/i;
 const DEFAULT_MAX_PENDING_BYTES = 512 * 1024 * 1024;
+const PACKAGE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PACKAGE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const USE_CASE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
+
+export interface EdgeManagedPackage {
+  packageId: string;
+  version: string;
+  useCaseId?: string;
+}
+
+export type EdgePackageControlStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED' | 'UNKNOWN';
+
+export interface EdgePackageControlSnapshot {
+  packageId: string;
+  packageVersion: string;
+  useCaseId: string | null;
+  status: EdgePackageControlStatus;
+  reason: string | null;
+  checkedAt: string | null;
+  lastErrorCode: string | null;
+}
+
+interface EdgePackageControlHealth {
+  packageId: string;
+  packageVersion: string;
+  useCaseId: string | null;
+  status: EdgePackageControlStatus;
+  checkedAt: string | null;
+  lastErrorCode: string | null;
+}
+
+function packageControlKey(value: { packageId: string; version: string; useCaseId?: string | null }): string {
+  return JSON.stringify([value.packageId, value.version, value.useCaseId ?? null]);
+}
 
 export interface EdgeAgentRuntimeConfig {
   spoolDir: string;
@@ -28,6 +62,9 @@ export interface EdgeAgentRuntimeConfig {
   modelVersions?: Record<string, string>;
   capabilities?: Record<string, unknown>;
   driftSignals?: Array<Record<string, unknown>>;
+  /** Only explicitly configured packages are governed; unlisted packages are never allowed to execute. */
+  managedPackages?: EdgeManagedPackage[];
+  packageControlPollIntervalMs?: number;
 }
 
 export interface EdgeAgentHealth {
@@ -40,6 +77,7 @@ export interface EdgeAgentHealth {
   agentVersion: string;
   lastHealthReportAt: string | null;
   lastHealthErrorCode: string | null;
+  packageControls: EdgePackageControlHealth[];
 }
 
 export interface EdgeAgentFlushResult {
@@ -107,6 +145,9 @@ export class EdgeAgentRuntime {
   private lastHealthReportAt: string | null = null;
   private lastHealthErrorCode: string | null = null;
   private lastDeliveryErrorCode: string | null = null;
+  private readonly managedPackages: readonly EdgeManagedPackage[];
+  private readonly packageControlStates = new Map<string, EdgePackageControlSnapshot>();
+  private lastPackageControlAttemptAt = 0;
 
   constructor(private readonly config: EdgeAgentRuntimeConfig) {
     if (!UUID_PATTERN.test(config.deviceId)) {
@@ -138,6 +179,31 @@ export class EdgeAgentRuntime {
         healthReportIntervalMs > 3_600_000) {
       throw new Error('EDGE_HEALTH_REPORT_INTERVAL_MS must be between 10000 and 3600000');
     }
+    const packageControlPollIntervalMs = config.packageControlPollIntervalMs ?? 30_000;
+    if (!Number.isInteger(packageControlPollIntervalMs) ||
+        packageControlPollIntervalMs < 5_000 || packageControlPollIntervalMs > 3_600_000) {
+      throw new Error('EDGE_PACKAGE_CONTROL_POLL_INTERVAL_MS must be between 5000 and 3600000');
+    }
+    const managedPackages = config.managedPackages ?? [];
+    if (!Array.isArray(managedPackages) || managedPackages.length > 10) {
+      throw new Error('EDGE_MANAGED_PACKAGES must contain no more than 10 package entries');
+    }
+    const seenPackages = new Set<string>();
+    for (const managedPackage of managedPackages) {
+      if (!managedPackage || typeof managedPackage !== 'object' ||
+          !PACKAGE_ID_PATTERN.test(managedPackage.packageId) ||
+          !PACKAGE_VERSION_PATTERN.test(managedPackage.version) ||
+          (managedPackage.useCaseId !== undefined &&
+            !USE_CASE_ID_PATTERN.test(managedPackage.useCaseId))) {
+        throw new Error('EDGE_MANAGED_PACKAGES contains an invalid package entry');
+      }
+      const key = packageControlKey(managedPackage);
+      if (seenPackages.has(key)) {
+        throw new Error('EDGE_MANAGED_PACKAGES cannot contain duplicate package scopes');
+      }
+      seenPackages.add(key);
+    }
+    this.managedPackages = managedPackages.map((managedPackage) => ({ ...managedPackage }));
 
     this.apiBaseUrl = new URL(config.apiBaseUrl);
     if (
@@ -221,6 +287,158 @@ export class EdgeAgentRuntime {
     }
     await this.spool.close();
     this.started = false;
+  }
+
+  /**
+   * Returns the most recent remote policy decision for each configured package.
+   * An unconfigured or not-yet-polled package is UNKNOWN and must not execute.
+   */
+  getPackageControlStates(): EdgePackageControlSnapshot[] {
+    return this.managedPackages.map((managedPackage) => {
+      const state = this.packageControlStates.get(packageControlKey(managedPackage));
+      return state ? { ...state } : {
+        packageId: managedPackage.packageId,
+        packageVersion: managedPackage.version,
+        useCaseId: managedPackage.useCaseId ?? null,
+        status: 'UNKNOWN',
+        reason: null,
+        checkedAt: null,
+        lastErrorCode: null,
+      };
+    });
+  }
+
+  getPackageControlState(
+    packageId: string,
+    version: string,
+    useCaseId?: string,
+  ): EdgePackageControlSnapshot {
+    const state = this.packageControlStates.get(packageControlKey({
+      packageId, version, useCaseId: useCaseId ?? null,
+    }));
+    return state ? { ...state } : {
+      packageId,
+      packageVersion: version,
+      useCaseId: useCaseId ?? null,
+      status: 'UNKNOWN',
+      reason: null,
+      checkedAt: null,
+      lastErrorCode: null,
+    };
+  }
+
+  /**
+   * Host model/policy runtimes must call this immediately before execution.
+   * Decisions fail closed on missing state, failed polls, stale state, or revoke.
+   */
+  isPackageExecutionAllowed(packageId: string, version: string, useCaseId?: string): boolean {
+    const key = packageControlKey({ packageId, version, useCaseId: useCaseId ?? null });
+    if (!this.managedPackages.some((managedPackage) => packageControlKey(managedPackage) === key)) {
+      return false;
+    }
+    const state = this.packageControlStates.get(key);
+    if (!state || state.status !== 'ACTIVE' || state.lastErrorCode !== null || !state.checkedAt) {
+      return false;
+    }
+    const checkedAt = Date.parse(state.checkedAt);
+    const pollInterval = this.config.packageControlPollIntervalMs ?? 30_000;
+    return Number.isFinite(checkedAt) &&
+      Date.now() - checkedAt <= pollInterval * 2 + this.config.requestTimeoutMs;
+  }
+
+  /**
+   * Polls the authenticated control-plane endpoint. A failed/invalid response
+   * changes the local decision to UNKNOWN immediately; REVOKED is latched for
+   * the lifetime of this process and cannot be cleared by a later response.
+   */
+  async pollPackageControlsOnce(): Promise<number> {
+    this.lastPackageControlAttemptAt = Date.now();
+    const results = await Promise.all(this.managedPackages.map((managedPackage) =>
+      this.pollOnePackageControl(managedPackage)));
+    return results.filter(Boolean).length;
+  }
+
+  private async pollOnePackageControl(managedPackage: EdgeManagedPackage): Promise<boolean> {
+    const key = packageControlKey(managedPackage);
+    const previous = this.packageControlStates.get(key);
+    const markFailure = (code: string): false => {
+      this.packageControlStates.set(key, {
+        packageId: managedPackage.packageId,
+        packageVersion: managedPackage.version,
+        useCaseId: managedPackage.useCaseId ?? null,
+        status: previous?.status === 'REVOKED' ? 'REVOKED' : 'UNKNOWN',
+        reason: previous?.status === 'REVOKED' ? previous.reason : null,
+        checkedAt: previous?.checkedAt ?? null,
+        lastErrorCode: code,
+      });
+      return false;
+    };
+
+    try {
+      const url = new URL(
+        `/api/v2/edge/device-package-controls/${encodeURIComponent(this.config.deviceId)}/effective`,
+        this.apiBaseUrl,
+      );
+      url.searchParams.set('package_id', managedPackage.packageId);
+      url.searchParams.set('package_version', managedPackage.version);
+      if (managedPackage.useCaseId) url.searchParams.set('use_case_id', managedPackage.useCaseId);
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          authorization: `Bearer ${this.config.deviceToken}`,
+          accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        const failureCode = `HTTP_${response.status}`;
+        await response.body?.cancel().catch(() => undefined);
+        return markFailure(failureCode);
+      }
+
+      let payload: unknown;
+      try {
+        payload = await response.json() as unknown;
+      } catch {
+        return markFailure('INVALID_CONTROL_RESPONSE');
+      }
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        return markFailure('INVALID_CONTROL_RESPONSE');
+      }
+      const responseValue = payload as Record<string, unknown>;
+      if (
+        responseValue.packageId !== managedPackage.packageId ||
+        responseValue.packageVersion !== managedPackage.version ||
+        !['ACTIVE', 'PAUSED', 'REVOKED'].includes(String(responseValue.status)) ||
+        (responseValue.reason !== null && responseValue.reason !== undefined &&
+          typeof responseValue.reason !== 'string')
+      ) {
+        return markFailure('INVALID_CONTROL_RESPONSE');
+      }
+
+      const reportedStatus = responseValue.status as Exclude<EdgePackageControlStatus, 'UNKNOWN'>;
+      const latchedRevocation = previous?.status === 'REVOKED';
+      const status: EdgePackageControlStatus = latchedRevocation ? 'REVOKED' : reportedStatus;
+      this.packageControlStates.set(key, {
+        packageId: managedPackage.packageId,
+        packageVersion: managedPackage.version,
+        useCaseId: managedPackage.useCaseId ?? null,
+        status,
+        reason: latchedRevocation ? previous.reason : (
+          typeof responseValue.reason === 'string' ? responseValue.reason.slice(0, 300) : null
+        ),
+        checkedAt: new Date().toISOString(),
+        lastErrorCode: null,
+      });
+      return true;
+    } catch (error) {
+      return markFailure(
+        error instanceof Error && error.name === 'TimeoutError'
+          ? 'REQUEST_TIMEOUT'
+          : 'NETWORK_ERROR',
+      );
+    }
   }
 
   async reportHealthOnce(): Promise<boolean> {
@@ -351,6 +569,14 @@ export class EdgeAgentRuntime {
         agentVersion: this.config.agentVersion ?? '1.0.0',
         lastHealthReportAt: this.lastHealthReportAt,
         lastHealthErrorCode: this.lastHealthErrorCode,
+        packageControls: this.getPackageControlStates().map((control) => ({
+          packageId: control.packageId,
+          packageVersion: control.packageVersion,
+          useCaseId: control.useCaseId,
+          status: control.status,
+          checkedAt: control.checkedAt,
+          lastErrorCode: control.lastErrorCode,
+        })),
       };
       sendJson(response, 200, health);
       return;
@@ -409,6 +635,13 @@ export class EdgeAgentRuntime {
 
   private async runWorker(): Promise<void> {
     while (!this.stopping) {
+      if (
+        this.managedPackages.length > 0 &&
+        Date.now() - this.lastPackageControlAttemptAt >=
+          (this.config.packageControlPollIntervalMs ?? 30_000)
+      ) {
+        await this.pollPackageControlsOnce().catch(() => undefined);
+      }
       try {
         await this.flushOnce();
       } catch {
