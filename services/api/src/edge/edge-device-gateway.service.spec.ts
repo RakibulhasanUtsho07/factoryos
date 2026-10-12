@@ -353,6 +353,56 @@ describe('EdgeDeviceGatewayService', () => {
     expect(client.query).toHaveBeenCalledTimes(2);
   });
 
+  it('records machine-ingested observations against the active device credential, not a human user', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [deviceRow()] })
+      .mockResolvedValueOnce({ rows: [{ id: 'active-credential-id' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'new-observation-id' }] })
+      .mockResolvedValueOnce({ rows: [batchRow()] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.syncObservations(
+      tenantId,
+      factoryId,
+      null,
+      deviceId,
+      syncInput() as never,
+      {},
+      '5c04a5f9-c131-422a-a488-d3d2e22f8f3d',
+    );
+
+    expect(result.idempotent).toBe(false);
+    expect(client.query.mock.calls[3]?.[0]).toContain('recorded_by_credential_id');
+    expect(client.query.mock.calls[3]?.[1]?.[11]).toBeNull();
+    expect(client.query.mock.calls[3]?.[1]?.[12]).toBe('5c04a5f9-c131-422a-a488-d3d2e22f8f3d');
+    expect(client.query.mock.calls[4]?.[0]).toContain('recorded_by_credential_id');
+    expect(client.query.mock.calls[4]?.[1]?.[8]).toBeNull();
+    expect(client.query.mock.calls[4]?.[1]?.[9]).toBe('5c04a5f9-c131-422a-a488-d3d2e22f8f3d');
+    expect(iamService.authorize).not.toHaveBeenCalled();
+  });
+
+  it('refuses telemetry ingestion if the credential is revoked during reconnect', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [deviceRow()] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      service.syncObservations(
+        tenantId,
+        factoryId,
+        null,
+        deviceId,
+        syncInput() as never,
+        {},
+        '5c04a5f9-c131-422a-a488-d3d2e22f8f3d',
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(iamService.authorize).not.toHaveBeenCalled();
+  });
+
   it('rejects duplicate event IDs inside one batch before starting a transaction', async () => {
     await expect(
       service.syncObservations(
