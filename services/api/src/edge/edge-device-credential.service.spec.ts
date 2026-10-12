@@ -2,8 +2,6 @@ import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
 import {
   BadRequestException,
-  ConflictException,
-  NotFoundException,
   UnauthorizedException,
   ForbiddenException,
 } from '@nestjs/common';
