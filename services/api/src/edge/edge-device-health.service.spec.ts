@@ -19,16 +19,20 @@ const deviceId = '7c042d3b-efc0-4e1c-a532-720dbe6b154e';
 const credentialId = '5c04a5f9-c131-422a-a488-d3d2e22f8f3d';
 const userId = '5e8d2d2b-4a11-4ac7-8db9-cda1eafaf001';
 const reportId = '8b5eac9a-6d7e-4aa1-8d62-d2e8c1d60226';
+const reportBaseTime = Date.now() - 60_000;
+const reportTime = new Date(reportBaseTime).toISOString();
+const lastSyncTime = new Date(reportBaseTime - 60_000).toISOString();
+const driftTime = new Date(reportBaseTime - 30_000).toISOString();
 
 function report(overrides: Record<string, unknown> = {}): EdgeDeviceHealthReportDto {
   return {
     health_event_id: reportId,
-    reported_at: '2026-10-12T08:00:00.000Z',
+    reported_at: reportTime,
     agent_version: '1.0.0',
     runtime_status: EdgeRuntimeHealthStatus.DEGRADED,
     pending_batches: 2,
     pending_bytes: 1024,
-    last_successful_sync_at: '2026-10-12T07:59:00.000Z',
+    last_successful_sync_at: lastSyncTime,
     model_versions: { 'quality-defect': '1.2.0' },
     drift_signals: [
       {
@@ -36,7 +40,7 @@ function report(overrides: Record<string, unknown> = {}): EdgeDeviceHealthReport
         model_key: 'quality-defect',
         signal_type: EdgeDriftSignalType.LOW_CONFIDENCE,
         severity: EdgeDriftSeverity.WARNING,
-        detected_at: '2026-10-12T07:59:30.000Z',
+        detected_at: driftTime,
         observed_score: 0.64,
         baseline_score: 0.85,
       },
@@ -50,16 +54,16 @@ function storedReport(overrides: Record<string, unknown> = {}) {
   return {
     id: 'cba7f8c6-bf14-4d6c-84f7-9cf4da799c99',
     health_event_id: reportId,
-    reported_at: '2026-10-12T08:00:00.000Z',
+    reported_at: reportTime,
     agent_version: '1.0.0',
     runtime_status: EdgeRuntimeHealthStatus.DEGRADED,
     pending_batches: 2,
     pending_bytes: '1024',
-    last_successful_sync_at: '2026-10-12T07:59:00.000Z',
+    last_successful_sync_at: lastSyncTime,
     model_versions: { 'quality-defect': '1.2.0' },
     drift_signals: report().drift_signals,
     capabilities: { cpu: 'arm64', memory_mb: 512 },
-    received_at: '2026-10-12T08:00:01.000Z',
+    received_at: new Date(reportBaseTime + 1000).toISOString(),
     request_hash: 'a'.repeat(64),
     ...overrides,
   };
