@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Headers,
@@ -23,6 +24,10 @@ import { EdgeDeviceHealthReportDto } from './dto/edge-device-health.dto';
 import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
 import { EdgeDeviceCredentialService } from './edge-device-credential.service';
 import { EdgeDeviceHealthService } from './edge-device-health.service';
+import { EdgePackageGovernanceService } from './edge-package-governance.service';
+import { RegisterEdgePackageSigningKeyDto } from './dto/register-edge-package-signing-key.dto';
+import { RevokeEdgePackageSigningKeyDto } from './dto/revoke-edge-package-signing-key.dto';
+import { SetEdgePackageControlDto } from './dto/set-edge-package-control.dto';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -45,6 +50,7 @@ export class EdgeDeviceGatewayController {
     private readonly edgeService: EdgeDeviceGatewayService,
     private readonly credentialService: EdgeDeviceCredentialService,
     private readonly healthService: EdgeDeviceHealthService,
+    private readonly packageGovernanceService: EdgePackageGovernanceService,
   ) {}
 
   @Post('devices')
@@ -262,6 +268,131 @@ export class EdgeDeviceGatewayController {
       deviceId,
       limit === undefined ? 25 : Number(limit),
       offset === undefined ? 0 : Number(offset),
+    );
+  }
+
+  @Get('package-signing-keys')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.packages.keys.read')
+  @RequireFactoryScope()
+  async listPackageSigningKeys(
+    @Req() request: FactoryOsRequest,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.packageGovernanceService.listSigningKeys(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      limit === undefined ? 50 : Number(limit),
+      offset === undefined ? 0 : Number(offset),
+    );
+  }
+
+  @Post('package-signing-keys')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.packages.keys.manage')
+  @RequireFactoryScope()
+  async registerPackageSigningKey(
+    @Req() request: FactoryOsRequest,
+    @Body() body: RegisterEdgePackageSigningKeyDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.packageGovernanceService.registerSigningKey(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+      context.auditContext,
+    );
+  }
+
+  @Post('package-signing-keys/:keyId/revoke')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.packages.keys.manage')
+  @RequireFactoryScope()
+  async revokePackageSigningKey(
+    @Req() request: FactoryOsRequest,
+    @Param('keyId') keyId: string,
+    @Body() body: RevokeEdgePackageSigningKeyDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.packageGovernanceService.revokeSigningKey(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      keyId,
+      body,
+      context.auditContext,
+    );
+  }
+
+  @Get('package-controls')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.packages.controls.read')
+  @RequireFactoryScope()
+  async listPackageControls(
+    @Req() request: FactoryOsRequest,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('package_id') packageId?: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.packageGovernanceService.listPackageControls(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      limit === undefined ? 50 : Number(limit),
+      offset === undefined ? 0 : Number(offset),
+      packageId,
+    );
+  }
+
+  @Post('package-controls')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('edge.packages.controls.manage')
+  @RequireFactoryScope()
+  async setPackageControl(
+    @Req() request: FactoryOsRequest,
+    @Body() body: SetEdgePackageControlDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.packageGovernanceService.setPackageControl(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      body,
+      context.auditContext,
+    );
+  }
+
+  /**
+   * Device-token endpoint for an edge agent to poll effective package status.
+   * The token, not the request headers, determines tenant/factory/device scope.
+   */
+  @Get('device-package-controls/:deviceId/effective')
+  async getEffectiveDevicePackageControl(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('deviceId') deviceId: string,
+    @Query('package_id') packageId: string,
+    @Query('package_version') packageVersion: string,
+    @Query('use_case_id') useCaseId?: string,
+  ) {
+    const authenticated = await this.credentialService.authenticateDeviceToken(
+      authorization,
+      deviceId,
+    );
+    if (!packageId || !packageVersion) {
+      throw new BadRequestException('package_id and package_version are required');
+    }
+    return this.packageGovernanceService.getEffectivePackageControl(
+      authenticated.tenantId,
+      authenticated.factoryId,
+      authenticated.deviceId,
+      packageId,
+      packageVersion,
+      useCaseId,
     );
   }
 

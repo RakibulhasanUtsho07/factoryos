@@ -1,4 +1,4 @@
-# WP11-A/B/C/D/E/F/G/H/I — Edge/OT gateway, offline recovery, health reporting, protocol adapters, and signed package release lifecycle
+# WP11-A/B/C/D/E/F/G/H/I/J — Edge/OT gateway, offline recovery, health reporting, protocol adapters, and signed package governance
 
 This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
@@ -15,6 +15,12 @@ Human-admin and history-read endpoints require a verified user identity, tenant 
 | GET | `/api/v2/edge/devices/:deviceId/observations?limit=25&offset=0` | `edge.telemetry.read` | Read the device observation timeline |
 | POST | `/api/v2/edge/device-health/:deviceId` | Active device bearer credential | Append a device-agent health/model/drift report |
 | GET | `/api/v2/edge/devices/:deviceId/health?limit=25&offset=0` | `edge.devices.health.read` | Read health-report history with model versions, queue state, and reported drift |
+| GET | `/api/v2/edge/package-signing-keys` | `edge.packages.keys.read` | List scoped signer fingerprints and lifecycle state without returning key material in the admin response |
+| POST | `/api/v2/edge/package-signing-keys` | `edge.packages.keys.manage` | Register an Ed25519 public key or add a replacement key during overlap rotation |
+| POST | `/api/v2/edge/package-signing-keys/:keyId/revoke` | `edge.packages.keys.manage` | Permanently revoke a trusted signer key |
+| GET | `/api/v2/edge/package-controls` | `edge.packages.controls.read` | List package control state scoped to the selected factory |
+| POST | `/api/v2/edge/package-controls` | `edge.packages.controls.manage` | Pause/resume/revoke a package at factory, device, device-group, or use-case scope |
+| GET | `/api/v2/edge/device-package-controls/:deviceId/effective?package_id=quality-defect&package_version=1.2.0` | Active device bearer credential | Resolve the strongest matching factory/device/group/use-case package control for an edge agent |
 
 Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. The protocol adapter layer below normalizes allow-listed MQTT/OPC UA/Modbus samples into the durable spool. A deployment must supply a pre-authorized transport/client bridge; this slice does not open live broker/session connections or ship a native Modbus client driver.
 
@@ -97,7 +103,7 @@ The authenticated user API is not a device-credential protocol. Before productio
 - **FR-IOT-04:** provides exact topic/node allow-listing, deterministic sample normalization, source-timestamp/quality preservation, and adapter lifecycle contracts for MQTT/OPC UA; production driver/session integration remains deployment-owned.
 - **FR-EDG-07:** restricts the API to IAM-authorized factory scopes and rejects credential material in payloads; OS/network sandboxing for an edge agent remains follow-up work.
 - **FR-EDG-08:** exposes fleet status/last-sync state, agent and model versions, queue health, reported drift signals, and append-only per-device health history; values sent by a device remain unverified telemetry.
-- **FR-EDG-12:** supports factory-scoped pause/resume/revoke status. Device-group and use-case package revocation remain follow-up work.
+- **FR-EDG-12:** the control-plane API now stores pause/resume/revoke rules scoped to a factory, registered device, registered device group, or supplied use-case ID. A device-token endpoint resolves effective controls for a package/version; the edge-agent polling loop and actual model-runtime enforcement are not yet wired, so full remote pause/revoke acceptance is still outstanding.
 
 Migration `040_edge_ot_device_gateway.sql` adds the scoped device registry, observation ledger, synchronization batches, RLS, immutable-ledger triggers, and IAM permissions. Migration `041_edge_device_credentials.sql` adds hashed machine credentials and identity-linked telemetry; migration `042_edge_device_health_and_stream_metadata.sql` adds health/drift history, stream unit and sampling fields, RLS, and the immutable health ledger. PostgreSQL CI applies the migrations after the WP10 migrations.
 
@@ -150,4 +156,24 @@ The services/api/src/edge/packages/EdgePackageActivationStore implements a local
 - A newly activated manifest that enables rollback must name the currently active version as its rollback target. Rollback re-verifies the current and previous signed releases and their stored artifacts, then atomically swaps the pointer only when the signed rollback target matches the persisted previous release.
 - A missing, tampered, expired, untrusted, or revoked previous release fails closed and leaves the active pointer unchanged. State files use restrictive POSIX modes where supported.
 
-This store requires a trusted local root directory on a filesystem with atomic same-volume rename semantics and a **single writer** per package. The implementation does not unpack archives, start model runtimes, or execute policy/tool code. Signing-key rotation/revocation controls, OS-level service sandboxing, fleet/device-group/use-case package revocation, and hardware-in-loop acceptance remain follow-up gates.
+This store requires a trusted local root directory on a filesystem with atomic same-volume rename semantics and a **single writer** per package. The implementation does not unpack archives, start model runtimes, or execute policy/tool code. WP11-J adds the cloud signer registry and control plane, but OS-level service sandboxing, local verifier trust injection, agent polling/enforcement, and hardware-in-loop acceptance remain follow-up gates.
+
+
+## WP11-J — signer rotation/revocation and remote package controls
+
+Migration 043_edge_package_governance.sql adds tenant/factory-isolated signing-key state and package control state with append-only lifecycle event tables, restrictive foreign keys, indexes, and RLS policies.
+
+### Signing-key registry
+
+- Only Ed25519 public-key PEM is accepted. Private-key PEM, other asymmetric key types, malformed key IDs, and duplicate key IDs with conflicting material are rejected.
+- Registration records a SHA-256 fingerprint, not a private signing key. A rotation request may name the previous key; the new key is added as ACTIVE and the previous key deliberately remains trusted during the overlap window. The previous key is not implicitly retired because still-valid releases can rely on it.
+- Revocation is terminal and idempotent. The key registry returns ACTIVE/REVOKED state to an internal verifier bridge, while the admin list returns key IDs/fingerprints/lifecycle metadata without the PEM.
+- Registration, rotation-addition, and revocation are recorded transactionally in an append-only key event ledger. Audit payloads omit key material.
+
+### Pause/resume/revoke by target
+
+POST /api/v2/edge/package-controls accepts package ID, package_version (* or a semantic version), target kind (FACTORY, DEVICE, DEVICE_GROUP, USE_CASE), target key, action (PAUSE, RESUME, REVOKE), and an operator reason. Device/group targets are checked against the selected tenant/factory registry. A control can be resumed only while it has not been permanently revoked.
+
+GET /api/v2/edge/device-package-controls/:deviceId/effective authenticates a device bearer credential and resolves matching rules for the device, its registered group, the factory, and an optional use-case ID. Any matching REVOKED rule wins over PAUSED; any PAUSED rule wins over ACTIVE. Narrower scopes cannot override a broader revocation. Package-control state changes and their append-only event records commit in one database transaction.
+
+These are cloud-side trust/control-plane primitives aligned to FR-EDG-05 / NFR-AI-05 and the remote-scope management intent of FR-EDG-12. The local activation store still receives its verifier policy from its host, and the edge-agent does not yet poll this endpoint or prevent model execution based on its result. Public-key rollout into the local verifier, agent polling/backoff, kill-switch enforcement at the runtime boundary, device-group/use-case package assignment semantics, key rollover grace policy, and online/offline hardware acceptance remain release gates.
