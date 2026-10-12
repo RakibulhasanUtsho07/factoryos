@@ -9,11 +9,13 @@ import type {
   OpcUaSignalMapping,
 } from './edge-protocol-adapter.types.js';
 import {
+  drainProtocolOperations,
   normalizeObservedAt,
   normalizeQuality,
   normalizeScalar,
   queueNormalizedSample,
   validateSourceMode,
+  trackProtocolOperation,
   validateStreamMapping,
 } from './edge-protocol-adapter.utils.js';
 
@@ -23,6 +25,7 @@ export class OpcUaEdgeProtocolAdapter implements EdgeAdapterLifecycle {
   private readonly mappingsByNodeId = new Map<string, OpcUaSignalMapping>();
   private readonly unsubscribers: Array<() => void | Promise<void>> = [];
   private started = false;
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     mappings: readonly OpcUaSignalMapping[],
@@ -93,9 +96,12 @@ export class OpcUaEdgeProtocolAdapter implements EdgeAdapterLifecycle {
     try {
       for (const mapping of this.mappingsByNodeId.values()) {
         const unsubscribe = await transport.subscribe(mapping.nodeId, (sample) => {
-          void Promise.resolve()
-            .then(() => this.ingestDataValue(sample, sourceModeProvider()))
-            .catch((error: unknown) => onError(error instanceof Error ? error : new Error('OPC UA adapter failed')));
+          trackProtocolOperation(
+            this.inFlight,
+            () => this.ingestDataValue(sample, sourceModeProvider()),
+            onError,
+            'OPC UA adapter failed',
+          );
         });
         this.unsubscribers.push(unsubscribe);
       }
@@ -114,6 +120,7 @@ export class OpcUaEdgeProtocolAdapter implements EdgeAdapterLifecycle {
         errors.push(error instanceof Error ? error : new Error('OPC UA unsubscribe failed'));
       }
     }
+    await drainProtocolOperations(this.inFlight);
     this.started = false;
     if (errors.length) throw new AggregateError(errors, 'One or more OPC UA subscriptions could not be stopped');
   }
