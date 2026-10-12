@@ -34,6 +34,10 @@ export interface EdgeSpoolObservation {
   observed_at: string;
   source_mode: EdgeObservationSourceMode;
   quality: EdgeObservationQuality;
+  /** Optional only for already persisted legacy spool files during upgrade. */
+  unit?: string;
+  /** 0 means event-driven; positive values are periodic intervals in milliseconds. */
+  sampling_interval_ms?: number;
   payload: Record<string, unknown>;
 }
 
@@ -144,7 +148,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function normalizeBatch(input: unknown): { batch: EdgeSpoolBatch; contentHash: string; byteLength: number } {
+function normalizeBatch(input: unknown, allowLegacy = false): { batch: EdgeSpoolBatch; contentHash: string; byteLength: number } {
   if (!isPlainRecord(input)) {
     throw new EdgeSpoolError('INVALID_BATCH', 'Batch must be a JSON object');
   }
@@ -167,7 +171,7 @@ function normalizeBatch(input: unknown): { batch: EdgeSpoolBatch; contentHash: s
     if (!isPlainRecord(item)) {
       throw new EdgeSpoolError('INVALID_BATCH', 'Each observation must be a JSON object');
     }
-    const expectedKeys = [
+    const legacyKeys = [
       'event_id',
       'observed_at',
       'payload',
@@ -175,12 +179,17 @@ function normalizeBatch(input: unknown): { batch: EdgeSpoolBatch; contentHash: s
       'signal_key',
       'source_mode',
     ];
+    const currentKeys = [...legacyKeys, 'sampling_interval_ms', 'unit'];
     const actualKeys = Object.keys(item).sort();
-    if (
-      actualKeys.length !== expectedKeys.length ||
-      expectedKeys.some((key, index) => actualKeys[index] !== key)
-    ) {
-      throw new EdgeSpoolError('INVALID_BATCH', 'Observation fields do not match the edge sync contract');
+    const isLegacy = actualKeys.length === legacyKeys.length &&
+      legacyKeys.every((key, index) => actualKeys[index] === key);
+    const isCurrent = actualKeys.length === currentKeys.length &&
+      currentKeys.every((key, index) => actualKeys[index] === key);
+    if ((!isCurrent && !(allowLegacy && isLegacy))) {
+      throw new EdgeSpoolError(
+        'INVALID_BATCH',
+        'New batches must include unit and sampling_interval_ms; only previously persisted batches may use the legacy shape',
+      );
     }
 
     if (typeof item.event_id !== 'string' || !UUID_PATTERN.test(item.event_id)) {
@@ -204,6 +213,20 @@ function normalizeBatch(input: unknown): { batch: EdgeSpoolBatch; contentHash: s
     if (!['GOOD', 'UNCERTAIN', 'BAD'].includes(String(item.quality))) {
       throw new EdgeSpoolError('INVALID_BATCH', 'quality is invalid');
     }
+    let unit: string | undefined;
+    let samplingIntervalMs: number | undefined;
+    if (isCurrent) {
+      if (typeof item.unit !== 'string' || !/^[A-Za-z0-9%._/-]{1,32}$/.test(item.unit)) {
+        throw new EdgeSpoolError('INVALID_BATCH', 'unit is invalid');
+      }
+      if (!Number.isSafeInteger(item.sampling_interval_ms) ||
+          (item.sampling_interval_ms as number) < 0 ||
+          (item.sampling_interval_ms as number) > 86400000) {
+        throw new EdgeSpoolError('INVALID_BATCH', 'sampling_interval_ms must be between 0 and 86400000');
+      }
+      unit = item.unit;
+      samplingIntervalMs = item.sampling_interval_ms as number;
+    }
     if (!isPlainRecord(item.payload)) {
       throw new EdgeSpoolError('INVALID_BATCH', 'payload must be a JSON object');
     }
@@ -216,6 +239,7 @@ function normalizeBatch(input: unknown): { batch: EdgeSpoolBatch; contentHash: s
       observed_at: item.observed_at,
       source_mode: item.source_mode,
       quality: item.quality as EdgeObservationQuality,
+      ...(unit !== undefined ? { unit, sampling_interval_ms: samplingIntervalMs } : {}),
       payload: JSON.parse(canonicalJson(item.payload)) as Record<string, unknown>,
     };
   });
@@ -459,10 +483,12 @@ export class DurableEdgeSpool {
       ) {
         throw new Error('Invalid envelope');
       }
+      // Accept the pre-metadata shape only for an existing durable queue item, so
+      // replay after an agent upgrade retains the exact old request body and hash.
       const normalized = normalizeBatch({
         batch_key: parsed.batch_key,
         observations: parsed.observations,
-      });
+      }, true);
       if (normalized.contentHash !== parsed.content_hash) throw new Error('Content hash mismatch');
       return parsed as StoredEdgeBatch;
     } catch {
