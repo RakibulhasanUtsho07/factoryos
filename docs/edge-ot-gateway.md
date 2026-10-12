@@ -1,4 +1,4 @@
-# WP11-A/B/C/D/E/F/G/H — Edge/OT gateway, offline recovery, health reporting, protocol adapters, and signed package verification
+# WP11-A/B/C/D/E/F/G/H/I — Edge/OT gateway, offline recovery, health reporting, protocol adapters, and signed package release lifecycle
 
 This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
@@ -134,6 +134,20 @@ The services/api/src/edge/packages module verifies the signed package envelope b
 - The release signature uses Ed25519 and a trusted public-key registry supplied by the host. Missing/revoked keys and non-Ed25519 keys fail closed; private signing keys never belong in the API or edge package.
 - Verification enforces the exact target tenant/factory, an explicit host tool allow-list, strict timezone/calendar timestamp validation, a maximum validity window, unique safe relative artifact paths, exact artifact-set membership, declared byte lengths, and SHA-256 content hashes.
 - Unknown manifest fields are rejected, so a package cannot smuggle credentials or unreviewed execution settings through additional JSON properties. Artifact paths containing traversal, absolute-path, drive-letter, hidden-path, or backslash forms are rejected.
-- The verifier returns the normalized manifest, manifest digest, and aggregate artifact byte count. It does not extract archives, install model files, execute model code, update an active release pointer, or perform a rollback itself.
+- The verifier returns the normalized manifest, manifest digest, and aggregate artifact byte count. It does not extract archives or execute model code.
 
-This is the signed metadata and artifact-integrity gate for FR-EDG-02 / FR-EDG-05 and the signed-release-integrity aspect of NFR-AI-05. The deployment installer still needs an atomic activation store, persisted previous-release pointer, signature-key rotation workflow, device/group/use-case revocation, and hardware/runtime acceptance tests before signed model/policy installation and operational rollback can be considered complete.
+This provides the signed metadata and artifact-integrity gate for FR-EDG-02 / FR-EDG-05 and the signed-release-integrity aspect of NFR-AI-05. WP11-I adds the local filesystem activation/rollback contract below; production deployment still needs key rotation/revocation management, device/group/use-case revocation, installer integration, and hardware/runtime acceptance tests.
+
+
+## WP11-I — atomic activation pointer and persisted rollback
+
+The services/api/src/edge/packages/EdgePackageActivationStore implements a local filesystem release store for one edge-agent writer:
+
+- It verifies the Ed25519 signature, active signer, target tenant/factory, tool allow-list, expiry window, and every artifact hash again before activation.
+- Verified artifact files, normalized manifest, signature and release metadata are written to a private staging directory. Files are synced before the staging directory is renamed into an immutable content-addressed release directory.
+- The active state is kept in a per-package JSON pointer. A temporary pointer file is synced and atomically renamed into place, so a failed staging/write step leaves the existing active pointer untouched.
+- The persisted pointer records the active and previous version plus manifest digest. Re-activating the same verified version/digest is idempotent; attempting to bind different contents to the same active version is rejected.
+- A newly activated manifest that enables rollback must name the currently active version as its rollback target. Rollback re-verifies the current and previous signed releases and their stored artifacts, then atomically swaps the pointer only when the signed rollback target matches the persisted previous release.
+- A missing, tampered, expired, untrusted, or revoked previous release fails closed and leaves the active pointer unchanged. State files use restrictive POSIX modes where supported.
+
+This store requires a trusted local root directory on a filesystem with atomic same-volume rename semantics and a **single writer** per package. The implementation does not unpack archives, start model runtimes, or execute policy/tool code. Signing-key rotation/revocation controls, OS-level service sandboxing, fleet/device-group/use-case package revocation, and hardware-in-loop acceptance remain follow-up gates.

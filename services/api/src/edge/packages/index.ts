@@ -10,3 +10,11 @@ export {
   type SignedEdgePackageInput,
   type VerifiedEdgePackage,
 } from './edge-package-manifest-verifier.js';
+export {
+  EdgePackageActivationError,
+  EdgePackageActivationStore,
+  type EdgePackageActivationErrorCode,
+  type EdgePackageActivationResult,
+  type EdgePackageActivationState,
+  type EdgePackageReleaseRef,
+} from './edge-package-activation.store.js';
