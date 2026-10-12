@@ -128,9 +128,17 @@ export function verifyEdgePackage(
     );
   }
 
+  const publicKeyPem = typeof keyRecord.publicKeyPem === 'string' ? keyRecord.publicKeyPem.trim() : '';
+  if (!publicKeyPem.startsWith('-----BEGIN PUBLIC KEY-----') || publicKeyPem.includes('PRIVATE KEY-----')) {
+    throw new EdgePackageVerificationError(
+      'UNTRUSTED_SIGNING_KEY',
+      'The trusted key registry must contain public-key PEM only',
+    );
+  }
+
   let publicKey: KeyObject;
   try {
-    publicKey = createPublicKey(keyRecord.publicKeyPem);
+    publicKey = createPublicKey(publicKeyPem);
   } catch {
     throw new EdgePackageVerificationError(
       'UNTRUSTED_SIGNING_KEY',

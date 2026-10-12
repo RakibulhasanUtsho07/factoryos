@@ -203,6 +203,13 @@ describe('verifyEdgePackage', () => {
     }))).toThrow(EdgePackageVerificationError);
 
     expect(() => verifyEdgePackage(signedPackage(), policy({ maxTotalArtifactBytes: 0 }))).toThrow(EdgePackageVerificationError);
+
+    const privateKeyPem = keyPair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    expect(() => verifyEdgePackage(signedPackage(), policy({
+      trustedSigningKeys: {
+        'edge-release-2026': { publicKeyPem: privateKeyPem, status: 'ACTIVE' },
+      },
+    }))).toThrow(EdgePackageVerificationError);
   });
 
   it('requires explicit rollback target metadata when rollback is enabled', () => {
