@@ -9,7 +9,7 @@ import { DurableEdgeSpool, EdgeSpoolError } from './spool/durable-edge-spool.js'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEVICE_TOKEN_PATTERN =
-  /^fos_edge_([0-9a-f-]{36})\.([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/;
+  /^fos_edge_([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/i;
 const DEFAULT_MAX_PENDING_BYTES = 512 * 1024 * 1024;
 
 export interface EdgeAgentRuntimeConfig {
@@ -159,11 +159,12 @@ export class EdgeAgentRuntime {
       await new Promise<void>((resolve, reject) => {
         const server = this.server;
         if (!server) return reject(new Error('Edge agent server was not created'));
+        let onListening: () => void = () => undefined;
         const onError = (error: Error) => {
           server.off('listening', onListening);
           reject(error);
         };
-        const onListening = () => {
+        onListening = () => {
           server.off('error', onError);
           resolve();
         };
@@ -177,7 +178,7 @@ export class EdgeAgentRuntime {
         this.workerPromise = this.runWorker();
       }
     } catch (error) {
-      this.server?.close();
+      this.server?.close(() => undefined);
       this.server = null;
       await this.spool.close();
       throw error;
