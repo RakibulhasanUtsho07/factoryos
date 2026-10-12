@@ -1,10 +1,12 @@
 import type {
+  EdgeModbusTransport,
   EdgeMqttTransport,
   EdgeOpcUaTransport,
   EdgeProtocolSourceMode,
 } from './edge-protocol-adapter.types.js';
 import { MqttEdgeProtocolAdapter } from './mqtt-edge-protocol.adapter.js';
 import { OpcUaEdgeProtocolAdapter } from './opcua-edge-protocol.adapter.js';
+import { ModbusEdgeProtocolAdapter } from './modbus-edge-protocol.adapter.js';
 
 export type EdgeProtocolAdapterBinding =
   | {
@@ -16,6 +18,11 @@ export type EdgeProtocolAdapterBinding =
       protocol: 'OPC_UA';
       adapter: OpcUaEdgeProtocolAdapter;
       transport: EdgeOpcUaTransport;
+    }
+  | {
+      protocol: 'MODBUS';
+      adapter: ModbusEdgeProtocolAdapter;
+      transport: EdgeModbusTransport;
     };
 
 /**
@@ -42,6 +49,8 @@ export class EdgeProtocolAdapterSupervisor {
     try {
       for (const binding of this.bindings) {
         if (binding.protocol === 'MQTT') {
+          await binding.adapter.start(binding.transport, this.sourceModeProvider, this.onError);
+        } else if (binding.protocol === 'OPC_UA') {
           await binding.adapter.start(binding.transport, this.sourceModeProvider, this.onError);
         } else {
           await binding.adapter.start(binding.transport, this.sourceModeProvider, this.onError);

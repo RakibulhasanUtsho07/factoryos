@@ -179,7 +179,7 @@ export async function drainProtocolOperations(pending: Set<Promise<void>>): Prom
 export async function queueNormalizedSample(
   sink: EdgeProtocolBatchSink,
   args: {
-    protocol: 'MQTT' | 'OPC_UA';
+    protocol: 'MQTT' | 'OPC_UA' | 'MODBUS';
     sourceIdentifier: string;
     sourceSequence?: string | number;
     signalKey: string;

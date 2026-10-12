@@ -1,4 +1,4 @@
-# WP11-A/B/C/D/E/F — Edge/OT gateway, offline recovery, health reporting, and protocol adapters
+# WP11-A/B/C/D/E/F/G — Edge/OT gateway, offline recovery, health reporting, and protocol adapters
 
 This backend slice establishes the cloud-side identity, telemetry replay, edge-agent health, and offline recovery boundary. It stores device and health metadata plus observations, but does not issue machine commands or connect to physical PLCs.
 
@@ -16,7 +16,7 @@ Human-admin and history-read endpoints require a verified user identity, tenant 
 | POST | `/api/v2/edge/device-health/:deviceId` | Active device bearer credential | Append a device-agent health/model/drift report |
 | GET | `/api/v2/edge/devices/:deviceId/health?limit=25&offset=0` | `edge.devices.health.read` | Read health-report history with model versions, queue state, and reported drift |
 
-Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. The protocol adapter layer below normalizes allow-listed MQTT/OPC UA sample callbacks into the durable spool. A deployment must supply a pre-authorized transport/client bridge; this slice does not open live broker/session connections or implement the Modbus driver.
+Registration accepts protocol metadata `OPC_UA`, `MQTT`, `MODBUS`, or `GENERIC`. The protocol adapter layer below normalizes allow-listed MQTT/OPC UA/Modbus samples into the durable spool. A deployment must supply a pre-authorized transport/client bridge; this slice does not open live broker/session connections or ship a native Modbus client driver.
 
 ## Device credential lifecycle
 
@@ -54,7 +54,7 @@ The adapter code lives under `services/api/src/edge/protocol-adapters/`:
 - `MqttEdgeProtocolAdapter` subscribes only to exact, configured MQTT topics (wildcards and whitespace are rejected). Every mapping requires an explicit JSON value path and source timestamp path; source ID/sequence/quality paths are optional. If the message does not carry mapped quality, it is recorded as `UNCERTAIN`, not guessed as `GOOD`.
 - `OpcUaEdgeProtocolAdapter` subscribes only to exact configured NodeIds and preserves the OPC UA source timestamp and mapped `GOOD`/`UNCERTAIN`/`BAD` quality.
 - Both adapters require explicit signal key, unit, and sampling interval mappings, allow only bounded scalar values, and write one stable event into the same `DurableEdgeSpool`. Deterministic UUIDv5 identities include protocol, source identifier, optional source sequence, signal key, timestamp, value and quality. A retransmitted source sample therefore uses the same local batch/event identity.
-- The supervisor starts bindings in order and rolls back earlier subscriptions if a later binding fails. It shuts subscriptions down in reverse order and routes message/queue failures to the host-provided error callback.
+- The supervisor starts bindings in order and rolls back earlier subscriptions/watches if a later binding fails. It shuts subscriptions down in reverse order and routes message/queue failures to the host-provided error callback.
 
 Example mapping configuration (the transport clients themselves are injected by the deployment):
 
@@ -81,7 +81,7 @@ const opcUaMappings = [{
 
 The adapter contracts deliberately do not call `mqtt.connect`, create an OPC UA session, resolve arbitrary endpoint URLs, or handle private keys. A transport bridge must enforce TLS/certificate validation, topic/node authorization, OT network segmentation, timeouts, and least-privilege credentials before passing messages to these adapters. The host must provide a truthful current source-mode callback and monitor adapter errors; the adapter does not infer that a sample was offline merely because cloud sync later failed.
 
-This is the protocol-neutral adapter/normalization slice for **FR-IOT-03/04/05**. Hardware-in-the-loop tests, production MQTT broker and OPC UA server sessions, certificate-bound mTLS, and deployment wiring are intentionally still exit criteria rather than claimed as complete live connectivity.
+This is the driver-neutral adapter/normalization slice for **FR-IOT-03/04/05**, now covering MQTT, OPC UA and Modbus contracts. Hardware-in-the-loop tests, production MQTT broker and OPC UA server sessions, certificate-bound mTLS, and deployment wiring are intentionally still exit criteria rather than claimed as complete live connectivity.
 
 ## Safety and isolation
 
@@ -109,3 +109,18 @@ The MQTT and OPC UA adapter lifecycle now tracks each accepted asynchronous sour
 The shared timestamp normalizer requires an explicit timezone and validates the actual calendar components before accepting the timestamp. This prevents runtime date parsing from silently rolling an impossible date such as February 30 into a different timestamp, which would change the identity and meaning of the source event. The existing maximum-future-time bound remains in force.
 
 Regression tests cover impossible source calendar dates and a deliberately blocked spool enqueue for both MQTT and OPC UA: adapter shutdown must remain pending until the enqueue settles. Transport drivers, broker credentials, OPC UA certificate/session creation and hardware-in-loop behavior remain outside this slice.
+
+
+## WP11-G — Modbus register normalization
+
+The ModbusEdgeProtocolAdapter adds the third protocol-normalization contract, aligned with WP11 Edge/OT scope. Each mapping is an explicit allow-listed tuple of unit ID, function code, and zero-based register/coil address, with a logical signal key, unit, source identifier, and polling interval. Unit IDs are restricted to 1–247, addresses to 0–65535, duplicate read mappings are rejected, and polling faster than 250 ms is rejected.
+
+Supported read shapes:
+- Function codes 1/2: one BOOL value from a coil/discrete-input read.
+- Function codes 3/4: UINT16, INT16, UINT32, INT32, or FLOAT32 from one or two unsigned 16-bit registers.
+- 32-bit values use explicit BIG_ENDIAN or LITTLE_ENDIAN register-word order. Optional finite scale/offset transforms are applied after decoding; BOOL cannot use numeric transforms.
+- Read timestamps pass shared timezone/calendar validation; source quality is preserved as GOOD/UNCERTAIN/BAD and missing quality defaults to UNCERTAIN. Optional source sequence is preserved.
+- Normalized events use the same stable UUIDv5 identity and durable spool path, making retries/reconnect consistent across protocols.
+
+The adapter depends on an injected transport bridge that performs authorized register polling and presents read snapshots. It does not open TCP sockets, parse arbitrary endpoint configuration, create credentials, or claim native Modbus TCP/RTU connectivity. The deployment bridge remains responsible for network segmentation, device access policy, transport timeouts, client lifecycle, and hardware-in-loop verification. Supervisor tests cover startup/rollback; Modbus decoding and shutdown-drain tests cover the adapter data contract.
+

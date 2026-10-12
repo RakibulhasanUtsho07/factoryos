@@ -13,7 +13,7 @@ export interface EdgeProtocolIngestResult {
   batchKey: string;
   eventId: string;
   signalKey: string;
-  protocol: 'MQTT' | 'OPC_UA';
+  protocol: 'MQTT' | 'OPC_UA' | 'MODBUS';
 }
 
 export interface EdgeStreamMapping {
@@ -33,6 +33,33 @@ export interface MqttSignalMapping extends EdgeStreamMapping {
 
 export interface OpcUaSignalMapping extends EdgeStreamMapping {
   nodeId: string;
+}
+
+export type ModbusFunctionCode = 1 | 2 | 3 | 4;
+export type ModbusDataType = 'BOOL' | 'UINT16' | 'INT16' | 'UINT32' | 'INT32' | 'FLOAT32';
+export type ModbusWordOrder = 'BIG_ENDIAN' | 'LITTLE_ENDIAN';
+
+export interface ModbusSignalMapping extends EdgeStreamMapping {
+  /** Safe logical name for the physical source; never an endpoint or secret. */
+  sourceIdentifier: string;
+  unitId: number;
+  functionCode: ModbusFunctionCode;
+  /** Zero-based Modbus read address. */
+  address: number;
+  dataType: ModbusDataType;
+  wordOrder?: ModbusWordOrder;
+  scale?: number;
+  offset?: number;
+}
+
+export interface EdgeModbusReadSample {
+  unitId: number;
+  functionCode: ModbusFunctionCode;
+  address: number;
+  values: readonly (number | boolean)[];
+  sampledAt: string | Date;
+  quality?: EdgeProtocolQuality;
+  sourceSequence?: string | number;
 }
 
 export interface EdgeMqttMessage {
@@ -68,6 +95,14 @@ export interface EdgeOpcUaTransport {
   subscribe(
     nodeId: string,
     handler: (value: EdgeOpcUaDataValue) => void,
+  ): Promise<() => void | Promise<void>>;
+}
+
+export interface EdgeModbusTransport {
+  /** Poll this exact read at the configured interval and emit read snapshots. */
+  watch(
+    mapping: Readonly<ModbusSignalMapping>,
+    handler: (sample: EdgeModbusReadSample) => void,
   ): Promise<() => void | Promise<void>>;
 }
 
