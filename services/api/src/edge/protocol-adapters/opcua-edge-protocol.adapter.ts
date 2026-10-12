@@ -17,7 +17,7 @@ import {
   validateStreamMapping,
 } from './edge-protocol-adapter.utils.js';
 
-const OPC_NODE_ID_PATTERN = /^(?:ns=\d+;)?(?:i=\d+|s=[^\u0000\r\n]{1,220}|g=[0-9a-f-]{36}|b=[A-Za-z0-9+/=]{1,220})$/i;
+const OPC_NODE_ID_PATTERN = /^(?:(?:ns=\d+|nsu=[^;\u0000\r\n]{1,160});)?(?:i=\d+|s=[^\u0000\r\n]{1,220}|g=[0-9a-f-]{36}|b=[A-Za-z0-9+/=]{1,220})$/i;
 
 export class OpcUaEdgeProtocolAdapter implements EdgeAdapterLifecycle {
   private readonly mappingsByNodeId = new Map<string, OpcUaSignalMapping>();
