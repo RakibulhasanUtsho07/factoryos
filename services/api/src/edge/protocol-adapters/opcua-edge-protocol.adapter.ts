@@ -17,7 +17,7 @@ import {
   validateStreamMapping,
 } from './edge-protocol-adapter.utils.js';
 
-const OPC_NODE_ID_PATTERN = /^(?:(?:ns=\d+|nsu=[^;\u0000\r\n]{1,160});)?(?:i=\d+|s=[^\u0000\r\n]{1,220}|g=[0-9a-f-]{36}|b=[A-Za-z0-9+/=]{1,220})$/i;
+const OPC_NODE_ID_PATTERN = /^(?:(?:ns=\d+|nsu=[^;]{1,160});)?(?:i=\d+|s=.{1,220}|g=[0-9a-f-]{36}|b=[A-Za-z0-9+/=]{1,220})$/i;
 
 export class OpcUaEdgeProtocolAdapter implements EdgeAdapterLifecycle {
   private readonly mappingsByNodeId = new Map<string, OpcUaSignalMapping>();
@@ -120,6 +120,7 @@ export class OpcUaEdgeProtocolAdapter implements EdgeAdapterLifecycle {
 
   private validateMapping(mapping: OpcUaSignalMapping): void {
     if (!mapping || typeof mapping.nodeId !== 'string' || mapping.nodeId.length > 256 ||
+        mapping.nodeId.includes('\0') || /[\r\n]/.test(mapping.nodeId) ||
         !OPC_NODE_ID_PATTERN.test(mapping.nodeId)) {
       throw new EdgeSpoolError('INVALID_BATCH', 'OPC UA nodeId is not a supported explicit NodeId');
     }
