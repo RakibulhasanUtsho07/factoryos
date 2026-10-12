@@ -227,6 +227,8 @@ export class EdgeAgentRuntime {
           signal: AbortSignal.timeout(this.config.requestTimeoutMs),
           redirect: 'error',
         });
+        // Do not retain unconsumed response streams in this long-running edge process.
+        await response.body?.cancel().catch(() => undefined);
         if (!response.ok) {
           const failureCode = `HTTP_${response.status}`;
           await this.spool.recordFailure(batchKey, failureCode);
