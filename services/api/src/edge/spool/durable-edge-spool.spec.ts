@@ -49,6 +49,21 @@ describe('DurableEdgeSpool', () => {
     expect((await spool.status()).pendingBatches).toBe(1);
   });
 
+  it('restores the last successful cloud sync timestamp after a restart', async () => {
+    const timestamp = '2026-10-12T04:00:00.000Z';
+    await spool.markSuccessfulSync(timestamp);
+    expect((await spool.status()).lastSuccessfulSyncAt).toBe(timestamp);
+
+    await spool.close();
+    spool = new DurableEdgeSpool(rootDir, { retryBaseMs: 10, retryMaxMs: 40 });
+    await spool.initialize();
+    expect((await spool.status()).lastSuccessfulSyncAt).toBe(timestamp);
+
+    // A delayed clock value must not move the durable sync marker backwards.
+    await spool.markSuccessfulSync('2026-10-12T03:00:00.000Z');
+    expect((await spool.status()).lastSuccessfulSyncAt).toBe(timestamp);
+  });
+
   it('deduplicates identical batch keys and rejects conflicting reuse', async () => {
     await expect(spool.enqueue(firstBatch(), 1_000)).resolves.toEqual({
       idempotent: false,
