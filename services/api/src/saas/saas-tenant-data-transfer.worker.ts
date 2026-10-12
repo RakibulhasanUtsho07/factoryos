@@ -24,6 +24,7 @@ import type {
   SaasTenantTransferDatasetSource,
   SaasTenantTransferExportManifest,
 } from './saas-tenant-data-transfer.adapters';
+import { assertSaasTenantTransferFieldSafe } from './saas-tenant-transfer-field-guard';
 
 @Injectable()
 export class SaasTenantDataTransferWorkerService {
@@ -293,11 +294,7 @@ export class SaasTenantDataTransferWorkerService {
   }
 
   private assertExportField(field: string) {
-    const normalized = field.replace(/([a-z0-9])([A-Z])/g, (_match, left: string, right: string) => left + '_' + right).replace(/[.-]/g, '_').toLowerCase();
-    if (/^(password|password_hash|token|access_token|refresh_token|client_secret|client_token|secret|api_key|private_key|authorization|connection_string|database_url|jwt_secret|encryption_key|signing_key)$/.test(normalized)
-      || /(?:^|_)(?:password|secret|access_token|refresh_token|api_key|private_key|connection_string)(?:_|$)/.test(normalized)) {
-      throw new BadRequestException('Dataset source attempted to export a credential/secret field');
-    }
+    assertSaasTenantTransferFieldSafe(field, 'source');
   }
 
   private workerKey(operation: string, transferId: string, version: number) {

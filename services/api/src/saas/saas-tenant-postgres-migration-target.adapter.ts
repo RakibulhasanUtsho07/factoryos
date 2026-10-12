@@ -15,6 +15,7 @@ import type {
   SaasTenantTransferExportManifest,
 } from './saas-tenant-data-transfer.adapters';
 import { SAAS_TENANT_DATASET_TABLES } from './saas-tenant-postgres-dataset-source';
+import { assertSaasTenantTransferFieldSafe } from './saas-tenant-transfer-field-guard';
 import { assertSaasTenantIamEffectiveAccess, buildSaasTenantIamRemappingPlan } from './saas-tenant-iam-remapping.plan';
 import type { SaasTenantIamPortableSnapshot, SaasTenantIamTargetDirectory, SaasIamTransferStatus, SaasTenantMembershipStatus } from './saas-tenant-iam-remapping.plan';
 import {
@@ -257,8 +258,10 @@ export class SaasTenantPostgresMigrationTargetAdapter
         if (row.tenant_id !== input.tenantId) {
           throw new BadRequestException('Source bundle contains a row without the authenticated tenant scope');
         }
+        // Validate nested JSON fields too; checking only the top-level table
+        // columns would allow secret hashes to hide inside JSONB values.
+        this.canonicalJson(payload);
         const keys = Object.keys(payload).sort();
-        for (const key of keys) this.assertSafeField(key);
 
         if (event.category === SaasTransferDatasetCategory.IAM_ACCESS) {
           if (!IAM_TABLES.has(event.table)) {
@@ -944,16 +947,7 @@ export class SaasTenantPostgresMigrationTargetAdapter
   }
 
   private assertSafeField(field: string): void {
-    const normalized = field
-      .replace(/([a-z0-9])([A-Z])/g, (_match, left: string, right: string) => left + '_' + right)
-      .replace(/[.-]/g, '_')
-      .toLowerCase();
-    if (
-      /^(password|password_hash|token|access_token|refresh_token|client_secret|client_token|secret|api_key|private_key|authorization|connection_string|database_url|jwt_secret|encryption_key|signing_key)$/.test(normalized) ||
-      /(?:^|_)(?:password|secret|access_token|refresh_token|api_key|private_key|connection_string)(?:_|$)/.test(normalized)
-    ) {
-      throw new BadRequestException('Target importer rejected a credential/secret field');
-    }
+    assertSaasTenantTransferFieldSafe(field, 'target');
   }
 
   private quoteIdentifier(identifier: string): string {

@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { REQUIRED_TRANSFER_CATEGORIES } from './dto/create-saas-schema-compatibility-rule.dto';
 import { SaasTenantPostgresMigrationTargetAdapter, TenantExportTextReader } from './saas-tenant-postgres-migration-target.adapter';
 import type { SaasTenantTransferExportManifest } from './saas-tenant-data-transfer.adapters';
@@ -26,6 +26,16 @@ function chunksOf(text: string, sizes: number[]): AsyncIterable<Buffer> {
 }
 
 describe('SaasTenantPostgresMigrationTargetAdapter', () => {
+  it('rejects nested action-token hashes in target JSON data before accepting an import', () => {
+    const adapter = new SaasTenantPostgresMigrationTargetAdapter(
+      { get: jest.fn(() => undefined) } as never,
+      { query: jest.fn() } as never,
+    );
+    const canonicalJson = (adapter as unknown as { canonicalJson(value: unknown): string }).canonicalJson.bind(adapter);
+    expect(() => canonicalJson({ payload: { actionTokenHash: 'not-for-import' } }))
+      .toThrow(BadRequestException);
+  });
+
   it('fails closed when no dedicated target database URL is configured', async () => {
     const config = { get: jest.fn(() => undefined) };
     const sourceDb = { query: jest.fn() };

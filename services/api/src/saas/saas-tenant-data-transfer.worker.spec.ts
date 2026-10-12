@@ -301,6 +301,21 @@ describe('SaasTenantDataTransferWorkerService', () => {
     expect(transfers.attestExport).not.toHaveBeenCalled();
   });
 
+  it('rejects nested action-token hashes before writing or attesting an export bundle', async () => {
+    const source = createSnapshotSource(async function* () {
+      yield { id: 'customer-1', metadata: { actionTokenHash: 'not-for-export' } };
+    });
+    worker = new SaasTenantDataTransferWorkerService(transfers as never, bundles as never, source);
+    transfers.history.mockResolvedValueOnce([sourceSnapshot({
+      version: 1, status: 'REQUESTED', sourceBundleReference: null, sourceBundleDigest: null, sourceManifest: {},
+    })]);
+
+    await expect(worker.processExport(tenantId, actorUserId, exportId))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(transfers.attestExport).not.toHaveBeenCalled();
+    expect(bundles.remove).not.toHaveBeenCalled();
+  });
+
   it('rejects an unsupported export category before reading any dataset', async () => {
     const source = {
       withSnapshot: jest.fn(async (_tenant: string, _schema: string, callback: (snapshot: { readDataset: () => AsyncIterable<unknown> }) => Promise<unknown>) =>
