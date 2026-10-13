@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 
@@ -234,7 +235,13 @@ integrationDescribe(
             const result = await client.query(sql, values as never[]);
             await client.query('COMMIT');
 
-            if (/INSERT\s+INTO\s+ai_execution_claims/i.test(sql)) {
+            const isClaimInsert =
+              /INSERT\s+INTO\s+ai_execution_claims/i.test(sql);
+            const isCompetingClaimLookup =
+              /FROM\s+ai_execution_claims/i.test(sql) &&
+              /action_intent_id\s*=\s*\$3/i.test(sql);
+
+            if (isClaimInsert || isCompetingClaimLookup) {
               observer(sql, result.rows.length);
             }
 
@@ -286,13 +293,26 @@ integrationDescribe(
         const bothClaimInsertsObserved = new Promise<void>((resolve) => {
           resolveBothClaimInserts = resolve;
         });
+        let resolveCompetingClaimRead!: () => void;
+        const competingClaimReadObserved = new Promise<void>((resolve) => {
+          resolveCompetingClaimRead = resolve;
+        });
 
-        const database = createScopedDatabaseAdapter((_sql, rowCount) => {
-          claimInsertCount += 1;
-          claimInsertRowCounts.push(rowCount);
+        const database = createScopedDatabaseAdapter((sql, rowCount) => {
+          if (/INSERT\s+INTO\s+ai_execution_claims/i.test(sql)) {
+            claimInsertCount += 1;
+            claimInsertRowCounts.push(rowCount);
 
-          if (claimInsertCount === 2) {
-            resolveBothClaimInserts();
+            if (claimInsertCount === 2) {
+              resolveBothClaimInserts();
+            }
+          }
+
+          if (
+            /FROM\s+ai_execution_claims/i.test(sql) &&
+            /action_intent_id\s*=\s*\$3/i.test(sql)
+          ) {
+            resolveCompetingClaimRead();
           }
         });
 
@@ -357,9 +377,9 @@ integrationDescribe(
           // One INSERT wins; the competing INSERT must return no claim.
           expect([...claimInsertRowCounts].sort()).toEqual([0, 1]);
 
-          // Keep the winning request inside the gateway until the loser has
-          // observed the committed CLAIMED row and failed closed.
-          await new Promise((resolve) => setTimeout(resolve, 25));
+          // Hold the winning gateway call until the loser has read the
+          // still-CLAIMED row, so the assertion exercises the in-flight race.
+          await competingClaimReadObserved;
           releaseGateway();
 
           const results = await settledRequests;
@@ -385,6 +405,7 @@ integrationDescribe(
             );
           }
 
+          expect(failure.reason).toBeInstanceOf(ConflictException);
           expect(success.value.idempotent).toBe(false);
           expect(success.value.execution.actionIntentId).toBe(
             fixture.actionId,
