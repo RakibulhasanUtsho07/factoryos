@@ -396,6 +396,25 @@ export class EdgeDeviceGatewayController {
     );
   }
 
+  /**
+   * Full signing-key snapshot for an authenticated edge device. Device auth
+   * determines tenant/factory scope; caller-supplied scope headers are ignored.
+   */
+  @Get('device-package-signing-keys/:deviceId')
+  async syncDevicePackageSigningKeys(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('deviceId') deviceId: string,
+  ) {
+    const authenticated = await this.credentialService.authenticateDeviceToken(
+      authorization,
+      deviceId,
+    );
+    return this.packageGovernanceService.getTrustedSigningKeySnapshot(
+      authenticated.tenantId,
+      authenticated.factoryId,
+    );
+  }
+
   private getAuthenticatedFactoryContext(request: FactoryOsRequest) {
     const userId = request.factoryos?.userId ?? null;
     const tenantId = request.factoryos?.tenantId ?? null;

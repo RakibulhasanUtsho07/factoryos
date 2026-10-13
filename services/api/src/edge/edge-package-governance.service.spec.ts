@@ -160,6 +160,36 @@ describe('EdgePackageGovernanceService', () => {
     expect(database.query.mock.calls[0]?.[2]).toEqual({ tenantId });
   });
 
+  it('returns a complete device verifier snapshot with active and revoked public keys only', async () => {
+    database.query.mockResolvedValueOnce({ rows: [
+      { key_id: 'active-key', public_key_pem: publicKeyPem, fingerprint_sha256: fingerprint, status: 'ACTIVE' },
+      { key_id: 'revoked-key', public_key_pem: publicKeyPem, fingerprint_sha256: fingerprint, status: 'REVOKED' },
+    ] });
+    const snapshot = await service.getTrustedSigningKeySnapshot(tenantId, factoryId);
+    expect(snapshot).toMatchObject({
+      schemaVersion: 1,
+      tenantId,
+      factoryId,
+      checkedAt: expect.any(String),
+      signingKeys: [
+        { keyId: 'active-key', publicKeyPem, fingerprintSha256: fingerprint, status: 'ACTIVE' },
+        { keyId: 'revoked-key', publicKeyPem, fingerprintSha256: fingerprint, status: 'REVOKED' },
+      ],
+    });
+    expect(database.query.mock.calls[0]?.[0]).toContain('LIMIT 513');
+    expect(database.query.mock.calls[0]?.[1]).toEqual([tenantId, factoryId]);
+  });
+
+  it('refuses an oversized signer snapshot instead of silently omitting historical revoked keys', async () => {
+    database.query.mockResolvedValueOnce({ rows: Array.from({ length: 513 }, (_, index) => ({
+      key_id: `key-${index}`,
+      public_key_pem: publicKeyPem,
+      fingerprint_sha256: fingerprint,
+      status: 'ACTIVE',
+    })) });
+    await expect(service.getTrustedSigningKeySnapshot(tenantId, factoryId)).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('creates an immutable pause control for a registered factory scope', async () => {
     client.query
       .mockResolvedValueOnce({ rows: [] })

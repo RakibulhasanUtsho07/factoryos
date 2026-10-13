@@ -7,6 +7,8 @@ import {
 } from 'node:http';
 import { DurableEdgeSpool, EdgeSpoolError } from './spool/durable-edge-spool.js';
 import { EdgePackageControlStateStore } from './edge-package-control-state.store.js';
+import { EdgePackageSigningKeyStore } from './edge-package-signing-key.store.js';
+import type { EdgePackageVerificationPolicy } from './packages/edge-package-manifest-verifier.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEVICE_TOKEN_PATTERN =
@@ -66,6 +68,7 @@ export interface EdgeAgentRuntimeConfig {
   /** Only explicitly configured packages are governed; unlisted packages are never allowed to execute. */
   managedPackages?: EdgeManagedPackage[];
   packageControlPollIntervalMs?: number;
+  packageSigningKeyPollIntervalMs?: number;
 }
 
 export interface EdgeAgentHealth {
@@ -79,6 +82,13 @@ export interface EdgeAgentHealth {
   lastHealthReportAt: string | null;
   lastHealthErrorCode: string | null;
   packageControls: EdgePackageControlHealth[];
+  packageSigningKeys: {
+    keyCount: number;
+    activeKeyCount: number;
+    revokedKeyCount: number;
+    lastSuccessfulSyncAt: string | null;
+    lastErrorCode: string | null;
+  };
 }
 
 export interface EdgeAgentFlushResult {
@@ -136,6 +146,8 @@ function getBearerToken(request: IncomingMessage): string | null {
 export class EdgeAgentRuntime {
   private readonly spool: DurableEdgeSpool;
   private readonly packageControlStateStore: EdgePackageControlStateStore;
+  private readonly packageSigningKeyStore: EdgePackageSigningKeyStore;
+  private readonly configuredTenantId: string;
   private readonly apiBaseUrl: URL;
   private readonly expectedLocalToken: Buffer;
   private server: Server | null = null;
@@ -150,6 +162,8 @@ export class EdgeAgentRuntime {
   private readonly managedPackages: readonly EdgeManagedPackage[];
   private readonly packageControlStates = new Map<string, EdgePackageControlSnapshot>();
   private lastPackageControlAttemptAt = 0;
+  private lastSigningKeySyncAttemptAt = 0;
+  private lastSigningKeySyncErrorCode: string | null = null;
 
   constructor(private readonly config: EdgeAgentRuntimeConfig) {
     if (!UUID_PATTERN.test(config.deviceId)) {
@@ -159,6 +173,7 @@ export class EdgeAgentRuntime {
     if (!deviceToken || deviceToken[2].toLowerCase() !== config.deviceId.toLowerCase()) {
       throw new Error('EDGE_DEVICE_TOKEN must be a valid one-time issued token for EDGE_DEVICE_ID');
     }
+    this.configuredTenantId = deviceToken[1].toLowerCase();
     if (Buffer.byteLength(config.localToken, 'utf8') < 32) {
       throw new Error('EDGE_AGENT_LOCAL_TOKEN must contain at least 32 bytes of random material');
     }
@@ -185,6 +200,11 @@ export class EdgeAgentRuntime {
     if (!Number.isInteger(packageControlPollIntervalMs) ||
         packageControlPollIntervalMs < 5_000 || packageControlPollIntervalMs > 3_600_000) {
       throw new Error('EDGE_PACKAGE_CONTROL_POLL_INTERVAL_MS must be between 5000 and 3600000');
+    }
+    const packageSigningKeyPollIntervalMs = config.packageSigningKeyPollIntervalMs ?? 60_000;
+    if (!Number.isInteger(packageSigningKeyPollIntervalMs) ||
+        packageSigningKeyPollIntervalMs < 10_000 || packageSigningKeyPollIntervalMs > 3_600_000) {
+      throw new Error('EDGE_PACKAGE_SIGNING_KEY_POLL_INTERVAL_MS must be between 10000 and 3600000');
     }
     const managedPackages = config.managedPackages ?? [];
     if (!Array.isArray(managedPackages) || managedPackages.length > 10) {
@@ -226,6 +246,7 @@ export class EdgeAgentRuntime {
       maxPendingBytes: config.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES,
     });
     this.packageControlStateStore = new EdgePackageControlStateStore(config.spoolDir);
+    this.packageSigningKeyStore = new EdgePackageSigningKeyStore(config.spoolDir, this.configuredTenantId);
   }
 
   get listenPort(): number | null {
@@ -237,6 +258,7 @@ export class EdgeAgentRuntime {
     if (this.started) return;
     await this.spool.initialize();
     try {
+      await this.packageSigningKeyStore.initialize();
       const persistedControlStates = await this.packageControlStateStore.initialize(
         this.managedPackages.map((managedPackage) => ({
           packageId: managedPackage.packageId,
@@ -375,6 +397,77 @@ export class EdgeAgentRuntime {
    * changes the local decision to UNKNOWN immediately; REVOKED is latched for
    * the lifetime of this process and cannot be cleared by a later response.
    */
+  getPackageSigningKeySyncStatus() {
+    return this.packageSigningKeyStore.getSyncStatus();
+  }
+
+  /**
+   * Build the policy passed to verifyEdgePackage/EdgePackageActivationStore
+   * from durable synchronized keys. Stale snapshots and failed polls are not
+   * allowed to keep a signing key trusted.
+   */
+  createPackageVerificationPolicy(
+    policy: Omit<EdgePackageVerificationPolicy, 'trustedSigningKeys'>,
+  ): EdgePackageVerificationPolicy {
+    const maxAgeMs =
+      (this.config.packageSigningKeyPollIntervalMs ?? 60_000) * 2 +
+      this.config.requestTimeoutMs;
+    return this.packageSigningKeyStore.createVerificationPolicy(policy, maxAgeMs);
+  }
+
+  async pollPackageSigningKeysOnce(): Promise<boolean> {
+    this.lastSigningKeySyncAttemptAt = Date.now();
+    try {
+      const url = new URL(
+        `/api/v2/edge/device-package-signing-keys/${encodeURIComponent(this.config.deviceId)}`,
+        this.apiBaseUrl,
+      );
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          authorization: `Bearer ${this.config.deviceToken}`,
+          accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        const failureCode = `HTTP_${response.status}`;
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(failureCode);
+      }
+      const contentLength = Number(response.headers.get('content-length'));
+      if (Number.isFinite(contentLength) && contentLength > 512 * 1024) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error('SNAPSHOT_TOO_LARGE');
+      }
+      const payloadText = await response.text();
+      if (Buffer.byteLength(payloadText, 'utf8') > 512 * 1024) {
+        throw new Error('SNAPSHOT_TOO_LARGE');
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(payloadText) as unknown;
+      } catch {
+        throw new Error('INVALID_SNAPSHOT_JSON');
+      }
+      await this.packageSigningKeyStore.applySnapshot(payload);
+      this.lastSigningKeySyncErrorCode = null;
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const code = message === 'SNAPSHOT_TOO_LARGE' || message === 'INVALID_SNAPSHOT_JSON' ||
+          message.startsWith('HTTP_')
+        ? message
+        : error instanceof Error && error.name === 'TimeoutError'
+          ? 'REQUEST_TIMEOUT'
+          : 'SYNC_FAILED';
+      this.lastSigningKeySyncErrorCode = code;
+      await this.packageSigningKeyStore.recordSyncFailure(code).catch(() => undefined);
+      return false;
+    }
+  }
+
   async pollPackageControlsOnce(): Promise<number> {
     this.lastPackageControlAttemptAt = Date.now();
     const results = await Promise.all(this.managedPackages.map((managedPackage) =>
@@ -615,6 +708,14 @@ export class EdgeAgentRuntime {
           checkedAt: control.checkedAt,
           lastErrorCode: control.lastErrorCode,
         })),
+        packageSigningKeys: {
+          keyCount: this.packageSigningKeyStore.getSyncStatus().keyCount,
+          activeKeyCount: this.packageSigningKeyStore.getSyncStatus().activeKeyCount,
+          revokedKeyCount: this.packageSigningKeyStore.getSyncStatus().revokedKeyCount,
+          lastSuccessfulSyncAt: this.packageSigningKeyStore.getSyncStatus().lastSuccessfulSyncAt,
+          lastErrorCode: this.lastSigningKeySyncErrorCode ??
+            this.packageSigningKeyStore.getSyncStatus().lastErrorCode,
+        },
       };
       sendJson(response, 200, health);
       return;
@@ -673,6 +774,12 @@ export class EdgeAgentRuntime {
 
   private async runWorker(): Promise<void> {
     while (!this.stopping) {
+      if (
+        Date.now() - this.lastSigningKeySyncAttemptAt >=
+          (this.config.packageSigningKeyPollIntervalMs ?? 60_000)
+      ) {
+        await this.pollPackageSigningKeysOnce();
+      }
       if (
         this.managedPackages.length > 0 &&
         Date.now() - this.lastPackageControlAttemptAt >=

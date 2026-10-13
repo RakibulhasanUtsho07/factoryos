@@ -1,3 +1,4 @@
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,13 @@ const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
 const DEVICE_TOKEN =
   `fos_edge_11111111-1111-4111-8111-111111111111.${DEVICE_ID}.${'A'.repeat(43)}`;
 const LOCAL_TOKEN = 'local-spool-token-with-at-least-32-random-bytes';
+const SIGNER_TENANT_ID = '11111111-1111-4111-8111-111111111111';
+const SIGNER_FACTORY_ID = '33333333-3333-4333-8333-333333333333';
+const signerKeyPair = generateKeyPairSync('ed25519');
+const signerPublicKeyPem = signerKeyPair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const signerFingerprintSha256 = createHash('sha256')
+  .update(signerKeyPair.publicKey.export({ type: 'spki', format: 'der' }))
+  .digest('hex');
 
 function listen(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -34,6 +42,10 @@ describe('EdgeAgentRuntime', () => {
   let packageControlStatus: 'ACTIVE' | 'PAUSED' | 'REVOKED' = 'ACTIVE';
   let packageControlFailureStatus: number | null = null;
   let packageControlRequestCount = 0;
+  let signingKeyStatus: 'ACTIVE' | 'REVOKED' = 'ACTIVE';
+  let signingKeyTenantId = SIGNER_TENANT_ID;
+  let signingKeyFactoryId = SIGNER_FACTORY_ID;
+  let signingKeyFailureStatus: number | null = null;
 
   beforeEach(async () => {
     rootDir = await mkdtemp(join(tmpdir(), 'factoryos-edge-agent-'));
@@ -43,8 +55,36 @@ describe('EdgeAgentRuntime', () => {
     packageControlStatus = 'ACTIVE';
     packageControlFailureStatus = null;
     packageControlRequestCount = 0;
+    signingKeyStatus = 'ACTIVE';
+    signingKeyTenantId = SIGNER_TENANT_ID;
+    signingKeyFactoryId = SIGNER_FACTORY_ID;
+    signingKeyFailureStatus = null;
     cloudServer = createServer((request, response) => {
       const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (request.method === 'GET' &&
+          requestUrl.pathname === `/api/v2/edge/device-package-signing-keys/${DEVICE_ID}`) {
+        receivedAuthorization = request.headers.authorization;
+        receivedUrl = request.url;
+        if (signingKeyFailureStatus !== null) {
+          response.writeHead(signingKeyFailureStatus, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'temporary signing-key sync failure' }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          schemaVersion: 1,
+          tenantId: signingKeyTenantId,
+          factoryId: signingKeyFactoryId,
+          checkedAt: new Date().toISOString(),
+          signingKeys: [{
+            keyId: 'edge-signing-v1',
+            publicKeyPem: signerPublicKeyPem,
+            fingerprintSha256: signerFingerprintSha256,
+            status: signingKeyStatus,
+          }],
+        }));
+        return;
+      }
       if (request.method === 'GET' && requestUrl.pathname.includes('/device-package-controls/')) {
         packageControlRequestCount += 1;
         receivedAuthorization = request.headers.authorization;
@@ -326,6 +366,81 @@ describe('EdgeAgentRuntime', () => {
       lastErrorCode: null,
     });
     expect(runtime.isPackageExecutionAllowed('quality-defect', '1.2.0')).toBe(false);
+  });
+
+  it('syncs scoped Ed25519 keys from cloud into a verifier policy and keeps revoked keys untrusted', async () => {
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      packageSigningKeyPollIntervalMs: 30_000,
+      autoSync: false,
+    });
+    await runtime.start();
+    const policyInput = {
+      tenantId: SIGNER_TENANT_ID,
+      factoryId: SIGNER_FACTORY_ID,
+      allowedToolIds: new Set(['AI.RUNTIME.NOOP']),
+    };
+    expect(Object.keys(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys)).toHaveLength(0);
+
+    await expect(runtime.pollPackageSigningKeysOnce()).resolves.toBe(true);
+    expect(receivedAuthorization).toBe(`Bearer ${DEVICE_TOKEN}`);
+    expect(receivedUrl).toBe(`/api/v2/edge/device-package-signing-keys/${DEVICE_ID}`);
+    expect(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys['edge-signing-v1'])
+      .toEqual({ publicKeyPem: signerPublicKeyPem, status: 'ACTIVE' });
+    expect(runtime.getPackageSigningKeySyncStatus()).toMatchObject({
+      tenantId: SIGNER_TENANT_ID,
+      factoryId: SIGNER_FACTORY_ID,
+      keyCount: 1,
+      activeKeyCount: 1,
+      lastErrorCode: null,
+    });
+
+    signingKeyStatus = 'REVOKED';
+    await expect(runtime.pollPackageSigningKeysOnce()).resolves.toBe(true);
+    expect(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys['edge-signing-v1']?.status)
+      .toBe('REVOKED');
+
+    signingKeyStatus = 'ACTIVE';
+    await expect(runtime.pollPackageSigningKeysOnce()).resolves.toBe(true);
+    expect(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys['edge-signing-v1']?.status)
+      .toBe('REVOKED');
+  });
+
+  it('disables active signing keys immediately when key synchronization fails', async () => {
+    runtime = new EdgeAgentRuntime({
+      spoolDir: rootDir,
+      localToken: LOCAL_TOKEN,
+      apiBaseUrl: `http://127.0.0.1:${serverPort(cloudServer)}`,
+      deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
+      port: 0,
+      pollIntervalMs: 60_000,
+      requestTimeoutMs: 2_000,
+      packageSigningKeyPollIntervalMs: 30_000,
+      autoSync: false,
+    });
+    await runtime.start();
+    const policyInput = {
+      tenantId: SIGNER_TENANT_ID,
+      factoryId: SIGNER_FACTORY_ID,
+      allowedToolIds: new Set(['AI.RUNTIME.NOOP']),
+    };
+    await runtime.pollPackageSigningKeysOnce();
+    expect(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys['edge-signing-v1']?.status)
+      .toBe('ACTIVE');
+
+    signingKeyFailureStatus = 503;
+    await expect(runtime.pollPackageSigningKeysOnce()).resolves.toBe(false);
+    expect(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys['edge-signing-v1']?.status)
+      .toBe('REVOKED');
+    expect(runtime.getPackageSigningKeySyncStatus().lastErrorCode).toBe('HTTP_503');
   });
 
   it('rejects device credentials that are not bound to the configured device', () => {

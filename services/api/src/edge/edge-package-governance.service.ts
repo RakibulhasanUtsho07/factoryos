@@ -148,16 +148,40 @@ export class EdgePackageGovernanceService {
     return { limit, offset, hasMore, nextOffset: hasMore ? offset + limit : null, signingKeys: result.rows.slice(0, limit).map(row => this.mapKey(row)) };
   }
 
-  /** Internal bridge used by edge runtimes to construct trusted-key verifier policy. */
-  async getTrustedSigningKeys(tenantId: string, factoryId: string): Promise<Record<string, EdgePackageTrustedSigningKey>> {
+  /**
+   * Device-facing complete public-key snapshot. All lifecycle states are sent,
+   * including REVOKED keys, so a disconnected edge verifier can explicitly
+   * distrust keys without any private material ever leaving the server.
+   */
+  async getTrustedSigningKeySnapshot(tenantId: string, factoryId: string) {
     this.validateScope(tenantId, factoryId);
     const result = await this.database.query<KeyRow>(
-      'SELECT key_id,public_key_pem,fingerprint_sha256,status FROM edge_package_signing_keys WHERE tenant_id=$1 AND factory_id=$2 ORDER BY created_at ASC,id ASC',
+      'SELECT key_id,public_key_pem,fingerprint_sha256,status FROM edge_package_signing_keys WHERE tenant_id=$1 AND factory_id=$2 ORDER BY created_at ASC,id ASC LIMIT 513',
       [tenantId, factoryId], { tenantId },
     );
+    if (result.rows.length > 512) {
+      throw new ConflictException('The signing-key registry exceeds the edge snapshot safety limit');
+    }
+    return {
+      schemaVersion: 1 as const,
+      tenantId: tenantId.toLowerCase(),
+      factoryId: factoryId.toLowerCase(),
+      checkedAt: new Date().toISOString(),
+      signingKeys: result.rows.map((row) => ({
+        keyId: row.key_id,
+        publicKeyPem: row.public_key_pem,
+        fingerprintSha256: row.fingerprint_sha256,
+        status: row.status,
+      })),
+    };
+  }
+
+  /** Internal bridge used by edge runtimes to construct trusted-key verifier policy. */
+  async getTrustedSigningKeys(tenantId: string, factoryId: string): Promise<Record<string, EdgePackageTrustedSigningKey>> {
+    const snapshot = await this.getTrustedSigningKeySnapshot(tenantId, factoryId);
     const keys: Record<string, EdgePackageTrustedSigningKey> = {};
-    for (const row of result.rows) Object.defineProperty(keys, row.key_id, {
-      value: { publicKeyPem: row.public_key_pem, status: row.status },
+    for (const row of snapshot.signingKeys) Object.defineProperty(keys, row.keyId, {
+      value: { publicKeyPem: row.publicKeyPem, status: row.status },
       enumerable: true, configurable: true, writable: true,
     });
     return keys;

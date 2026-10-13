@@ -93,6 +93,7 @@ async function startEdgeAgent(): Promise<void> {
     agentVersion: process.env.EDGE_AGENT_VERSION?.trim() || '1.0.0',
     healthReportIntervalMs: integerEnvironment('EDGE_HEALTH_REPORT_INTERVAL_MS', 30_000),
     packageControlPollIntervalMs: integerEnvironment('EDGE_PACKAGE_CONTROL_POLL_INTERVAL_MS', 30_000),
+    packageSigningKeyPollIntervalMs: integerEnvironment('EDGE_PACKAGE_SIGNING_KEY_POLL_INTERVAL_MS', 60_000),
     managedPackages: managedPackagesEnvironment(),
     modelVersions: modelVersionsEnvironment(),
     capabilities: objectEnvironment('EDGE_CAPABILITIES_JSON', {
