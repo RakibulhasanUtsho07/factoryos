@@ -433,5 +433,170 @@ integrationDescribe(
       },
       20_000,
     );
+
+    it(
+      'keeps an ambiguous gateway failure claimed and blocks automatic replay',
+      async () => {
+        const fixture = await createAuthorizedActionFixture();
+        const database = createScopedDatabaseAdapter(() => undefined);
+        let gatewayCalls = 0;
+
+        const aiToolGateway = {
+          execute: async () => {
+            gatewayCalls += 1;
+            throw new Error('SIMULATED_AMBIGUOUS_GATEWAY_TIMEOUT');
+          },
+        };
+
+        const service = new AiRuntimeService(
+          database as never,
+          { record: async () => 'audit-event-id' } as never,
+          { authorize: async () => undefined } as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          aiToolGateway as never,
+        );
+
+        const input = {
+          action_token: fixture.actionToken,
+          execution_key: `ambiguous-${randomUUID()}`,
+          tool_version: '1.0.0',
+        };
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            actorUserId,
+            input,
+          ),
+        ).rejects.toThrow('SIMULATED_AMBIGUOUS_GATEWAY_TIMEOUT');
+
+        const stateAfterTimeout = await database.query(
+          `
+          SELECT
+            c.status AS claim_status,
+            c.failure_code,
+            (SELECT COUNT(*) FROM ai_execution_records e
+              WHERE e.tenant_id = $1 AND e.factory_id = $2
+                AND e.action_intent_id = $3) AS execution_count
+          FROM ai_execution_claims c
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.action_intent_id = $3
+          `,
+          [tenantId, factoryId, fixture.actionId],
+          { tenantId, userId: actorUserId },
+        );
+
+        expect(stateAfterTimeout.rows).toHaveLength(1);
+        expect(stateAfterTimeout.rows[0]?.claim_status).toBe('CLAIMED');
+        expect(stateAfterTimeout.rows[0]?.failure_code).toBeNull();
+        expect(Number(stateAfterTimeout.rows[0]?.execution_count)).toBe(0);
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            actorUserId,
+            input,
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+
+        expect(gatewayCalls).toBe(1);
+
+        const stateAfterReplay = await database.query(
+          'SELECT status FROM ai_execution_claims WHERE tenant_id = $1 AND factory_id = $2 AND action_intent_id = $3',
+          [tenantId, factoryId, fixture.actionId],
+          { tenantId, userId: actorUserId },
+        );
+        expect(stateAfterReplay.rows[0]?.status).toBe('CLAIMED');
+      },
+      20_000,
+    );
+
+    it(
+      'replays a recorded tool failure without invoking the gateway twice',
+      async () => {
+        const fixture = await createAuthorizedActionFixture();
+        const database = createScopedDatabaseAdapter(() => undefined);
+        let gatewayCalls = 0;
+
+        const aiToolGateway = {
+          execute: async (action: Record<string, unknown>) => {
+            gatewayCalls += 1;
+            return {
+              status: 'FAILED' as const,
+              result: {},
+              error: { code: 'SIMULATED_TOOL_FAILURE' },
+              executorType: action.executorType,
+              toolVersion: action.toolVersion,
+              inputsHash: action.payloadHash,
+            };
+          },
+        };
+
+        const service = new AiRuntimeService(
+          database as never,
+          { record: async () => 'audit-event-id' } as never,
+          { authorize: async () => undefined } as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          aiToolGateway as never,
+        );
+
+        const input = {
+          action_token: fixture.actionToken,
+          execution_key: `failed-${randomUUID()}`,
+          tool_version: '1.0.0',
+        };
+
+        const first = await service.executeAction(
+          tenantId,
+          factoryId,
+          actorUserId,
+          input,
+        );
+        expect(first.idempotent).toBe(false);
+        expect(first.execution.status).toBe('FAILED');
+        expect(first.execution.error).toEqual({
+          code: 'SIMULATED_TOOL_FAILURE',
+        });
+
+        const replay = await service.executeAction(
+          tenantId,
+          factoryId,
+          actorUserId,
+          input,
+        );
+        expect(replay.idempotent).toBe(true);
+        expect(replay.execution.id).toBe(first.execution.id);
+        expect(replay.execution.status).toBe('FAILED');
+        expect(gatewayCalls).toBe(1);
+
+        const state = await database.query(
+          `
+          SELECT
+            c.status AS claim_status,
+            c.failure_code,
+            (SELECT COUNT(*) FROM ai_execution_records e
+              WHERE e.tenant_id = $1 AND e.factory_id = $2
+                AND e.action_intent_id = $3) AS execution_count
+          FROM ai_execution_claims c
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.action_intent_id = $3
+          `,
+          [tenantId, factoryId, fixture.actionId],
+          { tenantId, userId: actorUserId },
+        );
+
+        expect(state.rows[0]?.claim_status).toBe('FAILED');
+        expect(state.rows[0]?.failure_code).toBe('TOOL_EXECUTION_FAILED');
+        expect(Number(state.rows[0]?.execution_count)).toBe(1);
+      },
+      20_000,
+    );
+
   },
 );
