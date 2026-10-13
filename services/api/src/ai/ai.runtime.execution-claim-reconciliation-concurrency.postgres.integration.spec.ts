@@ -423,5 +423,67 @@ integrationDescribe(
       },
       20_000,
     );
+
+    it(
+      'keeps reconciliation evidence append-only and hidden from another tenant',
+      async () => {
+        const fixture = await createFixture();
+        const service = createService(createScopedDatabase());
+
+        await service.reconcileExecutionClaim(
+          scope.tenantId,
+          scope.factoryId,
+          scope.actorUserId,
+          fixture.claimId,
+          failedDecision,
+        );
+
+        const appDatabase = createScopedDatabase();
+
+        await expect(
+          appDatabase.query(
+            `
+            UPDATE public.ai_execution_claim_reconciliations
+            SET reason = 'Tampered reason for regression test'
+            WHERE claim_id = $1
+            `,
+            [fixture.claimId],
+            { tenantId: scope.tenantId, userId: scope.actorUserId },
+          ),
+        ).rejects.toMatchObject({ code: '23514' });
+
+        await expect(
+          appDatabase.query(
+            `
+            DELETE FROM public.ai_execution_claim_reconciliations
+            WHERE claim_id = $1
+            `,
+            [fixture.claimId],
+            { tenantId: scope.tenantId, userId: scope.actorUserId },
+          ),
+        ).rejects.toMatchObject({ code: '23514' });
+
+        const crossTenantRead = await appDatabase.query(
+          `
+          SELECT id
+          FROM public.ai_execution_claim_reconciliations
+          WHERE claim_id = $1
+          `,
+          [fixture.claimId],
+          { tenantId: randomUUID(), userId: scope.actorUserId },
+        );
+
+        expect(crossTenantRead.rows).toHaveLength(0);
+
+        const state = await readState(fixture);
+        expect(state).toMatchObject({
+          status: 'FAILED',
+          reconciliationCount: 1,
+          auditCount: 1,
+        });
+      },
+      20_000,
+    );
+
   },
 );
