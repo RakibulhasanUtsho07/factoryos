@@ -737,6 +737,54 @@ describe('AiOperationalEvaluationService', () => {
     });
   });
 
+  it('returns unknown threshold checks when candidate forecast samples are below the policy minimum', async () => {
+    database.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            model_version: 'planner-1',
+            sample_count: '4',
+            mean_absolute_error: 2.5,
+            mean_absolute_percentage_error: 0.2,
+            absolute_percentage_error_sample_count: '4',
+            mean_signed_error: -1,
+            within_tolerance_rate: 0.5,
+          },
+          {
+            model_version: 'planner-2',
+            sample_count: '2',
+            mean_absolute_error: 1.5,
+            mean_absolute_percentage_error: 0.1,
+            absolute_percentage_error_sample_count: '2',
+            mean_signed_error: 0.5,
+            within_tolerance_rate: 0.8,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [policyRow()],
+      });
+
+    const result = await service.compareForecastModels(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        domain: 'PLANNING',
+        metricKey: 'lead-time',
+        baselineModelVersion: 'planner-1',
+        candidateModelVersion: 'planner-2',
+        policyKey: 'planning.lead-time',
+      },
+    );
+
+    expect(result.policyEvaluation.status).toBe('INSUFFICIENT_DATA');
+    expect(result.policyEvaluation.checks).toEqual({
+      maxMeanAbsoluteError: null,
+      minWithinToleranceRate: null,
+    });
+  });
+
   it('returns INSUFFICIENT_DATA when MAPE has fewer contributing samples than the policy minimum', async () => {
     database.query
       .mockResolvedValueOnce({

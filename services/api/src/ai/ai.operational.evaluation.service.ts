@@ -1222,9 +1222,10 @@ export class AiOperationalEvaluationService {
     const checks: Record<string, boolean | null> = {};
 
     if (policyConfig.maxMeanAbsoluteError !== null) {
-      checks.maxMeanAbsoluteError = candidate
-        ? candidate.meanAbsoluteError <= policyConfig.maxMeanAbsoluteError
-        : null;
+      checks.maxMeanAbsoluteError =
+        candidate && candidate.sampleCount >= policyConfig.minimumSamples
+          ? candidate.meanAbsoluteError <= policyConfig.maxMeanAbsoluteError
+          : null;
     }
     if (policyConfig.maxMeanAbsolutePercentageError !== null) {
       // MAPE excludes rows whose actual value is zero. Apply minimum_samples
@@ -1239,9 +1240,10 @@ export class AiOperationalEvaluationService {
             policyConfig.maxMeanAbsolutePercentageError;
     }
     if (policyConfig.minWithinToleranceRate !== null) {
-      checks.minWithinToleranceRate = candidate
-        ? candidate.withinToleranceRate >= policyConfig.minWithinToleranceRate
-        : null;
+      checks.minWithinToleranceRate =
+        candidate && candidate.sampleCount >= policyConfig.minimumSamples
+          ? candidate.withinToleranceRate >= policyConfig.minWithinToleranceRate
+          : null;
     }
 
     let calibrationSampleCount: number | null = null;
