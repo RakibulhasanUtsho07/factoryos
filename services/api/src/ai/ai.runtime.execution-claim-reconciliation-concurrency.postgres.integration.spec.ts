@@ -1,5 +1,5 @@
-import { ConflictException } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
 import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 
 import { AiRuntimeService } from './ai.runtime.service';
@@ -21,6 +21,7 @@ type Fixture = {
   executionKey: string;
   toolVersion: string;
   inputsHash: string;
+  actionToken: string;
 };
 
 const failedDecision: ReconcileAiExecutionClaimDto = {
@@ -142,6 +143,7 @@ integrationDescribe(
         executionKey: `B19.CONCURRENT.${randomUUID()}`,
         toolVersion: '1.0.0',
         inputsHash: 'b'.repeat(64),
+        actionToken: `B19.CONCURRENT.${randomUUID()}`,
       };
 
       try {
@@ -188,7 +190,9 @@ integrationDescribe(
             fixture.toolVersion,
             fixture.actionIntentId,
             fixture.inputsHash,
-            randomUUID().replace(/-/g, '').repeat(2),
+            createHash('sha256')
+              .update(JSON.stringify(fixture.actionToken), 'utf8')
+              .digest('hex'),
             scope.actorUserId,
           ],
         );
@@ -481,6 +485,72 @@ integrationDescribe(
           reconciliationCount: 1,
           auditCount: 1,
         });
+      },
+      20_000,
+    );
+
+
+    it(
+      'rejects action tokens presented from another tenant or factory before claiming execution',
+      async () => {
+        const fixture = await createFixture();
+        const service = createService(createScopedDatabase());
+        const input = {
+          action_token: fixture.actionToken,
+          execution_key: `B19.SCOPE.${randomUUID()}`,
+          tool_version: fixture.toolVersion,
+        };
+
+        await expect(
+          service.executeAction(
+            randomUUID(),
+            scope.factoryId,
+            scope.actorUserId,
+            input,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        await expect(
+          service.executeAction(
+            scope.tenantId,
+            randomUUID(),
+            scope.actorUserId,
+            {
+              ...input,
+              execution_key: `B19.SCOPE.${randomUUID()}`,
+            },
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        const db = await adminPool.connect();
+        try {
+          const counts = await db.query<{
+            claimCount: number;
+            executionCount: number;
+          }>(
+            `
+            SELECT
+              (
+                SELECT COUNT(*)::int
+                FROM public.ai_execution_claims
+                WHERE action_intent_id = $1
+              ) AS "claimCount",
+              (
+                SELECT COUNT(*)::int
+                FROM public.ai_execution_records
+                WHERE action_intent_id = $1
+              ) AS "executionCount"
+            `,
+            [fixture.actionIntentId],
+          );
+
+          expect(counts.rows[0]).toMatchObject({
+            claimCount: 1,
+            executionCount: 0,
+          });
+        } finally {
+          db.release();
+        }
       },
       20_000,
     );
