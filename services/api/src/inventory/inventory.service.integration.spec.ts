@@ -8,6 +8,8 @@ import { DatabaseService } from '../database/database.service';
 import {
   CreateInventoryItemDto,
   CreateInventoryMovementDto,
+  CreateInventoryReservationDto,
+  TransitionInventoryReservationDto,
   InventoryMovementType,
 } from './inventory.dto';
 import { InventoryService } from './inventory.service';
@@ -46,6 +48,31 @@ describe('InventoryService PostgreSQL integration', () => {
     };
     return inventory.createMovement(
       TEST_USER_ID, tenantId, factoryAId, dto, idempotencyKey, randomUUID(), randomUUID(),
+    );
+  }
+
+
+  async function reserve(itemId: string, quantity: number, idempotencyKey = 'res-' + randomUUID()) {
+    const dto: CreateInventoryReservationDto = {
+      item_id: itemId, location_code: 'MAIN', quantity,
+      reason: 'Reserve for order', reference_ref: 'ORDER-LINE-' + itemId,
+    };
+    return inventory.createReservation(
+      TEST_USER_ID, tenantId, factoryAId, dto, idempotencyKey, randomUUID(), randomUUID(),
+    );
+  }
+
+  async function transitionReservation(
+    reservationId: string,
+    targetStatus: 'RELEASED' | 'CONSUMED',
+    idempotencyKey = 'res-op-' + randomUUID(),
+  ) {
+    const dto: TransitionInventoryReservationDto = {
+      reason: targetStatus === 'RELEASED' ? 'Order reservation cancelled' : 'Order material consumed',
+    };
+    return inventory.transitionReservation(
+      TEST_USER_ID, tenantId, factoryAId, reservationId, targetStatus,
+      dto, idempotencyKey, randomUUID(), randomUUID(),
     );
   }
 
@@ -205,4 +232,105 @@ describe('InventoryService PostgreSQL integration', () => {
       adminPool.query('UPDATE inventory_movements SET reason = $1 WHERE id = $2', ['Tampered ledger row', result.movement.id]),
     ).rejects.toThrow('Inventory movement ledger is append-only');
   });
+
+  it('replays reservation creation for the same key without reserving additional stock', async () => {
+    const item = await createItem();
+    await movement(item.id, InventoryMovementType.RECEIPT, 9);
+    const key = 'reserve-retry-' + randomUUID();
+    const first = await reserve(item.id, 4, key);
+    const retry = await reserve(item.id, 4, key);
+    expect(first.replayed).toBe(false);
+    expect(retry.replayed).toBe(true);
+    expect(retry.reservation.id).toBe(first.reservation.id);
+    const balance = await inventory.listBalances(tenantId, factoryAId, { item_id: item.id });
+    expect(balance.balances[0]).toMatchObject({
+      on_hand_quantity: '9.000000', reserved_quantity: '4.000000', available_quantity: '5.000000',
+    });
+  });
+
+  it('reserves only available stock and prevents unreserved issues from consuming reserved quantity', async () => {
+    const item = await createItem();
+    await movement(item.id, InventoryMovementType.RECEIPT, 10);
+    const reserved = await reserve(item.id, 7);
+    expect(reserved.replayed).toBe(false);
+    expect(reserved.reservation.status).toBe('ACTIVE');
+    const balance = await inventory.listBalances(tenantId, factoryAId, { item_id: item.id });
+    expect(balance.balances[0]).toMatchObject({
+      on_hand_quantity: '10.000000', reserved_quantity: '7.000000', available_quantity: '3.000000',
+    });
+    await expect(movement(item.id, InventoryMovementType.ISSUE, -4))
+      .rejects.toThrow('Inventory movement would make the stock balance negative');
+    const reservations = await inventory.listReservations(tenantId, factoryAId, {
+      item_id: item.id, status: 'ACTIVE' as never,
+    });
+    expect(reservations.reservations).toHaveLength(1);
+    await expect(inventory.listReservations(tenantId, factoryBId, { item_id: item.id }))
+      .resolves.toMatchObject({ reservations: [] });
+  });
+
+  it('releases reserved stock exactly once and supports safe idempotent retry', async () => {
+    const item = await createItem();
+    await movement(item.id, InventoryMovementType.RECEIPT, 8);
+    const created = await reserve(item.id, 5);
+    const key = 'release-' + randomUUID();
+    const released = await transitionReservation(created.reservation.id, 'RELEASED', key);
+    const retry = await transitionReservation(created.reservation.id, 'RELEASED', key);
+    expect(released.replayed).toBe(false);
+    expect(retry.replayed).toBe(true);
+    expect(retry.reservation.status).toBe('RELEASED');
+    const balance = await inventory.listBalances(tenantId, factoryAId, { item_id: item.id });
+    expect(balance.balances[0]).toMatchObject({
+      on_hand_quantity: '8.000000', reserved_quantity: '0.000000', available_quantity: '8.000000',
+    });
+    await expect(transitionReservation(created.reservation.id, 'CONSUMED'))
+      .rejects.toThrow('Inventory reservation is already released');
+  });
+
+  it('consumes a reservation as an atomic issue movement and replays without double consumption', async () => {
+    const item = await createItem();
+    await movement(item.id, InventoryMovementType.RECEIPT, 10);
+    const created = await reserve(item.id, 6);
+    const key = 'consume-' + randomUUID();
+    const consumed = await transitionReservation(created.reservation.id, 'CONSUMED', key);
+    const retry = await transitionReservation(created.reservation.id, 'CONSUMED', key);
+    expect(consumed.replayed).toBe(false);
+    expect(consumed.reservation.status).toBe('CONSUMED');
+    expect(consumed.movement).toMatchObject({
+      movement_type: 'ISSUE', quantity_delta: '-6.000000', on_hand_after: '4.000000',
+    });
+    expect(retry.replayed).toBe(true);
+    expect(retry.movement?.id).toBe(consumed.movement?.id);
+    const balance = await inventory.listBalances(tenantId, factoryAId, { item_id: item.id });
+    expect(balance.balances[0]).toMatchObject({
+      on_hand_quantity: '4.000000', reserved_quantity: '0.000000', available_quantity: '4.000000',
+    });
+    const event = await adminPool.query(
+      `SELECT COUNT(*)::int AS count FROM inventory_reservation_events
+       WHERE tenant_id = $1 AND reservation_id = $2 AND event_type = 'CONSUMED'`,
+      [tenantId, created.reservation.id],
+    );
+    expect(event.rows[0]?.count).toBe(1);
+  });
+
+  it('serializes concurrent reservations to prevent reserving more than available stock', async () => {
+    const item = await createItem();
+    await movement(item.id, InventoryMovementType.RECEIPT, 10);
+    const attempts = await Promise.allSettled([reserve(item.id, 7), reserve(item.id, 7)]);
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
+    const balance = await inventory.listBalances(tenantId, factoryAId, { item_id: item.id });
+    expect(balance.balances[0]).toMatchObject({ on_hand_quantity: '10.000000', reserved_quantity: '7.000000' });
+  });
+
+  it('keeps reservation lifecycle events append-only in PostgreSQL', async () => {
+    const item = await createItem();
+    const created = await reserve(item.id, 1);
+    await expect(
+      adminPool.query(
+        "UPDATE inventory_reservation_events SET reason = $1 WHERE tenant_id = $2 AND reservation_id = $3",
+        ['Tampered reservation event', tenantId, created.reservation.id],
+      ),
+    ).rejects.toThrow('Inventory reservation event ledger is append-only');
+  });
+
 });

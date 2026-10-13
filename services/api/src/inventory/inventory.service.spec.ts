@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { InventoryService } from './inventory.service';
-import { InventoryMovementType } from './inventory.dto';
+import { CreateInventoryReservationDto, InventoryMovementType } from './inventory.dto';
 
 describe('InventoryService movement validation', () => {
   const userId = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -53,4 +53,24 @@ describe('InventoryService movement validation', () => {
       .rejects.toThrow('Idempotency-Key must be 1-128 safe ASCII characters');
     expect(transaction).not.toHaveBeenCalled();
   });
+
+  it('rejects zero or over-precision reservation quantities before opening a transaction', async () => {
+    const dto: CreateInventoryReservationDto = {
+      item_id: itemId, location_code: 'MAIN', quantity: 0, reason: 'Reserve for order',
+    };
+    await expect(service.createReservation(userId, tenantId, factoryId, dto, 'reserve-1', null, null))
+      .rejects.toThrow('quantity must be positive');
+    await expect(service.createReservation(userId, tenantId, factoryId,
+      { ...dto, quantity: 1.0000001 }, 'reserve-2', null, null))
+      .rejects.toThrow('quantity must be positive');
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed reservation idempotency key before opening a transaction', async () => {
+    await expect(service.createReservation(userId, tenantId, factoryId, {
+      item_id: itemId, location_code: 'MAIN', quantity: 1, reason: 'Reserve for order',
+    }, 'bad key', null, null)).rejects.toThrow('Idempotency-Key must be 1-128 safe ASCII characters');
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
 });

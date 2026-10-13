@@ -14,6 +14,10 @@ import { DatabaseService } from '../database/database.service';
 import {
   CreateInventoryItemDto,
   CreateInventoryMovementDto,
+  CreateInventoryReservationDto,
+  InventoryReservationStatus,
+  ListInventoryReservationsDto,
+  TransitionInventoryReservationDto,
   InventoryMovementType,
   ListInventoryBalancesDto,
   ListInventoryItemsDto,
@@ -51,6 +55,28 @@ interface InventoryMovementRow {
   correlation_id: string | null;
   request_id: string | null;
   created_at: string;
+}
+
+
+interface InventoryReservationRow {
+  id: string;
+  tenant_id: string;
+  factory_id: string;
+  item_id: string;
+  item_code: string;
+  item_name: string;
+  base_unit: string;
+  location_code: string;
+  quantity: string;
+  status: InventoryReservationStatus;
+  reason: string;
+  reference_ref: string | null;
+  idempotency_key: string;
+  created_by_user_id: string;
+  updated_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  version: number;
 }
 
 @Injectable()
@@ -259,7 +285,7 @@ export class InventoryService {
               version = version + 1,
               updated_at = clock_timestamp()
           WHERE id = $2 AND tenant_id = $3 AND factory_id = $4
-            AND on_hand_quantity + $1::numeric >= 0
+            AND on_hand_quantity + $1::numeric >= reserved_quantity
             AND on_hand_quantity + $1::numeric <= 1000000000000
           RETURNING on_hand_quantity::text AS on_hand_after
           `,
@@ -267,7 +293,7 @@ export class InventoryService {
         );
         const balanceAfter = updateResult.rows[0];
         if (!balanceAfter) {
-          throw new ConflictException('Inventory movement would make the stock balance negative or exceed the supported quantity');
+          throw new ConflictException('Inventory movement would make the stock balance negative, consume reserved units, or exceed the supported quantity');
         }
 
         const correlationId = traceId ?? requestId ?? randomUUID();
@@ -348,6 +374,458 @@ export class InventoryService {
     return result;
   }
 
+
+  async createReservation(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    dto: CreateInventoryReservationDto,
+    idempotencyKeyInput: string,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateIdentity(userId, tenantId, factoryId);
+    this.validateReservation(dto);
+    const idempotencyKey = this.validateIdempotencyKey(idempotencyKeyInput);
+    this.validateOptionalUuid(requestId, 'requestId');
+    this.validateOptionalUuid(traceId, 'traceId');
+
+    const normalized = {
+      item_id: dto.item_id.toLowerCase(),
+      location_code: dto.location_code.trim().toUpperCase(),
+      quantity: dto.quantity,
+      reason: dto.reason.trim(),
+      reference_ref: dto.reference_ref?.trim() || null,
+    };
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify({ tenant_id: tenantId, factory_id: factoryId, ...normalized }))
+      .digest('hex');
+
+    const result = await this.database.transaction(
+      { tenantId, userId },
+      async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [tenantId, idempotencyKey]);
+        const priorResult = await client.query<{ id: string; request_hash: string }>(
+          'SELECT id::text AS id, request_hash FROM inventory_reservations WHERE tenant_id = $1 AND idempotency_key = $2 LIMIT 1',
+          [tenantId, idempotencyKey],
+        );
+        const prior = priorResult.rows[0];
+        if (prior) {
+          if (prior.request_hash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used for a different inventory reservation');
+          }
+          return {
+            reservation: await this.getReservationInTransaction(client, tenantId, factoryId, prior.id),
+            replayed: true,
+          };
+        }
+
+        await this.assertActiveFactory(client, tenantId, factoryId);
+        const itemResult = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM inventory_items
+           WHERE tenant_id = $1 AND factory_id = $2 AND id = $3 AND status = 'ACTIVE'
+           FOR SHARE`,
+          [tenantId, factoryId, normalized.item_id],
+        );
+        const item = itemResult.rows[0];
+        if (!item) throw new NotFoundException('Active inventory item was not found in this factory');
+
+        await client.query(
+          `INSERT INTO inventory_stock_balances (tenant_id, factory_id, item_id, location_code, on_hand_quantity, reserved_quantity)
+           VALUES ($1, $2, $3, $4, 0, 0)
+           ON CONFLICT (tenant_id, factory_id, item_id, location_code) DO NOTHING`,
+          [tenantId, factoryId, item.id, normalized.location_code],
+        );
+        const balanceResult = await client.query<{ id: string; on_hand_quantity: string; reserved_quantity: string }>(
+          `SELECT id::text AS id, on_hand_quantity::text AS on_hand_quantity, reserved_quantity::text AS reserved_quantity
+           FROM inventory_stock_balances
+           WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND location_code = $4
+           FOR UPDATE`,
+          [tenantId, factoryId, item.id, normalized.location_code],
+        );
+        const balance = balanceResult.rows[0];
+        if (!balance) throw new Error('INVENTORY_BALANCE_LOCK_FAILED');
+
+        const balanceUpdate = await client.query<{ on_hand_after: string; reserved_quantity_after: string }>(
+          `UPDATE inventory_stock_balances
+           SET reserved_quantity = reserved_quantity + $1::numeric,
+               version = version + 1,
+               updated_at = clock_timestamp()
+           WHERE id = $2 AND tenant_id = $3 AND factory_id = $4
+             AND on_hand_quantity - reserved_quantity >= $1::numeric
+           RETURNING on_hand_quantity::text AS on_hand_after, reserved_quantity::text AS reserved_quantity_after`,
+          [normalized.quantity, balance.id, tenantId, factoryId],
+        );
+        const balanceAfter = balanceUpdate.rows[0];
+        if (!balanceAfter) {
+          throw new ConflictException('Insufficient available inventory to reserve requested quantity');
+        }
+
+        const reservationResult = await client.query<{ id: string }>(
+          `INSERT INTO inventory_reservations (
+             tenant_id, factory_id, item_id, location_code, quantity, reason, reference_ref,
+             idempotency_key, request_hash, created_by_user_id, updated_by_user_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+           RETURNING id::text AS id`,
+          [tenantId, factoryId, item.id, normalized.location_code, normalized.quantity,
+            normalized.reason, normalized.reference_ref, idempotencyKey, requestHash, userId],
+        );
+        const reservationId = reservationResult.rows[0]?.id;
+        if (!reservationId) throw new Error('INVENTORY_RESERVATION_INSERT_FAILED');
+
+        const correlationId = traceId ?? requestId ?? randomUUID();
+        await client.query(
+          `INSERT INTO inventory_reservation_events (
+             tenant_id, factory_id, reservation_id, event_type, quantity, on_hand_after,
+             reserved_quantity_after, reason, idempotency_key, request_hash, recorded_by_user_id,
+             correlation_id, request_id
+           ) VALUES ($1,$2,$3,'RESERVED',$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [tenantId, factoryId, reservationId, normalized.quantity, balanceAfter.on_hand_after,
+            balanceAfter.reserved_quantity_after, normalized.reason, idempotencyKey, requestHash,
+            userId, correlationId, requestId],
+        );
+        await this.publishReservationEvent(
+          client, tenantId, factoryId, reservationId, item.id, normalized.location_code,
+          'RESERVED', normalized.quantity, normalized.reason, normalized.reference_ref,
+          balanceAfter.on_hand_after, balanceAfter.reserved_quantity_after, null, correlationId, userId,
+        );
+
+        return {
+          reservation: await this.getReservationInTransaction(client, tenantId, factoryId, reservationId),
+          replayed: false,
+        };
+      },
+    );
+
+    if (!result.replayed) {
+      await this.recordAuditSafely({
+        tenantId, factoryId, userId, requestId, traceId,
+        action: 'RESERVE',
+        resourceType: 'INVENTORY_RESERVATION',
+        resourceId: result.reservation.id,
+        payload: {
+          itemCode: result.reservation.item_code,
+          locationCode: result.reservation.location_code,
+          quantity: result.reservation.quantity,
+          referenceRef: result.reservation.reference_ref,
+          idempotencyKey,
+        },
+      });
+    }
+    return result;
+  }
+
+  async transitionReservation(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    reservationId: string,
+    targetStatus: 'RELEASED' | 'CONSUMED',
+    dto: TransitionInventoryReservationDto,
+    idempotencyKeyInput: string,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateIdentity(userId, tenantId, factoryId);
+    this.validateOptionalUuid(reservationId, 'reservationId');
+    const reason = dto.reason.trim();
+    if (reason.length < 8 || reason.length > 300) {
+      throw new BadRequestException('reason must be between 8 and 300 characters');
+    }
+    const idempotencyKey = this.validateIdempotencyKey(idempotencyKeyInput);
+    this.validateOptionalUuid(requestId, 'requestId');
+    this.validateOptionalUuid(traceId, 'traceId');
+
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify({
+        tenant_id: tenantId, factory_id: factoryId, reservation_id: reservationId,
+        target_status: targetStatus, reason,
+      }))
+      .digest('hex');
+
+    const result = await this.database.transaction(
+      { tenantId, userId },
+      async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [tenantId, idempotencyKey]);
+        const priorEventResult = await client.query<{ request_hash: string; reservation_id: string; movement_id: string | null }>(
+          `SELECT request_hash, reservation_id::text AS reservation_id, movement_id::text AS movement_id
+           FROM inventory_reservation_events
+           WHERE tenant_id = $1 AND idempotency_key = $2 LIMIT 1`,
+          [tenantId, idempotencyKey],
+        );
+        const priorEvent = priorEventResult.rows[0];
+        if (priorEvent) {
+          if (priorEvent.request_hash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used for a different inventory reservation operation');
+          }
+          const reservation = await this.getReservationInTransaction(
+            client, tenantId, factoryId, priorEvent.reservation_id,
+          );
+          const movement = priorEvent.movement_id
+            ? await this.getMovementInTransaction(client, tenantId, factoryId, priorEvent.movement_id)
+            : null;
+          return { reservation, movement, replayed: true };
+        }
+
+        const reservationResult = await client.query<{
+          id: string; item_id: string; location_code: string; quantity: string;
+          status: InventoryReservationStatus; reference_ref: string | null;
+        }>(
+          `SELECT id::text AS id, item_id::text AS item_id, location_code,
+                  quantity::text AS quantity, status, reference_ref
+           FROM inventory_reservations
+           WHERE tenant_id = $1 AND factory_id = $2 AND id = $3
+           FOR UPDATE`,
+          [tenantId, factoryId, reservationId],
+        );
+        const reservation = reservationResult.rows[0];
+        if (!reservation) throw new NotFoundException('Inventory reservation was not found in this factory');
+        if (reservation.status !== InventoryReservationStatus.ACTIVE) {
+          throw new ConflictException(`Inventory reservation is already ${reservation.status.toLowerCase()}`);
+        }
+
+        const balanceResult = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM inventory_stock_balances
+           WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND location_code = $4
+           FOR UPDATE`,
+          [tenantId, factoryId, reservation.item_id, reservation.location_code],
+        );
+        const balance = balanceResult.rows[0];
+        if (!balance) throw new Error('INVENTORY_RESERVATION_BALANCE_NOT_FOUND');
+
+        const balanceUpdate = targetStatus === 'RELEASED'
+          ? await client.query<{ on_hand_after: string; reserved_quantity_after: string }>(
+            `UPDATE inventory_stock_balances
+             SET reserved_quantity = reserved_quantity - $1::numeric,
+                 version = version + 1, updated_at = clock_timestamp()
+             WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND reserved_quantity >= $1::numeric
+             RETURNING on_hand_quantity::text AS on_hand_after, reserved_quantity::text AS reserved_quantity_after`,
+            [reservation.quantity, balance.id, tenantId, factoryId],
+          )
+          : await client.query<{ on_hand_after: string; reserved_quantity_after: string }>(
+            `UPDATE inventory_stock_balances
+             SET on_hand_quantity = on_hand_quantity - $1::numeric,
+                 reserved_quantity = reserved_quantity - $1::numeric,
+                 version = version + 1, updated_at = clock_timestamp()
+             WHERE id = $2 AND tenant_id = $3 AND factory_id = $4
+               AND reserved_quantity >= $1::numeric AND on_hand_quantity >= $1::numeric
+             RETURNING on_hand_quantity::text AS on_hand_after, reserved_quantity::text AS reserved_quantity_after`,
+            [reservation.quantity, balance.id, tenantId, factoryId],
+          );
+        const balanceAfter = balanceUpdate.rows[0];
+        if (!balanceAfter) {
+          throw new ConflictException('Inventory reservation balance is inconsistent; no stock was changed');
+        }
+
+        const correlationId = traceId ?? requestId ?? randomUUID();
+        let movementId: string | null = null;
+        if (targetStatus === 'CONSUMED') {
+          const movementKey = `INV-RES-CONSUME-${randomUUID()}`;
+          const movementHash = createHash('sha256')
+            .update(JSON.stringify({ operation: 'RESERVATION_CONSUME', reservation_id: reservationId, request_hash: requestHash }))
+            .digest('hex');
+          const movementInsert = await client.query<{ id: string }>(
+            `INSERT INTO inventory_movements (
+               tenant_id, factory_id, item_id, location_code, movement_type, quantity_delta, on_hand_after,
+               reason, reference_ref, idempotency_key, request_hash, recorded_by, correlation_id, request_id
+             ) VALUES ($1,$2,$3,$4,'ISSUE',-$5::numeric,$6,$7,$8,$9,$10,$11,$12,$13)
+             RETURNING id::text AS id`,
+            [tenantId, factoryId, reservation.item_id, reservation.location_code, reservation.quantity,
+              balanceAfter.on_hand_after, reason, reservation.reference_ref, movementKey, movementHash,
+              userId, correlationId, requestId],
+          );
+          movementId = movementInsert.rows[0]?.id ?? null;
+          if (!movementId) throw new Error('INVENTORY_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+          const movementPayload = {
+            movement_id: movementId, item_id: reservation.item_id, factory_id: factoryId,
+            location_code: reservation.location_code, movement_type: 'ISSUE',
+            quantity_delta: `-${reservation.quantity}`,
+            on_hand_after: balanceAfter.on_hand_after, reference_ref: reservation.reference_ref,
+            reservation_id: reservationId, actor_user_id: userId,
+          };
+          await client.query(
+            `INSERT INTO outbox_events (
+               tenant_id, factory_id, aggregate_type, aggregate_id, event_type, event_version,
+               occurred_at, correlation_id, causation_id, actor, source, payload
+             ) VALUES ($1,$2,'INVENTORY_MOVEMENT',$3,'INVENTORY.MOVEMENT_RECORDED',1,clock_timestamp(),
+               $4,NULL,$5::jsonb,$6::jsonb,$7::jsonb)`,
+            [tenantId, factoryId, movementId, correlationId,
+              JSON.stringify({ type: 'user', id: userId }),
+              JSON.stringify({ system: 'FactoryOS', connector: 'inventory-service', version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0' }),
+              JSON.stringify(movementPayload)],
+          );
+        }
+
+        await client.query(
+          `UPDATE inventory_reservations SET status = $1, updated_by_user_id = $2,
+             updated_at = clock_timestamp(), version = version + 1
+           WHERE id = $3 AND tenant_id = $4 AND factory_id = $5 AND status = 'ACTIVE'`,
+          [targetStatus, userId, reservationId, tenantId, factoryId],
+        );
+        await client.query(
+          `INSERT INTO inventory_reservation_events (
+             tenant_id, factory_id, reservation_id, event_type, quantity, on_hand_after,
+             reserved_quantity_after, reason, idempotency_key, request_hash, recorded_by_user_id,
+             correlation_id, request_id, movement_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [tenantId, factoryId, reservationId, targetStatus, reservation.quantity, balanceAfter.on_hand_after,
+            balanceAfter.reserved_quantity_after, reason, idempotencyKey, requestHash, userId,
+            correlationId, requestId, movementId],
+        );
+        await this.publishReservationEvent(
+          client, tenantId, factoryId, reservationId, reservation.item_id, reservation.location_code,
+          targetStatus, reservation.quantity, reason, reservation.reference_ref,
+          balanceAfter.on_hand_after, balanceAfter.reserved_quantity_after, movementId, correlationId, userId,
+        );
+
+        return {
+          reservation: await this.getReservationInTransaction(client, tenantId, factoryId, reservationId),
+          movement: movementId ? await this.getMovementInTransaction(client, tenantId, factoryId, movementId) : null,
+          replayed: false,
+        };
+      },
+    );
+
+    if (!result.replayed) {
+      await this.recordAuditSafely({
+        tenantId, factoryId, userId, requestId, traceId,
+        action: targetStatus,
+        resourceType: 'INVENTORY_RESERVATION',
+        resourceId: result.reservation.id,
+        payload: {
+          itemCode: result.reservation.item_code,
+          locationCode: result.reservation.location_code,
+          quantity: result.reservation.quantity,
+          movementId: result.movement?.id ?? null,
+          idempotencyKey,
+        },
+      });
+    }
+    return result;
+  }
+
+  async listReservations(tenantId: string, factoryId: string, query: ListInventoryReservationsDto) {
+    this.validateIdentity(null, tenantId, factoryId);
+    this.validateOptionalUuid(query.item_id ?? null, 'item_id');
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const values: unknown[] = [tenantId, factoryId];
+    const where = ['r.tenant_id = $1', 'r.factory_id = $2'];
+    if (query.item_id) {
+      values.push(query.item_id);
+      where.push(`r.item_id = ${values.length}`);
+    }
+    if (query.status) {
+      values.push(query.status);
+      where.push(`r.status = ${values.length}`);
+    }
+    values.push(limit, (page - 1) * limit);
+    const limitIndex = values.length - 1;
+    const offsetIndex = values.length;
+    const result = await this.database.query<InventoryReservationRow>(
+      `SELECT r.id::text AS id, r.tenant_id::text AS tenant_id, r.factory_id::text AS factory_id,
+              r.item_id::text AS item_id, i.item_code, i.item_name, i.base_unit, r.location_code,
+              r.quantity::text AS quantity, r.status, r.reason, r.reference_ref, r.idempotency_key,
+              r.created_by_user_id::text AS created_by_user_id, r.updated_by_user_id::text AS updated_by_user_id,
+              r.created_at::text AS created_at, r.updated_at::text AS updated_at, r.version::int AS version
+       FROM inventory_reservations r
+       INNER JOIN inventory_items i ON i.id = r.item_id AND i.tenant_id = r.tenant_id AND i.factory_id = r.factory_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT ${limitIndex} OFFSET ${offsetIndex}`,
+      values,
+      { tenantId },
+    );
+    return { page, limit, reservations: result.rows };
+  }
+
+  private validateIdempotencyKey(input: string): string {
+    if (typeof input !== 'string') {
+      throw new BadRequestException('Idempotency-Key must be 1-128 safe ASCII characters');
+    }
+    const key = input.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(key)) {
+      throw new BadRequestException('Idempotency-Key must be 1-128 safe ASCII characters');
+    }
+    return key;
+  }
+
+  private validateReservation(dto: CreateInventoryReservationDto): void {
+    if (!isUUID(dto.item_id)) throw new BadRequestException('item_id must be a valid UUID');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(dto.location_code.trim())) {
+      throw new BadRequestException('location_code is invalid');
+    }
+    if (
+      !Number.isFinite(dto.quantity) ||
+      dto.quantity <= 0 ||
+      dto.quantity > 1000000000000 ||
+      Number(dto.quantity.toFixed(6)) !== dto.quantity
+    ) {
+      throw new BadRequestException('quantity must be positive, at most 12 integer digits and 6 decimal places');
+    }
+    const reason = dto.reason.trim();
+    if (reason.length < 8 || reason.length > 300) {
+      throw new BadRequestException('reason must be between 8 and 300 characters');
+    }
+    if (dto.reference_ref != null && dto.reference_ref.trim().length > 255) {
+      throw new BadRequestException('reference_ref must be at most 255 characters');
+    }
+  }
+
+  private async getReservationInTransaction(
+    client: PoolClient, tenantId: string, factoryId: string, reservationId: string,
+  ): Promise<InventoryReservationRow> {
+    const result = await client.query<InventoryReservationRow>(
+      `SELECT r.id::text AS id, r.tenant_id::text AS tenant_id, r.factory_id::text AS factory_id,
+              r.item_id::text AS item_id, i.item_code, i.item_name, i.base_unit, r.location_code,
+              r.quantity::text AS quantity, r.status, r.reason, r.reference_ref, r.idempotency_key,
+              r.created_by_user_id::text AS created_by_user_id, r.updated_by_user_id::text AS updated_by_user_id,
+              r.created_at::text AS created_at, r.updated_at::text AS updated_at, r.version::int AS version
+       FROM inventory_reservations r
+       INNER JOIN inventory_items i ON i.id = r.item_id AND i.tenant_id = r.tenant_id AND i.factory_id = r.factory_id
+       WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.id = $3 LIMIT 1`,
+      [tenantId, factoryId, reservationId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('Inventory reservation was not found in this factory');
+    return row;
+  }
+
+  private async publishReservationEvent(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    reservationId: string,
+    itemId: string,
+    locationCode: string,
+    eventType: 'RESERVED' | 'RELEASED' | 'CONSUMED',
+    quantity: number | string,
+    reason: string,
+    referenceRef: string | null,
+    onHandAfter: string,
+    reservedQuantityAfter: string,
+    movementId: string | null,
+    correlationId: string,
+    userId: string,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO outbox_events (
+         tenant_id, factory_id, aggregate_type, aggregate_id, event_type, event_version,
+         occurred_at, correlation_id, causation_id, actor, source, payload
+       ) VALUES ($1,$2,'INVENTORY_RESERVATION',$3,'INVENTORY.RESERVATION_CHANGED',1,clock_timestamp(),
+         $4,$5,$6::jsonb,$7::jsonb,$8::jsonb)`,
+      [tenantId, factoryId, reservationId, correlationId, movementId,
+        JSON.stringify({ type: 'user', id: userId }),
+        JSON.stringify({ system: 'FactoryOS', connector: 'inventory-service', version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0' }),
+        JSON.stringify({
+          reservation_id: reservationId, item_id: itemId, factory_id: factoryId,
+          location_code: locationCode, event_type: eventType, quantity: String(quantity),
+          on_hand_after: onHandAfter, reserved_quantity_after: reservedQuantityAfter,
+          reason, reference_ref: referenceRef, movement_id: movementId, actor_user_id: userId,
+        })],
+    );
+  }
+
   async listBalances(tenantId: string, factoryId: string, query: ListInventoryBalancesDto) {
     this.validateIdentity(null, tenantId, factoryId);
     this.validateOptionalUuid(query.item_id ?? null, 'item_id');
@@ -365,6 +843,8 @@ export class InventoryService {
       `
       SELECT b.item_id::text AS item_id, i.item_code, i.item_name, i.base_unit,
              b.location_code, b.on_hand_quantity::text AS on_hand_quantity,
+             b.reserved_quantity::text AS reserved_quantity,
+             (b.on_hand_quantity - b.reserved_quantity)::text AS available_quantity,
              b.version::int AS version, b.updated_at::text AS updated_at
       FROM inventory_stock_balances b
       INNER JOIN inventory_items i
@@ -486,7 +966,7 @@ export class InventoryService {
     if (!dto.reason.trim() || dto.reason.trim().length < 8 || dto.reason.trim().length > 300) {
       throw new BadRequestException('reason must be between 8 and 300 characters');
     }
-    if (dto.reference_ref !== undefined && dto.reference_ref.trim().length > 255) {
+    if (dto.reference_ref != null && dto.reference_ref.trim().length > 255) {
       throw new BadRequestException('reference_ref must be at most 255 characters');
     }
   }

@@ -5,6 +5,8 @@ import {
   Get,
   Headers,
   Post,
+  Param,
+  ParseUUIDPipe,
   Query,
   Req,
   UnauthorizedException,
@@ -19,6 +21,9 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   CreateInventoryItemDto,
   CreateInventoryMovementDto,
+  CreateInventoryReservationDto,
+  ListInventoryReservationsDto,
+  TransitionInventoryReservationDto,
   ListInventoryBalancesDto,
   ListInventoryItemsDto,
   ListInventoryMovementsDto,
@@ -96,6 +101,78 @@ export class InventoryController {
   async listMovements(@Req() request: FactoryOsRequest, @Query() query: ListInventoryMovementsDto): Promise<unknown> {
     const context = this.requireContext(request);
     return this.inventoryService.listMovements(context.tenantId, context.factoryId, query);
+  }
+
+
+  @Post('reservations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async createReservation(
+    @Req() request: FactoryOsRequest,
+    @Body() body: CreateInventoryReservationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<unknown> {
+    const context = this.requireContext(request);
+    if (idempotencyKey === undefined || idempotencyKey === null) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+    return this.inventoryService.createReservation(
+      context.userId, context.tenantId, context.factoryId, body,
+      idempotencyKey, context.requestId, context.traceId,
+    );
+  }
+
+  @Get('reservations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listReservations(
+    @Req() request: FactoryOsRequest,
+    @Query() query: ListInventoryReservationsDto,
+  ): Promise<unknown> {
+    const context = this.requireContext(request);
+    return this.inventoryService.listReservations(context.tenantId, context.factoryId, query);
+  }
+
+  @Post('reservations/:reservationId/release')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async releaseReservation(
+    @Req() request: FactoryOsRequest,
+    @Param('reservationId', new ParseUUIDPipe()) reservationId: string,
+    @Body() body: TransitionInventoryReservationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<unknown> {
+    const context = this.requireContext(request);
+    if (idempotencyKey === undefined || idempotencyKey === null) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+    return this.inventoryService.transitionReservation(
+      context.userId, context.tenantId, context.factoryId, reservationId, 'RELEASED',
+      body, idempotencyKey, context.requestId, context.traceId,
+    );
+  }
+
+  @Post('reservations/:reservationId/consume')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async consumeReservation(
+    @Req() request: FactoryOsRequest,
+    @Param('reservationId', new ParseUUIDPipe()) reservationId: string,
+    @Body() body: TransitionInventoryReservationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<unknown> {
+    const context = this.requireContext(request);
+    if (idempotencyKey === undefined || idempotencyKey === null) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+    return this.inventoryService.transitionReservation(
+      context.userId, context.tenantId, context.factoryId, reservationId, 'CONSUMED',
+      body, idempotencyKey, context.requestId, context.traceId,
+    );
   }
 
   private requireContext(request: FactoryOsRequest): {

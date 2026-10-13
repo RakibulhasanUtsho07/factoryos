@@ -73,6 +73,68 @@ export class CreateInventoryMovementDto {
   reference_ref?: string;
 }
 
+
+export enum InventoryReservationStatus {
+  ACTIVE = 'ACTIVE',
+  RELEASED = 'RELEASED',
+  CONSUMED = 'CONSUMED',
+}
+
+export class CreateInventoryReservationDto {
+  @IsUUID()
+  item_id!: string;
+
+  @IsString()
+  @MaxLength(80)
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/)
+  location_code!: string;
+
+  @IsNumber({ maxDecimalPlaces: 6 })
+  @Min(0.000001)
+  @Max(1000000000000)
+  quantity!: number;
+
+  @IsString()
+  @MaxLength(300)
+  @Matches(/^.{8,300}$/)
+  reason!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  reference_ref?: string;
+}
+
+export class TransitionInventoryReservationDto {
+  @IsString()
+  @MaxLength(300)
+  @Matches(/^.{8,300}$/)
+  reason!: string;
+}
+
+export class ListInventoryReservationsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+
+  @IsOptional()
+  @IsUUID()
+  item_id?: string;
+
+  @IsOptional()
+  @IsEnum(InventoryReservationStatus)
+  status?: InventoryReservationStatus;
+}
+
 export class ListInventoryBalancesDto {
   @IsOptional()
   @IsUUID()
