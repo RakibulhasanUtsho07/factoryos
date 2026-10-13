@@ -181,6 +181,90 @@ const decisionRow = {
     '2026-10-07T00:00:00.000Z',
 };
 
+const approvalBoundPayload = {
+  quantity: 10,
+};
+
+const approvalBoundTarget = {
+  decision_id: decisionId,
+};
+
+const approvalBoundPayloadHash = sha256(
+  JSON.stringify(approvalBoundPayload),
+);
+
+function buildBoundApprovalRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: approvalId,
+    tenant_id: tenantId,
+    policy_id: policyId,
+    risk_class_id: '6f1adddd-dddd-4ddd-8ddd-dddddddddddd',
+    action: 'PLAN.CHANGE',
+    resource_type: 'PLAN',
+    resource_id: 'plan-1',
+    status: 'APPROVED',
+    expires_at: '2999-01-01T00:00:00.000Z',
+    metadata: {
+      decisionId,
+      actionPayloadHash: approvalBoundPayloadHash,
+      target: approvalBoundTarget,
+    },
+    ...overrides,
+  };
+}
+
+const authorizedActionInsertRow = {
+  id: actionId,
+  tenant_id: tenantId,
+  factory_id: factoryId,
+  decision_id: decisionId,
+  action_type: 'PLAN.CHANGE',
+  tool_id: 'PLAN.CHANGE',
+  tool_version: '1.0.0',
+  target: approvalBoundTarget,
+  resource_type: 'PLAN',
+  resource_id: 'plan-1',
+  payload: approvalBoundPayload,
+  payload_hash: approvalBoundPayloadHash,
+  risk_class: 'L3',
+  authorization_status: 'AUTHORIZED',
+  authorization: {
+    approvalId,
+    approvalStatus: 'APPROVED',
+  },
+  approval_id: approvalId,
+  action_token_hash: 'b'.repeat(64),
+  token_expires_at: '2999-01-01T00:00:00.000Z',
+  idempotency_key: null,
+  created_by: userId,
+  created_at: '2026-10-07T00:00:00.000Z',
+};
+
+function approvalRequiredEvaluation(): PolicyEvaluationMock {
+  return {
+    outcome: 'APPROVAL_REQUIRED',
+    risk: {
+      class: 'L3',
+      policyRef: {
+        id: policyId,
+        key: 'plan-change',
+        version: '1',
+      },
+      approvalRequired: true,
+    },
+    policy: {
+      id: policyId,
+      riskClass: {
+        id: '6f1adddd-dddd-4ddd-8ddd-dddddddddddd',
+      },
+    },
+    safeDefault: false,
+    reason: 'HUMAN_APPROVAL_REQUIRED',
+  };
+}
+
 describe(
   'AiRuntimeService governed action + learning wave',
   () => {
@@ -596,6 +680,160 @@ describe(
         expect(
           createApprovalMock,
         ).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
+      'accepts an approved action only when decision, payload, target, resource, and risk class match',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [buildBoundApprovalRow()],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [authorizedActionInsertRow],
+        });
+        evaluatePolicyMock.mockResolvedValue(approvalRequiredEvaluation());
+
+        const result = await service.authorizeAction(
+          tenantId,
+          factoryId,
+          userId,
+          {
+            decision_id: decisionId,
+            action_type: 'PLAN.CHANGE',
+            tool_version: '1.0.0',
+            target: approvalBoundTarget,
+            resource_type: 'PLAN',
+            resource_id: 'plan-1',
+            payload: approvalBoundPayload,
+            approval_id: approvalId,
+          },
+        );
+
+        expect(result.action.authorizationStatus).toBe('AUTHORIZED');
+        expect(result.action.approvalId).toBe(approvalId);
+        expect(result.actionToken).toEqual(expect.any(String));
+        expect(databaseQueryMock).toHaveBeenCalledTimes(3);
+      },
+    );
+
+    it(
+      'rejects an approved action when the payload differs from the approval metadata',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [buildBoundApprovalRow({
+            metadata: {
+              decisionId,
+              actionPayloadHash: sha256(JSON.stringify({ quantity: 999 })),
+              target: approvalBoundTarget,
+            },
+          })],
+        });
+        evaluatePolicyMock.mockResolvedValue(approvalRequiredEvaluation());
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              approval_id: approvalId,
+            },
+          ),
+        ).rejects.toThrow(
+          'AI action approval is bound to a different decision or payload',
+        );
+
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
+      'rejects an approved action when the target differs from the approval metadata',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [buildBoundApprovalRow({
+            metadata: {
+              decisionId,
+              actionPayloadHash: approvalBoundPayloadHash,
+              target: { decision_id: decisionId, factory_id: 'another-factory' },
+            },
+          })],
+        });
+        evaluatePolicyMock.mockResolvedValue(approvalRequiredEvaluation());
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              approval_id: approvalId,
+            },
+          ),
+        ).rejects.toThrow(
+          'AI action approval target does not match the requested action',
+        );
+
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
+      'does not treat a null approval resource as a wildcard',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [buildBoundApprovalRow({ resource_type: null })],
+        });
+        evaluatePolicyMock.mockResolvedValue(approvalRequiredEvaluation());
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              approval_id: approvalId,
+            },
+          ),
+        ).rejects.toThrow(
+          'AI action approval resource type does not match the requested action',
+        );
+
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
       },
     );
 
