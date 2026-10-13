@@ -356,20 +356,20 @@ export class AiOperationalEvaluationService {
       SELECT
         o.id::text AS id,
         o.decision_id::text AS decision_id,
-        o.expected_metric ->> $4 AS predicted_metric_value,
-        o.actual_metric ->> $4 AS actual_metric_value,
-        jsonb_typeof(o.expected_metric -> $4) = 'number'
+        o.expected_metric ->> $4::text AS predicted_metric_value,
+        o.actual_metric ->> $4::text AS actual_metric_value,
+        jsonb_typeof(o.expected_metric -> $4::text) = 'number'
           AS predicted_metric_is_number,
-        jsonb_typeof(o.actual_metric -> $4) = 'number'
+        jsonb_typeof(o.actual_metric -> $4::text) = 'number'
           AS actual_metric_is_number,
         CASE
-          WHEN jsonb_typeof(o.expected_metric -> $4) = 'number'
-          THEN ABS((o.expected_metric ->> $4)::numeric) <= 1000000000000000
+          WHEN jsonb_typeof(o.expected_metric -> $4::text) = 'number'
+          THEN ABS((o.expected_metric ->> $4::text)::numeric) <= 1000000000000000
           ELSE FALSE
         END AS predicted_metric_in_range,
         CASE
-          WHEN jsonb_typeof(o.actual_metric -> $4) = 'number'
-          THEN ABS((o.actual_metric ->> $4)::numeric) <= 1000000000000000
+          WHEN jsonb_typeof(o.actual_metric -> $4::text) = 'number'
+          THEN ABS((o.actual_metric ->> $4::text)::numeric) <= 1000000000000000
           ELSE FALSE
         END AS actual_metric_in_range,
         o.status,
@@ -1592,7 +1592,7 @@ export class AiOperationalEvaluationService {
     if (
       isJsonNumber !== true ||
       typeof value !== 'string' ||
-      !/^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$/.test(value) ||
+      !/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value) ||
       !isWithinRange
     ) {
       throw new BadRequestException(
