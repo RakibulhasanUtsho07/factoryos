@@ -45,7 +45,7 @@ export class InventoryController {
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.write')
   @RequireFactoryScope()
-  async createItem(@Req() request: FactoryOsRequest, @Body() body: CreateInventoryItemDto) {
+  async createItem(@Req() request: FactoryOsRequest, @Body() body: CreateInventoryItemDto): Promise<unknown> {
     const context = this.requireContext(request);
     return this.inventoryService.createItem(
       context.userId, context.tenantId, context.factoryId, body, context.requestId, context.traceId,
@@ -56,7 +56,7 @@ export class InventoryController {
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.read')
   @RequireFactoryScope()
-  async listItems(@Req() request: FactoryOsRequest, @Query() query: ListInventoryItemsDto) {
+  async listItems(@Req() request: FactoryOsRequest, @Query() query: ListInventoryItemsDto): Promise<unknown> {
     const context = this.requireContext(request);
     return this.inventoryService.listItems(context.tenantId, context.factoryId, query);
   }
@@ -69,7 +69,7 @@ export class InventoryController {
     @Req() request: FactoryOsRequest,
     @Body() body: CreateInventoryMovementDto,
     @Headers('idempotency-key') idempotencyKey?: string,
-  ) {
+  ): Promise<unknown> {
     const context = this.requireContext(request);
     if (idempotencyKey === undefined || idempotencyKey === null) {
       throw new BadRequestException('Idempotency-Key header is required');
@@ -84,7 +84,7 @@ export class InventoryController {
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.read')
   @RequireFactoryScope()
-  async listBalances(@Req() request: FactoryOsRequest, @Query() query: ListInventoryBalancesDto) {
+  async listBalances(@Req() request: FactoryOsRequest, @Query() query: ListInventoryBalancesDto): Promise<unknown> {
     const context = this.requireContext(request);
     return this.inventoryService.listBalances(context.tenantId, context.factoryId, query);
   }
@@ -93,7 +93,7 @@ export class InventoryController {
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.read')
   @RequireFactoryScope()
-  async listMovements(@Req() request: FactoryOsRequest, @Query() query: ListInventoryMovementsDto) {
+  async listMovements(@Req() request: FactoryOsRequest, @Query() query: ListInventoryMovementsDto): Promise<unknown> {
     const context = this.requireContext(request);
     return this.inventoryService.listMovements(context.tenantId, context.factoryId, query);
   }
