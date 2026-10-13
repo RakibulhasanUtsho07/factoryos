@@ -332,6 +332,25 @@ describe('AiOperationalEvaluationService', () => {
     expect(result.evaluation.absoluteError).toBeCloseTo(0.2);
     expect(result.evaluation.predictionCorrect).toBe(true);
     expect(database.query).toHaveBeenCalledTimes(2);
+    const insertCall = database.query.mock.calls[1];
+    expect(insertCall?.[0]).toContain('ABS($13::numeric - $14::numeric)');
+    expect(insertCall?.[1]).toEqual([
+      tenantId,
+      factoryId,
+      decisionId,
+      '9f1a2222-2222-4222-8222-222222222222',
+      'forecast-key-001',
+      'QUALITY',
+      'defect-rate',
+      'model-2.1.0',
+      0.8,
+      expect.any(String),
+      userId,
+      observedAt,
+      '10',
+      '10.2',
+      0.3,
+    ]);
   });
 
   it('rejects a forecast model version that conflicts with its source decision', async () => {
@@ -404,8 +423,12 @@ describe('AiOperationalEvaluationService', () => {
       rows: [{
         id: '9f1a2222-2222-4222-8222-222222222222',
         decision_id: decisionId,
-        expected_metric: { 'defect-rate': 'ten' },
-        actual_metric: { 'defect-rate': 10.2 },
+        predicted_metric_value: 'ten',
+        actual_metric_value: '10.2',
+        predicted_metric_is_number: false,
+        actual_metric_is_number: true,
+        predicted_metric_in_range: false,
+        actual_metric_in_range: true,
         status: 'OBSERVED',
         observed_at: '2026-10-10T09:00:00.000Z',
       }],

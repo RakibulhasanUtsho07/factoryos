@@ -342,8 +342,12 @@ export class AiOperationalEvaluationService {
     const outcomeResult = await this.database.query<{
       id: string;
       decision_id: string;
-      expected_metric: Record<string, unknown>;
-      actual_metric: Record<string, unknown>;
+      predicted_metric_value: string | null;
+      actual_metric_value: string | null;
+      predicted_metric_is_number: boolean | null;
+      actual_metric_is_number: boolean | null;
+      predicted_metric_in_range: boolean;
+      actual_metric_in_range: boolean;
       status: string;
       observed_at: string;
       decision_metadata?: unknown;
@@ -352,8 +356,22 @@ export class AiOperationalEvaluationService {
       SELECT
         o.id::text AS id,
         o.decision_id::text AS decision_id,
-        o.expected_metric,
-        o.actual_metric,
+        o.expected_metric ->> $4 AS predicted_metric_value,
+        o.actual_metric ->> $4 AS actual_metric_value,
+        jsonb_typeof(o.expected_metric -> $4) = 'number'
+          AS predicted_metric_is_number,
+        jsonb_typeof(o.actual_metric -> $4) = 'number'
+          AS actual_metric_is_number,
+        CASE
+          WHEN jsonb_typeof(o.expected_metric -> $4) = 'number'
+          THEN ABS((o.expected_metric ->> $4)::numeric) <= 1000000000000000
+          ELSE FALSE
+        END AS predicted_metric_in_range,
+        CASE
+          WHEN jsonb_typeof(o.actual_metric -> $4) = 'number'
+          THEN ABS((o.actual_metric ->> $4)::numeric) <= 1000000000000000
+          ELSE FALSE
+        END AS actual_metric_in_range,
         o.status,
         o.created_at::text AS observed_at,
         d.metadata AS decision_metadata
@@ -367,7 +385,7 @@ export class AiOperationalEvaluationService {
         AND o.factory_id = $3
       LIMIT 1
       `,
-      [sourceOutcomeId, tenantId, factoryId],
+      [sourceOutcomeId, tenantId, factoryId, metricKey],
       { tenantId, userId: actorUserId },
     );
 
@@ -389,23 +407,25 @@ export class AiOperationalEvaluationService {
       outcome.decision_metadata,
     );
 
+    // Preserve PostgreSQL's exact JSONB numeric text. JavaScript Number
+    // arithmetic can produce binary floating-point artifacts, such as 10.2 - 10.
     const predictedValue = this.metricNumber(
-      outcome.expected_metric,
+      outcome.predicted_metric_value,
       metricKey,
       'expected_metric',
+      outcome.predicted_metric_is_number,
+      outcome.predicted_metric_in_range,
     );
     const actualValue = this.metricNumber(
-      outcome.actual_metric,
+      outcome.actual_metric_value,
       metricKey,
       'actual_metric',
+      outcome.actual_metric_is_number,
+      outcome.actual_metric_in_range,
     );
-    const absoluteError = Math.abs(predictedValue - actualValue);
-    const absolutePercentageError =
-      actualValue === 0 ? null : absoluteError / Math.abs(actualValue);
-    const predictionCorrect = absoluteError <= input.tolerance;
     const observedAt = new Date(outcome.observed_at).toISOString();
 
-    const requestHash = this.requestHash({
+    const requestHashInput = {
       tenantId,
       factoryId,
       actorUserId,
@@ -420,6 +440,14 @@ export class AiOperationalEvaluationService {
       predictedValue,
       actualValue,
       observedAt,
+    };
+    const requestHash = this.requestHash(requestHashInput);
+    // Accept a pre-057 fingerprint only when replaying an existing key.
+    // New rows fingerprint the exact source numeric text.
+    const legacyRequestHash = this.requestHash({
+      ...requestHashInput,
+      predictedValue: Number(predictedValue),
+      actualValue: Number(actualValue),
     });
 
     const inserted = await this.database.query<EvaluationRow>(
@@ -447,8 +475,15 @@ export class AiOperationalEvaluationService {
       )
       VALUES (
         gen_random_uuid(),
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18
+        $1, $2, $3, $4, $5, $6, $7, $8, $9,
+        ABS($13::numeric - $14::numeric) <= $15::numeric,
+        $10, $11, $12, $13::numeric, $14::numeric,
+        ABS($13::numeric - $14::numeric),
+        CASE
+          WHEN $14::numeric = 0 THEN NULL
+          ELSE ABS($13::numeric - $14::numeric) / ABS($14::numeric)
+        END,
+        $15::numeric
       )
       ON CONFLICT (tenant_id, factory_id, evaluation_key) DO NOTHING
       RETURNING
@@ -483,14 +518,11 @@ export class AiOperationalEvaluationService {
         metricKey,
         modelVersion,
         input.confidence,
-        predictionCorrect,
         requestHash,
         actorUserId,
         observedAt,
         predictedValue,
         actualValue,
-        absoluteError,
-        absolutePercentageError,
         input.tolerance,
       ],
       { tenantId, userId: actorUserId },
@@ -511,12 +543,15 @@ export class AiOperationalEvaluationService {
           metricKey,
           modelVersion,
           confidence: input.confidence,
-          predictedValue,
-          actualValue,
-          absoluteError,
-          absolutePercentageError,
-          tolerance: input.tolerance,
-          predictionCorrect,
+          predictedValue: Number(insertedRow.predicted_value),
+          actualValue: Number(insertedRow.actual_value),
+          absoluteError: Number(insertedRow.absolute_error),
+          absolutePercentageError:
+            insertedRow.absolute_percentage_error === null
+              ? null
+              : Number(insertedRow.absolute_percentage_error),
+          tolerance: Number(insertedRow.tolerance),
+          predictionCorrect: insertedRow.prediction_correct,
         },
       });
 
@@ -566,7 +601,10 @@ export class AiOperationalEvaluationService {
       );
     }
 
-    if (existing.request_hash !== requestHash) {
+    if (
+      existing.request_hash !== requestHash &&
+      existing.request_hash !== legacyRequestHash
+    ) {
       throw new ConflictException(
         'The evaluation key was already used for a different forecast request',
       );
@@ -1543,16 +1581,19 @@ export class AiOperationalEvaluationService {
   }
 
   private metricNumber(
-    metrics: Record<string, unknown>,
+    value: unknown,
     metricKey: string,
     field: 'expected_metric' | 'actual_metric',
-  ): number {
-    const value = metrics[metricKey];
-
+    isJsonNumber: boolean | null,
+    isWithinRange: boolean,
+  ): string {
+    // Keep the authoritative JSONB number as text until PostgreSQL casts it
+    // to NUMERIC. Accept numbers only, not strings, booleans, or missing keys.
     if (
-      typeof value !== 'number' ||
-      !Number.isFinite(value) ||
-      Math.abs(value) > 1_000_000_000_000_000
+      isJsonNumber !== true ||
+      typeof value !== 'string' ||
+      !/^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$/.test(value) ||
+      !isWithinRange
     ) {
       throw new BadRequestException(
         `${field}.${metricKey} must be a finite numeric value within the supported range`,
