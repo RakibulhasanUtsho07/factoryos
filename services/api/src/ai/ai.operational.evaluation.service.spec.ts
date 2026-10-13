@@ -737,6 +737,115 @@ describe('AiOperationalEvaluationService', () => {
     });
   });
 
+  it('returns INSUFFICIENT_DATA when MAPE has fewer contributing samples than the policy minimum', async () => {
+    database.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            model_version: 'planner-1',
+            sample_count: '4',
+            mean_absolute_error: 2.5,
+            mean_absolute_percentage_error: 0.2,
+            absolute_percentage_error_sample_count: '4',
+            mean_signed_error: -1,
+            within_tolerance_rate: 0.5,
+          },
+          {
+            model_version: 'planner-2',
+            sample_count: '5',
+            mean_absolute_error: 1.5,
+            mean_absolute_percentage_error: 0.1,
+            // Three rows had numeric actuals, but zero actuals do not contribute
+            // to percentage error. Only two MAPE samples are available.
+            absolute_percentage_error_sample_count: '2',
+            mean_signed_error: 0.5,
+            within_tolerance_rate: 0.8,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [policyRow({ max_mean_absolute_percentage_error: '0.5' })],
+      });
+
+    const result = await service.compareForecastModels(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        domain: 'PLANNING',
+        metricKey: 'lead-time',
+        baselineModelVersion: 'planner-1',
+        candidateModelVersion: 'planner-2',
+        policyKey: 'planning.lead-time',
+      },
+    );
+
+    expect(result.policyEvaluation.status).toBe('INSUFFICIENT_DATA');
+    expect(result.policyEvaluation.checks.maxMeanAbsolutePercentageError).toBeNull();
+    expect(result.policyEvaluation.checks.maxMeanAbsoluteError).toBe(true);
+    expect(result.policyEvaluation.checks.minWithinToleranceRate).toBe(true);
+  });
+
+  it('returns INSUFFICIENT_DATA when calibration observations do not reach the policy minimum', async () => {
+    database.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            model_version: 'planner-1',
+            sample_count: '4',
+            mean_absolute_error: 2.5,
+            mean_absolute_percentage_error: 0.2,
+            absolute_percentage_error_sample_count: '4',
+            mean_signed_error: -1,
+            within_tolerance_rate: 0.5,
+          },
+          {
+            model_version: 'planner-2',
+            sample_count: '5',
+            mean_absolute_error: 1.5,
+            mean_absolute_percentage_error: 0.1,
+            absolute_percentage_error_sample_count: '5',
+            mean_signed_error: 0.5,
+            within_tolerance_rate: 0.8,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [policyRow({ max_expected_calibration_error: '0.1' })],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            domain: 'PLANNING',
+            metric_key: 'lead-time',
+            model_version: 'planner-2',
+            bucket_index: 8,
+            sample_count: 2,
+            mean_confidence: 0.8,
+            observed_accuracy: 0.8,
+            brier_score: 0.16,
+          },
+        ],
+      });
+
+    const result = await service.compareForecastModels(
+      tenantId,
+      factoryId,
+      userId,
+      {
+        domain: 'PLANNING',
+        metricKey: 'lead-time',
+        baselineModelVersion: 'planner-1',
+        candidateModelVersion: 'planner-2',
+        policyKey: 'planning.lead-time',
+      },
+    );
+
+    expect(result.policyEvaluation.status).toBe('INSUFFICIENT_DATA');
+    expect(result.policyEvaluation.checks.maxExpectedCalibrationError).toBeNull();
+    expect(result.policyEvaluation.calibrationSampleCount).toBe(2);
+  });
+
   it('reports a candidate that violates a configured forecast threshold', async () => {
     database.query
       .mockResolvedValueOnce({

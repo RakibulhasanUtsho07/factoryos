@@ -1070,6 +1070,7 @@ export class AiOperationalEvaluationService {
       sample_count: number | string;
       mean_absolute_error: number | string;
       mean_absolute_percentage_error: number | string | null;
+      absolute_percentage_error_sample_count: number | string;
       mean_signed_error: number | string;
       within_tolerance_rate: number | string;
     }>(
@@ -1081,6 +1082,8 @@ export class AiOperationalEvaluationService {
         AVG(absolute_percentage_error)
           FILTER (WHERE absolute_percentage_error IS NOT NULL)
           ::double precision AS mean_absolute_percentage_error,
+        COUNT(absolute_percentage_error)::integer
+          AS absolute_percentage_error_sample_count,
         AVG(actual_value - predicted_value)::double precision AS mean_signed_error,
         AVG((absolute_error <= tolerance)::integer)::double precision AS within_tolerance_rate
       FROM ai_operational_evaluation_records
@@ -1111,6 +1114,12 @@ export class AiOperationalEvaluationService {
     >(
       result.rows.map((row) => [row.model_version, row] as const),
     );
+    const mapeSampleCountByVersion = new Map<string, number>(
+      result.rows.map((row) => [
+        row.model_version,
+        Number(row.absolute_percentage_error_sample_count),
+      ] as const),
+    );
 
     const toMetrics = (modelVersion: string) => {
       const row = byVersion.get(modelVersion);
@@ -1133,6 +1142,8 @@ export class AiOperationalEvaluationService {
 
     const baseline = toMetrics(baselineModelVersion);
     const candidate = toMetrics(candidateModelVersion);
+    const candidateMapeSampleCount =
+      mapeSampleCountByVersion.get(candidateModelVersion) ?? 0;
     const delta =
       baseline && candidate
         ? {
@@ -1216,8 +1227,13 @@ export class AiOperationalEvaluationService {
         : null;
     }
     if (policyConfig.maxMeanAbsolutePercentageError !== null) {
+      // MAPE excludes rows whose actual value is zero. Apply minimum_samples
+      // to the samples that contribute to this metric, rather than the wider
+      // forecast sample count, and report the check as unknown when sparse.
       checks.maxMeanAbsolutePercentageError =
-        !candidate || candidate.meanAbsolutePercentageError === null
+        !candidate ||
+        candidate.meanAbsolutePercentageError === null ||
+        candidateMapeSampleCount < policyConfig.minimumSamples
           ? null
           : candidate.meanAbsolutePercentageError <=
             policyConfig.maxMeanAbsolutePercentageError;
@@ -1247,7 +1263,9 @@ export class AiOperationalEvaluationService {
           calibrationSeries.expectedCalibrationError;
         candidateExpectedCalibrationError = expectedCalibrationError;
         checks.maxExpectedCalibrationError =
-          expectedCalibrationError <= maxExpectedCalibrationError;
+          calibrationSampleCount < policyConfig.minimumSamples
+            ? null
+            : expectedCalibrationError <= maxExpectedCalibrationError;
       }
     }
 
