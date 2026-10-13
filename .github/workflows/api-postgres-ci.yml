@@ -50,6 +50,7 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
+      TEST_APP_DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
       TEST_ADMIN_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
       B19_TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
       SAAS_TRANSFER_TARGET_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_transfer_target_test_ci
@@ -110,6 +111,7 @@ jobs:
             migrations/025_ai_tool_action_binding.sql
             migrations/026_ai_action_binding_integrity.sql
             migrations/026_ai_agent_task_request_fingerprint.sql
+            migrations/026_ai_tool_registry_global_write_hardening.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
             migrations/029_ai_agent_operational_controls.sql
