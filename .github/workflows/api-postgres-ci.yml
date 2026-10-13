@@ -12,7 +12,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
   push:
-    branches: [main, dev]
+    branches: [main, dev, rakibul-hasan]
     paths:
       - 'services/api/**'
       - 'migrations/**'
@@ -109,6 +109,7 @@ jobs:
             migrations/024_ai_agent_workflow_drafts.sql
             migrations/025_ai_tool_action_binding.sql
             migrations/026_ai_action_binding_integrity.sql
+            migrations/026_ai_agent_task_request_fingerprint.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
             migrations/029_ai_agent_operational_controls.sql
@@ -136,7 +137,33 @@ jobs:
             migrations/051_saas_deployment_profiles.sql
             migrations/052_saas_tenant_export_migration.sql
             migrations/053_saas_tenant_import_receipts.sql
+            migrations/054_ai_operational_evaluation.sql
+            migrations/055_ai_operational_forecast_accuracy.sql
+            migrations/056_ai_operational_evaluation_policies.sql
           )
+
+          # Fail closed if a SQL migration is added to the repository but omitted
+          # from the disposable PostgreSQL CI schema build.
+          declare -A configured_migrations=()
+          for migration in "${migrations[@]}"; do
+            if [[ ! -f "$migration" ]]; then
+              echo "::error::Configured migration does not exist: $migration"
+              exit 1
+            fi
+            configured_migrations["$migration"]=1
+          done
+
+          missing_migrations=()
+          while IFS= read -r migration; do
+            if [[ -z "${configured_migrations[$migration]+x}" ]]; then
+              missing_migrations+=("$migration")
+            fi
+          done < <(find migrations -maxdepth 1 -type f -name '*.sql' -print | sort)
+
+          if (("${#missing_migrations[@]}" > 0)); then
+            printf '::error::Migrations omitted from PostgreSQL CI: %s\n' "${missing_migrations[*]}"
+            exit 1
+          fi
 
           for migration in "${migrations[@]}"; do
             echo "Applying $migration"
