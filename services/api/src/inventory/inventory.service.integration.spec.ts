@@ -125,6 +125,18 @@ describe('InventoryService PostgreSQL integration', () => {
   });
 
   afterAll(async () => {
+    if (adminPool && tenantId && factoryAId) {
+      // Do not leak test-created pending events into outbox dispatcher integration tests.
+      await adminPool.query(
+        `UPDATE outbox_events
+         SET status = 'PUBLISHED', published_at = COALESCE(published_at, clock_timestamp()),
+             locked_at = NULL, locked_by = NULL
+         WHERE tenant_id = $1 AND factory_id = $2
+           AND source->>'connector' = 'inventory-service'
+           AND status IN ('PENDING', 'FAILED', 'PROCESSING')`,
+        [tenantId, factoryAId],
+      );
+    }
     if (adminPool && factoryBId && tenantId) {
       await adminPool.query(
         'DELETE FROM factories WHERE id = $1 AND tenant_id = $2',
@@ -324,6 +336,7 @@ describe('InventoryService PostgreSQL integration', () => {
 
   it('keeps reservation lifecycle events append-only in PostgreSQL', async () => {
     const item = await createItem();
+    await movement(item.id, InventoryMovementType.RECEIPT, 2);
     const created = await reserve(item.id, 1);
     await expect(
       adminPool.query(
