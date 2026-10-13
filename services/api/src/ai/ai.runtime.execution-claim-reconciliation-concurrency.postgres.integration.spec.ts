@@ -1,6 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
+import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 
 import { AiRuntimeService } from './ai.runtime.service';
 import type { ReconcileAiExecutionClaimDto } from './dto/reconcile-ai-execution-claim.dto';
