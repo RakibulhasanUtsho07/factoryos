@@ -212,3 +212,26 @@ The device-token endpoint `GET /api/v2/edge/device-package-signing-keys/:deviceI
 The edge agent polls this endpoint using its device bearer credential. Configure `EDGE_PACKAGE_SIGNING_KEY_POLL_INTERVAL_MS` (default 60 seconds; range 10 seconds–1 hour). The local `EdgePackageSigningKeyStore` verifies each key's Ed25519 type and SHA-256 fingerprint, binds the snapshot to the device token's tenant and the initially synchronized factory, and durably stores it using fsync plus atomic rename. Rebinding a key ID to different public-key material is rejected. A key that was revoked, or disappears from the server's complete snapshot, remains locally REVOKED and cannot be reactivated by a later snapshot. Failed synchronization immediately invalidates ACTIVE trust; the verifier policy also fails closed when the last successful snapshot becomes stale.
 
 The host can construct the policy consumed by `verifyEdgePackage` / `EdgePackageActivationStore` through `runtime.createPackageVerificationPolicy({ tenantId, factoryId, allowedToolIds })`. Only a recent, successfully synchronized ACTIVE key is passed as ACTIVE; revoked/stale/failed-sync keys are represented as REVOKED so signature verification cannot accept them. `/healthz` reports key counts and synchronization status, not public-key PEM. This wires the key registry into a verifier-policy source, but a deployment still has to route package activation through that policy provider and connect the activation/control gates to its actual model/policy runtime. Local trust-store directory protection and hardware-in-loop acceptance remain release gates.
+
+
+## WP11-N — governed signed-package activation boundary
+
+Deployment hosts should route each signed package release through `runtime.activateSignedPackage(activationStore, input, scope)` instead of calling `EdgePackageActivationStore.activate` directly. The coordinator requires the submitted manifest's tenant, factory, package ID, and version to match the explicit deployment target; it then requires a fresh, exact `ACTIVE` package-control decision for the configured package/version/use-case before constructing the policy from the synchronized signing-key store. The activation store independently verifies the Ed25519 signature, target scope, allowed tools, expiry, artifact set, hashes and byte lengths before changing the active pointer.
+
+Example host wiring:
+
+```ts
+const activationStore = new EdgePackageActivationStore(packageRoot);
+const result = await runtime.activateSignedPackage(activationStore, signedRelease, {
+  tenantId,
+  factoryId,
+  packageId: 'quality-defect',
+  version: '1.2.0',
+  useCaseId: 'inspection',
+  allowedToolIds: new Set(['AI.RUNTIME.NOOP']),
+});
+```
+
+The exact target package/version/use-case must already be declared in `EDGE_MANAGED_PACKAGES_JSON` so the agent has polled its control decision. Missing, stale, failed, PAUSED or REVOKED control state denies activation. The coordinator does not execute model/policy code; the eventual model host must still consult `isPackageExecutionAllowed` immediately before and during governed execution. A deployment may still bypass the coordinator if it directly calls the lower-level store, so the production host integration must use this entry point exclusively and runtime-kill-switch/HIL acceptance remains a release gate.
+
+Regression coverage verifies that control denial does not create an active pointer, manifest scope mismatches never reach the control gate, and a revoked synchronized signer prevents activation.
