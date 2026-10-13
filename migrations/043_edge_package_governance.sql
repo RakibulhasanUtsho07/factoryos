@@ -195,7 +195,7 @@ CREATE TRIGGER edge_package_control_events_immutable
   FOR EACH ROW EXECUTE FUNCTION edge_reject_ledger_mutation();
 
 CREATE OR REPLACE FUNCTION edge_package_signing_key_guard() RETURNS trigger
-LANGUAGE plpgsql AS $
+LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'Edge package signing keys cannot be deleted; revoke the key instead';
@@ -212,14 +212,14 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 DROP TRIGGER IF EXISTS edge_package_signing_key_guard ON edge_package_signing_keys;
 CREATE TRIGGER edge_package_signing_key_guard
   BEFORE UPDATE OR DELETE ON edge_package_signing_keys
   FOR EACH ROW EXECUTE FUNCTION edge_package_signing_key_guard();
 
 CREATE OR REPLACE FUNCTION edge_package_control_guard() RETURNS trigger
-LANGUAGE plpgsql AS $
+LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'Edge package controls cannot be deleted; resume or revoke the control instead';
@@ -236,7 +236,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 DROP TRIGGER IF EXISTS edge_package_control_guard ON edge_package_controls;
 CREATE TRIGGER edge_package_control_guard
   BEFORE UPDATE OR DELETE ON edge_package_controls
