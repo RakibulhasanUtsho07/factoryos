@@ -8,7 +8,9 @@ import {
 import { DurableEdgeSpool, EdgeSpoolError } from './spool/durable-edge-spool.js';
 import { EdgePackageControlStateStore } from './edge-package-control-state.store.js';
 import { EdgePackageSigningKeyStore } from './edge-package-signing-key.store.js';
-import type { EdgePackageVerificationPolicy } from './packages/edge-package-manifest-verifier.js';
+import type { EdgePackageVerificationPolicy, SignedEdgePackageInput } from './packages/edge-package-manifest-verifier.js';
+import type { EdgePackageActivationResult, EdgePackageActivationStore } from './packages/edge-package-activation.store.js';
+import { EdgePackageReleaseCoordinator, type EdgePackageActivationScope } from './packages/edge-package-release-coordinator.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEVICE_TOKEN_PATTERN =
@@ -413,6 +415,20 @@ export class EdgeAgentRuntime {
       (this.config.packageSigningKeyPollIntervalMs ?? 60_000) * 2 +
       this.config.requestTimeoutMs;
     return this.packageSigningKeyStore.createVerificationPolicy(policy, maxAgeMs);
+  }
+
+  /**
+   * Governed package-install entry point for deployment hosts. It requires an
+   * exact, fresh ACTIVE remote control decision and a current synchronized
+   * signer policy before the activation store may modify its release pointer.
+   */
+  async activateSignedPackage(
+    activationStore: Pick<EdgePackageActivationStore, 'activate'>,
+    input: SignedEdgePackageInput,
+    scope: EdgePackageActivationScope,
+  ): Promise<EdgePackageActivationResult> {
+    const coordinator = new EdgePackageReleaseCoordinator(activationStore, this);
+    return coordinator.activate(input, scope);
   }
 
   async pollPackageSigningKeysOnce(): Promise<boolean> {
