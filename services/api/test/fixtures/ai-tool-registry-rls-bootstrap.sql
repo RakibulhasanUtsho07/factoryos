@@ -107,7 +107,9 @@ $$;
 
 GRANT CONNECT ON DATABASE factoryos_test TO factoryos_test_app;
 GRANT USAGE ON SCHEMA public TO factoryos_test_app;
-GRANT SELECT, INSERT ON public.ai_tool_registry TO factoryos_test_app;
+-- Deliberately grant UPDATE/DELETE too: integration tests must prove the
+-- RLS policies deny mutations even if SQL privileges are overly broad.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.ai_tool_registry TO factoryos_test_app;
 GRANT EXECUTE ON FUNCTION public.factoryos_current_tenant_id() TO factoryos_test_app;
 
 COMMIT;
