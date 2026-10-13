@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
+import type { PoolClient } from 'pg';
 
 /**
  * Real PostgreSQL regression coverage for migration 026.
@@ -17,7 +18,7 @@ const testDatabaseUrl = process.env.TEST_APP_DATABASE_URL;
 const integrationDescribe = testDatabaseUrl ? describe : describe.skip;
 
 integrationDescribe('AI tool registry RLS (PostgreSQL integration)', () => {
-  let pool: Pool;
+  let pool!: Pool;
 
   const tenantId = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
   const otherTenantId = '8aaab63d-c447-46ce-950d-deebdd7f5f31';
