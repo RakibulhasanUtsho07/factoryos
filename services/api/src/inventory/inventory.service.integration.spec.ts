@@ -58,23 +58,34 @@ describe('InventoryService PostgreSQL integration', () => {
 
     adminPool = new Pool({ connectionString: adminUrl });
     appPool = new Pool({ connectionString: appUrl });
-    const factories = await adminPool.query<{ tenant_id: string; factory_id: string }>(
+    const factoryResult = await adminPool.query<{ tenant_id: string; factory_id: string }>(
       `
       SELECT f.tenant_id::text AS tenant_id, f.id::text AS factory_id
       FROM factories f
       INNER JOIN tenants t ON t.id = f.tenant_id
       WHERE t.status = 'ACTIVE' AND f.status = 'ACTIVE'
       ORDER BY f.created_at, f.id
-      LIMIT 100
+      LIMIT 1
       `,
     );
-    const sameTenant = factories.rows.filter((row) => row.tenant_id === factories.rows[0]?.tenant_id);
-    if (sameTenant.length < 2) {
-      throw new Error('Inventory integration tests require two active factories in the same tenant');
-    }
-    tenantId = sameTenant[0]!.tenant_id;
-    factoryAId = sameTenant[0]!.factory_id;
-    factoryBId = sameTenant.find((row) => row.factory_id !== factoryAId)!.factory_id;
+    const factory = factoryResult.rows[0];
+    if (!factory) throw new Error('Inventory integration tests require one active factory');
+    tenantId = factory.tenant_id;
+    factoryAId = factory.factory_id;
+
+    // Keep cross-factory isolation coverage deterministic; CI seeds are not
+    // required to contain multiple factories for one tenant.
+    const fixtureFactory = await adminPool.query<{ factory_id: string }>(
+      `
+      INSERT INTO factories (tenant_id, code, name, status)
+      VALUES ($1, $2, 'Inventory Integration Fixture', 'ACTIVE')
+      RETURNING id::text AS factory_id
+      `,
+      [tenantId, `INV-IT-${randomUUID().replace(/-/g, '').slice(0, 18).toUpperCase()}`],
+    );
+    const fixture = fixtureFactory.rows[0];
+    if (!fixture) throw new Error('Could not create inventory isolation fixture factory');
+    factoryBId = fixture.factory_id;
 
     const user = await adminPool.query('SELECT 1 FROM users WHERE id = $1', [TEST_USER_ID]);
     if (user.rowCount !== 1) throw new Error('Inventory test user is missing: ' + TEST_USER_ID);
@@ -87,6 +98,12 @@ describe('InventoryService PostgreSQL integration', () => {
   });
 
   afterAll(async () => {
+    if (adminPool && factoryBId && tenantId) {
+      await adminPool.query(
+        'DELETE FROM factories WHERE id = $1 AND tenant_id = $2',
+        [factoryBId, tenantId],
+      );
+    }
     if (appPool) await appPool.end();
     if (adminPool) await adminPool.end();
   });
