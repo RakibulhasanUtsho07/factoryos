@@ -164,6 +164,56 @@ integrationDescribe('AI tool registry RLS (PostgreSQL integration)', () => {
     }
   });
 
+
+  it('rejects an insert targeting a different tenant than the active context', async () => {
+    const client = await pool.connect();
+    try {
+      await beginTenantTransaction(client, tenantId);
+
+      await expect(
+        insertTenantTool(client, otherTenantId, 'TEST.WRONG.TENANT.' + randomUUID()),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await rollbackAndRelease(client);
+    }
+  });
+
+  it('rejects tenant-scoped inserts when no tenant context is present', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await expect(
+        insertTenantTool(client, tenantId, 'TEST.NO.CONTEXT.' + randomUUID()),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await rollbackAndRelease(client);
+    }
+  });
+
+  it('prevents application sessions from updating or deleting registry history', async () => {
+    const client = await pool.connect();
+    const toolId = 'TEST.IMMUTABLE.' + randomUUID();
+    try {
+      await beginTenantTransaction(client, tenantId);
+      await insertTenantTool(client, tenantId, toolId);
+
+      const updated = await client.query(
+        "UPDATE ai_tool_registry SET metadata = '{\"attempt\":\"update\"}'::jsonb WHERE tenant_id = $1 AND tool_id = $2",
+        [tenantId, toolId],
+      );
+      const deleted = await client.query(
+        'DELETE FROM ai_tool_registry WHERE tenant_id = $1 AND tool_id = $2',
+        [tenantId, toolId],
+      );
+
+      expect(updated.rowCount).toBe(0);
+      expect(deleted.rowCount).toBe(0);
+    } finally {
+      await rollbackAndRelease(client);
+    }
+  });
+
   it('hides another tenant tool when the active tenant context changes', async () => {
     const client = await pool.connect();
     const toolId = 'TEST.CROSS.TENANT.' + randomUUID();
