@@ -1338,21 +1338,65 @@ export class AiRuntimeService {
           );
         }
 
-        if (
-          approval.resource_type &&
-          approval.resource_type !== resourceType
-        ) {
+        if (approval.resource_type !== resourceType) {
           throw new ConflictException(
             'AI action approval resource type does not match the requested action',
           );
         }
 
-        if (
-          approval.resource_id &&
-          approval.resource_id !== resourceId
-        ) {
+        if (approval.resource_id !== resourceId) {
           throw new ConflictException(
             'AI action approval resource id does not match the requested action',
+          );
+        }
+
+        /*
+         * Approvals requested by the AI runtime capture the decision,
+         * payload hash, and target in metadata. Verify those bindings
+         * before minting an executable action token; matching only the
+         * policy/action/resource fields would otherwise allow a broader
+         * or stale approval to authorize a different payload or target.
+         */
+        const approvalMetadata = approval.metadata;
+
+        if (
+          !approvalMetadata ||
+          typeof approvalMetadata !== 'object' ||
+          Array.isArray(approvalMetadata)
+        ) {
+          throw new ConflictException(
+            'AI action approval is missing its immutable action binding',
+          );
+        }
+
+        if (
+          approvalMetadata.decisionId !== decisionId ||
+          approvalMetadata.actionPayloadHash !== payloadHash
+        ) {
+          throw new ConflictException(
+            'AI action approval is bound to a different decision or payload',
+          );
+        }
+
+        const approvedTarget = approvalMetadata.target;
+
+        if (
+          !approvedTarget ||
+          typeof approvedTarget !== 'object' ||
+          Array.isArray(approvedTarget) ||
+          this.computeHash(approvedTarget) !== this.computeHash(target)
+        ) {
+          throw new ConflictException(
+            'AI action approval target does not match the requested action',
+          );
+        }
+
+        if (
+          approval.risk_class_id !==
+          (evaluation.policy.riskClass?.id ?? null)
+        ) {
+          throw new ConflictException(
+            'AI action approval is bound to a different risk class',
           );
         }
 
@@ -4080,6 +4124,7 @@ export class AiRuntimeService {
         resource_id: string | null;
         status: string;
         expires_at: string | null;
+        metadata: Record<string, unknown>;
       }>(
         `
         SELECT
@@ -4091,7 +4136,8 @@ export class AiRuntimeService {
           a.resource_type,
           a.resource_id,
           a.status,
-          a.expires_at::text AS expires_at
+          a.expires_at::text AS expires_at,
+          a.metadata
         FROM approvals a
         WHERE a.id = $1
           AND a.tenant_id = $2
