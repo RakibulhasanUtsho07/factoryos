@@ -7,8 +7,8 @@ import type { PoolClient } from 'pg';
  * Real PostgreSQL regression coverage for migration 026.
  *
  * Set TEST_APP_DATABASE_URL to a non-superuser application database
- * role after migrations 018 and 026 have been applied. This suite is
- * intentionally skipped when that dedicated integration URL is absent.
+ * role after the focused bootstrap fixture and real migration 026 have
+ * been applied. This suite is skipped when that dedicated URL is absent.
  *
  * Every test uses a transaction and rolls it back so the immutable
  * registry table is not left with test fixtures.
