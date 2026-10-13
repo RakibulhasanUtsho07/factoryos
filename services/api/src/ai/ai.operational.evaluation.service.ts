@@ -671,6 +671,10 @@ export class AiOperationalEvaluationService {
       WHERE tenant_id = $1
         AND factory_id = $2
         AND source_outcome_id IS NOT NULL
+        AND predicted_value IS NOT NULL
+        AND actual_value IS NOT NULL
+        AND absolute_error IS NOT NULL
+        AND tolerance IS NOT NULL
         AND observed_at >= NOW() - INTERVAL '90 days'
         AND ($3::varchar IS NULL OR domain = $3)
         AND ($4::varchar IS NULL OR metric_key = $4)
@@ -1093,6 +1097,10 @@ export class AiOperationalEvaluationService {
         AND metric_key = $4
         AND model_version IN ($5, $6)
         AND source_outcome_id IS NOT NULL
+        AND predicted_value IS NOT NULL
+        AND actual_value IS NOT NULL
+        AND absolute_error IS NOT NULL
+        AND tolerance IS NOT NULL
         AND observed_at >= NOW() - INTERVAL '90 days'
       GROUP BY model_version
       ORDER BY model_version

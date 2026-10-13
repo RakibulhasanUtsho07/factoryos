@@ -488,6 +488,18 @@ describe('AiOperationalEvaluationService', () => {
     );
 
     expect(result.totalSamples).toBe(4);
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'absolute_error IS NOT NULL',
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'predicted_value IS NOT NULL',
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'actual_value IS NOT NULL',
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'tolerance IS NOT NULL',
+    );
     expect(result.series[0]).toEqual({
       domain: 'PLANNING',
       metricKey: 'lead-time',
@@ -668,6 +680,18 @@ describe('AiOperationalEvaluationService', () => {
       tenantId,
       'ai.business.read',
       factoryId,
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'absolute_error IS NOT NULL',
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'predicted_value IS NOT NULL',
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'actual_value IS NOT NULL',
+    );
+    expect(database.query.mock.calls[0]?.[0]).toContain(
+      'tolerance IS NOT NULL',
     );
     expect(database.query).toHaveBeenCalledWith(
       expect.stringContaining('model_version IN ($5, $6)'),
