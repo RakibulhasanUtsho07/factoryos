@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 
 const migration = readFileSync(
   resolve(
-    __dirname,
-    '../../../../../migrations/026_ai_tool_registry_global_write_hardening.sql',
+    process.cwd(),
+    '../../migrations/026_ai_tool_registry_global_write_hardening.sql',
   ),
   'utf8',
 ).replace(/\s+/g, ' ');
