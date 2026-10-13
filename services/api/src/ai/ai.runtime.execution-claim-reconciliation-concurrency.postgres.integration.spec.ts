@@ -32,9 +32,9 @@ const failedDecision: ReconcileAiExecutionClaimDto = {
 integrationDescribe(
   'AI execution claim reconciliation concurrency PostgreSQL integration',
   () => {
-    let adminPool: Pool;
-    let appPool: Pool;
-    let scope: Scope;
+    let adminPool!: Pool;
+    let appPool!: Pool;
+    let scope!: Scope;
 
     beforeAll(async () => {
       const url = new URL(testDatabaseUrl!);
