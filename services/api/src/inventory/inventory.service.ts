@@ -713,11 +713,11 @@ export class InventoryService {
     const where = ['r.tenant_id = $1', 'r.factory_id = $2'];
     if (query.item_id) {
       values.push(query.item_id);
-      where.push(`r.item_id = ${values.length}`);
+      where.push(`r.item_id = $${values.length}`);
     }
     if (query.status) {
       values.push(query.status);
-      where.push(`r.status = ${values.length}`);
+      where.push(`r.status = $${values.length}`);
     }
     values.push(limit, (page - 1) * limit);
     const limitIndex = values.length - 1;
@@ -732,7 +732,7 @@ export class InventoryService {
        INNER JOIN inventory_items i ON i.id = r.item_id AND i.tenant_id = r.tenant_id AND i.factory_id = r.factory_id
        WHERE ${where.join(' AND ')}
        ORDER BY r.created_at DESC, r.id DESC
-       LIMIT ${limitIndex} OFFSET ${offsetIndex}`,
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       values,
       { tenantId },
     );
