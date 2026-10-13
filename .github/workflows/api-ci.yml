@@ -59,6 +59,13 @@ jobs:
           psql "postgresql://factoryos:factoryos@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 \
             -f migrations/026_ai_tool_registry_global_write_hardening.sql
+      - name: Verify AI Tool Registry migration is rerunnable
+        env:
+          PGPASSWORD: factoryos
+        run: |
+          psql "postgresql://factoryos:factoryos@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 \
+            -f migrations/026_ai_tool_registry_global_write_hardening.sql
       - name: Prepare isolated API test environment
         shell: bash
         run: |
