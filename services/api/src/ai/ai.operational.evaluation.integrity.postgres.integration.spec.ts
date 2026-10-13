@@ -187,7 +187,7 @@ postgresDescribe('AI operational forecast numeric consistency PostgreSQL invaria
           'Forecast numeric invariant integration test',
           'DETERMINISTIC',
           'TEST',
-          jsonb_build_object('model_version', $7)
+          jsonb_build_object('model_version', $7::text)
         )
         `,
         [
