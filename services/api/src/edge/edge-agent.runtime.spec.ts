@@ -393,7 +393,7 @@ describe('EdgeAgentRuntime', () => {
     expect(receivedAuthorization).toBe(`Bearer ${DEVICE_TOKEN}`);
     expect(receivedUrl).toBe(`/api/v2/edge/device-package-signing-keys/${DEVICE_ID}`);
     expect(runtime.createPackageVerificationPolicy(policyInput).trustedSigningKeys['edge-signing-v1'])
-      .toEqual({ publicKeyPem: signerPublicKeyPem, status: 'ACTIVE' });
+      .toEqual({ publicKeyPem: signerPublicKeyPem.trim(), status: 'ACTIVE' });
     expect(runtime.getPackageSigningKeySyncStatus()).toMatchObject({
       tenantId: SIGNER_TENANT_ID,
       factoryId: SIGNER_FACTORY_ID,

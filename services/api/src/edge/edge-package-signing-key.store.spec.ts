@@ -59,7 +59,7 @@ describe('EdgePackageSigningKeyStore', () => {
     await store.applySnapshot(snapshot());
     const verifyPolicy = store.createVerificationPolicy(policy(), 60_000);
     expect(verifyPolicy.trustedSigningKeys['edge-signing-v1']).toEqual({
-      publicKeyPem,
+      publicKeyPem: publicKeyPem.trim(),
       status: 'ACTIVE',
     });
     expect(store.getSyncStatus()).toMatchObject({
@@ -70,7 +70,7 @@ describe('EdgePackageSigningKeyStore', () => {
     const restarted = new EdgePackageSigningKeyStore(rootDir, tenantId);
     await restarted.initialize();
     expect(restarted.createVerificationPolicy(policy(), 60_000).trustedSigningKeys['edge-signing-v1'])
-      .toEqual({ publicKeyPem, status: 'ACTIVE' });
+      .toEqual({ publicKeyPem: publicKeyPem.trim(), status: 'ACTIVE' });
   });
 
   it('fails closed when the last signer snapshot is stale or a later poll fails', async () => {
