@@ -34,6 +34,8 @@ import {
   ListOrdersDto,
 } from './dto/list-orders.dto';
 
+import { CreateOrderMaterialDispositionDto } from './dto/create-order-material-disposition.dto';
+
 import {
   OrderIdempotencyService,
 } from './order-idempotency.service';
