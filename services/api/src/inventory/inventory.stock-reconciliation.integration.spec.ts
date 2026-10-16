@@ -143,13 +143,14 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       reason_code: 'CYCLE_COUNT' as const,
       notes: 'Verified count in storage aisle A',
     };
+    const idempotencyKey = 'reconcile-positive-' + randomUUID();
     const first = await service.recordReconciliation(
       TEST_USER_ID,
       tenantId,
       factoryId,
       itemId,
       input,
-      'reconcile-positive-' + randomUUID(),
+      idempotencyKey,
       randomUUID(),
       randomUUID(),
     );
@@ -161,32 +162,18 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(first.quantity_after).toBe('9.5000');
     expect(first.adjustment_movement_id).toBeTruthy();
 
-    const sameKey = 'reconcile-replay-' + randomUUID();
-    // A different key means a new count; the actual replay below deliberately
-    // keeps the exact key for the same request.
-    const replayFirst = await service.recordReconciliation(
-      TEST_USER_ID,
-      tenantId,
-      factoryId,
-      itemId,
-      input,
-      sameKey,
-      randomUUID(),
-      randomUUID(),
-    );
     const replay = await service.recordReconciliation(
       TEST_USER_ID,
       tenantId,
       factoryId,
       itemId,
       input,
-      sameKey,
+      idempotencyKey,
       randomUUID(),
       randomUUID(),
     );
-    expect(replayFirst.replayed).toBe(false);
     expect(replay.replayed).toBe(true);
-    expect(replay.id).toBe(replayFirst.id);
+    expect(replay.id).toBe(first.id);
 
     const balance = await adminPool.query<{ quantity_on_hand: string }>(
       'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
@@ -206,13 +193,13 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       FROM inventory_movements
       WHERE id = $1
       `,
-      [replayFirst.adjustment_movement_id],
+      [first.adjustment_movement_id],
     );
     expect(movement.rows[0]).toMatchObject({
       movement_type: 'RECEIPT',
       quantity_delta: '1.5000',
       reference_type: 'STOCK_RECONCILIATION',
-      reference_id: replayFirst.id,
+      reference_id: first.id,
     });
 
     await expect(
@@ -222,7 +209,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
         factoryId,
         itemId,
         { ...input, counted_quantity: 10 },
-        sameKey,
+        idempotencyKey,
         randomUUID(),
         randomUUID(),
       ),
