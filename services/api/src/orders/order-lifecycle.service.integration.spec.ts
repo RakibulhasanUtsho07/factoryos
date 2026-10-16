@@ -797,6 +797,29 @@ describe(
         expect(afterReserve.rows[0]?.on_hand).toBe('10.0000');
         expect(afterReserve.rows[0]?.reserved).toBe('5.0000');
 
+        const confirmationEvent = await pool.query<{
+          inventory: {
+            reservations_created: number;
+            reservations_released: number;
+            reservations_consumed: number;
+          };
+        }>(
+          `
+          SELECT payload->'inventory' AS inventory
+          FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND aggregate_id = $3 AND event_type = 'ORDER.CONFIRMED'
+          ORDER BY created_at DESC
+          LIMIT 1
+          `,
+          [tenantId, factoryId, fixture.orderId],
+        );
+        expect(confirmationEvent.rows[0]?.inventory).toEqual({
+          reservations_created: 2,
+          reservations_released: 0,
+          reservations_consumed: 0,
+        });
+
         const inProgress = await ordersService.transitionOrderStatus(
           TEST_USER_ID, tenantId, fixture.orderId, 'IN_PROGRESS', null, randomUUID(), 2,
         );
@@ -886,6 +909,16 @@ describe(
           [tenantId, factoryId, fixture.lineIds],
         );
         expect(reservations.rows[0]?.count).toBe(0);
+
+        const confirmationEvents = await pool.query<{ count: number }>(
+          `
+          SELECT COUNT(*)::int AS count FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND aggregate_id = $3 AND event_type = 'ORDER.CONFIRMED'
+          `,
+          [tenantId, factoryId, fixture.orderId],
+        );
+        expect(confirmationEvents.rows[0]?.count).toBe(0);
       },
     );
 
