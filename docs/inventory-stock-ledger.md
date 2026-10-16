@@ -75,6 +75,7 @@ Each factory has a protected virtual `UNASSIGNED` stock bucket. Existing aggrega
 
 - Create a `WAREHOUSE` or `STAGING` location, then create `BIN` children under that parent. Codes are unique case-insensitively per factory; cross-tenant/factory parent bindings are rejected.
 - Stock receipts/issues may optionally include `location_id`. The chosen location balance delta and aggregate stock balance commit together; issues cannot make that bin negative, and aggregate reservations remain protected.
+- If `location_id` is omitted, receipts go to `UNASSIGNED`. Legacy/global issues reduce `UNASSIGNED` first, then other bins in deterministic location-ID order; their movement record retains a null location because no single physical source bin was specified.
 - A location transfer is a separate immutable record with source/destination before/after quantities, required idempotency, actor, audit attempt and transactional `INVENTORY.STOCK_LOCATION_TRANSFERRED` outbox event. Transfers lock the item and its aggregate first, cannot move more than currently unreserved aggregate stock, and do not change aggregate on-hand.
 - Location, location-balance and transfer tables force tenant RLS. Location transfers and default-location identity are protected from direct mutation.
 
