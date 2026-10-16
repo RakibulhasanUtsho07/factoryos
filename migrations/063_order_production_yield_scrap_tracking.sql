@@ -113,8 +113,8 @@ BEGIN
     AND r.factory_id = NEW.factory_id
     AND r.order_line_id = NEW.order_line_id;
 
-  IF v_prior_good + NEW.good_quantity + v_prior_scrap + NEW.scrap_quantity > v_target_quantity THEN
-    RAISE EXCEPTION 'reported good plus scrap output exceeds the order-line target'
+  IF v_prior_good + NEW.good_quantity > v_target_quantity THEN
+    RAISE EXCEPTION 'reported good output exceeds the order-line target'
       USING ERRCODE = '23514';
   END IF;
 
