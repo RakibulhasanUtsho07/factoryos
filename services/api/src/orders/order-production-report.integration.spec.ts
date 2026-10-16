@@ -11,12 +11,12 @@ import { OrderProductionReportService } from './order-production-report.service'
 describe('OrderProductionReportService PostgreSQL integration', () => {
   const TEST_USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 
-  let pool: Pool;
-  let appPool: Pool;
-  let database: DatabaseService;
-  let service: OrderProductionReportService;
-  let tenantId: string;
-  let factoryId: string;
+  let pool!: Pool;
+  let appPool!: Pool;
+  let database!: DatabaseService;
+  let service!: OrderProductionReportService;
+  let tenantId!: string;
+  let factoryId!: string;
   const fixtures: Array<{ orderId: string; lineId: string }> = [];
 
   const createFixture = async (
