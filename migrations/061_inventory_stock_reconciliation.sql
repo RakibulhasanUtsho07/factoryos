@@ -101,10 +101,8 @@ BEGIN
     OR movement.quantity_delta <> NEW.quantity_delta
     OR movement.quantity_after <> NEW.quantity_after
     OR movement.quantity <> ABS(NEW.quantity_delta)
-    OR movement.movement_type <> CASE
-      WHEN NEW.quantity_delta > 0 THEN 'RECEIPT'
-      ELSE 'ISSUE'
-    END
+    OR (NEW.quantity_delta > 0 AND movement.movement_type <> 'RECEIPT')
+    OR (NEW.quantity_delta < 0 AND movement.movement_type <> 'ISSUE')
   THEN
     RAISE EXCEPTION 'stock reconciliation must reference its matching immutable adjustment movement'
       USING ERRCODE = '23514';
