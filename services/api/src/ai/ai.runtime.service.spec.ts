@@ -707,5 +707,103 @@ describe(
         );
       },
     );
+
+    it(
+      'revalidates and locks an approval inside the execution transaction before calling the gateway',
+      async () => {
+        const actionId = '2a2a0000-0000-4000-8000-000000000001';
+        const approvalId = '2a2a0000-0000-4000-8000-000000000002';
+        const claimId = '2a2a0000-0000-4000-8000-000000000003';
+        const actionToken = 'approved-action-token';
+        const executionKey = 'approval-race-execution';
+        const payloadHash = 'b'.repeat(64);
+
+        databaseQueryMock
+          .mockResolvedValueOnce({
+            rows: [
+              {
+                id: actionId,
+                tenant_id: tenantId,
+                factory_id: factoryId,
+                decision_id: decisionId,
+                action_type: 'AI.RUNTIME.NOOP',
+                tool_id: 'AI.RUNTIME.NOOP',
+                tool_version: '1.0.0',
+                target: {},
+                resource_type: null,
+                resource_id: null,
+                payload: {},
+                payload_hash: payloadHash,
+                risk_class: 'L0',
+                authorization_status: 'AUTHORIZED',
+                authorization: {},
+                approval_id: approvalId,
+                action_token_hash: 'c'.repeat(64),
+                token_expires_at: new Date(Date.now() + 60_000).toISOString(),
+                idempotency_key: null,
+                created_by: userId,
+                created_at: new Date().toISOString(),
+              },
+            ],
+          })
+          .mockResolvedValueOnce({ rows: [] })
+          .mockResolvedValueOnce({ rows: [] })
+          // Preflight sees the approval as valid.
+          .mockResolvedValueOnce({ rows: [{ id: approvalId }] })
+          .mockResolvedValueOnce({ rows: [{ id: claimId }] })
+          // The locked-claim transaction detects approval revocation and
+          // terminalizes the claim without invoking the gateway.
+          .mockResolvedValueOnce({
+            rows: [
+              {
+                id: claimId,
+                tenant_id: tenantId,
+                factory_id: factoryId,
+                action_intent_id: actionId,
+                execution_key: executionKey,
+                tool_version: '1.0.0',
+                inputs_hash: payloadHash,
+                status: 'CLAIMED',
+                failure_code: null,
+                claimed_at: new Date().toISOString(),
+                completed_at: null,
+              },
+            ],
+          })
+          .mockResolvedValueOnce({ rows: [] })
+          .mockResolvedValueOnce({ rows: [{ id: claimId }] });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: actionToken,
+              execution_key: executionKey,
+              tool_version: '1.0.0',
+            },
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseTransactionMock).toHaveBeenCalledTimes(1);
+        expect(databaseQueryMock).toHaveBeenCalledTimes(8);
+        expect(String(databaseQueryMock.mock.calls[6]?.[0])).toContain('FOR SHARE');
+        expect(databaseQueryMock.mock.calls[6]?.[1]).toEqual([
+          approvalId,
+          tenantId,
+        ]);
+        expect(String(databaseQueryMock.mock.calls[7]?.[0])).toContain(
+          "failure_code = 'APPROVAL_NO_LONGER_VALID'",
+        );
+        expect(databaseQueryMock.mock.calls[7]?.[1]).toEqual([
+          claimId,
+          tenantId,
+          factoryId,
+        ]);
+      },
+    );
+
   },
 );

@@ -7,6 +7,8 @@ import {
 
 import { isUUID } from 'class-validator';
 
+import { createHash } from 'node:crypto';
+
 import type { QueryResultRow } from 'pg';
 
 import { AuditService } from '../../audit/audit.service';
@@ -130,6 +132,8 @@ export class AiAgentStudioPolicySimulationService {
 
       cases.push({
         eventKey: event.eventKey,
+        inputFingerprint: this.fingerprintEvent(event),
+        evidenceSource: 'POLICY_SERVICE',
         action: event.action,
         resourceType:
           event.resourceType ?? null,
@@ -201,7 +205,14 @@ export class AiAgentStudioPolicySimulationService {
           false,
       ).length;
 
+    const missingExpectedOutcomeCount =
+      cases.filter((item) => item.expectedOutcome === null).length;
+
+    const expectationsComplete =
+      missingExpectedOutcomeCount === 0;
+
     const allExpectedOutcomesMatched =
+      expectationsComplete &&
       expectedOutcomeDriftCount === 0;
 
     const allCasesNonDenied =
@@ -212,17 +223,21 @@ export class AiAgentStudioPolicySimulationService {
         ? 'POLICY_DRIFT_DETECTED'
         : deniedCount > 0
           ? 'DENIED_CASES_PRESENT'
-          : 'READY_FOR_REVIEW';
+          : !expectationsComplete
+            ? 'EXPECTATIONS_INCOMPLETE'
+            : 'READY_FOR_REVIEW';
 
     const status: 'COMPLETED' | 'BLOCKED' =
       expectedOutcomeDriftCount > 0 ||
-      deniedCount > 0
+      deniedCount > 0 ||
+      !expectationsComplete
         ? 'BLOCKED'
         : 'COMPLETED';
 
     const plan = normalizedEvents.map(
       (event, index) => ({
         stepKey: `policy-case-${index + 1}`,
+        inputFingerprint: this.fingerprintEvent(event),
         toolId:
           'AI.AGENT_STUDIO.POLICY_SIMULATION',
         toolVersion: '1.0.0',
@@ -244,6 +259,8 @@ export class AiAgentStudioPolicySimulationService {
         (item, index) => ({
           stepIndex: index,
           eventKey: item.eventKey,
+          inputFingerprint: item.inputFingerprint,
+          evidenceSource: item.evidenceSource,
           actualOutcome:
             item.actualOutcome,
           expectedOutcome:
@@ -278,6 +295,8 @@ export class AiAgentStudioPolicySimulationService {
       deniedCount,
       expectedOutcomeMatches,
       expectedOutcomeDriftCount,
+      missingExpectedOutcomeCount,
+      expectationsComplete,
       allExpectedOutcomesMatched,
       allCasesNonDenied,
       recommendation,
@@ -395,6 +414,8 @@ export class AiAgentStudioPolicySimulationService {
       deniedCount,
       expectedOutcomeMatches,
       expectedOutcomeDriftCount,
+      missingExpectedOutcomeCount,
+      expectationsComplete,
       allExpectedOutcomesMatched,
       allCasesNonDenied,
       recommendation,
@@ -412,6 +433,8 @@ export class AiAgentStudioPolicySimulationService {
         status,
         recommendation,
         expectedOutcomeDriftCount,
+        missingExpectedOutcomeCount,
+        expectationsComplete,
         deniedCount,
         liveExecution: false,
       },
@@ -473,7 +496,7 @@ export class AiAgentStudioPolicySimulationService {
       );
     }
 
-    return events.map(
+    const normalizedEvents = events.map(
       (event, index) => {
         if (
           !event ||
@@ -551,6 +574,46 @@ export class AiAgentStudioPolicySimulationService {
         };
       },
     );
+
+    const seenEventKeys = new Set<string>();
+    for (const event of normalizedEvents) {
+      if (seenEventKeys.has(event.eventKey)) {
+        throw new BadRequestException(
+          'historical event_key values must be unique within a simulation',
+        );
+      }
+      seenEventKeys.add(event.eventKey);
+    }
+
+    return normalizedEvents;
+  }
+
+  private fingerprintEvent(event: AiAgentStudioHistoricalEvent): string {
+    const canonicalInput = {
+      eventKey: event.eventKey,
+      action: event.action,
+      resourceType: event.resourceType ?? null,
+      attributes: event.attributes ?? {},
+      effectiveAt: event.effectiveAt,
+      expectedOutcome: event.expectedOutcome ?? null,
+    };
+    return createHash('sha256')
+      .update(this.stableJson(canonicalInput), 'utf8')
+      .digest('hex');
+  }
+
+  private stableJson(value: unknown): string {
+    if (value === null || typeof value !== 'object') {
+      const encoded = JSON.stringify(value);
+      return encoded === undefined ? 'null' : encoded;
+    }
+    if (Array.isArray(value)) {
+      return '[' + value.map((item) => this.stableJson(item)).join(',') + ']';
+    }
+    const record = value as Record<string, unknown>;
+    const fields = Object.keys(record).sort().map((key) =>
+      JSON.stringify(key) + ':' + this.stableJson(record[key]));
+    return '{' + fields.join(',') + '}';
   }
 
   private requiredDate(

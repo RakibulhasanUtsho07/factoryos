@@ -269,6 +269,9 @@ describe(
           'inbox_events',
           'order_event_projections',
           'order_idempotency_keys',
+          'inventory_items',
+          'inventory_stock_balances',
+          'inventory_movements',
         ];
 
         const result =

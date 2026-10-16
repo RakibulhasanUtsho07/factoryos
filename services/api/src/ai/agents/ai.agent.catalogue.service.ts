@@ -38,10 +38,13 @@ import type {
 import type {
   AiAgentCatalogueStatus,
   AiAgentDefinition,
+  AiAgentOperationalControl,
+  AiAgentOperationalControlStatus,
   AiAgentToolEntitlement,
   AiAgentToolGrant,
   AiAgentToolGrantStatus,
   CreateAiAgentDefinitionInput,
+  CreateAiAgentOperationalControlInput,
   CreateAiAgentToolGrantInput,
 } from './ai.agent.catalogue.types';
 
@@ -53,6 +56,8 @@ interface AgentDefinitionRow extends QueryResultRow {
   version: string;
   name: string;
   description: string | null;
+  language: string;
+  owner_user_id: string | null;
   capability: string;
   typical_output: string;
   authority: string;
@@ -67,6 +72,20 @@ interface AgentDefinitionRow extends QueryResultRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface AgentOperationalControlRow extends QueryResultRow {
+  id: string;
+  control_revision: string;
+  tenant_id: string;
+  factory_id: string;
+  agent_id: string;
+  agent_definition_id: string;
+  status: AiAgentOperationalControlStatus;
+  execution_scopes: string[];
+  reason: string;
+  created_by: string | null;
+  created_at: string;
 }
 
 interface AgentToolGrantRow extends QueryResultRow {
@@ -120,6 +139,34 @@ export class AiAgentCatalogueService {
     );
 
     const normalized = this.normalizeAgentDefinition(input);
+    const ownerUserId = input.ownerUserId ?? actorUserId;
+    this.validateUuid(ownerUserId, 'ownerUserId');
+
+    if (ownerUserId !== actorUserId) {
+      const ownerMembership = await this.database.query<{
+        user_id: string;
+      }>(
+        `
+        SELECT tm.user_id::text AS user_id
+        FROM tenant_memberships tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE
+          tm.tenant_id = $1
+          AND tm.user_id = $2
+          AND tm.status = 'ACTIVE'
+          AND u.status = 'ACTIVE'
+        LIMIT 1
+        `,
+        [tenantId, ownerUserId],
+        { tenantId, userId: actorUserId },
+      );
+
+      if (!ownerMembership.rows[0]) {
+        throw new ForbiddenException(
+          'Agent owner must be an active member of the same tenant',
+        );
+      }
+    }
 
     try {
       const result =
@@ -132,6 +179,8 @@ export class AiAgentCatalogueService {
             version,
             name,
             description,
+            language,
+            owner_user_id,
             capability,
             typical_output,
             authority,
@@ -163,7 +212,9 @@ export class AiAgentCatalogueService {
             $15,
             $16,
             $17,
-            $18
+            $18,
+            $19,
+            $20
           )
           RETURNING
             id::text AS id,
@@ -173,6 +224,8 @@ export class AiAgentCatalogueService {
             version,
             name,
             description,
+            language,
+            owner_user_id::text AS owner_user_id,
             capability,
             typical_output,
             authority,
@@ -195,6 +248,8 @@ export class AiAgentCatalogueService {
             normalized.version,
             normalized.name,
             normalized.description,
+            normalized.language,
+            ownerUserId,
             normalized.capability,
             normalized.typicalOutput,
             normalized.authority,
@@ -234,6 +289,8 @@ export class AiAgentCatalogueService {
           agentId: mapped.agentId,
           version: mapped.version,
           status: mapped.status,
+          language: mapped.language,
+          ownerUserId: mapped.ownerUserId,
           riskCeiling: mapped.riskCeiling,
           executionScopes: mapped.executionScopes,
           result: 'CREATED',
@@ -279,6 +336,8 @@ export class AiAgentCatalogueService {
           d.version,
           d.name,
           d.description,
+          d.language,
+          d.owner_user_id::text AS owner_user_id,
           d.capability,
           d.typical_output,
           d.authority,
@@ -319,6 +378,170 @@ export class AiAgentCatalogueService {
     }
 
     return this.mapAgentDefinition(row);
+  }
+
+  async getAgentOperationalControlState(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    definitionId: string,
+  ): Promise<{
+    agentDefinitionId: string;
+    agentId: string;
+    catalogueStatus: AiAgentCatalogueStatus;
+    control: AiAgentOperationalControl | null;
+  }> {
+    const agent = await this.getAgentDefinition(
+      tenantId,
+      factoryId,
+      actorUserId,
+      definitionId,
+    );
+    const control = await this.findLatestOperationalControl(
+      tenantId,
+      factoryId,
+      agent.agentId,
+      actorUserId,
+    );
+
+    return {
+      agentDefinitionId: agent.id,
+      agentId: agent.agentId,
+      catalogueStatus: agent.status,
+      control: control ? this.mapOperationalControl(control) : null,
+    };
+  }
+
+  async setAgentOperationalControl(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    definitionId: string,
+    input: CreateAiAgentOperationalControlInput,
+  ): Promise<AiAgentOperationalControl> {
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(factoryId, 'factoryId');
+    this.validateUuid(actorUserId, 'actorUserId');
+    this.validateUuid(definitionId, 'definitionId');
+
+    await this.iamService.authorize(
+      actorUserId,
+      tenantId,
+      'ai.agents.control',
+      factoryId,
+    );
+
+    if (!input || typeof input !== 'object') {
+      throw new BadRequestException(
+        'AI agent operational control input is required',
+      );
+    }
+
+    const status = this.validateOperationalControlStatus(input.status);
+    const reason = this.requiredString(input.reason, 'reason', 2000);
+    const executionScopes = this.normalizeExecutionScopes(
+      input.executionScopes,
+    );
+
+    if (status !== 'RESTRICTED' && executionScopes.length > 0) {
+      throw new BadRequestException(
+        'executionScopes may only be supplied when status is RESTRICTED',
+      );
+    }
+
+    const agent = await this.getAgentDefinition(
+      tenantId,
+      factoryId,
+      actorUserId,
+      definitionId,
+    );
+
+    if (agent.status !== 'ACTIVE') {
+      throw new ConflictException(
+        'Operational controls must target an ACTIVE agent definition',
+      );
+    }
+
+    const baselineScopes = new Set(agent.executionScopes);
+    const wideningScope = executionScopes.find(
+      (scope) => !baselineScopes.has(scope),
+    );
+
+    if (wideningScope) {
+      throw new ForbiddenException(
+        `Operational controls cannot widen agent execution scopes: ${wideningScope}`,
+      );
+    }
+
+    const result = await this.database.query<AgentOperationalControlRow>(
+      `
+      INSERT INTO ai_agent_operational_controls (
+        tenant_id,
+        factory_id,
+        agent_id,
+        agent_definition_id,
+        status,
+        execution_scopes,
+        reason,
+        created_by
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING
+        id::text AS id,
+        control_revision::text AS control_revision,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        agent_id,
+        agent_definition_id::text AS agent_definition_id,
+        status,
+        execution_scopes,
+        reason,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      `,
+      [
+        tenantId,
+        factoryId,
+        agent.agentId,
+        agent.id,
+        status,
+        executionScopes,
+        reason,
+        actorUserId,
+      ],
+      {
+        tenantId,
+        userId: actorUserId,
+      },
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new BadRequestException(
+        'AI agent operational control insert returned no row',
+      );
+    }
+
+    const mapped = this.mapOperationalControl(row);
+    await this.safeAudit({
+      tenantId,
+      factoryId,
+      actorUserId,
+      action: 'SET_OPERATIONAL_CONTROL',
+      resourceType: 'AI_AGENT_OPERATIONAL_CONTROL',
+      resourceId: mapped.id,
+      payload: {
+        agentId: mapped.agentId,
+        agentDefinitionId: mapped.agentDefinitionId,
+        revision: mapped.revision,
+        status: mapped.status,
+        executionScopes: mapped.executionScopes,
+        reason: mapped.reason,
+        result: 'RECORDED',
+      },
+    });
+
+    return mapped;
   }
 
   async listAgentDefinitions(
@@ -388,6 +611,8 @@ export class AiAgentCatalogueService {
           d.version,
           d.name,
           d.description,
+          d.language,
+          d.owner_user_id::text AS owner_user_id,
           d.capability,
           d.typical_output,
           d.authority,
@@ -462,6 +687,8 @@ export class AiAgentCatalogueService {
           d.version,
           d.name,
           d.description,
+          d.language,
+          d.owner_user_id::text AS owner_user_id,
           d.capability,
           d.typical_output,
           d.authority,
@@ -1000,6 +1227,29 @@ export class AiAgentCatalogueService {
       agent,
       tool,
     );
+
+    const operationalControl =
+      await this.findLatestOperationalControl(
+        tenantId,
+        factoryId,
+        agent.agentId,
+      );
+
+    if (operationalControl?.status === 'PAUSED') {
+      throw new ForbiddenException(
+        `AI agent is paused by operational control: ${normalizedAgentId}`,
+      );
+    }
+
+    if (operationalControl?.status === 'RESTRICTED') {
+      const restrictedScopes = new Set(
+        operationalControl.execution_scopes ?? [],
+      );
+      agent.executionScopes = agent.executionScopes.filter(
+        (scope) => restrictedScopes.has(scope),
+      );
+    }
+
     this.assertToolScopesWithinAgentExecutionScopes(
       agent,
       tool,
@@ -1066,6 +1316,80 @@ export class AiAgentCatalogueService {
       agent,
       grant: this.mapGrant(grantRow),
     };
+  }
+
+  private async findLatestOperationalControl(
+    tenantId: string,
+    factoryId: string,
+    agentId: string,
+    actorUserId?: string | null,
+  ): Promise<AgentOperationalControlRow | null> {
+    const result = await this.database.query<AgentOperationalControlRow>(
+      `
+      SELECT
+        id::text AS id,
+        control_revision::text AS control_revision,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        agent_id,
+        agent_definition_id::text AS agent_definition_id,
+        status,
+        execution_scopes,
+        reason,
+        created_by::text AS created_by,
+        created_at::text AS created_at
+      FROM ai_agent_operational_controls
+      WHERE
+        tenant_id = $1
+        AND factory_id = $2
+        AND agent_id = $3
+      ORDER BY control_revision DESC
+      LIMIT 1
+      `,
+      [tenantId, factoryId, agentId],
+      {
+        tenantId,
+        userId: actorUserId ?? undefined,
+      },
+    );
+
+    return result.rows[0] ?? null;
+  }
+
+  private mapOperationalControl(
+    row: AgentOperationalControlRow,
+  ): AiAgentOperationalControl {
+    return {
+      id: row.id,
+      revision: row.control_revision,
+      tenantId: row.tenant_id,
+      factoryId: row.factory_id,
+      agentId: row.agent_id,
+      agentDefinitionId: row.agent_definition_id,
+      status: row.status,
+      executionScopes: Array.isArray(row.execution_scopes)
+        ? [...row.execution_scopes]
+        : [],
+      reason: row.reason,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    };
+  }
+
+  private validateOperationalControlStatus(
+    status: unknown,
+  ): AiAgentOperationalControlStatus {
+    if (
+      status !== 'ENABLED' &&
+      status !== 'PAUSED' &&
+      status !== 'RESTRICTED'
+    ) {
+      throw new BadRequestException(
+        'Operational control status must be ENABLED, PAUSED, or RESTRICTED',
+      );
+    }
+
+    return status;
   }
 
   private async resolveNextGrantVersion(
@@ -1206,6 +1530,7 @@ export class AiAgentCatalogueService {
               'description',
               2000,
             ),
+      language: this.normalizeLanguage(input.language),
       capability: this.requiredString(
         input.capability,
         'capability',
@@ -1312,6 +1637,8 @@ export class AiAgentCatalogueService {
       version: row.version,
       name: row.name,
       description: row.description,
+      language: row.language ?? 'en',
+      ownerUserId: row.owner_user_id ?? null,
       capability: row.capability,
       typicalOutput: row.typical_output,
       authority: row.authority,
@@ -1405,6 +1732,33 @@ export class AiAgentCatalogueService {
         `${field} must be a valid UUID`,
       );
     }
+  }
+
+  private normalizeLanguage(value: unknown): string {
+    const raw = value === undefined || value === null ? 'en' : value;
+
+    if (typeof raw !== 'string') {
+      throw new BadRequestException('language must be a BCP 47 language tag');
+    }
+
+    const language = raw.trim();
+    if (
+      language.length > 35 ||
+      !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)
+    ) {
+      throw new BadRequestException(
+        'language must be a BCP 47 language tag such as en or bn-BD',
+      );
+    }
+
+    return language.split('-').map((part, index) => {
+      if (index === 0) return part.toLowerCase();
+      if (part.length === 2 && /^[A-Za-z]+$/.test(part)) return part.toUpperCase();
+      if (part.length === 4 && /^[A-Za-z]+$/.test(part)) {
+        return part[0]!.toUpperCase() + part.slice(1).toLowerCase();
+      }
+      return part.toLowerCase();
+    }).join('-');
   }
 
   private normalizeExecutionScopes(

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 
 import { EntitlementsModule } from './entitlements/entitlements.module';
+import { SaasModule } from './saas/saas.module';
 import { ConfigModule } from '@nestjs/config';
 
 import { AppController } from './app.controller';
@@ -17,6 +18,9 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
 import { OrdersModule } from './orders/orders.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { ResearchModule } from './research/research.module';
+import { GrowthModule } from './growth/growth.module';
 import { OutboxModule } from './outbox/outbox.module';
 
 import { PolicyModule } from './policy/policy.module';
@@ -65,7 +69,15 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 
     OrdersModule,
 
+    InventoryModule,
+
+    ResearchModule,
+
+    GrowthModule,
+
     EntitlementsModule,
+
+    SaasModule,
 
     PolicyModule,
 

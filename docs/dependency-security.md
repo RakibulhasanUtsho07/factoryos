@@ -25,3 +25,22 @@ References:
 - Do not use `npm audit fix --force` as an automated fix; npm previously proposed downgrades to `eslint-config-next`, `ts-jest`, and `@nestjs/mau` that would be incompatible with the repository's current toolchain.
 - Keep root `overrides` and `package-lock.json` synchronized. The verified overrides patch `handlebars` to 4.7.10, `tmp` to 0.2.7, `undici` 6.x to 6.29.0, and `argparse` to 2.0.1. The `argparse` override passed the full CI suite and removes the obsolete `sprintf-js` chain from the lockfile.
 - Re-run full `npm audit`, production `npm audit --omit=dev`, all lint/build jobs, and the PostgreSQL-backed API suite after every dependency update.
+
+
+### Latest audit results — 2026-10-10
+
+After installing the updated workspace lockfile and rerunning the dependency audits:
+
+- `npm audit --omit=dev`: 0 vulnerabilities.
+- `npm audit`: 5 high-severity findings. The reported advisory identifies the `braces` dependency chain.
+
+The dependency path is:
+
+`eslint-config-next@16.4.0` → `@next/eslint-plugin-next@16.4.0` → `fast-glob@3.3.1` → `micromatch@4.0.8` → `braces@3.0.3`.
+
+`npm explain braces` confirms that this dependency is reached through the Web workspace's development tooling.
+
+The upstream advisory currently lists affected versions through `3.0.3` and no patched version. The finding remains unresolved; it is not considered fixed merely because production dependencies have a clean audit.
+
+Do not run `npm audit fix --force`. Reassess this finding when a compatible upstream fix or alternative dependency chain becomes available.
+

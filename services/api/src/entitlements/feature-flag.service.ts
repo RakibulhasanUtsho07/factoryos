@@ -496,6 +496,41 @@ export class FeatureFlagService {
 
             AND f.key = $2
 
+            -- Safe runtime evaluation: disabled subscription states and
+            -- expired trial/billing windows must never turn a feature flag on.
+            -- No-subscription tenants remain in legacy compatibility mode.
+            AND NOT EXISTS (
+              SELECT 1
+              FROM saas_subscriptions s
+              WHERE s.tenant_id = f.tenant_id
+                AND s.id = (
+                  SELECT latest.id
+                  FROM saas_subscriptions latest
+                  WHERE latest.tenant_id = f.tenant_id
+                  ORDER BY latest.created_at DESC, latest.id DESC
+                  LIMIT 1
+                )
+                AND (
+                  s.status IN ('SUSPENDED', 'TERMINATED', 'EXPIRED')
+                  OR (
+                    s.status = 'TRIAL'
+                    AND (
+                      s.trial_ends_at IS NULL
+                      OR s.trial_ends_at <= COALESCE($3::timestamptz, now())
+                    )
+                  )
+                  OR (
+                    s.status = 'ACTIVE'
+                    AND (
+                      s.current_period_start IS NULL
+                      OR s.current_period_start > COALESCE($3::timestamptz, now())
+                      OR s.current_period_end IS NULL
+                      OR s.current_period_end <= COALESCE($3::timestamptz, now())
+                    )
+                  )
+                )
+            )
+
             AND f.effective_from <=
               COALESCE(
                 $3::timestamptz,

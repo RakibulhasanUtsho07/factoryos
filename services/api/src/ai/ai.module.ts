@@ -8,6 +8,8 @@ import { PolicyModule } from '../policy/policy.module';
 
 import { AiAgentCatalogueController } from './agents/ai.agent.catalogue.controller';
 import { AiAgentCatalogueService } from './agents/ai.agent.catalogue.service';
+import { AiAgentEvaluationController } from './agents/ai.agent.evaluation.controller';
+import { AiAgentEvaluationService } from './agents/ai.agent.evaluation.service';
 import { AiAgentController } from './agents/ai.agent.controller';
 import { AiAgentRuntimeService } from './agents/ai.agent.runtime.service';
 import { AiAgentStudioController } from './agents/ai.agent.studio.controller';
@@ -24,6 +26,7 @@ import { AiAgentStudioTemplateController } from './agents/ai.agent.studio.templa
 import { AiAgentStudioTemplateService } from './agents/ai.agent.studio.template.service';
 import { AiController } from './ai.controller';
 import { AiRuntimeService } from './ai.runtime.service';
+import { AiOperationalEvaluationService } from './ai.operational.evaluation.service';
 import { AiToolModule } from './ai.tool.module';
 
 @Module({
@@ -39,6 +42,7 @@ import { AiToolModule } from './ai.tool.module';
     AiController,
     AiAgentController,
     AiAgentCatalogueController,
+    AiAgentEvaluationController,
     AiAgentStudioController,
     AiAgentStudioRunController,
     AiAgentStudioPolicySimulationController,
@@ -48,8 +52,10 @@ import { AiToolModule } from './ai.tool.module';
   ],
   providers: [
     AiRuntimeService,
+    AiOperationalEvaluationService,
     AiAgentRuntimeService,
     AiAgentCatalogueService,
+    AiAgentEvaluationService,
     AiAgentStudioService,
     AiAgentStudioRunService,
     AiAgentStudioPolicySimulationService,
@@ -59,8 +65,10 @@ import { AiToolModule } from './ai.tool.module';
   ],
   exports: [
     AiRuntimeService,
+    AiOperationalEvaluationService,
     AiAgentRuntimeService,
     AiAgentCatalogueService,
+    AiAgentEvaluationService,
     AiAgentStudioService,
     AiAgentStudioRunService,
     AiAgentStudioPolicySimulationService,

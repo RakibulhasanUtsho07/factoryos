@@ -8,6 +8,31 @@ export type AiAgentCatalogueStatus =
   | 'PAUSED'
   | 'RETIRED';
 
+export type AiAgentOperationalControlStatus =
+  | 'ENABLED'
+  | 'PAUSED'
+  | 'RESTRICTED';
+
+export interface CreateAiAgentOperationalControlInput {
+  status: AiAgentOperationalControlStatus;
+  executionScopes?: string[];
+  reason: string;
+}
+
+export interface AiAgentOperationalControl {
+  id: string;
+  revision: string;
+  tenantId: string;
+  factoryId: string;
+  agentId: string;
+  agentDefinitionId: string;
+  status: AiAgentOperationalControlStatus;
+  executionScopes: string[];
+  reason: string;
+  createdBy: string | null;
+  createdAt: string;
+}
+
 export type AiAgentToolGrantStatus =
   | 'ACTIVE'
   | 'REVOKED';
@@ -17,6 +42,8 @@ export interface CreateAiAgentDefinitionInput {
   version: string;
   name: string;
   description?: string | null;
+  language?: string;
+  ownerUserId?: string | null;
   capability: string;
   typicalOutput: string;
   authority: string;
@@ -38,6 +65,8 @@ export interface AiAgentDefinition {
   version: string;
   name: string;
   description: string | null;
+  language: string;
+  ownerUserId: string | null;
   capability: string;
   typicalOutput: string;
   authority: string;

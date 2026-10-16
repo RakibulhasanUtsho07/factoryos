@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
 } from '@nestjs/common';
 
@@ -11,6 +12,14 @@ import {
 import {
   IamService,
 } from '../../iam/iam.service';
+
+import {
+  SaasUsageService,
+} from '../../saas/saas-usage.service';
+
+import {
+  SaasSubscriptionService,
+} from '../../saas/saas-subscription.service';
 
 import {
   AiToolRegistryService,
@@ -32,6 +41,12 @@ export class AiToolGatewayService {
 
     private readonly iamService:
       IamService,
+
+    private readonly saasUsageService:
+      SaasUsageService,
+
+    private readonly saasSubscriptionService:
+      SaasSubscriptionService,
   ) {}
 
   /* ==========================================================
@@ -65,6 +80,79 @@ export class AiToolGatewayService {
         permission,
         action.factoryId,
       );
+    }
+
+    // Re-check live subscription state at the last governed boundary before
+    // metering and execution. No long-lived entitlement cache can outlive
+    // suspension/expiry and a denied subscription attempt does not get billed.
+    await this.saasSubscriptionService.assertAiCapabilityAvailable(
+      action.tenantId,
+    );
+
+    /*
+     * WP10 / FR-PROD-04: workload class is registry metadata, never
+     * caller-controlled input. Record the governed attempt once before
+     * evaluating controls so a hard limit cannot be bypassed by retries.
+     */
+    const workloadClass = tool.metadata?.workloadClass ?? 'PRODUCTION';
+    if (typeof workloadClass !== 'string') {
+      throw new ConflictException(
+        'Registered AI tool workloadClass metadata is invalid',
+      );
+    }
+
+    const nonCriticalClasses = new Set<string>([
+      'EVALUATION',
+      'RED_TEAM',
+      'SHADOW_MODE',
+      'DEVELOPMENT',
+    ]);
+    if (
+      !nonCriticalClasses.has(workloadClass) &&
+      workloadClass !== 'PRODUCTION' &&
+      workloadClass !== 'NON_AI'
+    ) {
+      throw new ConflictException(
+        'Registered AI tool workloadClass metadata is unsupported',
+      );
+    }
+
+    await this.saasUsageService.recordAiToolCall(
+      action.tenantId,
+      action.factoryId,
+      action.actorUserId,
+      {
+        executionKey: action.actionIntentId,
+        toolId: tool.toolId,
+        workloadClass,
+      },
+    );
+
+    if (nonCriticalClasses.has(workloadClass)) {
+      try {
+        await this.saasUsageService.assertWorkloadExecutionAllowed(
+          action.tenantId,
+          action.factoryId,
+          action.actorUserId,
+          workloadClass,
+        );
+      } catch (error) {
+        if (error instanceof ForbiddenException) {
+          return {
+            status: 'FAILED',
+            result: {},
+            error: {
+              code: 'SAAS_WORKLOAD_PAUSED',
+              message: 'Non-critical AI workload was blocked by SaaS budget controls',
+            },
+            tool,
+            executorType: action.executorType,
+            toolVersion: tool.version,
+            inputsHash: action.payloadHash,
+          };
+        }
+        throw error;
+      }
     }
 
     /*

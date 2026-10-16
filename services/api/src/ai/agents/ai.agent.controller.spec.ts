@@ -8,12 +8,16 @@ describe('AiAgentController', () => {
   const getTaskMock = jest.fn();
   const cancelTaskMock = jest.fn();
   const createHandoffMock = jest.fn();
+  const acceptHandoffMock = jest.fn();
+  const rejectHandoffMock = jest.fn();
 
   const runtime = {
     createTask: createTaskMock,
     getTask: getTaskMock,
     cancelTask: cancelTaskMock,
     createHandoff: createHandoffMock,
+    acceptHandoff: acceptHandoffMock,
+    rejectHandoff: rejectHandoffMock,
   };
 
   const controller = new AiAgentController(runtime as never);
@@ -37,6 +41,8 @@ describe('AiAgentController', () => {
     getTaskMock.mockResolvedValue({ task: { id: 'task-1' }, steps: [] });
     cancelTaskMock.mockResolvedValue({ id: 'task-1', state: 'CANCELLED' });
     createHandoffMock.mockResolvedValue({ id: 'handoff-1' });
+    acceptHandoffMock.mockResolvedValue({ id: 'handoff-1', status: 'ACCEPTED' });
+    rejectHandoffMock.mockResolvedValue({ id: 'handoff-1', status: 'REJECTED' });
   });
 
   it('creates a task using authenticated trace context and mapped DTO fields', async () => {
@@ -129,6 +135,48 @@ describe('AiAgentController', () => {
         targetAgentId: 'target-agent-1',
         parentTraceId: request.factoryos.traceId,
       }),
+    );
+  });
+
+  it('accepts a handoff in the authenticated factory scope', async () => {
+    const handoffId = '99999999-9999-4999-8999-999999999999';
+
+    await controller.acceptHandoff(request as never, handoffId);
+
+    expect(acceptHandoffMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      handoffId,
+    );
+  });
+
+  it('rejects a handoff in authenticated factory scope and forwards the audit reason', async () => {
+    const handoffId = '99999999-9999-4999-8999-999999999999';
+    const reason = 'The receiving workflow is no longer needed';
+
+    await controller.rejectHandoff(request as never, handoffId, { reason });
+
+    expect(rejectHandoffMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      handoffId,
+      reason,
+    );
+  });
+
+  it('preserves the default handoff rejection reason when no body is supplied', async () => {
+    const handoffId = '99999999-9999-4999-8999-999999999999';
+
+    await controller.rejectHandoff(request as never, handoffId);
+
+    expect(rejectHandoffMock).toHaveBeenCalledWith(
+      request.factoryos.tenantId,
+      request.factoryos.factoryId,
+      request.factoryos.userId,
+      handoffId,
+      undefined,
     );
   });
 

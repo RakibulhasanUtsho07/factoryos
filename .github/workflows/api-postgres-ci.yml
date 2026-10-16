@@ -12,7 +12,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
   push:
-    branches: [main, dev]
+    branches: [main, dev, rakibul-hasan]
     paths:
       - 'services/api/**'
       - 'migrations/**'
@@ -50,8 +50,10 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
+      TEST_APP_DATABASE_URL: postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
       TEST_ADMIN_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
       B19_TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+      SAAS_TRANSFER_TARGET_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_transfer_target_test_ci
       JWT_SECRET: ci-only-not-a-production-secret
       NODE_ENV: test
       PORT: 3001
@@ -108,13 +110,77 @@ jobs:
             migrations/024_ai_agent_workflow_drafts.sql
             migrations/025_ai_tool_action_binding.sql
             migrations/026_ai_action_binding_integrity.sql
+            migrations/026_ai_agent_task_request_fingerprint.sql
+            migrations/026_ai_tool_registry_global_write_hardening.sql
             migrations/027_ai_execution_idempotency_claims.sql
             migrations/028_ai_execution_claim_reconciliation.sql
+            migrations/029_ai_agent_operational_controls.sql
+            migrations/030_ai_agent_language_owner.sql
+            migrations/031_ai_agent_evaluation_cases.sql
+            migrations/032_ai_agent_execution_evidence.sql
+            migrations/033_ai_agent_handoff_contract_immutability.sql
+            migrations/034_ai_agent_handoff_lifecycle.sql
+            migrations/035_ai_agent_task_contract_immutability.sql
+            migrations/036_ai_agent_task_request_hash.sql
+            migrations/037_ai_agent_simulation_parent_scope.sql
+            migrations/038_inventory_stock_ledger.sql
+            migrations/039_research_growth_intelligence.sql
+            migrations/040_growth_constraint_gate_unknowns.sql
+            migrations/041_growth_outcome_learning_signals.sql
+            migrations/042_research_topic_watchlists.sql
+            migrations/043_research_growth_iam_permissions.sql
+            migrations/044_growth_outcome_result_link_integrity.sql
+            migrations/045_saas_usage_metering_reconciliation.sql
+            migrations/046_saas_budget_controls.sql
+            migrations/047_saas_alerts_provider_costs.sql
+            migrations/048_saas_subscription_lifecycle.sql
+            migrations/049_saas_sandbox_environments.sql
+            migrations/050_saas_release_rollouts.sql
+            migrations/051_saas_deployment_profiles.sql
+            migrations/052_saas_tenant_export_migration.sql
+            migrations/053_saas_tenant_import_receipts.sql
+            migrations/054_ai_operational_evaluation.sql
+            migrations/055_ai_operational_forecast_accuracy.sql
+            migrations/056_ai_operational_evaluation_policies.sql
+            migrations/057_ai_operational_forecast_numeric_consistency.sql
+            migrations/058_inventory_reservations.sql
           )
+
+          # Fail closed if a SQL migration is added to the repository but omitted
+          # from the disposable PostgreSQL CI schema build.
+          declare -A configured_migrations=()
+          for migration in "${migrations[@]}"; do
+            if [[ ! -f "$migration" ]]; then
+              echo "::error::Configured migration does not exist: $migration"
+              exit 1
+            fi
+            configured_migrations["$migration"]=1
+          done
+
+          missing_migrations=()
+          while IFS= read -r migration; do
+            if [[ -z "${configured_migrations[$migration]+x}" ]]; then
+              missing_migrations+=("$migration")
+            fi
+          done < <(find migrations -maxdepth 1 -type f -name '*.sql' -print | sort)
+
+          if (("${#missing_migrations[@]}" > 0)); then
+            printf '::error::Migrations omitted from PostgreSQL CI: %s\n' "${missing_migrations[*]}"
+            exit 1
+          fi
 
           for migration in "${migrations[@]}"; do
             echo "Applying $migration"
             psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+              -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
+          # The target importer is tested against a distinct database with the same reviewed schema.
+          psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
+            'CREATE DATABASE factoryos_transfer_target_test_ci'
+          for migration in "${migrations[@]}"; do
+            echo "Applying target $migration"
+            psql "postgresql://postgres@127.0.0.1:5432/factoryos_transfer_target_test_ci" \
               -v ON_ERROR_STOP=1 -f "$migration"
           done
 
@@ -155,6 +221,7 @@ jobs:
           DATABASE_URL=postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_test
           TEST_ADMIN_DATABASE_URL=postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
           B19_TEST_ADMIN_DATABASE_URL=postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_b19_restore_test_ci
+          SAAS_TRANSFER_TARGET_DATABASE_URL=postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_transfer_target_test_ci
           JWT_SECRET=ci-only-not-a-production-secret
           AUTH_MODE=dev
           DEV_AUTH_ENABLED=false

@@ -1,0 +1,646 @@
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import { Pool, type QueryResult, type QueryResultRow } from 'pg';
+
+import { AiRuntimeService } from './ai.runtime.service';
+import type { ReconcileAiExecutionClaimDto } from './dto/reconcile-ai-execution-claim.dto';
+
+const testDatabaseUrl = process.env.B19_TEST_ADMIN_DATABASE_URL;
+const integrationDescribe = testDatabaseUrl ? describe : describe.skip;
+
+type Scope = {
+  tenantId: string;
+  factoryId: string;
+  actorUserId: string;
+};
+
+type Fixture = {
+  decisionId: string;
+  traceId: string;
+  actionIntentId: string;
+  executionRecordId: string;
+  claimId: string;
+  executionKey: string;
+  toolVersion: string;
+  inputsHash: string;
+  actionToken: string;
+};
+
+const failedDecision: ReconcileAiExecutionClaimDto = {
+  decision: 'CONFIRMED_FAILED',
+  reason: 'Concurrent reconciliation regression test investigated the claim.',
+  evidence_ref: 'B19-CONCURRENT-RECONCILIATION-TEST',
+};
+
+integrationDescribe(
+  'AI execution claim reconciliation concurrency PostgreSQL integration',
+  () => {
+    let adminPool!: Pool;
+    let appPool!: Pool;
+    let scope!: Scope;
+
+    beforeAll(async () => {
+      const url = new URL(testDatabaseUrl!);
+      const databaseName = decodeURIComponent(
+        url.pathname.replace(/^\//, ''),
+      );
+
+      if (
+        !['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname) ||
+        !databaseName.startsWith('factoryos_b19_restore_test_')
+      ) {
+        throw new Error(
+          'B19_TEST_ADMIN_DATABASE_URL must target an isolated local factoryos_b19_restore_test_* database.',
+        );
+      }
+
+      adminPool = new Pool({
+        connectionString: testDatabaseUrl,
+        max: 6,
+        connectionTimeoutMillis: 5000,
+      });
+      appPool = adminPool;
+
+      const db = await adminPool.connect();
+      try {
+        const role = await db.query<{ rolsuper: boolean }>(
+          'SELECT rolsuper FROM pg_roles WHERE rolname = current_user',
+        );
+        if (!role.rows[0]?.rolsuper) {
+          throw new Error(
+            'The reconciliation race test requires the isolated test database admin role.',
+          );
+        }
+
+        const schema = await db.query<{
+          migrationInstalled: boolean;
+          appRoleAvailable: boolean;
+        }>(
+          `
+          SELECT
+            EXISTS (
+              SELECT 1 FROM public.schema_migrations
+              WHERE version = '028_ai_execution_claim_reconciliation'
+            ) AS "migrationInstalled",
+            EXISTS (
+              SELECT 1 FROM pg_roles
+              WHERE rolname = 'factoryos_app'
+                AND rolsuper = false
+                AND rolbypassrls = false
+            ) AS "appRoleAvailable"
+          `,
+        );
+
+        if (
+          !schema.rows[0]?.migrationInstalled ||
+          !schema.rows[0]?.appRoleAvailable
+        ) {
+          throw new Error(
+            'Migration 028 and the non-superuser factoryos_app role are required.',
+          );
+        }
+
+        const active = await db.query<Scope>(
+          `
+          SELECT
+            t.id::text AS "tenantId",
+            f.id::text AS "factoryId",
+            u.id::text AS "actorUserId"
+          FROM public.tenants t
+          JOIN public.factories f ON f.tenant_id = t.id
+          JOIN public.tenant_memberships tm
+            ON tm.tenant_id = t.id AND tm.status = 'ACTIVE'
+          JOIN public.users u
+            ON u.id = tm.user_id AND u.status = 'ACTIVE'
+          WHERE t.status = 'ACTIVE' AND f.status = 'ACTIVE'
+          ORDER BY t.created_at, f.created_at
+          LIMIT 1
+          `,
+        );
+        if (!active.rows[0]) {
+          throw new Error(
+            'No active tenant/factory/user context is available in the isolated integration database.',
+          );
+        }
+        scope = active.rows[0];
+      } finally {
+        db.release();
+      }
+    }, 15_000);
+
+    afterAll(async () => {
+      if (adminPool) {
+        await adminPool.end();
+      }
+    });
+
+    async function createFixture(
+      withSuccessfulExecution = false,
+    ): Promise<Fixture> {
+      const db = await adminPool.connect();
+      const fixture: Fixture = {
+        decisionId: randomUUID(),
+        traceId: randomUUID(),
+        actionIntentId: randomUUID(),
+        executionRecordId: randomUUID(),
+        claimId: randomUUID(),
+        executionKey: `B19.CONCURRENT.${randomUUID()}`,
+        toolVersion: '1.0.0',
+        inputsHash: 'b'.repeat(64),
+        actionToken: `B19.CONCURRENT.${randomUUID()}`,
+      };
+
+      try {
+        await db.query('BEGIN');
+        await db.query(
+          `
+          INSERT INTO public.ai_decision_envelopes (
+            id, tenant_id, factory_id, request_id, trace_id, actor_id,
+            objective, reasoning_mode, output_state, metadata
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'DETERMINISTIC', 'TEST', '{}'::jsonb)
+          `,
+          [
+            fixture.decisionId,
+            scope.tenantId,
+            scope.factoryId,
+            randomUUID(),
+            fixture.traceId,
+            scope.actorUserId,
+            'Verify reconciliation cannot be finalized twice',
+          ],
+        );
+
+        await db.query(
+          `
+          INSERT INTO public.ai_action_intents (
+            id, tenant_id, factory_id, decision_id, action_type, tool_id,
+            tool_version, target, resource_type, resource_id, payload,
+            payload_hash, risk_class, authorization_status, "authorization",
+            action_token_hash, token_expires_at, created_by
+          )
+          VALUES (
+            $1, $2, $3, $4, 'AI.RECONCILIATION.TEST', 'AI.RECONCILIATION.TEST',
+            $5, '{}'::jsonb, 'RECONCILIATION_TEST', $6, '{}'::jsonb,
+            $7, 'L0', 'AUTHORIZED', '{}'::jsonb, $8,
+            NOW() + INTERVAL '1 hour', $9
+          )
+          `,
+          [
+            fixture.actionIntentId,
+            scope.tenantId,
+            scope.factoryId,
+            fixture.decisionId,
+            fixture.toolVersion,
+            fixture.actionIntentId,
+            fixture.inputsHash,
+            createHash('sha256')
+              .update(JSON.stringify(fixture.actionToken), 'utf8')
+              .digest('hex'),
+            scope.actorUserId,
+          ],
+        );
+
+        await db.query(
+          `
+          INSERT INTO public.ai_execution_claims (
+            id, tenant_id, factory_id, action_intent_id, execution_key,
+            tool_version, inputs_hash, status, claimed_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 'CLAIMED', NOW() - INTERVAL '20 minutes')
+          `,
+          [
+            fixture.claimId,
+            scope.tenantId,
+            scope.factoryId,
+            fixture.actionIntentId,
+            fixture.executionKey,
+            fixture.toolVersion,
+            fixture.inputsHash,
+          ],
+        );
+
+        if (withSuccessfulExecution) {
+          await db.query(
+            `
+            INSERT INTO public.ai_execution_records (
+              id, tenant_id, factory_id, decision_id, action_intent_id,
+              execution_key, executor_type, tool_version, inputs_hash,
+              result, error, status, finished_at
+            )
+            VALUES (
+              $1, $2, $3, $4, $5, $6, 'AI_TOOL_GATEWAY', $7, $8,
+              '{}'::jsonb, '{}'::jsonb, 'SUCCEEDED', NOW()
+            )
+            `,
+            [
+              fixture.executionRecordId,
+              scope.tenantId,
+              scope.factoryId,
+              fixture.decisionId,
+              fixture.actionIntentId,
+              fixture.executionKey,
+              fixture.toolVersion,
+              fixture.inputsHash,
+            ],
+          );
+        }
+
+        await db.query('COMMIT');
+      } catch (error) {
+        await db.query('ROLLBACK');
+        throw error;
+      } finally {
+        db.release();
+      }
+
+      return fixture;
+    }
+
+    function createScopedDatabase(
+      afterPreflight?: () => Promise<void>,
+    ) {
+      return {
+        query: async <T extends QueryResultRow = QueryResultRow>(
+          sql: string,
+          values: unknown[] = [],
+          context?: { tenantId?: string; userId?: string },
+        ): Promise<QueryResult<T>> => {
+          const db = await appPool.connect();
+          try {
+            await db.query('BEGIN');
+            if (context?.tenantId) {
+              await db.query(
+                "SELECT set_config('app.tenant_id', $1, true)",
+                [context.tenantId],
+              );
+            }
+            if (context?.userId) {
+              await db.query(
+                "SELECT set_config('app.user_id', $1, true)",
+                [context.userId],
+              );
+            }
+            await db.query('SET LOCAL ROLE factoryos_app');
+            const result = await db.query<T>(sql, values as never[]);
+            await db.query('COMMIT');
+
+            const isPreflight =
+              /^\s*SELECT/i.test(sql) &&
+              /FROM\s+ai_execution_claims c/i.test(sql) &&
+              /LEFT JOIN\s+ai_execution_records e/i.test(sql) &&
+              /c\.claimed_at <= NOW\(\) - INTERVAL '5 minutes'/i.test(sql);
+
+            if (isPreflight && afterPreflight) {
+              await afterPreflight();
+            }
+            return result;
+          } catch (error) {
+            await db.query('ROLLBACK').catch(() => undefined);
+            throw error;
+          } finally {
+            db.release();
+          }
+        },
+      };
+    }
+
+    function createService(database: ReturnType<typeof createScopedDatabase>) {
+      return new AiRuntimeService(
+        database as never,
+        {} as never,
+        { authorize: async () => undefined } as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
+    }
+
+    async function readState(fixture: Fixture) {
+      const db = await adminPool.connect();
+      try {
+        const result = await db.query<{
+          status: string;
+          reconciliationCount: number;
+          auditCount: number;
+        }>(
+          `
+          SELECT
+            c.status,
+            (
+              SELECT COUNT(*)::int
+              FROM public.ai_execution_claim_reconciliations r
+              WHERE r.claim_id = c.id
+            ) AS "reconciliationCount",
+            (
+              SELECT COUNT(*)::int
+              FROM public.audit_events a
+              WHERE a.tenant_id = c.tenant_id
+                AND a.factory_id = c.factory_id
+                AND a.resource_id = c.id
+                AND a.action = 'RECONCILE_EXECUTION_CLAIM'
+            ) AS "auditCount"
+          FROM public.ai_execution_claims c
+          WHERE c.id = $1
+          `,
+          [fixture.claimId],
+        );
+        return result.rows[0];
+      } finally {
+        db.release();
+      }
+    }
+
+    it(
+      'allows only one of two concurrent reconciliation requests to finalize a claim',
+      async () => {
+        const fixture = await createFixture();
+        let preflightCount = 0;
+        let releasePreflight!: () => void;
+        const bothPreflightsReady = new Promise<void>((resolve) => {
+          releasePreflight = resolve;
+        });
+
+        const database = createScopedDatabase(async () => {
+          preflightCount += 1;
+          if (preflightCount === 2) {
+            releasePreflight();
+          }
+          await bothPreflightsReady;
+        });
+        const service = createService(database);
+
+        const requests = await Promise.allSettled([
+          service.reconcileExecutionClaim(
+            scope.tenantId,
+            scope.factoryId,
+            scope.actorUserId,
+            fixture.claimId,
+            failedDecision,
+          ),
+          service.reconcileExecutionClaim(
+            scope.tenantId,
+            scope.factoryId,
+            scope.actorUserId,
+            fixture.claimId,
+            failedDecision,
+          ),
+        ]);
+
+        expect(preflightCount).toBe(2);
+        expect(requests.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+        const rejected = requests.find((r) => r.status === 'rejected');
+        expect(rejected?.status).toBe('rejected');
+        if (rejected?.status === 'rejected') {
+          expect(rejected.reason).toBeInstanceOf(ConflictException);
+        }
+
+        const state = await readState(fixture);
+        expect(state).toMatchObject({
+          status: 'FAILED',
+          reconciliationCount: 1,
+          auditCount: 1,
+        });
+      },
+      20_000,
+    );
+
+    it(
+      'rejects a reconciliation decision that contradicts the stored execution result',
+      async () => {
+        const fixture = await createFixture(true);
+        const service = createService(createScopedDatabase());
+
+        await expect(
+          service.reconcileExecutionClaim(
+            scope.tenantId,
+            scope.factoryId,
+            scope.actorUserId,
+            fixture.claimId,
+            failedDecision,
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+
+        const state = await readState(fixture);
+        expect(state).toMatchObject({
+          status: 'CLAIMED',
+          reconciliationCount: 0,
+          auditCount: 0,
+        });
+      },
+      20_000,
+    );
+
+    it(
+      'keeps reconciliation evidence append-only and hidden from another tenant',
+      async () => {
+        const fixture = await createFixture();
+        const service = createService(createScopedDatabase());
+
+        await service.reconcileExecutionClaim(
+          scope.tenantId,
+          scope.factoryId,
+          scope.actorUserId,
+          fixture.claimId,
+          failedDecision,
+        );
+
+        const appDatabase = createScopedDatabase();
+
+        await expect(
+          appDatabase.query(
+            `
+            UPDATE public.ai_execution_claim_reconciliations
+            SET reason = 'Tampered reason for regression test'
+            WHERE claim_id = $1
+            `,
+            [fixture.claimId],
+            { tenantId: scope.tenantId, userId: scope.actorUserId },
+          ),
+        ).rejects.toMatchObject({ code: '23514' });
+
+        await expect(
+          appDatabase.query(
+            `
+            DELETE FROM public.ai_execution_claim_reconciliations
+            WHERE claim_id = $1
+            `,
+            [fixture.claimId],
+            { tenantId: scope.tenantId, userId: scope.actorUserId },
+          ),
+        ).rejects.toMatchObject({ code: '23514' });
+
+        const crossTenantRead = await appDatabase.query(
+          `
+          SELECT id
+          FROM public.ai_execution_claim_reconciliations
+          WHERE claim_id = $1
+          `,
+          [fixture.claimId],
+          { tenantId: randomUUID(), userId: scope.actorUserId },
+        );
+
+        expect(crossTenantRead.rows).toHaveLength(0);
+
+        const state = await readState(fixture);
+        expect(state).toMatchObject({
+          status: 'FAILED',
+          reconciliationCount: 1,
+          auditCount: 1,
+        });
+      },
+      20_000,
+    );
+
+
+    it(
+      'rejects action tokens presented from another tenant or factory before claiming execution',
+      async () => {
+        const fixture = await createFixture();
+        const service = createService(createScopedDatabase());
+        const input = {
+          action_token: fixture.actionToken,
+          execution_key: `B19.SCOPE.${randomUUID()}`,
+          tool_version: fixture.toolVersion,
+        };
+
+        await expect(
+          service.executeAction(
+            randomUUID(),
+            scope.factoryId,
+            scope.actorUserId,
+            input,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        await expect(
+          service.executeAction(
+            scope.tenantId,
+            randomUUID(),
+            scope.actorUserId,
+            {
+              ...input,
+              execution_key: `B19.SCOPE.${randomUUID()}`,
+            },
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        const db = await adminPool.connect();
+        try {
+          const counts = await db.query<{
+            claimCount: number;
+            executionCount: number;
+          }>(
+            `
+            SELECT
+              (
+                SELECT COUNT(*)::int
+                FROM public.ai_execution_claims
+                WHERE action_intent_id = $1
+              ) AS "claimCount",
+              (
+                SELECT COUNT(*)::int
+                FROM public.ai_execution_records
+                WHERE action_intent_id = $1
+              ) AS "executionCount"
+            `,
+            [fixture.actionIntentId],
+          );
+
+          expect(counts.rows[0]).toMatchObject({
+            claimCount: 1,
+            executionCount: 0,
+          });
+        } finally {
+          db.release();
+        }
+      },
+      20_000,
+    );
+
+    it(
+      'hides execution claims and execution records from another tenant even when their IDs are known',
+      async () => {
+        const fixture = await createFixture(true);
+        const database = createScopedDatabase();
+
+        const visibleClaim = await database.query(
+          'SELECT id FROM public.ai_execution_claims WHERE id = $1',
+          [fixture.claimId],
+          { tenantId: scope.tenantId, userId: scope.actorUserId },
+        );
+        const visibleExecution = await database.query(
+          'SELECT id FROM public.ai_execution_records WHERE id = $1',
+          [fixture.executionRecordId],
+          { tenantId: scope.tenantId, userId: scope.actorUserId },
+        );
+
+        expect(visibleClaim.rows).toHaveLength(1);
+        expect(visibleExecution.rows).toHaveLength(1);
+
+        const otherTenantId = randomUUID();
+        const hiddenClaim = await database.query(
+          'SELECT id FROM public.ai_execution_claims WHERE id = $1',
+          [fixture.claimId],
+          { tenantId: otherTenantId, userId: scope.actorUserId },
+        );
+        const hiddenExecution = await database.query(
+          'SELECT id FROM public.ai_execution_records WHERE id = $1',
+          [fixture.executionRecordId],
+          { tenantId: otherTenantId, userId: scope.actorUserId },
+        );
+
+        expect(hiddenClaim.rows).toHaveLength(0);
+        expect(hiddenExecution.rows).toHaveLength(0);
+      },
+      20_000,
+    );
+
+
+    it(
+      'keeps stale-claim listing, reconciliation, and replay isolated to the requested factory',
+      async () => {
+        const fixture = await createFixture(true);
+        const service = createService(createScopedDatabase());
+        const otherFactoryId = randomUUID();
+
+        const staleClaims = await service.listStaleExecutionClaims(
+          scope.tenantId,
+          otherFactoryId,
+          scope.actorUserId,
+        );
+        expect(staleClaims.items).toHaveLength(0);
+
+        await expect(
+          service.reconcileExecutionClaim(
+            scope.tenantId,
+            otherFactoryId,
+            scope.actorUserId,
+            fixture.claimId,
+            failedDecision,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        await expect(
+          service.replayDecision(
+            scope.tenantId,
+            otherFactoryId,
+            scope.actorUserId,
+            fixture.traceId,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        const state = await readState(fixture);
+        expect(state).toMatchObject({
+          status: 'CLAIMED',
+          reconciliationCount: 0,
+          auditCount: 0,
+        });
+      },
+      20_000,
+    );
+
+
+  },
+);

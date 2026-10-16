@@ -115,6 +115,30 @@ VALUES
   (
     'feature_flags.security_critical.write',
     'Create security-critical tenant feature flag versions'
+  ),
+  (
+    'research.read',
+    'Read approved research sources, claims, releases and topic watchlists'
+  ),
+  (
+    'research.write',
+    'Register and maintain research sources, claims, topic watchlists and release drafts'
+  ),
+  (
+    'research.review',
+    'Review research rights, claims, watchlists and knowledge release promotions'
+  ),
+  (
+    'growth.read',
+    'Read growth opportunities, scenarios, experiments and realized outcomes'
+  ),
+  (
+    'growth.write',
+    'Create and manage growth hypotheses, scenarios, experiments and validation unknowns'
+  ),
+  (
+    'growth.review',
+    'Accept or reject growth hypotheses and review validation decisions'
   )
 ON CONFLICT (code) DO NOTHING;
 
@@ -137,7 +161,13 @@ WHERE r.code = 'ORG_ADMIN'
     'entitlements.write',
     'feature_flags.read',
     'feature_flags.write',
-    'feature_flags.security_critical.write'
+    'feature_flags.security_critical.write',
+    'research.read',
+    'research.write',
+    'research.review',
+    'growth.read',
+    'growth.write',
+    'growth.review'
   );
 
 COMMIT;
