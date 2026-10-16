@@ -242,6 +242,7 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         `,
         ['release-' + randomUUID(), 'c'.repeat(64), reservationId],
       );
+      await client.query('SET CONSTRAINTS ctr_inventory_reservation_balance_consistency IMMEDIATE');
 
       await client.query('SAVEPOINT protect_reservation_reopen');
       await expect(client.query(
