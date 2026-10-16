@@ -418,6 +418,24 @@ describe(
     afterAll(async () => {
       if (pool) {
         if (boundOrderId) {
+          // Keep this fixture's ORDER.CREATED event from being claimed by
+          // unrelated dispatcher integration tests sharing the CI database.
+          await pool.query(
+            `
+            UPDATE outbox_events
+            SET
+              status = 'PUBLISHED',
+              published_at = COALESCE(published_at, clock_timestamp()),
+              last_error = NULL
+            WHERE
+              aggregate_type = 'ORDER'
+              AND aggregate_id = $1
+              AND event_type = 'ORDER.CREATED'
+              AND status IN ('PENDING', 'FAILED')
+            `,
+            [boundOrderId],
+          );
+
           await pool.query(
             `
             DELETE FROM orders
