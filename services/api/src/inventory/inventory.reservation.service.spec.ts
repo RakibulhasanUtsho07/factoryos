@@ -150,6 +150,7 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([row()]))
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '0.0000' }]))
       .mockResolvedValueOnce(queryRows([{ id: consumedMovementId, quantity_after: '8.0000' }]))
+      .mockResolvedValueOnce(queryRows([]))
       .mockResolvedValueOnce(queryRows([row({
         status: 'CONSUMED',
         transition_idempotency_key: 'consume-1',
@@ -159,7 +160,6 @@ describe('InventoryReservationService', () => {
         })).digest('hex'),
         consumed_movement_id: consumedMovementId,
       })]))
-      .mockResolvedValueOnce(queryRows([]))
       .mockResolvedValueOnce(queryRows([]));
 
     const result = await service.transitionReservation(
@@ -174,8 +174,8 @@ describe('InventoryReservationService', () => {
     });
     expect(String(client.query.mock.calls[2]?.[0])).toContain('quantity_on_hand = quantity_on_hand - $1::numeric');
     expect(String(client.query.mock.calls[3]?.[0])).toContain("'ISSUE'");
-    expect(String(client.query.mock.calls[4]?.[0])).toContain("status = 'RESERVED'");
-    expect(client.query.mock.calls[5]?.[1]).toContain('INVENTORY.STOCK_ISSUED');
+    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_ISSUED');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain("status = 'RESERVED'");
     expect(client.query.mock.calls[6]?.[1]).toContain('INVENTORY.STOCK_RESERVATION_CONSUMED');
     expect(audit.record).toHaveBeenCalledTimes(1);
   });
