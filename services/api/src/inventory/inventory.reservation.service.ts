@@ -47,6 +47,49 @@ interface MovementRow extends QueryResultRow {
   quantity_after: string;
 }
 
+interface OrderMaterialDispositionRow extends QueryResultRow {
+  id: string;
+  tenant_id: string;
+  factory_id: string;
+  order_id: string;
+  reservation_id: string;
+  item_id: string;
+  disposition_type: 'RETURN_TO_STOCK' | 'SCRAPPED';
+  quantity: string;
+  idempotency_key: string;
+  request_hash: string;
+  movement_id: string | null;
+  notes: string | null;
+  created_by_user_id: string;
+  correlation_id: string;
+  created_at: string;
+}
+
+type OrderMaterialDispositionResult = Omit<
+  OrderMaterialDispositionRow,
+  'request_hash' | 'idempotency_key'
+> & {
+  replayed: boolean;
+};
+
+const ORDER_MATERIAL_DISPOSITION_COLUMNS = `
+  id::text AS id,
+  tenant_id::text AS tenant_id,
+  factory_id::text AS factory_id,
+  order_id::text AS order_id,
+  reservation_id::text AS reservation_id,
+  item_id::text AS item_id,
+  disposition_type,
+  quantity::text AS quantity,
+  idempotency_key,
+  request_hash,
+  movement_id::text AS movement_id,
+  notes,
+  created_by_user_id::text AS created_by_user_id,
+  correlation_id::text AS correlation_id,
+  created_at::text AS created_at
+`;
+
 type ReservationResult = {
   id: string;
   tenant_id: string;
@@ -231,6 +274,415 @@ export class InventoryReservationService {
     return result;
   }
 
+
+
+  /**
+   * Records an explicit return-to-stock or scrap decision for already-issued
+   * order material. Each disposition is immutable and idempotent.
+   */
+  async recordOrderMaterialDisposition(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    orderId: string,
+    dto: {
+      reservation_id: string;
+      disposition_type: 'RETURN_TO_STOCK' | 'SCRAPPED';
+      quantity: number;
+      notes?: string;
+    },
+    rawIdempotencyKey: string | null,
+    requestId: string | null,
+    traceId: string | null,
+  ): Promise<OrderMaterialDispositionResult> {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(orderId, 'orderId');
+    this.validateUuid(dto.reservation_id, 'reservation_id');
+    if (!['RETURN_TO_STOCK', 'SCRAPPED'].includes(dto.disposition_type)) {
+      throw new BadRequestException('disposition_type must be RETURN_TO_STOCK or SCRAPPED');
+    }
+
+    const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
+    const quantity = this.normalizeQuantity(dto.quantity);
+    const notes = dto.notes?.trim() || null;
+    const reservationId = dto.reservation_id.toLowerCase();
+    const normalizedOrderId = orderId.toLowerCase();
+    const dispositionType = dto.disposition_type;
+    const requestHash = this.hash({
+      orderId: normalizedOrderId,
+      reservationId,
+      dispositionType,
+      quantity,
+      notes,
+    });
+
+    let result: OrderMaterialDispositionResult;
+    try {
+      result = await this.database.transaction(
+        { tenantId, userId },
+        async (client) => {
+          const existingBeforeLock = await this.findDispositionByIdempotencyKey(
+            client, tenantId, factoryId, idempotencyKey,
+          );
+          if (existingBeforeLock) {
+            return this.replayDispositionOrConflict(existingBeforeLock, requestHash);
+          }
+
+          const orderResult = await client.query<{
+            id: string;
+            factory_id: string;
+            order_number: string;
+            status: string;
+          }>(
+            `
+            SELECT id::text AS id, factory_id::text AS factory_id, order_number, status
+            FROM orders
+            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+            FOR UPDATE
+            `,
+            [orderId, tenantId, factoryId],
+          );
+          const order = orderResult.rows[0];
+          if (!order) throw new NotFoundException('Order not found in this factory');
+          if (order.status !== 'IN_PROGRESS') {
+            throw new ConflictException('Material disposition is only allowed for an in-progress order');
+          }
+
+          const reservationScope = await client.query<{ item_id: string }>(
+            `
+            SELECT r.item_id::text AS item_id
+            FROM inventory_reservations r
+            JOIN order_lines ol
+              ON ol.id = r.reference_id
+              AND ol.tenant_id = r.tenant_id
+              AND ol.factory_id = r.factory_id
+              AND ol.inventory_item_id = r.item_id
+            WHERE r.id = $1
+              AND r.tenant_id = $2
+              AND r.factory_id = $3
+              AND r.reference_type = 'ORDER_LINE'
+              AND ol.order_id = $4
+            LIMIT 1
+            `,
+            [reservationId, tenantId, factoryId, orderId],
+          );
+          const scopedReservation = reservationScope.rows[0];
+          if (!scopedReservation) {
+            throw new NotFoundException('Consumed inventory reservation was not found for this order');
+          }
+
+          const itemResult = await client.query<{ id: string; status: string }>(
+            `
+            SELECT id::text AS id, status
+            FROM inventory_items
+            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+            FOR UPDATE
+            `,
+            [scopedReservation.item_id, tenantId, factoryId],
+          );
+          const item = itemResult.rows[0];
+          if (!item) throw new NotFoundException('Inventory item not found in this factory');
+
+          // Recheck after acquiring the item lock; stock movement and
+          // reservation transitions use the same item -> reservation lock order.
+          const existingAfterLock = await this.findDispositionByIdempotencyKey(
+            client, tenantId, factoryId, idempotencyKey,
+          );
+          if (existingAfterLock) {
+            return this.replayDispositionOrConflict(existingAfterLock, requestHash);
+          }
+
+          const reservationResult = await client.query<ReservationRow>(
+            `
+            SELECT ${RESERVATION_COLUMNS}
+            FROM inventory_reservations r
+            JOIN order_lines ol
+              ON ol.id = r.reference_id
+              AND ol.tenant_id = r.tenant_id
+              AND ol.factory_id = r.factory_id
+              AND ol.inventory_item_id = r.item_id
+            WHERE r.id = $1
+              AND r.tenant_id = $2
+              AND r.factory_id = $3
+              AND r.reference_type = 'ORDER_LINE'
+              AND ol.order_id = $4
+            FOR UPDATE OF r
+            `,
+            [reservationId, tenantId, factoryId, orderId],
+          );
+          const reservation = reservationResult.rows[0];
+          if (!reservation || reservation.status !== 'CONSUMED') {
+            throw new ConflictException('Only consumed order reservations can be dispositioned');
+          }
+
+          const capacityResult = await client.query<{
+            within_limit: boolean;
+            remaining_quantity: string;
+          }>(
+            `
+            SELECT
+              $1::numeric + COALESCE(SUM(d.quantity), 0) <= $2::numeric AS within_limit,
+              ($2::numeric - COALESCE(SUM(d.quantity), 0))::text AS remaining_quantity
+            FROM order_material_dispositions d
+            WHERE d.tenant_id = $3
+              AND d.factory_id = $4
+              AND d.reservation_id = $5
+            `,
+            [quantity, reservation.quantity, tenantId, factoryId, reservationId],
+          );
+          const capacity = capacityResult.rows[0];
+          if (!capacity?.within_limit) {
+            throw new ConflictException(
+              `Disposition quantity exceeds the remaining issued material (${capacity?.remaining_quantity ?? '0'} available)`,
+            );
+          }
+
+          const correlationId = this.correlationId(requestId, traceId);
+          const dispositionId = randomUUID();
+          const dispositionMovementNotes =
+            notes ?? `Material returned from order ${order.order_number}`;
+          let movementId: string | null = null;
+          let balance: BalanceRow | null = null;
+
+          if (dispositionType === 'RETURN_TO_STOCK') {
+            if (item.status !== 'ACTIVE') {
+              throw new ConflictException('Disabled inventory items cannot receive returned material');
+            }
+
+            const balanceResult = await client.query<BalanceRow>(
+              `
+              UPDATE inventory_stock_balances
+              SET quantity_on_hand = quantity_on_hand + $1::numeric,
+                  version = version + 1,
+                  updated_at = clock_timestamp()
+              WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+              RETURNING quantity_on_hand::text AS quantity_on_hand,
+                        quantity_reserved::text AS quantity_reserved
+              `,
+              [quantity, tenantId, factoryId, item.id],
+            );
+            balance = balanceResult.rows[0] ?? null;
+            if (!balance) throw new ConflictException('Inventory stock balance is unavailable');
+
+            const movementKey = `order-material-return:${dispositionId}`;
+            const movementHash = this.hash({
+              itemId: item.id.toLowerCase(),
+              movementType: 'RECEIPT',
+              quantity,
+              referenceType: 'ORDER_MATERIAL_RETURN',
+              referenceId: dispositionId,
+              notes: dispositionMovementNotes,
+            });
+            const movementResult = await client.query<MovementRow>(
+              `
+              INSERT INTO inventory_movements (
+                tenant_id, factory_id, item_id, movement_type, quantity,
+                quantity_delta, quantity_after, idempotency_key, request_hash,
+                reference_type, reference_id, notes, created_by_user_id, correlation_id
+              )
+              VALUES ($1, $2, $3, 'RECEIPT', $4::numeric, $4::numeric, $5::numeric,
+                      $6, $7, 'ORDER_MATERIAL_RETURN', $8::uuid, $9, $10, $11::uuid)
+              RETURNING id::text AS id, quantity_after::text AS quantity_after
+              `,
+              [
+                tenantId, factoryId, item.id, quantity, balance.quantity_on_hand,
+                movementKey, movementHash, dispositionId, dispositionMovementNotes,
+                userId, correlationId,
+              ],
+            );
+            movementId = movementResult.rows[0]?.id ?? null;
+            if (!movementId) throw new Error('ORDER_MATERIAL_RETURN_MOVEMENT_INSERT_FAILED');
+          }
+
+          const insertResult = await client.query<OrderMaterialDispositionRow>(
+            `
+            INSERT INTO order_material_dispositions (
+              id, tenant_id, factory_id, order_id, reservation_id, item_id,
+              disposition_type, quantity, idempotency_key, request_hash,
+              movement_id, notes, created_by_user_id, correlation_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10,
+                    $11::uuid, $12, $13, $14::uuid)
+            RETURNING ${ORDER_MATERIAL_DISPOSITION_COLUMNS}
+            `,
+            [
+              dispositionId, tenantId, factoryId, orderId, reservationId, item.id,
+              dispositionType, quantity, idempotencyKey, requestHash,
+              movementId, notes, userId, correlationId,
+            ],
+          );
+          const inserted = insertResult.rows[0];
+          if (!inserted) throw new Error('ORDER_MATERIAL_DISPOSITION_INSERT_FAILED');
+
+          await this.insertOutboxEvent(client, {
+            tenantId,
+            factoryId,
+            aggregateId: item.id,
+            eventType: dispositionType === 'RETURN_TO_STOCK'
+              ? 'INVENTORY.ORDER_MATERIAL_RETURNED'
+              : 'INVENTORY.ORDER_MATERIAL_SCRAPPED',
+            correlationId,
+            userId,
+            payload: {
+              disposition: {
+                id: inserted.id,
+                order_id: order.id,
+                reservation_id: reservationId,
+                item_id: item.id,
+                disposition_type: dispositionType,
+                quantity: inserted.quantity,
+                notes: inserted.notes,
+                movement_id: movementId,
+              },
+              ...(balance ? {
+                balance: {
+                  quantity_on_hand: balance.quantity_on_hand,
+                  quantity_reserved: balance.quantity_reserved,
+                },
+              } : {}),
+            },
+          });
+
+          return this.toDispositionResult(inserted, false);
+        },
+      );
+    } catch (error) {
+      if (this.errorCode(error) !== '23505') throw error;
+      const stored = await this.database.query<OrderMaterialDispositionRow>(
+        `
+        SELECT ${ORDER_MATERIAL_DISPOSITION_COLUMNS}
+        FROM order_material_dispositions
+        WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+        LIMIT 1
+        `,
+        [tenantId, factoryId, idempotencyKey],
+        { tenantId, userId },
+      );
+      if (!stored.rows[0]) {
+        throw new ConflictException('Material disposition conflicts with an existing record');
+      }
+      result = this.replayDispositionOrConflict(stored.rows[0], requestHash);
+    }
+
+    if (!result.replayed) {
+      await this.recordAuditSafely({
+        tenantId,
+        factoryId,
+        userId,
+        action: dispositionType === 'RETURN_TO_STOCK'
+          ? 'ORDER_MATERIAL_RETURN_TO_STOCK'
+          : 'ORDER_MATERIAL_SCRAPPED',
+        resourceType: 'ORDER_MATERIAL_DISPOSITION',
+        resourceId: result.id,
+        requestId,
+        traceId,
+        payload: {
+          orderId: result.order_id,
+          reservationId: result.reservation_id,
+          itemId: result.item_id,
+          dispositionType: result.disposition_type,
+          quantity: result.quantity,
+          movementId: result.movement_id,
+        },
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Fails closed before an in-progress order is cancelled unless every
+   * consumed order-line reservation has a complete return/scrap disposition.
+   * The migration installs the same invariant as a database trigger.
+   */
+  async assertOrderMaterialsDisposedBeforeCancellation(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      orderId: string;
+      previousStatus: string;
+      targetStatus: string;
+    },
+  ): Promise<void> {
+    if (input.previousStatus !== 'IN_PROGRESS' || input.targetStatus !== 'CANCELLED') return;
+
+    const incompleteResult = await client.query<{
+      reservation_id: string;
+      remaining_quantity: string;
+    }>(
+      `
+      SELECT r.id::text AS reservation_id,
+             (r.quantity - COALESCE(SUM(d.quantity), 0))::text AS remaining_quantity
+      FROM inventory_reservations r
+      JOIN order_lines ol
+        ON ol.id = r.reference_id
+        AND ol.tenant_id = r.tenant_id
+        AND ol.factory_id = r.factory_id
+        AND ol.inventory_item_id = r.item_id
+      LEFT JOIN order_material_dispositions d
+        ON d.tenant_id = r.tenant_id
+        AND d.factory_id = r.factory_id
+        AND d.reservation_id = r.id
+      WHERE r.tenant_id = $1
+        AND r.factory_id = $2
+        AND ol.order_id = $3
+        AND r.reference_type = 'ORDER_LINE'
+        AND r.status = 'CONSUMED'
+      GROUP BY r.id, r.quantity
+      HAVING COALESCE(SUM(d.quantity), 0) <> r.quantity
+      ORDER BY r.id
+      LIMIT 1
+      `,
+      [input.tenantId, input.factoryId, input.orderId],
+    );
+
+    const incomplete = incompleteResult.rows[0];
+    if (incomplete) {
+      throw new ConflictException(
+        `Order cannot be cancelled yet: reservation ${incomplete.reservation_id} has ${incomplete.remaining_quantity} material units without a return/scrap disposition`,
+      );
+    }
+  }
+
+  private async findDispositionByIdempotencyKey(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    idempotencyKey: string,
+  ): Promise<OrderMaterialDispositionRow | null> {
+    const result = await client.query<OrderMaterialDispositionRow>(
+      `
+      SELECT ${ORDER_MATERIAL_DISPOSITION_COLUMNS}
+      FROM order_material_dispositions
+      WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, idempotencyKey],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private replayDispositionOrConflict(
+    row: OrderMaterialDispositionRow,
+    requestHash: string,
+  ): OrderMaterialDispositionResult {
+    if (row.request_hash !== requestHash) {
+      throw new ConflictException('Idempotency-Key has already been used for a different material disposition');
+    }
+    return this.toDispositionResult(row, true);
+  }
+
+  private toDispositionResult(
+    row: OrderMaterialDispositionRow,
+    replayed: boolean,
+  ): OrderMaterialDispositionResult {
+    const {
+      request_hash: _requestHash,
+      idempotency_key: _idempotencyKey,
+      ...result
+    } = row;
+    return { ...result, replayed };
+  }
 
   /**
    * Applies inventory side effects in the caller's order-status transaction.
@@ -1002,6 +1454,7 @@ export class InventoryReservationService {
     userId: string;
     action: string;
     resourceId: string;
+    resourceType?: string;
     requestId: string | null;
     traceId: string | null;
     payload: Record<string, unknown>;
@@ -1013,7 +1466,7 @@ export class InventoryReservationService {
         actorUserId: input.userId,
         eventType: 'INVENTORY',
         action: input.action,
-        resourceType: 'INVENTORY_RESERVATION',
+        resourceType: input.resourceType ?? 'INVENTORY_RESERVATION',
         resourceId: input.resourceId,
         requestId: input.requestId && isUUID(input.requestId) ? input.requestId : null,
         correlationId: input.traceId && isUUID(input.traceId) ? input.traceId : null,
