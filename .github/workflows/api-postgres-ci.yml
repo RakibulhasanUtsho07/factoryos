@@ -146,6 +146,7 @@ jobs:
             migrations/058_inventory_reservations.sql
             migrations/059_order_line_inventory_binding.sql
             migrations/060_order_material_dispositions.sql
+            migrations/061_inventory_stock_reconciliation.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
