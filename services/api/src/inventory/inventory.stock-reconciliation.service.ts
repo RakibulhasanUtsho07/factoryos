@@ -45,6 +45,7 @@ interface InventoryMovementRow extends QueryResultRow {
 interface LockedBalanceRow extends QueryResultRow {
   quantity_before: string;
   quantity_reserved: string;
+  balance_version: string;
   quantity_delta: string;
   count_covers_reservations: boolean;
   has_variance: boolean;
@@ -158,11 +159,17 @@ export class InventoryStockReconciliationService {
       result = await this.database.transaction(
         { tenantId, userId },
         async (client) => {
+          let cycleCountSnapshot: {
+            ledger_quantity_at_count: string;
+            balance_version_at_count: string;
+          } | null = null;
           if (cycleCountReview) {
             const workflowResult = await client.query<{
               id: string;
               status: 'PENDING_REVIEW' | 'REJECTED' | 'APPLIED';
               created_by_user_id: string;
+              ledger_quantity_at_count: string;
+              balance_version_at_count: string;
               reviewed_by_user_id: string | null;
               review_idempotency_key: string | null;
               review_request_hash: string | null;
@@ -173,6 +180,8 @@ export class InventoryStockReconciliationService {
                 id::text AS id,
                 status,
                 created_by_user_id::text AS created_by_user_id,
+                ledger_quantity_at_count::text AS ledger_quantity_at_count,
+                balance_version_at_count::text AS balance_version_at_count,
                 reviewed_by_user_id::text AS reviewed_by_user_id,
                 review_idempotency_key,
                 review_request_hash,
@@ -187,6 +196,10 @@ export class InventoryStockReconciliationService {
             if (!proposal) {
               throw new NotFoundException('Cycle-count proposal not found in this factory');
             }
+            cycleCountSnapshot = {
+              ledger_quantity_at_count: proposal.ledger_quantity_at_count,
+              balance_version_at_count: proposal.balance_version_at_count,
+            };
             if (proposal.created_by_user_id === userId) {
               throw new ConflictException('The user who submitted a cycle count cannot approve it');
             }
@@ -265,6 +278,7 @@ export class InventoryStockReconciliationService {
             SELECT
               b.quantity_on_hand::text AS quantity_before,
               b.quantity_reserved::text AS quantity_reserved,
+              b.version::text AS balance_version,
               ($1::numeric - b.quantity_on_hand)::numeric(18, 4)::text AS quantity_delta,
               ($1::numeric >= b.quantity_reserved) AS count_covers_reservations,
               ($1::numeric <> b.quantity_on_hand) AS has_variance,
@@ -281,6 +295,17 @@ export class InventoryStockReconciliationService {
           if (!balance) {
             throw new ConflictException(
               'Inventory stock balance is not initialized for this item',
+            );
+          }
+          if (
+            cycleCountSnapshot
+            && (
+              balance.quantity_before !== cycleCountSnapshot.ledger_quantity_at_count
+              || balance.balance_version !== cycleCountSnapshot.balance_version_at_count
+            )
+          ) {
+            throw new ConflictException(
+              'Inventory stock changed after this cycle count was submitted; submit a fresh physical count',
             );
           }
           if (!balance.count_covers_reservations) {
