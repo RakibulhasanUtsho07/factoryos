@@ -335,11 +335,15 @@ BEGIN
   FOR v_balance IN
     SELECT lb.location_id, lb.quantity_on_hand
     FROM inventory_location_balances lb
+    JOIN inventory_locations l
+      ON l.id = lb.location_id
+     AND l.tenant_id = lb.tenant_id
+     AND l.factory_id = lb.factory_id
     WHERE lb.tenant_id = NEW.tenant_id
       AND lb.factory_id = NEW.factory_id
       AND lb.item_id = NEW.item_id
-    ORDER BY lb.location_id
-    FOR UPDATE
+    ORDER BY l.is_default DESC, lb.location_id
+    FOR UPDATE OF lb
   LOOP
     EXIT WHEN v_remaining = 0;
     v_take := LEAST(v_balance.quantity_on_hand, v_remaining);
