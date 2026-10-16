@@ -154,6 +154,7 @@ describe('InventoryService', () => {
       .update(JSON.stringify({
         itemId: ITEM_ID,
         movementType: 'RECEIPT',
+        locationId: null,
         quantity: '2.5000',
         referenceType: null,
         referenceId: null,
