@@ -16,7 +16,7 @@ JOIN permissions p ON (
 )
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
--- Support scope-preserving references from cycle-count workflow records.
+-- Scope-preserving references from a cycle-count review to applied ledger evidence.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -50,6 +50,7 @@ CREATE TABLE inventory_cycle_count_proposals (
   review_request_hash VARCHAR(64),
   review_note TEXT,
   reconciliation_id UUID,
+
   CONSTRAINT uq_inventory_cycle_count_proposal_id_scope
     UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT uq_inventory_cycle_count_proposal_idempotency
@@ -74,15 +75,19 @@ CREATE TABLE inventory_cycle_count_proposals (
     CHECK (request_hash ~ '^[0-9a-f]{64}$'),
   CONSTRAINT chk_inventory_cycle_count_review_fields
     CHECK (
-      (status = 'PENDING_REVIEW'
+      (
+        status = 'PENDING_REVIEW'
         AND reviewed_by_user_id IS NULL
         AND reviewed_at IS NULL
         AND review_decision IS NULL
         AND review_idempotency_key IS NULL
         AND review_request_hash IS NULL
-        AND reconciliation_id IS NULL)
+        AND review_note IS NULL
+        AND reconciliation_id IS NULL
+      )
       OR
-      (status = 'REJECTED'
+      (
+        status = 'REJECTED'
         AND reviewed_by_user_id IS NOT NULL
         AND reviewed_at IS NOT NULL
         AND review_decision IS NOT NULL
@@ -91,9 +96,11 @@ CREATE TABLE inventory_cycle_count_proposals (
         AND review_request_hash IS NOT NULL
         AND review_request_hash ~ '^[0-9a-f]{64}$'
         AND length(btrim(COALESCE(review_note, ''))) > 0
-        AND reconciliation_id IS NULL)
+        AND reconciliation_id IS NULL
+      )
       OR
-      (status = 'APPLIED'
+      (
+        status = 'APPLIED'
         AND reviewed_by_user_id IS NOT NULL
         AND reviewed_at IS NOT NULL
         AND review_decision IS NOT NULL
@@ -101,7 +108,8 @@ CREATE TABLE inventory_cycle_count_proposals (
         AND review_idempotency_key IS NOT NULL
         AND review_request_hash IS NOT NULL
         AND review_request_hash ~ '^[0-9a-f]{64}$'
-        AND reconciliation_id IS NOT NULL)
+        AND reconciliation_id IS NOT NULL
+      )
     )
 );
 
@@ -155,278 +163,6 @@ BEGIN
     OR NEW.review_decision NOT IN ('APPROVE', 'REJECT')
     OR NEW.review_idempotency_key IS NULL
     OR NEW.review_request_hash IS NULL
-    OR NEW.review_request_hash !~ '^[0-9a-f]{64}$'
-  THEN
-    RAISE EXCEPTION 'invalid cycle-count review transition or separation-of-duties violation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'REJECTED' AND (
-    NEW.review_decision <> 'REJECT'
-    OR NEW.reconciliation_id IS NOT NULL
-    OR length(btrim(COALESCE(NEW.review_note, ''))) = 0
-  ) THEN
-    RAISE EXCEPTION 'rejected cycle counts require a reason and no stock reconciliation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'APPLIED' AND (
-    NEW.review_decision <> 'APPROVE'
-    OR NEW.reconciliation_id IS NULL
-  ) THEN
-    RAISE EXCEPTION 'approved cycle counts require the atomic stock reconciliation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER inventory_cycle_count_proposals_guard
-BEFORE UPDATE OR DELETE ON inventory_cycle_count_proposals
-FOR EACH ROW
-EXECUTE FUNCTION factoryos_guard_inventory_cycle_count_proposal();
-
-ALTER TABLE inventory_cycle_count_proposals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE inventory_cycle_count_proposals FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY inventory_cycle_count_proposals_tenant_isolation
-ON inventory_cycle_count_proposals
-USING (tenant_id = factoryos_current_tenant_id())
-WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-COMMENT ON TABLE inventory_cycle_count_proposals IS
-  'Immutable physical cycle-count proposal with reviewer separation of duties. Count and stock adjustment are distinct; approval and the resulting reconciliation are committed in one transaction.';
-
-INSERT INTO schema_migrations (version, checksum)
-VALUES ('062_inventory_cycle_count_approval', NULL)
-ON CONFLICT (version) DO NOTHING;
-
-COMMIT;
-
-        AND length(btrim(COALESCE(review_note, ''))) > 0
-        AND reconciliation_id IS NULL)
-      OR
-      (status = 'APPLIED'
-        AND reviewed_by_user_id IS NOT NULL
-        AND reviewed_at IS NOT NULL
-        AND review_decision IS NOT NULL
-        AND review_decision = 'APPROVE'
-        AND review_idempotency_key IS NOT NULL
-        AND review_request_hash IS NOT NULL
-        AND review_request_hash ~ '^[0-9a-f]{64}$'
-        AND reconciliation_id IS NOT NULL)
-    )
-);
-
-CREATE UNIQUE INDEX uq_inventory_cycle_count_review_idempotency
-  ON inventory_cycle_count_proposals (tenant_id, factory_id, review_idempotency_key)
-  WHERE review_idempotency_key IS NOT NULL;
-
-CREATE INDEX idx_inventory_cycle_count_factory_status_created
-  ON inventory_cycle_count_proposals
-  (tenant_id, factory_id, status, created_at DESC, id DESC);
-
-CREATE INDEX idx_inventory_cycle_count_item_created
-  ON inventory_cycle_count_proposals
-  (tenant_id, factory_id, item_id, created_at DESC, id DESC);
-
-CREATE OR REPLACE FUNCTION factoryos_guard_inventory_cycle_count_proposal()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'inventory_cycle_count_proposals are immutable'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF NEW.id IS DISTINCT FROM OLD.id
-    OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
-    OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
-    OR NEW.item_id IS DISTINCT FROM OLD.item_id
-    OR NEW.counted_quantity IS DISTINCT FROM OLD.counted_quantity
-    OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
-    OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
-    OR NEW.notes IS DISTINCT FROM OLD.notes
-    OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
-    OR NEW.created_at IS DISTINCT FROM OLD.created_at
-  THEN
-    RAISE EXCEPTION 'cycle-count proposal facts cannot be edited'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF OLD.status <> 'PENDING_REVIEW' THEN
-    RAISE EXCEPTION 'cycle-count review decision is terminal'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF NEW.status NOT IN ('REJECTED', 'APPLIED')
-    OR NEW.reviewed_by_user_id IS NULL
-    OR NEW.reviewed_by_user_id = NEW.created_by_user_id
-    OR NEW.reviewed_at IS NULL
-    OR NEW.review_decision NOT IN ('APPROVE', 'REJECT')
-    OR NEW.review_idempotency_key IS NULL
-    OR NEW.review_request_hash !~ '^[0-9a-f]{64}$'
-  THEN
-    RAISE EXCEPTION 'invalid cycle-count review transition or separation-of-duties violation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'REJECTED' AND (
-    NEW.review_decision <> 'REJECT'
-    OR NEW.reconciliation_id IS NOT NULL
-    OR length(btrim(COALESCE(NEW.review_note, ''))) = 0
-  ) THEN
-    RAISE EXCEPTION 'rejected cycle counts require a reason and no stock reconciliation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'APPLIED' AND (
-    NEW.review_decision <> 'APPROVE'
-    OR NEW.reconciliation_id IS NULL
-  ) THEN
-    RAISE EXCEPTION 'approved cycle counts require the atomic stock reconciliation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER inventory_cycle_count_proposals_guard
-BEFORE UPDATE OR DELETE ON inventory_cycle_count_proposals
-FOR EACH ROW
-EXECUTE FUNCTION factoryos_guard_inventory_cycle_count_proposal();
-
-ALTER TABLE inventory_cycle_count_proposals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE inventory_cycle_count_proposals FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY inventory_cycle_count_proposals_tenant_isolation
-ON inventory_cycle_count_proposals
-USING (tenant_id = factoryos_current_tenant_id())
-WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-COMMENT ON TABLE inventory_cycle_count_proposals IS
-  'Immutable physical cycle-count proposal with reviewer separation of duties. Count and stock adjustment are distinct; approval and the resulting reconciliation are committed in one transaction.';
-
-INSERT INTO schema_migrations (version, checksum)
-VALUES ('062_inventory_cycle_count_approval', NULL)
-ON CONFLICT (version) DO NOTHING;
-
-COMMIT;
-
-  THEN
-    RAISE EXCEPTION 'invalid cycle-count review transition or separation-of-duties violation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'REJECTED' AND (
-    NEW.review_decision <> 'REJECT'
-    OR NEW.reconciliation_id IS NOT NULL
-    OR length(btrim(COALESCE(NEW.review_note, ''))) = 0
-  ) THEN
-    RAISE EXCEPTION 'rejected cycle counts require a reason and no stock reconciliation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'APPLIED' AND (
-    NEW.review_decision <> 'APPROVE'
-    OR NEW.reconciliation_id IS NULL
-  ) THEN
-    RAISE EXCEPTION 'approved cycle counts require the atomic stock reconciliation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER inventory_cycle_count_proposals_guard
-BEFORE UPDATE OR DELETE ON inventory_cycle_count_proposals
-FOR EACH ROW
-EXECUTE FUNCTION factoryos_guard_inventory_cycle_count_proposal();
-
-ALTER TABLE inventory_cycle_count_proposals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE inventory_cycle_count_proposals FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY inventory_cycle_count_proposals_tenant_isolation
-ON inventory_cycle_count_proposals
-USING (tenant_id = factoryos_current_tenant_id())
-WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-COMMENT ON TABLE inventory_cycle_count_proposals IS
-  'Immutable physical cycle-count proposal with reviewer separation of duties. Count and stock adjustment are distinct; approval and the resulting reconciliation are committed in one transaction.';
-
-INSERT INTO schema_migrations (version, checksum)
-VALUES ('062_inventory_cycle_count_approval', NULL)
-ON CONFLICT (version) DO NOTHING;
-
-COMMIT;
-
-        AND length(btrim(COALESCE(review_note, ''))) > 0
-        AND reconciliation_id IS NULL)
-      OR
-      (status = 'APPLIED'
-        AND reviewed_by_user_id IS NOT NULL
-        AND reviewed_at IS NOT NULL
-        AND review_decision IS NOT NULL
-        AND review_decision = 'APPROVE'
-        AND review_idempotency_key IS NOT NULL
-        AND review_request_hash IS NOT NULL
-        AND review_request_hash ~ '^[0-9a-f]{64}$'
-        AND reconciliation_id IS NOT NULL)
-    )
-);
-
-CREATE UNIQUE INDEX uq_inventory_cycle_count_review_idempotency
-  ON inventory_cycle_count_proposals (tenant_id, factory_id, review_idempotency_key)
-  WHERE review_idempotency_key IS NOT NULL;
-
-CREATE INDEX idx_inventory_cycle_count_factory_status_created
-  ON inventory_cycle_count_proposals
-  (tenant_id, factory_id, status, created_at DESC, id DESC);
-
-CREATE INDEX idx_inventory_cycle_count_item_created
-  ON inventory_cycle_count_proposals
-  (tenant_id, factory_id, item_id, created_at DESC, id DESC);
-
-CREATE OR REPLACE FUNCTION factoryos_guard_inventory_cycle_count_proposal()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'inventory_cycle_count_proposals are immutable'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF NEW.id IS DISTINCT FROM OLD.id
-    OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
-    OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
-    OR NEW.item_id IS DISTINCT FROM OLD.item_id
-    OR NEW.counted_quantity IS DISTINCT FROM OLD.counted_quantity
-    OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
-    OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
-    OR NEW.notes IS DISTINCT FROM OLD.notes
-    OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
-    OR NEW.created_at IS DISTINCT FROM OLD.created_at
-  THEN
-    RAISE EXCEPTION 'cycle-count proposal facts cannot be edited'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF OLD.status <> 'PENDING_REVIEW' THEN
-    RAISE EXCEPTION 'cycle-count review decision is terminal'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF NEW.status NOT IN ('REJECTED', 'APPLIED')
-    OR NEW.reviewed_by_user_id IS NULL
-    OR NEW.reviewed_by_user_id = NEW.created_by_user_id
-    OR NEW.reviewed_at IS NULL
-    OR NEW.review_decision NOT IN ('APPROVE', 'REJECT')
-    OR NEW.review_idempotency_key IS NULL
     OR NEW.review_request_hash !~ '^[0-9a-f]{64}$'
   THEN
     RAISE EXCEPTION 'invalid cycle-count review transition or separation-of-duties violation'
