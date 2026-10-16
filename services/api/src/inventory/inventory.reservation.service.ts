@@ -447,7 +447,7 @@ export class InventoryReservationService {
         AND r.reference_type = 'ORDER_LINE'
         AND ol.order_id = $3
         AND r.status = 'RESERVED'
-      ORDER BY r.item_id
+      ORDER BY item_id
       `,
       [input.tenantId, input.factoryId, input.orderId],
     );
