@@ -982,6 +982,17 @@ export class OrdersService {
             );
           }
 
+          await this.inventoryReservationService.assertOrderMaterialsDisposedBeforeCancellation(
+            client,
+            {
+              tenantId,
+              factoryId: order.factory_id,
+              orderId: order.id,
+              previousStatus: order.status,
+              targetStatus,
+            },
+          );
+
           const inventoryLifecycle =
             await this.inventoryReservationService.applyOrderTransition(
               client,
