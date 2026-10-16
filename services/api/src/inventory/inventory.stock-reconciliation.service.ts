@@ -98,6 +98,12 @@ export class InventoryStockReconciliationService {
     rawIdempotencyKey: string | null,
     requestId: string | null,
     traceId: string | null,
+    cycleCountReview?: {
+      proposalId: string;
+      decisionIdempotencyKey: string;
+      reviewRequestHash: string;
+      reviewNote: string | null;
+    },
   ): Promise<InventoryStockReconciliationResult> {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(itemId, 'itemId');
@@ -126,6 +132,12 @@ export class InventoryStockReconciliationService {
     ) {
       throw new BadRequestException('reason_code is invalid');
     }
+    if (dto.reason_code === 'CYCLE_COUNT' && !cycleCountReview) {
+      throw new ConflictException(
+        'Cycle counts must be submitted and approved through the cycle-count review workflow',
+      );
+    }
+    if (cycleCountReview) this.validateUuid(cycleCountReview.proposalId, 'proposalId');
 
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const countedQuantity = dto.counted_quantity.toFixed(4);
@@ -146,6 +158,70 @@ export class InventoryStockReconciliationService {
       result = await this.database.transaction(
         { tenantId, userId },
         async (client) => {
+          if (cycleCountReview) {
+            const workflowResult = await client.query<{
+              id: string;
+              status: 'PENDING_REVIEW' | 'REJECTED' | 'APPLIED';
+              created_by_user_id: string;
+              reviewed_by_user_id: string | null;
+              review_idempotency_key: string | null;
+              review_request_hash: string | null;
+              reconciliation_id: string | null;
+            }>(
+              `
+              SELECT
+                id::text AS id,
+                status,
+                created_by_user_id::text AS created_by_user_id,
+                reviewed_by_user_id::text AS reviewed_by_user_id,
+                review_idempotency_key,
+                review_request_hash,
+                reconciliation_id::text AS reconciliation_id
+              FROM inventory_cycle_count_proposals
+              WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND item_id = $4
+              FOR UPDATE
+              `,
+              [cycleCountReview.proposalId, tenantId, factoryId, normalizedItemId],
+            );
+            const proposal = workflowResult.rows[0];
+            if (!proposal) {
+              throw new NotFoundException('Cycle-count proposal not found in this factory');
+            }
+            if (proposal.created_by_user_id === userId) {
+              throw new ConflictException('The user who submitted a cycle count cannot approve it');
+            }
+            if (proposal.status === 'REJECTED') {
+              throw new ConflictException('A rejected cycle count cannot be applied');
+            }
+            if (proposal.status === 'APPLIED') {
+              if (
+                proposal.reviewed_by_user_id !== userId
+                || proposal.review_idempotency_key !== cycleCountReview.decisionIdempotencyKey
+                || proposal.review_request_hash !== cycleCountReview.reviewRequestHash
+                || !proposal.reconciliation_id
+              ) {
+                throw new ConflictException('Cycle count already has a different review decision');
+              }
+              const storedReconciliation = await client.query<ReconciliationRow>(
+                `
+                SELECT ${RECONCILIATION_COLUMNS}
+                FROM inventory_stock_reconciliations
+                WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+                LIMIT 1
+                `,
+                [proposal.reconciliation_id, tenantId, factoryId],
+              );
+              const stored = storedReconciliation.rows[0];
+              if (!stored) {
+                throw new ConflictException('Applied cycle count is missing its reconciliation record');
+              }
+              return this.replayOrConflict(stored, requestHash);
+            }
+            if (proposal.status !== 'PENDING_REVIEW') {
+              throw new ConflictException('Cycle count is not awaiting review');
+            }
+          }
+
           const existingBeforeLock = await this.findByIdempotencyKey(
             client, tenantId, factoryId, idempotencyKey,
           );
@@ -341,6 +417,54 @@ export class InventoryStockReconciliationService {
             },
           });
 
+          if (cycleCountReview) {
+            const applied = await client.query<{ id: string }>(
+              `
+              UPDATE inventory_cycle_count_proposals
+              SET status = 'APPLIED',
+                  reviewed_by_user_id = $1,
+                  reviewed_at = clock_timestamp(),
+                  review_decision = 'APPROVE',
+                  review_idempotency_key = $2,
+                  review_request_hash = $3,
+                  review_note = $4,
+                  reconciliation_id = $5::uuid
+              WHERE id = $6
+                AND tenant_id = $7
+                AND factory_id = $8
+                AND item_id = $9
+                AND status = 'PENDING_REVIEW'
+                AND created_by_user_id <> $1
+              RETURNING id::text AS id
+              `,
+              [
+                userId,
+                cycleCountReview.decisionIdempotencyKey,
+                cycleCountReview.reviewRequestHash,
+                cycleCountReview.reviewNote,
+                reconciliation.id,
+                cycleCountReview.proposalId,
+                tenantId,
+                factoryId,
+                normalizedItemId,
+              ],
+            );
+            if (!applied.rows[0]) {
+              throw new ConflictException('Cycle-count approval lost its pending state');
+            }
+            await this.insertCycleCountApprovedEvent(client, {
+              tenantId,
+              factoryId,
+              proposalId: cycleCountReview.proposalId,
+              itemId: normalizedItemId,
+              reconciliationId: reconciliation.id,
+              correlationId,
+              userId,
+              quantityDelta: reconciliation.quantity_delta,
+              reviewNote: cycleCountReview.reviewNote,
+            });
+          }
+
           return this.toResult(reconciliation, false);
         },
       );
@@ -507,6 +631,57 @@ export class InventoryStockReconciliationService {
           version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0',
         }),
         JSON.stringify(input.payload),
+      ],
+    );
+  }
+
+  private async insertCycleCountApprovedEvent(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      proposalId: string;
+      itemId: string;
+      reconciliationId: string;
+      correlationId: string;
+      userId: string;
+      quantityDelta: string;
+      reviewNote: string | null;
+    },
+  ): Promise<void> {
+    await client.query(
+      `
+      INSERT INTO outbox_events (
+        tenant_id, factory_id, aggregate_type, aggregate_id,
+        event_type, event_version, occurred_at, correlation_id, causation_id,
+        actor, source, payload
+      )
+      VALUES (
+        $1, $2, 'INVENTORY_CYCLE_COUNT', $3, 'INVENTORY.CYCLE_COUNT_APPROVED', 1,
+        clock_timestamp(), $4::uuid, NULL, $5::jsonb, $6::jsonb, $7::jsonb
+      )
+      `,
+      [
+        input.tenantId,
+        input.factoryId,
+        input.proposalId,
+        input.correlationId,
+        JSON.stringify({ type: 'user', id: input.userId }),
+        JSON.stringify({
+          system: 'FactoryOS',
+          connector: 'inventory-cycle-count',
+          version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0',
+        }),
+        JSON.stringify({
+          cycle_count: {
+            id: input.proposalId,
+            item_id: input.itemId,
+            reconciliation_id: input.reconciliationId,
+            quantity_delta: input.quantityDelta,
+            review_note: input.reviewNote,
+            status: 'APPLIED',
+          },
+        }),
       ],
     );
   }
