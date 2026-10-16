@@ -762,7 +762,7 @@ describe(
 
 
     it(
-      'should reserve bound order lines atomically on confirmation and consume them on completion',
+      'should reserve bound order lines on confirmation and issue stock when production starts',
       async () => {
         const fixture = await createBoundInventoryOrder(10, [3, 2]);
 
@@ -824,12 +824,24 @@ describe(
           TEST_USER_ID, tenantId, fixture.orderId, 'IN_PROGRESS', null, randomUUID(), 2,
         );
         expect(inProgress.inventory.reservations_created).toBe(0);
+        expect(inProgress.inventory.reservations_consumed).toBe(2);
+
+        const inProgressBalance = await pool.query<{ on_hand: string; reserved: string }>(
+          `
+          SELECT quantity_on_hand::text AS on_hand, quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(inProgressBalance.rows[0]?.on_hand).toBe('5.0000');
+        expect(inProgressBalance.rows[0]?.reserved).toBe('0.0000');
 
         const completed = await ordersService.transitionOrderStatus(
           TEST_USER_ID, tenantId, fixture.orderId, 'COMPLETED', null, randomUUID(), 3,
         );
         expect(completed.status).toBe('COMPLETED');
-        expect(completed.inventory.reservations_consumed).toBe(2);
+        expect(completed.inventory.reservations_consumed).toBe(0);
 
         const finalBalance = await pool.query<{ on_hand: string; reserved: string }>(
           `
