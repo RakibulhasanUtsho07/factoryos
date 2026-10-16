@@ -421,6 +421,10 @@ describe(
               [tenantId, factoryId, reservationOrderIds],
             );
             await pool.query(
+              'DELETE FROM inventory_location_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
               'DELETE FROM inventory_stock_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
               [tenantId, factoryId, reservationItemIds],
             );
