@@ -21,6 +21,8 @@ The controller is mounted at **/inventory/items**. Each endpoint requires a veri
 - **GET /inventory/items/:itemId/reservations?status=RESERVED&limit=50** lists factory-scoped reservations.
 - **POST /inventory/items/:itemId/reservations/:reservationId/transition** releases or consumes a reservation and requires a separate `Idempotency-Key`.
 - **POST /orders/:orderId/material-dispositions** records a partial or full `RETURN_TO_STOCK` or `SCRAPPED` quantity against a consumed order-line reservation; an `Idempotency-Key` is required.
+- **POST /orders/:orderId/production-reports** records good finished output and scrap output for one order line; it requires `orders.write` and an `Idempotency-Key`.
+- **GET /orders/:orderId/production-reports?limit=50** lists immutable, factory-scoped output/yield reports for an order and requires `orders.read`.
 
 The movement payload accepts movement_type, a positive quantity with up to four decimal places, optional reference_type, optional UUID reference_id, and optional notes.
 
@@ -52,10 +54,20 @@ The API unit suite covers normalized item creation, required movement and reserv
 
 Order cancellation after production has started requires explicit material disposition. `POST /orders/:orderId/material-dispositions` records an idempotent quantity as `RETURN_TO_STOCK` or `SCRAPPED` against a consumed order-line reservation. Returned quantities create a positive immutable `RECEIPT` movement and update on-hand balance; scrap is recorded as immutable evidence without adding stock. Partial dispositions are allowed while an order is `IN_PROGRESS`, but the sum for each consumed reservation must equal the issued quantity before it can be cancelled. Application checks and a PostgreSQL trigger enforce this condition; dispositions cannot be edited or deleted. A cancellation that has not fully dispositioned consumed materials fails without changing the order status.
 
+## Production yield and scrap reporting (migration 063)
+
+Production reports distinguish accepted finished output from scrapped finished output. They do not represent raw-material disposition: returned raw material still uses the separate material-disposition workflow above, and finished-good scrap never increases raw-material stock.
+
+- A report can only be recorded while its order is `IN_PROGRESS`; the order line must belong to the same order, tenant, and factory.
+- Both output quantities are non-negative and use the existing four-decimal quantity precision. At least one must be positive, and a non-zero scrap quantity requires a reason.
+- Cumulative good plus scrap output for a line cannot exceed its planned order-line quantity. The order row is locked for each report, so concurrent reports cannot over-produce the line.
+- Reports are append-only and factory/tenant-scoped, have required idempotency keys, and reject key reuse with a different request. PostgreSQL validates order state, output limits, cumulative snapshots, scope and immutability as a second enforcement layer.
+- Each accepted report records cumulative good quantity, cumulative scrap quantity and yield percentage (`good / (good + scrap) × 100`). The report and `ORDER.PRODUCTION_REPORTED` outbox event commit atomically; audit logging is attempted after commit.
+
 ## Explicitly out of scope
 
 This is a stock-ledger and reservation foundation, not a complete warehouse or manufacturing inventory module. Bound order lines participate in the order-status transaction: `DRAFT -> CONFIRMED` reserves each mapped line with a stable per-order-line idempotency key; `CONFIRMED -> IN_PROGRESS` consumes the reservation into an append-only issue movement as production starts; `COMPLETED` finalizes the order without issuing stock again; and cancellation of an order that never started releases any active reservations without changing on-hand stock.
 
 For cancellation after production has started, the API exposes `POST /orders/:orderId/material-dispositions`. Each consumed reservation's issued quantity must be explicitly accounted for as `RETURN_TO_STOCK` or `SCRAPPED` while the order is `IN_PROGRESS`. Returned quantities generate a receipt movement and increase on-hand stock; scrap records evidence without adding stock. Partial dispositions are allowed, but the total per reservation must equal its consumed quantity before cancellation succeeds. Idempotency, tenant/factory scope, immutable records, audit/outbox events, and a database trigger protect the workflow. An insufficient-stock confirmation and an incomplete-disposition cancellation both roll back without changing order state. Unmapped legacy lines remain valid and do not reserve stock.
 
-Location/bin management, purchase receipt workflows, lots/serials, unit conversions, costing/valuation, reorder policies, location/bin-level cycle counting, approval thresholds and variance tolerances, production yield/scrap tracking beyond order cancellation, and ERP/MES integration acceptance remain open work. The first stock-reconciliation slice records and applies count differences, but does not yet implement a separate draft/review/approve cycle-count workflow. These inventory capabilities are still a partial WP02 implementation; neither WP02 nor whole-backend completion should be marked complete on this slice alone.
+Location/bin management, purchase receipt workflows, lots/serials, unit conversions, costing/valuation, reorder policies, location/bin-level cycle counting, approval thresholds and variance tolerances, production routing and scheduling, shift/operator-level productivity analytics, costing/valuation, and full ERP/MES integration acceptance remain open work. The first stock-reconciliation slice records and applies count differences, but does not yet implement a separate draft/review/approve cycle-count workflow. These inventory capabilities are still a partial WP02 implementation; neither WP02 nor whole-backend completion should be marked complete on this slice alone.
