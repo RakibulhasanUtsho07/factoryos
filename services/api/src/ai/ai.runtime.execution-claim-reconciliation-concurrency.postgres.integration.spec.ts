@@ -17,6 +17,7 @@ type Scope = {
 type Fixture = {
   decisionId: string;
   actionIntentId: string;
+  executionRecordId: string;
   claimId: string;
   executionKey: string;
   toolVersion: string;
@@ -139,6 +140,7 @@ integrationDescribe(
       const fixture: Fixture = {
         decisionId: randomUUID(),
         actionIntentId: randomUUID(),
+        executionRecordId: randomUUID(),
         claimId: randomUUID(),
         executionKey: `B19.CONCURRENT.${randomUUID()}`,
         toolVersion: '1.0.0',
@@ -230,7 +232,7 @@ integrationDescribe(
             )
             `,
             [
-              randomUUID(),
+              fixture.executionRecordId,
               scope.tenantId,
               scope.factoryId,
               fixture.decisionId,
@@ -554,6 +556,45 @@ integrationDescribe(
       },
       20_000,
     );
+
+    it(
+      'hides execution claims and execution records from another tenant even when their IDs are known',
+      async () => {
+        const fixture = await createFixture(true);
+        const database = createScopedDatabase();
+
+        const visibleClaim = await database.query(
+          'SELECT id FROM public.ai_execution_claims WHERE id = $1',
+          [fixture.claimId],
+          { tenantId: scope.tenantId, userId: scope.actorUserId },
+        );
+        const visibleExecution = await database.query(
+          'SELECT id FROM public.ai_execution_records WHERE id = $1',
+          [fixture.executionRecordId],
+          { tenantId: scope.tenantId, userId: scope.actorUserId },
+        );
+
+        expect(visibleClaim.rows).toHaveLength(1);
+        expect(visibleExecution.rows).toHaveLength(1);
+
+        const otherTenantId = randomUUID();
+        const hiddenClaim = await database.query(
+          'SELECT id FROM public.ai_execution_claims WHERE id = $1',
+          [fixture.claimId],
+          { tenantId: otherTenantId, userId: scope.actorUserId },
+        );
+        const hiddenExecution = await database.query(
+          'SELECT id FROM public.ai_execution_records WHERE id = $1',
+          [fixture.executionRecordId],
+          { tenantId: otherTenantId, userId: scope.actorUserId },
+        );
+
+        expect(hiddenClaim.rows).toHaveLength(0);
+        expect(hiddenExecution.rows).toHaveLength(0);
+      },
+      20_000,
+    );
+
 
   },
 );
