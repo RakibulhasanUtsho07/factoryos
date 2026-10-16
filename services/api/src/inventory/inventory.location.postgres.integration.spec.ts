@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 
@@ -342,7 +342,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId,
       { location_code: 'BAD-BIN-' + randomUUID().slice(0, 8), name: 'Cross-factory bin', location_type: 'BIN', parent_location_id: otherWarehouse.id },
       requestId, traceId,
-    )).rejects.toBeInstanceOf(NotFoundException);
+    )).rejects.toBeInstanceOf(BadRequestException);
 
     const { binA } = await createWarehouseAndBins(fixture.factoryId);
     await expect(locationService.transferStock(
