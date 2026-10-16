@@ -37,6 +37,8 @@ CREATE TABLE inventory_cycle_count_proposals (
   factory_id UUID NOT NULL,
   item_id UUID NOT NULL,
   counted_quantity NUMERIC(18, 4) NOT NULL,
+  ledger_quantity_at_count NUMERIC(18, 4) NOT NULL,
+  balance_version_at_count BIGINT NOT NULL,
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING_REVIEW',
   idempotency_key VARCHAR(255) NOT NULL,
   request_hash VARCHAR(64) NOT NULL,
@@ -67,6 +69,10 @@ CREATE TABLE inventory_cycle_count_proposals (
     REFERENCES inventory_stock_reconciliations (id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT chk_inventory_cycle_count_quantity
     CHECK (counted_quantity >= 0),
+  CONSTRAINT chk_inventory_cycle_count_ledger_quantity
+    CHECK (ledger_quantity_at_count >= 0),
+  CONSTRAINT chk_inventory_cycle_count_balance_version
+    CHECK (balance_version_at_count > 0),
   CONSTRAINT chk_inventory_cycle_count_status
     CHECK (status IN ('PENDING_REVIEW', 'REJECTED', 'APPLIED')),
   CONSTRAINT chk_inventory_cycle_count_key
