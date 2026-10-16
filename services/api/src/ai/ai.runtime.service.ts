@@ -1780,6 +1780,28 @@ export class AiRuntimeService {
     };
   }
 
+  if (action.approval_id) {
+    const approvalResult = await this.database.query<{ id: string }>(
+      `
+      SELECT id::text AS id
+      FROM approvals
+      WHERE id = $1
+        AND tenant_id = $2
+        AND status = 'APPROVED'
+        AND (expires_at IS NULL OR expires_at > clock_timestamp())
+      LIMIT 1
+      `,
+      [action.approval_id, tenantId],
+      { tenantId, userId: actorUserId },
+    );
+
+    if (!approvalResult.rows[0]) {
+      throw new ConflictException(
+        'AI action approval is no longer valid; authorize a new action',
+      );
+    }
+  }
+
   if (
     !action.token_expires_at ||
     new Date(action.token_expires_at).getTime() <= Date.now()
@@ -2020,6 +2042,50 @@ export class AiRuntimeService {
         );
       }
 
+      if (action.approval_id) {
+        const currentApproval = await client.query<{ id: string }>(
+          `
+          SELECT id::text AS id
+          FROM approvals
+          WHERE id = $1
+            AND tenant_id = $2
+            AND status = 'APPROVED'
+            AND (expires_at IS NULL OR expires_at > clock_timestamp())
+          FOR SHARE
+          `,
+          [action.approval_id, tenantId],
+        );
+
+        if (!currentApproval.rows[0]) {
+          const invalidatedClaim = await client.query<{ id: string }>(
+            `
+            UPDATE ai_execution_claims
+            SET
+              status = 'FAILED',
+              failure_code = 'APPROVAL_NO_LONGER_VALID',
+              completed_at = clock_timestamp()
+            WHERE id = $1
+              AND tenant_id = $2
+              AND factory_id = $3
+              AND status = 'CLAIMED'
+            RETURNING id::text AS id
+            `,
+            [claim.id, tenantId, factoryId],
+          );
+
+          if (!invalidatedClaim.rows[0]) {
+            throw new ConflictException(
+              'AI execution claim could not be finalized after approval expiry',
+            );
+          }
+
+          return {
+            kind: 'approval-invalid' as const,
+            claimId: claim.id,
+          };
+        }
+      }
+
       let gatewayOutcome: Awaited<
         ReturnType<AiToolGatewayService['execute']>
       >;
@@ -2187,6 +2253,27 @@ export class AiRuntimeService {
 
   if (finalization.kind === 'gateway-error') {
     throw finalization.error;
+  }
+
+  if (finalization.kind === 'approval-invalid') {
+    await this.recordAuditSafely({
+      tenantId,
+      factoryId,
+      actorUserId,
+      eventType: 'AI_ACTION',
+      action: 'EXECUTE_BLOCKED_APPROVAL_INVALID',
+      resourceType: 'AI_EXECUTION_CLAIM',
+      resourceId: finalization.claimId,
+      payload: {
+        actionIntentId: action.id,
+        approvalId: action.approval_id,
+        reason: 'APPROVAL_NO_LONGER_VALID',
+      },
+    });
+
+    throw new ConflictException(
+      'AI action approval expired or was no longer approved before gateway execution',
+    );
   }
 
   const row = finalization.row;
