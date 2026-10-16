@@ -1242,6 +1242,9 @@ export class OrdersService {
               Number(
                 updatedOrder.version,
               ),
+
+            inventory:
+              inventoryLifecycle,
           };
         },
       );
