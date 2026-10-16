@@ -162,6 +162,54 @@ BEFORE UPDATE OR DELETE ON inventory_reservations
 FOR EACH ROW
 EXECUTE FUNCTION factoryos_guard_inventory_reservation_lifecycle();
 
+-- A terminal reservation update is not sufficient by itself: its stock
+-- balance change must commit in the same transaction as the lifecycle row.
+CREATE OR REPLACE FUNCTION factoryos_assert_inventory_reservation_balance()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_balance NUMERIC(18, 4);
+  v_active_reservations NUMERIC(18, 4);
+BEGIN
+  SELECT quantity_reserved
+    INTO v_balance
+  FROM inventory_stock_balances
+  WHERE tenant_id = NEW.tenant_id
+    AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'inventory reservation requires an inventory stock balance'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT COALESCE(SUM(quantity), 0)
+    INTO v_active_reservations
+  FROM inventory_reservations
+  WHERE tenant_id = NEW.tenant_id
+    AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id
+    AND status = 'RESERVED';
+
+  IF v_balance IS DISTINCT FROM v_active_reservations THEN
+    RAISE EXCEPTION 'inventory stock reserved quantity must equal active reservation total'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS ctr_inventory_reservation_balance_consistency
+  ON inventory_reservations;
+
+CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_balance_consistency
+AFTER INSERT OR UPDATE ON inventory_reservations
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION factoryos_assert_inventory_reservation_balance();
+
 ALTER TABLE inventory_reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_reservations FORCE ROW LEVEL SECURITY;
 
