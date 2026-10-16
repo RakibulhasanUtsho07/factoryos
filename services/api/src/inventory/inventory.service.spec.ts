@@ -238,6 +238,9 @@ describe('InventoryService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
 
     expect(client.query).toHaveBeenCalledTimes(4);
+    expect(String(client.query.mock.calls[3]?.[0])).toContain(
+      'quantity_on_hand + $1::numeric >= quantity_reserved',
+    );
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_movements'))).toBe(false);
     expect(audit.record).not.toHaveBeenCalled();
   });
