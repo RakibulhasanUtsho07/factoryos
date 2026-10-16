@@ -148,6 +148,7 @@ jobs:
             migrations/060_order_material_dispositions.sql
             migrations/061_inventory_stock_reconciliation.sql
             migrations/062_inventory_cycle_count_approval.sql
+            migrations/063_order_production_yield_scrap_tracking.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
