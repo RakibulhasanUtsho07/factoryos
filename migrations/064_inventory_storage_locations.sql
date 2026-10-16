@@ -230,7 +230,7 @@ EXECUTE FUNCTION factoryos_validate_inventory_location_parent();
 CREATE OR REPLACE FUNCTION factoryos_seed_default_inventory_location()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $seed$
 BEGIN
   INSERT INTO inventory_locations (
     tenant_id, factory_id, location_code, name, location_type, is_default
@@ -239,7 +239,7 @@ BEGIN
   ON CONFLICT DO NOTHING;
   RETURN NEW;
 END;
-$;
+$seed$;
 
 CREATE TRIGGER factories_seed_default_inventory_location
 AFTER INSERT ON factories
