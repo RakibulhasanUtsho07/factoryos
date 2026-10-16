@@ -152,7 +152,7 @@ export class InventoryLocationService {
           if (!row) throw new Error('INVENTORY_LOCATION_INSERT_FAILED');
 
           await this.insertOutboxEvent(client, {
-            tenantId, factoryId, aggregateId: row.id,
+            tenantId, factoryId, aggregateType: 'INVENTORY_LOCATION', aggregateId: row.id,
             eventType: 'INVENTORY.LOCATION_CREATED',
             correlationId: this.correlationId(requestId, traceId),
             userId,
@@ -477,7 +477,7 @@ export class InventoryLocationService {
         if (!transfer) throw new Error('INVENTORY_LOCATION_TRANSFER_INSERT_FAILED');
 
         await this.insertOutboxEvent(client, {
-          tenantId, factoryId, aggregateId: itemId,
+          tenantId, factoryId, aggregateType: 'INVENTORY_ITEM', aggregateId: itemId,
           eventType: 'INVENTORY.STOCK_LOCATION_TRANSFERRED',
           correlationId, userId,
           payload: {
@@ -599,6 +599,7 @@ export class InventoryLocationService {
     input: {
       tenantId: string;
       factoryId: string;
+      aggregateType: string;
       aggregateId: string;
       eventType: string;
       correlationId: string;
@@ -614,13 +615,14 @@ export class InventoryLocationService {
         actor, source, payload
       )
       VALUES (
-        $1, $2, 'INVENTORY_ITEM', $3, $4, 1, clock_timestamp(),
+        $1, $2, $3, $4, $5, 1, clock_timestamp(),
         $5::uuid, NULL, $6::jsonb, $7::jsonb, $8::jsonb
       )
       `,
       [
         input.tenantId,
         input.factoryId,
+        input.aggregateType,
         input.aggregateId,
         input.eventType,
         input.correlationId,
