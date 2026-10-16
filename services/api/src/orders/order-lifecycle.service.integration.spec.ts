@@ -1025,9 +1025,10 @@ describe(
           quantity: 1,
           notes: 'Unused material returned after production stopped',
         };
+        const returnIdempotencyKey = 'return-material-' + randomUUID();
         const returned = await inventoryReservationService.recordOrderMaterialDisposition(
           TEST_USER_ID, tenantId, factoryId, fixture.orderId,
-          returnRequest, 'return-material-' + randomUUID(), randomUUID(), randomUUID(),
+          returnRequest, returnIdempotencyKey, randomUUID(), randomUUID(),
         );
         expect(returned.disposition_type).toBe('RETURN_TO_STOCK');
         expect(returned.movement_id).toBeTruthy();
@@ -1035,7 +1036,7 @@ describe(
 
         const returnReplay = await inventoryReservationService.recordOrderMaterialDisposition(
           TEST_USER_ID, tenantId, factoryId, fixture.orderId,
-          returnRequest, returned.idempotency_key ?? null, randomUUID(), randomUUID(),
+          returnRequest, returnIdempotencyKey, randomUUID(), randomUUID(),
         );
         expect(returnReplay.id).toBe(returned.id);
         expect(returnReplay.replayed).toBe(true);
