@@ -17,6 +17,10 @@ export class CreateStockMovementDto {
   quantity!: number;
 
   @IsOptional()
+  @IsUUID()
+  location_id?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(64)
   reference_type?: string;
