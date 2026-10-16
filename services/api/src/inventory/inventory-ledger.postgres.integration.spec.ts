@@ -175,4 +175,65 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
       await client.query('ROLLBACK TO SAVEPOINT protect_nonnegative_balance');
     });
   });
+  it('rejects a reserved balance above on-hand stock and prevents reopening terminal reservations', async () => {
+    await withFixture(async (client, fixture) => {
+      await client.query('SAVEPOINT protect_reserved_balance');
+      await expect(client.query(
+        'UPDATE inventory_stock_balances SET quantity_reserved = 1 WHERE item_id = $1',
+        [fixture.itemId],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_reserved_balance');
+
+      const reservationId = randomUUID();
+      const reservationKey = 'reservation-' + randomUUID();
+      await client.query(
+        `
+        UPDATE inventory_stock_balances
+        SET quantity_on_hand = 3, quantity_reserved = 1
+        WHERE item_id = $1
+        `,
+        [fixture.itemId],
+      );
+      await client.query(
+        `
+        INSERT INTO inventory_reservations (
+          id, tenant_id, factory_id, item_id, quantity, status,
+          idempotency_key, request_hash, created_by_user_id, correlation_id
+        )
+        VALUES ($1, $2, $3, $4, 1, 'RESERVED', $5, $6, $7, $8)
+        `,
+        [
+          reservationId, tenantId, fixture.factoryId, fixture.itemId,
+          reservationKey, 'a'.repeat(64), userId, traceId,
+        ],
+      );
+
+      await client.query(
+        `
+        UPDATE inventory_reservations
+        SET status = 'RELEASED',
+            transition_idempotency_key = $1,
+            transition_request_hash = $2,
+            updated_at = clock_timestamp()
+        WHERE id = $3
+        `,
+        ['release-' + randomUUID(), 'b'.repeat(64), reservationId],
+      );
+
+      await client.query('SAVEPOINT protect_reservation_reopen');
+      await expect(client.query(
+        "UPDATE inventory_reservations SET status = 'RESERVED' WHERE id = $1",
+        [reservationId],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_reservation_reopen');
+
+      await client.query('SAVEPOINT protect_reservation_payload');
+      await expect(client.query(
+        'UPDATE inventory_reservations SET quantity = 2 WHERE id = $1',
+        [reservationId],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_reservation_payload');
+    });
+  });
+
 });
