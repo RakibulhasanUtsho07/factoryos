@@ -127,6 +127,20 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
         await adminPool.query('ALTER TABLE inventory_movements DISABLE TRIGGER USER');
         try {
           await adminPool.query(
+            `
+            DELETE FROM outbox_events
+            WHERE aggregate_id = ANY($1::uuid[])
+               OR aggregate_id IN (
+                 SELECT id FROM inventory_cycle_count_proposals
+                 WHERE item_id = ANY($1::uuid[])
+                 UNION
+                 SELECT id FROM inventory_stock_reconciliations
+                 WHERE item_id = ANY($1::uuid[])
+               )
+            `,
+            [itemIds],
+          );
+          await adminPool.query(
             'DELETE FROM inventory_cycle_count_proposals WHERE item_id = ANY($1::uuid[])',
             [itemIds],
           );
@@ -136,10 +150,6 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
           );
           await adminPool.query(
             'DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])',
-            [itemIds],
-          );
-          await adminPool.query(
-            'DELETE FROM outbox_events WHERE aggregate_id = ANY($1::uuid[])',
             [itemIds],
           );
           await adminPool.query(
@@ -339,6 +349,23 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
         'cycle-count-self-approve-' + randomUUID(), randomUUID(), randomUUID(),
       ),
     ).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(
+      adminPool.query(
+        `
+        UPDATE inventory_cycle_count_proposals
+        SET status = 'REJECTED',
+            reviewed_by_user_id = created_by_user_id,
+            reviewed_at = clock_timestamp(),
+            review_decision = 'REJECT',
+            review_idempotency_key = $1,
+            review_request_hash = $2,
+            review_note = 'attempted self-review'
+        WHERE id = $3
+        `,
+        ['cycle-count-forged-review-' + randomUUID(), '0'.repeat(64), proposal.id],
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
 
     const approvalKey = 'cycle-count-approve-' + randomUUID();
     const first = await cycleCountService.approveCycleCount(
