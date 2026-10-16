@@ -178,7 +178,7 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
     expect(listed[0]?.id).toBe(created.id);
   });
 
-  it('rejects empty output, missing scrap reason, and cumulative output above the planned quantity', async () => {
+  it('requires valid output and scrap reason while allowing scrap to be separately accounted for', async () => {
     const fixture = await createFixture();
     await expect(createReport(
       fixture, { good_quantity: 0, scrap_quantity: 0 }, 'yield-empty-001',
@@ -187,9 +187,22 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
       fixture, { good_quantity: 0, scrap_quantity: 1 }, 'yield-no-reason-001',
     )).rejects.toBeInstanceOf(BadRequestException);
 
-    await createReport(fixture, { good_quantity: 7, scrap_quantity: 0 }, 'yield-part-001');
+    await createReport(
+      fixture,
+      { good_quantity: 7, scrap_quantity: 3, scrap_reason: 'Initial rejected finish' },
+      'yield-part-001',
+    );
+    const completedGood = await createReport(
+      fixture,
+      { good_quantity: 3, scrap_quantity: 2, scrap_reason: 'Additional rejected finish' },
+      'yield-part-002',
+    );
+    expect(completedGood.cumulative_good_quantity).toBe('10.0000');
+    expect(completedGood.cumulative_scrap_quantity).toBe('5.0000');
+    expect(completedGood.yield_percent).toBe('66.6667');
+
     await expect(createReport(
-      fixture, { good_quantity: 3, scrap_quantity: 1, scrap_reason: 'Rejected finish' }, 'yield-over-001',
+      fixture, { good_quantity: 0.1, scrap_quantity: 0 }, 'yield-over-001',
     )).rejects.toBeInstanceOf(ConflictException);
   });
 
