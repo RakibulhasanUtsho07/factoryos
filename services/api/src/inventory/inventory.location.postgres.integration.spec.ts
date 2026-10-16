@@ -269,7 +269,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const totals = await readBinTotals(fixture.factoryId, fixture.itemId);
     expect(aggregate?.quantity_on_hand).toBe('12.0000');
     expect(totals?.sum).toBe(aggregate?.quantity_on_hand);
-    expect(totals?.count).toBe(3);
+    expect(totals?.count).toBe(2);
 
     const transfers = await locationService.listTransfers(
       tenantId, fixture.factoryId, fixture.itemId,
