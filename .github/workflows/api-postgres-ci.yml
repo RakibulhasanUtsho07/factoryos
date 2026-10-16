@@ -143,6 +143,7 @@ jobs:
             migrations/055_ai_operational_forecast_accuracy.sql
             migrations/056_ai_operational_evaluation_policies.sql
             migrations/057_ai_operational_forecast_numeric_consistency.sql
+            migrations/058_inventory_reservations.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
