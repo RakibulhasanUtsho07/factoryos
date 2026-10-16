@@ -30,6 +30,7 @@ describe(
 
     let orderAId: string;
     let orderBId: string;
+    let inventoryItemId: string;
 
     beforeAll(async () => {
       const databaseUrl =
@@ -220,14 +221,43 @@ describe(
         orderAResult.rows[0].id;
 
       // --------------------------------------------------------
-      // Create order line for Factory A order.
+      // Bind Factory A order line to its authoritative inventory item.
       // --------------------------------------------------------
+
+      const inventoryItemResult =
+        await pool.query<{
+          id: string;
+        }>(
+          `
+          INSERT INTO inventory_items (
+            tenant_id,
+            factory_id,
+            sku,
+            name,
+            unit,
+            created_by_user_id
+          )
+          VALUES ($1, $2, $3, $4, 'PCS', $5)
+          RETURNING id::text AS id
+          `,
+          [
+            tenantId,
+            factoryAId,
+            `READ-A-ITEM-${randomUUID()}`,
+            'Read Test Inventory Item A',
+            TEST_USER_ID,
+          ],
+        );
+
+      inventoryItemId =
+        inventoryItemResult.rows[0].id;
 
       await pool.query(
         `
         INSERT INTO order_lines (
           tenant_id,
           order_id,
+          inventory_item_id,
           line_number,
           product_code,
           product_name,
@@ -241,6 +271,7 @@ describe(
         VALUES (
           $1,
           $2,
+          $3,
           1,
           'READ-A-001',
           'Read Test Product A',
@@ -254,6 +285,7 @@ describe(
         [
           tenantId,
           orderAId,
+          inventoryItemId,
         ],
       );
 
@@ -411,6 +443,16 @@ describe(
           );
         }
 
+        if (inventoryItemId) {
+          await pool.query(
+            `
+            DELETE FROM inventory_items
+            WHERE id = $1
+            `,
+            [inventoryItemId],
+          );
+        }
+
         await pool.end();
       }
 
@@ -472,12 +514,42 @@ describe(
         );
 
         expect(
+          result.lines[0].inventory_item_id,
+        ).toBe(inventoryItemId);
+
+        expect(
           result.lines[0].quantity,
         ).toBe('12.5000');
 
         expect(
           result.lines[0].unit_price,
         ).toBe('125.5000');
+      },
+    );
+
+    it(
+      'should reject an inventory item from a different factory at the database boundary',
+      async () => {
+        await expect(
+          pool.query(
+            `
+            INSERT INTO order_lines (
+              tenant_id,
+              order_id,
+              inventory_item_id,
+              line_number,
+              product_code,
+              product_name,
+              quantity,
+              unit
+            )
+            VALUES ($1, $2, $3, 99, 'CROSS-FACTORY', 'Cross Factory Item', 1, 'PCS')
+            `,
+            [tenantId, orderBId, inventoryItemId],
+          ),
+        ).rejects.toMatchObject({
+          code: '23503',
+        });
       },
     );
 
