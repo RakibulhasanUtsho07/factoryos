@@ -955,6 +955,17 @@ describe(
              */
             await adminPool.query(
               `
+              DELETE FROM inventory_locations
+              WHERE factory_id IN ($1, $2)
+              `,
+              [
+                factoryAId,
+                factoryBId,
+              ],
+            );
+
+            await adminPool.query(
+              `
               DELETE FROM factories
               WHERE
                 id IN (
