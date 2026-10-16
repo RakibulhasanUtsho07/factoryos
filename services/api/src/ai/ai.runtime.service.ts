@@ -2086,6 +2086,30 @@ export class AiRuntimeService {
         }
       }
 
+      // Revalidate and lock the approval inside the same transaction
+      // that holds the execution claim. The earlier preflight check alone
+      // could race with an approval being cancelled before gateway execution.
+      if (action.approval_id) {
+        const currentApprovalResult = await client.query<{ id: string }>(
+          `
+          SELECT id::text AS id
+          FROM approvals
+          WHERE id = $1
+            AND tenant_id = $2
+            AND status = 'APPROVED'
+            AND (expires_at IS NULL OR expires_at > clock_timestamp())
+          FOR SHARE
+          `,
+          [action.approval_id, tenantId],
+        );
+
+        if (!currentApprovalResult.rows[0]) {
+          throw new ConflictException(
+            'AI action approval is no longer valid; authorize a new action',
+          );
+        }
+      }
+
       let gatewayOutcome: Awaited<
         ReturnType<AiToolGatewayService['execute']>
       >;
