@@ -35,6 +35,7 @@ type InventoryMovementRow = QueryResultRow & {
   tenant_id: string;
   factory_id: string;
   item_id: string;
+  location_id: string | null;
   movement_type: 'RECEIPT' | 'ISSUE';
   quantity: string;
   quantity_delta: string;
@@ -245,6 +246,8 @@ export class InventoryService {
       throw new BadRequestException('movement_type must be RECEIPT or ISSUE');
     }
 
+    const locationId = dto.location_id?.trim().toLowerCase() || null;
+    if (locationId) this.validateUuid(locationId, 'location_id');
     const referenceType = dto.reference_type?.trim().toUpperCase() || null;
     const referenceId = dto.reference_id?.toLowerCase() || null;
     if (referenceId) this.validateUuid(referenceId, 'reference_id');
@@ -254,6 +257,7 @@ export class InventoryService {
       .update(JSON.stringify({
         itemId: itemId.toLowerCase(),
         movementType: dto.movement_type,
+        locationId,
         quantity,
         referenceType,
         referenceId,
@@ -295,6 +299,24 @@ export class InventoryService {
           );
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
 
+          if (locationId) {
+            const locationResult = await client.query<{ id: string }>(
+              `SELECT id::text AS id
+               FROM inventory_locations
+               WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND status = 'ACTIVE'
+               LIMIT 1`,
+              [locationId, tenantId, factoryId],
+            );
+            if (!locationResult.rows[0]) {
+              throw new NotFoundException('Active inventory location not found in this factory');
+            }
+            // The migration trigger applies the aggregate stock delta to this bin atomically.
+            await client.query(
+              `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
+              [locationId],
+            );
+          }
+
           const delta = dto.movement_type === 'RECEIPT' ? dto.quantity : -dto.quantity;
           const balanceResult = await client.query<{ quantity_on_hand: string }>(
             `
@@ -320,19 +342,20 @@ export class InventoryService {
           const movementResult = await client.query<InventoryMovementRow>(
             `
             INSERT INTO inventory_movements (
-              tenant_id, factory_id, item_id, movement_type, quantity,
+              tenant_id, factory_id, item_id, location_id, movement_type, quantity,
               quantity_delta, quantity_after, idempotency_key, request_hash,
               reference_type, reference_id, notes, created_by_user_id, correlation_id
             )
             VALUES (
-              $1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric,
-              $8, $9, $10, $11::uuid, $12, $13, $14::uuid
+              $1, $2, $3, $4::uuid, $5, $6::numeric, $7::numeric, $8::numeric,
+              $9, $10, $11, $12::uuid, $13, $14, $15::uuid
             )
             RETURNING
               id::text AS id,
               tenant_id::text AS tenant_id,
               factory_id::text AS factory_id,
               item_id::text AS item_id,
+              location_id::text AS location_id,
               movement_type,
               quantity::text AS quantity,
               quantity_delta::text AS quantity_delta,
@@ -346,7 +369,7 @@ export class InventoryService {
               created_at::text AS created_at
             `,
             [
-              tenantId, factoryId, itemId, dto.movement_type, quantity,
+              tenantId, factoryId, itemId, locationId, dto.movement_type, quantity,
               delta.toFixed(4), balance.quantity_on_hand, idempotencyKey,
               requestHash, referenceType, referenceId, notes, userId, correlationId,
             ],
@@ -367,6 +390,7 @@ export class InventoryService {
               movement: {
                 id: movement.id,
                 item_id: itemId,
+                location_id: movement.location_id,
                 movement_type: movement.movement_type,
                 quantity: movement.quantity,
                 quantity_delta: movement.quantity_delta,
@@ -422,6 +446,7 @@ export class InventoryService {
         resourceId: result.id, requestId, traceId,
         payload: {
           itemId,
+          locationId: result.location_id,
           quantity: result.quantity,
           quantityAfter: result.quantity_after,
           referenceType: result.reference_type,
@@ -461,6 +486,7 @@ export class InventoryService {
         tenant_id::text AS tenant_id,
         factory_id::text AS factory_id,
         item_id::text AS item_id,
+        location_id::text AS location_id,
         movement_type,
         quantity::text AS quantity,
         quantity_delta::text AS quantity_delta,
@@ -530,12 +556,12 @@ export class InventoryService {
     replayed: boolean,
   ): InventoryMovementResult {
     const {
-      id, tenant_id, factory_id, item_id, movement_type, quantity,
+      id, tenant_id, factory_id, item_id, location_id, movement_type, quantity,
       quantity_delta, quantity_after, reference_type, reference_id, notes,
       created_by_user_id, correlation_id, created_at,
     } = stored;
     return {
-      id, tenant_id, factory_id, item_id, movement_type, quantity,
+      id, tenant_id, factory_id, item_id, location_id, movement_type, quantity,
       quantity_delta, quantity_after, reference_type, reference_id, notes,
       created_by_user_id, correlation_id, created_at, replayed,
     };
