@@ -204,6 +204,17 @@ export class OrdersService {
       );
     }
 
+    for (const line of dto.lines) {
+      if (
+        line.inventory_item_id !== undefined &&
+        !isUUID(line.inventory_item_id)
+      ) {
+        throw new BadRequestException(
+          `inventory_item_id on line ${line.line_number} must be a valid UUID`,
+        );
+      }
+    }
+
     const currency =
       (
         dto.currency ||
@@ -418,6 +429,7 @@ export class OrdersService {
         line_number: number;
         product_code: string;
         product_name: string;
+        inventory_item_id: string | null;
         quantity: string;
         unit: string;
         unit_price: string | null;
@@ -426,12 +438,66 @@ export class OrdersService {
     for (
       const line of dto.lines
     ) {
+      const inventoryItemId =
+        line.inventory_item_id?.trim() || null;
+
+      if (inventoryItemId) {
+        const inventoryItemResult =
+          await client.query<{
+            id: string;
+            unit: string;
+            status: string;
+          }>(
+            `
+            SELECT
+              id::text AS id,
+              unit,
+              status
+            FROM inventory_items
+            WHERE id = $1
+              AND tenant_id = $2
+              AND factory_id = $3
+            FOR SHARE
+            `,
+            [
+              inventoryItemId,
+              tenantId,
+              orderRow.factory_id,
+            ],
+          );
+
+        const inventoryItem =
+          inventoryItemResult.rows[0];
+
+        if (!inventoryItem) {
+          throw new NotFoundException(
+            `Inventory item on order line ${line.line_number} was not found in this factory`,
+          );
+        }
+
+        if (inventoryItem.status !== 'ACTIVE') {
+          throw new ConflictException(
+            `Inventory item on order line ${line.line_number} is disabled`,
+          );
+        }
+
+        if (
+          inventoryItem.unit.trim().toUpperCase() !==
+          line.unit.trim().toUpperCase()
+        ) {
+          throw new BadRequestException(
+            `Order line ${line.line_number} unit must match its inventory item unit`,
+          );
+        }
+      }
+
       const lineResult =
         await client.query<{
           id: string;
           line_number: number;
           product_code: string;
           product_name: string;
+          inventory_item_id: string | null;
           quantity: string;
           unit: string;
           unit_price: string | null;
@@ -439,10 +505,12 @@ export class OrdersService {
           `
           INSERT INTO order_lines (
             tenant_id,
+            factory_id,
             order_id,
             line_number,
             product_code,
             product_name,
+            inventory_item_id,
             quantity,
             unit,
             unit_price,
@@ -459,8 +527,10 @@ export class OrdersService {
             $6,
             $7,
             $8,
-            $9::date,
-            $10
+            $9,
+            $10,
+            $11::date,
+            $12
           )
 
           RETURNING
@@ -468,16 +538,19 @@ export class OrdersService {
             line_number,
             product_code,
             product_name,
+            inventory_item_id::text AS inventory_item_id,
             quantity::text AS quantity,
             unit,
             unit_price::text AS unit_price
           `,
           [
             tenantId,
+            orderRow.factory_id,
             orderRow.id,
             line.line_number,
             line.product_code.trim(),
             line.product_name.trim(),
+            inventoryItemId,
             line.quantity,
             line.unit.trim(),
             line.unit_price ??
@@ -534,6 +607,9 @@ export class OrdersService {
 
             product_code:
               line.product_code,
+
+            inventory_item_id:
+              line.inventory_item_id,
 
             quantity:
               line.quantity,
@@ -1324,6 +1400,7 @@ export class OrdersService {
         line_number: number;
         product_code: string;
         product_name: string;
+        inventory_item_id: string | null;
         quantity: string;
         unit: string;
         unit_price:
@@ -1347,6 +1424,9 @@ export class OrdersService {
           ol.product_code,
 
           ol.product_name,
+
+          ol.inventory_item_id::text
+            AS inventory_item_id,
 
           ol.quantity::text
             AS quantity,
