@@ -319,6 +319,8 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     );
     expect(first.status).toBe('PENDING_REVIEW');
     expect(first.replayed).toBe(false);
+    expect(first.ledger_quantity_at_count).toBe('6.0000');
+    expect(first.balance_version_at_count).toBe('1');
     expect(replay.replayed).toBe(true);
     expect(replay.id).toBe(first.id);
 
@@ -453,6 +455,41 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       [itemId],
     );
     expect(balance.rows[0]?.quantity_on_hand).toBe('5.0000');
+  });
+
+  it('refuses to apply a stale count if stock changes before approval', async () => {
+    const itemId = await createItem('6.0000', '1.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 5, notes: 'Count captured before late receipt' },
+      'cycle-count-stale-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    await service.recordReconciliation(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 8, reason_code: 'OTHER', notes: 'Receipt arrived after counting' },
+      'stock-changed-after-count-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    await expect(
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Trying to approve stale physical count' },
+        'cycle-count-stale-approve-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const storedProposal = await adminPool.query<{ status: string }>(
+      'SELECT status FROM inventory_cycle_count_proposals WHERE id = $1',
+      [proposal.id],
+    );
+    expect(storedProposal.rows[0]?.status).toBe('PENDING_REVIEW');
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
   });
 
   it('records zero variance without creating a no-op movement', async () => {
