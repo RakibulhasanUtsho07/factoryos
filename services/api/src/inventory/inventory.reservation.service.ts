@@ -293,9 +293,11 @@ export class InventoryReservationService {
       targetStatus,
     });
 
-    const result = await this.database.transaction(
-      { tenantId, userId },
-      async (client) => {
+    let result: ReservationResult;
+    try {
+      result = await this.database.transaction(
+        { tenantId, userId },
+        async (client) => {
         // Use the same item -> reservation lock order as creation and stock movements.
         const itemResult = await client.query<{ id: string; status: string }>(
           `
@@ -403,6 +405,7 @@ export class InventoryReservationService {
             correlationId, userId,
             payload: {
               movement: {
+                id: consumedMovementId,
                 item_id: itemId, movement_type: 'ISSUE', quantity: reservation.quantity,
                 quantity_delta: '-' + reservation.quantity, quantity_after: balance.quantity_on_hand,
                 reference_type: 'RESERVATION', reference_id: reservationId,
@@ -449,9 +452,15 @@ export class InventoryReservationService {
             },
           },
         });
-        return this.toResult(updated, false);
-      },
-    );
+          return this.toResult(updated, false);
+        },
+      );
+    } catch (error) {
+      if (this.errorCode(error) === '23505') {
+        throw new ConflictException('Idempotency-Key has already been used for another reservation transition');
+      }
+      throw error;
+    }
 
     if (!result.replayed) {
       await this.recordAuditSafely({
