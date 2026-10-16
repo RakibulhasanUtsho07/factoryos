@@ -404,7 +404,11 @@ export class InventoryService {
         },
       );
     } catch (error) {
-      if (this.errorCode(error) !== '23505') throw error;
+      const code = this.errorCode(error);
+      if (code === '23514' && locationId) {
+        throw new ConflictException('Insufficient stock at the selected location or inventory location balance is inconsistent');
+      }
+      if (code !== '23505') throw error;
 
       // The database unique key arbitrates the rare race where two requests
       // reuse one key while holding different item-row locks.
