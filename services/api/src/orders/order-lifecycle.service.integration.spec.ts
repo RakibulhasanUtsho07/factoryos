@@ -789,7 +789,7 @@ describe(
           WHERE tenant_id = $1 AND factory_id = $2
             AND reference_type = 'ORDER_LINE'
             AND reference_id = ANY($3::uuid[])
-          ORDER BY reference_id
+          ORDER BY quantity DESC, reference_id
           `,
           [tenantId, factoryId, fixture.lineIds],
         );
