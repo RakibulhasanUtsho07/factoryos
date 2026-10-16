@@ -14,6 +14,7 @@ The controller is mounted at **/inventory/items**. Each endpoint requires a veri
 - **POST /inventory/items/:itemId/reservations** reserves currently available stock; an `Idempotency-Key` is required.
 - **GET /inventory/items/:itemId/reservations?status=RESERVED&limit=50** lists factory-scoped reservations.
 - **POST /inventory/items/:itemId/reservations/:reservationId/transition** releases or consumes a reservation and requires a separate `Idempotency-Key`.
+- **POST /orders/:orderId/material-dispositions** records a partial or full `RETURN_TO_STOCK` or `SCRAPPED` quantity against a consumed order-line reservation; an `Idempotency-Key` is required.
 
 The movement payload accepts movement_type, a positive quantity with up to four decimal places, optional reference_type, optional UUID reference_id, and optional notes.
 
