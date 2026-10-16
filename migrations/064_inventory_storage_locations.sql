@@ -167,6 +167,14 @@ DECLARE
   v_parent_type VARCHAR(20);
   v_parent_status VARCHAR(20);
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.is_default THEN
+      RAISE EXCEPTION 'default inventory location cannot be deleted'
+        USING ERRCODE = '55000';
+    END IF;
+    RETURN OLD;
+  END IF;
+
   IF NEW.is_default THEN
     IF TG_OP = 'UPDATE' AND (
       NEW.id IS DISTINCT FROM OLD.id
@@ -214,9 +222,29 @@ END;
 $$;
 
 CREATE TRIGGER inventory_locations_parent_guard
-BEFORE INSERT OR UPDATE ON inventory_locations
+BEFORE INSERT OR UPDATE OR DELETE ON inventory_locations
 FOR EACH ROW
 EXECUTE FUNCTION factoryos_validate_inventory_location_parent();
+
+-- Factories created after this migration receive the same default bucket as existing factories.
+CREATE OR REPLACE FUNCTION factoryos_seed_default_inventory_location()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  INSERT INTO inventory_locations (
+    tenant_id, factory_id, location_code, name, location_type, is_default
+  )
+  VALUES (NEW.tenant_id, NEW.id, 'UNASSIGNED', 'Unassigned stock', 'VIRTUAL', TRUE)
+  ON CONFLICT DO NOTHING;
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER factories_seed_default_inventory_location
+AFTER INSERT ON factories
+FOR EACH ROW
+EXECUTE FUNCTION factoryos_seed_default_inventory_location();
 
 CREATE OR REPLACE FUNCTION factoryos_sync_inventory_location_balance()
 RETURNS trigger
