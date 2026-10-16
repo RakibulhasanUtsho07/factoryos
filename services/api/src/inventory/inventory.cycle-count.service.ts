@@ -23,6 +23,8 @@ interface CycleCountProposalRow extends QueryResultRow {
   factory_id: string;
   item_id: string;
   counted_quantity: string;
+  ledger_quantity_at_count: string;
+  balance_version_at_count: string;
   status: InventoryCycleCountStatus;
   idempotency_key: string;
   request_hash: string;
@@ -57,6 +59,8 @@ const CYCLE_COUNT_COLUMNS = `
   factory_id::text AS factory_id,
   item_id::text AS item_id,
   counted_quantity::text AS counted_quantity,
+  ledger_quantity_at_count::text AS ledger_quantity_at_count,
+  balance_version_at_count::text AS balance_version_at_count,
   status,
   idempotency_key,
   request_hash,
@@ -129,8 +133,27 @@ export class InventoryCycleCountService {
             throw new ConflictException('Disabled inventory items cannot be cycle counted');
           }
 
-          // The item-row lock provides the same serialization point used by
-          // receipts/issues without changing stock during count submission.
+          // Snapshot the balance/version under the same item-first lock used by
+          // stock writers. Approval refuses to apply this count if stock changed
+          // between physical counting and review.
+          const balanceResult = await client.query<{
+            quantity_on_hand: string;
+            version: string;
+          }>(
+            `
+            SELECT quantity_on_hand::text AS quantity_on_hand,
+                   version::text AS version
+            FROM inventory_stock_balances
+            WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+            FOR UPDATE
+            `,
+            [tenantId, factoryId, normalizedItemId],
+          );
+          const balance = balanceResult.rows[0];
+          if (!balance) {
+            throw new ConflictException('Inventory stock balance is not initialized for this item');
+          }
+
           const duplicateAfterLock = await this.findBySubmitKey(
             client, tenantId, factoryId, idempotencyKey,
           );
@@ -141,10 +164,14 @@ export class InventoryCycleCountService {
           const inserted = await client.query<CycleCountProposalRow>(
             `
             INSERT INTO inventory_cycle_count_proposals (
-              tenant_id, factory_id, item_id, counted_quantity, status,
+              tenant_id, factory_id, item_id, counted_quantity,
+              ledger_quantity_at_count, balance_version_at_count, status,
               idempotency_key, request_hash, notes, created_by_user_id
             )
-            VALUES ($1, $2, $3, $4::numeric, 'PENDING_REVIEW', $5, $6, $7, $8)
+            VALUES (
+              $1, $2, $3, $4::numeric, $5::numeric, $6::bigint,
+              'PENDING_REVIEW', $7, $8, $9, $10
+            )
             RETURNING ${CYCLE_COUNT_COLUMNS}
             `,
             [
@@ -152,6 +179,8 @@ export class InventoryCycleCountService {
               factoryId,
               normalizedItemId,
               countedQuantity,
+              balance.quantity_on_hand,
+              balance.version,
               idempotencyKey,
               requestHash,
               notes,
