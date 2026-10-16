@@ -1010,7 +1010,7 @@ describe(
             AND reference_type = 'ORDER_LINE'
             AND reference_id = ANY($3::uuid[])
             AND status = 'CONSUMED'
-          ORDER BY reference_id
+          ORDER BY quantity DESC, reference_id
           `,
           [tenantId, factoryId, fixture.lineIds],
         );
