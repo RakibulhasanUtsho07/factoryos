@@ -7,6 +7,7 @@ import {
   createIntegrationDatabase,
 } from '../database/integration-database.adapter';
 import { InventoryStockReconciliationService } from './inventory.stock-reconciliation.service';
+import { InventoryCycleCountService } from './inventory.cycle-count.service';
 
 describe('InventoryStockReconciliationService PostgreSQL integration', () => {
   const TEST_USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -14,6 +15,8 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
   let adminPool!: Pool;
   let appPool!: Pool;
   let service!: InventoryStockReconciliationService;
+  let cycleCountService!: InventoryCycleCountService;
+  let reviewerUserId!: string;
   let tenantId!: string;
   let factoryId!: string;
   const itemIds: string[] = [];
@@ -88,19 +91,45 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     );
     if (!actor.rows[0]) throw new Error('Stock reconciliation test user does not exist');
 
+    const reviewer = await adminPool.query<{ id: string }>(
+      `
+      INSERT INTO users (external_subject, email, display_name, status)
+      VALUES ($1, $2, 'Cycle Count Reviewer Fixture', 'ACTIVE')
+      RETURNING id::text AS id
+      `,
+      [
+        'cycle-count-reviewer-' + randomUUID(),
+        'cycle-count-reviewer-' + randomUUID() + '@factoryos.test',
+      ],
+    );
+    reviewerUserId = reviewer.rows[0]?.id ?? '';
+    if (!reviewerUserId) throw new Error('Cycle-count reviewer fixture was not created');
+
     const database = createIntegrationDatabase(appPool);
     const audit = { record: async () => undefined } as unknown as AuditService;
     service = new InventoryStockReconciliationService(database as never, audit);
+    cycleCountService = new InventoryCycleCountService(
+      database as never,
+      audit,
+      service,
+    );
   });
 
   afterAll(async () => {
     try {
       if (adminPool && itemIds.length > 0) {
         await adminPool.query(
+          'ALTER TABLE inventory_cycle_count_proposals DISABLE TRIGGER USER',
+        );
+        await adminPool.query(
           'ALTER TABLE inventory_stock_reconciliations DISABLE TRIGGER USER',
         );
         await adminPool.query('ALTER TABLE inventory_movements DISABLE TRIGGER USER');
         try {
+          await adminPool.query(
+            'DELETE FROM inventory_cycle_count_proposals WHERE item_id = ANY($1::uuid[])',
+            [itemIds],
+          );
           await adminPool.query(
             'DELETE FROM inventory_stock_reconciliations WHERE item_id = ANY($1::uuid[])',
             [itemIds],
@@ -128,9 +157,15 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
           await adminPool.query(
             'ALTER TABLE inventory_stock_reconciliations ENABLE TRIGGER USER',
           );
+          await adminPool.query(
+            'ALTER TABLE inventory_cycle_count_proposals ENABLE TRIGGER USER',
+          );
         }
       }
     } finally {
+      if (adminPool && reviewerUserId) {
+        await adminPool.query('DELETE FROM users WHERE id = $1', [reviewerUserId]);
+      }
       if (appPool) await appPool.end();
       if (adminPool) await adminPool.end();
     }
@@ -140,7 +175,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const itemId = await createItem('8.0000', '2.0000');
     const input = {
       counted_quantity: 9.5,
-      reason_code: 'CYCLE_COUNT' as const,
+      reason_code: 'OTHER' as const,
       notes: 'Verified count in storage aisle A',
     };
     const idempotencyKey = 'reconcile-positive-' + randomUUID();
@@ -223,7 +258,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       tenantId,
       factoryId,
       itemId,
-      { counted_quantity: 3, reason_code: 'CYCLE_COUNT' },
+      { counted_quantity: 3, reason_code: 'OTHER' },
       'reconcile-negative-' + randomUUID(),
       randomUUID(),
       randomUUID(),
@@ -261,6 +296,138 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(records[0]?.id).toBe(result.id);
   });
 
+  it('submits a cycle count without touching stock and replays the same idempotency key', async () => {
+    const itemId = await createItem('6.0000', '1.0000');
+    const key = 'cycle-count-submit-' + randomUUID();
+    const input = { counted_quantity: 5.25, notes: 'Aisle B manual count' };
+
+    const first = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId, input, key, randomUUID(), randomUUID(),
+    );
+    const replay = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId, input, key, randomUUID(), randomUUID(),
+    );
+    expect(first.status).toBe('PENDING_REVIEW');
+    expect(first.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(replay.id).toBe(first.id);
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('6.0000');
+
+    const changed = cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 5, notes: input.notes }, key, randomUUID(), randomUUID(),
+    );
+    await expect(changed).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('requires a different reviewer and atomically applies exactly one adjustment on approval', async () => {
+    const itemId = await createItem('10.0000', '2.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 7, notes: 'Counted by operator A' },
+      'cycle-count-approve-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    await expect(
+      cycleCountService.approveCycleCount(
+        TEST_USER_ID, tenantId, factoryId, itemId, proposal.id, {},
+        'cycle-count-self-approve-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const approvalKey = 'cycle-count-approve-' + randomUUID();
+    const first = await cycleCountService.approveCycleCount(
+      reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+      { review_note: 'Physical count evidence checked' },
+      approvalKey, randomUUID(), randomUUID(),
+    );
+    const replay = await cycleCountService.approveCycleCount(
+      reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+      { review_note: 'Physical count evidence checked' },
+      approvalKey, randomUUID(), randomUUID(),
+    );
+    expect(first.replayed).toBe(false);
+    expect(first.reason_code).toBe('CYCLE_COUNT');
+    expect(first.quantity_delta).toBe('-3.0000');
+    expect(replay.replayed).toBe(true);
+    expect(replay.id).toBe(first.id);
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('7.0000');
+
+    const proposalState = await adminPool.query<{
+      status: string;
+      reviewed_by_user_id: string;
+      reconciliation_id: string;
+    }>(
+      `
+      SELECT status, reviewed_by_user_id::text AS reviewed_by_user_id,
+             reconciliation_id::text AS reconciliation_id
+      FROM inventory_cycle_count_proposals WHERE id = $1
+      `,
+      [proposal.id],
+    );
+    expect(proposalState.rows[0]).toMatchObject({
+      status: 'APPLIED',
+      reviewed_by_user_id: reviewerUserId,
+      reconciliation_id: first.id,
+    });
+
+    const issueCount = await adminPool.query<{ count: string }>(
+      `
+      SELECT COUNT(*)::text AS count
+      FROM inventory_movements
+      WHERE item_id = $1 AND reference_type = 'STOCK_RECONCILIATION'
+      `,
+      [itemId],
+    );
+    expect(issueCount.rows[0]?.count).toBe('1');
+  });
+
+  it('rejects a pending cycle count with a reason and leaves the balance unchanged', async () => {
+    const itemId = await createItem('5.0000', '1.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 9 }, 'cycle-count-reject-submit-' + randomUUID(),
+      randomUUID(), randomUUID(),
+    );
+    const rejectionKey = 'cycle-count-reject-' + randomUUID();
+    const rejected = await cycleCountService.rejectCycleCount(
+      reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+      { review_note: 'Count evidence needs recount' },
+      rejectionKey, randomUUID(), randomUUID(),
+    );
+    const replay = await cycleCountService.rejectCycleCount(
+      reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+      { review_note: 'Count evidence needs recount' },
+      rejectionKey, randomUUID(), randomUUID(),
+    );
+    expect(rejected.status).toBe('REJECTED');
+    expect(rejected.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+
+    await expect(
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id, {},
+        'cycle-count-approve-rejected-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('5.0000');
+  });
+
   it('records zero variance without creating a no-op movement', async () => {
     const itemId = await createItem('4.0000', '1.0000');
     const result = await service.recordReconciliation(
@@ -268,7 +435,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       tenantId,
       factoryId,
       itemId,
-      { counted_quantity: 4, reason_code: 'CYCLE_COUNT' },
+      { counted_quantity: 4, reason_code: 'OTHER' },
       'reconcile-zero-' + randomUUID(),
       randomUUID(),
       randomUUID(),
