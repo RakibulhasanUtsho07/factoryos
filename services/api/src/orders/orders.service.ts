@@ -1295,6 +1295,9 @@ export class OrdersService {
           updatedAt:
             result.updated_at,
 
+          inventory:
+            result.inventory,
+
           result:
             'UPDATED',
         },
