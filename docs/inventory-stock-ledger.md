@@ -60,7 +60,7 @@ Production reports distinguish accepted finished output from scrapped finished o
 
 - A report can only be recorded while its order is `IN_PROGRESS`; the order line must belong to the same order, tenant, and factory.
 - Both output quantities are non-negative and use the existing four-decimal quantity precision. At least one must be positive, and a non-zero scrap quantity requires a reason.
-- Cumulative good plus scrap output for a line cannot exceed its planned order-line quantity. The order row is locked for each report, so concurrent reports cannot over-produce the line.
+- Cumulative accepted good output cannot exceed the planned order-line quantity; scrap is tracked separately because it does not fulfill customer demand and may require replacement production. The order row is locked for each report, so concurrent submissions cannot over-report accepted good output.
 - Reports are append-only and factory/tenant-scoped, have required idempotency keys, and reject key reuse with a different request. PostgreSQL validates order state, output limits, cumulative snapshots, scope and immutability as a second enforcement layer.
 - Each accepted report records cumulative good quantity, cumulative scrap quantity and yield percentage (`good / (good + scrap) × 100`). The report and `ORDER.PRODUCTION_REPORTED` outbox event commit atomically; audit logging is attempted after commit.
 
