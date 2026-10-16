@@ -18,7 +18,7 @@ BEGIN
       NOT VALID;
   END IF;
 END;
-$;
+$$;
 
 ALTER TABLE inventory_stock_balances
   VALIDATE CONSTRAINT chk_inventory_balance_reserved_within_on_hand;
@@ -78,13 +78,15 @@ CREATE TABLE IF NOT EXISTS inventory_reservations (
         AND transition_idempotency_key IS NOT NULL
         AND length(btrim(transition_idempotency_key)) > 0
         AND transition_request_hash IS NOT NULL
-        AND transition_request_hash ~ '^[a-f0-9]{64}
+        AND transition_request_hash ~ '^[a-f0-9]{64}$'
         AND consumed_movement_id IS NULL
       )
       OR
       (
         status = 'CONSUMED'
+        AND transition_idempotency_key IS NOT NULL
         AND length(btrim(transition_idempotency_key)) > 0
+        AND transition_request_hash IS NOT NULL
         AND transition_request_hash ~ '^[a-f0-9]{64}$'
         AND consumed_movement_id IS NOT NULL
       )
@@ -130,106 +132,9 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
-  IF length(btrim(NEW.transition_idempotency_key)) = 0
-     OR NEW.transition_request_hash !~ '^[a-f0-9]{64}$' THEN
-    RAISE EXCEPTION 'inventory reservation transition requires an idempotency key and request hash'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'CONSUMED' AND NEW.consumed_movement_id IS NULL THEN
-    RAISE EXCEPTION 'consumed inventory reservations must reference the issue movement'
-      USING ERRCODE = '23514';
-  END IF;
-
-  IF NEW.status = 'RELEASED' AND NEW.consumed_movement_id IS NOT NULL THEN
-    RAISE EXCEPTION 'released inventory reservations cannot reference a consumed movement'
-      USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_inventory_reservation_lifecycle
-  ON inventory_reservations;
-
-CREATE TRIGGER trg_inventory_reservation_lifecycle
-BEFORE UPDATE OR DELETE ON inventory_reservations
-FOR EACH ROW
-EXECUTE FUNCTION factoryos_guard_inventory_reservation_lifecycle();
-
-ALTER TABLE inventory_reservations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE inventory_reservations FORCE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS inventory_reservations_tenant_isolation
-  ON inventory_reservations;
-
-CREATE POLICY inventory_reservations_tenant_isolation
-ON inventory_reservations
-USING (tenant_id = factoryos_current_tenant_id())
-WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-COMMENT ON TABLE inventory_reservations IS
-  'Factory-scoped idempotent inventory reservations. Reservation payload is immutable; only RESERVED -> RELEASED/CONSUMED is permitted.';
-
-INSERT INTO schema_migrations (version, checksum)
-VALUES ('058_inventory_reservations', NULL)
-ON CONFLICT (version) DO NOTHING;
-
-COMMIT;
-
-        AND consumed_movement_id IS NULL
-      )
-      OR
-      (
-        status = 'CONSUMED'
-        AND length(btrim(transition_idempotency_key)) > 0
-        AND transition_request_hash ~ '^[a-f0-9]{64}$'
-        AND consumed_movement_id IS NOT NULL
-      )
-    )
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_reservation_idempotency
-  ON inventory_reservations (tenant_id, factory_id, idempotency_key);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_reservation_transition_idempotency
-  ON inventory_reservations (tenant_id, factory_id, transition_idempotency_key)
-  WHERE transition_idempotency_key IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_inventory_reservations_item_status_created
-  ON inventory_reservations (tenant_id, factory_id, item_id, status, created_at DESC);
-
-CREATE OR REPLACE FUNCTION factoryos_guard_inventory_reservation_lifecycle()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'inventory reservations cannot be deleted'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF OLD.status <> 'RESERVED'
-     OR NEW.status NOT IN ('RELEASED', 'CONSUMED') THEN
-    RAISE EXCEPTION 'inventory reservation lifecycle only permits RESERVED to RELEASED or CONSUMED'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF ROW(
-    NEW.id, NEW.tenant_id, NEW.factory_id, NEW.item_id, NEW.quantity,
-    NEW.idempotency_key, NEW.request_hash, NEW.reference_type, NEW.reference_id,
-    NEW.notes, NEW.created_by_user_id, NEW.correlation_id, NEW.created_at
-  ) IS DISTINCT FROM ROW(
-    OLD.id, OLD.tenant_id, OLD.factory_id, OLD.item_id, OLD.quantity,
-    OLD.idempotency_key, OLD.request_hash, OLD.reference_type, OLD.reference_id,
-    OLD.notes, OLD.created_by_user_id, OLD.correlation_id, OLD.created_at
-  ) THEN
-    RAISE EXCEPTION 'inventory reservation request binding is immutable'
-      USING ERRCODE = '55000';
-  END IF;
-
-  IF length(btrim(NEW.transition_idempotency_key)) = 0
+  IF NEW.transition_idempotency_key IS NULL
+     OR length(btrim(NEW.transition_idempotency_key)) = 0
+     OR NEW.transition_request_hash IS NULL
      OR NEW.transition_request_hash !~ '^[a-f0-9]{64}$' THEN
     RAISE EXCEPTION 'inventory reservation transition requires an idempotency key and request hash'
       USING ERRCODE = '23514';
