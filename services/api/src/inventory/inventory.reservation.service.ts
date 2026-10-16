@@ -47,7 +47,7 @@ interface MovementRow extends QueryResultRow {
   quantity_after: string;
 }
 
-interface OrderMaterialDispositionRow extends QueryResultRow {
+export interface OrderMaterialDispositionRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -65,7 +65,7 @@ interface OrderMaterialDispositionRow extends QueryResultRow {
   created_at: string;
 }
 
-type OrderMaterialDispositionResult = Omit<
+export type OrderMaterialDispositionResult = Omit<
   OrderMaterialDispositionRow,
   'request_hash' | 'idempotency_key'
 > & {
