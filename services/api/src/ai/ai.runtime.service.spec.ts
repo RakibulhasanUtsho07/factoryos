@@ -751,8 +751,8 @@ describe(
           // Preflight sees the approval as valid.
           .mockResolvedValueOnce({ rows: [{ id: approvalId }] })
           .mockResolvedValueOnce({ rows: [{ id: claimId }] })
-          // Inside the locked-claim transaction, the approval has since
-          // been revoked or expired, so the final locked check finds no row.
+          // The locked-claim transaction detects approval revocation and
+          // terminalizes the claim without invoking the gateway.
           .mockResolvedValueOnce({
             rows: [
               {
@@ -770,7 +770,8 @@ describe(
               },
             ],
           })
-          .mockResolvedValueOnce({ rows: [] });
+          .mockResolvedValueOnce({ rows: [] })
+          .mockResolvedValueOnce({ rows: [{ id: claimId }] });
 
         await expect(
           service.executeAction(
@@ -787,11 +788,19 @@ describe(
 
         expect(aiToolGateway.execute).not.toHaveBeenCalled();
         expect(databaseTransactionMock).toHaveBeenCalledTimes(1);
-        expect(databaseQueryMock).toHaveBeenCalledTimes(7);
+        expect(databaseQueryMock).toHaveBeenCalledTimes(8);
         expect(String(databaseQueryMock.mock.calls[6]?.[0])).toContain('FOR SHARE');
         expect(databaseQueryMock.mock.calls[6]?.[1]).toEqual([
           approvalId,
           tenantId,
+        ]);
+        expect(String(databaseQueryMock.mock.calls[7]?.[0])).toContain(
+          "failure_code = 'APPROVAL_NO_LONGER_VALID'",
+        );
+        expect(databaseQueryMock.mock.calls[7]?.[1]).toEqual([
+          claimId,
+          tenantId,
+          factoryId,
         ]);
       },
     );
