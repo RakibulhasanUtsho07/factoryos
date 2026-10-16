@@ -208,6 +208,7 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         ],
       );
 
+      await client.query('SAVEPOINT protect_reservation_balance_consistency');
       await client.query(
         `
         UPDATE inventory_reservations
@@ -217,7 +218,29 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
             updated_at = clock_timestamp()
         WHERE id = $3
         `,
-        ['release-' + randomUUID(), 'b'.repeat(64), reservationId],
+        ['release-invalid-' + randomUUID(), 'b'.repeat(64), reservationId],
+      );
+      await expect(client.query(
+        'SET CONSTRAINTS ctr_inventory_reservation_balance_consistency IMMEDIATE',
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_reservation_balance_consistency');
+      await client.query('SET CONSTRAINTS ctr_inventory_reservation_balance_consistency DEFERRED');
+
+      // The valid lifecycle transition releases the reserved balance in the same transaction.
+      await client.query(
+        'UPDATE inventory_stock_balances SET quantity_reserved = 0 WHERE item_id = $1',
+        [fixture.itemId],
+      );
+      await client.query(
+        `
+        UPDATE inventory_reservations
+        SET status = 'RELEASED',
+            transition_idempotency_key = $1,
+            transition_request_hash = $2,
+            updated_at = clock_timestamp()
+        WHERE id = $3
+        `,
+        ['release-' + randomUUID(), 'c'.repeat(64), reservationId],
       );
 
       await client.query('SAVEPOINT protect_reservation_reopen');
