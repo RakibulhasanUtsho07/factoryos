@@ -146,6 +146,8 @@ BEGIN
     OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
     OR NEW.item_id IS DISTINCT FROM OLD.item_id
     OR NEW.counted_quantity IS DISTINCT FROM OLD.counted_quantity
+    OR NEW.ledger_quantity_at_count IS DISTINCT FROM OLD.ledger_quantity_at_count
+    OR NEW.balance_version_at_count IS DISTINCT FROM OLD.balance_version_at_count
     OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
     OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
     OR NEW.notes IS DISTINCT FROM OLD.notes
