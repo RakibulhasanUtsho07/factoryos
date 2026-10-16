@@ -231,6 +231,423 @@ export class InventoryReservationService {
     return result;
   }
 
+
+  /**
+   * Applies inventory side effects in the caller's order-status transaction.
+   * The caller's PoolClient keeps order state, stock balances, reservation
+   * history and outbox evidence atomic.
+   */
+  async applyOrderTransition(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      orderId: string;
+      orderNumber: string;
+      previousStatus: string;
+      targetStatus: 'DRAFT' | 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+      requestId: string | null;
+      traceId: string | null;
+    },
+  ): Promise<{
+    reservations_created: number;
+    reservations_released: number;
+    reservations_consumed: number;
+  }> {
+    const result = {
+      reservations_created: 0,
+      reservations_released: 0,
+      reservations_consumed: 0,
+    };
+
+    if (input.previousStatus === 'DRAFT' && input.targetStatus === 'CONFIRMED') {
+      result.reservations_created = await this.reserveOrderLines(client, input);
+    }
+    if (input.targetStatus === 'CANCELLED') {
+      result.reservations_released = await this.transitionOrderReservations(client, input, 'RELEASED');
+    }
+    if (input.previousStatus === 'IN_PROGRESS' && input.targetStatus === 'COMPLETED') {
+      result.reservations_consumed = await this.transitionOrderReservations(client, input, 'CONSUMED');
+    }
+    return result;
+  }
+
+  private async reserveOrderLines(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      orderId: string;
+      orderNumber: string;
+      requestId: string | null;
+      traceId: string | null;
+    },
+  ): Promise<number> {
+    const linesResult = await client.query<{
+      id: string;
+      line_number: number;
+      item_id: string;
+      quantity: string;
+      unit: string;
+    }>(
+      `
+      SELECT ol.id::text AS id, ol.line_number,
+             ol.inventory_item_id::text AS item_id,
+             ol.quantity::text AS quantity, ol.unit
+      FROM order_lines ol
+      WHERE ol.order_id = $1
+        AND ol.tenant_id = $2
+        AND ol.factory_id = $3
+        AND ol.inventory_item_id IS NOT NULL
+      ORDER BY ol.inventory_item_id, ol.id
+      FOR UPDATE
+      `,
+      [input.orderId, input.tenantId, input.factoryId],
+    );
+
+    let createdCount = 0;
+    const correlationId = this.correlationId(input.requestId, input.traceId);
+
+    for (const line of linesResult.rows) {
+      const itemResult = await client.query<{ id: string; status: string; unit: string }>(
+        `
+        SELECT id::text AS id, status, unit
+        FROM inventory_items
+        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+        FOR UPDATE
+        `,
+        [line.item_id, input.tenantId, input.factoryId],
+      );
+      const item = itemResult.rows[0];
+      if (!item) {
+        throw new NotFoundException(`Inventory item on order line ${line.line_number} was not found in this factory`);
+      }
+      if (item.status !== 'ACTIVE') {
+        throw new ConflictException(`Inventory item on order line ${line.line_number} is disabled`);
+      }
+      if (item.unit.trim().toUpperCase() !== line.unit.trim().toUpperCase()) {
+        throw new ConflictException(`Order line ${line.line_number} unit no longer matches its inventory item`);
+      }
+
+      const quantity = this.normalizeQuantity(Number(line.quantity));
+      const referenceType = 'ORDER_LINE';
+      const referenceId = line.id.toLowerCase();
+      const notes = `Reserved for order ${input.orderNumber} (line ${line.line_number})`;
+      const idempotencyKey = `order:${input.orderId}:line:${line.id}:reserve:v1`;
+      const requestHash = this.hash({
+        itemId: line.item_id.toLowerCase(),
+        quantity,
+        referenceType,
+        referenceId,
+        notes,
+      });
+
+      const prior = await this.findByIdempotencyKey(
+        client, input.tenantId, input.factoryId, idempotencyKey,
+      );
+      if (prior) {
+        this.replayOrConflict(prior, requestHash);
+        if (prior.status !== 'RESERVED') {
+          throw new ConflictException(`Order line ${line.line_number} already has a terminal inventory reservation`);
+        }
+        continue;
+      }
+
+      const balanceResult = await client.query<BalanceRow>(
+        `
+        UPDATE inventory_stock_balances
+        SET quantity_reserved = quantity_reserved + $1::numeric,
+            version = version + 1,
+            updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+          AND quantity_on_hand - quantity_reserved >= $1::numeric
+        RETURNING quantity_on_hand::text AS quantity_on_hand,
+                  quantity_reserved::text AS quantity_reserved
+        `,
+        [quantity, input.tenantId, input.factoryId, line.item_id],
+      );
+      const balance = balanceResult.rows[0];
+      if (!balance) {
+        throw new ConflictException(`Insufficient available stock for order line ${line.line_number}`);
+      }
+
+      const inserted = await client.query<ReservationRow>(
+        `
+        INSERT INTO inventory_reservations (
+          tenant_id, factory_id, item_id, quantity, idempotency_key,
+          request_hash, reference_type, reference_id, notes,
+          created_by_user_id, correlation_id
+        )
+        VALUES ($1, $2, $3, $4::numeric, $5, $6, $7, $8::uuid, $9, $10, $11::uuid)
+        RETURNING ${RESERVATION_COLUMNS}
+        `,
+        [
+          input.tenantId, input.factoryId, line.item_id, quantity, idempotencyKey,
+          requestHash, referenceType, referenceId, notes, input.userId, correlationId,
+        ],
+      );
+      const reservation = inserted.rows[0];
+      if (!reservation) throw new Error('ORDER_INVENTORY_RESERVATION_INSERT_FAILED');
+
+      await this.insertOutboxEvent(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        aggregateId: line.item_id,
+        eventType: 'INVENTORY.STOCK_RESERVED',
+        correlationId,
+        userId: input.userId,
+        payload: {
+          reservation: {
+            id: reservation.id,
+            item_id: line.item_id,
+            quantity: reservation.quantity,
+            status: reservation.status,
+            reference_type: referenceType,
+            reference_id: referenceId,
+            order_id: input.orderId,
+            order_number: input.orderNumber,
+          },
+          balance: {
+            quantity_on_hand: balance.quantity_on_hand,
+            quantity_reserved: balance.quantity_reserved,
+          },
+        },
+      });
+      createdCount += 1;
+    }
+    return createdCount;
+  }
+
+  private async transitionOrderReservations(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      orderId: string;
+      orderNumber: string;
+      requestId: string | null;
+      traceId: string | null;
+    },
+    targetStatus: 'RELEASED' | 'CONSUMED',
+  ): Promise<number> {
+    // Keep the item -> reservation lock order used by the public reservation API.
+    const candidates = await client.query<{ item_id: string }>(
+      `
+      SELECT DISTINCT r.item_id::text AS item_id
+      FROM inventory_reservations r
+      JOIN order_lines ol
+        ON ol.id = r.reference_id
+        AND ol.tenant_id = r.tenant_id
+        AND ol.factory_id = r.factory_id
+        AND ol.inventory_item_id = r.item_id
+      WHERE r.tenant_id = $1 AND r.factory_id = $2
+        AND r.reference_type = 'ORDER_LINE'
+        AND ol.order_id = $3
+        AND r.status = 'RESERVED'
+      ORDER BY r.item_id
+      `,
+      [input.tenantId, input.factoryId, input.orderId],
+    );
+    const itemIds = candidates.rows.map((row) => row.item_id);
+    if (itemIds.length === 0) return 0;
+
+    const itemResult = await client.query<{ id: string; status: string }>(
+      `
+      SELECT id::text AS id, status
+      FROM inventory_items
+      WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])
+      ORDER BY id
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, itemIds],
+    );
+    if (itemResult.rows.length !== itemIds.length) {
+      throw new ConflictException('An order reservation references an inventory item outside its factory');
+    }
+    const itemStatuses = new Map(itemResult.rows.map((row) => [row.id, row.status]));
+
+    const reservationsResult = await client.query<ReservationRow>(
+      `
+      SELECT
+        r.id::text AS id, r.tenant_id::text AS tenant_id,
+        r.factory_id::text AS factory_id, r.item_id::text AS item_id,
+        r.quantity::text AS quantity, r.status, r.idempotency_key,
+        r.request_hash, r.reference_type, r.reference_id::text AS reference_id,
+        r.notes, r.transition_idempotency_key, r.transition_request_hash,
+        r.consumed_movement_id::text AS consumed_movement_id,
+        r.created_by_user_id::text AS created_by_user_id,
+        r.correlation_id::text AS correlation_id,
+        r.created_at::text AS created_at, r.updated_at::text AS updated_at
+      FROM inventory_reservations r
+      JOIN order_lines ol
+        ON ol.id = r.reference_id
+        AND ol.tenant_id = r.tenant_id
+        AND ol.factory_id = r.factory_id
+        AND ol.inventory_item_id = r.item_id
+      WHERE r.tenant_id = $1 AND r.factory_id = $2
+        AND r.reference_type = 'ORDER_LINE'
+        AND ol.order_id = $3
+        AND r.status = 'RESERVED'
+      ORDER BY r.item_id, r.id
+      FOR UPDATE OF r
+      `,
+      [input.tenantId, input.factoryId, input.orderId],
+    );
+
+    let changedCount = 0;
+    const correlationId = this.correlationId(input.requestId, input.traceId);
+
+    for (const reservation of reservationsResult.rows) {
+      if (targetStatus === 'CONSUMED' && itemStatuses.get(reservation.item_id) !== 'ACTIVE') {
+        throw new ConflictException(`Inventory item for order reservation ${reservation.id} is disabled`);
+      }
+
+      const transitionKey =
+        `order:${input.orderId}:reservation:${reservation.id}:${targetStatus.toLowerCase()}:v1`;
+      const transitionHash = this.hash({
+        reservationId: reservation.id.toLowerCase(),
+        targetStatus,
+      });
+
+      let balance: BalanceRow | undefined;
+      if (targetStatus === 'RELEASED') {
+        const result = await client.query<BalanceRow>(
+          `
+          UPDATE inventory_stock_balances
+          SET quantity_reserved = quantity_reserved - $1::numeric,
+              version = version + 1, updated_at = clock_timestamp()
+          WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+            AND quantity_reserved >= $1::numeric
+          RETURNING quantity_on_hand::text AS quantity_on_hand,
+                    quantity_reserved::text AS quantity_reserved
+          `,
+          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+        );
+        balance = result.rows[0];
+      } else {
+        const result = await client.query<BalanceRow>(
+          `
+          UPDATE inventory_stock_balances
+          SET quantity_on_hand = quantity_on_hand - $1::numeric,
+              quantity_reserved = quantity_reserved - $1::numeric,
+              version = version + 1, updated_at = clock_timestamp()
+          WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+            AND quantity_reserved >= $1::numeric
+            AND quantity_on_hand >= $1::numeric
+          RETURNING quantity_on_hand::text AS quantity_on_hand,
+                    quantity_reserved::text AS quantity_reserved
+          `,
+          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+        );
+        balance = result.rows[0];
+      }
+      if (!balance) {
+        throw new ConflictException(`Inventory balance is inconsistent for reservation ${reservation.id}; no order transition was applied`);
+      }
+
+      let consumedMovementId: string | null = null;
+      if (targetStatus === 'CONSUMED') {
+        const movementKey = 'reservation-consume-' + this.hash({
+          tenantId: input.tenantId,
+          factoryId: input.factoryId,
+          reservationId: reservation.id,
+          transitionKey,
+        }).slice(0, 48);
+        const movementResult = await client.query<MovementRow>(
+          `
+          INSERT INTO inventory_movements (
+            tenant_id, factory_id, item_id, movement_type, quantity,
+            quantity_delta, quantity_after, idempotency_key, request_hash,
+            reference_type, reference_id, notes, created_by_user_id, correlation_id
+          )
+          VALUES ($1, $2, $3, 'ISSUE', $4::numeric, -$4::numeric, $5::numeric,
+                  $6, $7, 'RESERVATION', $8::uuid, $9, $10, $11::uuid)
+          RETURNING id::text AS id, quantity_after::text AS quantity_after
+          `,
+          [
+            input.tenantId, input.factoryId, reservation.item_id, reservation.quantity,
+            balance.quantity_on_hand, movementKey, transitionHash, reservation.id,
+            reservation.notes, input.userId, correlationId,
+          ],
+        );
+        consumedMovementId = movementResult.rows[0]?.id ?? null;
+        if (!consumedMovementId) throw new Error('ORDER_INVENTORY_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+
+        await this.insertOutboxEvent(client, {
+          tenantId: input.tenantId,
+          factoryId: input.factoryId,
+          aggregateId: reservation.item_id,
+          eventType: 'INVENTORY.STOCK_ISSUED',
+          correlationId,
+          userId: input.userId,
+          payload: {
+            movement: {
+              id: consumedMovementId,
+              item_id: reservation.item_id,
+              movement_type: 'ISSUE',
+              quantity: reservation.quantity,
+              quantity_delta: '-' + reservation.quantity,
+              quantity_after: balance.quantity_on_hand,
+              reference_type: 'RESERVATION',
+              reference_id: reservation.id,
+            },
+            reservation_id: reservation.id,
+            order_id: input.orderId,
+          },
+        });
+      }
+
+      const updatedResult = await client.query<ReservationRow>(
+        `
+        UPDATE inventory_reservations
+        SET status = $1, transition_idempotency_key = $2,
+            transition_request_hash = $3, consumed_movement_id = $4::uuid,
+            updated_at = clock_timestamp()
+        WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
+          AND item_id = $8 AND status = 'RESERVED'
+        RETURNING ${RESERVATION_COLUMNS}
+        `,
+        [
+          targetStatus, transitionKey, transitionHash, consumedMovementId,
+          reservation.id, input.tenantId, input.factoryId, reservation.item_id,
+        ],
+      );
+      const updated = updatedResult.rows[0];
+      if (!updated) throw new ConflictException(`Inventory reservation ${reservation.id} changed concurrently`);
+
+      await this.insertOutboxEvent(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        aggregateId: reservation.item_id,
+        eventType: targetStatus === 'RELEASED'
+          ? 'INVENTORY.STOCK_RESERVATION_RELEASED'
+          : 'INVENTORY.STOCK_RESERVATION_CONSUMED',
+        correlationId,
+        userId: input.userId,
+        payload: {
+          reservation: {
+            id: reservation.id,
+            item_id: reservation.item_id,
+            quantity: reservation.quantity,
+            status: targetStatus,
+            consumed_movement_id: consumedMovementId,
+            order_id: input.orderId,
+            order_number: input.orderNumber,
+          },
+          balance: {
+            quantity_on_hand: balance.quantity_on_hand,
+            quantity_reserved: balance.quantity_reserved,
+          },
+        },
+      });
+      changedCount += 1;
+    }
+    return changedCount;
+  }
+
   async listReservations(
     tenantId: string,
     factoryId: string,
