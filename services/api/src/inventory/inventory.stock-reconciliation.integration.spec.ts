@@ -220,6 +220,14 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(replay.replayed).toBe(true);
     expect(replay.id).toBe(first.id);
 
+    await expect(
+      service.recordReconciliation(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+        { counted_quantity: 5.25, reason_code: 'CYCLE_COUNT', notes: input.notes },
+        'direct-cycle-count-bypass-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
     const balance = await adminPool.query<{ quantity_on_hand: string }>(
       'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
       [itemId],
@@ -351,6 +359,13 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
         'cycle-count-self-approve-' + randomUUID(), randomUUID(), randomUUID(),
       ),
     ).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(
+      adminPool.query(
+        'UPDATE inventory_cycle_count_proposals SET ledger_quantity_at_count = 99 WHERE id = $1',
+        [proposal.id],
+      ),
+    ).rejects.toMatchObject({ code: '55000' });
 
     await expect(
       adminPool.query(
