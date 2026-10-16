@@ -16,6 +16,7 @@ type Scope = {
 
 type Fixture = {
   decisionId: string;
+  traceId: string;
   actionIntentId: string;
   executionRecordId: string;
   claimId: string;
@@ -139,6 +140,7 @@ integrationDescribe(
       const db = await adminPool.connect();
       const fixture: Fixture = {
         decisionId: randomUUID(),
+        traceId: randomUUID(),
         actionIntentId: randomUUID(),
         executionRecordId: randomUUID(),
         claimId: randomUUID(),
@@ -163,7 +165,7 @@ integrationDescribe(
             scope.tenantId,
             scope.factoryId,
             randomUUID(),
-            randomUUID(),
+            fixture.traceId,
             scope.actorUserId,
             'Verify reconciliation cannot be finalized twice',
           ],
@@ -591,6 +593,50 @@ integrationDescribe(
 
         expect(hiddenClaim.rows).toHaveLength(0);
         expect(hiddenExecution.rows).toHaveLength(0);
+      },
+      20_000,
+    );
+
+
+    it(
+      'keeps stale-claim listing, reconciliation, and replay isolated to the requested factory',
+      async () => {
+        const fixture = await createFixture(true);
+        const service = createService(createScopedDatabase());
+        const otherFactoryId = randomUUID();
+
+        const staleClaims = await service.listStaleExecutionClaims(
+          scope.tenantId,
+          otherFactoryId,
+          scope.actorUserId,
+        );
+        expect(staleClaims.items).toHaveLength(0);
+
+        await expect(
+          service.reconcileExecutionClaim(
+            scope.tenantId,
+            otherFactoryId,
+            scope.actorUserId,
+            fixture.claimId,
+            failedDecision,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        await expect(
+          service.replayDecision(
+            scope.tenantId,
+            otherFactoryId,
+            scope.actorUserId,
+            fixture.traceId,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        const state = await readState(fixture);
+        expect(state).toMatchObject({
+          status: 'CLAIMED',
+          reconciliationCount: 0,
+          auditCount: 0,
+        });
       },
       20_000,
     );
