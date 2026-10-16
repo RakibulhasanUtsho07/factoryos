@@ -207,6 +207,7 @@ export class OrdersService {
     for (const line of dto.lines) {
       if (
         line.inventory_item_id !== undefined &&
+        line.inventory_item_id !== null &&
         !isUUID(line.inventory_item_id)
       ) {
         throw new BadRequestException(
