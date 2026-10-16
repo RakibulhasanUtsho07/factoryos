@@ -21,6 +21,7 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ListOrdersDto } from './dto/list-orders.dto';
 import { TransitionOrderDto } from './dto/transition-order.dto';
+import { CreateOrderMaterialDispositionDto } from './dto/create-order-material-disposition.dto';
 
 import { OrdersService } from './orders.service';
 
@@ -132,6 +133,44 @@ export class OrdersController {
       requestId,
       traceId,
       body.expected_version,
+    );
+  }
+
+  // ============================================================
+  // ORDER MATERIAL DISPOSITION
+  // ============================================================
+
+  @Post(':orderId/material-dispositions')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.write')
+  @RequireFactoryScope()
+  async createMaterialDisposition(
+    @Req() request: FactoryOsRequest,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+    @Body() body: CreateOrderMaterialDispositionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const userId = request.factoryos?.userId ?? null;
+    const tenantId = request.factoryos?.tenantId ?? null;
+    const factoryId = request.factoryos?.factoryId ?? null;
+    const requestId = request.factoryos?.requestId ?? null;
+    const traceId = request.factoryos?.traceId ?? null;
+
+    if (!userId || !tenantId || !factoryId) {
+      throw new UnauthorizedException(
+        'Authenticated user, tenant and factory context are required',
+      );
+    }
+
+    return this.ordersService.recordMaterialDisposition(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      body,
+      idempotencyKey ?? null,
+      requestId,
+      traceId,
     );
   }
 
