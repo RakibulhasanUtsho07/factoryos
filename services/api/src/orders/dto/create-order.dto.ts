@@ -37,6 +37,10 @@ export class CreateOrderLineDto {
   unit!: string;
 
   @IsOptional()
+  @IsUUID()
+  inventory_item_id?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   unit_price?: number;

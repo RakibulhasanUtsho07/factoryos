@@ -8,6 +8,7 @@ import {
   createIntegrationDatabase,
 } from '../database/integration-database.adapter';
 
+import { OrderIdempotencyService } from './order-idempotency.service';
 import { OrdersService } from './orders.service';
 
 describe(
@@ -30,6 +31,8 @@ describe(
 
     let orderAId: string;
     let orderBId: string;
+    let inventoryItemId: string;
+    let boundOrderId: string | null = null;
 
     beforeAll(async () => {
       const databaseUrl =
@@ -220,14 +223,43 @@ describe(
         orderAResult.rows[0].id;
 
       // --------------------------------------------------------
-      // Create order line for Factory A order.
+      // Bind Factory A order line to its authoritative inventory item.
       // --------------------------------------------------------
+
+      const inventoryItemResult =
+        await pool.query<{
+          id: string;
+        }>(
+          `
+          INSERT INTO inventory_items (
+            tenant_id,
+            factory_id,
+            sku,
+            name,
+            unit,
+            created_by_user_id
+          )
+          VALUES ($1, $2, $3, $4, 'PCS', $5)
+          RETURNING id::text AS id
+          `,
+          [
+            tenantId,
+            factoryAId,
+            `READ-A-ITEM-${randomUUID()}`,
+            'Read Test Inventory Item A',
+            TEST_USER_ID,
+          ],
+        );
+
+      inventoryItemId =
+        inventoryItemResult.rows[0].id;
 
       await pool.query(
         `
         INSERT INTO order_lines (
           tenant_id,
           order_id,
+          inventory_item_id,
           line_number,
           product_code,
           product_name,
@@ -241,6 +273,7 @@ describe(
         VALUES (
           $1,
           $2,
+          $3,
           1,
           'READ-A-001',
           'Read Test Product A',
@@ -254,6 +287,7 @@ describe(
         [
           tenantId,
           orderAId,
+          inventoryItemId,
         ],
       );
 
@@ -377,12 +411,40 @@ describe(
         new OrdersService(
           database,
           auditService,
-          {} as never,
+          new OrderIdempotencyService(database),
         );
     });
 
     afterAll(async () => {
       if (pool) {
+        if (boundOrderId) {
+          // Keep this fixture's ORDER.CREATED event from being claimed by
+          // unrelated dispatcher integration tests sharing the CI database.
+          await pool.query(
+            `
+            UPDATE outbox_events
+            SET
+              status = 'PUBLISHED',
+              published_at = COALESCE(published_at, clock_timestamp()),
+              last_error = NULL
+            WHERE
+              aggregate_type = 'ORDER'
+              AND aggregate_id = $1
+              AND event_type = 'ORDER.CREATED'
+              AND status IN ('PENDING', 'FAILED')
+            `,
+            [boundOrderId],
+          );
+
+          await pool.query(
+            `
+            DELETE FROM orders
+            WHERE id = $1
+            `,
+            [boundOrderId],
+          );
+        }
+
         if (orderAId) {
           await pool.query(
             `
@@ -408,6 +470,16 @@ describe(
             [
               orderBId,
             ],
+          );
+        }
+
+        if (inventoryItemId) {
+          await pool.query(
+            `
+            DELETE FROM inventory_items
+            WHERE id = $1
+            `,
+            [inventoryItemId],
           );
         }
 
@@ -472,12 +544,112 @@ describe(
         );
 
         expect(
+          result.lines[0].inventory_item_id,
+        ).toBe(inventoryItemId);
+
+        expect(
           result.lines[0].quantity,
         ).toBe('12.5000');
 
         expect(
           result.lines[0].unit_price,
         ).toBe('125.5000');
+      },
+    );
+
+    it(
+      'should create and read back an order line bound to a same-factory inventory item',
+      async () => {
+        const created = await ordersService.createOrder(
+          TEST_USER_ID,
+          tenantId,
+          {
+            factory_id: factoryAId,
+            order_number: `BOUND-TEST-${randomUUID()}`,
+            currency: 'BDT',
+            lines: [
+              {
+                line_number: 1,
+                product_code: 'READ-A-001',
+                product_name: 'Read Test Product A',
+                inventory_item_id: inventoryItemId,
+                quantity: 2,
+                unit: 'PCS',
+              },
+            ],
+          },
+          null,
+          null,
+          null,
+        );
+
+        boundOrderId = created.id;
+        expect(created.lines[0].inventory_item_id).toBe(inventoryItemId);
+
+        const readBack = await ordersService.getOrderById(
+          tenantId,
+          factoryAId,
+          created.id,
+        );
+        expect(readBack.lines[0].inventory_item_id).toBe(inventoryItemId);
+      },
+    );
+
+    it(
+      'should reject an order line when its unit differs from the bound inventory item',
+      async () => {
+        await expect(
+          ordersService.createOrder(
+            TEST_USER_ID,
+            tenantId,
+            {
+              factory_id: factoryAId,
+              order_number: `BOUND-UNIT-TEST-${randomUUID()}`,
+              currency: 'BDT',
+              lines: [
+                {
+                  line_number: 1,
+                  product_code: 'READ-A-001',
+                  product_name: 'Read Test Product A',
+                  inventory_item_id: inventoryItemId,
+                  quantity: 2,
+                  unit: 'KG',
+                },
+              ],
+            },
+            null,
+            null,
+            null,
+          ),
+        ).rejects.toThrow(
+          'Order line 1 unit must match its inventory item unit',
+        );
+      },
+    );
+
+    it(
+      'should reject an inventory item from a different factory at the database boundary',
+      async () => {
+        await expect(
+          pool.query(
+            `
+            INSERT INTO order_lines (
+              tenant_id,
+              order_id,
+              inventory_item_id,
+              line_number,
+              product_code,
+              product_name,
+              quantity,
+              unit
+            )
+            VALUES ($1, $2, $3, 99, 'CROSS-FACTORY', 'Cross Factory Item', 1, 'PCS')
+            `,
+            [tenantId, orderBId, inventoryItemId],
+          ),
+        ).rejects.toMatchObject({
+          code: '23503',
+        });
       },
     );
 
