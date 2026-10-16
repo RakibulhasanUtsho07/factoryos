@@ -467,7 +467,9 @@ export class InventoryReservationService {
     if (itemResult.rows.length !== itemIds.length) {
       throw new ConflictException('An order reservation references an inventory item outside its factory');
     }
-    const itemStatuses = new Map(itemResult.rows.map((row) => [row.id, row.status]));
+    const itemStatuses = new Map<string, string>(
+      itemResult.rows.map((row) => [row.id, row.status] as const),
+    );
 
     const reservationsResult = await client.query<ReservationRow>(
       `
