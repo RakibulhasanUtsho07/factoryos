@@ -5,12 +5,13 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 
 import { InventoryController } from './inventory.controller';
+import { InventoryReservationService } from './inventory.reservation.service';
 import { InventoryService } from './inventory.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [InventoryController],
-  providers: [InventoryService],
+  providers: [InventoryService, InventoryReservationService],
   exports: [InventoryService],
 })
 export class InventoryModule {}
