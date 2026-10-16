@@ -24,6 +24,8 @@ type InventoryItemRow = QueryResultRow & {
   unit: string;
   status: 'ACTIVE' | 'DISABLED';
   quantity_on_hand: string;
+  quantity_reserved: string;
+  quantity_available: string;
   version: string;
   created_at: string;
 };
@@ -115,17 +117,26 @@ export class InventoryService {
           const created = itemResult.rows[0];
           if (!created) throw new Error('INVENTORY_ITEM_INSERT_FAILED');
 
-          const balanceResult = await client.query<{ quantity_on_hand: string }>(
+          const balanceResult = await client.query<{
+            quantity_on_hand: string;
+            quantity_reserved: string;
+            quantity_available: string;
+          }>(
             `
             INSERT INTO inventory_stock_balances (
               tenant_id, factory_id, item_id, quantity_on_hand
             )
             VALUES ($1, $2, $3, 0)
-            RETURNING quantity_on_hand::text AS quantity_on_hand
+            RETURNING
+              quantity_on_hand::text AS quantity_on_hand,
+              quantity_reserved::text AS quantity_reserved,
+              (quantity_on_hand - quantity_reserved)::text AS quantity_available
             `,
             [tenantId, factoryId, created.id],
           );
           created.quantity_on_hand = balanceResult.rows[0]?.quantity_on_hand ?? '0.0000';
+          created.quantity_reserved = balanceResult.rows[0]?.quantity_reserved ?? '0.0000';
+          created.quantity_available = balanceResult.rows[0]?.quantity_available ?? '0.0000';
 
           await this.insertOutboxEvent(client, {
             tenantId,
@@ -179,6 +190,8 @@ export class InventoryService {
         i.factory_id::text AS factory_id,
         i.sku, i.name, i.unit, i.status,
         b.quantity_on_hand::text AS quantity_on_hand,
+        b.quantity_reserved::text AS quantity_reserved,
+        (b.quantity_on_hand - b.quantity_reserved)::text AS quantity_available,
         i.version::text AS version,
         i.created_at::text AS created_at
       FROM inventory_items i
@@ -293,7 +306,7 @@ export class InventoryService {
             WHERE tenant_id = $2
               AND factory_id = $3
               AND item_id = $4
-              AND quantity_on_hand + $1::numeric >= 0
+              AND quantity_on_hand + $1::numeric >= quantity_reserved
             RETURNING quantity_on_hand::text AS quantity_on_hand
             `,
             [delta.toFixed(4), tenantId, factoryId, itemId],
