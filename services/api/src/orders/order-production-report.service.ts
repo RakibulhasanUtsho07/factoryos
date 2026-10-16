@@ -399,7 +399,7 @@ export class OrderProductionReportService {
       throw new BadRequestException(`${field} must be a non-negative number`);
     }
     const text = value.toString();
-    if (!/^\\d+(?:\\.\\d{1,4})?$/.test(text)) {
+    if (!/^\d+(?:\.\d{1,4})?$/.test(text)) {
       throw new BadRequestException(`${field} must have at most four decimal places`);
     }
     return value.toFixed(4);
