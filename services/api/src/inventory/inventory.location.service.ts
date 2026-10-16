@@ -13,7 +13,7 @@ import { DatabaseService } from '../database/database.service';
 import { CreateInventoryLocationDto } from './dto/create-inventory-location.dto';
 import { TransferInventoryLocationDto } from './dto/transfer-inventory-location.dto';
 
-interface InventoryLocationRow extends QueryResultRow {
+export interface InventoryLocationRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
