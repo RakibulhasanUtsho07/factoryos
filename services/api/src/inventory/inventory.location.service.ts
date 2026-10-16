@@ -252,7 +252,7 @@ export class InventoryLocationService {
         l.location_type,
         l.is_default,
         l.status AS location_status,
-        COALESCE(lb.quantity_on_hand, 0)::text AS quantity_on_hand,
+        CASE WHEN lb.quantity_on_hand IS NULL THEN '0.0000' ELSE lb.quantity_on_hand::text END AS quantity_on_hand,
         lb.version::text AS location_balance_version,
         b.quantity_on_hand::text AS item_quantity_on_hand,
         b.quantity_reserved::text AS item_quantity_reserved,
