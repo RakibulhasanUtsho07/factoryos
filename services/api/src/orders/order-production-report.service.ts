@@ -186,9 +186,9 @@ export class OrderProductionReportService {
         const priorScrap = this.toUnits(totals?.scrap_quantity ?? '0');
         const nextGood = priorGood + this.toUnits(goodQuantity);
         const nextScrap = priorScrap + this.toUnits(scrapQuantity);
-        if (nextGood + nextScrap > this.toUnits(line.quantity)) {
+        if (nextGood > this.toUnits(line.quantity)) {
           throw new ConflictException(
-            'Reported good plus scrap output cannot exceed the order-line target quantity',
+            'Cumulative good output cannot exceed the order-line target quantity',
           );
         }
 
