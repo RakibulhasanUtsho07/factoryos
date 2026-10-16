@@ -17,6 +17,8 @@ The controller is mounted at **/inventory/items**. Each endpoint requires a veri
 
 The movement payload accepts movement_type, a positive quantity with up to four decimal places, optional reference_type, optional UUID reference_id, and optional notes.
 
+Order creation accepts an optional `inventory_item_id` on each order line. When supplied, the API requires an active item from the order's same tenant/factory and requires its unit to match the line unit (case-insensitive). Legacy/unmapped lines remain valid with a null binding.
+
 ## Data integrity and safety guarantees
 
 Migration 038_inventory_stock_ledger.sql adds three tenant-scoped tables:
@@ -31,6 +33,8 @@ A movement transaction locks the item row, rechecks the idempotency key, atomica
 
 Reservation creation locks the same item row used by stock movements, fingerprints the complete request and atomically increases reserved quantity, stores the reservation and emits an outbox event. A reservation can make one terminal transition only: `RESERVED -> RELEASED` or `RESERVED -> CONSUMED`. Releasing lowers reserved quantity without changing on-hand stock. Consuming lowers both on-hand and reserved quantities and creates an append-only `ISSUE` movement tied to the reservation. Transition retries are bound to a separate idempotency key; the database prevents reservation payload edits, deletion, or reopening terminal reservations. The unique index on (tenant_id, factory_id, idempotency_key) is the final arbiter for concurrent retries; identical requests replay the stored result, while reusing the key with a different request is rejected. An issue that would make stock negative fails closed.
 
+Migration 059 introduces a nullable `order_lines.inventory_item_id` and backfills `order_lines.factory_id` for existing rows. Composite foreign keys bind each order line to its parent order and, when selected, to an inventory item in the same tenant/factory. A database trigger fills factory scope for legacy SQL inserts that omit it and rejects cross-scope item bindings or unit mismatches. The order create/read API exposes `inventory_item_id`, and the `ORDER.CREATED` outbox payload carries the binding for downstream workflows.
+
 Audit events are attempted after commit using the existing API audit service. A durable inventory domain event is already recorded in the transactional outbox, so downstream consumers have a replayable business-event source.
 
 ## Verification evidence
@@ -39,4 +43,4 @@ The API unit suite covers normalized item creation, required movement and reserv
 
 ## Explicitly out of scope
 
-This is a stock-ledger and reservation foundation, not a complete warehouse or manufacturing inventory module. Reservation-to-order allocation is not automatic because order lines do not yet carry an authoritative inventory item binding. Location/bin management, purchase receipts, production consumption/scrap, lots/serials, unit conversions, costing/valuation, reorder policy, cycle counting, reconciliation workflows and ERP/MES integration acceptance remain open work. Therefore WP02 and whole-backend completion must not be marked complete on this change alone.
+This is a stock-ledger and reservation foundation, not a complete warehouse or manufacturing inventory module. Reservation-to-order allocation, release-on-cancel, and consumption-on-production-start are still not automatic. The binding now identifies the inventory item, but a subsequent slice must define an idempotent allocation lifecycle and wire order status transitions to reservation operations without double-reserving on retries. Location/bin management, purchase receipts, production consumption/scrap, lots/serials, unit conversions, costing/valuation, reorder policy, cycle counting, reconciliation workflows and ERP/MES integration acceptance remain open work. Therefore WP02 and whole-backend completion must not be marked complete on this change alone.
