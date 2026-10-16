@@ -208,6 +208,17 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const fixture = await createStockFixture();
     const { binA, binB } = await createWarehouseAndBins(fixture.factoryId);
 
+    const locationEvent = await adminPool.query<{ aggregate_type: string }>(
+      `
+      SELECT aggregate_type FROM outbox_events
+      WHERE tenant_id = $1 AND factory_id = $2
+        AND aggregate_id = $3 AND event_type = 'INVENTORY.LOCATION_CREATED'
+      ORDER BY created_at DESC LIMIT 1
+      `,
+      [tenantId, fixture.factoryId, binA.id],
+    );
+    expect(locationEvent.rows[0]?.aggregate_type).toBe('INVENTORY_LOCATION');
+
     const payload = {
       source_location_id: fixture.defaultLocationId,
       destination_location_id: binA.id,
@@ -222,6 +233,17 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(moved.source_quantity_after).toBe('5.0000');
     expect(moved.destination_quantity_after).toBe('7.0000');
     expect(moved.replayed).toBe(false);
+
+    const transferEvent = await adminPool.query<{ aggregate_type: string }>(
+      `
+      SELECT aggregate_type FROM outbox_events
+      WHERE tenant_id = $1 AND factory_id = $2
+        AND aggregate_id = $3 AND event_type = 'INVENTORY.STOCK_LOCATION_TRANSFERRED'
+      ORDER BY created_at DESC LIMIT 1
+      `,
+      [tenantId, fixture.factoryId, fixture.itemId],
+    );
+    expect(transferEvent.rows[0]?.aggregate_type).toBe('INVENTORY_ITEM');
 
     const replay = await locationService.transferStock(
       userId, tenantId, fixture.factoryId, fixture.itemId,
