@@ -20,6 +20,9 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { CreateStockMovementDto } from './dto/create-stock-movement.dto';
+import { CreateInventoryReservationDto } from './dto/create-inventory-reservation.dto';
+import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
+import { InventoryReservationService } from './inventory.reservation.service';
 import { InventoryService } from './inventory.service';
 
 interface FactoryOsRequestContext {
@@ -38,7 +41,10 @@ type FactoryOsRequest = Request & {
 
 @Controller('inventory/items')
 export class InventoryController {
-  constructor(private readonly inventoryService: InventoryService) {}
+  constructor(
+    private readonly inventoryService: InventoryService,
+    private readonly reservationService: InventoryReservationService,
+  ) {}
 
   @Post()
   @UseGuards(PermissionGuard)
@@ -98,6 +104,58 @@ export class InventoryController {
       idempotencyKey ?? null,
       context.requestId,
       context.traceId,
+    );
+  }
+
+  @Post(':itemId/reservations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async createReservation(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: CreateInventoryReservationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.reservationService.createReservation(
+      context.userId, context.tenantId, context.factoryId, itemId, body,
+      idempotencyKey ?? null, context.requestId, context.traceId,
+    );
+  }
+
+  @Get(':itemId/reservations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listReservations(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('status') status?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.reservationService.listReservations(
+      context.tenantId, context.factoryId, itemId,
+      { status, limit: rawLimit === undefined ? 50 : Number(rawLimit) },
+    );
+  }
+
+  @Post(':itemId/reservations/:reservationId/transition')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async transitionReservation(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Param('reservationId', new ParseUUIDPipe()) reservationId: string,
+    @Body() body: TransitionInventoryReservationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.reservationService.transitionReservation(
+      context.userId, context.tenantId, context.factoryId, itemId, reservationId,
+      body, idempotencyKey ?? null, context.requestId, context.traceId,
     );
   }
 
