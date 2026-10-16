@@ -18,7 +18,6 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let locationService!: InventoryLocationService;
   let inventoryService!: InventoryService;
   const factoryIds: string[] = [];
-  const itemIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
 
@@ -53,7 +52,6 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   afterAll(async () => {
     if (adminPool && factoryIds.length) {
       for (const factoryId of factoryIds) {
-        const factoryItemIds = itemIds.length ? itemIds : [];
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -110,6 +108,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
         }
       }
+    }
+    if (adminPool) {
       await adminPool.query('DELETE FROM users WHERE id = $1', [userId]);
       await adminPool.query('DELETE FROM tenants WHERE id = $1', [tenantId]);
     }
@@ -140,7 +140,6 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     const itemId = itemResult.rows[0]?.id;
     if (!itemId) throw new Error('Location test item fixture missing');
-    itemIds.push(itemId);
 
     await adminPool.query(
       `
