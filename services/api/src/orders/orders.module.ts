@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
+import { InventoryModule } from '../inventory/inventory.module';
 
 import { OrderIdempotencyService } from './order-idempotency.service';
 import { OrdersController } from './orders.controller';
@@ -13,6 +14,7 @@ import { OrdersService } from './orders.service';
     DatabaseModule,
     AuditModule,
     IamModule,
+    InventoryModule,
   ],
 
   controllers: [
