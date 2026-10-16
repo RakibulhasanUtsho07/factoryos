@@ -88,7 +88,7 @@ CREATE TABLE inventory_cycle_count_proposals (
         AND review_decision = 'REJECT'
         AND review_idempotency_key IS NOT NULL
         AND review_request_hash IS NOT NULL
-        AND review_request_hash ~ '^[0-9a-f]{64}
+        AND review_request_hash ~ '^[0-9a-f]{64}$'
         AND length(btrim(COALESCE(review_note, ''))) > 0
         AND reconciliation_id IS NULL)
       OR
@@ -152,7 +152,7 @@ BEGIN
     OR NEW.review_decision NOT IN ('APPROVE', 'REJECT')
     OR NEW.review_idempotency_key IS NULL
     OR NEW.review_request_hash IS NULL
-    OR NEW.review_request_hash !~ '^[0-9a-f]{64}
+    OR NEW.review_request_hash !~ '^[0-9a-f]{64}$'
   THEN
     RAISE EXCEPTION 'invalid cycle-count review transition or separation-of-duties violation'
       USING ERRCODE = '23514';
