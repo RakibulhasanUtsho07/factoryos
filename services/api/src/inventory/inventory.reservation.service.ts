@@ -394,7 +394,25 @@ export class InventoryReservationService {
 
           const reservationResult = await client.query<ReservationRow>(
             `
-            SELECT ${RESERVATION_COLUMNS}
+            SELECT
+              r.id::text AS id,
+              r.tenant_id::text AS tenant_id,
+              r.factory_id::text AS factory_id,
+              r.item_id::text AS item_id,
+              r.quantity::text AS quantity,
+              r.status,
+              r.idempotency_key,
+              r.request_hash,
+              r.reference_type,
+              r.reference_id::text AS reference_id,
+              r.notes,
+              r.transition_idempotency_key,
+              r.transition_request_hash,
+              r.consumed_movement_id::text AS consumed_movement_id,
+              r.created_by_user_id::text AS created_by_user_id,
+              r.correlation_id::text AS correlation_id,
+              r.created_at::text AS created_at,
+              r.updated_at::text AS updated_at
             FROM inventory_reservations r
             JOIN order_lines ol
               ON ol.id = r.reference_id
