@@ -153,6 +153,10 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
             [itemIds],
           );
           await adminPool.query(
+            'DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])',
+            [itemIds],
+          );
+          await adminPool.query(
             'DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])',
             [itemIds],
           );
