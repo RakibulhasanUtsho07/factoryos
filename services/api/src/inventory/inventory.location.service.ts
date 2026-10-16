@@ -616,7 +616,7 @@ export class InventoryLocationService {
       )
       VALUES (
         $1, $2, $3, $4, $5, 1, clock_timestamp(),
-        $5::uuid, NULL, $6::jsonb, $7::jsonb, $8::jsonb
+        $6::uuid, NULL, $7::jsonb, $8::jsonb, $9::jsonb
       )
       `,
       [
