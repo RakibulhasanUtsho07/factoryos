@@ -236,4 +236,28 @@ describe('InventoryReservationService', () => {
     expect(client.query).toHaveBeenCalledTimes(2);
     expect(audit.record).not.toHaveBeenCalled();
   });
+
+  it('replays the same terminal transition without touching stock twice', async () => {
+    const transitionHash = createHash('sha256').update(JSON.stringify({
+      reservationId: RESERVATION_ID,
+      targetStatus: 'RELEASED',
+    })).digest('hex');
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(queryRows([row({
+        status: 'RELEASED',
+        transition_idempotency_key: 'release-1',
+        transition_request_hash: transitionHash,
+      })]));
+
+    const result = await service.transitionReservation(
+      USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
+      { target_status: 'RELEASED' } as TransitionInventoryReservationDto,
+      'release-1', TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({ status: 'RELEASED', replayed: true });
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
 });
