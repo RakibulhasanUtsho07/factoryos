@@ -1152,6 +1152,17 @@ describe(
         expect(state.rows[0]?.status).toBe('IN_PROGRESS');
         expect(state.rows[0]?.version).toBe('3');
 
+        await expect(
+          pool.query(
+            `
+            UPDATE orders
+            SET status = 'CANCELLED', version = version + 1
+            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+            `,
+            [fixture.orderId, tenantId, factoryId],
+          ),
+        ).rejects.toThrow('every consumed order material must be fully returned to stock or marked as scrapped');
+
         const consumed = await pool.query<{ id: string }>(
           `
           SELECT id::text AS id FROM inventory_reservations
