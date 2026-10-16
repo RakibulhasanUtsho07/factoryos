@@ -85,6 +85,7 @@ CREATE TABLE inventory_cycle_count_proposals (
       (status = 'REJECTED'
         AND reviewed_by_user_id IS NOT NULL
         AND reviewed_at IS NOT NULL
+        AND review_decision IS NOT NULL
         AND review_decision = 'REJECT'
         AND review_idempotency_key IS NOT NULL
         AND review_request_hash IS NOT NULL
@@ -95,8 +96,10 @@ CREATE TABLE inventory_cycle_count_proposals (
       (status = 'APPLIED'
         AND reviewed_by_user_id IS NOT NULL
         AND reviewed_at IS NOT NULL
+        AND review_decision IS NOT NULL
         AND review_decision = 'APPROVE'
         AND review_idempotency_key IS NOT NULL
+        AND review_request_hash IS NOT NULL
         AND review_request_hash ~ '^[0-9a-f]{64}$'
         AND reconciliation_id IS NOT NULL)
     )
@@ -207,8 +210,10 @@ COMMIT;
       (status = 'APPLIED'
         AND reviewed_by_user_id IS NOT NULL
         AND reviewed_at IS NOT NULL
+        AND review_decision IS NOT NULL
         AND review_decision = 'APPROVE'
         AND review_idempotency_key IS NOT NULL
+        AND review_request_hash IS NOT NULL
         AND review_request_hash ~ '^[0-9a-f]{64}$'
         AND reconciliation_id IS NOT NULL)
     )
@@ -365,8 +370,10 @@ COMMIT;
       (status = 'APPLIED'
         AND reviewed_by_user_id IS NOT NULL
         AND reviewed_at IS NOT NULL
+        AND review_decision IS NOT NULL
         AND review_decision = 'APPROVE'
         AND review_idempotency_key IS NOT NULL
+        AND review_request_hash IS NOT NULL
         AND review_request_hash ~ '^[0-9a-f]{64}$'
         AND reconciliation_id IS NOT NULL)
     )
