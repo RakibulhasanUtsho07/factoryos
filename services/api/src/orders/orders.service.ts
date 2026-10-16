@@ -1320,6 +1320,28 @@ export class OrdersService {
     return result;
   }
 
+  async recordMaterialDisposition(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    orderId: string,
+    dto: CreateOrderMaterialDispositionDto,
+    idempotencyKey: string | null,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    return this.inventoryReservationService.recordOrderMaterialDisposition(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      dto,
+      idempotencyKey,
+      requestId,
+      traceId,
+    );
+  }
+
   async getOrderById(
     tenantId: string,
     factoryId: string,
