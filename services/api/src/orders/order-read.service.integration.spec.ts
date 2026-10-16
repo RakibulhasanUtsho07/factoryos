@@ -10,6 +10,7 @@ import {
 
 import { OrderIdempotencyService } from './order-idempotency.service';
 import { OrdersService } from './orders.service';
+import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 
 describe(
   'OrdersService read queries',
@@ -412,6 +413,7 @@ describe(
           database,
           auditService,
           new OrderIdempotencyService(database),
+          new InventoryReservationService(database, auditService),
         );
     });
 
