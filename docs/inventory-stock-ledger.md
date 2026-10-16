@@ -22,6 +22,11 @@ The controller is mounted at **/inventory/items**. Each endpoint requires a veri
 - **POST /inventory/items/:itemId/reservations/:reservationId/transition** releases or consumes a reservation and requires a separate `Idempotency-Key`.
 - **POST /orders/:orderId/material-dispositions** records a partial or full `RETURN_TO_STOCK` or `SCRAPPED` quantity against a consumed order-line reservation; an `Idempotency-Key` is required.
 - **POST /orders/:orderId/production-reports** records good finished output and scrap output for one order line; it requires `orders.write` and an `Idempotency-Key`.
+- **POST /inventory/locations** creates a factory-scoped `WAREHOUSE`, `STAGING`, or child `BIN`; bins must belong to an active warehouse/staging location.
+- **GET /inventory/locations?limit=50** lists the factory locations, including the protected `UNASSIGNED` bucket that preserves compatibility for global stock operations.
+- **GET /inventory/items/:itemId/locations?limit=100** returns per-location quantities and the aggregate on-hand/reserved/available totals for the item.
+- **POST /inventory/items/:itemId/location-transfers** moves stock between active locations with an `Idempotency-Key`; transfers do not change aggregate on-hand and reject stock reserved for open work.
+- **GET /inventory/items/:itemId/location-transfers?limit=50** lists immutable transfer evidence.
 - **GET /orders/:orderId/production-reports?limit=50** lists immutable, factory-scoped output/yield reports for an order and requires `orders.read`.
 
 The movement payload accepts movement_type, a positive quantity with up to four decimal places, optional reference_type, optional UUID reference_id, and optional notes.
@@ -64,10 +69,21 @@ Production reports distinguish accepted finished output from scrapped finished o
 - Reports are append-only and factory/tenant-scoped, have required idempotency keys, and reject key reuse with a different request. PostgreSQL validates order state, output limits, cumulative snapshots, scope and immutability as a second enforcement layer.
 - Each accepted report records cumulative good quantity, cumulative scrap quantity and yield percentage (`good / (good + scrap) × 100`). The report and `ORDER.PRODUCTION_REPORTED` outbox event commit atomically; audit logging is attempted after commit.
 
+## Warehouse, bin and location-level stock (migration 064)
+
+Each factory has a protected virtual `UNASSIGNED` stock bucket. Existing aggregate stock is backfilled there; future factory creation automatically creates the bucket. `inventory_location_balances` stores item quantities by location, while an after-trigger keeps the sum consistent with the authoritative aggregate `inventory_stock_balances` whenever legacy/global services adjust on-hand stock. Legacy aggregate issues drain location buckets deterministically; they do not assert that a physical pick occurred from a specific bin.
+
+- Create a `WAREHOUSE` or `STAGING` location, then create `BIN` children under that parent. Codes are unique case-insensitively per factory; cross-tenant/factory parent bindings are rejected.
+- Stock receipts/issues may optionally include `location_id`. The chosen location balance delta and aggregate stock balance commit together; issues cannot make that bin negative, and aggregate reservations remain protected.
+- A location transfer is a separate immutable record with source/destination before/after quantities, required idempotency, actor, audit attempt and transactional `INVENTORY.STOCK_LOCATION_TRANSFERRED` outbox event. Transfers lock the item and its aggregate first, cannot move more than currently unreserved aggregate stock, and do not change aggregate on-hand.
+- Location, location-balance and transfer tables force tenant RLS. Location transfers and default-location identity are protected from direct mutation.
+
+This is the first location/bin vertical slice. Location-scoped cycle-count approvals, allocation of reservations to specific bins, directed put-away/picking, lot/serial genealogy, warehouse replenishment and multi-step receiving remain follow-on work.
+
 ## Explicitly out of scope
 
 This is a stock-ledger and reservation foundation, not a complete warehouse or manufacturing inventory module. Bound order lines participate in the order-status transaction: `DRAFT -> CONFIRMED` reserves each mapped line with a stable per-order-line idempotency key; `CONFIRMED -> IN_PROGRESS` consumes the reservation into an append-only issue movement as production starts; `COMPLETED` finalizes the order without issuing stock again; and cancellation of an order that never started releases any active reservations without changing on-hand stock.
 
 For cancellation after production has started, the API exposes `POST /orders/:orderId/material-dispositions`. Each consumed reservation's issued quantity must be explicitly accounted for as `RETURN_TO_STOCK` or `SCRAPPED` while the order is `IN_PROGRESS`. Returned quantities generate a receipt movement and increase on-hand stock; scrap records evidence without adding stock. Partial dispositions are allowed, but the total per reservation must equal its consumed quantity before cancellation succeeds. Idempotency, tenant/factory scope, immutable records, audit/outbox events, and a database trigger protect the workflow. An insufficient-stock confirmation and an incomplete-disposition cancellation both roll back without changing order state. Unmapped legacy lines remain valid and do not reserve stock.
 
-Location/bin management, purchase receipt workflows, lots/serials, unit conversions, costing/valuation, reorder policies, location/bin-level cycle counting, approval thresholds and variance tolerances, production routing and scheduling, shift/operator-level productivity analytics, costing/valuation, and full ERP/MES integration acceptance remain open work. The first stock-reconciliation slice records and applies count differences, but does not yet implement a separate draft/review/approve cycle-count workflow. These inventory capabilities are still a partial WP02 implementation; neither WP02 nor whole-backend completion should be marked complete on this slice alone.
+Purchase receipt workflows, lot/serial genealogy, unit conversions, costing/valuation, reorder policies, location/bin-level cycle counting, allocation of reservations to bins, directed put-away/picking, approval thresholds and variance tolerances, production routing and scheduling, shift/operator-level productivity analytics, and full ERP/MES integration acceptance remain open work. The first stock-reconciliation slice records and applies count differences, but does not yet implement a separate draft/review/approve cycle-count workflow. These inventory capabilities are still a partial WP02 implementation; neither WP02 nor whole-backend completion should be marked complete on this slice alone.
