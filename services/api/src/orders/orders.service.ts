@@ -38,6 +38,10 @@ import {
   OrderIdempotencyService,
 } from './order-idempotency.service';
 
+import {
+  InventoryReservationService,
+} from '../inventory/inventory.reservation.service';
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -47,6 +51,9 @@ export class OrdersService {
 
     private readonly orderIdempotencyService:
       OrderIdempotencyService,
+
+    private readonly inventoryReservationService:
+      InventoryReservationService,
   ) {}
 
   async createOrder(
@@ -975,6 +982,22 @@ export class OrdersService {
             );
           }
 
+          const inventoryLifecycle =
+            await this.inventoryReservationService.applyOrderTransition(
+              client,
+              {
+                userId,
+                tenantId,
+                factoryId: order.factory_id,
+                orderId: order.id,
+                orderNumber: order.order_number,
+                previousStatus: order.status,
+                targetStatus,
+                requestId,
+                traceId,
+              },
+            );
+
           const updatedResult =
             await client.query<{
               id: string;
@@ -1093,6 +1116,9 @@ export class OrdersService {
               user_id:
                 userId,
             },
+
+            inventory:
+              inventoryLifecycle,
           };
 
           const correlationId =
