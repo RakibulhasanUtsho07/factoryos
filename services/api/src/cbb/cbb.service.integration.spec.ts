@@ -863,6 +863,7 @@ describe(
                 `,
               );
             }
+            await adminPool.query('ALTER TABLE inventory_locations DISABLE TRIGGER USER');
 
             /*
              * Clear current-version pointers before removing the
@@ -994,6 +995,7 @@ describe(
               ],
             );
           } finally {
+            await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
             for (
               const table
               of immutableTables
