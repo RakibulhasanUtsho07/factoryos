@@ -96,8 +96,8 @@ BEGIN
 
   IF NOT FOUND
     OR movement.item_id <> NEW.item_id
-    OR movement.reference_type <> 'STOCK_RECONCILIATION'
-    OR movement.reference_id <> NEW.id
+    OR movement.reference_type IS DISTINCT FROM 'STOCK_RECONCILIATION'
+    OR movement.reference_id IS DISTINCT FROM NEW.id
     OR movement.quantity_delta <> NEW.quantity_delta
     OR movement.quantity_after <> NEW.quantity_after
     OR movement.quantity <> ABS(NEW.quantity_delta)
