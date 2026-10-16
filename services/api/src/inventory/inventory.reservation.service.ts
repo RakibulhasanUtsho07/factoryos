@@ -267,7 +267,7 @@ export class InventoryReservationService {
     if (input.targetStatus === 'CANCELLED') {
       result.reservations_released = await this.transitionOrderReservations(client, input, 'RELEASED');
     }
-    if (input.previousStatus === 'IN_PROGRESS' && input.targetStatus === 'COMPLETED') {
+    if (input.previousStatus === 'CONFIRMED' && input.targetStatus === 'IN_PROGRESS') {
       result.reservations_consumed = await this.transitionOrderReservations(client, input, 'CONSUMED');
     }
     return result;
@@ -353,6 +353,26 @@ export class InventoryReservationService {
           throw new ConflictException(`Order line ${line.line_number} already has a terminal inventory reservation`);
         }
         continue;
+      }
+
+      const activeReservation = await client.query<{ id: string }>(
+        `
+        SELECT id::text AS id
+        FROM inventory_reservations
+        WHERE tenant_id = $1 AND factory_id = $2
+          AND reference_type = 'ORDER_LINE'
+          AND reference_id = $3::uuid
+          AND status = 'RESERVED'
+        ORDER BY id
+        LIMIT 1
+        FOR UPDATE
+        `,
+        [input.tenantId, input.factoryId, referenceId],
+      );
+      if (activeReservation.rows[0]) {
+        throw new ConflictException(
+          `Order line ${line.line_number} already has an active inventory reservation`,
+        );
       }
 
       const balanceResult = await client.query<BalanceRow>(
