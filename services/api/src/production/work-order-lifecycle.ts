@@ -117,3 +117,44 @@ export function assertTargetQuantityNotExceeded(
     throw new Error('WORK_ORDER_TARGET_QUANTITY_EXCEEDED');
   }
 }
+
+export function assertDowntimeCanStart(input: {
+  workOrderStatus: WorkOrderStatus;
+  operationStatus: OperationStatus;
+  activeTimerOpen: boolean;
+  downtimeAlreadyOpen: boolean;
+}): void {
+  if (
+    input.workOrderStatus !== 'IN_PROGRESS'
+    || input.operationStatus !== 'IN_PROGRESS'
+    || !input.activeTimerOpen
+    || input.downtimeAlreadyOpen
+  ) {
+    throw new Error('DOWNTIME_START_REQUIRES_ACTIVE_OPERATION_TIMER');
+  }
+}
+
+export function assertDowntimeCanEnd(input: {
+  workOrderStatus: WorkOrderStatus;
+  operationStatus: OperationStatus;
+  downtimeAlreadyOpen: boolean;
+}): void {
+  if (
+    input.workOrderStatus !== 'IN_PROGRESS'
+    || input.operationStatus !== 'IN_PROGRESS'
+    || !input.downtimeAlreadyOpen
+  ) {
+    throw new Error('DOWNTIME_END_REQUIRES_OPEN_INTERVAL');
+  }
+}
+
+export function assertWipSnapshotQuantity(quantity: bigint, targetQuantity: bigint): void {
+  if (quantity < 0n) throw new Error('WIP_QUANTITY_CANNOT_BE_NEGATIVE');
+  if (targetQuantity <= 0n || quantity > targetQuantity) {
+    throw new Error('WIP_QUANTITY_EXCEEDS_WORK_ORDER_TARGET');
+  }
+}
+
+export function assertReworkQuantity(quantity: bigint): void {
+  if (quantity <= 0n) throw new Error('REWORK_QUANTITY_MUST_BE_POSITIVE');
+}
