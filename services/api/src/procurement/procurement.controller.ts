@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Query, Req,
+  Body, Controller, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query, Req,
   UnauthorizedException, UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -11,6 +11,7 @@ import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { ListSuppliersDto } from './dto/list-suppliers.dto';
 import { TransitionSupplierStatusDto } from './dto/transition-supplier-status.dto';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
+import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { ListPurchaseOrdersDto } from './dto/list-purchase-orders.dto';
 import { TransitionPurchaseOrderDto } from './dto/transition-purchase-order.dto';
 import { PurchaseOrderStatus } from './purchase-order-lifecycle';
@@ -104,6 +105,22 @@ export class PurchaseOrdersController {
   async list(@Req() request: ProcurementRequest, @Query() query: ListPurchaseOrdersDto) {
     const { tenantId, factoryId } = requiredFactoryContext(request);
     return this.procurementService.listPurchaseOrders(tenantId, factoryId, query);
+  }
+
+  @Patch(':purchaseOrderId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('purchase_orders.write')
+  @RequireFactoryScope()
+  async updateDraft(
+    @Req() request: ProcurementRequest,
+    @Param('purchaseOrderId', new ParseUUIDPipe()) purchaseOrderId: string,
+    @Body() body: UpdatePurchaseOrderDto,
+  ) {
+    const { userId, tenantId, factoryId } = requiredFactoryContext(request);
+    return this.procurementService.updateDraftPurchaseOrder(
+      userId, tenantId, factoryId, purchaseOrderId, body,
+      request.factoryos?.requestId ?? null, request.factoryos?.traceId ?? null,
+    );
   }
 
   @Get(':purchaseOrderId')

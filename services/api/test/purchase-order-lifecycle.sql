@@ -57,11 +57,21 @@ BEGIN
     tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
   ) VALUES (v_tenant, v_factory, v_order, NULL, 'DRAFT', 1, v_creator, 'Purchase order created');
 
+  -- A draft can be revised; computed line amounts remain database-owned.
+  UPDATE purchase_order_lines SET quantity = 3 WHERE id = v_line;
+  IF (SELECT line_amount FROM purchase_order_lines WHERE id = v_line) <> 12 THEN
+    RAISE EXCEPTION 'Expected generated line amount 12 after draft quantity edit';
+  END IF;
+  UPDATE purchase_orders SET notes = 'Draft terms edited', version = version + 1 WHERE id = v_order;
+  INSERT INTO purchase_order_status_history (
+    tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
+  ) VALUES (v_tenant, v_factory, v_order, 'DRAFT', 'DRAFT', 2, v_creator, 'Draft terms edited');
+
   UPDATE purchase_orders SET status = 'SUBMITTED', submitted_by_user_id = v_creator,
     submitted_at = clock_timestamp(), version = version + 1 WHERE id = v_order;
   INSERT INTO purchase_order_status_history (
     tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
-  ) VALUES (v_tenant, v_factory, v_order, 'DRAFT', 'SUBMITTED', 2, v_creator, 'Submitted in schema regression test');
+  ) VALUES (v_tenant, v_factory, v_order, 'DRAFT', 'SUBMITTED', 3, v_creator, 'Submitted in schema regression test');
 
   BEGIN
     UPDATE purchase_order_lines SET quantity = 4 WHERE id = v_line;
@@ -86,10 +96,10 @@ BEGIN
     approved_at = clock_timestamp(), version = version + 1 WHERE id = v_order;
   INSERT INTO purchase_order_status_history (
     tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
-  ) VALUES (v_tenant, v_factory, v_order, 'SUBMITTED', 'APPROVED', 3, v_approver, 'Approved in schema regression test');
+  ) VALUES (v_tenant, v_factory, v_order, 'SUBMITTED', 'APPROVED', 4, v_approver, 'Approved in schema regression test');
 
   BEGIN
-    UPDATE purchase_order_status_history SET reason = 'tampered' WHERE purchase_order_id = v_order AND version = 3;
+    UPDATE purchase_order_status_history SET reason = 'tampered' WHERE purchase_order_id = v_order AND version = 4;
     RAISE EXCEPTION 'Expected status history mutation to be rejected';
   EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
   END;

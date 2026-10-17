@@ -13,6 +13,7 @@ import { ListSuppliersDto } from './dto/list-suppliers.dto';
 import { TransitionSupplierStatusDto } from './dto/transition-supplier-status.dto';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { ListPurchaseOrdersDto } from './dto/list-purchase-orders.dto';
+import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { canTransitionPurchaseOrder, PurchaseOrderStatus, SupplierStatus } from './purchase-order-lifecycle';
 
 export interface SupplierRow extends QueryResultRow {
@@ -249,6 +250,154 @@ export class ProcurementService {
     }
     const po = await this.getPurchaseOrder(tenantId, factoryId, result.id);
     return { ...po, replayed: result.replayed };
+  }
+
+  async updateDraftPurchaseOrder(
+    userId: string, tenantId: string, factoryId: string, purchaseOrderId: string,
+    dto: UpdatePurchaseOrderDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(factoryId, 'factoryId');
+    this.validateUuid(purchaseOrderId, 'purchaseOrderId');
+    if (!Number.isInteger(dto.expected_version) || dto.expected_version < 1) {
+      throw new BadRequestException('expected_version must be a positive integer');
+    }
+
+    const editableFields = [
+      'order_date', 'expected_delivery_date', 'currency',
+      'payment_terms_days', 'notes', 'lines',
+    ] as const;
+    const changedFields = editableFields.filter(field => dto[field] !== undefined);
+    if (changedFields.length === 0) {
+      throw new BadRequestException('At least one draft purchase-order field must be supplied');
+    }
+
+    let lines: Array<{
+      line_number: number; inventory_item_id: string | null; description: string;
+      quantity: string; unit: string; unit_price: string; notes: string | null;
+    }> | null = null;
+    if (dto.lines !== undefined) {
+      if (!Array.isArray(dto.lines) || dto.lines.length === 0) {
+        throw new BadRequestException('A draft purchase order must contain at least one line');
+      }
+      const lineNumbers = dto.lines.map(line => line.line_number);
+      if (new Set(lineNumbers).size !== lineNumbers.length) {
+        throw new BadRequestException('Duplicate line_number is not allowed');
+      }
+      lines = [...dto.lines].sort((a, b) => a.line_number - b.line_number).map(line => ({
+        line_number: line.line_number,
+        inventory_item_id: line.inventory_item_id ?? null,
+        description: line.description.trim(),
+        quantity: String(line.quantity),
+        unit: line.unit.trim().toUpperCase(),
+        unit_price: String(line.unit_price),
+        notes: line.notes?.trim() ?? null,
+      }));
+      if (lines.some(line => !line.description || !line.unit)) {
+        throw new BadRequestException('Purchase-order line description and unit are required');
+      }
+      for (const line of lines) {
+        if (line.inventory_item_id !== null) this.validateUuid(line.inventory_item_id, 'inventory_item_id');
+      }
+    }
+
+    let nextCurrency: string | undefined;
+    if (dto.currency !== undefined) {
+      nextCurrency = dto.currency.trim().toUpperCase();
+      if (!/^[A-Z]{3}$/.test(nextCurrency)) throw new BadRequestException('currency must be a 3-letter code');
+    }
+
+    const updated = await this.database.transaction({ tenantId, userId }, async client => {
+      const currentResult = await client.query<{
+        id: string; po_number: string; status: PurchaseOrderStatus; version: string;
+        order_date: string; expected_delivery_date: string | null;
+        currency: string; payment_terms_days: number; notes: string | null;
+      }>(`
+        SELECT id::text AS id, po_number, status, version::text AS version,
+          order_date::text AS order_date, expected_delivery_date::text AS expected_delivery_date,
+          currency, payment_terms_days, notes
+        FROM purchase_orders
+        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+        FOR UPDATE
+      `, [purchaseOrderId, tenantId, factoryId]);
+      const current = currentResult.rows[0];
+      if (!current) throw new NotFoundException('Purchase order not found');
+      if (Number(current.version) !== dto.expected_version) {
+        throw new ConflictException(`Purchase-order version conflict. Expected version ${dto.expected_version}, current version is ${current.version}`);
+      }
+      if (current.status !== 'DRAFT') {
+        throw new ConflictException('Only draft purchase orders can be edited');
+      }
+
+      const orderDate = dto.order_date === undefined
+        ? current.order_date
+        : new Date(dto.order_date).toISOString().slice(0, 10);
+      const expectedDate = dto.expected_delivery_date === undefined
+        ? current.expected_delivery_date
+        : dto.expected_delivery_date === null
+          ? null
+          : new Date(dto.expected_delivery_date).toISOString().slice(0, 10);
+      if (expectedDate && expectedDate < orderDate) {
+        throw new BadRequestException('expected_delivery_date cannot be before order_date');
+      }
+      const currency = nextCurrency ?? current.currency;
+      const paymentTermsDays = dto.payment_terms_days ?? current.payment_terms_days;
+      const notes = dto.notes === undefined ? current.notes : (dto.notes?.trim() || null);
+
+      const headerUpdate = await client.query<{ version: string }>(`
+        UPDATE purchase_orders
+        SET order_date = $1, expected_delivery_date = $2, currency = $3,
+            payment_terms_days = $4, notes = $5,
+            updated_at = clock_timestamp(), version = version + 1
+        WHERE id = $6 AND tenant_id = $7 AND factory_id = $8
+          AND status = 'DRAFT' AND version = $9
+        RETURNING version::text AS version
+      `, [orderDate, expectedDate, currency, paymentTermsDays, notes,
+        purchaseOrderId, tenantId, factoryId, current.version]);
+      const next = headerUpdate.rows[0];
+      if (!next) throw new ConflictException('Purchase order changed while it was being edited');
+
+      if (lines !== null) {
+        await client.query(`
+          DELETE FROM purchase_order_lines
+          WHERE purchase_order_id = $1 AND tenant_id = $2 AND factory_id = $3
+        `, [purchaseOrderId, tenantId, factoryId]);
+        for (const line of lines) {
+          await client.query(`
+            INSERT INTO purchase_order_lines (
+              tenant_id, factory_id, purchase_order_id, line_number, inventory_item_id,
+              description, quantity, unit, unit_price, notes
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          `, [tenantId, factoryId, purchaseOrderId, line.line_number, line.inventory_item_id,
+            line.description, line.quantity, line.unit, line.unit_price, line.notes]);
+        }
+      }
+
+      await client.query(`
+        INSERT INTO purchase_order_status_history (
+          tenant_id, factory_id, purchase_order_id, from_status, to_status, version,
+          actor_user_id, reason, request_id, trace_id
+        ) VALUES ($1,$2,$3,'DRAFT','DRAFT',$4,$5,'Draft purchase order updated',$6,$7)
+      `, [tenantId, factoryId, purchaseOrderId, next.version, userId,
+        this.uuidOrNull(requestId), this.uuidOrNull(traceId)]);
+      await this.insertOutbox(client, tenantId, factoryId, 'PURCHASE_ORDER', purchaseOrderId,
+        'PROCUREMENT.PURCHASE_ORDER_DRAFT_UPDATED', {
+          purchase_order_id: purchaseOrderId, po_number: current.po_number,
+          status: 'DRAFT', version: next.version, changed_fields: changedFields,
+        });
+      return { version: next.version, changed_fields: changedFields };
+    }).catch(error => {
+      if (this.errorCode(error) === '23505') throw new ConflictException('Purchase-order line numbers must be unique');
+      if (this.errorCode(error) === '23503') throw new BadRequestException('Purchase order references an inventory item outside the authorized tenant/factory scope');
+      throw error;
+    });
+
+    await this.auditSafely({
+      tenantId, factoryId, userId, requestId, traceId, resourceType: 'PURCHASE_ORDER',
+      resourceId: purchaseOrderId, action: 'DRAFT_UPDATED', payload: updated,
+    });
+    return { ...(await this.getPurchaseOrder(tenantId, factoryId, purchaseOrderId)), update: updated };
   }
 
   async listPurchaseOrders(tenantId: string, factoryId: string, dto: ListPurchaseOrdersDto) {
