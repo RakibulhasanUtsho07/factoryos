@@ -438,6 +438,16 @@ CREATE TRIGGER trg_work_order_events_immutable
 BEFORE UPDATE OR DELETE ON work_order_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_work_order_event_mutation();
 
+CREATE OR REPLACE FUNCTION factoryos_guard_work_order_event_payload()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_quantity TEXT;
+BEGIN
+  IF NEW.event_type IN ('WIP_REPORTED', 'REWORK_REPORTED') THEN
+    v_quantity := NEW.payload->>'quantity';
+    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\\.[0-9]{1,4})?
 CREATE OR REPLACE FUNCTION factoryos_guard_work_order_production_output()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -450,6 +460,8 @@ DECLARE
   v_operation_step INTEGER;
   v_last_step INTEGER;
   v_operation_status VARCHAR(20);
+  v_active_started_at TIMESTAMPTZ;
+  v_downtime_started_at TIMESTAMPTZ;
   v_prior_processed NUMERIC(18,4);
 BEGIN
   IF NEW.work_order_id IS NULL AND NEW.work_order_operation_id IS NULL THEN
@@ -475,7 +487,8 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  SELECT step_number, status INTO v_operation_step, v_operation_status
+  SELECT step_number, status, active_started_at, downtime_started_at
+    INTO v_operation_step, v_operation_status, v_active_started_at, v_downtime_started_at
   FROM work_order_operations
   WHERE id = NEW.work_order_operation_id
     AND work_order_id = NEW.work_order_id
@@ -483,8 +496,149 @@ BEGIN
     AND factory_id = NEW.factory_id
   FOR UPDATE;
 
-  IF NOT FOUND OR v_operation_status <> 'IN_PROGRESS' THEN
-    RAISE EXCEPTION 'output must be reported against the active final operation'
+  IF NOT FOUND OR v_operation_status <> 'IN_PROGRESS'
+    OR v_active_started_at IS NULL OR v_downtime_started_at IS NOT NULL THEN
+    RAISE EXCEPTION 'output must be reported against the actively running final operation outside downtime'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT max(step_number) INTO v_last_step
+  FROM work_order_operations
+  WHERE work_order_id = NEW.work_order_id
+    AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+  IF v_operation_step <> v_last_step THEN
+    RAISE EXCEPTION 'finished output can only be reported against the final routing operation'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT COALESCE(SUM(good_quantity + scrap_quantity), 0)
+    INTO v_prior_processed
+  FROM order_production_reports
+  WHERE work_order_id = NEW.work_order_id
+    AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+
+  IF v_prior_processed + NEW.good_quantity + NEW.scrap_quantity > v_target_quantity THEN
+    RAISE EXCEPTION 'cumulative work-order processed output cannot exceed its target quantity'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_order_production_report_work_order_guard
+BEFORE INSERT ON order_production_reports
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_production_output();
+
+ALTER TABLE work_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_orders FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_orders_tenant_isolation ON work_orders
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
+ALTER TABLE work_order_operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_order_operations FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_order_operations_tenant_isolation ON work_order_operations
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
+ALTER TABLE work_order_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_order_events FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_order_events_tenant_isolation ON work_order_events
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
+COMMENT ON TABLE work_orders IS
+  'Version-pinned production work orders created from factory-scoped sales-order lines; status changes require actor, version and immutable shop-floor event evidence.';
+COMMENT ON TABLE work_order_operations IS
+  'Immutable snapshots of the released product routing with guarded operation status, actual run time and downtime evidence.';
+COMMENT ON TABLE work_order_events IS
+  'Append-only shop-floor event log carrying source timestamp actor/device and idempotency evidence for start stop output WIP downtime hold release rework and scrap.';
+COMMENT ON COLUMN work_orders.target_quantity IS
+  'Planned units to process; reported good plus scrap quantities cannot exceed this value, while only good quantity fulfils the sales order.';
+COMMENT ON COLUMN work_order_operations.actual_run_minutes IS
+  'Server-measured accumulated active time across start/resume/pause/hold/complete intervals, excluding recorded downtime.';
+COMMENT ON COLUMN work_order_operations.downtime_minutes IS
+  'Server-measured accumulated downtime, recorded as matched downtime start/end events.';
+
+INSERT INTO schema_migrations (version, checksum)
+VALUES ('090_production_work_order_operation_lifecycle', NULL)
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+ OR v_quantity::numeric <= 0 THEN
+      RAISE EXCEPTION 'WIP and rework events require a positive four-decimal quantity'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
+  IF NEW.event_type IN (
+    'WORK_ORDER_HELD', 'WORK_ORDER_CANCELLED', 'OPERATION_HELD',
+    'OPERATION_SKIPPED', 'DOWNTIME_STARTED', 'REWORK_REPORTED'
+  ) AND length(btrim(COALESCE(NEW.payload->>'reason', ''))) = 0 THEN
+    RAISE EXCEPTION 'hold, cancel, skip, downtime-start and rework events require a reason'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER trg_work_order_event_payload_guard
+BEFORE INSERT ON work_order_events
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_event_payload();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_work_order_production_output()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_source_order_id UUID;
+  v_source_order_line_id UUID;
+  v_target_quantity NUMERIC(18,4);
+  v_work_order_status VARCHAR(24);
+  v_operation_step INTEGER;
+  v_last_step INTEGER;
+  v_operation_status VARCHAR(20);
+  v_active_started_at TIMESTAMPTZ;
+  v_downtime_started_at TIMESTAMPTZ;
+  v_prior_processed NUMERIC(18,4);
+BEGIN
+  IF NEW.work_order_id IS NULL AND NEW.work_order_operation_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT source_order_id, source_order_line_id, target_quantity, status
+    INTO v_source_order_id, v_source_order_line_id, v_target_quantity, v_work_order_status
+  FROM work_orders
+  WHERE id = NEW.work_order_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'work-order output does not reference a work order in this factory'
+      USING ERRCODE = '23503';
+  END IF;
+  IF NEW.order_id <> v_source_order_id OR NEW.order_line_id <> v_source_order_line_id THEN
+    RAISE EXCEPTION 'work-order output must match its source sales order and line'
+      USING ERRCODE = '23514';
+  END IF;
+  IF v_work_order_status <> 'IN_PROGRESS' THEN
+    RAISE EXCEPTION 'work-order output is allowed only while the work order is in progress'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT step_number, status, active_started_at, downtime_started_at
+    INTO v_operation_step, v_operation_status, v_active_started_at, v_downtime_started_at
+  FROM work_order_operations
+  WHERE id = NEW.work_order_operation_id
+    AND work_order_id = NEW.work_order_id
+    AND tenant_id = NEW.tenant_id
+    AND factory_id = NEW.factory_id
+  FOR UPDATE;
+
+  IF NOT FOUND OR v_operation_status <> 'IN_PROGRESS'
+    OR v_active_started_at IS NULL OR v_downtime_started_at IS NOT NULL THEN
+    RAISE EXCEPTION 'output must be reported against the actively running final operation outside downtime'
       USING ERRCODE = '23514';
   END IF;
 
