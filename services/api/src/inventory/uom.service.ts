@@ -8,11 +8,11 @@ import { ConvertUomQuantityDto, CreateUomConversionDto, CreateUomUnitDto, Review
 type State = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'RETIRED';
 type Rounding = 'REJECT' | 'HALF_UP';
 interface KeyRow extends QueryResultRow { id: string; request_hash: string; }
-interface UnitRow extends QueryResultRow {
+export interface UnitRow extends QueryResultRow {
   id: string; tenant_id: string; factory_id: string; unit_code: string; name: string;
   dimension_code: string; decimal_precision: number; created_by_user_id: string; correlation_id: string; created_at: string;
 }
-interface RuleRow extends QueryResultRow {
+export interface RuleRow extends QueryResultRow {
   id: string; tenant_id: string; factory_id: string; from_unit_id: string; from_unit_code: string; from_unit_name: string;
   to_unit_id: string; to_unit_code: string; to_unit_name: string; dimension_code: string;
   factor_numerator: string; factor_denominator: string; rounding_mode: Rounding; status: State;

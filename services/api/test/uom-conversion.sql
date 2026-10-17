@@ -156,6 +156,10 @@ BEGIN
     RAISE EXCEPTION 'exact UoM conversion/inverse failed: forward %, reverse %', v_quantity, v_reverse;
   END IF;
 
+  -- Expected negative insert cases must use their declared submitter so the
+  -- test exercises dimension and active-pair guards instead of the actor guard first.
+  PERFORM set_config('app.user_id', v_submitter::text, TRUE);
+
   BEGIN
     INSERT INTO uom_conversion_rules (
       tenant_id, factory_id, from_unit_id, to_unit_id, factor_numerator, factor_denominator,
