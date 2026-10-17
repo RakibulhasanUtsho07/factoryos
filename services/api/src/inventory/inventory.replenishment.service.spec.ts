@@ -175,6 +175,9 @@ describe('InventoryReplenishmentService', () => {
     expect(sql).not.toContain('SUM(gl.received_quantity)');
     expect(sql).toContain('AND pr.tenant_id = pol.tenant_id');
     expect(sql).toContain('AND pr.factory_id = pol.factory_id');
+    expect(sql).toContain('GROUP BY tenant_id, factory_id, inventory_item_id');
+    expect(sql).toContain('AND incoming.tenant_id = rp.tenant_id');
+    expect(sql).toContain('AND incoming.factory_id = rp.factory_id');
     expect(sql).toContain('b.quantity_on_hand - b.quantity_reserved');
     expect(sql).toContain('uncovered_shortage_quantity');
     expect(sql).toContain('LIMIT $3');
