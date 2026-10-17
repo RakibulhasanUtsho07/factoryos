@@ -61,19 +61,18 @@ CREATE INDEX idx_traceability_label_template_active
 CREATE OR REPLACE FUNCTION factoryos_guard_traceability_label_template()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $trace_label_guard$
 BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
-      RAISE EXCEPTION 'label template actor must match the authenticated user'
-        USING ERRCODE = '23514';
+      RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'label template actor must match the authenticated user';
     END IF;
     RETURN NEW;
   END IF;
-  RAISE EXCEPTION 'label templates are versioned by creating a new template; existing template evidence cannot be edited or deleted'
-    USING ERRCODE = '55000';
+  RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'label templates are immutable; create a new template code for a new version';
 END;
-$;
+$trace_label_guard$;
+
 CREATE TRIGGER trg_traceability_label_template_immutable
 BEFORE INSERT OR UPDATE OR DELETE ON traceability_label_templates
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_traceability_label_template();
