@@ -25,6 +25,7 @@ export type OperationCommand =
   | 'DOWNTIME_START'
   | 'DOWNTIME_END'
   | 'WIP_REPORTED'
+  | 'WIP_TRANSFERRED'
   | 'REWORK_REPORTED';
 
 const WORK_ORDER_TRANSITIONS: Readonly<Record<WorkOrderStatus, readonly WorkOrderStatus[]>> = {
@@ -84,6 +85,7 @@ export function nextOperationStatus(
       if (current === 'IN_PROGRESS') return current;
       break;
     case 'WIP_REPORTED':
+    case 'WIP_TRANSFERRED':
     case 'REWORK_REPORTED':
       if (current === 'IN_PROGRESS' || current === 'PAUSED') return current;
       break;
@@ -157,4 +159,21 @@ export function assertWipSnapshotQuantity(quantity: bigint, targetQuantity: bigi
 
 export function assertReworkQuantity(quantity: bigint): void {
   if (quantity <= 0n) throw new Error('REWORK_QUANTITY_MUST_BE_POSITIVE');
+}
+
+export function assertWipTransfer(
+  sourceWip: bigint,
+  targetWip: bigint,
+  transferQuantity: bigint,
+  workOrderTarget: bigint,
+): void {
+  if (sourceWip < 0n || targetWip < 0n || transferQuantity <= 0n || workOrderTarget <= 0n) {
+    throw new Error('INVALID_WIP_TRANSFER_QUANTITY');
+  }
+  if (transferQuantity > sourceWip) {
+    throw new Error('WIP_TRANSFER_EXCEEDS_SOURCE_OPERATION_QUANTITY');
+  }
+  if (targetWip + transferQuantity > workOrderTarget) {
+    throw new Error('WIP_TRANSFER_EXCEEDS_WORK_ORDER_TARGET');
+  }
 }
