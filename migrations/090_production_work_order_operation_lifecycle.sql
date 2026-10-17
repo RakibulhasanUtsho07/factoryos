@@ -83,7 +83,12 @@ CREATE TABLE work_orders (
   CONSTRAINT chk_work_order_request_hash CHECK (request_hash ~ '^[0-9a-f]{64}$'),
   CONSTRAINT chk_work_order_release_evidence CHECK (
     (status = 'DRAFT' AND released_by_user_id IS NULL AND released_at IS NULL)
-    OR (status <> 'DRAFT' AND released_by_user_id IS NOT NULL AND released_at IS NOT NULL)
+    OR (status IN ('RELEASED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED')
+      AND released_by_user_id IS NOT NULL AND released_at IS NOT NULL)
+    OR (status = 'CANCELLED' AND (
+      (released_by_user_id IS NULL AND released_at IS NULL)
+      OR (released_by_user_id IS NOT NULL AND released_at IS NOT NULL)
+    ))
   ),
   CONSTRAINT chk_work_order_completion_evidence CHECK (
     (status = 'COMPLETED' AND completed_at IS NOT NULL) OR (status <> 'COMPLETED' AND completed_at IS NULL)
@@ -106,6 +111,7 @@ CREATE TABLE work_order_operations (
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
   work_order_id UUID NOT NULL,
+  product_version_id UUID NOT NULL,
   product_routing_step_id UUID NOT NULL,
   step_number INTEGER NOT NULL,
   operation_code VARCHAR(100) NOT NULL,
@@ -134,8 +140,11 @@ CREATE TABLE work_order_operations (
   CONSTRAINT fk_work_order_operation_work_order
     FOREIGN KEY (work_order_id, tenant_id, factory_id) REFERENCES work_orders(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_work_order_operation_routing_snapshot
-    FOREIGN KEY (product_routing_step_id, work_order_id, tenant_id, factory_id)
+    FOREIGN KEY (product_routing_step_id, product_version_id, tenant_id, factory_id)
     REFERENCES product_routing_steps(id, product_version_id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_operation_version
+    FOREIGN KEY (product_version_id, tenant_id, factory_id)
+    REFERENCES product_versions(id, tenant_id, factory_id, product_id) ON DELETE RESTRICT,
   CONSTRAINT fk_work_order_operation_work_centre
     FOREIGN KEY (work_centre_id, tenant_id, factory_id)
     REFERENCES manufacturing_work_centres(id, tenant_id, factory_id) ON DELETE RESTRICT,
