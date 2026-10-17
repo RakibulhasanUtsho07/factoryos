@@ -93,7 +93,7 @@ The allocator locks the inventory item first, then aggregate and candidate locat
 
 On `CONFIRMED -> IN_PROGRESS`, each child consumes from its assigned bin: bin reserved and on-hand values are updated together, and its immutable `ISSUE` movement/outbox carry the source `location_id`. Cancellation before production releases every child and restores each bin's reserved amount without changing on-hand stock. Tenant/factory scoping, forced RLS, immutable history, deferred aggregate/bin consistency, audit attempts and transactional outbox evidence remain in force.
 
-This slice implements deterministic bin spreading, not the full SRS allocation policy: FEFO/FIFO and lot/serial-aware selection, directed picking and replenishment remain follow-on work.
+This slice implements deterministic bin spreading, not the full SRS allocation policy: FEFO/FIFO and lot/serial-aware selection remain follow-on work. Directed picking is covered in the location-policy section above, and min/max replenishment is covered below.
 
 ## Min/max reorder policy and replenishment recommendations (migration 081)
 
@@ -104,7 +104,7 @@ Each active inventory item may have one factory-scoped reorder policy:
 - `GET /inventory/replenishment/shortages?limit=50` lists enabled-policy items whose currently available stock is below the minimum. It distinguishes the physical shortfall from the shortfall that remains after incoming stock is counted, so a shortage covered by an approved shipment is visible without automatically recommending another order.
 - `GET /inventory/replenishment/recommendations?limit=50` lists items whose inventory position is at or below the minimum and proposes the quantity needed to reach the maximum.
 
-The calculation is explicit: `available = on_hand - reserved`; `incoming = approved purchase-order line quantity - posted goods-receipt received quantity` for each still-open, inventory-mapped PO line; and `inventory_position = available + incoming`. Only `APPROVED` purchase orders count as incoming. Draft, submitted, rejected and cancelled POs do not. GRN quantities are subtracted from the remaining PO quantity once their receipt is posted, so accepted stock is not counted as both on-hand and incoming, and rejected received quantity is not treated as still in transit.
+The calculation is explicit: `available = on_hand - reserved`; `incoming = approved purchase-order line quantity - posted goods-receipt accepted quantity` for each still-open, inventory-mapped PO line; and `inventory_position = available + incoming`. Only `APPROVED` purchase orders count as incoming. Draft, submitted, rejected and cancelled POs do not. Only accepted GRN quantity reduces the open PO quantity because rejected units were not posted to stock and must remain outstanding (subject to the existing PO lifecycle); accepted stock is therefore not counted as both on-hand and incoming.
 
 The uncovered shortage is `max(minimum - inventory_position, 0)`. When the reorder trigger is met, the recommended quantity is `max(maximum - inventory_position, 0)`; otherwise it is zero. The response identifies whether an active preferred supplier needs to be selected or the recommendation is ready for human review. `next_incoming_date` is taken from the earliest dated open approved PO, while `estimated_replenishment_date` is today's date plus the configured lead time. The lead-time date is an estimate, not a demand-based stockout forecast.
 
