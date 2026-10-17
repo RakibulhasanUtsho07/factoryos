@@ -9,6 +9,8 @@ DECLARE
   v_location_balance_check BOOLEAN;
   v_location_balance_trigger BOOLEAN;
   v_reserved_stock_guard BOOLEAN;
+  v_balance_guard_trigger BOOLEAN;
+  v_balance_guard_function BOOLEAN;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
@@ -58,13 +60,30 @@ BEGIN
   SELECT position('quantity_reserved' IN pg_get_functiondef('factoryos_sync_inventory_location_balance()'::regprocedure)) > 0
     INTO v_reserved_stock_guard;
 
+  SELECT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'inventory_location_balances'::regclass
+      AND tgname = 'ctr_inventory_location_balance_reserved_consistency'
+      AND NOT tgisinternal
+      AND tgdeferrable
+      AND tginitdeferred
+      AND tgenabled <> 'D'
+  ) INTO v_balance_guard_trigger;
+
+  SELECT position(
+    'inventory_reservations' IN
+    pg_get_functiondef('factoryos_assert_inventory_location_reserved_balance()'::regprocedure)
+  ) > 0 INTO v_balance_guard_function;
+
   IF NOT v_reserved_column OR NOT v_location_column OR NOT v_location_fk
      OR NOT v_location_balance_check OR NOT v_location_balance_trigger
-     OR NOT v_reserved_stock_guard THEN
+     OR NOT v_reserved_stock_guard OR NOT v_balance_guard_trigger
+     OR NOT v_balance_guard_function THEN
     RAISE EXCEPTION
-      'WP02 bin reservation schema is incomplete: reserved_column %, location_column %, location_fk %, balance_check %, deferred_consistency %, reserved_stock_guard %',
+      'WP02 bin reservation schema is incomplete: reserved_column %, location_column %, location_fk %, balance_check %, reservation_consistency %, reserved_stock_guard %, balance_guard_trigger %, balance_guard_function %',
       v_reserved_column, v_location_column, v_location_fk, v_location_balance_check,
-      v_location_balance_trigger, v_reserved_stock_guard;
+      v_location_balance_trigger, v_reserved_stock_guard, v_balance_guard_trigger,
+      v_balance_guard_function;
   END IF;
 
   RAISE NOTICE 'WP02 bin-bound reservation schema checks passed';

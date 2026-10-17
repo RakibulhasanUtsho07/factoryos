@@ -400,6 +400,36 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     });
   });
 
+  it('rejects direct bin reserved-balance drift that has no matching active reservation', async () => {
+    const fixture = await createStockFixture('12.0000');
+    const { binA } = await createWarehouseAndBins(fixture.factoryId);
+
+    await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 7,
+      },
+      'reserved-balance-guard-' + randomUUID(), requestId, traceId,
+    );
+
+    await expect(adminPool.query(
+      `UPDATE inventory_location_balances
+       SET quantity_reserved = quantity_reserved + 1
+       WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND location_id = $4`,
+      [tenantId, fixture.factoryId, fixture.itemId, binA.id],
+    )).rejects.toMatchObject({ code: '23514' });
+
+    const balance = await adminPool.query<{ quantity_reserved: string }>(
+      `SELECT quantity_reserved::text AS quantity_reserved
+       FROM inventory_location_balances
+       WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND location_id = $4`,
+      [tenantId, fixture.factoryId, fixture.itemId, binA.id],
+    );
+    expect(balance.rows[0]?.quantity_reserved).toBe('0.0000');
+  });
+
   it('keeps location balances aligned when receipts/issues target a bin or use the legacy aggregate path', async () => {
     const fixture = await createStockFixture();
     const { binA, binB } = await createWarehouseAndBins(fixture.factoryId);
