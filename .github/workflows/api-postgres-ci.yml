@@ -227,8 +227,6 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
 
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
-            -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
@@ -257,6 +255,10 @@ jobs:
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
+
+          # This contract also checks demo-role grants, so run it after the development role seeds.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
 
           # B19 tests clone only this dedicated, idle template DB.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" \
