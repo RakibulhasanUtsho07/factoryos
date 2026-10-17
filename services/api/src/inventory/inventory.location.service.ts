@@ -853,13 +853,13 @@ export class InventoryLocationService {
   ): InventoryLocationTransferResult {
     const {
       id, tenant_id, factory_id, item_id, source_location_id, destination_location_id,
-      quantity, source_quantity_before, source_quantity_after,
+      movement_purpose, quantity, source_quantity_before, source_quantity_after,
       destination_quantity_before, destination_quantity_after,
       notes, created_by_user_id, correlation_id, created_at,
     } = row;
     return {
       id, tenant_id, factory_id, item_id, source_location_id, destination_location_id,
-      quantity, source_quantity_before, source_quantity_after,
+      movement_purpose, quantity, source_quantity_before, source_quantity_after,
       destination_quantity_before, destination_quantity_after,
       notes, created_by_user_id, correlation_id, created_at, replayed,
     };
