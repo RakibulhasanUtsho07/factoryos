@@ -587,7 +587,7 @@ BEGIN
   END IF;
   IF NEW.event_type IN ('WIP_REPORTED', 'REWORK_REPORTED') THEN
     v_quantity := NEW.payload->>'quantity';
-    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\\.[0-9]{1,4})?$' THEN
+    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\.[0-9]{1,4})?$' THEN
       RAISE EXCEPTION 'WIP and rework events require a four-decimal quantity' USING ERRCODE = '23514';
     END IF;
     IF (NEW.event_type = 'WIP_REPORTED' AND v_quantity::numeric < 0)
