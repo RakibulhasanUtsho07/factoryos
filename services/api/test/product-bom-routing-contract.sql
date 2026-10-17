@@ -21,7 +21,7 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '083_product_definition_idempotency_hardening')
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '084_product_contract_maker_checker')
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '085_product_alternate_retirement_lifecycle')
-     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '086_product_bom_uom_snapshots') THEN
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '086_product_bom_uom_snapshots')\n     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '087_product_bom_contract_retention_guards') THEN
     RAISE EXCEPTION 'Product/BOM/routing migration marker is missing';
   END IF;
 
@@ -48,6 +48,25 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_lines'::regclass AND conname='chk_product_bom_line_uom_snapshot')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_alternates'::regclass AND conname='chk_product_bom_alternate_uom_snapshot') THEN
     RAISE EXCEPTION 'BOM/alternate UoM snapshots missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid='product_bom_lines'::regclass AND tgname='trg_product_bom_no_self_component'
+      AND NOT tgisinternal AND tgenabled<>'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid='product_bom_alternates'::regclass AND tgname='trg_product_alternate_no_self_component'
+      AND NOT tgisinternal AND tgenabled<>'D'
+  ) THEN
+    RAISE EXCEPTION 'Self-component BOM/alternate guards are missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='product_bom_alternates'::regclass AND conname='fk_product_bom_alternate_line'
+      AND confdeltype='r'
+  ) THEN
+    RAISE EXCEPTION 'Alternate-material contract history must block BOM-line deletion';
   END IF;
 
   IF NOT EXISTS (

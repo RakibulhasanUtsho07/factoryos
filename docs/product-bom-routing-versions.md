@@ -5,7 +5,7 @@
 
 ## Contract model
 
-A factory-scoped product definition references one active finished-good inventory item. Product versions are retained engineering revisions with a version number, effective date range, expected yield, change summary and optimistic `row_version`. New revisions begin as `DRAFT`. Approval requires a non-empty BOM, at least one routing step, no unresolved draft alternate material contracts, and a non-overlapping effective interval against other approved versions. Approved revisions cannot be edited; create a new draft instead.
+A factory-scoped product definition references one active finished-good inventory item. Product versions are retained engineering revisions with a version number, effective date range, expected yield, change summary and optimistic `row_version`. New revisions begin as `DRAFT`. Approval requires a non-empty BOM, at least one routing step, no unresolved draft alternate material contracts, and a non-overlapping effective interval against other approved versions. Approved revisions cannot be edited; create a new draft instead. Once alternate-material contracts exist for a draft revision, changing the BOM requires a new product version so the existing contracts and their audit lineage are never cascade-deleted.
 
 Every BOM line references active inventory in the same tenant and factory; has a positive quantity, unit, wastage assumption, unique line number, and optional alternate group. The BOM unit must match the item's base unit or have a **directionally approved** UoM conversion into that unit. Wastage is a planning assumption and does not directly post stock.
 

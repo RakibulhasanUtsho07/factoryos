@@ -237,6 +237,13 @@ export class ProductDefinitionsService {
     const p=productId.toLowerCase(),v=versionId.toLowerCase(),correlation=this.correlation(requestId,traceId);
     const result=await this.database.transaction({tenantId,userId},async client=>{
       await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
+      const linkedAlternates=await client.query<{exists:boolean}>(`SELECT EXISTS (
+        SELECT 1 FROM product_bom_alternates
+        WHERE tenant_id=$1 AND factory_id=$2 AND product_id=$3 AND product_version_id=$4
+      ) AS exists`,[tenantId,factoryId,p,v]);
+      if(linkedAlternates.rows[0]?.exists) {
+        throw new ConflictException('This draft has alternate material contracts; create a new product version to change the BOM without deleting contract history');
+      }
       const ids=[...new Set(lines.map(x=>x.item))];
       const valid=await client.query<{id:string;unit:string}>(`SELECT id::text AS id,unit FROM inventory_items
         WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' AND id=ANY($3::uuid[])`,[tenantId,factoryId,ids]);
