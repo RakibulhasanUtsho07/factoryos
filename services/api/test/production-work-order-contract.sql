@@ -175,8 +175,8 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conrelid = 'work_orders'::regclass
       AND conname = 'chk_work_order_completion_evidence'
-  ) THEN
-    RAISE EXCEPTION 'Operation WIP snapshot, active/downtime timing or work-order completion evidence constraints are missing';
+  ) OR position('aggregate WIP across all operations' IN pg_get_functiondef('factoryos_guard_work_order_operation_lifecycle()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'Operation WIP snapshot, aggregate WIP, active/downtime timing or work-order completion evidence constraints are missing';
   END IF;
 
   RAISE NOTICE 'Production work-order lifecycle schema, IAM, tenant scope and output-link contracts passed';
