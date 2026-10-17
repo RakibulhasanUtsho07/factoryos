@@ -681,7 +681,7 @@ export class ProductionWorkOrdersService {
       tenantId, userId, requestId, traceId,
       advisoryLockKey: `production-work-order:${command}:${tenantId}:${factoryId}:${workOrderId}:${key}`,
     }, async (client) => {
-      const eventKey = this.scopedEventKey(workOrderId, 'OPERATION_EVENT', key);
+      const eventKey = this.scopedEventKey(workOrderId, command, key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
       if (replay) return { workOrderId, replayed: true as const };
 
@@ -1088,7 +1088,7 @@ export class ProductionWorkOrdersService {
       tenantId, userId, requestId, traceId,
       advisoryLockKey: `production-operation:${tenantId}:${factoryId}:${workOrderId}:${key}`,
     }, async (client) => {
-      const eventKey = this.scopedEventKey(workOrderId, command, key);
+      const eventKey = this.scopedEventKey(workOrderId, 'OPERATION_EVENT', key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
       if (replay) return { workOrderId, replayed: true as const };
 
