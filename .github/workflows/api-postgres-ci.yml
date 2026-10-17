@@ -173,6 +173,7 @@ jobs:
             migrations/085_product_alternate_retirement_lifecycle.sql
             migrations/086_product_bom_uom_snapshots.sql
             migrations/087_product_bom_contract_retention_guards.sql
+            migrations/088_product_version_supersession_and_release_readiness.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

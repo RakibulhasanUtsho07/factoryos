@@ -20,6 +20,7 @@ export interface ProductRow extends QueryResultRow {
 export interface VersionRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; product_id:string; version_number:number;
   state:'DRAFT'|'APPROVED'|'RETIRED'; effective_from:string; effective_to:string|null;
+  effective_to_override:string|null; superseded_by_version_id:string|null;
   expected_yield_percent:string; change_summary:string; row_version:string; idempotency_key:string;
   request_hash:string; approval_idempotency_key:string|null; approval_request_hash:string|null;
   retirement_idempotency_key:string|null; retirement_request_hash:string|null; created_by_user_id:string;
@@ -58,6 +59,7 @@ const PRODUCT_COLS=`p.id::text AS id,p.tenant_id::text AS tenant_id,p.factory_id
  p.created_at::text AS created_at,p.updated_at::text AS updated_at`;
 const VERSION_COLS=`id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,product_id::text AS product_id,
  version_number,state,effective_from::text AS effective_from,effective_to::text AS effective_to,
+ effective_to_override::text AS effective_to_override,superseded_by_version_id::text AS superseded_by_version_id,
  expected_yield_percent::text AS expected_yield_percent,change_summary,row_version::text AS row_version,
  idempotency_key,request_hash,approval_idempotency_key,approval_request_hash,retirement_idempotency_key,retirement_request_hash,
  created_by_user_id::text AS created_by_user_id,updated_by_user_id::text AS updated_by_user_id,
@@ -180,11 +182,12 @@ export class ProductDefinitionsService {
     this.uuid(productId,'productId');
     const at=this.date(atRaw,'at');
     const found=await this.database.query<VersionRow>(`SELECT ${VERSION_COLS} FROM product_versions
-      WHERE tenant_id=$1 AND factory_id=$2 AND product_id=$3 AND state='APPROVED'
-        AND effective_from <= $4::date AND (effective_to IS NULL OR effective_to >= $4::date)
-      ORDER BY version_number DESC LIMIT 2`,
+      WHERE tenant_id=$1 AND factory_id=$2 AND product_id=$3 AND state IN ('APPROVED','RETIRED')
+        AND effective_from <= $4::date
+        AND (COALESCE(effective_to_override,effective_to) IS NULL OR COALESCE(effective_to_override,effective_to) >= $4::date)
+      ORDER BY effective_from DESC,version_number DESC LIMIT 2`,
       [tenantId,factoryId,productId.toLowerCase(),at],{tenantId,userId});
-    if(found.rows.length===0) throw new NotFoundException('No approved product version is effective on the requested date');
+    if(found.rows.length===0) throw new NotFoundException('No product version is effective on the requested date');
     if(found.rows.length>1) throw new ConflictException('Multiple approved product versions overlap the requested date; release integrity needs repair');
     return this.getVersionDetail(userId,tenantId,factoryId,productId,found.rows[0].id);
   }
@@ -454,13 +457,68 @@ export class ProductDefinitionsService {
       hash=this.hash({product_id:p,product_version_id:v,expected_version:dto.expected_version}),correlation=this.correlation(requestId,traceId);
     try {
       const result=await this.database.transaction({tenantId,userId},async client=>{
+        // Serialize product releases before locking a version row; two concurrent releases must not
+        // deadlock while each tries to supersede the other's currently approved interval.
+        const product=await client.query<{id:string;status:string}>(`SELECT id::text AS id,status FROM product_definitions
+          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,[p,tenantId,factoryId]);
+        if(!product.rows[0]||product.rows[0].status!=='ACTIVE') throw new NotFoundException('Active product definition was not found in this factory');
+
         const q=await client.query<VersionRow>(`SELECT ${VERSION_COLS} FROM product_versions WHERE id=$1 AND product_id=$2
           AND tenant_id=$3 AND factory_id=$4 FOR UPDATE`,[v,p,tenantId,factoryId]);
         const row=q.rows[0]; if(!row) throw new NotFoundException('Product version was not found in this factory');
-        if(row.state==='APPROVED'&&row.approval_idempotency_key===key&&row.approval_request_hash===hash) return {version:row,replayed:true};
+        if(row.state==='APPROVED'&&row.approval_idempotency_key===key&&row.approval_request_hash===hash) {
+          return {version:row,replayed:true,supersededVersions:[] as VersionRow[]};
+        }
         if(row.state!=='DRAFT') throw new ConflictException('Only a draft product version can be approved');
         if(row.created_by_user_id===userId) throw new ConflictException('Product version must be approved by a different user than its creator');
         this.expected(row.row_version,dto.expected_version);
+
+        // Do not backdate through a later-starting approved version. That needs an explicit
+        // engineering correction rather than silently retiring a future-effective contract.
+        const futureOverlap=await client.query<{id:string}>(`SELECT id::text AS id FROM product_versions
+          WHERE product_id=$1 AND tenant_id=$2 AND factory_id=$3 AND state='APPROVED' AND id<>$4
+            AND effective_from >= $5::date
+            AND effective_from <= COALESCE($6::date,'infinity'::date)
+            AND COALESCE(effective_to_override,effective_to,'infinity'::date) >= $5::date
+          ORDER BY effective_from LIMIT 1 FOR UPDATE`,
+          [p,tenantId,factoryId,v,row.effective_from,row.effective_to]);
+        if(futureOverlap.rows.length) {
+          throw new ConflictException('The new effective window overlaps a later-starting approved version; reconcile that future revision first');
+        }
+
+        const prior=await client.query<VersionRow>(`SELECT ${VERSION_COLS} FROM product_versions
+          WHERE product_id=$1 AND tenant_id=$2 AND factory_id=$3 AND state='APPROVED' AND id<>$4
+            AND effective_from < $5::date
+            AND effective_from <= COALESCE($6::date,'infinity'::date)
+            AND COALESCE(effective_to_override,effective_to,'infinity'::date) >= $5::date
+          ORDER BY effective_from FOR UPDATE`,
+          [p,tenantId,factoryId,v,row.effective_from,row.effective_to]);
+        if(prior.rows.length>1) {
+          throw new ConflictException('Multiple earlier approved versions overlap this release window; repair effective-date integrity before approving');
+        }
+        const supersededVersions:VersionRow[]=[];
+        const priorVersion=prior.rows[0];
+        if(priorVersion) {
+          const cutoff=this.previousDay(row.effective_from);
+          const retirementKey=`system:superseded:${v}`;
+          const retirementHash=this.hash({product_id:p,retired_version_id:priorVersion.id,
+            superseded_by_version_id:v,effective_to_override:cutoff});
+          const retired=await client.query<VersionRow>(`UPDATE product_versions SET state='RETIRED',
+            row_version=row_version+1,updated_by_user_id=$1,updated_at=clock_timestamp(),
+            retirement_idempotency_key=$2,retirement_request_hash=$3,
+            effective_to_override=$4::date,superseded_by_version_id=$5
+            WHERE id=$6 AND product_id=$7 AND tenant_id=$8 AND factory_id=$9
+              AND state='APPROVED' AND row_version=$10
+            RETURNING ${VERSION_COLS}`,
+            [userId,retirementKey,retirementHash,cutoff,v,priorVersion.id,p,tenantId,factoryId,priorVersion.row_version]);
+          const superseded=retired.rows[0];
+          if(!superseded) throw new ConflictException('The previous product version changed concurrently; reload before releasing this revision');
+          supersededVersions.push(superseded);
+          await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:superseded.id,event:'PRODUCT.VERSION_SUPERSEDED',
+            correlation,requestId,userId,payload:{product_id:p,product_version_id:superseded.id,
+              superseded_by_version_id:v,effective_to_override:cutoff,row_version:superseded.row_version}});
+        }
+
         const u=await client.query<VersionRow>(`UPDATE product_versions SET state='APPROVED',row_version=row_version+1,
           updated_by_user_id=$1,updated_at=clock_timestamp(),approved_by_user_id=$1,approved_at=clock_timestamp(),
           approval_idempotency_key=$2,approval_request_hash=$3
@@ -468,14 +526,26 @@ export class ProductDefinitionsService {
           RETURNING ${VERSION_COLS}`,[userId,key,hash,v,p,tenantId,factoryId,dto.expected_version]);
         const approved=u.rows[0]; if(!approved) throw new ConflictException('Product version changed concurrently; reload before approving');
         await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:v,event:'PRODUCT.VERSION_APPROVED',correlation,requestId,userId,
-          payload:{product_id:p,product_version_id:v,version_number:approved.version_number,effective_from:approved.effective_from,effective_to:approved.effective_to,row_version:approved.row_version}});
-        return {version:approved,replayed:false};
+          payload:{product_id:p,product_version_id:v,version_number:approved.version_number,
+            effective_from:approved.effective_from,effective_to:approved.effective_to,row_version:approved.row_version,
+            superseded_version_ids:supersededVersions.map(x=>x.id)}});
+        return {version:approved,replayed:false,supersededVersions};
       });
-      if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_VERSION_APPROVED',resource:'PRODUCT_VERSION',id:v,requestId,traceId,payload:{productId:p,versionNumber:result.version.version_number,effectiveFrom:result.version.effective_from,effectiveTo:result.version.effective_to}});
+      if(!result.replayed) {
+        for(const superseded of result.supersededVersions) {
+          await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_VERSION_SUPERSEDED',resource:'PRODUCT_VERSION',
+            id:superseded.id,requestId,traceId,payload:{productId:p,supersededByVersionId:v,
+              effectiveToOverride:superseded.effective_to_override}});
+        }
+        await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_VERSION_APPROVED',resource:'PRODUCT_VERSION',id:v,requestId,traceId,
+          payload:{productId:p,versionNumber:result.version.version_number,effectiveFrom:result.version.effective_from,
+            effectiveTo:result.version.effective_to,supersededVersionIds:result.supersededVersions.map(x=>x.id)}});
+      }
       return result;
     } catch(e) {
       if(this.code(e)==='23514') throw new ConflictException(e instanceof Error?e.message:'Product version release controls failed');
-      this.uniqueConflict(e,'An approved version already overlaps this effective period'); throw e;
+      this.uniqueConflict(e,'An approved version already overlaps this effective period');
+      throw e;
     }
   }
 
@@ -483,6 +553,7 @@ export class ProductDefinitionsService {
     this.scope(userId,tenantId,factoryId); this.uuid(productId,'productId'); this.uuid(versionId,'versionId');
     if(!Number.isInteger(dto.expected_version)||dto.expected_version<1) throw new BadRequestException('expected_version must be a positive integer');
     const key=this.key(keyRaw),p=productId.toLowerCase(),v=versionId.toLowerCase(),
+    if(key.startsWith('system:superseded:')) throw new BadRequestException('Idempotency-Key prefix system:superseded: is reserved for system-generated version supersession');
       hash=this.hash({product_id:p,product_version_id:v,expected_version:dto.expected_version}),correlation=this.correlation(requestId,traceId);
     const result=await this.database.transaction({tenantId,userId},async client=>{
       const q=await client.query<VersionRow>(`SELECT ${VERSION_COLS} FROM product_versions WHERE id=$1 AND product_id=$2
@@ -492,11 +563,13 @@ export class ProductDefinitionsService {
       if(row.state!=='APPROVED') throw new ConflictException('Only approved product versions may be retired');
       this.expected(row.row_version,dto.expected_version);
       const u=await client.query<VersionRow>(`UPDATE product_versions SET state='RETIRED',row_version=row_version+1,
-        updated_by_user_id=$1,updated_at=clock_timestamp(),retirement_idempotency_key=$2,retirement_request_hash=$3
+        updated_by_user_id=$1,updated_at=clock_timestamp(),retirement_idempotency_key=$2,retirement_request_hash=$3,
+        effective_to_override=CASE WHEN effective_from>CURRENT_DATE THEN effective_from-1
+          WHEN effective_to IS NOT NULL AND effective_to<CURRENT_DATE THEN effective_to ELSE CURRENT_DATE END
         WHERE id=$4 AND product_id=$5 AND tenant_id=$6 AND factory_id=$7 AND state='APPROVED' AND row_version=$8
         RETURNING ${VERSION_COLS}`,[userId,key,hash,v,p,tenantId,factoryId,dto.expected_version]);
       const retired=u.rows[0]; if(!retired) throw new ConflictException('Product version changed concurrently; reload before retiring');
-      await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:v,event:'PRODUCT.VERSION_RETIRED',correlation,requestId,userId,payload:{product_id:p,product_version_id:v,version_number:retired.version_number,row_version:retired.row_version}});
+      await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:v,event:'PRODUCT.VERSION_RETIRED',correlation,requestId,userId,payload:{product_id:p,product_version_id:v,version_number:retired.version_number,effective_to_override:retired.effective_to_override,row_version:retired.row_version}});
       return {version:retired,replayed:false};
     });
     if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_VERSION_RETIRED',resource:'PRODUCT_VERSION',id:v,requestId,traceId,payload:{productId:p,versionNumber:result.version.version_number}});
@@ -567,6 +640,13 @@ export class ProductDefinitionsService {
       throw new BadRequestException(`Quantity must have at most ${scale} decimal places`);
     }
     return BigInt(whole)*10n**BigInt(scale)+BigInt(fraction||'0');
+  }
+
+  private previousDay(isoDate:string):string {
+    const date=new Date(`${isoDate}T00:00:00.000Z`);
+    if(Number.isNaN(date.getTime())) throw new BadRequestException('effective_from must be a valid calendar date');
+    date.setUTCDate(date.getUTCDate()-1);
+    return date.toISOString().slice(0,10);
   }
 
   private async lockDraft(client:PoolClient,tenantId:string,factoryId:string,p:string,v:string,expected:number) {

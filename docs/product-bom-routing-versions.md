@@ -5,7 +5,7 @@
 
 ## Contract model
 
-A factory-scoped product definition references one active finished-good inventory item. Product versions are retained engineering revisions with a version number, effective date range, expected yield, change summary and optimistic `row_version`. New revisions begin as `DRAFT`. Approval requires a non-empty BOM, at least one routing step, no unresolved draft alternate material contracts, and a non-overlapping effective interval against other approved versions. Approved revisions cannot be edited; create a new draft instead. Once alternate-material contracts exist for a draft revision, changing the BOM requires a new product version so the existing contracts and their audit lineage are never cascade-deleted.
+A factory-scoped product definition references one active finished-good inventory item. Product versions are retained engineering revisions with a version number, effective date range, expected yield, change summary and optimistic `row_version`. New revisions begin as `DRAFT`. Approval requires a non-empty BOM, at least one routing step, active finished-good/components/work centres, no unresolved draft alternate material contracts, and a non-overlapping effective interval. Releasing a later-effective version atomically closes the earlier approved interval on the prior calendar day and records the superseding revision; historical queries continue resolving that earlier revision only for the dates it covered. Approved revisions cannot be edited; create a new draft instead. Once alternate-material contracts exist for a draft revision, changing the BOM requires a new product version so the existing contracts and their audit lineage are never cascade-deleted.
 
 Every BOM line references active inventory in the same tenant and factory; has a positive quantity, unit, wastage assumption, unique line number, and optional alternate group. The BOM unit must match the item's base unit or have a **directionally approved** UoM conversion into that unit. Wastage is a planning assumption and does not directly post stock.
 
@@ -24,7 +24,7 @@ All routes are under `/api`, require verified user/tenant and factory scope, and
 | `GET /api/products/:productId/versions` | `products.master.read` | List revisions |
 | `POST /api/products/:productId/versions` | `products.master.write` | Create a draft revision; requires `Idempotency-Key` |
 | `GET /api/products/:productId/versions/:versionId` | `products.master.read` | Read version, BOM, alternates and route |
-| `GET /api/products/:productId/versions/effective?at=YYYY-MM-DD` | `products.master.read` | Resolve the single approved effective revision and its BOM/route for a date |
+| `GET /api/products/:productId/versions/effective?at=YYYY-MM-DD` | `products.master.read` | Resolve the single effective revision (including retained historical intervals) and its BOM/route for a date |
 | `PUT /api/products/:productId/versions/:versionId/bom` | `products.master.write` | Replace draft BOM with optimistic version check |
 | `PUT /api/products/:productId/versions/:versionId/routing` | `products.master.write` | Replace draft routing with optimistic version check |
 | `POST /api/products/:productId/versions/:versionId/bom-lines/:lineId/alternates` | `products.master.write` | Create a draft alternate contract; key required |

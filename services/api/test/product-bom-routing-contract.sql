@@ -22,7 +22,8 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '084_product_contract_maker_checker')
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '085_product_alternate_retirement_lifecycle')
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '086_product_bom_uom_snapshots')
-     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '087_product_bom_contract_retention_guards') THEN
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '087_product_bom_contract_retention_guards')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '088_product_version_supersession_and_release_readiness') THEN
     RAISE EXCEPTION 'Product/BOM/routing migration marker is missing';
   END IF;
 
@@ -49,6 +50,14 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_lines'::regclass AND conname='chk_product_bom_line_uom_snapshot')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_alternates'::regclass AND conname='chk_product_bom_alternate_uom_snapshot') THEN
     RAISE EXCEPTION 'BOM/alternate UoM snapshots missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='product_versions' AND column_name='effective_to_override')
+     OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='product_versions' AND column_name='superseded_by_version_id')
+     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='product_versions'::regclass AND tgname='trg_product_version_effective_override_guard' AND NOT tgisinternal AND tgenabled<>'D')
+     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='product_versions'::regclass AND tgname='trg_product_version_release_readiness' AND NOT tgisinternal AND tgenabled<>'D')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_versions'::regclass AND conname='chk_product_version_supersession_pair') THEN
+    RAISE EXCEPTION 'Product version historical cutoff/supersession and release-readiness guards are missing';
   END IF;
 
   IF NOT EXISTS (
