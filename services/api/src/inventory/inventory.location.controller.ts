@@ -102,6 +102,72 @@ export class InventoryLocationController {
     );
   }
 
+  @Post('items/:itemId/put-away')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async putAwayStock(
+    @Req() request: InventoryLocationRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: TransferInventoryLocationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.locationService.transferStock(
+      context.userId, context.tenantId, context.factoryId, itemId,
+      { ...body, movement_purpose: 'PUT_AWAY' }, idempotencyKey ?? null,
+      context.requestId, context.traceId,
+    );
+  }
+
+  @Post('items/:itemId/picks')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async pickStockToStaging(
+    @Req() request: InventoryLocationRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: TransferInventoryLocationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.locationService.transferStock(
+      context.userId, context.tenantId, context.factoryId, itemId,
+      { ...body, movement_purpose: 'PICK' }, idempotencyKey ?? null,
+      context.requestId, context.traceId,
+    );
+  }
+
+  @Get('items/:itemId/put-away-targets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listPutawayTargets(
+    @Req() request: InventoryLocationRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.locationService.listPutawayTargets(
+      context.tenantId, context.factoryId, itemId, rawLimit === undefined ? 50 : Number(rawLimit),
+    );
+  }
+
+  @Get('items/:itemId/pick-sources')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listPickSources(
+    @Req() request: InventoryLocationRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.locationService.listPickSources(
+      context.tenantId, context.factoryId, itemId, rawLimit === undefined ? 50 : Number(rawLimit),
+    );
+  }
+
   @Post('items/:itemId/location-transfers')
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.write')

@@ -314,15 +314,24 @@ export class InventoryService {
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
 
           if (locationId) {
-            const locationResult = await client.query<{ id: string }>(
-              `SELECT id::text AS id
+            const locationResult = await client.query<{
+              id: string; putaway_enabled: boolean; picking_enabled: boolean;
+            }>(
+              `SELECT id::text AS id, putaway_enabled, picking_enabled
                FROM inventory_locations
                WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND status = 'ACTIVE'
                LIMIT 1`,
               [locationId, tenantId, factoryId],
             );
-            if (!locationResult.rows[0]) {
+            const selectedLocation = locationResult.rows[0];
+            if (!selectedLocation) {
               throw new NotFoundException('Active inventory location not found in this factory');
+            }
+            if (dto.movement_type === 'RECEIPT' && !selectedLocation.putaway_enabled) {
+              throw new ConflictException('Selected location policy does not allow stock receipts/put-away');
+            }
+            if (dto.movement_type === 'ISSUE' && !selectedLocation.picking_enabled) {
+              throw new ConflictException('Selected location policy does not allow picking/stock issues');
             }
             // The migration trigger applies the aggregate stock delta to this bin atomically.
             await client.query(

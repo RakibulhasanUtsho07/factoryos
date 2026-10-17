@@ -47,6 +47,7 @@ interface LocationTransferRow extends QueryResultRow {
   item_id: string;
   source_location_id: string;
   destination_location_id: string;
+  movement_purpose: 'TRANSFER' | 'PUT_AWAY' | 'PICK';
   quantity: string;
   source_quantity_before: string;
   source_quantity_after: string;
@@ -79,6 +80,7 @@ const TRANSFER_COLUMNS = `
   item_id::text AS item_id,
   source_location_id::text AS source_location_id,
   destination_location_id::text AS destination_location_id,
+  movement_purpose,
   quantity::text AS quantity,
   source_quantity_before::text AS source_quantity_before,
   source_quantity_after::text AS source_quantity_after,
@@ -356,6 +358,86 @@ export class InventoryLocationService {
     return result.rows;
   }
 
+  async listPutawayTargets(
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+    rawLimit = 50,
+  ) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(itemId, 'itemId');
+    const limit = this.validateLimit(rawLimit);
+    const item = await this.database.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_items
+       WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1`,
+      [itemId, tenantId, factoryId], { tenantId },
+    );
+    if (!item.rows[0]) throw new NotFoundException('Inventory item not found in this factory');
+    const result = await this.database.query(
+      `
+      SELECT l.id::text AS location_id, l.location_code, l.name AS location_name,
+             l.parent_location_id::text AS parent_location_id,
+             l.putaway_priority, l.picking_enabled,
+             COALESCE(lb.quantity_on_hand, 0)::text AS quantity_on_hand,
+             COALESCE(lb.quantity_reserved, 0)::text AS quantity_reserved
+      FROM inventory_locations l
+      JOIN inventory_locations parent
+        ON parent.id = l.parent_location_id
+       AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+      LEFT JOIN inventory_location_balances lb
+        ON lb.tenant_id = l.tenant_id AND lb.factory_id = l.factory_id
+       AND lb.location_id = l.id AND lb.item_id = $3
+      WHERE l.tenant_id = $1 AND l.factory_id = $2
+        AND l.status = 'ACTIVE' AND l.location_type = 'BIN' AND l.putaway_enabled = TRUE
+        AND parent.status = 'ACTIVE' AND parent.location_type IN ('WAREHOUSE', 'STAGING')
+      ORDER BY l.putaway_priority, lower(l.location_code), l.id
+      LIMIT $4
+      `,
+      [tenantId, factoryId, itemId, limit], { tenantId },
+    );
+    return result.rows;
+  }
+
+  async listPickSources(
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+    rawLimit = 50,
+  ) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(itemId, 'itemId');
+    const limit = this.validateLimit(rawLimit);
+    const item = await this.database.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_items
+       WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1`,
+      [itemId, tenantId, factoryId], { tenantId },
+    );
+    if (!item.rows[0]) throw new NotFoundException('Inventory item not found in this factory');
+    const result = await this.database.query(
+      `
+      SELECT l.id::text AS location_id, l.location_code, l.name AS location_name,
+             l.parent_location_id::text AS parent_location_id, l.picking_priority,
+             lb.quantity_on_hand::text AS quantity_on_hand,
+             lb.quantity_reserved::text AS quantity_reserved,
+             (lb.quantity_on_hand - lb.quantity_reserved)::text AS quantity_available
+      FROM inventory_location_balances lb
+      JOIN inventory_locations l
+        ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id AND l.factory_id = lb.factory_id
+      JOIN inventory_locations parent
+        ON parent.id = l.parent_location_id
+       AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+      WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+        AND l.status = 'ACTIVE' AND l.location_type = 'BIN' AND l.picking_enabled = TRUE
+        AND parent.status = 'ACTIVE' AND parent.location_type IN ('WAREHOUSE', 'STAGING')
+        AND lb.quantity_on_hand > lb.quantity_reserved
+      ORDER BY l.picking_priority, lower(l.location_code), l.id
+      LIMIT $4
+      `,
+      [tenantId, factoryId, itemId, limit], { tenantId },
+    );
+    return result.rows;
+  }
+
   async listItemBalances(
     tenantId: string,
     factoryId: string,
@@ -452,6 +534,10 @@ export class InventoryLocationService {
     if (sourceId === destinationId) {
       throw new BadRequestException('source_location_id and destination_location_id must differ');
     }
+    const movementPurpose = dto.movement_purpose ?? 'TRANSFER';
+    if (!['TRANSFER', 'PUT_AWAY', 'PICK'].includes(movementPurpose)) {
+      throw new BadRequestException('movement_purpose must be TRANSFER, PUT_AWAY or PICK');
+    }
 
     const idempotencyKey = rawIdempotencyKey?.trim() ?? '';
     if (!idempotencyKey) throw new BadRequestException('Idempotency-Key is required for location transfers');
@@ -471,6 +557,7 @@ export class InventoryLocationService {
       itemId: itemId.toLowerCase(),
       sourceId,
       destinationId,
+      movementPurpose,
       quantity,
       notes,
     });
@@ -512,6 +599,32 @@ export class InventoryLocationService {
         );
         if (locationResult.rows.length !== 2) {
           throw new NotFoundException('Both locations must be active and belong to this factory');
+        }
+        const sourceLocation = locationResult.rows.find((row) => row.id === sourceId);
+        const destinationLocation = locationResult.rows.find((row) => row.id === destinationId);
+        if (!sourceLocation || !destinationLocation) {
+          throw new NotFoundException('Source or destination location is unavailable');
+        }
+        if (!sourceLocation.picking_enabled) {
+          throw new ConflictException('Source location policy does not allow picking or transfers');
+        }
+        if (!destinationLocation.putaway_enabled) {
+          throw new ConflictException('Destination location policy does not allow put-away or receipts');
+        }
+        if (movementPurpose === 'PUT_AWAY') {
+          if (
+            !(
+              sourceLocation.location_type === 'STAGING'
+              || (sourceLocation.location_type === 'VIRTUAL' && sourceLocation.is_default)
+            )
+            || destinationLocation.location_type !== 'BIN'
+          ) {
+            throw new BadRequestException('PUT_AWAY must move stock from STAGING/UNASSIGNED to a BIN');
+          }
+        } else if (movementPurpose === 'PICK') {
+          if (sourceLocation.location_type !== 'BIN' || destinationLocation.location_type !== 'STAGING') {
+            throw new BadRequestException('PICK must move unreserved stock from a BIN to STAGING');
+          }
         }
 
         const aggregateResult = await client.query<{
@@ -602,11 +715,11 @@ export class InventoryLocationService {
             tenant_id, factory_id, item_id, source_location_id, destination_location_id,
             quantity, source_quantity_before, source_quantity_after,
             destination_quantity_before, destination_quantity_after,
-            idempotency_key, request_hash, notes, created_by_user_id, correlation_id
+            idempotency_key, request_hash, notes, created_by_user_id, correlation_id, movement_purpose
           )
           VALUES (
             $1, $2, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric,
-            $9::numeric, $10::numeric, $11, $12, $13, $14, $15::uuid
+            $9::numeric, $10::numeric, $11, $12, $13, $14, $15::uuid, $16
           )
           RETURNING ${TRANSFER_COLUMNS}
           `,
@@ -614,7 +727,7 @@ export class InventoryLocationService {
             tenantId, factoryId, itemId, sourceId, destinationId,
             quantity, this.fromUnits(sourceBefore), this.fromUnits(sourceAfter),
             this.fromUnits(destinationBefore), this.fromUnits(destinationAfter),
-            idempotencyKey, requestHash, notes, userId, correlationId,
+            idempotencyKey, requestHash, notes, userId, correlationId, movementPurpose,
           ],
         );
         const transfer = inserted.rows[0];
@@ -622,11 +735,16 @@ export class InventoryLocationService {
 
         await this.insertOutboxEvent(client, {
           tenantId, factoryId, aggregateType: 'INVENTORY_ITEM', aggregateId: itemId,
-          eventType: 'INVENTORY.STOCK_LOCATION_TRANSFERRED',
+          eventType: movementPurpose === 'PUT_AWAY'
+            ? 'INVENTORY.STOCK_PUT_AWAY_COMPLETED'
+            : movementPurpose === 'PICK'
+              ? 'INVENTORY.STOCK_PICKED_TO_STAGING'
+              : 'INVENTORY.STOCK_LOCATION_TRANSFERRED',
           correlationId, userId,
           payload: {
             transfer: {
               id: transfer.id,
+              movement_purpose: movementPurpose,
               item_id: transfer.item_id,
               source_location_id: transfer.source_location_id,
               destination_location_id: transfer.destination_location_id,
@@ -645,9 +763,14 @@ export class InventoryLocationService {
     if (!result.replayed) {
       await this.recordAuditSafely({
         tenantId, factoryId, userId,
-        action: 'STOCK_LOCATION_TRANSFER',
+        action: result.movement_purpose === 'PUT_AWAY'
+          ? 'STOCK_PUT_AWAY'
+          : result.movement_purpose === 'PICK'
+            ? 'STOCK_PICK'
+            : 'STOCK_LOCATION_TRANSFER',
         resourceId: result.id, requestId, traceId,
         payload: {
+          movementPurpose: result.movement_purpose,
           itemId: result.item_id,
           sourceLocationId: result.source_location_id,
           destinationLocationId: result.destination_location_id,

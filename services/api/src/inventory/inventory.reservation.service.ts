@@ -202,7 +202,7 @@ export class InventoryReservationService {
               SELECT id::text AS id
               FROM inventory_locations
               WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-                AND status = 'ACTIVE' AND location_type = 'BIN'
+                AND status = 'ACTIVE' AND location_type = 'BIN' AND picking_enabled = TRUE
               FOR UPDATE
               `,
               [locationId, tenantId, factoryId],
@@ -924,7 +924,8 @@ export class InventoryReservationService {
         LEFT JOIN inventory_locations parent
           ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
         WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
-          AND l.status = 'ACTIVE' AND lb.quantity_on_hand > lb.quantity_reserved
+          AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
+          AND lb.quantity_on_hand > lb.quantity_reserved
           AND (
             (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
             OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')

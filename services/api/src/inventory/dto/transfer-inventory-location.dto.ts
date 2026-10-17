@@ -8,6 +8,9 @@ import {
 } from 'class-validator';
 
 export class TransferInventoryLocationDto {
+  @IsOptional()
+  @IsIn(['TRANSFER', 'PUT_AWAY', 'PICK'])
+  movement_purpose?: 'TRANSFER' | 'PUT_AWAY' | 'PICK';
   @IsUUID()
   source_location_id!: string;
 
