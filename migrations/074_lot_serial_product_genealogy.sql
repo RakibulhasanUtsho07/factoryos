@@ -148,11 +148,17 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_seed_traceability_settings();
 CREATE OR REPLACE FUNCTION factoryos_guard_traceability_settings()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $trace_settings_guard$
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'traceability settings cannot be deleted'
-      USING ERRCODE = '55000';
+    -- Preserve settings during normal operation but allow parent-factory lifecycle cascade.
+    IF EXISTS (
+      SELECT 1 FROM factories f
+      WHERE f.id = OLD.factory_id AND f.tenant_id = OLD.tenant_id
+    ) THEN
+      RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'traceability settings cannot be deleted independently of their factory';
+    END IF;
+    RETURN OLD;
   END IF;
   IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
      OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
@@ -160,12 +166,11 @@ BEGIN
      OR NEW.version <> OLD.version + 1
      OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
      OR NEW.updated_at <= OLD.updated_at THEN
-    RAISE EXCEPTION 'traceability settings updates require the authenticated actor and the next version'
-      USING ERRCODE = '23514';
+    RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'traceability settings updates require the authenticated actor and the next version';
   END IF;
   RETURN NEW;
 END;
-$$;
+$trace_settings_guard$;
 CREATE TRIGGER trg_traceability_settings_guard
 BEFORE UPDATE OR DELETE ON traceability_settings
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_traceability_settings();
