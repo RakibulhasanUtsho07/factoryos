@@ -79,6 +79,9 @@ BEGIN
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_events'::regclass
       AND tgname = 'trg_work_order_events_immutable' AND NOT tgisinternal AND tgenabled <> 'D'
   ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_events'::regclass
+      AND tgname = 'trg_work_order_event_payload_guard' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'orders'::regclass
       AND tgname = 'trg_order_terminal_work_order_guard' AND NOT tgisinternal AND tgenabled <> 'D'
   ) THEN
