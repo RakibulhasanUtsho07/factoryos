@@ -553,8 +553,8 @@ export class ProductDefinitionsService {
     this.scope(userId,tenantId,factoryId); this.uuid(productId,'productId'); this.uuid(versionId,'versionId');
     if(!Number.isInteger(dto.expected_version)||dto.expected_version<1) throw new BadRequestException('expected_version must be a positive integer');
     const key=this.key(keyRaw),p=productId.toLowerCase(),v=versionId.toLowerCase(),
-    if(key.startsWith('system:superseded:')) throw new BadRequestException('Idempotency-Key prefix system:superseded: is reserved for system-generated version supersession');
       hash=this.hash({product_id:p,product_version_id:v,expected_version:dto.expected_version}),correlation=this.correlation(requestId,traceId);
+    if(key.startsWith('system:superseded:')) throw new BadRequestException('Idempotency-Key prefix system:superseded: is reserved for system-generated version supersession');
     const result=await this.database.transaction({tenantId,userId},async client=>{
       const q=await client.query<VersionRow>(`SELECT ${VERSION_COLS} FROM product_versions WHERE id=$1 AND product_id=$2
         AND tenant_id=$3 AND factory_id=$4 FOR UPDATE`,[v,p,tenantId,factoryId]);
