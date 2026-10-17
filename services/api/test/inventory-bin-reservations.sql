@@ -15,6 +15,7 @@ DECLARE
   v_order_allocation_trigger BOOLEAN;
   v_reservation_allocation_trigger BOOLEAN;
   v_order_allocation_function BOOLEAN;
+  v_final_state_balance_guard BOOLEAN;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
@@ -27,6 +28,12 @@ BEGIN
     WHERE version = '078_multi_bin_order_reservation_allocation'
   ) THEN
     RAISE EXCEPTION 'WP02 multi-bin order allocation migration marker is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version = '079_inventory_bin_balance_deferred_final_state_guard'
+  ) THEN
+    RAISE EXCEPTION 'WP02 final-state bin balance guard migration marker is missing';
   END IF;
 
   SELECT EXISTS (
@@ -85,6 +92,11 @@ BEGIN
     pg_get_functiondef('factoryos_assert_inventory_location_reserved_balance()'::regprocedure)
   ) > 0 INTO v_balance_guard_function;
 
+  SELECT position(
+    'SELECT lb.quantity_reserved' IN
+    pg_get_functiondef('factoryos_assert_inventory_location_reserved_balance()'::regprocedure)
+  ) > 0 INTO v_final_state_balance_guard;
+
   SELECT EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname = current_schema() AND tablename = 'inventory_reservations'
@@ -114,13 +126,13 @@ BEGIN
      OR NOT v_reserved_stock_guard OR NOT v_balance_guard_trigger
      OR NOT v_balance_guard_function OR NOT v_multi_bin_unique_index
      OR NOT v_order_allocation_trigger OR NOT v_reservation_allocation_trigger
-     OR NOT v_order_allocation_function THEN
+     OR NOT v_order_allocation_function OR NOT v_final_state_balance_guard THEN
     RAISE EXCEPTION
-      'WP02 bin reservation schema is incomplete: reserved_column %, location_column %, location_fk %, balance_check %, reservation_consistency %, reserved_stock_guard %, balance_guard_trigger %, balance_guard_function %, multi_bin_unique %, order_guard %, reservation_guard %, order_guard_function %',
+      'WP02 bin reservation schema is incomplete: reserved_column %, location_column %, location_fk %, balance_check %, reservation_consistency %, reserved_stock_guard %, balance_guard_trigger %, balance_guard_function %, multi_bin_unique %, order_guard %, reservation_guard %, order_guard_function %, final_state_balance_guard %',
       v_reserved_column, v_location_column, v_location_fk, v_location_balance_check,
       v_location_balance_trigger, v_reserved_stock_guard, v_balance_guard_trigger,
       v_balance_guard_function, v_multi_bin_unique_index, v_order_allocation_trigger,
-      v_reservation_allocation_trigger, v_order_allocation_function;
+      v_reservation_allocation_trigger, v_order_allocation_function, v_final_state_balance_guard;
   END IF;
 
   RAISE NOTICE 'WP02 bin-bound reservation schema checks passed';
