@@ -111,6 +111,7 @@ CREATE TABLE work_order_operations (
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
   work_order_id UUID NOT NULL,
+  product_id UUID NOT NULL,
   product_version_id UUID NOT NULL,
   product_routing_step_id UUID NOT NULL,
   step_number INTEGER NOT NULL,
@@ -143,7 +144,7 @@ CREATE TABLE work_order_operations (
     FOREIGN KEY (product_routing_step_id, product_version_id, tenant_id, factory_id)
     REFERENCES product_routing_steps(id, product_version_id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_work_order_operation_version
-    FOREIGN KEY (product_version_id, tenant_id, factory_id)
+    FOREIGN KEY (product_version_id, tenant_id, factory_id, product_id)
     REFERENCES product_versions(id, tenant_id, factory_id, product_id) ON DELETE RESTRICT,
   CONSTRAINT fk_work_order_operation_work_centre
     FOREIGN KEY (work_centre_id, tenant_id, factory_id)
@@ -320,6 +321,14 @@ BEGIN
   END IF;
 
   IF TG_OP = 'INSERT' THEN
+    SELECT product_id, product_version_id
+      INTO v_work_order_product_id, v_work_order_product_version_id
+    FROM work_orders
+    WHERE id = NEW.work_order_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+    IF NOT FOUND OR NEW.product_id <> v_work_order_product_id OR NEW.product_version_id <> v_work_order_product_version_id THEN
+      RAISE EXCEPTION 'operation route snapshot must match the parent work-order product revision'
+        USING ERRCODE = '23514';
+    END IF;
     IF NEW.status <> 'PLANNED' OR NEW.row_version <> 1
       OR NEW.started_at IS NOT NULL OR NEW.active_started_at IS NOT NULL
       OR NEW.completed_at IS NOT NULL OR NEW.downtime_started_at IS NOT NULL THEN
@@ -329,12 +338,12 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF ROW(NEW.id, NEW.tenant_id, NEW.factory_id, NEW.work_order_id, NEW.product_routing_step_id,
+  IF ROW(NEW.id, NEW.tenant_id, NEW.factory_id, NEW.work_order_id, NEW.product_id, NEW.product_version_id, NEW.product_routing_step_id,
          NEW.step_number, NEW.operation_code, NEW.operation_name, NEW.work_centre_id, NEW.setup_minutes,
          NEW.run_minutes_per_unit, NEW.queue_minutes, NEW.transfer_minutes, NEW.required_skill,
          NEW.instructions, NEW.is_quality_gate, NEW.created_at)
      IS DISTINCT FROM
-     ROW(OLD.id, OLD.tenant_id, OLD.factory_id, OLD.work_order_id, OLD.product_routing_step_id,
+     ROW(OLD.id, OLD.tenant_id, OLD.factory_id, OLD.work_order_id, OLD.product_id, OLD.product_version_id, OLD.product_routing_step_id,
          OLD.step_number, OLD.operation_code, OLD.operation_name, OLD.work_centre_id, OLD.setup_minutes,
          OLD.run_minutes_per_unit, OLD.queue_minutes, OLD.transfer_minutes, OLD.required_skill,
          OLD.instructions, OLD.is_quality_gate, OLD.created_at) THEN
