@@ -2,6 +2,10 @@ import {
   assertPrecedingOperationsComplete,
   assertTargetQuantityNotExceeded,
   assertWorkOrderTransition,
+  assertDowntimeCanStart,
+  assertDowntimeCanEnd,
+  assertWipSnapshotQuantity,
+  assertReworkQuantity,
   nextOperationStatus,
 } from './work-order-lifecycle';
 
@@ -52,5 +56,34 @@ describe('production work-order lifecycle contracts', () => {
   it('keeps processed good plus scrap output within the work-order target', () => {
     expect(() => assertTargetQuantityNotExceeded(1000000n, 600000n, 400000n)).not.toThrow();
     expect(() => assertTargetQuantityNotExceeded(1000000n, 600000n, 400001n)).toThrow('WORK_ORDER_TARGET_QUANTITY_EXCEEDED');
+  });
+
+  it('uses WIP as a current-operation snapshot and permits an explicit zero reset', () => {
+    expect(() => assertWipSnapshotQuantity(0n, 1000000n)).not.toThrow();
+    expect(() => assertWipSnapshotQuantity(250000n, 1000000n)).not.toThrow();
+    expect(() => assertWipSnapshotQuantity(1000001n, 1000000n)).toThrow('WIP_QUANTITY_EXCEEDS_WORK_ORDER_TARGET');
+    expect(() => assertWipSnapshotQuantity(-1n, 1000000n)).toThrow('WIP_QUANTITY_CANNOT_BE_NEGATIVE');
+  });
+
+  it('only opens downtime while the operation timer is running and only closes an open interval', () => {
+    expect(() => assertDowntimeCanStart({
+      workOrderStatus: 'IN_PROGRESS', operationStatus: 'IN_PROGRESS',
+      activeTimerOpen: true, downtimeAlreadyOpen: false,
+    })).not.toThrow();
+    expect(() => assertDowntimeCanStart({
+      workOrderStatus: 'IN_PROGRESS', operationStatus: 'IN_PROGRESS',
+      activeTimerOpen: false, downtimeAlreadyOpen: false,
+    })).toThrow('DOWNTIME_START_REQUIRES_ACTIVE_OPERATION_TIMER');
+    expect(() => assertDowntimeCanEnd({
+      workOrderStatus: 'IN_PROGRESS', operationStatus: 'IN_PROGRESS', downtimeAlreadyOpen: true,
+    })).not.toThrow();
+    expect(() => assertDowntimeCanEnd({
+      workOrderStatus: 'IN_PROGRESS', operationStatus: 'IN_PROGRESS', downtimeAlreadyOpen: false,
+    })).toThrow('DOWNTIME_END_REQUIRES_OPEN_INTERVAL');
+  });
+
+  it('requires positive rework quantities while preserving zero as a valid WIP snapshot', () => {
+    expect(() => assertReworkQuantity(1n)).not.toThrow();
+    expect(() => assertReworkQuantity(0n)).toThrow('REWORK_QUANTITY_MUST_BE_POSITIVE');
   });
 });
