@@ -176,6 +176,10 @@ CREATE INDEX idx_work_order_operations_sequence
 CREATE INDEX idx_work_order_operations_centre_status
   ON work_order_operations (tenant_id, factory_id, work_centre_id, status, step_number);
 
+CREATE UNIQUE INDEX uq_work_order_single_in_progress_operation
+  ON work_order_operations (tenant_id, factory_id, work_order_id)
+  WHERE status = 'IN_PROGRESS';
+
 CREATE TABLE work_order_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -389,10 +393,35 @@ CREATE TRIGGER trg_work_order_operation_lifecycle
 BEFORE INSERT OR UPDATE OR DELETE ON work_order_operations
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_operation_lifecycle();
 
+CREATE OR REPLACE FUNCTION factoryos_block_terminal_order_with_open_work_orders()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  IF NEW.status IS DISTINCT FROM OLD.status
+    AND NEW.status IN ('COMPLETED', 'CANCELLED')
+    AND EXISTS (
+      SELECT 1 FROM work_orders wo
+      WHERE wo.source_order_id = NEW.id
+        AND wo.tenant_id = NEW.tenant_id
+        AND wo.factory_id = NEW.factory_id
+        AND wo.status IN ('DRAFT', 'RELEASED', 'IN_PROGRESS', 'ON_HOLD')
+    ) THEN
+    RAISE EXCEPTION 'all work orders must be completed or explicitly cancelled before the sales order can become terminal'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER trg_order_terminal_work_order_guard
+BEFORE UPDATE OF status ON orders
+FOR EACH ROW EXECUTE FUNCTION factoryos_block_terminal_order_with_open_work_orders();
+
 CREATE OR REPLACE FUNCTION factoryos_prevent_work_order_event_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $
 BEGIN
   RAISE EXCEPTION 'shop-floor work-order events are append-only'
     USING ERRCODE = '55000';
