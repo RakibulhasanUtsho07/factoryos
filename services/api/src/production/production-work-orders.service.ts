@@ -575,6 +575,37 @@ export class ProductionWorkOrdersService {
     const workOrder = result.rows[0] as (WorkOrderRow & Record<string, unknown>) | undefined;
     if (!workOrder) throw new NotFoundException('Work order was not found in this factory');
 
+    const materialsResult = await this.database.query(`
+      SELECT r.id::text AS requirement_id, r.bom_line_id::text AS bom_line_id,
+        r.component_item_id::text AS component_item_id, r.line_number,
+        r.component_sku, r.component_name, r.component_unit,
+        r.base_quantity_per::text AS base_quantity_per,
+        r.expected_yield_percent::text AS expected_yield_percent,
+        r.wastage_percent::text AS wastage_percent,
+        r.required_quantity::text AS required_quantity,
+        COALESCE(
+          jsonb_agg(jsonb_build_object(
+            'reservation_id', mr.reservation_id,
+            'location_id', ir.location_id,
+            'item_id', mr.item_id,
+            'quantity', mr.quantity::text,
+            'status', ir.status,
+            'consumed_movement_id', ir.consumed_movement_id::text
+          ) ORDER BY ir.location_id, mr.reservation_id)
+          FILTER (WHERE mr.id IS NOT NULL),
+          '[]'::jsonb
+        ) AS reservations
+      FROM work_order_material_requirements r
+      LEFT JOIN work_order_material_reservations mr
+        ON mr.requirement_id = r.id AND mr.work_order_id = r.work_order_id
+       AND mr.tenant_id = r.tenant_id AND mr.factory_id = r.factory_id
+      LEFT JOIN inventory_reservations ir
+        ON ir.id = mr.reservation_id AND ir.tenant_id = mr.tenant_id AND ir.factory_id = mr.factory_id
+      WHERE r.work_order_id = $1 AND r.tenant_id = $2 AND r.factory_id = $3
+      GROUP BY r.id
+      ORDER BY r.line_number
+    `, [workOrderId, tenantId, factoryId], { tenantId, userId });
+
     const operationsResult = await this.database.query(`
       SELECT ${OPERATION_COLUMNS},
         (SELECT COALESCE(SUM(r.good_quantity), 0)::text FROM order_production_reports r
@@ -610,6 +641,7 @@ export class ProductionWorkOrdersService {
 
     return {
       ...workOrder,
+      materials: materialsResult.rows,
       operations: operationsResult.rows,
       events: eventsResult.rows,
     };
