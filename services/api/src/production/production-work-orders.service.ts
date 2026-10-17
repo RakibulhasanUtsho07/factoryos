@@ -1231,6 +1231,9 @@ export class ProductionWorkOrdersService {
           nextOperationBecameReady = true;
         }
       } else if (command === 'SKIP') {
+        if (this.toUnits(operation.wip_quantity) > 0n) {
+          throw new ConflictException('Clear WIP by transferring or dispositioning it before skipping this operation');
+        }
         const preceding = await client.query<{ status: OperationStatus; step_number: number }>(`
           SELECT status, step_number FROM work_order_operations
           WHERE work_order_id = $1 AND tenant_id = $2 AND factory_id = $3 AND step_number < $4
