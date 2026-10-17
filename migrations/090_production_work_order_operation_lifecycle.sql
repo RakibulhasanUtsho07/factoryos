@@ -599,6 +599,10 @@ DECLARE
   v_source_after NUMERIC(18,4);
   v_target_before NUMERIC(18,4);
   v_target_after NUMERIC(18,4);
+  v_source_status VARCHAR(20);
+  v_target_status VARCHAR(20);
+  v_source_downtime_started_at TIMESTAMPTZ;
+  v_work_order_status VARCHAR(24);
 BEGIN
   IF NEW.event_source IN ('HMI', 'MES', 'PLC', 'MOBILE')
     AND (NEW.device_id IS NULL OR length(btrim(NEW.device_id)) = 0) THEN
@@ -642,8 +646,8 @@ BEGIN
   END IF;
 
   IF NEW.event_type = 'WIP_TRANSFERRED' THEN
-    SELECT op.wip_quantity, op.row_version, op.step_number
-      INTO v_current_wip, v_operation_row_version, v_source_step
+    SELECT op.wip_quantity, op.row_version, op.step_number, op.status, op.downtime_started_at
+      INTO v_current_wip, v_operation_row_version, v_source_step, v_source_status, v_source_downtime_started_at
     FROM work_order_operations op
     WHERE op.id = NEW.operation_id AND op.work_order_id = NEW.work_order_id
       AND op.tenant_id = NEW.tenant_id AND op.factory_id = NEW.factory_id
@@ -659,8 +663,8 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
 
-    SELECT op.wip_quantity, op.row_version, op.step_number
-      INTO v_target_wip, v_target_row_version, v_target_step
+    SELECT op.wip_quantity, op.row_version, op.step_number, op.status
+      INTO v_target_wip, v_target_row_version, v_target_step, v_target_status
     FROM work_order_operations op
     WHERE op.id = v_target_operation_id AND op.work_order_id = NEW.work_order_id
       AND op.tenant_id = NEW.tenant_id AND op.factory_id = NEW.factory_id
@@ -670,9 +674,17 @@ BEGIN
         USING ERRCODE = '23503';
     END IF;
 
-    SELECT target_quantity INTO v_work_order_target
+    SELECT target_quantity, status INTO v_work_order_target, v_work_order_status
     FROM work_orders WHERE id = NEW.work_order_id
       AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+
+    IF v_work_order_status <> 'IN_PROGRESS'
+      OR v_source_status NOT IN ('IN_PROGRESS', 'PAUSED')
+      OR v_source_downtime_started_at IS NOT NULL
+      OR v_target_status NOT IN ('PLANNED', 'READY') THEN
+      RAISE EXCEPTION 'WIP transfer requires an in-progress work order, no open downtime and a planned/ready target'
+        USING ERRCODE = '23514';
+    END IF;
 
     v_source_before := (NEW.payload #>> '{wip_transfer,source_wip_before}')::numeric;
     v_source_after := (NEW.payload #>> '{wip_transfer,source_wip_after}')::numeric;
@@ -690,7 +702,7 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
 
-    IF v_target_step <> (
+    IF v_target_step IS NULL OR v_target_step IS DISTINCT FROM (
       SELECT min(op.step_number)
       FROM work_order_operations op
       WHERE op.work_order_id = NEW.work_order_id AND op.tenant_id = NEW.tenant_id
