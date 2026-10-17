@@ -157,6 +157,20 @@ export class ProductDefinitionsService {
     } catch(e) { this.uniqueConflict(e,'Product version or idempotency key already exists'); throw e; }
   }
 
+  async getEffectiveVersion(userId:string,tenantId:string,factoryId:string,productId:string,atRaw:string) {
+    this.scope(userId,tenantId,factoryId);
+    this.uuid(productId,'productId');
+    const at=this.date(atRaw,'at');
+    const found=await this.database.query<VersionRow>(`SELECT ${VERSION_COLS} FROM product_versions
+      WHERE tenant_id=$1 AND factory_id=$2 AND product_id=$3 AND state='APPROVED'
+        AND effective_from <= $4::date AND (effective_to IS NULL OR effective_to >= $4::date)
+      ORDER BY version_number DESC LIMIT 2`,
+      [tenantId,factoryId,productId.toLowerCase(),at],{tenantId,userId});
+    if(found.rows.length===0) throw new NotFoundException('No approved product version is effective on the requested date');
+    if(found.rows.length>1) throw new ConflictException('Multiple approved product versions overlap the requested date; release integrity needs repair');
+    return this.getVersionDetail(userId,tenantId,factoryId,productId,found.rows[0].id);
+  }
+
   async getVersionDetail(userId:string,tenantId:string,factoryId:string,productId:string,versionId:string) {
     this.scope(userId,tenantId,factoryId); this.uuid(productId,'productId'); this.uuid(versionId,'versionId');
     return this.database.transaction({tenantId,userId},async client=>{

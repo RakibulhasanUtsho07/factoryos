@@ -61,6 +61,12 @@ export class ProductsController {
     const c=this.context(req); return this.service.createVersion(c.userId,c.tenantId,c.factoryId,productId,dto,key??null,c.requestId,c.traceId);
   }
 
+  @Get(':productId/versions/effective')
+  @UseGuards(PermissionGuard) @RequirePermission('products.master.read') @RequireFactoryScope()
+  getEffectiveVersion(@Req() req:ProductRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Query('at') at?:string) {
+    const c=this.context(req); return this.service.getEffectiveVersion(c.userId,c.tenantId,c.factoryId,productId,at??'');
+  }
+
   @Get(':productId/versions/:versionId')
   @UseGuards(PermissionGuard) @RequirePermission('products.master.read') @RequireFactoryScope()
   detail(@Req() req:ProductRequest,@Param('productId',new ParseUUIDPipe()) productId:string,

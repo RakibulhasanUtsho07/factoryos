@@ -24,6 +24,7 @@ All routes are under `/api`, require verified user/tenant and factory scope, and
 | `GET /api/products/:productId/versions` | `products.master.read` | List revisions |
 | `POST /api/products/:productId/versions` | `products.master.write` | Create a draft revision; requires `Idempotency-Key` |
 | `GET /api/products/:productId/versions/:versionId` | `products.master.read` | Read version, BOM, alternates and route |
+| `GET /api/products/:productId/versions/effective?at=YYYY-MM-DD` | `products.master.read` | Resolve the single approved effective revision and its BOM/route for a date |
 | `PUT /api/products/:productId/versions/:versionId/bom` | `products.master.write` | Replace draft BOM with optimistic version check |
 | `PUT /api/products/:productId/versions/:versionId/routing` | `products.master.write` | Replace draft routing with optimistic version check |
 | `POST /api/products/:productId/versions/:versionId/bom-lines/:lineId/alternates` | `products.master.write` | Create a draft alternate contract; key required |

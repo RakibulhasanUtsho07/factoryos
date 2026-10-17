@@ -35,6 +35,11 @@ describe('ProductDefinitionsService request contracts',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects invalid dates when resolving an effective product version',async()=>{
+    await expect(service.getEffectiveVersion(USER,TENANT,FACTORY,PRODUCT,'2026-02-30')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
   it('rejects impossible effective date windows before opening a transaction',async()=>{
     await expect(service.createVersion(USER,TENANT,FACTORY,PRODUCT,{
       effective_from:'2026-10-20',effective_to:'2026-10-19',expected_yield_percent:98.5,change_summary:'Revision',
