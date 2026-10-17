@@ -387,7 +387,7 @@ export class MrpLiteService {
               AND po.factory_id = $2
               AND po.status = 'APPROVED'
               AND pol.inventory_item_id = ANY($3::uuid[])
-              AND pol.quantity > COALESCE(received.received_quantity, 0)
+              AND pol.quantity > COALESCE(received.accepted_quantity, 0)
             ORDER BY po.expected_delivery_date NULLS LAST, po.po_number, pol.id
           `, [tenantId, factoryId, itemIds])).rows
         : [];
