@@ -150,9 +150,15 @@ export function assertDowntimeCanEnd(input: {
   }
 }
 
-export function assertWipSnapshotQuantity(quantity: bigint, targetQuantity: bigint): void {
-  if (quantity < 0n) throw new Error('WIP_QUANTITY_CANNOT_BE_NEGATIVE');
-  if (targetQuantity <= 0n || quantity > targetQuantity) {
+export function assertWipSnapshotQuantity(
+  quantity: bigint,
+  targetQuantity: bigint,
+  otherOperationWip = 0n,
+): void {
+  if (quantity < 0n || otherOperationWip < 0n) {
+    throw new Error('WIP_QUANTITY_CANNOT_BE_NEGATIVE');
+  }
+  if (targetQuantity <= 0n || quantity + otherOperationWip > targetQuantity) {
     throw new Error('WIP_QUANTITY_EXCEEDS_WORK_ORDER_TARGET');
   }
 }
