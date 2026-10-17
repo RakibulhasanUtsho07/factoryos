@@ -15,7 +15,7 @@ describe('production work-order lifecycle contracts', () => {
 
   it('requires release readiness before the first operation starts', () => {
     expect(nextOperationStatus('READY', 'START', false)).toBe('IN_PROGRESS');
-    expect(nextOperationStatus('PLANNED', 'START', false)).toThrow;
+    expect(() => nextOperationStatus('PLANNED', 'START', false)).toThrow('INVALID_OPERATION_COMMAND:PLANNED:START');
   });
 
   it('supports measured start, pause, resume, hold and completion transitions', () => {
