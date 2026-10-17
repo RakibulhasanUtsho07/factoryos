@@ -117,6 +117,20 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'work_order_events'::regclass
+      AND conname = 'chk_work_order_event_type'
+      AND pg_get_constraintdef(oid) LIKE '%WIP_TRANSFERRED%'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'work_order_operations'::regclass
+      AND tgname = 'trg_work_order_wip_snapshot_event_evidence'
+      AND NOT tgisinternal AND tgenabled <> 'D' AND tgdeferrable AND tginitdeferred
+  ) THEN
+    RAISE EXCEPTION 'WIP transfer event type or deferred WIP snapshot audit evidence is missing';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conrelid = 'work_orders'::regclass
       AND conname = 'fk_work_order_source_line'
   ) OR NOT EXISTS (
