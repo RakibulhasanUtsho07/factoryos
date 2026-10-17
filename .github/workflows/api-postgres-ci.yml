@@ -174,6 +174,7 @@ jobs:
             migrations/086_product_bom_uom_snapshots.sql
             migrations/087_product_bom_contract_retention_guards.sql
             migrations/088_product_version_supersession_and_release_readiness.sql
+            migrations/089_mrp_lite_material_planning.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -225,6 +226,9 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \\
+            -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
