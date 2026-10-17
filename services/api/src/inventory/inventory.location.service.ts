@@ -31,6 +31,7 @@ export interface InventoryLocationRow extends QueryResultRow {
 interface LocationBalanceRow extends QueryResultRow {
   location_id: string;
   quantity_on_hand: string;
+  quantity_reserved: string;
   version?: string;
 }
 
@@ -237,6 +238,8 @@ export class InventoryLocationService {
       is_default: boolean;
       location_status: string;
       quantity_on_hand: string;
+      location_quantity_reserved: string;
+      location_quantity_available: string;
       location_balance_version: string | null;
       item_quantity_on_hand: string;
       item_quantity_reserved: string;
@@ -253,6 +256,8 @@ export class InventoryLocationService {
         l.is_default,
         l.status AS location_status,
         CASE WHEN lb.quantity_on_hand IS NULL THEN '0.0000' ELSE lb.quantity_on_hand::text END AS quantity_on_hand,
+        CASE WHEN lb.quantity_reserved IS NULL THEN '0.0000' ELSE lb.quantity_reserved::text END AS location_quantity_reserved,
+        CASE WHEN lb.quantity_on_hand IS NULL THEN '0.0000' ELSE (lb.quantity_on_hand - lb.quantity_reserved)::text END AS location_quantity_available,
         lb.version::text AS location_balance_version,
         b.quantity_on_hand::text AS item_quantity_on_hand,
         b.quantity_reserved::text AS item_quantity_reserved,
@@ -407,7 +412,7 @@ export class InventoryLocationService {
         const balancesResult = await client.query<LocationBalanceRow>(
           `
           SELECT location_id::text AS location_id, quantity_on_hand::text AS quantity_on_hand,
-                 version::text AS version
+                 quantity_reserved::text AS quantity_reserved, version::text AS version
           FROM inventory_location_balances
           WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
             AND location_id = ANY($4::uuid[])
@@ -428,8 +433,9 @@ export class InventoryLocationService {
         const sourceBefore = this.toUnits(sourceBalance.quantity_on_hand);
         const destinationBefore = this.toUnits(destinationBalance.quantity_on_hand);
         const quantityUnits = this.toUnits(quantity);
-        if (sourceBefore < quantityUnits) {
-          throw new ConflictException('Insufficient stock at the source location');
+        const sourceReserved = this.toUnits(sourceBalance.quantity_reserved);
+        if (sourceBefore - sourceReserved < quantityUnits) {
+          throw new ConflictException('Transfer quantity exceeds unreserved stock at the source location');
         }
 
         const sourceAfter = sourceBefore - quantityUnits;
