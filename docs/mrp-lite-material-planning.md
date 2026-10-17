@@ -51,7 +51,7 @@ The yield gross-up and BOM wastage are planning assumptions only. They do not is
 * Incoming supply is eligible for dated coverage only when it has an ETA on or after both `horizon_start` and the database's current date. Undated and overdue POs remain visible in incoming totals but are not trusted to meet a future due date.
 * **Shortage quantity** is the component quantity not coverable by unreserved stock and eligible incoming supply by the required date. **Shortage date** is that demand's required date. If a later dated PO ETA can cover the whole shortfall, `projected_available_date` and `LATE_SUPPLY` explain the recovery without hiding the original shortage; otherwise the status is `UNSUPPLIED`. A fully covered row is `COVERED`.
 
-Every requirement keeps the order and effective BOM revision IDs, component-unit quantity snapshots, stock/reservation/incoming quantities, both advisory allocation quantities, shortage/projection dates and alternate-material scenarios. Approved alternates are shown only as `WHAT_IF_ONLY` scenarios against their own inventory and open supply; this version does not auto-substitute materials.
+Every requirement keeps the order and effective BOM revision IDs, component-unit quantity snapshots, stock/reservation/incoming quantities, both advisory allocation quantities, shortage/projection dates and alternate-material scenarios. Approved alternates are shown only as `WHAT_IF_ONLY` scenarios, including the estimated alternate quantity derived from the shortage and approved conversion snapshot plus that alternate item's own on-hand, reserved and incoming quantities. Scenarios do not consume a shared alternate supply pool across hypothetical choices and do not auto-substitute materials.
 
 ## Persistence and boundaries
 
