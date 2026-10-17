@@ -92,13 +92,15 @@ interface PlanException {
   order_number: string;
   line_number: number;
   need_by_date: string;
+  bom_line_id?: string | null;
+  component_item_id?: string | null;
   message: string;
 }
 
 const PLAN_COLUMNS = `
   id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id,
   horizon_start::text AS horizon_start, horizon_end::text AS horizon_end,
-  allocation_policy, idempotency_key, request_hash, request_id::text AS request_id,
+  allocation_policy, request_id::text AS request_id,
   trace_id::text AS trace_id, correlation_id::text AS correlation_id,
   created_by_user_id::text AS created_by_user_id, summary, exceptions,
   created_at::text AS created_at
@@ -275,7 +277,7 @@ export class MrpLiteService {
         }
 
         if (issue) {
-          const identity = `${row.order_line_id}:${issue.code}`;
+          const identity = `${row.order_line_id}:${issue.code}${issue.code === 'INACTIVE_COMPONENT' ? `:${row.bom_line_id ?? 'missing'}` : ''}`;
           if (!seenExceptions.has(identity)) {
             seenExceptions.add(identity);
             exceptions.push({
@@ -285,6 +287,8 @@ export class MrpLiteService {
               order_number: row.order_number,
               line_number: row.order_line_number,
               need_by_date: row.need_by_date,
+              bom_line_id: row.bom_line_id,
+              component_item_id: row.component_item_id,
             });
           }
           continue;
