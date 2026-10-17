@@ -100,7 +100,7 @@ ALTER TABLE product_bom_lines
   ADD CONSTRAINT chk_product_bom_line_uom_snapshot CHECK (
     (uom_conversion_rule_id IS NULL AND uom_conversion_rule_version IS NULL AND uom_factor_numerator=1
       AND uom_factor_denominator=1 AND uom_rounding_mode='REJECT' AND upper(btrim(unit))=upper(btrim(inventory_base_unit)))
-    OR (uom_conversion_rule_id IS NOT NULL AND uom_conversion_rule_version>0 AND uom_rounding_mode IN ('REJECT','HALF_UP'))
+    OR (uom_conversion_rule_id IS NOT NULL AND uom_conversion_rule_version IS NOT NULL AND uom_conversion_rule_version>0 AND uom_rounding_mode IN ('REJECT','HALF_UP'))
   );
 
 ALTER TABLE product_bom_alternates
@@ -116,7 +116,7 @@ ALTER TABLE product_bom_alternates
   ADD CONSTRAINT chk_product_bom_alternate_uom_snapshot CHECK (
     (uom_conversion_rule_id IS NULL AND uom_conversion_rule_version IS NULL AND uom_factor_numerator=1
       AND uom_factor_denominator=1 AND uom_rounding_mode='REJECT' AND upper(btrim(unit))=upper(btrim(inventory_base_unit)))
-    OR (uom_conversion_rule_id IS NOT NULL AND uom_conversion_rule_version>0 AND uom_rounding_mode IN ('REJECT','HALF_UP'))
+    OR (uom_conversion_rule_id IS NOT NULL AND uom_conversion_rule_version IS NOT NULL AND uom_conversion_rule_version>0 AND uom_rounding_mode IN ('REJECT','HALF_UP'))
   );
 
 CREATE OR REPLACE FUNCTION factoryos_guard_product_bom_line()
@@ -149,7 +149,10 @@ BEGIN
     WHERE r.id=NEW.uom_conversion_rule_id AND r.tenant_id=NEW.tenant_id AND r.factory_id=NEW.factory_id
       AND r.status='APPROVED' AND upper(f.unit_code)=upper(btrim(NEW.unit)) AND upper(t.unit_code)=upper(btrim(v_item_unit))
     FOR SHARE OF r;
-    IF NOT FOUND OR v_rule.version<>NEW.uom_conversion_rule_version OR v_rule.factor_numerator<>NEW.uom_factor_numerator
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Approved UoM conversion for BOM snapshot was not found' USING ERRCODE='23514';
+    END IF;
+    IF v_rule.version<>NEW.uom_conversion_rule_version OR v_rule.factor_numerator<>NEW.uom_factor_numerator
       OR v_rule.factor_denominator<>NEW.uom_factor_denominator OR v_rule.rounding_mode<>NEW.uom_rounding_mode THEN
       RAISE EXCEPTION 'BOM snapshot must capture the currently approved directional UoM conversion' USING ERRCODE='23514';
     END IF;
@@ -207,7 +210,10 @@ BEGIN
       WHERE r.id=NEW.uom_conversion_rule_id AND r.tenant_id=NEW.tenant_id AND r.factory_id=NEW.factory_id
         AND r.status='APPROVED' AND upper(f.unit_code)=upper(btrim(NEW.unit)) AND upper(t.unit_code)=upper(btrim(v_item_unit))
       FOR SHARE OF r;
-      IF NOT FOUND OR v_rule.version<>NEW.uom_conversion_rule_version OR v_rule.factor_numerator<>NEW.uom_factor_numerator
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Approved UoM conversion for alternate snapshot was not found' USING ERRCODE='23514';
+      END IF;
+      IF v_rule.version<>NEW.uom_conversion_rule_version OR v_rule.factor_numerator<>NEW.uom_factor_numerator
         OR v_rule.factor_denominator<>NEW.uom_factor_denominator OR v_rule.rounding_mode<>NEW.uom_rounding_mode THEN
         RAISE EXCEPTION 'Alternate snapshot must capture currently approved directional UoM conversion' USING ERRCODE='23514';
       END IF;

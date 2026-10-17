@@ -31,6 +31,15 @@ interface WorkCentreRow extends QueryResultRow {
   capacity_units_per_hour:string|null; version:string; idempotency_key:string; request_hash:string;
   created_by_user_id:string; updated_by_user_id:string; created_at:string; updated_at:string;
 }
+interface UomQuantitySnapshot {
+  baseUnit: string;
+  baseQuantity: string;
+  ruleId: string | null;
+  ruleVersion: string | null;
+  numerator: string;
+  denominator: string;
+  roundingMode: 'REJECT' | 'HALF_UP';
+}
 interface AlternateRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; product_id:string; product_version_id:string;
   bom_line_id:string; alternate_item_id:string; conversion_factor:string; unit:string; rationale:string;
@@ -232,7 +241,7 @@ export class ProductDefinitionsService {
       const valid=await client.query<{id:string;unit:string}>(`SELECT id::text AS id,unit FROM inventory_items
         WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' AND id=ANY($3::uuid[])`,[tenantId,factoryId,ids]);
       if(valid.rows.length!==ids.length) throw new BadRequestException('BOM components must be active inventory items in the same factory');
-      const unitSnapshots=new Map<number,Awaited<ReturnType<ProductDefinitionsService['resolveQuantitySnapshot']>>>();
+      const unitSnapshots=new Map<number,UomQuantitySnapshot>();
       for(const line of lines) {
         const item=valid.rows.find(x=>x.id===line.item);
         if(item) unitSnapshots.set(line.line,await this.resolveQuantitySnapshot(client,tenantId,factoryId,line.unit,item.unit,line.qty,4,`BOM line ${line.line} unit`));
@@ -519,10 +528,7 @@ export class ProductDefinitionsService {
   }
 
   private async resolveQuantitySnapshot(client:PoolClient,tenantId:string,factoryId:string,sourceUnit:string,targetUnit:string,
-    quantity:string,scale:4|6,label:string):Promise<{
-      baseUnit:string;baseQuantity:string;ruleId:string|null;ruleVersion:string|null;
-      numerator:string;denominator:string;roundingMode:'REJECT'|'HALF_UP';
-    }> {
+    quantity:string,scale:4|6,label:string):Promise<UomQuantitySnapshot> {
     const from=sourceUnit.trim(),to=targetUnit.trim();
     const scaled=this.quantityToScaledInteger(quantity,scale);
     if(from.toUpperCase()===to.toUpperCase()) return {baseUnit:to,baseQuantity:quantity,ruleId:null,ruleVersion:null,numerator:'1',denominator:'1',roundingMode:'REJECT'};
