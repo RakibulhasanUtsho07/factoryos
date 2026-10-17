@@ -152,6 +152,7 @@ jobs:
             migrations/064_inventory_storage_locations.sql
             migrations/065_inventory_bin_reservations.sql
             migrations/066_inventory_bin_reservation_balance_guard.sql
+            migrations/067_supplier_purchase_order_lifecycle.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -185,6 +186,9 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/purchase-order-lifecycle.sql
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
