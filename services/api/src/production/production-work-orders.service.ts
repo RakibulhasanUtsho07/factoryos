@@ -681,7 +681,7 @@ export class ProductionWorkOrdersService {
       tenantId, userId, requestId, traceId,
       advisoryLockKey: `production-work-order:${command}:${tenantId}:${factoryId}:${workOrderId}:${key}`,
     }, async (client) => {
-      const eventKey = this.scopedEventKey(workOrderId, command, key);
+      const eventKey = this.scopedEventKey(workOrderId, 'OPERATION_EVENT', key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
       if (replay) return { workOrderId, replayed: true as const };
 
@@ -1075,6 +1075,7 @@ export class ProductionWorkOrdersService {
     const occurredAt = this.eventTimestamp(dto.occurred_at);
     const source = dto.source ?? 'API';
     const deviceId = dto.device_id?.trim() || null;
+    this.assertDeviceSource(source, deviceId);
     const requestHash = this.hash({
       work_order_id: workOrderId.toLowerCase(), operation_id: operationId.toLowerCase(),
       command, expected_work_order_version: dto.expected_work_order_version,
@@ -1085,7 +1086,7 @@ export class ProductionWorkOrdersService {
 
     const result = await this.database.transaction({
       tenantId, userId, requestId, traceId,
-      advisoryLockKey: `production-operation:${tenantId}:${factoryId}:${workOrderId}:${command}:${key}`,
+      advisoryLockKey: `production-operation:${tenantId}:${factoryId}:${workOrderId}:${key}`,
     }, async (client) => {
       const eventKey = this.scopedEventKey(workOrderId, command, key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
@@ -1486,6 +1487,7 @@ export class ProductionWorkOrdersService {
     const notes = dto.notes?.trim() || null;
     const source = dto.source ?? 'API';
     const deviceId = dto.device_id?.trim() || null;
+    this.assertDeviceSource(source, deviceId);
     const occurredAt = this.eventTimestamp(dto.occurred_at);
     const requestHash = this.hash({
       work_order_id: workOrderId.toLowerCase(), operation_id: dto.operation_id.toLowerCase(),
@@ -1523,7 +1525,7 @@ export class ProductionWorkOrdersService {
       const operation = operationResult.rows[0];
       if (!operation) throw new NotFoundException('Output operation was not found in this work order');
       if (operation.row_version !== dto.expected_operation_version) throw new ConflictException('Operation version is stale');
-      if (operation.status !== 'IN_PROGRESS' || operation.downtime_started_at) {
+      if (operation.status !== 'IN_PROGRESS' || !operation.active_started_at || operation.downtime_started_at) {
         throw new ConflictException('Output must be reported while the final operation is actively running outside downtime');
       }
       const lastStep = await this.lastOperationStep(client, workOrderId, tenantId, factoryId);
@@ -1819,6 +1821,15 @@ export class ProductionWorkOrdersService {
 
   private correlationId(traceId: string | null, requestId: string | null) {
     return this.validUuid(traceId) ?? this.validUuid(requestId) ?? randomUUID();
+  }
+
+  private assertDeviceSource(
+    source: 'API' | 'HMI' | 'MES' | 'PLC' | 'MOBILE' | 'IMPORT',
+    deviceId: string | null,
+  ) {
+    if (['HMI', 'MES', 'PLC', 'MOBILE'].includes(source) && !deviceId) {
+      throw new BadRequestException(`device_id is required when event source is ${source}`);
+    }
   }
 
   private requiredIdempotencyKey(value: string | null) {
