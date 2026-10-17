@@ -39,6 +39,9 @@ export interface DatabaseContext {
   requestId?: string | null;
 
   traceId?: string | null;
+
+  /** Optional per-operation isolation; default transaction behavior is unchanged. */
+  isolationLevel?: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE';
 }
 
 type TransactionCallback<T> = (
@@ -325,9 +328,12 @@ export class DatabaseService
       // BEGIN
       // --------------------------------------------------------
 
-      await client.query(
-        'BEGIN',
-      );
+      const isolationLevel = context?.isolationLevel;
+      const beginStatement = isolationLevel
+        ? `BEGIN ISOLATION LEVEL ${isolationLevel}`
+        : 'BEGIN';
+
+      await client.query(beginStatement);
 
       // --------------------------------------------------------
       // TRANSACTION-LOCAL RLS CONTEXT
