@@ -725,38 +725,6 @@ CREATE TRIGGER trg_product_genealogy_guard
 BEFORE INSERT OR UPDATE OR DELETE ON product_genealogy_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_product_genealogy_event();
 
-CREATE TABLE traceability_unit_status_events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID NOT NULL,
-  factory_id UUID NOT NULL,
-  unit_id UUID NOT NULL,
-  version BIGINT NOT NULL,
-  from_status VARCHAR(16) NOT NULL,
-  to_status VARCHAR(16) NOT NULL,
-  reason TEXT NOT NULL,
-  idempotency_key VARCHAR(255) NOT NULL,
-  request_hash CHAR(64) NOT NULL,
-  changed_by_user_id UUID NOT NULL,
-  correlation_id UUID NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-
-  CONSTRAINT uq_traceability_status_unit_version UNIQUE (unit_id, version),
-  CONSTRAINT uq_traceability_status_idempotency UNIQUE (tenant_id, factory_id, idempotency_key),
-  CONSTRAINT fk_traceability_status_unit
-    FOREIGN KEY (unit_id, tenant_id, factory_id)
-    REFERENCES traceability_units (id, tenant_id, factory_id) ON DELETE RESTRICT,
-  CONSTRAINT fk_traceability_status_actor
-    FOREIGN KEY (changed_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
-  CONSTRAINT chk_traceability_status_values CHECK (
-    from_status IN ('ACTIVE', 'QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED')
-    AND to_status IN ('ACTIVE', 'QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED')
-    AND from_status <> to_status
-  ),
-  CONSTRAINT chk_traceability_status_reason CHECK (length(btrim(reason)) > 0),
-  CONSTRAINT chk_traceability_status_key CHECK (length(btrim(idempotency_key)) > 0),
-  CONSTRAINT chk_traceability_status_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
-);
-
 CREATE OR REPLACE FUNCTION factoryos_guard_traceability_unit_status_event()
 RETURNS trigger
 LANGUAGE plpgsql
