@@ -336,6 +336,7 @@ export class ProductDefinitionsService {
         return {alternate:alt,row_version:pv.rows[0]?.row_version??'0',replayed:true};
       }
       if(alt.status!=='DRAFT') throw new ConflictException('Only draft alternate contracts may be approved');
+      if(alt.created_by_user_id===userId) throw new ConflictException('Alternate material contract must be approved by a different user than its creator');
       await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
       const u=await client.query<AlternateRow>(`UPDATE product_bom_alternates SET status='APPROVED',approved_by_user_id=$1,approved_at=clock_timestamp(),
         updated_at=clock_timestamp(),approval_idempotency_key=$2,approval_request_hash=$3
@@ -362,6 +363,7 @@ export class ProductDefinitionsService {
         const row=q.rows[0]; if(!row) throw new NotFoundException('Product version was not found in this factory');
         if(row.state==='APPROVED'&&row.approval_idempotency_key===key&&row.approval_request_hash===hash) return {version:row,replayed:true};
         if(row.state!=='DRAFT') throw new ConflictException('Only a draft product version can be approved');
+        if(row.created_by_user_id===userId) throw new ConflictException('Product version must be approved by a different user than its creator');
         this.expected(row.row_version,dto.expected_version);
         const u=await client.query<VersionRow>(`UPDATE product_versions SET state='APPROVED',row_version=row_version+1,
           updated_by_user_id=$1,updated_at=clock_timestamp(),approved_by_user_id=$1,approved_at=clock_timestamp(),

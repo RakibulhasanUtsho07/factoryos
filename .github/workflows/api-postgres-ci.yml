@@ -169,6 +169,7 @@ jobs:
             migrations/081_inventory_reorder_replenishment.sql
             migrations/082_product_bom_routing_version_contracts.sql
             migrations/083_product_definition_idempotency_hardening.sql
+            migrations/084_product_contract_maker_checker.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

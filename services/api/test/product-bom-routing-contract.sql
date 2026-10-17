@@ -91,6 +91,10 @@ BEGIN
     RAISE EXCEPTION 'BOM component and route work-centre scope constraints are missing';
   END IF;
 
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_versions'::regclass AND conname='chk_product_version_independent_approval')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_alternates'::regclass AND conname='chk_product_bom_alternate_independent_approval') THEN
+    RAISE EXCEPTION 'Independent product/alternate approval controls are missing';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_product_version_approval_idempotency')
      OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_product_alternate_approval_idempotency') THEN
     RAISE EXCEPTION 'Approval idempotency guards are missing';
