@@ -2,6 +2,7 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
+import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { ProductionWorkOrdersService } from './production-work-orders.service';
 
 const USER = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -14,13 +15,16 @@ describe('ProductionWorkOrdersService request contracts', () => {
   let service: ProductionWorkOrdersService;
   let database: { transaction: ReturnType<typeof jest.fn>; query: ReturnType<typeof jest.fn> };
   let audit: { record: ReturnType<typeof jest.fn> };
+  let inventory: { reserveWorkOrderMaterialRequirement: ReturnType<typeof jest.fn>; transitionWorkOrderMaterialReservations: ReturnType<typeof jest.fn> };
 
   beforeEach(() => {
     database = { transaction: jest.fn(), query: jest.fn() };
     audit = { record: jest.fn() };
+    inventory = { reserveWorkOrderMaterialRequirement: jest.fn(), transitionWorkOrderMaterialReservations: jest.fn() };
     service = new ProductionWorkOrdersService(
       database as unknown as DatabaseService,
       audit as unknown as AuditService,
+      inventory as unknown as InventoryReservationService,
     );
   });
 
