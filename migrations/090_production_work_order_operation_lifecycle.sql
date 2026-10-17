@@ -313,7 +313,10 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_lifecycle();
 CREATE OR REPLACE FUNCTION factoryos_guard_work_order_operation_lifecycle()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $
+DECLARE
+  v_work_order_product_id UUID;
+  v_work_order_product_version_id UUID;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'work-order operations are retained; use an explicit skip event before release or completion'
