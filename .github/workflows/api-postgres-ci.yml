@@ -157,6 +157,7 @@ jobs:
             migrations/069_supplier_po_transactional_audit.sql
             migrations/070_purchase_order_actor_binding.sql
             migrations/071_supplier_audit_correlation.sql
+            migrations/072_goods_receipt_grn.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
