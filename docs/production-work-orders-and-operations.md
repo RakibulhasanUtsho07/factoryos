@@ -79,7 +79,7 @@ PLANNED/READY -> SKIPPED only when the operation is not a quality gate.
 
 Only one operation per work order may be running at once. An operation cannot start until every preceding step is `COMPLETED` or `SKIPPED`; skips are prohibited for quality-gate steps. Operation commands require both `expected_work_order_version` and `expected_operation_version`; stale writes fail with a conflict rather than overwriting another operator's work.
 
-The server measures active-run intervals on start/resume and closes them on pause/hold/downtime/complete. Downtime must have a matched start and end; its duration is accounted separately from active run time, and a downtime interval can open only while an operation timer is actively running. Each `WIP_REPORTED` event replaces the operation’s current WIP snapshot (including an explicit `0` to clear it); WIP may not be negative or exceed the work-order target. Rework quantities must be positive and are retained as append-only rework evidence. Skip, hold, downtime-start, rework and scrap require a reason.
+The server measures active-run intervals on start/resume and closes them on pause/hold/downtime/complete. Downtime must have a matched start and end; its duration is accounted separately from active run time, and a downtime interval can open only while an operation timer is actively running. Each `WIP_REPORTED` event replaces the operation’s current WIP snapshot (including an explicit `0` to clear it); WIP may not be negative, and the sum of current WIP snapshots across all routing operations may not exceed the work-order target. Rework quantities must be positive and are retained as append-only rework evidence. Skip, hold, downtime-start, rework and scrap require a reason.
 
 Example operation-event request (all state-changing commands require the current versions and an idempotency key):
 
@@ -117,7 +117,7 @@ A zero WIP snapshot explicitly clears the current operation WIP before finishing
 
 ### Explicit WIP transfer
 
-`WIP_TRANSFERRED` moves a positive quantity only from an `IN_PROGRESS` or `PAUSED` operation to the immediate next routing operation in the same work order. Both source and target operation versions are serialized under the work-order transaction; source WIP is decreased and target WIP increased atomically. The transfer is rejected if it would overdraw source WIP, exceed the work-order target, skip over an operation, target an already running/completed operation, or occur while source downtime is open.
+`WIP_TRANSFERRED` moves a positive quantity only from an `IN_PROGRESS` or `PAUSED` operation to the immediate next routing operation in the same work order. Both source and target operation versions are serialized under the work-order transaction; source WIP is decreased and target WIP increased atomically. The work-order-wide sum of WIP across all operations is capped at the target quantity, so a WIP snapshot cannot duplicate the same planned units across two routing stages. The transfer is rejected if it would overdraw source WIP, exceed the work-order target, skip over an operation, target an already running/completed operation, or occur while source downtime is open.
 
 ```json
 {
