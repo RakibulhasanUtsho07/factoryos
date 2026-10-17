@@ -81,6 +81,40 @@ Only one operation per work order may be running at once. An operation cannot st
 
 The server measures active-run intervals on start/resume and closes them on pause/hold/downtime/complete. Downtime must have a matched start and end; its duration is accounted separately from active run time, and a downtime interval can open only while an operation timer is actively running. Each `WIP_REPORTED` event replaces the operation’s current WIP snapshot (including an explicit `0` to clear it); WIP may not be negative or exceed the work-order target. Rework quantities must be positive and are retained as append-only rework evidence. Skip, hold, downtime-start, rework and scrap require a reason.
 
+Example operation-event request (all state-changing commands require the current versions and an idempotency key):
+
+```http
+POST /api/production/work-orders/{workOrderId}/operations/{operationId}/events
+Idempotency-Key: line-a-op-1-start-00042
+Content-Type: application/json
+```
+
+```json
+{
+  "command": "START",
+  "expected_work_order_version": 3,
+  "expected_operation_version": 2,
+  "source": "HMI",
+  "device_id": "LINE-A-HMI-02",
+  "occurred_at": "2026-10-22T08:00:00Z"
+}
+```
+
+Use the same endpoint for `PAUSE`, `RESUME`, `COMPLETE`, `DOWNTIME_START`, `DOWNTIME_END`, `WIP_REPORTED` and `REWORK_REPORTED`. WIP is an absolute current-quantity snapshot, not a delta:
+
+```json
+{
+  "command": "WIP_REPORTED",
+  "quantity": 0,
+  "expected_work_order_version": 5,
+  "expected_operation_version": 4,
+  "source": "HMI",
+  "device_id": "LINE-A-HMI-02"
+}
+```
+
+A zero WIP snapshot explicitly clears the current operation WIP before finishing/transferring. A downtime-start command requires an open active-run timer and a reason; downtime-end requires an open interval. The server computes elapsed run/downtime from its own timestamps rather than trusting device-supplied duration values.
+
 ## Good output, scrap and order reconciliation
 
 Example final-operation output report:
