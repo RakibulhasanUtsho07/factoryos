@@ -29,6 +29,7 @@ All routes are under `/api`, require verified user/tenant and factory scope, and
 | `PUT /api/products/:productId/versions/:versionId/routing` | `products.master.write` | Replace draft routing with optimistic version check |
 | `POST /api/products/:productId/versions/:versionId/bom-lines/:lineId/alternates` | `products.master.write` | Create a draft alternate contract; key required |
 | `POST /api/products/:productId/versions/:versionId/alternates/:alternateId/approve` | `products.alternate.approve` | Approve alternate; key and expected row version required |
+| `POST /api/products/:productId/versions/:versionId/alternates/:alternateId/retire` | `products.alternate.approve` | Retire a draft/approved alternate while its product version is draft |
 | `POST /api/products/:productId/versions/:versionId/approve` | `products.version.approve` | Release a revision; key and expected row version required |
 | `POST /api/products/:productId/versions/:versionId/retire` | `products.version.approve` | Retire an approved revision; key and expected row version required |
 

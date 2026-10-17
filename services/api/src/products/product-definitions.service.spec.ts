@@ -88,6 +88,13 @@ describe('ProductDefinitionsService request contracts',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('requires an idempotency key to retire an alternate material contract',async()=>{
+    await expect(service.retireAlternate(USER,TENANT,FACTORY,PRODUCT,VERSION,TRACE,{
+      expected_version:1,
+    },null,null,null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects a zero alternate-material conversion factor',async()=>{
     await expect(service.createAlternate(USER,TENANT,FACTORY,PRODUCT,VERSION,TRACE,{
       expected_version:1,alternate_item_id:ITEM,conversion_factor:0,unit:'PCS',rationale:'Substitute',

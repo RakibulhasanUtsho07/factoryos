@@ -96,6 +96,14 @@ export class ProductsController {
     const c=this.context(req); return this.service.createAlternate(c.userId,c.tenantId,c.factoryId,productId,versionId,lineId,dto,key??null,c.requestId,c.traceId);
   }
 
+  @Post(':productId/versions/:versionId/alternates/:alternateId/retire')
+  @UseGuards(PermissionGuard) @RequirePermission('products.alternate.approve') @RequireFactoryScope()
+  retireAlternate(@Req() req:ProductRequest,@Param('productId',new ParseUUIDPipe()) productId:string,
+    @Param('versionId',new ParseUUIDPipe()) versionId:string,@Param('alternateId',new ParseUUIDPipe()) alternateId:string,
+    @Body() dto:ExpectedVersionDto,@Headers('idempotency-key') key?:string) {
+    const c=this.context(req); return this.service.retireAlternate(c.userId,c.tenantId,c.factoryId,productId,versionId,alternateId,dto,key??null,c.requestId,c.traceId);
+  }
+
   @Post(':productId/versions/:versionId/alternates/:alternateId/approve')
   @UseGuards(PermissionGuard) @RequirePermission('products.alternate.approve') @RequireFactoryScope()
   approveAlternate(@Req() req:ProductRequest,@Param('productId',new ParseUUIDPipe()) productId:string,

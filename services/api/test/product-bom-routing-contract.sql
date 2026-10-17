@@ -91,6 +91,10 @@ BEGIN
     RAISE EXCEPTION 'BOM component and route work-centre scope constraints are missing';
   END IF;
 
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='product_bom_alternates' AND column_name='retired_by_user_id')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_alternates'::regclass AND conname='chk_product_bom_alternate_lifecycle_metadata') THEN
+    RAISE EXCEPTION 'Alternate retirement lifecycle columns/constraint are missing';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_versions'::regclass AND conname='chk_product_version_independent_approval')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_alternates'::regclass AND conname='chk_product_bom_alternate_independent_approval') THEN
     RAISE EXCEPTION 'Independent product/alternate approval controls are missing';

@@ -186,7 +186,7 @@ export class ProductDefinitionsService {
       const alts=await client.query(`SELECT a.id::text AS id,a.bom_line_id::text AS bom_line_id,
         a.alternate_item_id::text AS alternate_item_id,i.sku AS alternate_sku,i.item_name AS alternate_name,
         a.conversion_factor::text AS conversion_factor,a.unit,a.rationale,a.status,
-        a.approved_by_user_id::text AS approved_by_user_id,a.approved_at::text AS approved_at
+        a.approved_by_user_id::text AS approved_by_user_id,a.approved_at::text AS approved_at,a.retired_by_user_id::text AS retired_by_user_id,a.retired_at::text AS retired_at
         FROM product_bom_alternates a JOIN inventory_items i ON i.id=a.alternate_item_id AND i.tenant_id=a.tenant_id AND i.factory_id=a.factory_id
         WHERE a.product_version_id=$1 AND a.tenant_id=$2 AND a.factory_id=$3 ORDER BY a.bom_line_id,a.created_at,a.id`,
         [version.id,tenantId,factoryId]);
@@ -328,16 +328,25 @@ export class ProductDefinitionsService {
     const key=this.key(keyRaw),p=productId.toLowerCase(),v=versionId.toLowerCase(),a=alternateId.toLowerCase(),
       hash=this.hash({product_id:p,product_version_id:v,alternate_id:a,expected_version:dto.expected_version}),correlation=this.correlation(requestId,traceId);
     const result=await this.database.transaction({tenantId,userId},async client=>{
-      const q=await client.query<AlternateRow>(`SELECT ${ALTERNATE_COLS} FROM product_bom_alternates
-        WHERE id=$1 AND product_id=$2 AND product_version_id=$3 AND tenant_id=$4 AND factory_id=$5 FOR UPDATE`,[a,p,v,tenantId,factoryId]);
-      const alt=q.rows[0]; if(!alt) throw new NotFoundException('Alternate contract was not found in this product version');
-      if(alt.status==='APPROVED'&&alt.approval_idempotency_key===key&&alt.approval_request_hash===hash) {
+      // The first read is deliberately unlocked; all write paths then lock version before alternate
+      // to match BOM replacement and avoid a parent/child lock-order deadlock.
+      const initial=await client.query<AlternateRow>(`SELECT ${ALTERNATE_COLS} FROM product_bom_alternates
+        WHERE id=$1 AND product_id=$2 AND product_version_id=$3 AND tenant_id=$4 AND factory_id=$5`,[a,p,v,tenantId,factoryId]);
+      const seen=initial.rows[0]; if(!seen) throw new NotFoundException('Alternate contract was not found in this product version');
+      if(seen.status==='APPROVED'&&seen.approval_idempotency_key===key&&seen.approval_request_hash===hash) {
         const pv=await client.query<{row_version:string}>('SELECT row_version::text AS row_version FROM product_versions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[v,tenantId,factoryId]);
-        return {alternate:alt,row_version:pv.rows[0]?.row_version??'0',replayed:true};
+        return {alternate:seen,row_version:pv.rows[0]?.row_version??'0',replayed:true};
       }
-      if(alt.status!=='DRAFT') throw new ConflictException('Only draft alternate contracts may be approved');
+      if(seen.status!=='DRAFT') throw new ConflictException('Only draft alternate contracts may be approved');
+      const parent=await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
+      const current=await client.query<AlternateRow>(`SELECT ${ALTERNATE_COLS} FROM product_bom_alternates
+        WHERE id=$1 AND product_id=$2 AND product_version_id=$3 AND tenant_id=$4 AND factory_id=$5 FOR UPDATE`,[a,p,v,tenantId,factoryId]);
+      const alt=current.rows[0]; if(!alt) throw new NotFoundException('Alternate contract was not found in this product version');
+      if(alt.status==='APPROVED'&&alt.approval_idempotency_key===key&&alt.approval_request_hash===hash) {
+        return {alternate:alt,row_version:parent.row_version,replayed:true};
+      }
+      if(alt.status!=='DRAFT') throw new ConflictException('Alternate material contract changed concurrently');
       if(alt.created_by_user_id===userId) throw new ConflictException('Alternate material contract must be approved by a different user than its creator');
-      await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
       const u=await client.query<AlternateRow>(`UPDATE product_bom_alternates SET status='APPROVED',approved_by_user_id=$1,approved_at=clock_timestamp(),
         updated_at=clock_timestamp(),approval_idempotency_key=$2,approval_request_hash=$3
         WHERE id=$4 AND product_id=$5 AND product_version_id=$6 AND tenant_id=$7 AND factory_id=$8 AND status='DRAFT'
@@ -348,6 +357,50 @@ export class ProductDefinitionsService {
       return {alternate:saved,row_version:rowVersion,replayed:false};
     });
     if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_BOM_ALTERNATE_APPROVED',resource:'PRODUCT_BOM_ALTERNATE',id:a,requestId,traceId,payload:{productId:p,productVersionId:v,rowVersion:result.row_version}});
+    return result;
+  }
+
+  async retireAlternate(userId:string,tenantId:string,factoryId:string,productId:string,versionId:string,alternateId:string,dto:ExpectedVersionDto,keyRaw:string|null,requestId:string|null,traceId:string|null) {
+    this.scope(userId,tenantId,factoryId); this.uuid(productId,'productId'); this.uuid(versionId,'versionId'); this.uuid(alternateId,'alternateId');
+    if(!Number.isInteger(dto.expected_version)||dto.expected_version<1) throw new BadRequestException('expected_version must be a positive integer');
+    const key=this.key(keyRaw),p=productId.toLowerCase(),v=versionId.toLowerCase(),a=alternateId.toLowerCase(),
+      hash=this.hash({product_id:p,product_version_id:v,alternate_id:a,expected_version:dto.expected_version}),correlation=this.correlation(requestId,traceId);
+    const result=await this.database.transaction({tenantId,userId},async client=>{
+      await this.lockKey(client,tenantId,factoryId,'alternate-retire',key);
+      const initial=await client.query<AlternateRow>(`SELECT ${ALTERNATE_COLS} FROM product_bom_alternates
+        WHERE id=$1 AND product_id=$2 AND product_version_id=$3 AND tenant_id=$4 AND factory_id=$5`,[a,p,v,tenantId,factoryId]);
+      const seen=initial.rows[0]; if(!seen) throw new NotFoundException('Alternate contract was not found in this product version');
+      if(seen.status==='RETIRED') {
+        if(seen.retirement_idempotency_key===key&&seen.retirement_request_hash===hash) {
+          const pv=await client.query<{row_version:string}>('SELECT row_version::text AS row_version FROM product_versions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[v,tenantId,factoryId]);
+          return {alternate:seen,row_version:pv.rows[0]?.row_version??'0',replayed:true};
+        }
+        throw new ConflictException('Alternate material contract has already been retired with a different request');
+      }
+      if(!['DRAFT','APPROVED'].includes(seen.status)) throw new ConflictException('Alternate material contract cannot be retired from its current state');
+      await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
+      const current=await client.query<AlternateRow>(`SELECT ${ALTERNATE_COLS} FROM product_bom_alternates
+        WHERE id=$1 AND product_id=$2 AND product_version_id=$3 AND tenant_id=$4 AND factory_id=$5 FOR UPDATE`,[a,p,v,tenantId,factoryId]);
+      const alt=current.rows[0]; if(!alt) throw new NotFoundException('Alternate contract was not found in this product version');
+      if(alt.status==='RETIRED'&&alt.retirement_idempotency_key===key&&alt.retirement_request_hash===hash) {
+        const pv=await client.query<{row_version:string}>('SELECT row_version::text AS row_version FROM product_versions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[v,tenantId,factoryId]);
+        return {alternate:alt,row_version:pv.rows[0]?.row_version??'0',replayed:true};
+      }
+      if(!['DRAFT','APPROVED'].includes(alt.status)) throw new ConflictException('Alternate material contract changed concurrently');
+      if(alt.created_by_user_id===userId) throw new ConflictException('Alternate material contract must be retired by a different user than its creator');
+      const updated=await client.query<AlternateRow>(`UPDATE product_bom_alternates SET status='RETIRED',
+        retired_by_user_id=$1,retired_at=clock_timestamp(),updated_at=clock_timestamp(),
+        retirement_idempotency_key=$2,retirement_request_hash=$3
+        WHERE id=$4 AND product_id=$5 AND product_version_id=$6 AND tenant_id=$7 AND factory_id=$8
+          AND status IN ('DRAFT','APPROVED') RETURNING ${ALTERNATE_COLS}`,
+        [userId,key,hash,a,p,v,tenantId,factoryId]);
+      const retired=updated.rows[0]; if(!retired) throw new ConflictException('Alternate material contract changed concurrently');
+      const rowVersion=await this.bumpDraft(client,userId,tenantId,factoryId,p,v,dto.expected_version);
+      await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:v,event:'PRODUCT.BOM_ALTERNATE_RETIRED',correlation,requestId,userId,
+        payload:{product_id:p,product_version_id:v,alternate_id:a,retired_by_user_id:userId,row_version:rowVersion}});
+      return {alternate:retired,row_version:rowVersion,replayed:false};
+    });
+    if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_BOM_ALTERNATE_RETIRED',resource:'PRODUCT_BOM_ALTERNATE',id:a,requestId,traceId,payload:{productId:p,productVersionId:v,rowVersion:result.row_version}});
     return result;
   }
 
