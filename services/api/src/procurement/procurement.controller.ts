@@ -8,6 +8,7 @@ import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
+import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { ListSuppliersDto } from './dto/list-suppliers.dto';
 import { TransitionSupplierStatusDto } from './dto/transition-supplier-status.dto';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
@@ -60,6 +61,21 @@ export class SuppliersController {
   async list(@Req() request: ProcurementRequest, @Query() query: ListSuppliersDto) {
     const { tenantId } = requiredUserTenant(request);
     return this.procurementService.listSuppliers(tenantId, query);
+  }
+
+  @Patch(':supplierId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('suppliers.write')
+  async update(
+    @Req() request: ProcurementRequest,
+    @Param('supplierId', new ParseUUIDPipe()) supplierId: string,
+    @Body() body: UpdateSupplierDto,
+  ) {
+    const { userId, tenantId } = requiredUserTenant(request);
+    return this.procurementService.updateSupplier(
+      userId, tenantId, supplierId, body,
+      request.factoryos?.requestId ?? null, request.factoryos?.traceId ?? null,
+    );
   }
 
   @Post(':supplierId/status')

@@ -8,6 +8,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 
 import { DatabaseService } from '../database/database.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
+import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { ListSuppliersDto } from './dto/list-suppliers.dto';
 import { TransitionSupplierStatusDto } from './dto/transition-supplier-status.dto';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
@@ -55,28 +56,119 @@ export class ProcurementService {
     if (!code || !name) throw new BadRequestException('Supplier code and name are required');
     if (!/^[A-Z]{2}$/.test(countryCode)) throw new BadRequestException('country_code must contain two letters');
     if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestException('currency must be a 3-letter code');
+
     let row: SupplierRow;
     try {
-      const result = await this.database.query<SupplierRow>(`
-        INSERT INTO suppliers (
-          tenant_id, code, name, country_code, email, phone, tax_reference,
-          payment_terms_days, currency, address, notes, created_by_user_id
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-        RETURNING id::text AS id, tenant_id::text AS tenant_id, code, name, status,
-          country_code, email, phone, tax_reference, payment_terms_days, currency,
-          address, notes, created_by_user_id::text AS created_by_user_id,
-          created_at::text AS created_at, updated_at::text AS updated_at, version::text AS version
-      `, [tenantId, code, name, countryCode, dto.email?.trim().toLowerCase() ?? null,
-        dto.phone?.trim() ?? null, dto.tax_reference?.trim() ?? null,
-        dto.payment_terms_days ?? 0, currency, dto.address?.trim() ?? null, dto.notes?.trim() ?? null, userId],
-      { tenantId, userId, requestId: this.uuidOrNull(requestId), traceId: this.uuidOrNull(traceId) });
-      row = result.rows[0];
-      if (!row) throw new Error('SUPPLIER_INSERT_FAILED');
+      row = await this.database.transaction({
+        tenantId, userId, requestId: this.uuidOrNull(requestId), traceId: this.uuidOrNull(traceId),
+      }, async client => {
+        const result = await client.query<SupplierRow>(`
+          INSERT INTO suppliers (
+            tenant_id, code, name, country_code, email, phone, tax_reference,
+            payment_terms_days, currency, address, notes, created_by_user_id
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          RETURNING id::text AS id, tenant_id::text AS tenant_id, code, name, status,
+            country_code, email, phone, tax_reference, payment_terms_days, currency,
+            address, notes, created_by_user_id::text AS created_by_user_id,
+            created_at::text AS created_at, updated_at::text AS updated_at, version::text AS version
+        `, [tenantId, code, name, countryCode, dto.email?.trim().toLowerCase() ?? null,
+          dto.phone?.trim() ?? null, dto.tax_reference?.trim() ?? null,
+          dto.payment_terms_days ?? 0, currency, dto.address?.trim() ?? null, dto.notes?.trim() ?? null, userId]);
+        const created = result.rows[0];
+        if (!created) throw new Error('SUPPLIER_INSERT_FAILED');
+        await this.insertOutbox(client, tenantId, null, 'SUPPLIER', created.id,
+          'PROCUREMENT.SUPPLIER_CREATED', {
+            supplier_id: created.id, code: created.code, status: created.status, version: created.version,
+          });
+        return created;
+      });
     } catch (error) {
       if (this.errorCode(error) === '23505') throw new ConflictException('Supplier code already exists in this tenant');
       throw error;
     }
     return this.mapSupplier(row);
+  }
+
+  async updateSupplier(
+    userId: string, tenantId: string, supplierId: string, dto: UpdateSupplierDto,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(supplierId, 'supplierId');
+    if (!Number.isInteger(dto.expected_version) || dto.expected_version < 1) {
+      throw new BadRequestException('expected_version must be a positive integer');
+    }
+
+    const editableFields = [
+      'name', 'country_code', 'email', 'phone', 'tax_reference',
+      'payment_terms_days', 'currency', 'address', 'notes',
+    ] as const;
+    const changedFields = editableFields.filter(field => dto[field] !== undefined);
+    if (changedFields.length === 0) {
+      throw new BadRequestException('At least one supplier profile field must be supplied');
+    }
+
+    const updated = await this.database.transaction({
+      tenantId, userId, requestId: this.uuidOrNull(requestId), traceId: this.uuidOrNull(traceId),
+    }, async client => {
+      const currentResult = await client.query<SupplierRow>(`
+        SELECT id::text AS id, tenant_id::text AS tenant_id, code, name, status,
+          country_code, email, phone, tax_reference, payment_terms_days, currency,
+          address, notes, created_by_user_id::text AS created_by_user_id,
+          created_at::text AS created_at, updated_at::text AS updated_at, version::text AS version
+        FROM suppliers
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+      `, [supplierId, tenantId]);
+      const current = currentResult.rows[0];
+      if (!current) throw new NotFoundException('Supplier not found');
+      if (Number(current.version) !== dto.expected_version) {
+        throw new ConflictException('Supplier version conflict. Expected version ' + dto.expected_version + ', current version is ' + current.version);
+      }
+
+      const name = dto.name === undefined ? current.name : dto.name.trim();
+      const countryCode = dto.country_code === undefined
+        ? current.country_code : dto.country_code.trim().toUpperCase();
+      const currency = dto.currency === undefined
+        ? current.currency : dto.currency.trim().toUpperCase();
+      const email = dto.email === undefined
+        ? current.email : (dto.email?.trim().toLowerCase() || null);
+      const phone = dto.phone === undefined ? current.phone : (dto.phone?.trim() || null);
+      const taxReference = dto.tax_reference === undefined
+        ? current.tax_reference : (dto.tax_reference?.trim() || null);
+      const address = dto.address === undefined ? current.address : (dto.address?.trim() || null);
+      const notes = dto.notes === undefined ? current.notes : (dto.notes?.trim() || null);
+      const paymentTermsDays = dto.payment_terms_days ?? current.payment_terms_days;
+
+      if (!name) throw new BadRequestException('Supplier name cannot be empty');
+      if (!/^[A-Z]{2}$/.test(countryCode)) throw new BadRequestException('country_code must contain two letters');
+      if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestException('currency must be a 3-letter code');
+
+      const result = await client.query<SupplierRow>(`
+        UPDATE suppliers
+        SET name = $1, country_code = $2, email = $3, phone = $4, tax_reference = $5,
+            payment_terms_days = $6, currency = $7, address = $8, notes = $9,
+            updated_at = clock_timestamp(), version = version + 1
+        WHERE id = $10 AND tenant_id = $11 AND version = $12
+        RETURNING id::text AS id, tenant_id::text AS tenant_id, code, name, status,
+          country_code, email, phone, tax_reference, payment_terms_days, currency,
+          address, notes, created_by_user_id::text AS created_by_user_id,
+          created_at::text AS created_at, updated_at::text AS updated_at, version::text AS version
+      `, [name, countryCode, email, phone, taxReference, paymentTermsDays, currency, address, notes,
+        supplierId, tenantId, current.version]);
+      const row = result.rows[0];
+      if (!row) throw new ConflictException('Supplier was changed concurrently');
+
+      await this.insertOutbox(client, tenantId, null, 'SUPPLIER', supplierId,
+        'PROCUREMENT.SUPPLIER_UPDATED', {
+          supplier_id: supplierId, code: row.code, status: row.status,
+          version: row.version, changed_fields: changedFields,
+        });
+      return row;
+    });
+
+    return this.mapSupplier(updated);
   }
 
   async listSuppliers(tenantId: string, dto: ListSuppliersDto) {

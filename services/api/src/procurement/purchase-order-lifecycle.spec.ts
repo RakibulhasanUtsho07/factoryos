@@ -3,6 +3,7 @@ import { validate } from 'class-validator';
 
 import { TransitionPurchaseOrderDto } from './dto/transition-purchase-order.dto';
 import { TransitionSupplierStatusDto } from './dto/transition-supplier-status.dto';
+import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { canTransitionPurchaseOrder, PURCHASE_ORDER_STATUSES, PurchaseOrderStatus } from './purchase-order-lifecycle';
 
 describe('purchase-order lifecycle', () => {
@@ -37,6 +38,15 @@ describe('purchase-order lifecycle', () => {
     expect(errors.some(error => error.property === 'expected_version')).toBe(true);
 
     const validVersion = plainToInstance(TransitionPurchaseOrderDto, { expected_version: 4 });
+    expect(await validate(validVersion)).toHaveLength(0);
+  });
+
+  it('requires an aggregate version when changing a supplier profile', async () => {
+    const missingVersion = plainToInstance(UpdateSupplierDto, { name: 'Updated name' });
+    const errors = await validate(missingVersion);
+    expect(errors.some(error => error.property === 'expected_version')).toBe(true);
+
+    const validVersion = plainToInstance(UpdateSupplierDto, { expected_version: 2, name: 'Updated name' });
     expect(await validate(validVersion)).toHaveLength(0);
   });
 

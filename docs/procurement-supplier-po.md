@@ -6,9 +6,10 @@ This backend slice implements the initial procurement lifecycle described by Fac
 
 - `POST /api/v1/suppliers` — create a tenant-scoped supplier; requires `suppliers.write`.
 - `GET /api/v1/suppliers?page=1&limit=20&status=ACTIVE&search=` — search/list suppliers; requires `suppliers.read`.
+- `PATCH /api/v1/suppliers/:supplierId` — edit supplier profile/contact/payment terms using required `expected_version`; requires `suppliers.write`.
 - `POST /api/v1/suppliers/:supplierId/status` — enable/disable a supplier with required `expected_version`; requires `suppliers.write`.
 
-Supplier codes are normalized to uppercase and unique per tenant. Suppliers are disabled rather than deleted. A supplier with draft, submitted, or approved purchase orders cannot be disabled.
+Supplier codes are normalized to uppercase and unique per tenant. Profile updates use optimistic version checks, emit transactional outbox events and correlated audit entries, while supplier creation emits an outbox event and audit entry atomically. Supplier codes and creator provenance are immutable. Suppliers are disabled rather than deleted. A supplier with draft, submitted, or approved purchase orders cannot be disabled.
 
 ## Purchase Order API
 
@@ -20,7 +21,7 @@ Supplier codes are normalized to uppercase and unique per tenant. Suppliers are 
 - `POST /api/v1/purchase-orders/:purchaseOrderId/approve` and `/reject` — decision by a separately authorized approver; requires `purchase_orders.approve`.
 - `POST /api/v1/purchase-orders/:purchaseOrderId/cancel` — cancel a draft or submitted PO with a reason; requires `purchase_orders.write`.
 
-The lifecycle is `DRAFT -> SUBMITTED -> APPROVED|REJECTED`; `DRAFT` and `SUBMITTED` may also be cancelled. Approved, rejected, and cancelled POs are terminal in this slice; receipt/partial receipt is deferred to the next procurement/WMS slice. Rejection and cancellation require a reason. The creator cannot approve their own PO. All purchase-order status transitions and draft updates require `expected_version` and return a conflict when the submitted version is stale. Supplier status transitions also require `expected_version`. Draft edits replace lines and update the header in a single transaction, append a same-status version history entry, and publish an outbox event. A stale version receives a conflict response.
+The lifecycle is `DRAFT -> SUBMITTED -> APPROVED|REJECTED`; `DRAFT` and `SUBMITTED` may also be cancelled. Approved, rejected, and cancelled POs are terminal in this slice; receipt/partial receipt is deferred to the next procurement/WMS slice. Rejection and cancellation require a reason. The creator cannot approve their own PO. All purchase-order status transitions and draft updates require `expected_version` and return a conflict when the submitted version is stale. Supplier status transitions also require `expected_version`. Draft edits replace lines and update the header in a single transaction, append a same-status version history entry with changed-field names, and publish an outbox event. A stale version receives a conflict response.
 
 All PO lines use a generated numeric line amount; aggregate totals are calculated by PostgreSQL rather than by a model or floating-point total in application code. Lines and commercial terms cannot be changed after submission. Status history and outbox events are written in the same transaction as the state change, alongside tenant/factory-safe foreign keys and forced row-level security.
 
