@@ -50,7 +50,6 @@ interface WorkOrderRow extends QueryResultRow {
   updated_by_user_id: string;
   created_at: string;
   updated_at: string;
-  request_hash: string;
 }
 
 interface OperationRow extends QueryResultRow {
@@ -992,7 +991,8 @@ export class ProductionWorkOrdersService {
         activeStartedAt = null;
       }
       const startedAtExpression = command === 'START' ? 'COALESCE(started_at, clock_timestamp())' : '$6::timestamptz';
-      const activeAtExpression = command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END'
+      const activeAtExpression = nextStatus === 'IN_PROGRESS'
+        && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END')
         ? 'clock_timestamp()'
         : '$7::timestamptz';
       const completedAtExpression = command === 'COMPLETE' ? 'clock_timestamp()' : '$8::timestamptz';
@@ -1053,7 +1053,7 @@ export class ProductionWorkOrdersService {
     const workOrder = await this.getWorkOrder(userId, tenantId, factoryId, result.workOrderId);
     if (!result.replayed) {
       await this.auditSafe({
-        tenantId, factoryId, userId, action: result.eventId ? eventTypeForCommand(command) : eventTypeForCommand(command),
+        tenantId, factoryId, userId, action: eventTypeForCommand(command),
         id: result.workOrderId, requestId, traceId,
         payload: { command, operationId, replayed: false, quantity },
       });
