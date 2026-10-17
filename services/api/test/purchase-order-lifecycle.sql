@@ -8,6 +8,7 @@ DECLARE
   v_approver UUID := gen_random_uuid();
   v_supplier UUID := gen_random_uuid();
   v_order UUID := gen_random_uuid();
+  v_cancel_order UUID := gen_random_uuid();
   v_line UUID := gen_random_uuid();
   v_rls_tables INTEGER;
   v_permissions INTEGER;
@@ -98,11 +99,19 @@ BEGIN
   END;
 
   BEGIN
+    UPDATE purchase_orders SET status = 'APPROVED', approved_by_user_id = v_approver,
+      approved_at = clock_timestamp(), version = version + 1 WHERE id = v_order;
+    RAISE EXCEPTION 'Expected approval actor spoofing from a different database identity to be rejected';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  BEGIN
     UPDATE purchase_orders SET status = 'DRAFT', version = version + 1 WHERE id = v_order;
     RAISE EXCEPTION 'Expected invalid status regression to be rejected';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
 
+  PERFORM set_config('app.user_id', v_approver::text, true);
   UPDATE purchase_orders SET status = 'APPROVED', approved_by_user_id = v_approver,
     approved_at = clock_timestamp(), version = version + 1 WHERE id = v_order;
   INSERT INTO purchase_order_status_history (
@@ -128,6 +137,32 @@ BEGIN
     RAISE EXCEPTION 'Expected history that does not match aggregate state to be rejected';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
+
+  -- A draft cancellation cannot fabricate a submission actor/timestamp.
+  PERFORM set_config('app.user_id', v_creator::text, true);
+  INSERT INTO purchase_orders (id, tenant_id, factory_id, supplier_id, po_number, created_by_user_id)
+    VALUES (v_cancel_order, v_tenant, v_factory, v_supplier, 'PO-TEST-002', v_creator);
+  INSERT INTO purchase_order_status_history (
+    tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
+  ) VALUES (v_tenant, v_factory, v_cancel_order, NULL, 'DRAFT', 1, v_creator, 'Purchase order created');
+
+  BEGIN
+    UPDATE purchase_orders SET status = 'CANCELLED',
+      submitted_by_user_id = v_creator, submitted_at = clock_timestamp(),
+      cancelled_by_user_id = v_creator, cancelled_at = clock_timestamp(),
+      cancellation_reason = 'No longer needed', version = version + 1
+    WHERE id = v_cancel_order;
+    RAISE EXCEPTION 'Expected draft cancellation from fabricating submission provenance to be rejected';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  UPDATE purchase_orders SET status = 'CANCELLED',
+    cancelled_by_user_id = v_creator, cancelled_at = clock_timestamp(),
+    cancellation_reason = 'No longer needed', version = version + 1
+  WHERE id = v_cancel_order;
+  INSERT INTO purchase_order_status_history (
+    tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
+  ) VALUES (v_tenant, v_factory, v_cancel_order, 'DRAFT', 'CANCELLED', 2, v_creator, 'No longer needed');
 
   IF NOT EXISTS (
     SELECT 1 FROM audit_events
