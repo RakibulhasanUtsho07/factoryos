@@ -795,8 +795,8 @@ export class ProductionWorkOrdersService {
       throw new BadRequestException('quantity is required for WIP and rework events');
     }
     const reason = dto.reason?.trim() || null;
-    if (['SKIP', 'HOLD', 'REWORK_REPORTED'].includes(command) && !reason) {
-      throw new BadRequestException('reason is required for skip, hold and rework events');
+    if (['SKIP', 'HOLD', 'REWORK_REPORTED', 'DOWNTIME_START'].includes(command) && !reason) {
+      throw new BadRequestException('reason is required for skip, hold, downtime start and rework events');
     }
     const occurredAt = this.eventTimestamp(dto.occurred_at);
     const source = dto.source ?? 'API';
