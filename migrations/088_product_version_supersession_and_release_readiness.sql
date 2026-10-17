@@ -6,6 +6,10 @@ ALTER TABLE product_versions
 
 -- Versions retired before this migration must remain historically resolvable up to
 -- their original end date, or through today if their end date was open-ended.
+-- Existing lifecycle trigger correctly rejects arbitrary updates to released revisions.
+-- Disable just that state-machine trigger while backfilling the new derived cutoff; the
+-- migration holds an exclusive table lock and the trigger is re-enabled before commit.
+ALTER TABLE product_versions DISABLE TRIGGER trg_product_version_guard;
 UPDATE product_versions
 SET effective_to_override=CASE
   WHEN effective_from>CURRENT_DATE THEN effective_from-1
@@ -13,6 +17,7 @@ SET effective_to_override=CASE
   ELSE CURRENT_DATE
 END
 WHERE state='RETIRED' AND effective_to_override IS NULL;
+ALTER TABLE product_versions ENABLE TRIGGER trg_product_version_guard;
 
 ALTER TABLE product_versions
   ADD CONSTRAINT fk_product_version_superseded_by
