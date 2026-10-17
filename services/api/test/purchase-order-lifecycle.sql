@@ -59,6 +59,9 @@ BEGIN
 
   UPDATE purchase_orders SET status = 'SUBMITTED', submitted_by_user_id = v_creator,
     submitted_at = clock_timestamp(), version = version + 1 WHERE id = v_order;
+  INSERT INTO purchase_order_status_history (
+    tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
+  ) VALUES (v_tenant, v_factory, v_order, 'DRAFT', 'SUBMITTED', 2, v_creator, 'Submitted in schema regression test');
 
   BEGIN
     UPDATE purchase_order_lines SET quantity = 4 WHERE id = v_line;

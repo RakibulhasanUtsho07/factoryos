@@ -189,15 +189,6 @@ export class ProcurementService {
     let result: { id: string; replayed: boolean };
     try {
       result = await this.database.transaction({ tenantId, userId }, async client => {
-        const factoryResult = await client.query<{ id: string }>(`
-          SELECT id::text AS id FROM factories WHERE id = $1 AND tenant_id = $2 AND status = 'ACTIVE' LIMIT 1
-        `, [factoryId, tenantId]);
-        if (!factoryResult.rows[0]) throw new ForbiddenException('Factory does not belong to tenant or is not active');
-        const supplierResult = await client.query<{ id: string }>(`
-          SELECT id::text AS id FROM suppliers WHERE id = $1 AND tenant_id = $2 AND status = 'ACTIVE' FOR SHARE
-        `, [dto.supplier_id, tenantId]);
-        if (!supplierResult.rows[0]) throw new NotFoundException('Active supplier not found');
-
         if (idempotencyKey) {
           await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))', [`${tenantId}:purchase-order:${idempotencyKey}`]);
           const prior = await client.query<{ id: string; request_hash: string }>(`
@@ -209,6 +200,15 @@ export class ProcurementService {
             return { id: prior.rows[0].id, replayed: true };
           }
         }
+
+        const factoryResult = await client.query<{ id: string }>(`
+          SELECT id::text AS id FROM factories WHERE id = $1 AND tenant_id = $2 AND status = 'ACTIVE' LIMIT 1
+        `, [factoryId, tenantId]);
+        if (!factoryResult.rows[0]) throw new ForbiddenException('Factory does not belong to tenant or is not active');
+        const supplierResult = await client.query<{ id: string }>(`
+          SELECT id::text AS id FROM suppliers WHERE id = $1 AND tenant_id = $2 AND status = 'ACTIVE' FOR SHARE
+        `, [dto.supplier_id, tenantId]);
+        if (!supplierResult.rows[0]) throw new NotFoundException('Active supplier not found');
 
         const inserted = await client.query<{ id: string; version: string }>(`
           INSERT INTO purchase_orders (
