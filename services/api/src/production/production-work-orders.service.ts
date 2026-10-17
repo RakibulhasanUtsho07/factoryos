@@ -931,16 +931,17 @@ export class ProductionWorkOrdersService {
 
       if (command === 'COMPLETE') {
         if (workOrder.status !== 'IN_PROGRESS') throw new ConflictException('Only an in-progress work order can be completed');
-        const operationStates = await client.query<{ status: OperationStatus; step_number: number; is_quality_gate: boolean }>(`
-          SELECT status, step_number, is_quality_gate FROM work_order_operations
+        const operationStates = await client.query<{ status: OperationStatus; step_number: number; is_quality_gate: boolean; wip_quantity: string }>(`
+          SELECT status, step_number, is_quality_gate, wip_quantity::text AS wip_quantity FROM work_order_operations
           WHERE work_order_id = $1 AND tenant_id = $2 AND factory_id = $3
           ORDER BY step_number
           FOR UPDATE
         `, [workOrder.id, tenantId, factoryId]);
         if (operationStates.rows.length === 0
           || operationStates.rows.some((op) => op.status !== 'COMPLETED' && op.status !== 'SKIPPED')
-          || operationStates.rows.some((op) => op.is_quality_gate && op.status === 'SKIPPED')) {
-          throw new ConflictException('All routing operations must be completed, and quality-gate operations cannot be skipped, before work-order completion');
+          || operationStates.rows.some((op) => op.is_quality_gate && op.status === 'SKIPPED')
+          || operationStates.rows.some((op) => this.toUnits(op.wip_quantity) > 0n)) {
+          throw new ConflictException('All routing operations must be completed, WIP must be zero on every operation, and quality-gate operations cannot be skipped, before work-order completion');
         }
         const processed = await client.query<{ processed_quantity: string }>(`
           SELECT COALESCE(SUM(good_quantity + scrap_quantity), 0)::text AS processed_quantity
@@ -1191,6 +1192,9 @@ export class ProductionWorkOrdersService {
         activeStartedAt = null;
       } else if (command === 'COMPLETE') {
         if (operation.downtime_started_at) throw new ConflictException('End the active downtime interval before completing the operation');
+        if (this.toUnits(operation.wip_quantity) > 0n) {
+          throw new ConflictException('Report WIP as zero after transferring or dispositioning it before finishing this operation');
+        }
         if (operation.step_number === await this.lastOperationStep(client, workOrderId, tenantId, factoryId)) {
           const totals = await client.query<{ processed_quantity: string }>(`
             SELECT COALESCE(SUM(good_quantity + scrap_quantity), 0)::text AS processed_quantity
