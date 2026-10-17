@@ -445,7 +445,7 @@ BEGIN
       RAISE EXCEPTION 'operation route snapshot must match the parent work-order product revision'
         USING ERRCODE = '23514';
     END IF;
-    IF NEW.status <> 'PLANNED' OR NEW.row_version <> 1
+    IF NEW.status <> 'PLANNED' OR NEW.row_version <> 1 OR NEW.wip_quantity <> 0
       OR NEW.started_at IS NOT NULL OR NEW.active_started_at IS NOT NULL
       OR NEW.completed_at IS NOT NULL OR NEW.downtime_started_at IS NOT NULL THEN
       RAISE EXCEPTION 'routing operations must be copied into a work order as planned version-one snapshots'
