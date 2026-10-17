@@ -21,7 +21,8 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '083_product_definition_idempotency_hardening')
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '084_product_contract_maker_checker')
      OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '085_product_alternate_retirement_lifecycle')
-     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '086_product_bom_uom_snapshots')\n     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '087_product_bom_contract_retention_guards') THEN
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '086_product_bom_uom_snapshots')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '087_product_bom_contract_retention_guards') THEN
     RAISE EXCEPTION 'Product/BOM/routing migration marker is missing';
   END IF;
 
