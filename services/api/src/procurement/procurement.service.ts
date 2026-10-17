@@ -163,9 +163,9 @@ export class ProcurementService {
     if (!poNumber) throw new BadRequestException('po_number is required');
     const currency = (dto.currency ?? 'BDT').trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestException('currency must be a 3-letter code');
-    const orderDate = dto.order_date ? new Date(dto.order_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const orderDate = dto.order_date ? new Date(dto.order_date).toISOString().slice(0, 10) : null;
     const expectedDate = dto.expected_delivery_date ? new Date(dto.expected_delivery_date).toISOString().slice(0, 10) : null;
-    if (expectedDate && expectedDate < orderDate) throw new BadRequestException('expected_delivery_date cannot be before order_date');
+    if (expectedDate && orderDate && expectedDate < orderDate) throw new BadRequestException('expected_delivery_date cannot be before order_date');
     const lines = [...dto.lines].sort((a, b) => a.line_number - b.line_number).map(line => ({
       line_number: line.line_number,
       inventory_item_id: line.inventory_item_id ?? null,
@@ -214,7 +214,7 @@ export class ProcurementService {
           INSERT INTO purchase_orders (
             tenant_id, factory_id, supplier_id, po_number, order_date, expected_delivery_date,
             currency, payment_terms_days, notes, created_by_user_id, idempotency_key, request_hash
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          ) VALUES ($1,$2,$3,$4,COALESCE($5::date,CURRENT_DATE),$6,$7,$8,$9,$10,$11,$12)
           RETURNING id::text AS id, version::text AS version
         `, [tenantId, factoryId, dto.supplier_id, poNumber, orderDate, expectedDate, currency,
           dto.payment_terms_days ?? 0, dto.notes?.trim() ?? null, userId, idempotencyKey, idempotencyKey ? requestHash : null]);
