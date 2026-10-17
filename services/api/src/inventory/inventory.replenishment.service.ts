@@ -394,7 +394,7 @@ export class InventoryReplenishmentService {
          AND s.tenant_id = rp.tenant_id
         WHERE rp.tenant_id = $1
           AND rp.factory_id = $2
-          AND rp.enabled = TRUE
+          AND (rp.enabled = TRUE OR $4::text = 'POLICY')
           AND i.status = 'ACTIVE'
       ),
       metrics AS (
@@ -411,7 +411,7 @@ export class InventoryReplenishmentService {
         SELECT
           metrics.*,
           CASE
-            WHEN inventory_position <= minimum_quantity
+            WHEN enabled AND inventory_position <= minimum_quantity
               THEN GREATEST(maximum_quantity - inventory_position, 0)::numeric(18,4)
             ELSE 0::numeric(18,4)
           END AS recommended_order_quantity
@@ -441,8 +441,9 @@ export class InventoryReplenishmentService {
         physical_shortage_quantity::text AS physical_shortage_quantity,
         uncovered_shortage_quantity::text AS uncovered_shortage_quantity,
         recommended_order_quantity::text AS recommended_order_quantity,
-        (inventory_position <= minimum_quantity) AS reorder_triggered,
+        (enabled AND inventory_position <= minimum_quantity) AS reorder_triggered,
         CASE
+          WHEN NOT enabled THEN 'NOT_REQUIRED'
           WHEN recommended_order_quantity <= 0 AND physical_shortage_quantity > 0
             THEN 'COVERED_BY_INCOMING'
           WHEN recommended_order_quantity <= 0 THEN 'NOT_REQUIRED'
