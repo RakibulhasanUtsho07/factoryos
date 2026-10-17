@@ -6,7 +6,7 @@ import type { QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import { CreateGoodsReceiptDto } from './dto/create-goods-receipt.dto';
 
-interface ReceiptHeaderRow extends QueryResultRow {
+export interface ReceiptHeaderRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -26,7 +26,7 @@ interface ReceiptHeaderRow extends QueryResultRow {
   created_at: string;
   posted_at: string;
 }
-interface ReceiptLineRow extends QueryResultRow {
+export interface ReceiptLineRow extends QueryResultRow {
   id: string;
   goods_receipt_id: string;
   purchase_order_id: string;
