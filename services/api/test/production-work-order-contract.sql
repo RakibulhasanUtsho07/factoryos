@@ -15,7 +15,7 @@ BEGIN
     RAISE EXCEPTION 'Production work-order lifecycle migration marker is missing';
   END IF;
 
-  FOREACH v_table IN ARRAY ARRAY['work_orders', 'work_order_operations', 'work_order_events'] LOOP
+  FOREACH v_table IN ARRAY ARRAY['work_orders', 'work_order_operations', 'work_order_events', 'work_order_material_requirements', 'work_order_material_reservations'] LOOP
     SELECT c.relrowsecurity, c.relforcerowsecurity
       INTO v_enabled, v_forced
     FROM pg_class c WHERE c.oid = to_regclass(v_table);
@@ -82,6 +82,15 @@ BEGIN
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_events'::regclass
       AND tgname = 'trg_work_order_event_payload_guard' AND NOT tgisinternal AND tgenabled <> 'D'
   ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_material_requirements'::regclass
+      AND tgname = 'trg_work_order_material_requirements_immutable' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_material_reservations'::regclass
+      AND tgname = 'trg_work_order_material_reservations_immutable' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_events'::regclass
+      AND tgname = 'trg_work_order_event_payload_guard' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'orders'::regclass
       AND tgname = 'trg_order_terminal_work_order_guard' AND NOT tgisinternal AND tgenabled <> 'D'
   ) THEN
@@ -107,6 +116,12 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conrelid = 'work_order_events'::regclass
       AND conname = 'fk_work_order_event_operation'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'work_order_material_requirements'::regclass
+      AND conname = 'fk_work_order_material_requirement_bom_line'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'work_order_material_reservations'::regclass
+      AND conname = 'fk_work_order_material_reservation_inventory'
   ) THEN
     RAISE EXCEPTION 'Work-order to order-line, routing snapshot or operation-event scope constraints are missing';
   END IF;
