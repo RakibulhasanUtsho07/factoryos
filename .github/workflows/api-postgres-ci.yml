@@ -175,6 +175,7 @@ jobs:
             migrations/087_product_bom_contract_retention_guards.sql
             migrations/088_product_version_supersession_and_release_readiness.sql
             migrations/089_mrp_lite_material_planning.sql
+            migrations/090_production_work_order_operation_lifecycle.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -255,6 +256,10 @@ jobs:
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
+
+          # Production lifecycle contract requires the development admin and factory-manager role grants.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/production-work-order-contract.sql
 
           # This contract also checks demo-role grants, so run it after the development role seeds.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
