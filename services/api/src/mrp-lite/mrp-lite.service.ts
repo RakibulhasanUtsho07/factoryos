@@ -357,9 +357,8 @@ export class MrpLiteService {
               pol.inventory_item_id::text AS item_id,
               po.po_number AS purchase_order_number,
               po.expected_delivery_date::text AS expected_delivery_date,
-              (pol.quantity - COALESCE(received.received_quantity, 0))::numeric(18,4)::text AS remaining_quantity,
+              (pol.quantity - COALESCE(received.accepted_quantity, 0))::numeric(18,4)::text AS remaining_quantity,
               (po.expected_delivery_date IS NOT NULL
-                AND po.expected_delivery_date >= $4::date
                 AND po.expected_delivery_date >= CURRENT_DATE) AS eligible_for_allocation
             FROM purchase_order_lines pol
             JOIN purchase_orders po
@@ -373,7 +372,7 @@ export class MrpLiteService {
              AND i.status = 'ACTIVE'
              AND upper(btrim(i.unit)) = upper(btrim(pol.unit))
             LEFT JOIN LATERAL (
-              SELECT COALESCE(SUM(gl.received_quantity), 0)::numeric(18,4) AS received_quantity
+              SELECT COALESCE(SUM(gl.accepted_quantity), 0)::numeric(18,4) AS accepted_quantity
               FROM goods_receipt_lines gl
               JOIN goods_receipts gr
                 ON gr.id = gl.goods_receipt_id
@@ -390,7 +389,7 @@ export class MrpLiteService {
               AND pol.inventory_item_id = ANY($3::uuid[])
               AND pol.quantity > COALESCE(received.received_quantity, 0)
             ORDER BY po.expected_delivery_date NULLS LAST, po.po_number, pol.id
-          `, [tenantId, factoryId, itemIds, horizonStart])).rows
+          `, [tenantId, factoryId, itemIds])).rows
         : [];
       const incomingSupply: MrpIncomingSupply[] = incomingRows.map((row) => ({
         id: row.id,
@@ -413,7 +412,7 @@ export class MrpLiteService {
         needByDate: candidate.source.need_by_date,
         requiredQuantity: candidate.requiredQuantity,
       }));
-      const allocations = allocateMrpRequirements(allocationDemands, stockByItem, incomingSupply, horizonStart);
+      const allocations = allocateMrpRequirements(allocationDemands, stockByItem, incomingSupply);
       const byRequirementId = new Map(allocations.map((a) => [a.requirementId, a] as const));
       const stockMetadata = new Map(stockRows.map((r) => [r.id, r] as const));
       const incomingByItem = new Map<string, string>();
