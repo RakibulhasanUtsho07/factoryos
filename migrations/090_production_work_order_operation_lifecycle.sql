@@ -328,7 +328,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_lifecycle();
 CREATE OR REPLACE FUNCTION factoryos_guard_work_order_operation_lifecycle()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_work_order_product_id UUID;
   v_work_order_product_version_id UUID;
@@ -396,7 +396,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_operation_lifecycle();
 CREATE OR REPLACE FUNCTION factoryos_block_terminal_order_with_open_work_orders()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   IF NEW.status IS DISTINCT FROM OLD.status
     AND NEW.status IN ('COMPLETED', 'CANCELLED')
@@ -412,7 +412,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TRIGGER trg_order_terminal_work_order_guard
 BEFORE UPDATE OF status ON orders
@@ -421,7 +421,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_block_terminal_order_with_open_work_orde
 CREATE OR REPLACE FUNCTION factoryos_prevent_work_order_event_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   RAISE EXCEPTION 'shop-floor work-order events are append-only'
     USING ERRCODE = '55000';
