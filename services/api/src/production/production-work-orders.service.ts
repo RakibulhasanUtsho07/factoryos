@@ -583,6 +583,13 @@ export class ProductionWorkOrdersService {
       assertWorkOrderTransition(workOrder.status, targetStatus);
 
       let operationId: string | null = null;
+      let operationStateChange: {
+        operationId: string;
+        fromStatus: OperationStatus;
+        toStatus: OperationStatus;
+        eventType: 'OPERATION_READY' | 'OPERATION_HELD' | 'OPERATION_PAUSED' | 'OPERATION_RESUMED';
+        payload: Record<string, unknown>;
+      } | null = null;
       const payload: Record<string, unknown> = { command, reason, expected_version: dto.expected_version };
       if (command === 'RELEASE') {
         const order = await this.lockSourceOrder(client, tenantId, factoryId, workOrder.source_order_id, workOrder.source_order_line_id);
@@ -627,11 +634,19 @@ export class ProductionWorkOrdersService {
         if (!firstOperation.rows[0] || firstOperation.rows[0].status !== 'PLANNED') {
           throw new ConflictException('The first routing operation is not in its planned release state');
         }
-        await client.query(`
+        const readyUpdate = await client.query(`
           UPDATE work_order_operations
           SET status = 'READY', row_version = row_version + 1, updated_at = clock_timestamp()
           WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND row_version = $4
         `, [firstOperation.rows[0].id, tenantId, factoryId, firstOperation.rows[0].row_version]);
+        if (readyUpdate.rowCount !== 1) throw new ConflictException('The first operation changed during work-order release');
+        operationStateChange = {
+          operationId: firstOperation.rows[0].id,
+          fromStatus: 'PLANNED',
+          toStatus: 'READY',
+          eventType: 'OPERATION_READY',
+          payload: { command, step_number: 1, reason: 'WORK_ORDER_RELEASED' },
+        };
         payload.operation_count = readiness.operation_count;
         payload.product_version_id = workOrder.product_version_id;
       }
@@ -656,7 +671,7 @@ export class ProductionWorkOrdersService {
         const running = active.rows[0];
         if (running) {
           operationId = running.id;
-          await client.query(`
+          const heldUpdate = await client.query(`
             UPDATE work_order_operations
             SET status = 'ON_HOLD',
                 actual_run_minutes = actual_run_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - active_started_at)) / 60, 0),
@@ -665,6 +680,14 @@ export class ProductionWorkOrdersService {
                 updated_at = clock_timestamp()
             WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND row_version = $4
           `, [running.id, tenantId, factoryId, running.row_version]);
+          if (heldUpdate.rowCount !== 1) throw new ConflictException('Running operation changed while the work order was held');
+          operationStateChange = {
+            operationId: running.id,
+            fromStatus: 'IN_PROGRESS',
+            toStatus: 'ON_HOLD',
+            eventType: 'OPERATION_HELD',
+            payload: { command, reason: reason ?? 'WORK_ORDER_HELD' },
+          };
         }
       }
 
@@ -683,11 +706,19 @@ export class ProductionWorkOrdersService {
         if (operation) {
           operationId = operation.id;
           const nextStatus: OperationStatus = operation.started_at ? 'PAUSED' : 'READY';
-          await client.query(`
+          const resumeOperation = await client.query(`
             UPDATE work_order_operations
             SET status = $1, row_version = row_version + 1, updated_at = clock_timestamp()
             WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND row_version = $5
           `, [nextStatus, operation.id, tenantId, factoryId, operation.row_version]);
+          if (resumeOperation.rowCount !== 1) throw new ConflictException('Held operation changed while the work order was resumed');
+          operationStateChange = {
+            operationId: operation.id,
+            fromStatus: 'ON_HOLD',
+            toStatus: nextStatus,
+            eventType: nextStatus === 'READY' ? 'OPERATION_READY' : 'OPERATION_RESUMED',
+            payload: { command, reason: reason ?? 'WORK_ORDER_RESUMED' },
+          };
         }
       }
 
@@ -760,6 +791,19 @@ export class ProductionWorkOrdersService {
         correlationId, requestId,
         payload: { ...payload, row_version: update.rows[0].row_version },
       });
+      if (operationStateChange) {
+        await this.appendOperationStateEvent(client, {
+          tenantId, factoryId, workOrderId: workOrder.id,
+          operationId: operationStateChange.operationId,
+          eventType: operationStateChange.eventType,
+          fromStatus: operationStateChange.fromStatus,
+          toStatus: operationStateChange.toStatus,
+          sourceEventKey: eventKey,
+          sourceRequestHash: requestHash,
+          actorUserId: userId, correlationId, requestId,
+          payload: operationStateChange.payload,
+        });
+      }
       return { workOrderId, replayed: false as const };
     });
 
@@ -1327,6 +1371,56 @@ export class ProductionWorkOrdersService {
       }),
     ]);
     return { id };
+  }
+
+  private async appendOperationStateEvent(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      workOrderId: string;
+      operationId: string;
+      eventType: 'OPERATION_READY' | 'OPERATION_HELD' | 'OPERATION_PAUSED' | 'OPERATION_RESUMED';
+      fromStatus: OperationStatus;
+      toStatus: OperationStatus;
+      sourceEventKey: string;
+      sourceRequestHash: string;
+      actorUserId: string;
+      correlationId: string;
+      requestId: string | null;
+      source?: string;
+      occurredAt?: string | null;
+      deviceId?: string | null;
+      payload: Record<string, unknown>;
+    },
+  ) {
+    const requestHash = this.hash({
+      work_order_id: input.workOrderId,
+      operation_id: input.operationId,
+      event_type: input.eventType,
+      from_status: input.fromStatus,
+      to_status: input.toStatus,
+      source_event_key: input.sourceEventKey,
+      source_request_hash: input.sourceRequestHash,
+    });
+    return this.appendEvent(client, {
+      tenantId: input.tenantId,
+      factoryId: input.factoryId,
+      workOrderId: input.workOrderId,
+      operationId: input.operationId,
+      eventType: input.eventType,
+      fromStatus: input.fromStatus,
+      toStatus: input.toStatus,
+      source: input.source ?? 'API',
+      occurredAt: input.occurredAt ?? null,
+      deviceId: input.deviceId ?? null,
+      idempotencyKey: this.scopedEventKey(input.workOrderId, input.eventType, input.sourceEventKey),
+      requestHash,
+      actorUserId: input.actorUserId,
+      correlationId: input.correlationId,
+      requestId: input.requestId,
+      payload: { ...input.payload, source_event_key: input.sourceEventKey },
+    });
   }
 
   private async auditSafe(input: {
