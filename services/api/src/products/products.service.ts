@@ -36,7 +36,9 @@ interface AlternateRow extends QueryResultRow {
   bom_line_id:string; alternate_item_id:string; conversion_factor:string; unit:string; rationale:string;
   status:string; idempotency_key:string; request_hash:string; approval_idempotency_key:string|null;
   approval_request_hash:string|null; created_by_user_id:string; approved_by_user_id:string|null;
-  approved_at:string|null; created_at:string; updated_at:string;
+  approved_at:string|null; retired_by_user_id:string|null; retired_at:string|null;
+  retirement_idempotency_key:string|null; retirement_request_hash:string|null;
+  created_at:string; updated_at:string;
 }
 const PRODUCT_COLS=`p.id::text AS id,p.tenant_id::text AS tenant_id,p.factory_id::text AS factory_id,
  p.inventory_item_id::text AS inventory_item_id,p.product_code,p.product_name,p.product_type,p.base_unit,p.status,
@@ -57,7 +59,8 @@ const ALTERNATE_COLS=`id::text AS id,tenant_id::text AS tenant_id,factory_id::te
  conversion_factor::text AS conversion_factor,unit,rationale,status,idempotency_key,request_hash,
  approval_idempotency_key,approval_request_hash,created_by_user_id::text AS created_by_user_id,
  approved_by_user_id::text AS approved_by_user_id,approved_at::text AS approved_at,
- created_at::text AS created_at,updated_at::text AS updated_at`;
+ retired_by_user_id::text AS retired_by_user_id,retired_at::text AS retired_at,
+ retirement_idempotency_key,retirement_request_hash,created_at::text AS created_at,updated_at::text AS updated_at`;
 
 @Injectable()
 export class ProductDefinitionsService {
@@ -178,13 +181,13 @@ export class ProductDefinitionsService {
         WHERE id=$1 AND product_id=$2 AND tenant_id=$3 AND factory_id=$4`,[versionId.toLowerCase(),productId.toLowerCase(),tenantId,factoryId]);
       const version=h.rows[0]; if(!version) throw new NotFoundException('Product version was not found in this factory');
       const bom=await client.query(`SELECT b.id::text AS id,b.line_number,b.component_item_id::text AS component_item_id,
-        i.sku AS component_sku,i.item_name AS component_name,b.quantity_per::text AS quantity_per,b.unit,
+        i.sku AS component_sku,i.name AS component_name,b.quantity_per::text AS quantity_per,b.unit,
         b.wastage_percent::text AS wastage_percent,b.alternate_group_code,b.notes
         FROM product_bom_lines b JOIN inventory_items i ON i.id=b.component_item_id AND i.tenant_id=b.tenant_id AND i.factory_id=b.factory_id
         WHERE b.product_version_id=$1 AND b.tenant_id=$2 AND b.factory_id=$3 ORDER BY b.line_number`,
         [version.id,tenantId,factoryId]);
       const alts=await client.query(`SELECT a.id::text AS id,a.bom_line_id::text AS bom_line_id,
-        a.alternate_item_id::text AS alternate_item_id,i.sku AS alternate_sku,i.item_name AS alternate_name,
+        a.alternate_item_id::text AS alternate_item_id,i.sku AS alternate_sku,i.name AS alternate_name,
         a.conversion_factor::text AS conversion_factor,a.unit,a.rationale,a.status,
         a.approved_by_user_id::text AS approved_by_user_id,a.approved_at::text AS approved_at,a.retired_by_user_id::text AS retired_by_user_id,a.retired_at::text AS retired_at
         FROM product_bom_alternates a JOIN inventory_items i ON i.id=a.alternate_item_id AND i.tenant_id=a.tenant_id AND i.factory_id=a.factory_id
