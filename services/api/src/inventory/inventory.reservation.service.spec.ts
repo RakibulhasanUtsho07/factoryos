@@ -47,11 +47,13 @@ describe('InventoryReservationService', () => {
       tenant_id: TENANT_ID,
       factory_id: FACTORY_ID,
       item_id: ITEM_ID,
+      location_id: null,
       quantity: '2.0000',
       status: 'RESERVED',
       idempotency_key: 'reserve-1',
       request_hash: createHash('sha256').update(JSON.stringify({
         itemId: ITEM_ID,
+        locationId: null,
         quantity: '2.0000',
         referenceType: null,
         referenceId: null,
@@ -118,6 +120,7 @@ describe('InventoryReservationService', () => {
   it('replays the same create request but rejects key reuse with a different payload', async () => {
     const expectedHash = createHash('sha256').update(JSON.stringify({
       itemId: ITEM_ID,
+      locationId: null,
       quantity: '2.0000',
       referenceType: null,
       referenceId: null,
