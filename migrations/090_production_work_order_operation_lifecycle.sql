@@ -573,28 +573,49 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_quantity TEXT;
+  v_current_wip NUMERIC(18,4);
+  v_operation_row_version BIGINT;
 BEGIN
+  IF NEW.event_source IN ('HMI', 'MES', 'PLC', 'MOBILE')
+    AND (NEW.device_id IS NULL OR length(btrim(NEW.device_id)) = 0) THEN
+    RAISE EXCEPTION 'device_id is required for HMI, MES, PLC and mobile shop-floor events'
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.occurred_at > clock_timestamp() + INTERVAL '5 minutes' THEN
+    RAISE EXCEPTION 'shop-floor event occurrence time cannot be more than five minutes in the future'
+      USING ERRCODE = '23514';
+  END IF;
   IF NEW.event_type IN ('WIP_REPORTED', 'REWORK_REPORTED') THEN
     v_quantity := NEW.payload->>'quantity';
-    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\.[0-9]{1,4})?$' THEN
-      RAISE EXCEPTION 'WIP and rework events require a four-decimal quantity'
-        USING ERRCODE = '23514';
+    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\\.[0-9]{1,4})?$' THEN
+      RAISE EXCEPTION 'WIP and rework events require a four-decimal quantity' USING ERRCODE = '23514';
     END IF;
     IF (NEW.event_type = 'WIP_REPORTED' AND v_quantity::numeric < 0)
       OR (NEW.event_type = 'REWORK_REPORTED' AND v_quantity::numeric <= 0) THEN
-      RAISE EXCEPTION 'WIP cannot be negative and rework quantity must be positive'
-        USING ERRCODE = '23514';
+      RAISE EXCEPTION 'WIP cannot be negative and rework quantity must be positive' USING ERRCODE = '23514';
     END IF;
   END IF;
-
+  IF NEW.event_type = 'WIP_REPORTED' THEN
+    SELECT wip_quantity, row_version INTO v_current_wip, v_operation_row_version
+    FROM work_order_operations
+    WHERE id = NEW.operation_id AND work_order_id = NEW.work_order_id
+      AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'WIP event must reference an operation in its work order and factory' USING ERRCODE = '23503';
+    END IF;
+    IF v_quantity::numeric IS DISTINCT FROM v_current_wip
+      OR (NEW.payload->>'wip_quantity')::numeric IS DISTINCT FROM v_current_wip
+      OR (NEW.payload->>'operation_row_version')::bigint IS DISTINCT FROM v_operation_row_version THEN
+      RAISE EXCEPTION 'WIP event quantity and operation version must match the persisted WIP snapshot' USING ERRCODE = '23514';
+    END IF;
+  END IF;
   IF NEW.event_type IN (
     'WORK_ORDER_HELD', 'WORK_ORDER_CANCELLED', 'OPERATION_HELD',
     'OPERATION_SKIPPED', 'DOWNTIME_STARTED', 'REWORK_REPORTED'
   ) AND length(btrim(COALESCE(NEW.payload->>'reason', ''))) = 0 THEN
-    RAISE EXCEPTION 'hold, cancel, skip, downtime-start and rework events require a reason'
-      USING ERRCODE = '23514';
+    RAISE EXCEPTION 'hold, cancel, skip, downtime-start and rework events require a reason' USING ERRCODE = '23514';
   END IF;
-
   RETURN NEW;
 END;
 $$;
@@ -602,6 +623,32 @@ $$;
 CREATE TRIGGER trg_work_order_event_payload_guard
 BEFORE INSERT ON work_order_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_event_payload();
+
+CREATE OR REPLACE FUNCTION factoryos_require_wip_snapshot_event_evidence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.wip_quantity IS DISTINCT FROM OLD.wip_quantity AND NOT EXISTS (
+    SELECT 1 FROM work_order_events e
+    WHERE e.work_order_id = NEW.work_order_id AND e.operation_id = NEW.id
+      AND e.tenant_id = NEW.tenant_id AND e.factory_id = NEW.factory_id
+      AND e.event_type = 'WIP_REPORTED'
+      AND (e.payload->>'quantity')::numeric = NEW.wip_quantity
+      AND (e.payload->>'wip_quantity')::numeric = NEW.wip_quantity
+      AND (e.payload->>'operation_row_version')::bigint = NEW.row_version
+  ) THEN
+    RAISE EXCEPTION 'changing current operation WIP requires a matching immutable WIP_REPORTED event'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER trg_work_order_wip_snapshot_event_evidence
+AFTER UPDATE OF wip_quantity ON work_order_operations
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_require_wip_snapshot_event_evidence();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_work_order_production_output()
 RETURNS trigger
