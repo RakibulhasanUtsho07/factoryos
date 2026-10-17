@@ -1485,20 +1485,19 @@ export class InventoryReservationService {
     },
     targetStatus: 'RELEASED' | 'CONSUMED',
   ): Promise<{ reservationCount: number; quantityByItem: Array<{ item_id: string; quantity: string }> }> {
-    const reservationResult = await client.query<ReservationRow>(
+    // Match the shared inventory locking order: inventory item first, then reservations.
+    const itemIdsResult = await client.query<{ item_id: string }>(
       `
-      SELECT ${RESERVATION_COLUMNS}
+      SELECT DISTINCT item_id::text AS item_id
       FROM inventory_reservations
       WHERE tenant_id = $1 AND factory_id = $2
         AND reference_type = 'WORK_ORDER_MATERIAL'
         AND reference_id = $3 AND status = 'RESERVED'
-      ORDER BY item_id, id
-      FOR UPDATE
+      ORDER BY item_id
       `,
       [input.tenantId, input.factoryId, input.workOrderId],
     );
-    const reservations = reservationResult.rows;
-    const itemIds = [...new Set(reservations.map((row) => row.item_id))].sort();
+    const itemIds = itemIdsResult.rows.map((row) => row.item_id);
     if (itemIds.length === 0) {
       return { reservationCount: 0, quantityByItem: [] };
     }
@@ -1515,6 +1514,20 @@ export class InventoryReservationService {
       throw new ConflictException('A work-order material reservation references an inventory item outside this factory');
     }
     const itemStatus = new Map(itemResult.rows.map((row) => [row.id, row.status] as const));
+    const reservationResult = await client.query<ReservationRow>(
+      `
+      SELECT ${RESERVATION_COLUMNS}
+      FROM inventory_reservations
+      WHERE tenant_id = $1 AND factory_id = $2
+        AND reference_type = 'WORK_ORDER_MATERIAL'
+        AND reference_id = $3 AND status = 'RESERVED'
+        AND item_id = ANY($4::uuid[])
+      ORDER BY item_id, id
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, input.workOrderId, itemIds],
+    );
+    const reservations = reservationResult.rows;
     const toUnits = (value: string): bigint => {
       const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
       if (!match) throw new ConflictException('Work-order material quantity is not a valid four-decimal value');
