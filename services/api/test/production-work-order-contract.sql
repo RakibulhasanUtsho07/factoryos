@@ -82,6 +82,18 @@ BEGIN
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_events'::regclass
       AND tgname = 'trg_work_order_event_payload_guard' AND NOT tgisinternal AND tgenabled <> 'D'
   ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_operations'::regclass
+      AND tgname = 'trg_work_order_wip_snapshot_event_evidence'
+      AND NOT tgisinternal AND tgenabled <> 'D' AND tgdeferrable AND tginitdeferred
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_proc p
+    WHERE p.proname = 'factoryos_require_wip_snapshot_event_evidence'
+      AND p.prorettype = 'trigger'::regtype
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_proc p
+    WHERE p.proname = 'factoryos_guard_work_order_event_payload'
+      AND p.prorettype = 'trigger'::regtype
+  ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_material_requirements'::regclass
       AND tgname = 'trg_work_order_material_requirements_immutable' AND NOT tgisinternal AND tgenabled <> 'D'
   ) OR NOT EXISTS (
