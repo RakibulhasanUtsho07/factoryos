@@ -466,7 +466,7 @@ export class InventoryReplenishmentService {
         physical_shortage_quantity DESC,
         sku ASC,
         item_id ASC
-      LIMIT $4
+      LIMIT $3
       `,
       [tenantId, factoryId, limit, mode, itemId],
       { tenantId },
