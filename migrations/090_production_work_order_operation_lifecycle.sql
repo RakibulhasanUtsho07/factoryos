@@ -294,7 +294,7 @@ CREATE TABLE work_order_events (
     'WORK_ORDER_CANCELLED', 'WORK_ORDER_COMPLETED', 'WORK_ORDER_STARTED',
     'OPERATION_READY', 'OPERATION_STARTED', 'OPERATION_PAUSED',
     'OPERATION_HELD', 'OPERATION_RESUMED', 'OPERATION_COMPLETED', 'OPERATION_SKIPPED',
-    'DOWNTIME_STARTED', 'DOWNTIME_ENDED', 'WIP_REPORTED', 'REWORK_REPORTED', 'OUTPUT_REPORTED'
+    'DOWNTIME_STARTED', 'DOWNTIME_ENDED', 'WIP_REPORTED', 'WIP_TRANSFERRED', 'REWORK_REPORTED', 'OUTPUT_REPORTED'
   )),
   CONSTRAINT chk_work_order_event_source CHECK (event_source IN ('API', 'HMI', 'MES', 'PLC', 'MOBILE', 'IMPORT')),
   CONSTRAINT chk_work_order_event_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
@@ -575,6 +575,16 @@ DECLARE
   v_quantity TEXT;
   v_current_wip NUMERIC(18,4);
   v_operation_row_version BIGINT;
+  v_source_step INTEGER;
+  v_target_step INTEGER;
+  v_target_wip NUMERIC(18,4);
+  v_target_row_version BIGINT;
+  v_target_operation_id UUID;
+  v_work_order_target NUMERIC(18,4);
+  v_source_before NUMERIC(18,4);
+  v_source_after NUMERIC(18,4);
+  v_target_before NUMERIC(18,4);
+  v_target_after NUMERIC(18,4);
 BEGIN
   IF NEW.event_source IN ('HMI', 'MES', 'PLC', 'MOBILE')
     AND (NEW.device_id IS NULL OR length(btrim(NEW.device_id)) = 0) THEN
@@ -585,16 +595,20 @@ BEGIN
     RAISE EXCEPTION 'shop-floor event occurrence time cannot be more than five minutes in the future'
       USING ERRCODE = '23514';
   END IF;
-  IF NEW.event_type IN ('WIP_REPORTED', 'REWORK_REPORTED') THEN
+
+  IF NEW.event_type IN ('WIP_REPORTED', 'WIP_TRANSFERRED', 'REWORK_REPORTED') THEN
     v_quantity := NEW.payload->>'quantity';
     IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\.[0-9]{1,4})?$' THEN
-      RAISE EXCEPTION 'WIP and rework events require a four-decimal quantity' USING ERRCODE = '23514';
+      RAISE EXCEPTION 'WIP, transfer and rework events require a four-decimal quantity'
+        USING ERRCODE = '23514';
     END IF;
     IF (NEW.event_type = 'WIP_REPORTED' AND v_quantity::numeric < 0)
-      OR (NEW.event_type = 'REWORK_REPORTED' AND v_quantity::numeric <= 0) THEN
-      RAISE EXCEPTION 'WIP cannot be negative and rework quantity must be positive' USING ERRCODE = '23514';
+      OR (NEW.event_type IN ('WIP_TRANSFERRED', 'REWORK_REPORTED') AND v_quantity::numeric <= 0) THEN
+      RAISE EXCEPTION 'WIP cannot be negative and transfer/rework quantities must be positive'
+        USING ERRCODE = '23514';
     END IF;
   END IF;
+
   IF NEW.event_type = 'WIP_REPORTED' THEN
     SELECT wip_quantity, row_version INTO v_current_wip, v_operation_row_version
     FROM work_order_operations
@@ -602,19 +616,83 @@ BEGIN
       AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
     FOR SHARE;
     IF NOT FOUND THEN
-      RAISE EXCEPTION 'WIP event must reference an operation in its work order and factory' USING ERRCODE = '23503';
+      RAISE EXCEPTION 'WIP event must reference an operation in its work order and factory'
+        USING ERRCODE = '23503';
     END IF;
     IF v_quantity::numeric IS DISTINCT FROM v_current_wip
       OR (NEW.payload->>'wip_quantity')::numeric IS DISTINCT FROM v_current_wip
       OR (NEW.payload->>'operation_row_version')::bigint IS DISTINCT FROM v_operation_row_version THEN
-      RAISE EXCEPTION 'WIP event quantity and operation version must match the persisted WIP snapshot' USING ERRCODE = '23514';
+      RAISE EXCEPTION 'WIP event quantity and operation version must match the persisted WIP snapshot'
+        USING ERRCODE = '23514';
     END IF;
   END IF;
+
+  IF NEW.event_type = 'WIP_TRANSFERRED' THEN
+    SELECT op.wip_quantity, op.row_version, op.step_number
+      INTO v_current_wip, v_operation_row_version, v_source_step
+    FROM work_order_operations op
+    WHERE op.id = NEW.operation_id AND op.work_order_id = NEW.work_order_id
+      AND op.tenant_id = NEW.tenant_id AND op.factory_id = NEW.factory_id
+    FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'WIP transfer source must reference an operation in this work order and factory'
+        USING ERRCODE = '23503';
+    END IF;
+
+    v_target_operation_id := NULLIF(NEW.payload #>> '{wip_transfer,target_operation_id}', '')::uuid;
+    IF v_target_operation_id IS NULL THEN
+      RAISE EXCEPTION 'WIP transfer requires a target operation'
+        USING ERRCODE = '23514';
+    END IF;
+
+    SELECT op.wip_quantity, op.row_version, op.step_number
+      INTO v_target_wip, v_target_row_version, v_target_step
+    FROM work_order_operations op
+    WHERE op.id = v_target_operation_id AND op.work_order_id = NEW.work_order_id
+      AND op.tenant_id = NEW.tenant_id AND op.factory_id = NEW.factory_id
+    FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'WIP transfer target must belong to the same work order and factory'
+        USING ERRCODE = '23503';
+    END IF;
+
+    SELECT target_quantity INTO v_work_order_target
+    FROM work_orders WHERE id = NEW.work_order_id
+      AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+
+    v_source_before := (NEW.payload #>> '{wip_transfer,source_wip_before}')::numeric;
+    v_source_after := (NEW.payload #>> '{wip_transfer,source_wip_after}')::numeric;
+    v_target_before := (NEW.payload #>> '{wip_transfer,target_wip_before}')::numeric;
+    v_target_after := (NEW.payload #>> '{wip_transfer,target_wip_after}')::numeric;
+
+    IF v_source_after IS DISTINCT FROM v_current_wip
+      OR v_target_after IS DISTINCT FROM v_target_wip
+      OR (NEW.payload #>> '{wip_transfer,source_operation_row_version}')::bigint IS DISTINCT FROM v_operation_row_version
+      OR (NEW.payload #>> '{wip_transfer,target_operation_row_version}')::bigint IS DISTINCT FROM v_target_row_version
+      OR v_source_before - v_quantity::numeric IS DISTINCT FROM v_source_after
+      OR v_target_before + v_quantity::numeric IS DISTINCT FROM v_target_after
+      OR v_source_after < 0 OR v_target_after > v_work_order_target THEN
+      RAISE EXCEPTION 'WIP transfer must conserve quantity and match both persisted operation snapshots'
+        USING ERRCODE = '23514';
+    END IF;
+
+    IF v_target_step <> (
+      SELECT min(op.step_number)
+      FROM work_order_operations op
+      WHERE op.work_order_id = NEW.work_order_id AND op.tenant_id = NEW.tenant_id
+        AND op.factory_id = NEW.factory_id AND op.step_number > v_source_step
+    ) THEN
+      RAISE EXCEPTION 'WIP may only transfer to the immediate next routing operation'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
   IF NEW.event_type IN (
     'WORK_ORDER_HELD', 'WORK_ORDER_CANCELLED', 'OPERATION_HELD',
     'OPERATION_SKIPPED', 'DOWNTIME_STARTED', 'REWORK_REPORTED'
   ) AND length(btrim(COALESCE(NEW.payload->>'reason', ''))) = 0 THEN
-    RAISE EXCEPTION 'hold, cancel, skip, downtime-start and rework events require a reason' USING ERRCODE = '23514';
+    RAISE EXCEPTION 'hold, cancel, skip, downtime-start and rework events require a reason'
+      USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
 END;
