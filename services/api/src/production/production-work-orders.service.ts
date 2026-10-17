@@ -902,6 +902,7 @@ export class ProductionWorkOrdersService {
       let actualRunExpression = 'actual_run_minutes';
       let downtimeExpression = 'downtime_minutes';
       let operationsToReady: OperationRow | null = null;
+      let nextOperationBecameReady = false;
 
       if (command === 'START') {
         if (!['RELEASED', 'IN_PROGRESS'].includes(workOrder.status)) {
@@ -978,11 +979,13 @@ export class ProductionWorkOrdersService {
         `, [workOrderId, tenantId, factoryId, operation.step_number]);
         operationsToReady = next.rows[0] ?? null;
         if (operationsToReady && operationsToReady.status === 'PLANNED') {
-          await client.query(`
+          const readyUpdate = await client.query(`
             UPDATE work_order_operations
             SET status = 'READY', row_version = row_version + 1, updated_at = clock_timestamp()
             WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND row_version = $4
           `, [operationsToReady.id, tenantId, factoryId, operationsToReady.row_version]);
+          if (readyUpdate.rowCount !== 1) throw new ConflictException('Next routing operation changed before it became ready');
+          nextOperationBecameReady = true;
         }
       } else if (command === 'SKIP') {
         const preceding = await client.query<{ status: OperationStatus; step_number: number }>(`
@@ -1007,11 +1010,13 @@ export class ProductionWorkOrdersService {
         `, [workOrderId, tenantId, factoryId, operation.step_number]);
         operationsToReady = next.rows[0] ?? null;
         if (operationsToReady && operationsToReady.status === 'PLANNED') {
-          await client.query(`
+          const readyUpdate = await client.query(`
             UPDATE work_order_operations
             SET status = 'READY', row_version = row_version + 1, updated_at = clock_timestamp()
             WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND row_version = $4
           `, [operationsToReady.id, tenantId, factoryId, operationsToReady.row_version]);
+          if (readyUpdate.rowCount !== 1) throw new ConflictException('Next routing operation changed before it became ready');
+          nextOperationBecameReady = true;
         }
       } else if (command === 'DOWNTIME_START') {
         if (operation.downtime_started_at) throw new ConflictException('A downtime interval is already open for this operation');
@@ -1103,13 +1108,57 @@ export class ProductionWorkOrdersService {
 
       payload.operation_row_version = operationUpdate.rows[0].row_version;
       if (operationsToReady) payload.next_operation_id = operationsToReady.id;
+      if (nextOperationBecameReady && operationsToReady) {
+        payload.next_operation_id = operationsToReady.id;
+        payload.next_operation_status = 'READY';
+      }
+      if (workOrderStateEventType) payload.work_order_state_event_type = workOrderStateEventType;
+
       const event = await this.appendEvent(client, {
         tenantId, factoryId, workOrderId: workOrder.id, operationId: operation.id,
         eventType, fromStatus: operation.status, toStatus: nextStatus,
         source, occurredAt, deviceId, idempotencyKey: eventKey, requestHash,
         actorUserId: userId, correlationId, requestId, payload,
       });
-      return { workOrderId, eventId: event.id, replayed: false as const };
+
+      if (workOrderStateEventType) {
+        await this.appendEvent(client, {
+          tenantId, factoryId, workOrderId: workOrder.id, operationId: operation.id,
+          eventType: workOrderStateEventType, fromStatus: workOrder.status, toStatus: nextWorkOrderStatus,
+          source, occurredAt, deviceId,
+          idempotencyKey: this.scopedEventKey(workOrder.id, workOrderStateEventType, eventKey),
+          requestHash: this.hash({
+            work_order_id: workOrder.id,
+            from_status: workOrder.status,
+            to_status: nextWorkOrderStatus,
+            source_request_hash: requestHash,
+          }),
+          actorUserId: userId, correlationId, requestId,
+          payload: {
+            command, operation_event_id: event.id, operation_id: operation.id,
+            operation_event_type: eventType, row_version: payload.work_order_row_version,
+          },
+        });
+      }
+
+      if (nextOperationBecameReady && operationsToReady) {
+        await this.appendOperationStateEvent(client, {
+          tenantId, factoryId, workOrderId: workOrder.id,
+          operationId: operationsToReady.id,
+          eventType: 'OPERATION_READY',
+          fromStatus: 'PLANNED',
+          toStatus: 'READY',
+          sourceEventKey: eventKey,
+          sourceRequestHash: requestHash,
+          actorUserId: userId, correlationId, requestId, source, occurredAt, deviceId,
+          payload: {
+            command, caused_by_operation_id: operation.id,
+            caused_by_event_type: eventType,
+            step_number: operationsToReady.step_number,
+          },
+        });
+      }
+      return { workOrderId, eventId: event.id, replayed: false as const, workOrderStateEventType };
     });
 
     const workOrder = await this.getWorkOrder(userId, tenantId, factoryId, result.workOrderId);
@@ -1119,6 +1168,13 @@ export class ProductionWorkOrdersService {
         id: result.workOrderId, requestId, traceId,
         payload: { command, operationId, replayed: false, quantity },
       });
+      if ('workOrderStateEventType' in result && result.workOrderStateEventType) {
+        await this.auditSafe({
+          tenantId, factoryId, userId, action: result.workOrderStateEventType,
+          id: result.workOrderId, requestId, traceId,
+          payload: { command, operationId, replayed: false, status: workOrder.status },
+        });
+      }
     }
     return { ...workOrder, replayed: result.replayed };
   }
