@@ -157,7 +157,7 @@ describe('InventoryReplenishmentService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('uses approved purchase orders and posted receipt quantities for shortage visibility', async () => {
+  it('uses accepted quantities from posted receipts so rejected stock remains outstanding', async () => {
     database.query.mockResolvedValue({ rows: [] } as QueryResponse);
 
     const result = await service.listShortages(TENANT_ID, FACTORY_ID, 25);
@@ -170,7 +170,11 @@ describe('InventoryReplenishmentService', () => {
     );
     const sql = String(database.query.mock.calls[0]?.[0]);
     expect(sql).toContain("gr.status = 'POSTED'");
-    expect(sql).toContain('pol.quantity - COALESCE(pr.received_quantity, 0)');
+    expect(sql).toContain('SUM(gl.accepted_quantity)::numeric(18,4) AS accepted_quantity');
+    expect(sql).toContain('pol.quantity - COALESCE(pr.accepted_quantity, 0)');
+    expect(sql).not.toContain('SUM(gl.received_quantity)');
+    expect(sql).toContain('AND pr.tenant_id = pol.tenant_id');
+    expect(sql).toContain('AND pr.factory_id = pol.factory_id');
     expect(sql).toContain('b.quantity_on_hand - b.quantity_reserved');
     expect(sql).toContain('uncovered_shortage_quantity');
     expect(sql).toContain('LIMIT $3');
