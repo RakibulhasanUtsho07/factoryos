@@ -59,9 +59,11 @@ describe('production work-order lifecycle contracts', () => {
     expect(() => assertTargetQuantityNotExceeded(1000000n, 600000n, 400001n)).toThrow('WORK_ORDER_TARGET_QUANTITY_EXCEEDED');
   });
 
-  it('uses WIP as a current-operation snapshot and permits an explicit zero reset', () => {
+  it('uses WIP as a current-operation snapshot and caps aggregate WIP across the route', () => {
     expect(() => assertWipSnapshotQuantity(0n, 1000000n)).not.toThrow();
     expect(() => assertWipSnapshotQuantity(250000n, 1000000n)).not.toThrow();
+    expect(() => assertWipSnapshotQuantity(400000n, 1000000n, 400000n)).not.toThrow();
+    expect(() => assertWipSnapshotQuantity(600000n, 1000000n, 450000n)).toThrow('WIP_QUANTITY_EXCEEDS_WORK_ORDER_TARGET');
     expect(() => assertWipSnapshotQuantity(1000001n, 1000000n)).toThrow('WIP_QUANTITY_EXCEEDS_WORK_ORDER_TARGET');
     expect(() => assertWipSnapshotQuantity(-1n, 1000000n)).toThrow('WIP_QUANTITY_CANNOT_BE_NEGATIVE');
   });
