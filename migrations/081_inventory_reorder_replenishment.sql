@@ -56,9 +56,6 @@ CREATE INDEX idx_purchase_order_lines_replenishment
   ON purchase_order_lines (tenant_id, factory_id, inventory_item_id, purchase_order_id)
   WHERE inventory_item_id IS NOT NULL;
 
-CREATE INDEX idx_goods_receipt_lines_replenishment
-  ON goods_receipt_lines (tenant_id, factory_id, purchase_order_line_id);
-
 CREATE OR REPLACE FUNCTION factoryos_guard_inventory_reorder_policy()
 RETURNS trigger
 LANGUAGE plpgsql
