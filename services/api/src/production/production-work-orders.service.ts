@@ -712,6 +712,66 @@ export class ProductionWorkOrdersService {
           || readiness.inactive_centre_count > 0 || readiness.inactive_component_count > 0) {
           throw new ConflictException('Work order release is blocked because a BOM, routing operation, active work centre or active component is missing');
         }
+        const materials = await client.query<{
+          id: string;
+          bom_line_id: string;
+          component_item_id: string;
+          component_unit: string;
+          line_number: number;
+          required_quantity: string;
+        }>(`
+          SELECT id::text AS id, bom_line_id::text AS bom_line_id,
+            component_item_id::text AS component_item_id, component_unit, line_number,
+            required_quantity::text AS required_quantity
+          FROM work_order_material_requirements
+          WHERE work_order_id = $1 AND tenant_id = $2 AND factory_id = $3
+          ORDER BY component_item_id, line_number
+          FOR UPDATE
+        `, [workOrder.id, tenantId, factoryId]);
+        if (materials.rows.length !== readiness.bom_count) {
+          throw new ConflictException('Work order material requirements do not match the pinned BOM; recreate the draft before release');
+        }
+        let reservationCount = 0;
+        for (const material of materials.rows) {
+          const allocations = await this.inventoryReservationService.reserveWorkOrderMaterialRequirement(client, {
+            userId,
+            tenantId,
+            factoryId,
+            workOrderId: workOrder.id,
+            workOrderNumber: workOrder.work_order_number,
+            requirementId: material.id,
+            bomLineId: material.bom_line_id,
+            itemId: material.component_item_id,
+            itemUnit: material.component_unit,
+            lineNumber: material.line_number,
+            quantity: material.required_quantity,
+            correlationId,
+          });
+          for (const allocation of allocations) {
+            await client.query(`
+              INSERT INTO work_order_material_reservations (
+                tenant_id, factory_id, work_order_id, requirement_id,
+                reservation_id, item_id, quantity
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)
+            `, [
+              tenantId, factoryId, workOrder.id, material.id,
+              allocation.reservationId, material.component_item_id, allocation.quantity,
+            ]);
+          }
+          reservationCount += allocations.length;
+        }
+        if (reservationCount < materials.rows.length) {
+          throw new ConflictException('Every BOM requirement must have an inventory reservation before release');
+        }
+        payload.material_requirement_count = materials.rows.length;
+        payload.material_reservation_count = reservationCount;
+        payload.material_requirements = materials.rows.map((material) => ({
+          bom_line_id: material.bom_line_id,
+          component_item_id: material.component_item_id,
+          required_quantity: material.required_quantity,
+          unit: material.component_unit,
+        }));
+
         const firstOperation = await client.query<{ id: string; status: OperationStatus; row_version: number }>(`
           SELECT id::text AS id, status, row_version::int AS row_version
           FROM work_order_operations
@@ -823,6 +883,16 @@ export class ProductionWorkOrdersService {
         if ((progress.rows[0]?.started_count ?? 0) > 0 || (progress.rows[0]?.output_count ?? 0) > 0) {
           throw new ConflictException('A work order that has started or reported output cannot be cancelled; record an explicit operational disposition');
         }
+        const releasedMaterials = await this.inventoryReservationService.transitionWorkOrderMaterialReservations(
+          client,
+          {
+            userId, tenantId, factoryId, workOrderId: workOrder.id,
+            workOrderNumber: workOrder.work_order_number, correlationId,
+          },
+          'RELEASED',
+        );
+        payload.material_reservation_count = releasedMaterials.reservationCount;
+        payload.released_material_quantities = releasedMaterials.quantityByItem;
       }
 
       if (command === 'COMPLETE') {
@@ -846,6 +916,36 @@ export class ProductionWorkOrdersService {
         if (this.toUnits(processed.rows[0]?.processed_quantity ?? '0.0000') !== this.toUnits(workOrder.target_quantity)) {
           throw new ConflictException('Reported good plus scrap output must equal the work-order target before completion');
         }
+        const requirements = await client.query<{ requirement_count: number; reservation_count: number }>(`
+          SELECT
+            (SELECT count(*)::int FROM work_order_material_requirements r
+              WHERE r.work_order_id = $1 AND r.tenant_id = $2 AND r.factory_id = $3) AS requirement_count,
+            (SELECT count(*)::int FROM work_order_material_reservations mr
+              JOIN inventory_reservations ir
+                ON ir.id = mr.reservation_id AND ir.tenant_id = mr.tenant_id AND ir.factory_id = mr.factory_id
+              WHERE mr.work_order_id = $1 AND mr.tenant_id = $2 AND mr.factory_id = $3
+                AND ir.reference_type = 'WORK_ORDER_MATERIAL' AND ir.reference_id = $1
+                AND ir.status = 'RESERVED') AS reservation_count
+        `, [workOrder.id, tenantId, factoryId]);
+        const materialReadiness = requirements.rows[0];
+        if (!materialReadiness
+          || materialReadiness.requirement_count < 1
+          || materialReadiness.reservation_count < materialReadiness.requirement_count) {
+          throw new ConflictException('Work-order material reservations are incomplete; production cannot be completed');
+        }
+        const consumedMaterials = await this.inventoryReservationService.transitionWorkOrderMaterialReservations(
+          client,
+          {
+            userId, tenantId, factoryId, workOrderId: workOrder.id,
+            workOrderNumber: workOrder.work_order_number, correlationId,
+          },
+          'CONSUMED',
+        );
+        if (consumedMaterials.reservationCount < materialReadiness.requirement_count) {
+          throw new ConflictException('Work-order material reservations could not all be consumed');
+        }
+        payload.material_reservation_count = consumedMaterials.reservationCount;
+        payload.consumed_material_quantities = consumedMaterials.quantityByItem;
       }
 
       if (command !== 'CANCEL' && command !== 'COMPLETE' && command !== 'RELEASE' && command !== 'HOLD' && command !== 'RESUME') {
