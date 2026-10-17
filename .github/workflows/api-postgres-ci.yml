@@ -150,6 +150,7 @@ jobs:
             migrations/062_inventory_cycle_count_approval.sql
             migrations/063_order_production_yield_scrap_tracking.sql
             migrations/064_inventory_storage_locations.sql
+            migrations/065_inventory_bin_reservations.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
