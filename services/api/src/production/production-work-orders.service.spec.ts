@@ -87,6 +87,34 @@ describe('ProductionWorkOrdersService request contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('requires quantity for WIP snapshots before opening a transaction', async () => {
+    await expect(service.reportOperationEvent(
+      USER, TENANT, FACTORY, WORK_ORDER, OPERATION,
+      {
+        command: 'WIP_REPORTED',
+        expected_work_order_version: 1,
+        expected_operation_version: 1,
+      } as never,
+      'wip-key', null, null,
+    )).rejects.toThrow('quantity is required for WIP and rework events');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects zero quantity as rework while zero remains a valid WIP-clear value', async () => {
+    await expect(service.reportOperationEvent(
+      USER, TENANT, FACTORY, WORK_ORDER, OPERATION,
+      {
+        command: 'REWORK_REPORTED',
+        quantity: 0,
+        reason: 'Rework verification',
+        expected_work_order_version: 1,
+        expected_operation_version: 1,
+      } as never,
+      'rework-key', null, null,
+    )).rejects.toThrow('rework quantity must be greater than zero');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('does not accept a zero-quantity output report as production evidence', async () => {
     await expect(service.reportOutput(
       USER, TENANT, FACTORY, WORK_ORDER,
