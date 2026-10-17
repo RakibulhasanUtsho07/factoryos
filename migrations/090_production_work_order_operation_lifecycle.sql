@@ -703,12 +703,28 @@ CREATE POLICY work_order_events_tenant_isolation ON work_order_events
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
+ALTER TABLE work_order_material_requirements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_order_material_requirements FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_order_material_requirements_tenant_isolation ON work_order_material_requirements
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
+ALTER TABLE work_order_material_reservations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_order_material_reservations FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_order_material_reservations_tenant_isolation ON work_order_material_reservations
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
 COMMENT ON TABLE work_orders IS
   'Version-pinned production work orders created from factory-scoped sales-order lines; status changes require actor, version and immutable shop-floor event evidence.';
 COMMENT ON TABLE work_order_operations IS
   'Immutable snapshots of the released product routing with guarded operation status, actual run time and downtime evidence.';
 COMMENT ON TABLE work_order_events IS
   'Append-only shop-floor event log carrying source timestamp actor/device and idempotency evidence for start stop output WIP downtime hold release rework and scrap.';
+COMMENT ON TABLE work_order_material_requirements IS
+  'Immutable component requirements calculated from the work-order target, pinned BOM base-quantity snapshots, expected yield and wastage.';
+COMMENT ON TABLE work_order_material_reservations IS
+  'Immutable links from BOM material requirements to inventory reservations made at release and released/consumed on terminal disposition.';
 COMMENT ON COLUMN work_orders.target_quantity IS
   'Planned units to process; reported good plus scrap quantities cannot exceed this value, while only good quantity fulfils the sales order.';
 COMMENT ON COLUMN work_order_operations.actual_run_minutes IS
