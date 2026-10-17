@@ -1135,7 +1135,7 @@ export class ProductionWorkOrdersService {
           }),
           actorUserId: userId, correlationId, requestId,
           payload: {
-            command, operation_event_id: event.id, operation_id: operation.id,
+            command, reason, operation_event_id: event.id, operation_id: operation.id,
             operation_event_type: eventType, row_version: payload.work_order_row_version,
           },
         });
