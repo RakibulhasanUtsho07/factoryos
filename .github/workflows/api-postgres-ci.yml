@@ -167,6 +167,7 @@ jobs:
             migrations/079_inventory_bin_balance_deferred_final_state_guard.sql
             migrations/080_inventory_location_directed_policy.sql
             migrations/081_inventory_reorder_replenishment.sql
+            migrations/082_product_bom_routing_version_contracts.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -215,6 +216,9 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
