@@ -9,6 +9,7 @@ import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
+import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { CreateWorkOrderDto } from './dto/create-work-order.dto';
 import { OperationEventDto } from './dto/operation-event.dto';
 import { WorkOrderOutputReportDto } from './dto/work-order-output-report.dto';
@@ -123,6 +124,33 @@ interface RoutingRow extends QueryResultRow {
   is_quality_gate: boolean;
 }
 
+interface BomMaterialRow extends QueryResultRow {
+  bom_line_id: string;
+  line_number: number;
+  component_item_id: string;
+  component_sku: string;
+  component_name: string;
+  component_unit: string;
+  base_quantity_per: string;
+  expected_yield_percent: string;
+  wastage_percent: string;
+  required_quantity: string;
+}
+
+interface WorkOrderMaterialRow extends QueryResultRow {
+  id: string;
+  bom_line_id: string;
+  component_item_id: string;
+  component_sku: string;
+  component_name: string;
+  component_unit: string;
+  required_quantity: string;
+  reservation_id: string | null;
+  location_id: string | null;
+  reserved_quantity: string | null;
+  reservation_status: string | null;
+}
+
 interface IdempotencyRow extends QueryResultRow {
   id: string;
   work_order_id: string;
@@ -187,6 +215,7 @@ export class ProductionWorkOrdersService {
   constructor(
     private readonly database: DatabaseService,
     private readonly auditService: AuditService,
+    private readonly inventoryReservationService: InventoryReservationService,
   ) {}
 
   async createWorkOrder(
@@ -389,6 +418,51 @@ export class ProductionWorkOrdersService {
       ]);
       if (!inserted.rows[0]) throw new Error('WORK_ORDER_CREATE_FAILED');
 
+      const materialRows = await client.query<BomMaterialRow>(`
+        SELECT b.id::text AS bom_line_id, b.line_number,
+          b.component_item_id::text AS component_item_id,
+          i.sku AS component_sku, i.name AS component_name, b.inventory_base_unit AS component_unit,
+          b.base_quantity_per::text AS base_quantity_per,
+          pv.expected_yield_percent::text AS expected_yield_percent,
+          b.wastage_percent::text AS wastage_percent,
+          (CEIL((
+            $5::numeric * 100::numeric / pv.expected_yield_percent
+            * b.base_quantity_per
+            * (1 + b.wastage_percent / 100::numeric)
+          ) * 10000) / 10000)::numeric(18,4)::text AS required_quantity
+        FROM product_bom_lines b
+        JOIN product_versions pv
+          ON pv.id = b.product_version_id AND pv.tenant_id = b.tenant_id
+         AND pv.factory_id = b.factory_id AND pv.product_id = b.product_id
+        JOIN inventory_items i
+          ON i.id = b.component_item_id AND i.tenant_id = b.tenant_id AND i.factory_id = b.factory_id
+        WHERE b.tenant_id = $1 AND b.factory_id = $2
+          AND b.product_id = $3 AND b.product_version_id = $4
+        ORDER BY b.line_number
+        FOR SHARE OF b, pv, i
+      `, [tenantId, factoryId, source.product_id, source.product_version_id, targetQuantity]);
+      if (materialRows.rows.length !== ready.bom_count) {
+        throw new ConflictException('Material requirements changed while the work order was being created');
+      }
+      for (const material of materialRows.rows) {
+        await client.query(`
+          INSERT INTO work_order_material_requirements (
+            tenant_id, factory_id, work_order_id, product_id, product_version_id,
+            bom_line_id, component_item_id, line_number, component_sku, component_name,
+            component_unit, base_quantity_per, expected_yield_percent, wastage_percent, required_quantity
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+            $12::numeric, $13::numeric, $14::numeric, $15::numeric
+          )
+        `, [
+          tenantId, factoryId, workOrderId, source.product_id, source.product_version_id,
+          material.bom_line_id, material.component_item_id, material.line_number,
+          material.component_sku, material.component_name, material.component_unit,
+          material.base_quantity_per, material.expected_yield_percent, material.wastage_percent,
+          material.required_quantity,
+        ]);
+      }
+
       for (const route of routes.rows) {
         await client.query(`
           INSERT INTO work_order_operations (
@@ -427,6 +501,12 @@ export class ProductionWorkOrdersService {
           product_version_number: source.product_version_number,
           target_quantity: targetQuantity,
           operation_count: routes.rows.length,
+          material_requirement_count: materialRows.rows.length,
+          required_materials: materialRows.rows.map((item) => ({
+            bom_line_id: item.bom_line_id, component_item_id: item.component_item_id,
+            line_number: item.line_number, required_quantity: item.required_quantity,
+            component_unit: item.component_unit,
+          })),
         },
       });
       return { workOrderId, replayed: false as const };
