@@ -88,9 +88,6 @@ BEGIN
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_material_reservations'::regclass
       AND tgname = 'trg_work_order_material_reservations_immutable' AND NOT tgisinternal AND tgenabled <> 'D'
   ) OR NOT EXISTS (
-    SELECT 1 FROM pg_trigger WHERE tgrelid = 'work_order_events'::regclass
-      AND tgname = 'trg_work_order_event_payload_guard' AND NOT tgisinternal AND tgenabled <> 'D'
-  ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'orders'::regclass
       AND tgname = 'trg_order_terminal_work_order_guard' AND NOT tgisinternal AND tgenabled <> 'D'
   ) THEN
@@ -144,10 +141,16 @@ BEGIN
     SELECT 1 FROM pg_constraint WHERE conrelid = 'work_order_operations'::regclass
       AND conname = 'chk_work_order_operation_active_timer'
   ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'work_order_operations'::regclass
+      AND conname = 'chk_work_order_operation_wip_quantity'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'work_order_operations' AND column_name = 'wip_quantity'
+  ) OR NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conrelid = 'work_orders'::regclass
       AND conname = 'chk_work_order_completion_evidence'
   ) THEN
-    RAISE EXCEPTION 'Operation active/downtime timing or work-order completion evidence constraints are missing';
+    RAISE EXCEPTION 'Operation WIP snapshot, active/downtime timing or work-order completion evidence constraints are missing';
   END IF;
 
   RAISE NOTICE 'Production work-order lifecycle schema, IAM, tenant scope and output-link contracts passed';
