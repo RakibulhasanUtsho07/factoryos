@@ -40,6 +40,30 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM roles r
+    JOIN role_permissions rp ON rp.role_id = r.id
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE r.code = 'ORG_ADMIN' AND p.code = 'mrp.read'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM roles r
+    JOIN role_permissions rp ON rp.role_id = r.id
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE r.code = 'ORG_ADMIN' AND p.code = 'mrp.write'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM roles r
+    JOIN role_permissions rp ON rp.role_id = r.id
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE r.code = 'FACTORY_MANAGER' AND p.code = 'mrp.read'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM roles r
+    JOIN role_permissions rp ON rp.role_id = r.id
+    JOIN permissions p ON p.id = rp.permission_id
+    WHERE r.code = 'FACTORY_MANAGER' AND p.code = 'mrp.write'
+  ) THEN
+    RAISE EXCEPTION 'MRP-lite permissions are not granted to the expected seeded planning roles';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
     WHERE tgrelid = 'mrp_plans'::regclass
       AND tgname = 'mrp_plans_immutable'
