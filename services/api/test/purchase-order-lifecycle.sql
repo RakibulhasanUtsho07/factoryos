@@ -124,10 +124,55 @@ BEGIN
   EXCEPTION WHEN check_violation THEN NULL;
   END;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE tenant_id = v_tenant AND resource_type = 'SUPPLIER'
+      AND resource_id = v_supplier AND action = 'CREATE'
+      AND payload->>'version' = '1'
+  ) THEN
+    RAISE EXCEPTION 'Expected supplier creation audit to be written transactionally';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE tenant_id = v_tenant AND resource_type = 'PURCHASE_ORDER'
+      AND resource_id = v_order AND action = 'CREATE'
+      AND payload->>'version' = '1'
+  ) THEN
+    RAISE EXCEPTION 'Expected purchase-order creation audit to be written transactionally';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE tenant_id = v_tenant AND resource_type = 'PURCHASE_ORDER'
+      AND resource_id = v_order AND action = 'DRAFT_UPDATED'
+      AND payload->>'version' = '2'
+  ) THEN
+    RAISE EXCEPTION 'Expected draft edit audit to be written transactionally';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE tenant_id = v_tenant AND resource_type = 'PURCHASE_ORDER'
+      AND resource_id = v_order AND action = 'STATUS_CHANGED'
+      AND payload->>'version' = '3'
+  ) THEN
+    RAISE EXCEPTION 'Expected submission audit to be written transactionally';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE tenant_id = v_tenant AND resource_type = 'PURCHASE_ORDER'
+      AND resource_id = v_order AND action = 'STATUS_CHANGED'
+      AND payload->>'version' = '4'
+  ) THEN
+    RAISE EXCEPTION 'Expected approval audit to be written transactionally';
+  END IF;
+
   -- Every version written during the test must have its own current-state history row.
   SET CONSTRAINTS ALL IMMEDIATE;
 
-  RAISE NOTICE 'WP02 supplier and purchase-order lifecycle schema and behavior checks passed';
+  RAISE NOTICE 'WP02 supplier and purchase-order lifecycle, versioning, and audit checks passed';
 END;
 $$;
 ROLLBACK;

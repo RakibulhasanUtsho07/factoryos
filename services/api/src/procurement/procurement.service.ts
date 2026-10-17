@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
 
-import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { ListSuppliersDto } from './dto/list-suppliers.dto';
@@ -44,10 +43,7 @@ export interface PurchaseOrderHistory extends QueryResultRow {
 
 @Injectable()
 export class ProcurementService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly auditService: AuditService,
-  ) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async createSupplier(userId: string, tenantId: string, dto: CreateSupplierDto, requestId: string | null, traceId: string | null) {
     this.validateUuid(userId, 'userId');
@@ -80,8 +76,6 @@ export class ProcurementService {
       if (this.errorCode(error) === '23505') throw new ConflictException('Supplier code already exists in this tenant');
       throw error;
     }
-    await this.auditSafely({ tenantId, userId, requestId, traceId, resourceType: 'SUPPLIER', resourceId: row.id,
-      action: 'CREATE', payload: { code: row.code, result: 'CREATED' } });
     return this.mapSupplier(row);
   }
 
@@ -146,8 +140,6 @@ export class ProcurementService {
       });
       return { ...supplier, status: dto.target_status, version: result.rows[0].version };
     });
-    await this.auditSafely({ tenantId, userId, requestId, traceId, resourceType: 'SUPPLIER', resourceId: supplierId,
-      action: 'STATUS_CHANGED', payload: { status: updated.status, version: updated.version } });
     return updated;
   }
 
@@ -393,10 +385,6 @@ export class ProcurementService {
       throw error;
     });
 
-    await this.auditSafely({
-      tenantId, factoryId, userId, requestId, traceId, resourceType: 'PURCHASE_ORDER',
-      resourceId: purchaseOrderId, action: 'DRAFT_UPDATED', payload: updated,
-    });
     return { ...(await this.getPurchaseOrder(tenantId, factoryId, purchaseOrderId)), update: updated };
   }
 
@@ -549,8 +537,6 @@ export class ProcurementService {
         });
       return { previousStatus: current.status, status: targetStatus, version: update.rows[0].version };
     });
-    await this.auditSafely({ tenantId, factoryId, userId, requestId, traceId, resourceType: 'PURCHASE_ORDER',
-      resourceId: purchaseOrderId, action: 'STATUS_CHANGED', payload: updated });
     return { ...(await this.getPurchaseOrder(tenantId, factoryId, purchaseOrderId)), transition: updated };
   }
 
@@ -578,22 +564,6 @@ export class ProcurementService {
       INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
       VALUES ($1,$2,$3,$4,$5,$6::jsonb)
     `, [tenantId, factoryId, aggregateType, aggregateId, eventType, JSON.stringify(payload)]);
-  }
-
-  private async auditSafely(input: {
-    tenantId: string; factoryId?: string | null; userId: string; requestId: string | null;
-    traceId: string | null; resourceType: string; resourceId: string; action: string;
-    payload: Record<string, unknown>;
-  }): Promise<void> {
-    try {
-      await this.auditService.record({ tenantId: input.tenantId, factoryId: input.factoryId ?? null,
-        actorUserId: input.userId, eventType: 'PROCUREMENT', action: input.action,
-        resourceType: input.resourceType, resourceId: input.resourceId,
-        correlationId: this.uuidOrNull(input.traceId), requestId: this.uuidOrNull(input.requestId),
-        dataClass: 'INTERNAL', payload: input.payload });
-    } catch {
-      // The immutable status history and transactional outbox remain committed if the secondary audit write fails.
-    }
   }
 
   private validateUuid(value: string, field: string) {
