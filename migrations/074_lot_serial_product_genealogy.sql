@@ -374,7 +374,6 @@ DECLARE
   v_report_order UUID;
   v_report_line UUID;
   v_good_quantity NUMERIC(18,4);
-  v_existing_quantity NUMERIC(18,4);
   v_template_active BOOLEAN;
   v_template_types TEXT[];
 BEGIN
