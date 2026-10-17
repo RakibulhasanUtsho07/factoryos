@@ -100,7 +100,7 @@ Content-Type: application/json
 }
 ```
 
-Use the same endpoint for `PAUSE`, `RESUME`, `COMPLETE`, `DOWNTIME_START`, `DOWNTIME_END`, `WIP_REPORTED` and `REWORK_REPORTED`. WIP is an absolute current-quantity snapshot, not a delta:
+Use the same endpoint for `PAUSE`, `RESUME`, `COMPLETE`, `DOWNTIME_START`, `DOWNTIME_END`, `WIP_REPORTED`, `WIP_TRANSFERRED` and `REWORK_REPORTED`. WIP is an absolute current-quantity snapshot, not a delta:
 
 ```json
 {
@@ -114,6 +114,25 @@ Use the same endpoint for `PAUSE`, `RESUME`, `COMPLETE`, `DOWNTIME_START`, `DOWN
 ```
 
 A zero WIP snapshot explicitly clears the current operation WIP before finishing/transferring. A downtime-start command requires an open active-run timer and a reason; downtime-end requires an open interval. The server computes elapsed run/downtime from its own timestamps rather than trusting device-supplied duration values.
+
+### Explicit WIP transfer
+
+`WIP_TRANSFERRED` moves a positive quantity only from an `IN_PROGRESS` or `PAUSED` operation to the immediate next routing operation in the same work order. Both source and target operation versions are serialized under the work-order transaction; source WIP is decreased and target WIP increased atomically. The transfer is rejected if it would overdraw source WIP, exceed the work-order target, skip over an operation, target an already running/completed operation, or occur while source downtime is open.
+
+```json
+{
+  "command": "WIP_TRANSFERRED",
+  "quantity": 25,
+  "target_operation_id": "7ffb7604-2066-4e94-8b9f-7bfb1cbef115",
+  "expected_work_order_version": 8,
+  "expected_operation_version": 5,
+  "source": "HMI",
+  "device_id": "LINE-A-HMI-02",
+  "occurred_at": "2026-10-22T09:15:00Z"
+}
+```
+
+One immutable `WIP_TRANSFERRED` event records the from/to operation and before/after quantities. Matching source and target `WIP_REPORTED` snapshot events are written in the same transaction so both persisted WIP changes remain auditable; a deferred PostgreSQL constraint rejects any WIP change missing that evidence. Reusing the same `Idempotency-Key` for a different command at the operation-events endpoint produces a conflict rather than executing a second command.
 
 ## Good output, scrap and order reconciliation
 
