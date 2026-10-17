@@ -37,7 +37,6 @@ describe('allocateMrpRequirements', () => {
       ],
       new Map<string, MrpStockPosition>([['material-a', { onHandQuantity: '7.0000', reservedQuantity: '0.0000' }]]),
       [supply({ expectedDeliveryDate: '2026-10-22', remainingQuantity: '3.0000' })],
-      '2026-10-17',
     );
 
     expect(result.map((row) => row.requirementId)).toEqual(['earlier', 'later']);
@@ -61,7 +60,6 @@ describe('allocateMrpRequirements', () => {
       [demand({ requiredQuantity: '10.0000', needByDate: '2026-10-30' })],
       new Map<string, MrpStockPosition>([['material-a', { onHandQuantity: '2.0000', reservedQuantity: '0.0000' }]]),
       [supply({ expectedDeliveryDate: '2026-11-02', remainingQuantity: '8.0000' })],
-      '2026-10-17',
     );
 
     expect(result[0]).toMatchObject({
@@ -79,7 +77,6 @@ describe('allocateMrpRequirements', () => {
       [demand({ requiredQuantity: '5.0000' })],
       new Map<string, MrpStockPosition>([['material-a', { onHandQuantity: '10.0000', reservedQuantity: '7.0000' }]]),
       [],
-      '2026-10-17',
     );
 
     expect(result[0]).toMatchObject({
@@ -102,7 +99,6 @@ describe('allocateMrpRequirements', () => {
         supply({ id: 'undated', expectedDeliveryDate: null, remainingQuantity: '2.0000' }),
         supply({ id: 'overdue', expectedDeliveryDate: '2026-10-01', remainingQuantity: '2.0000', eligibleForAllocation: false }),
       ],
-      '2026-10-17',
     );
 
     expect(result[0]).toMatchObject({
@@ -119,7 +115,6 @@ describe('allocateMrpRequirements', () => {
       [demand({ requiredQuantity: '0.3333' })],
       new Map<string, MrpStockPosition>([['material-a', { onHandQuantity: '0.1000', reservedQuantity: '0.0000' }]]),
       [supply({ remainingQuantity: '0.2333' })],
-      '2026-10-17',
     );
 
     expect(result[0]).toMatchObject({
@@ -139,7 +134,6 @@ describe('allocateMrpRequirements', () => {
       ],
       new Map<string, MrpStockPosition>([['material-a', { onHandQuantity: '0.0000', reservedQuantity: '0.0000' }]]),
       [supply({ remainingQuantity: '5.0000', expectedDeliveryDate: '2026-10-20' })],
-      '2026-10-17',
     );
 
     expect(result[0]?.plannedIncomingAllocationQuantity).toBe('4.0000');
@@ -148,3 +142,19 @@ describe('allocateMrpRequirements', () => {
     expect(result[1]?.shortageQuantity).toBe('3.0000');
   });
 });
+
+  it('uses non-overdue incoming supply even when its ETA is before a future planning horizon start', () => {
+    const result = allocateMrpRequirements(
+      [demand({ requiredQuantity: '4.0000', needByDate: '2026-11-05' })],
+      new Map<string, MrpStockPosition>([['material-a', { onHandQuantity: '0.0000', reservedQuantity: '0.0000' }]]),
+      [supply({ expectedDeliveryDate: '2026-10-25', remainingQuantity: '4.0000', eligibleForAllocation: true })],
+    );
+
+    expect(result[0]).toMatchObject({
+      incomingQuantity: '4.0000',
+      availableByNeedDateQuantity: '4.0000',
+      shortageQuantity: '0.0000',
+      shortageDate: null,
+      allocationStatus: 'COVERED',
+    });
+  });
