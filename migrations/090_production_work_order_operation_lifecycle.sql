@@ -374,6 +374,11 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
+  IF NEW.is_quality_gate AND NEW.status = 'SKIPPED' THEN
+    RAISE EXCEPTION 'quality-gate operations cannot be skipped by any persistence path'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
     (OLD.status = 'PLANNED' AND NEW.status IN ('READY', 'SKIPPED'))
     OR (OLD.status = 'READY' AND NEW.status IN ('IN_PROGRESS', 'ON_HOLD', 'SKIPPED'))
