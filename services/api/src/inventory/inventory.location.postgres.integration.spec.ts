@@ -7,6 +7,7 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { InventoryService } from './inventory.service';
 import { InventoryLocationService } from './inventory.location.service';
+import { InventoryReservationService } from './inventory.reservation.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -17,6 +18,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let database!: DatabaseService;
   let locationService!: InventoryLocationService;
   let inventoryService!: InventoryService;
+  let reservationService!: InventoryReservationService;
   const factoryIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
@@ -47,11 +49,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const audit = { record: async () => randomUUID() } as unknown as AuditService;
     locationService = new InventoryLocationService(database, audit);
     inventoryService = new InventoryService(database, audit);
+    reservationService = new InventoryReservationService(database, audit);
   }, 60_000);
 
   afterAll(async () => {
     if (adminPool && factoryIds.length) {
       for (const factoryId of factoryIds) {
+        await adminPool.query(
+          'ALTER TABLE inventory_reservations DISABLE TRIGGER USER',
+        );
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -64,6 +70,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         try {
           await adminPool.query(
             'DELETE FROM inventory_location_transfers WHERE tenant_id = $1 AND factory_id = $2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_reservations WHERE tenant_id = $1 AND factory_id = $2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -103,6 +113,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
         } finally {
+          await adminPool.query('ALTER TABLE inventory_reservations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_location_transfers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_movements ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
@@ -290,6 +301,103 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'UPDATE inventory_location_transfers SET notes = $1 WHERE id = $2',
       ['tampered', moved.id],
     )).rejects.toMatchObject({ code: '55000' });
+  });
+
+  it('pins a reservation to a BIN, prevents transfers through reserved stock and consumes from the same BIN', async () => {
+    const fixture = await createStockFixture('12.0000');
+    const { binA, binB } = await createWarehouseAndBins(fixture.factoryId);
+
+    await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 7,
+      },
+      'bin-reservation-seed-transfer', requestId, traceId,
+    );
+
+    const reservePayload = { quantity: 5, location_id: binA.id };
+    const reservation = await reservationService.createReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      reservePayload, 'bin-reservation-create', requestId, traceId,
+    );
+    expect(reservation).toMatchObject({
+      status: 'RESERVED',
+      location_id: binA.id,
+      quantity: '5.0000',
+      replayed: false,
+    });
+
+    const replay = await reservationService.createReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      reservePayload, 'bin-reservation-create', requestId, traceId,
+    );
+    expect(replay).toMatchObject({ id: reservation.id, replayed: true, location_id: binA.id });
+
+    const beforeTransfer = await locationService.listItemBalances(
+      tenantId, fixture.factoryId, fixture.itemId,
+    );
+    expect(beforeTransfer.find((row) => row.location_id === binA.id)).toMatchObject({
+      quantity_on_hand: '7.0000',
+      location_quantity_reserved: '5.0000',
+      location_quantity_available: '2.0000',
+    });
+
+    await expect(locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: binA.id,
+        destination_location_id: binB.id,
+        quantity: 3,
+      },
+      'bin-reservation-blocked-transfer', requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const consumed = await reservationService.transitionReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId, reservation.id,
+      { target_status: 'CONSUMED' },
+      'bin-reservation-consume', requestId, traceId,
+    );
+    expect(consumed).toMatchObject({
+      status: 'CONSUMED',
+      location_id: binA.id,
+      consumed_movement_id: expect.any(String),
+    });
+
+    const movement = await adminPool.query<{ location_id: string | null }>(
+      'SELECT location_id::text AS location_id FROM inventory_movements WHERE id = $1',
+      [consumed.consumed_movement_id],
+    );
+    expect(movement.rows[0]?.location_id).toBe(binA.id);
+
+    const releasedReservation = await reservationService.createReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { quantity: 1, location_id: binA.id }, 'bin-reservation-release-create', requestId, traceId,
+    );
+    const released = await reservationService.transitionReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId, releasedReservation.id,
+      { target_status: 'RELEASED' },
+      'bin-reservation-release', requestId, traceId,
+    );
+    expect(released.status).toBe('RELEASED');
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const totals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(aggregate).toMatchObject({
+      quantity_on_hand: '7.0000',
+      quantity_reserved: '0.0000',
+    });
+    expect(totals?.sum).toBe(aggregate?.quantity_on_hand);
+
+    const after = await locationService.listItemBalances(
+      tenantId, fixture.factoryId, fixture.itemId,
+    );
+    expect(after.find((row) => row.location_id === binA.id)).toMatchObject({
+      quantity_on_hand: '2.0000',
+      location_quantity_reserved: '0.0000',
+      location_quantity_available: '2.0000',
+    });
   });
 
   it('keeps location balances aligned when receipts/issues target a bin or use the legacy aggregate path', async () => {
