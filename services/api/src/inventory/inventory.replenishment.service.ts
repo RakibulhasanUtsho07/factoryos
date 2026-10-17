@@ -12,7 +12,7 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { UpsertInventoryReorderPolicyDto } from './dto/upsert-inventory-reorder-policy.dto';
 
-interface ReorderPolicyRow extends QueryResultRow {
+export interface ReorderPolicyRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -29,7 +29,7 @@ interface ReorderPolicyRow extends QueryResultRow {
   version: string;
 }
 
-interface ReplenishmentSignalRow extends QueryResultRow {
+export interface ReplenishmentSignalRow extends QueryResultRow {
   policy_id: string;
   tenant_id: string;
   factory_id: string;
