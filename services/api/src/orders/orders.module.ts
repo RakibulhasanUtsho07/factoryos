@@ -8,6 +8,7 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { OrderIdempotencyService } from './order-idempotency.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
+import { OrderProductionReportService } from './order-production-report.service';
 
 @Module({
   imports: [
@@ -24,11 +25,13 @@ import { OrdersService } from './orders.service';
   providers: [
     OrderIdempotencyService,
     OrdersService,
+    OrderProductionReportService,
   ],
 
   exports: [
     OrderIdempotencyService,
     OrdersService,
+    OrderProductionReportService,
   ],
 })
 export class OrdersModule {}

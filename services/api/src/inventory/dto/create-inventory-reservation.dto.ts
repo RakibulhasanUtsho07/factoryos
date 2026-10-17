@@ -22,6 +22,10 @@ export class CreateInventoryReservationDto {
   reference_id?: string;
 
   @IsOptional()
+  @IsUUID()
+  location_id?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(1000)
   notes?: string;

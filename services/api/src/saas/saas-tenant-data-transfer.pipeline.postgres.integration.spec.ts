@@ -74,6 +74,7 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         for (const [table, trigger] of immutableTriggers) {
           await pool.query('ALTER TABLE ' + table + ' DISABLE TRIGGER ' + trigger);
         }
+        await pool.query('ALTER TABLE inventory_locations DISABLE TRIGGER USER');
         try {
           if (isTarget) {
             await pool.query('DELETE FROM saas_tenant_import_receipts WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
@@ -92,11 +93,13 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
           await pool.query('DELETE FROM audit_events WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           await pool.query('DELETE FROM business_evidence_links WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           await pool.query('DELETE FROM business_evidence WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
+          await pool.query('DELETE FROM inventory_locations WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           await pool.query('DELETE FROM factories WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           await pool.query('DELETE FROM legal_entities WHERE tenant_id = ANY($1::uuid[])', [tenantIds]);
           if (userIds.length > 0) await pool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
           await pool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
         } finally {
+          await pool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
           for (const [table, trigger] of immutableTriggers.slice().reverse()) {
             await pool.query('ALTER TABLE ' + table + ' ENABLE TRIGGER ' + trigger);
           }

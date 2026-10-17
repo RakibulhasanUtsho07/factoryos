@@ -34,6 +34,8 @@ import {
   ListOrdersDto,
 } from './dto/list-orders.dto';
 
+import { CreateOrderMaterialDispositionDto } from './dto/create-order-material-disposition.dto';
+
 import {
   OrderIdempotencyService,
 } from './order-idempotency.service';
@@ -982,6 +984,17 @@ export class OrdersService {
             );
           }
 
+          await this.inventoryReservationService.assertOrderMaterialsDisposedBeforeCancellation(
+            client,
+            {
+              tenantId,
+              factoryId: order.factory_id,
+              orderId: order.id,
+              previousStatus: order.status,
+              targetStatus,
+            },
+          );
+
           const inventoryLifecycle =
             await this.inventoryReservationService.applyOrderTransition(
               client,
@@ -1307,6 +1320,28 @@ export class OrdersService {
     }
 
     return result;
+  }
+
+  async recordMaterialDisposition(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    orderId: string,
+    dto: CreateOrderMaterialDispositionDto,
+    idempotencyKey: string | null,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    return this.inventoryReservationService.recordOrderMaterialDisposition(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      dto,
+      idempotencyKey,
+      requestId,
+      traceId,
+    );
   }
 
   async getOrderById(

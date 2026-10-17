@@ -109,7 +109,7 @@ describe('InventoryService', () => {
     const input = { movement_type: 'RECEIPT', quantity: 2.5 } as CreateStockMovementDto;
     client.query
       .mockResolvedValueOnce({ rows: [] } as QueryResponse)
-      .mockResolvedValueOnce({ rows: [{ id: ITEM_ID, sku: 'FABRIC-01', name: 'Cotton', status: 'ACTIVE' }] } as QueryResponse)
+      .mockResolvedValueOnce({ rows: [{ id: ITEM_ID, sku: 'FABRIC-01', name: 'Cotton', unit: 'M', status: 'ACTIVE' }] } as QueryResponse)
       .mockResolvedValueOnce({ rows: [] } as QueryResponse)
       .mockResolvedValueOnce({ rows: [{ quantity_on_hand: '2.5000' }] } as QueryResponse)
       .mockResolvedValueOnce({
@@ -154,6 +154,7 @@ describe('InventoryService', () => {
       .update(JSON.stringify({
         itemId: ITEM_ID,
         movementType: 'RECEIPT',
+        locationId: null,
         quantity: '2.5000',
         referenceType: null,
         referenceId: null,
@@ -227,7 +228,7 @@ describe('InventoryService', () => {
   it('fails closed when an issue would make stock negative', async () => {
     client.query
       .mockResolvedValueOnce({ rows: [] } as QueryResponse)
-      .mockResolvedValueOnce({ rows: [{ id: ITEM_ID, sku: 'FABRIC-01', name: 'Cotton', status: 'ACTIVE' }] } as QueryResponse)
+      .mockResolvedValueOnce({ rows: [{ id: ITEM_ID, sku: 'FABRIC-01', name: 'Cotton', unit: 'M', status: 'ACTIVE' }] } as QueryResponse)
       .mockResolvedValueOnce({ rows: [] } as QueryResponse)
       .mockResolvedValueOnce({ rows: [] } as QueryResponse);
 

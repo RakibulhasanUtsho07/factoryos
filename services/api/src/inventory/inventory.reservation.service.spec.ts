@@ -14,6 +14,10 @@ const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
 const FACTORY_ID = '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 const ITEM_ID = '69ef2a43-8157-4d91-aa59-7b4260ef1778';
 const RESERVATION_ID = '522ecb02-3e23-4416-9d13-ed9dcd780b81';
+const ORDER_ID = '0f2e4f11-d513-4c27-8c0b-e2c4ab55e1f1';
+const ORDER_LINE_ID = '27c7247c-1c4f-44eb-8b62-8d1ae4f3ee3a';
+const BIN_A_ID = '06a4aacf-09f7-43af-8f18-f65a3c0e14b4';
+const BIN_B_ID = 'bf84203c-5b31-43f3-8e6a-dc2bcbf2a2a2';
 const TRACE_ID = 'f7168be2-1b73-42b3-a930-72c31b2d6050';
 
 type QueryResponse = { rows: QueryResultRow[] };
@@ -47,11 +51,13 @@ describe('InventoryReservationService', () => {
       tenant_id: TENANT_ID,
       factory_id: FACTORY_ID,
       item_id: ITEM_ID,
+      location_id: null,
       quantity: '2.0000',
       status: 'RESERVED',
       idempotency_key: 'reserve-1',
       request_hash: createHash('sha256').update(JSON.stringify({
         itemId: ITEM_ID,
+        locationId: null,
         quantity: '2.0000',
         referenceType: null,
         referenceId: null,
@@ -118,6 +124,7 @@ describe('InventoryReservationService', () => {
   it('replays the same create request but rejects key reuse with a different payload', async () => {
     const expectedHash = createHash('sha256').update(JSON.stringify({
       itemId: ITEM_ID,
+      locationId: null,
       quantity: '2.0000',
       referenceType: null,
       referenceId: null,
@@ -260,4 +267,100 @@ describe('InventoryReservationService', () => {
     expect(client.query).toHaveBeenCalledTimes(2);
     expect(audit.record).not.toHaveBeenCalled();
   });
+  it('splits an order-line reservation across multiple bins atomically', async () => {
+    const notes = 'Reserved for order ORD-MULTI-BIN (line 1)';
+    const hashFor = (locationId: string, quantity: string) => createHash('sha256').update(JSON.stringify({
+      itemId: ITEM_ID, locationId, quantity, referenceType: 'ORDER_LINE', referenceId: ORDER_LINE_ID, notes,
+    })).digest('hex');
+
+    client.query
+      .mockResolvedValueOnce(queryRows([{
+        id: ORDER_LINE_ID, line_number: 1, item_id: ITEM_ID, quantity: '5.0000', unit: 'EA',
+      }]))
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE', unit: 'EA' }]))
+      .mockResolvedValueOnce(queryRows([])) // legacy v1 key
+      .mockResolvedValueOnce(queryRows([])) // no pre-existing active allocations
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '7.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          location_id: BIN_A_ID, location_code: 'A-01', is_default: false,
+          location_type: 'BIN', quantity_on_hand: '3.0000', quantity_reserved: '0.0000',
+        },
+        {
+          location_id: BIN_B_ID, location_code: 'A-02', is_default: false,
+          location_type: 'BIN', quantity_on_hand: '4.0000', quantity_reserved: '0.0000',
+        },
+      ]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '7.0000', quantity_reserved: '5.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ location_id: BIN_A_ID }]))
+      .mockResolvedValueOnce(queryRows([row({
+        id: randomUUID(), location_id: BIN_A_ID, quantity: '3.0000',
+        idempotency_key: `order:${ORDER_ID}:line:${ORDER_LINE_ID}:bin:${BIN_A_ID}:reserve:v2`,
+        request_hash: hashFor(BIN_A_ID, '3.0000'),
+        reference_type: 'ORDER_LINE', reference_id: ORDER_LINE_ID, notes,
+      })]))
+      .mockResolvedValueOnce(queryRows([])) // first allocation outbox
+      .mockResolvedValueOnce(queryRows([{ location_id: BIN_B_ID }]))
+      .mockResolvedValueOnce(queryRows([row({
+        id: randomUUID(), location_id: BIN_B_ID, quantity: '2.0000',
+        idempotency_key: `order:${ORDER_ID}:line:${ORDER_LINE_ID}:bin:${BIN_B_ID}:reserve:v2`,
+        request_hash: hashFor(BIN_B_ID, '2.0000'),
+        reference_type: 'ORDER_LINE', reference_id: ORDER_LINE_ID, notes,
+      })]))
+      .mockResolvedValueOnce(queryRows([])); // second allocation outbox
+
+    const result = await service.applyOrderTransition(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      orderId: ORDER_ID, orderNumber: 'ORD-MULTI-BIN',
+      previousStatus: 'DRAFT', targetStatus: 'CONFIRMED',
+      requestId: TRACE_ID, traceId: TRACE_ID,
+    });
+
+    expect(result.reservations_created).toBe(2);
+    expect(client.query.mock.calls[6]?.[1]).toContain('5.0000');
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toHaveLength(2);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('UPDATE inventory_location_balances'))).toHaveLength(2);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO outbox_events'))).toHaveLength(2);
+  });
+
+  it('replays complete multi-bin allocation without reserving stock twice', async () => {
+    const notes = 'Reserved for order ORD-MULTI-BIN (line 1)';
+    const hashFor = (locationId: string, quantity: string) => createHash('sha256').update(JSON.stringify({
+      itemId: ITEM_ID, locationId, quantity, referenceType: 'ORDER_LINE', referenceId: ORDER_LINE_ID, notes,
+    })).digest('hex');
+
+    client.query
+      .mockResolvedValueOnce(queryRows([{
+        id: ORDER_LINE_ID, line_number: 1, item_id: ITEM_ID, quantity: '5.0000', unit: 'EA',
+      }]))
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE', unit: 'EA' }]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([
+        row({
+          id: randomUUID(), location_id: BIN_A_ID, quantity: '3.0000',
+          idempotency_key: `order:${ORDER_ID}:line:${ORDER_LINE_ID}:bin:${BIN_A_ID}:reserve:v2`,
+          request_hash: hashFor(BIN_A_ID, '3.0000'),
+          reference_type: 'ORDER_LINE', reference_id: ORDER_LINE_ID, notes,
+        }),
+        row({
+          id: randomUUID(), location_id: BIN_B_ID, quantity: '2.0000',
+          idempotency_key: `order:${ORDER_ID}:line:${ORDER_LINE_ID}:bin:${BIN_B_ID}:reserve:v2`,
+          request_hash: hashFor(BIN_B_ID, '2.0000'),
+          reference_type: 'ORDER_LINE', reference_id: ORDER_LINE_ID, notes,
+        }),
+      ]));
+
+    const result = await service.applyOrderTransition(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      orderId: ORDER_ID, orderNumber: 'ORD-MULTI-BIN',
+      previousStatus: 'DRAFT', targetStatus: 'CONFIRMED',
+      requestId: TRACE_ID, traceId: TRACE_ID,
+    });
+
+    expect(result.reservations_created).toBe(0);
+    expect(client.query).toHaveBeenCalledTimes(4);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('UPDATE inventory_stock_balances'))).toBe(false);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toBe(false);
+  });
+
 });
