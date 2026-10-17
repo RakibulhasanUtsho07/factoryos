@@ -69,7 +69,7 @@ export class ProcurementService {
       `, [tenantId, code, name, countryCode, dto.email?.trim().toLowerCase() ?? null,
         dto.phone?.trim() ?? null, dto.tax_reference?.trim() ?? null,
         dto.payment_terms_days ?? 0, currency, dto.address?.trim() ?? null, dto.notes?.trim() ?? null, userId],
-      { tenantId, userId });
+      { tenantId, userId, requestId: this.uuidOrNull(requestId), traceId: this.uuidOrNull(traceId) });
       row = result.rows[0];
       if (!row) throw new Error('SUPPLIER_INSERT_FAILED');
     } catch (error) {
@@ -111,7 +111,7 @@ export class ProcurementService {
     if (!Number.isInteger(dto.expected_version) || dto.expected_version < 1) {
       throw new BadRequestException('expected_version must be a positive integer');
     }
-    const updated = await this.database.transaction({ tenantId, userId }, async client => {
+    const updated = await this.database.transaction({ tenantId, userId, requestId: this.uuidOrNull(requestId), traceId: this.uuidOrNull(traceId) }, async client => {
       const current = await client.query<{ id: string; code: string; status: SupplierStatus; version: string }>(`
         SELECT id::text AS id, code, status, version::text AS version
         FROM suppliers WHERE id = $1 AND tenant_id = $2 FOR UPDATE
@@ -373,8 +373,9 @@ export class ProcurementService {
         INSERT INTO purchase_order_status_history (
           tenant_id, factory_id, purchase_order_id, from_status, to_status, version,
           actor_user_id, reason, request_id, trace_id
-        ) VALUES ($1,$2,$3,'DRAFT','DRAFT',$4,$5,'Draft purchase order updated',$6,$7)
+        ) VALUES ($1,$2,$3,'DRAFT','DRAFT',$4,$5,$6,$7,$8)
       `, [tenantId, factoryId, purchaseOrderId, next.version, userId,
+        `Draft purchase order updated: ${changedFields.join(', ')}`,
         this.uuidOrNull(requestId), this.uuidOrNull(traceId)]);
       await this.insertOutbox(client, tenantId, factoryId, 'PURCHASE_ORDER', purchaseOrderId,
         'PROCUREMENT.PURCHASE_ORDER_DRAFT_UPDATED', {

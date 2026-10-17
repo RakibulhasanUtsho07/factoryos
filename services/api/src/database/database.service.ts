@@ -35,6 +35,10 @@ export interface DatabaseContext {
   userId?:
     | string
     | null;
+
+  requestId?: string | null;
+
+  traceId?: string | null;
 }
 
 type TransactionCallback<T> = (
@@ -358,6 +362,18 @@ export class DatabaseService
               'app.user_id',
               $2,
               true
+            ),
+
+            set_config(
+              'app.request_id',
+              $3,
+              true
+            ),
+
+            set_config(
+              'app.trace_id',
+              $4,
+              true
             )
           `,
           [
@@ -365,6 +381,12 @@ export class DatabaseService
               '',
 
             context?.userId ??
+              '',
+
+            context?.requestId ??
+              '',
+
+            context?.traceId ??
               '',
           ],
         );

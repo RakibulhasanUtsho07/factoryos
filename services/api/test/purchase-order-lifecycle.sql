@@ -10,6 +10,8 @@ DECLARE
   v_order UUID := gen_random_uuid();
   v_cancel_order UUID := gen_random_uuid();
   v_line UUID := gen_random_uuid();
+  v_request UUID := gen_random_uuid();
+  v_trace UUID := gen_random_uuid();
   v_rls_tables INTEGER;
   v_permissions INTEGER;
   v_functions INTEGER;
@@ -51,6 +53,8 @@ BEGIN
   -- Match the transaction-local identity used by the production DatabaseService.
   PERFORM set_config('app.tenant_id', v_tenant::text, true);
   PERFORM set_config('app.user_id', v_creator::text, true);
+  PERFORM set_config('app.request_id', v_request::text, true);
+  PERFORM set_config('app.trace_id', v_trace::text, true);
 
   INSERT INTO suppliers (id, tenant_id, code, name, created_by_user_id)
     VALUES (v_supplier, v_tenant, 'SUP-TEST', 'Procurement Test Supplier', v_creator);
@@ -168,9 +172,10 @@ BEGIN
     SELECT 1 FROM audit_events
     WHERE tenant_id = v_tenant AND resource_type = 'SUPPLIER'
       AND resource_id = v_supplier AND action = 'CREATE'
-      AND payload->>'version' = '1'
+      AND actor_user_id = v_creator AND request_id = v_request
+      AND correlation_id = v_trace AND payload->>'version' = '1'
   ) THEN
-    RAISE EXCEPTION 'Expected supplier creation audit to be written transactionally';
+    RAISE EXCEPTION 'Expected supplier creation audit with actor/request/trace correlation';
   END IF;
 
   IF NOT EXISTS (
