@@ -80,7 +80,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_traceability_label_template();
 CREATE OR REPLACE FUNCTION factoryos_assert_traceability_label_template_evidence()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $trace_label_evidence$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM audit_events a
@@ -99,7 +99,7 @@ BEGIN
   END IF;
   RETURN NULL;
 END;
-$;
+$trace_label_evidence$;
 CREATE CONSTRAINT TRIGGER ctr_traceability_label_template_evidence
 AFTER INSERT ON traceability_label_templates
 DEFERRABLE INITIALLY DEFERRED
