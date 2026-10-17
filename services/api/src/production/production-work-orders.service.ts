@@ -1471,14 +1471,14 @@ export class ProductionWorkOrdersService {
         } else if (workOrder.status === 'ON_HOLD' && nextWorkOrderStatus === 'IN_PROGRESS') {
           workOrderStateEventType = 'WORK_ORDER_RESUMED';
         }
-      } else if (command === 'WIP_REPORTED' || command === 'REWORK_REPORTED') {
+      } else if (command === 'WIP_REPORTED' || command === 'WIP_TRANSFERRED' || command === 'REWORK_REPORTED') {
         // These events do not move the work-order state, but stale work-order clients should refresh.
         const woUpdate = await client.query(`
           UPDATE work_orders
           SET row_version = row_version + 1, updated_by_user_id = $1, updated_at = clock_timestamp()
           WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND row_version = $5
         `, [userId, workOrder.id, tenantId, factoryId, workOrder.row_version]);
-        if (woUpdate.rowCount !== 1) throw new ConflictException('Work order changed while reporting WIP/rework');
+        if (woUpdate.rowCount !== 1) throw new ConflictException('Work order changed while reporting WIP/transfer/rework');
         payload.work_order_row_version = workOrder.row_version + 1;
       }
 
