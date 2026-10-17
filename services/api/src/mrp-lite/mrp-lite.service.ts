@@ -133,7 +133,7 @@ export class MrpLiteService {
     const requestHash = this.hash({ horizon_start: horizonStart, horizon_end: horizonEnd, allocation_policy: 'DUE_DATE_FIFO' });
     const correlationId = this.validUuid(traceId) ?? this.validUuid(requestId) ?? randomUUID();
 
-    const transactionResult = await this.database.transaction({ tenantId, userId, requestId, traceId }, async (client) => {
+    const transactionResult = await this.database.transaction({ tenantId, userId, requestId, traceId, isolationLevel: 'REPEATABLE READ' }, async (client) => {
       await client.query(
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
         [`mrp-lite:${tenantId}:${factoryId}:${key}`],
