@@ -343,7 +343,7 @@ export class MrpLiteService {
         stockRows.map((row) => [row.id, {
           onHandQuantity: row.quantity_on_hand,
           reservedQuantity: row.quantity_reserved,
-        }]),
+        }] as const),
       );
 
       const incomingRows: IncomingRow[] = itemIds.length
@@ -410,8 +410,8 @@ export class MrpLiteService {
         requiredQuantity: candidate.requiredQuantity,
       }));
       const allocations = allocateMrpRequirements(allocationDemands, stockByItem, incomingSupply, horizonStart);
-      const byRequirementId = new Map(allocations.map((a) => [a.requirementId, a]));
-      const stockMetadata = new Map(stockRows.map((r) => [r.id, r]));
+      const byRequirementId = new Map(allocations.map((a) => [a.requirementId, a] as const));
+      const stockMetadata = new Map(stockRows.map((r) => [r.id, r] as const));
       const incomingByItem = new Map<string, string>();
       for (const incoming of incomingRows) {
         incomingByItem.set(incoming.item_id, this.add4(incomingByItem.get(incoming.item_id) ?? '0.0000', incoming.remaining_quantity));
