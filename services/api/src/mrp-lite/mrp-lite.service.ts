@@ -152,7 +152,7 @@ export class MrpLiteService {
         if (existing.rows[0].request_hash !== requestHash) {
           throw new ConflictException('Idempotency-Key was already used for a different MRP-lite horizon');
         }
-        return { planId: existing.rows[0].id, replayed: true };
+        return { planId: existing.rows[0].id, replayed: true as const };
       }
 
       const factory = await client.query<{ id: string }>(
@@ -543,7 +543,7 @@ export class MrpLiteService {
           covered_count: coveredCount, late_supply_count: lateCount, unsupplied_count: unsuppliedCount,
         },
       });
-      return { planId, replayed: false };
+      return { planId, replayed: false as const, requirementCount: candidates.length, exceptionCount: exceptions.length };
     });
 
     const plan = await this.getRun(userId, tenantId, factoryId, transactionResult.planId);
@@ -553,8 +553,8 @@ export class MrpLiteService {
         resource: 'MRP_LITE_PLAN', id: transactionResult.planId, requestId, traceId,
         payload: {
           horizonStart, horizonEnd, replayed: false,
-          requirementCount: (plan.summary as Record<string, unknown>).requirement_count,
-          exceptionCount: (plan.summary as Record<string, unknown>).exception_count,
+          requirementCount: transactionResult.requirementCount,
+          exceptionCount: transactionResult.exceptionCount,
         },
       });
     }
@@ -576,7 +576,7 @@ export class MrpLiteService {
     return result.rows;
   }
 
-  async getRun(userId: string, tenantId: string, factoryId: string, runId: string) {
+  async getRun(userId: string, tenantId: string, factoryId: string, runId: string): Promise<Record<string, unknown> & { requirements: QueryResultRow[] }> {
     this.assertScope(userId, tenantId, factoryId);
     this.uuid(runId, 'runId');
     const planResult = await this.database.query(`
@@ -584,7 +584,7 @@ export class MrpLiteService {
       FROM mrp_plans
       WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
     `, [runId, tenantId, factoryId], { tenantId, userId });
-    const plan = planResult.rows[0];
+    const plan = planResult.rows[0] as unknown as Record<string, unknown> | undefined;
     if (!plan) throw new NotFoundException('MRP-lite plan was not found in this factory');
 
     const requirementResult = await this.database.query(`
