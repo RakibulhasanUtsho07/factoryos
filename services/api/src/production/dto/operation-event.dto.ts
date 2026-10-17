@@ -1,8 +1,8 @@
-import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 
 export const OPERATION_COMMANDS = [
   'START', 'PAUSE', 'RESUME', 'HOLD', 'COMPLETE', 'SKIP',
-  'DOWNTIME_START', 'DOWNTIME_END', 'WIP_REPORTED', 'REWORK_REPORTED',
+  'DOWNTIME_START', 'DOWNTIME_END', 'WIP_REPORTED', 'WIP_TRANSFERRED', 'REWORK_REPORTED',
 ] as const;
 
 export class OperationEventDto {
@@ -21,6 +21,10 @@ export class OperationEventDto {
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
   quantity?: number;
+
+  @IsOptional()
+  @IsUUID()
+  target_operation_id?: string;
 
   @IsOptional()
   @IsString()
