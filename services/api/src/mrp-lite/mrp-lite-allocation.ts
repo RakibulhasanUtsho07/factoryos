@@ -87,7 +87,6 @@ export function allocateMrpRequirements(
   demands: readonly MrpAllocationDemand[],
   stockByItem: ReadonlyMap<string, MrpStockPosition>,
   incomingSupply: readonly MrpIncomingSupply[],
-  planningStartDate: string,
 ): MrpAllocationResult[] {
   const sortedDemands = [...demands].sort(demandOrder);
   const remainingStock = new Map<string, bigint>();
@@ -132,8 +131,7 @@ export function allocateMrpRequirements(
     for (const bucket of supply) {
       if (remaining === 0n) break;
       if (bucket.itemId !== demand.componentItemId || bucket.remaining === 0n || !bucket.eligibleForAllocation) continue;
-      if (!bucket.expectedDeliveryDate || bucket.expectedDeliveryDate < planningStartDate
-        || bucket.expectedDeliveryDate > demand.needByDate) continue;
+      if (!bucket.expectedDeliveryDate || bucket.expectedDeliveryDate > demand.needByDate) continue;
       const take = minQuantity(remaining, bucket.remaining);
       bucket.remaining -= take;
       remaining -= take;
