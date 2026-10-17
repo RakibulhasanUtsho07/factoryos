@@ -338,19 +338,22 @@ export class InventoryService {
           let conversionFactorNumerator: string | null = null;
           let conversionFactorDenominator: string | null = null;
           let conversionRoundingMode: 'REJECT' | 'HALF_UP' | null = null;
-          if (inputUnitCode) {
-            if (!this.uomService) throw new ConflictException('Unit-of-measure conversion service is unavailable');
+          if (this.uomService) {
+            // An omitted input_unit_code is a base-unit request, but it must
+            // still pass the configured unit precision validation.
+            const effectiveInputUnitCode = inputUnitCode ?? item.unit;
             const converted = await this.uomService.convertForStockMovement(
-              client, tenantId, factoryId, inputUnitCode, item.unit, dto.quantity.toFixed(8),
+              client, tenantId, factoryId, effectiveInputUnitCode, item.unit, dto.quantity.toFixed(8),
             );
             quantity = converted.quantity;
             inputQuantity = converted.inputQuantity;
-            movementInputUnitCode = inputUnitCode;
+            movementInputUnitCode = effectiveInputUnitCode;
             conversionRuleId = converted.conversionRuleId;
             conversionFactorNumerator = converted.factorNumerator;
             conversionFactorDenominator = converted.factorDenominator;
             conversionRoundingMode = converted.roundingMode;
           } else {
+            if (inputUnitCode) throw new ConflictException('Unit-of-measure conversion service is unavailable');
             quantity = dto.quantity.toFixed(4);
             inputQuantity = dto.quantity.toFixed(8);
             movementInputUnitCode = item.unit;

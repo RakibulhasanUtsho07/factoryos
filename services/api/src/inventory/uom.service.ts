@@ -226,7 +226,7 @@ export class UnitOfMeasureService {
     if(!from||!to) throw new NotFoundException('Both UoM codes must be registered in this factory');
     if(from.dimension_code!==to.dimension_code) throw new BadRequestException('Units from different dimensions cannot be converted');
     this.assertPrecision(qty,from.decimal_precision);
-    const precision=stockPrecision??to.decimal_precision;
+    const precision=stockPrecision===null?to.decimal_precision:Math.min(stockPrecision,to.decimal_precision);
     let numerator='1',denominator='1',ruleId:string|null=null,rounding:Rounding='REJECT';
     if(fromCode!==toCode) {
       const q=await client.query<{id:string;from_unit_id:string;factor_numerator:string;factor_denominator:string;rounding_mode:Rounding}>(`

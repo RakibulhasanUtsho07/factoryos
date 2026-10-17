@@ -162,6 +162,7 @@ jobs:
             migrations/074_lot_serial_product_genealogy.sql
             migrations/075_uom_conversion_controls.sql
             migrations/076_inventory_movement_uom_snapshot_compatibility.sql
+            migrations/077_uom_base_quantity_precision_guard.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

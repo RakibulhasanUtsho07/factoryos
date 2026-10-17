@@ -10,6 +10,7 @@ DECLARE
   v_kg UUID := gen_random_uuid();
   v_g UUID := gen_random_uuid();
   v_pcs UUID := gen_random_uuid();
+  v_inventory_item UUID := gen_random_uuid();
   v_kg_g_rule UUID := gen_random_uuid();
   v_hash CHAR(64) := repeat('a', 64);
   v_request UUID := gen_random_uuid();
@@ -20,8 +21,10 @@ DECLARE
   v_dimension_rejected BOOLEAN := FALSE;
   v_duplicate_pair_rejected BOOLEAN := FALSE;
   v_immutable_rejected BOOLEAN := FALSE;
+  v_base_precision_rejected BOOLEAN := FALSE;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '075_uom_conversion_controls') THEN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '075_uom_conversion_controls')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '077_uom_base_quantity_precision_guard') THEN
     RAISE EXCEPTION 'UoM migration marker is missing';
   END IF;
   IF to_regclass('uom_units') IS NULL OR to_regclass('uom_conversion_rules') IS NULL
@@ -179,6 +182,34 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN v_duplicate_pair_rejected := TRUE;
   END;
   IF NOT v_duplicate_pair_rejected THEN RAISE EXCEPTION 'duplicate active reverse conversion pair was not rejected'; END IF;
+
+  -- Direct SQL callers cannot bypass a registered PCS unit's zero-decimal precision.
+  INSERT INTO inventory_items (
+    id, tenant_id, factory_id, sku, name, unit, created_by_user_id
+  ) VALUES (
+    v_inventory_item, v_tenant, v_factory,
+    'UOM-COUNT-' || upper(substr(v_inventory_item::text, 1, 8)),
+    'UoM count precision test', 'PCS', v_submitter
+  );
+  INSERT INTO inventory_stock_balances (tenant_id, factory_id, item_id, quantity_on_hand)
+  VALUES (v_tenant, v_factory, v_inventory_item, 0);
+
+  BEGIN
+    INSERT INTO inventory_movements (
+      tenant_id, factory_id, item_id, movement_type, quantity, quantity_delta, quantity_after,
+      input_quantity, input_unit_code, conversion_rule_id, conversion_factor_numerator,
+      conversion_factor_denominator, conversion_rounding_mode, idempotency_key, request_hash,
+      created_by_user_id, correlation_id
+    ) VALUES (
+      v_tenant, v_factory, v_inventory_item, 'RECEIPT', 1.5, 1.5, 1.5,
+      1.50000000, 'PCS', NULL, NULL, NULL, NULL,
+      'uom-invalid-count-precision', v_hash, v_submitter, v_trace
+    );
+  EXCEPTION WHEN check_violation THEN v_base_precision_rejected := TRUE;
+  END;
+  IF NOT v_base_precision_rejected THEN
+    RAISE EXCEPTION 'direct inventory movement bypassed the registered PCS precision';
+  END IF;
 
   BEGIN
     UPDATE uom_units SET decimal_precision = 8

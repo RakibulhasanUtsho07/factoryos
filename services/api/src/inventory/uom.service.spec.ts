@@ -98,6 +98,21 @@ describe('UnitOfMeasureService', () => {
     expect(result.rounding_mode).toBe('HALF_UP');
   });
 
+  it('uses base-unit precision for stock conversion, even though the ledger stores four decimals', async () => {
+    client.query
+      .mockResolvedValueOnce(units(6, 0))
+      .mockResolvedValueOnce(rule('HALF_UP'))
+      .mockResolvedValueOnce({
+        rows: [{ exact_quantity: '1.5', rounded_quantity: '2.0000', exact_at_precision: false }],
+      });
+    const result = await service.convertForStockMovement(
+      client as unknown as import('pg').PoolClient, TENANT_ID, FACTORY_ID, 'KG', 'G', '0.0015',
+    );
+    expect(result.quantity).toBe('2.0000');
+    expect(result.roundingMode).toBe('HALF_UP');
+    expect(client.query.mock.calls[2][1]).toEqual(['0.0015', '1000', '1', 0, true]);
+  });
+
   it('rejects exponent notation, zero and negative quantities before database access', async () => {
     for (const quantity of ['1e-4', '0.000000001', '-1', '0']) {
       await expect(service.convert(USER_ID, TENANT_ID, FACTORY_ID, {

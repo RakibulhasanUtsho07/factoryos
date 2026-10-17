@@ -23,4 +23,4 @@ Implements the SRS/Blueprint Core Domain Kernel requirement for explicit, review
 
 ## Verification
 
-Migration: `075_uom_conversion_controls.sql`. PostgreSQL regression: `services/api/test/uom-conversion.sql`; service validation regression: `services/api/src/inventory/uom.service.spec.ts`.
+Migration chain: `075_uom_conversion_controls.sql`, `076_inventory_movement_uom_snapshot_compatibility.sql`, and `077_uom_base_quantity_precision_guard.sql`. PostgreSQL regression: `services/api/test/uom-conversion.sql`; service validation regression: `services/api/src/inventory/uom.service.spec.ts`.
