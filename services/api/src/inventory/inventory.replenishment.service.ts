@@ -317,8 +317,10 @@ export class InventoryReplenishmentService {
       `
       WITH posted_receipts AS (
         SELECT
+          gl.tenant_id,
+          gl.factory_id,
           gl.purchase_order_line_id,
-          SUM(gl.received_quantity)::numeric(18,4) AS received_quantity
+          SUM(gl.accepted_quantity)::numeric(18,4) AS accepted_quantity
         FROM goods_receipt_lines gl
         INNER JOIN goods_receipts gr
           ON gr.id = gl.goods_receipt_id
@@ -327,12 +329,12 @@ export class InventoryReplenishmentService {
         WHERE gl.tenant_id = $1
           AND gl.factory_id = $2
           AND gr.status = 'POSTED'
-        GROUP BY gl.purchase_order_line_id
+        GROUP BY gl.tenant_id, gl.factory_id, gl.purchase_order_line_id
       ),
       approved_po_lines AS (
         SELECT
           pol.inventory_item_id,
-          GREATEST(pol.quantity - COALESCE(pr.received_quantity, 0), 0)::numeric(18,4)
+          GREATEST(pol.quantity - COALESCE(pr.accepted_quantity, 0), 0)::numeric(18,4)
             AS outstanding_quantity,
           po.expected_delivery_date
         FROM purchase_orders po
@@ -342,6 +344,8 @@ export class InventoryReplenishmentService {
          AND pol.factory_id = po.factory_id
         LEFT JOIN posted_receipts pr
           ON pr.purchase_order_line_id = pol.id
+         AND pr.tenant_id = pol.tenant_id
+         AND pr.factory_id = pol.factory_id
         WHERE po.tenant_id = $1
           AND po.factory_id = $2
           AND po.status = 'APPROVED'
