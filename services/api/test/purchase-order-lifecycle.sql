@@ -58,6 +58,12 @@ BEGIN
 
   INSERT INTO suppliers (id, tenant_id, code, name, created_by_user_id)
     VALUES (v_supplier, v_tenant, 'SUP-TEST', 'Procurement Test Supplier', v_creator);
+
+  UPDATE suppliers
+    SET name = 'Procurement Test Supplier Updated',
+        updated_at = clock_timestamp(), version = version + 1
+    WHERE id = v_supplier AND tenant_id = v_tenant;
+
   INSERT INTO purchase_orders (id, tenant_id, factory_id, supplier_id, po_number, created_by_user_id)
     VALUES (v_order, v_tenant, v_factory, v_supplier, 'PO-TEST-001', v_creator);
   INSERT INTO purchase_order_lines (
@@ -176,6 +182,17 @@ BEGIN
       AND correlation_id = v_trace AND payload->>'version' = '1'
   ) THEN
     RAISE EXCEPTION 'Expected supplier creation audit with actor/request/trace correlation';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM audit_events
+    WHERE tenant_id = v_tenant AND resource_type = 'SUPPLIER'
+      AND resource_id = v_supplier AND action = 'UPDATED'
+      AND actor_user_id = v_creator AND request_id = v_request
+      AND correlation_id = v_trace AND payload->>'version' = '2'
+      AND payload->'changed_fields' @> '[\"name\"]'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'Expected correlated supplier profile update audit';
   END IF;
 
   IF NOT EXISTS (
