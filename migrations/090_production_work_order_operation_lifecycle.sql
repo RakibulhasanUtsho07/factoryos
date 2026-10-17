@@ -447,7 +447,7 @@ DECLARE
 BEGIN
   IF NEW.event_type IN ('WIP_REPORTED', 'REWORK_REPORTED') THEN
     v_quantity := NEW.payload->>'quantity';
-    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\\.[0-9]{1,4})?
+    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\.[0-9]{1,4})?$' OR v_quantity::numeric <= 0 THEN
 CREATE OR REPLACE FUNCTION factoryos_guard_work_order_production_output()
 RETURNS trigger
 LANGUAGE plpgsql
