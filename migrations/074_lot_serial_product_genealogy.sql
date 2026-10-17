@@ -117,7 +117,7 @@ CREATE TABLE traceability_settings (
 
   CONSTRAINT pk_traceability_settings PRIMARY KEY (tenant_id, factory_id),
   CONSTRAINT fk_traceability_settings_factory
-    FOREIGN KEY (factory_id, tenant_id) REFERENCES factories (id, tenant_id) ON DELETE RESTRICT,
+    FOREIGN KEY (factory_id, tenant_id) REFERENCES factories (id, tenant_id) ON DELETE CASCADE,
   CONSTRAINT fk_traceability_settings_actor
     FOREIGN KEY (updated_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
   CONSTRAINT chk_traceability_settings_retention CHECK (retention_years BETWEEN 1 AND 100),
