@@ -108,6 +108,9 @@ export class ProcurementService {
     dto: TransitionSupplierStatusDto, requestId: string | null, traceId: string | null,
   ) {
     this.validateUuid(userId, 'userId'); this.validateUuid(tenantId, 'tenantId'); this.validateUuid(supplierId, 'supplierId');
+    if (!Number.isInteger(dto.expected_version) || dto.expected_version < 1) {
+      throw new BadRequestException('expected_version must be a positive integer');
+    }
     const updated = await this.database.transaction({ tenantId, userId }, async client => {
       const current = await client.query<{ id: string; code: string; status: SupplierStatus; version: string }>(`
         SELECT id::text AS id, code, status, version::text AS version
@@ -115,7 +118,7 @@ export class ProcurementService {
       `, [supplierId, tenantId]);
       const supplier = current.rows[0];
       if (!supplier) throw new NotFoundException('Supplier not found');
-      if (Number(supplier.version) !== (dto.expected_version ?? Number(supplier.version))) {
+      if (Number(supplier.version) !== dto.expected_version) {
         throw new ConflictException(`Supplier version conflict. Expected version ${dto.expected_version}, current version is ${supplier.version}`);
       }
       if (supplier.status === dto.target_status) throw new ConflictException(`Supplier is already ${dto.target_status}`);
@@ -475,12 +478,12 @@ export class ProcurementService {
 
   async transitionPurchaseOrder(
     userId: string, tenantId: string, factoryId: string, purchaseOrderId: string,
-    targetStatus: PurchaseOrderStatus, expectedVersion: number | undefined, reason: string | undefined,
+    targetStatus: PurchaseOrderStatus, expectedVersion: number, reason: string | undefined,
     requestId: string | null, traceId: string | null,
   ) {
     this.validateUuid(userId, 'userId'); this.validateUuid(tenantId, 'tenantId');
     this.validateUuid(factoryId, 'factoryId'); this.validateUuid(purchaseOrderId, 'purchaseOrderId');
-    if (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 1)) {
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
       throw new BadRequestException('expected_version must be a positive integer');
     }
     const normalizedReason = reason?.trim() || null;
@@ -498,7 +501,7 @@ export class ProcurementService {
       `, [purchaseOrderId, tenantId, factoryId]);
       const current = currentResult.rows[0];
       if (!current) throw new NotFoundException('Purchase order not found');
-      if (expectedVersion !== undefined && expectedVersion !== Number(current.version)) {
+      if (expectedVersion !== Number(current.version)) {
         throw new ConflictException(`Purchase-order version conflict. Expected version ${expectedVersion}, current version is ${current.version}`);
       }
       if (current.status === targetStatus) throw new ConflictException(`Purchase order is already ${targetStatus}`);

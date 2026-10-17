@@ -142,7 +142,7 @@ export class PurchaseOrdersController {
   async submit(
     @Req() request: ProcurementRequest,
     @Param('purchaseOrderId', new ParseUUIDPipe()) purchaseOrderId: string,
-    @Body() body: TransitionPurchaseOrderDto = {},
+    @Body() body: TransitionPurchaseOrderDto,
   ) {
     return this.transition(request, purchaseOrderId, 'SUBMITTED', body);
   }
@@ -154,7 +154,7 @@ export class PurchaseOrdersController {
   async approve(
     @Req() request: ProcurementRequest,
     @Param('purchaseOrderId', new ParseUUIDPipe()) purchaseOrderId: string,
-    @Body() body: TransitionPurchaseOrderDto = {},
+    @Body() body: TransitionPurchaseOrderDto,
   ) {
     return this.transition(request, purchaseOrderId, 'APPROVED', body);
   }
@@ -166,7 +166,7 @@ export class PurchaseOrdersController {
   async reject(
     @Req() request: ProcurementRequest,
     @Param('purchaseOrderId', new ParseUUIDPipe()) purchaseOrderId: string,
-    @Body() body: TransitionPurchaseOrderDto = {},
+    @Body() body: TransitionPurchaseOrderDto,
   ) {
     return this.transition(request, purchaseOrderId, 'REJECTED', body);
   }
@@ -178,7 +178,7 @@ export class PurchaseOrdersController {
   async cancel(
     @Req() request: ProcurementRequest,
     @Param('purchaseOrderId', new ParseUUIDPipe()) purchaseOrderId: string,
-    @Body() body: TransitionPurchaseOrderDto = {},
+    @Body() body: TransitionPurchaseOrderDto,
   ) {
     return this.transition(request, purchaseOrderId, 'CANCELLED', body);
   }
