@@ -153,6 +153,7 @@ jobs:
             migrations/065_inventory_bin_reservations.sql
             migrations/066_inventory_bin_reservation_balance_guard.sql
             migrations/067_supplier_purchase_order_lifecycle.sql
+            migrations/068_purchase_order_lifecycle_integrity.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

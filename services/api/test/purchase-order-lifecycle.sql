@@ -80,6 +80,12 @@ BEGIN
   END;
 
   BEGIN
+    UPDATE purchase_order_lines SET purchase_order_id = gen_random_uuid() WHERE id = v_line;
+    RAISE EXCEPTION 'Expected purchase-order line parent identity changes to be rejected';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  BEGIN
     UPDATE purchase_orders SET status = 'APPROVED', approved_by_user_id = v_creator,
       approved_at = clock_timestamp(), version = version + 1 WHERE id = v_order;
     RAISE EXCEPTION 'Expected purchase-order creator self-approval to be rejected';
@@ -103,6 +109,23 @@ BEGIN
     RAISE EXCEPTION 'Expected status history mutation to be rejected';
   EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
   END;
+
+  BEGIN
+    UPDATE purchase_orders SET approved_by_user_id = v_creator, version = version + 1 WHERE id = v_order;
+    RAISE EXCEPTION 'Expected approval actor provenance to be immutable';
+  EXCEPTION WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  BEGIN
+    INSERT INTO purchase_order_status_history (
+      tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
+    ) VALUES (v_tenant, v_factory, v_order, 'APPROVED', 'DRAFT', 5, v_creator, 'Injected invalid history');
+    RAISE EXCEPTION 'Expected history that does not match aggregate state to be rejected';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  -- Every version written during the test must have its own current-state history row.
+  SET CONSTRAINTS ALL IMMEDIATE;
 
   RAISE NOTICE 'WP02 supplier and purchase-order lifecycle schema and behavior checks passed';
 END;
