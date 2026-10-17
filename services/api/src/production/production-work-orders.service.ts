@@ -502,7 +502,15 @@ export class ProductionWorkOrdersService {
             AND r.tenant_id = op.tenant_id AND r.factory_id = op.factory_id) AS reported_good_quantity,
         (SELECT COALESCE(SUM(r.scrap_quantity), 0)::text FROM order_production_reports r
           WHERE r.work_order_id = op.work_order_id AND r.work_order_operation_id = op.id
-            AND r.tenant_id = op.tenant_id AND r.factory_id = op.factory_id) AS reported_scrap_quantity
+            AND r.tenant_id = op.tenant_id AND r.factory_id = op.factory_id) AS reported_scrap_quantity,
+        (SELECT COALESCE(SUM((e.payload->>'quantity')::numeric), 0)::text FROM work_order_events e
+          WHERE e.work_order_id = op.work_order_id AND e.operation_id = op.id
+            AND e.tenant_id = op.tenant_id AND e.factory_id = op.factory_id
+            AND e.event_type = 'WIP_REPORTED') AS reported_wip_quantity,
+        (SELECT COALESCE(SUM((e.payload->>'quantity')::numeric), 0)::text FROM work_order_events e
+          WHERE e.work_order_id = op.work_order_id AND e.operation_id = op.id
+            AND e.tenant_id = op.tenant_id AND e.factory_id = op.factory_id
+            AND e.event_type = 'REWORK_REPORTED') AS reported_rework_quantity
       FROM work_order_operations op
       JOIN manufacturing_work_centres wc
         ON wc.id = op.work_centre_id AND wc.tenant_id = op.tenant_id AND wc.factory_id = op.factory_id
