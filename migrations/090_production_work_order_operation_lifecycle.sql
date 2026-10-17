@@ -75,7 +75,6 @@ CREATE TABLE work_orders (
   CONSTRAINT fk_work_order_releaser FOREIGN KEY (released_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_work_order_canceller FOREIGN KEY (cancelled_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_work_order_quantity CHECK (target_quantity > 0),
-  CONSTRAINT chk_work_order_dates CHECK (due_date >= planned_start_date),
   CONSTRAINT chk_work_order_priority CHECK (priority BETWEEN 1 AND 5),
   CONSTRAINT chk_work_order_status CHECK (status IN ('DRAFT', 'RELEASED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED')),
   CONSTRAINT chk_work_order_version CHECK (row_version > 0),
