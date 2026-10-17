@@ -18,6 +18,10 @@ import {
   assertPrecedingOperationsComplete,
   assertTargetQuantityNotExceeded,
   assertWorkOrderTransition,
+  assertDowntimeCanStart,
+  assertDowntimeCanEnd,
+  assertWipSnapshotQuantity,
+  assertReworkQuantity,
   nextOperationStatus,
   type OperationCommand,
   type OperationStatus,
@@ -193,7 +197,7 @@ const WORK_ORDER_COLUMNS = `
   completed_at::text AS completed_at, cancelled_by_user_id::text AS cancelled_by_user_id,
   cancelled_at::text AS cancelled_at, created_by_user_id::text AS created_by_user_id,
   updated_by_user_id::text AS updated_by_user_id, created_at::text AS created_at,
-  updated_at::text AS updated_at, request_hash
+  updated_at::text AS updated_at
 `;
 
 const OPERATION_COLUMNS = `
@@ -1056,8 +1060,12 @@ export class ProductionWorkOrdersService {
     if (['WIP_REPORTED', 'REWORK_REPORTED'].includes(command) && quantity === null) {
       throw new BadRequestException('quantity is required for WIP and rework events');
     }
-    if (command === 'REWORK_REPORTED' && quantity !== null && this.toUnits(quantity) <= 0n) {
-      throw new BadRequestException('rework quantity must be greater than zero');
+    if (command === 'REWORK_REPORTED' && quantity !== null) {
+      try {
+        assertReworkQuantity(this.toUnits(quantity));
+      } catch {
+        throw new BadRequestException('rework quantity must be greater than zero');
+      }
     }
     const reason = dto.reason?.trim() || null;
     if (['SKIP', 'HOLD', 'REWORK_REPORTED', 'DOWNTIME_START'].includes(command) && !reason) {
@@ -1145,6 +1153,16 @@ export class ProductionWorkOrdersService {
           WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE
         `, [operation.work_centre_id, tenantId, factoryId]);
         if (centre.rows[0]?.status !== 'ACTIVE') throw new ConflictException('The operation work centre is not active');
+        const alreadyRunning = await client.query<{ id: string }>(`
+          SELECT id::text AS id FROM work_order_operations
+          WHERE work_order_id = $1 AND tenant_id = $2 AND factory_id = $3
+            AND status = 'IN_PROGRESS' AND id <> $4
+          LIMIT 1
+          FOR UPDATE
+        `, [workOrderId, tenantId, factoryId, operation.id]);
+        if (alreadyRunning.rows[0]) {
+          throw new ConflictException('Another operation is already running for this work order');
+        }
         nextWorkOrderStatus = workOrder.status === 'RELEASED' ? 'IN_PROGRESS' : workOrder.status;
         startedAt = operation.started_at;
         activeStartedAt = null;
@@ -1240,14 +1258,29 @@ export class ProductionWorkOrdersService {
           nextOperationBecameReady = true;
         }
       } else if (command === 'DOWNTIME_START') {
-        if (workOrder.status !== 'IN_PROGRESS' || !operation.active_started_at || operation.downtime_started_at) {
+        try {
+          assertDowntimeCanStart({
+            workOrderStatus: workOrder.status,
+            operationStatus: operation.status,
+            activeTimerOpen: operation.active_started_at !== null,
+            downtimeAlreadyOpen: operation.downtime_started_at !== null,
+          });
+        } catch {
           throw new ConflictException('Downtime can start only during an active operation run with no open downtime interval');
         }
         actualRunExpression = 'actual_run_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - active_started_at)) / 60, 0)';
         activeStartedAt = null;
         downtimeStartedAt = null;
       } else if (command === 'DOWNTIME_END') {
-        if (workOrder.status !== 'IN_PROGRESS' || !operation.downtime_started_at) throw new ConflictException('An active downtime interval on an in-progress work order is required');
+        try {
+          assertDowntimeCanEnd({
+            workOrderStatus: workOrder.status,
+            operationStatus: operation.status,
+            downtimeAlreadyOpen: operation.downtime_started_at !== null,
+          });
+        } catch {
+          throw new ConflictException('An active downtime interval on an in-progress work order is required');
+        }
         downtimeExpression = 'downtime_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - downtime_started_at)) / 60, 0)';
         downtimeStartedAt = null;
         activeStartedAt = null;
@@ -1255,8 +1288,12 @@ export class ProductionWorkOrdersService {
         if (workOrder.status !== 'IN_PROGRESS') {
           throw new ConflictException('WIP and rework can only be reported for an in-progress work order');
         }
-        if (command === 'WIP_REPORTED' && quantity !== null && this.toUnits(quantity) > this.toUnits(workOrder.target_quantity)) {
-          throw new ConflictException('Reported WIP cannot exceed the work-order target quantity');
+        if (command === 'WIP_REPORTED' && quantity !== null) {
+          try {
+            assertWipSnapshotQuantity(this.toUnits(quantity), this.toUnits(workOrder.target_quantity));
+          } catch {
+            throw new ConflictException('Reported WIP must be non-negative and cannot exceed the work-order target quantity');
+          }
         }
       }
 
