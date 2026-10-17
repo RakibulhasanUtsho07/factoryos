@@ -46,6 +46,11 @@ BEGIN
   INSERT INTO tenants (id, slug, name) VALUES (v_tenant, 'procurement-test-' || v_tenant::text, 'Procurement Test');
   INSERT INTO users (id, display_name) VALUES (v_creator, 'Procurement Creator'), (v_approver, 'Procurement Approver');
   INSERT INTO factories (id, tenant_id, code, name) VALUES (v_factory, v_tenant, 'PROC-TEST', 'Procurement Test Factory');
+
+  -- Match the transaction-local identity used by the production DatabaseService.
+  PERFORM set_config('app.tenant_id', v_tenant::text, true);
+  PERFORM set_config('app.user_id', v_creator::text, true);
+
   INSERT INTO suppliers (id, tenant_id, code, name, created_by_user_id)
     VALUES (v_supplier, v_tenant, 'SUP-TEST', 'Procurement Test Supplier', v_creator);
   INSERT INTO purchase_orders (id, tenant_id, factory_id, supplier_id, po_number, created_by_user_id)
