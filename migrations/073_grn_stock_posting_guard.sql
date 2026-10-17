@@ -226,50 +226,54 @@ BEGIN
     WHERE gl.goods_receipt_id = v_receipt.id
       AND gl.tenant_id = v_receipt.tenant_id
       AND gl.factory_id = v_receipt.factory_id
+      AND gl.accepted_quantity > 0
       AND (
         (
-          gl.accepted_quantity > 0
-          AND (
-            (
-              SELECT count(*)
-              FROM inventory_movements im
-              WHERE im.tenant_id = gl.tenant_id
-                AND im.factory_id = gl.factory_id
-                AND im.reference_type = 'GOODS_RECEIPT'
-                AND im.reference_id = v_receipt.id
-                AND im.idempotency_key = 'GRN:' || v_receipt.id::text || ':' || gl.purchase_order_line_id::text
-            ) <> 1
-            OR NOT EXISTS (
-              SELECT 1
-              FROM inventory_movements im
-              WHERE im.tenant_id = gl.tenant_id
-                AND im.factory_id = gl.factory_id
-                AND im.item_id = gl.inventory_item_id
-                AND im.movement_type = 'RECEIPT'
-                AND im.quantity = gl.accepted_quantity
-                AND im.quantity_delta = gl.accepted_quantity
-                AND im.location_id = v_receipt.location_id
-                AND im.reference_type = 'GOODS_RECEIPT'
-                AND im.reference_id = v_receipt.id
-                AND im.idempotency_key = 'GRN:' || v_receipt.id::text || ':' || gl.purchase_order_line_id::text
-              )
-            )
-          )
-        )
-        OR (
-          gl.accepted_quantity = 0
-          AND EXISTS (
-            SELECT 1 FROM inventory_movements im
-            WHERE im.tenant_id = gl.tenant_id
-              AND im.factory_id = gl.factory_id
-              AND im.reference_type = 'GOODS_RECEIPT'
-              AND im.reference_id = v_receipt.id
-              AND im.idempotency_key = 'GRN:' || v_receipt.id::text || ':' || gl.purchase_order_line_id::text
-          )
+          SELECT count(*)
+          FROM inventory_movements im
+          WHERE im.tenant_id = gl.tenant_id
+            AND im.factory_id = gl.factory_id
+            AND im.reference_type = 'GOODS_RECEIPT'
+            AND im.reference_id = v_receipt.id
+            AND im.idempotency_key = 'GRN:' || v_receipt.id::text || ':' || gl.purchase_order_line_id::text
+        ) <> 1
+        OR NOT EXISTS (
+          SELECT 1
+          FROM inventory_movements im
+          WHERE im.tenant_id = gl.tenant_id
+            AND im.factory_id = gl.factory_id
+            AND im.item_id = gl.inventory_item_id
+            AND im.movement_type = 'RECEIPT'
+            AND im.quantity = gl.accepted_quantity
+            AND im.quantity_delta = gl.accepted_quantity
+            AND im.location_id = v_receipt.location_id
+            AND im.reference_type = 'GOODS_RECEIPT'
+            AND im.reference_id = v_receipt.id
+            AND im.idempotency_key = 'GRN:' || v_receipt.id::text || ':' || gl.purchase_order_line_id::text
         )
       )
   ) THEN
-    RAISE EXCEPTION 'each accepted line requires exactly one matching stock movement and rejected lines must not move stock'
+    RAISE EXCEPTION 'each accepted line requires exactly one matching stock movement'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM goods_receipt_lines gl
+    WHERE gl.goods_receipt_id = v_receipt.id
+      AND gl.tenant_id = v_receipt.tenant_id
+      AND gl.factory_id = v_receipt.factory_id
+      AND gl.accepted_quantity = 0
+      AND EXISTS (
+        SELECT 1 FROM inventory_movements im
+        WHERE im.tenant_id = gl.tenant_id
+          AND im.factory_id = gl.factory_id
+          AND im.reference_type = 'GOODS_RECEIPT'
+          AND im.reference_id = v_receipt.id
+          AND im.idempotency_key = 'GRN:' || v_receipt.id::text || ':' || gl.purchase_order_line_id::text
+      )
+  ) THEN
+    RAISE EXCEPTION 'fully rejected goods receipt lines must not create stock movements'
       USING ERRCODE = '23514';
   END IF;
 
