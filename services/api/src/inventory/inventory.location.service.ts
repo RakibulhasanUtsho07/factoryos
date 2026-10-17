@@ -553,14 +553,18 @@ export class InventoryLocationService {
 
     const quantity = dto.quantity.toFixed(4);
     const notes = dto.notes?.trim() || null;
-    const requestHash = this.hash({
+    // Keep the pre-policy TRANSFER fingerprint stable so already persisted transfer
+    // requests replay correctly after migration 080. Directed purposes are added
+    // to the identity because they change the allowed source/destination contract.
+    const requestIdentity: Record<string, string | null> = {
       itemId: itemId.toLowerCase(),
       sourceId,
       destinationId,
-      movementPurpose,
       quantity,
       notes,
-    });
+    };
+    if (movementPurpose !== 'TRANSFER') requestIdentity.movementPurpose = movementPurpose;
+    const requestHash = this.hash(requestIdentity);
 
     const result = await this.database.transaction(
       { tenantId, userId },

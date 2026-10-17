@@ -556,6 +556,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const targets = await locationService.listPutawayTargets(tenantId, fixture.factoryId, fixture.itemId);
     expect(targets[0]).toMatchObject({ location_id: binB.id, putaway_priority: 10 });
 
+    const putawayKey = 'directed-putaway-' + randomUUID();
     const putaway = await locationService.transferStock(
       userId, tenantId, fixture.factoryId, fixture.itemId,
       {
@@ -565,13 +566,35 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         movement_purpose: 'PUT_AWAY',
         notes: 'Directed put-away after receipt',
       },
-      'directed-putaway-' + randomUUID(), requestId, traceId,
+      putawayKey, requestId, traceId,
     );
     expect(putaway).toMatchObject({
       movement_purpose: 'PUT_AWAY',
       source_quantity_after: '5.0000',
       destination_quantity_after: '7.0000',
     });
+    const putawayReplay = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 7,
+        movement_purpose: 'PUT_AWAY',
+        notes: 'Directed put-away after receipt',
+      },
+      putawayKey, requestId, traceId,
+    );
+    expect(putawayReplay).toMatchObject({ id: putaway.id, replayed: true, movement_purpose: 'PUT_AWAY' });
+    await expect(locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 7,
+        notes: 'Directed put-away after receipt',
+      },
+      putawayKey, requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     const reservation = await reservationService.createReservation(
       userId, tenantId, fixture.factoryId, fixture.itemId,
