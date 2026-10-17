@@ -159,8 +159,11 @@ CREATE TABLE work_order_operations (
   CONSTRAINT chk_work_order_operation_version CHECK (row_version > 0),
   CONSTRAINT chk_work_order_operation_actuals CHECK (actual_run_minutes >= 0 AND downtime_minutes >= 0),
   CONSTRAINT chk_work_order_operation_active_timer CHECK (
-    (status = 'IN_PROGRESS' AND active_started_at IS NOT NULL AND completed_at IS NULL AND downtime_started_at IS NULL)
-    OR (status <> 'IN_PROGRESS' AND active_started_at IS NULL)
+    (status = 'IN_PROGRESS' AND completed_at IS NULL AND (
+      (active_started_at IS NOT NULL AND downtime_started_at IS NULL)
+      OR (active_started_at IS NULL AND downtime_started_at IS NOT NULL)
+    ))
+    OR (status <> 'IN_PROGRESS' AND active_started_at IS NULL AND downtime_started_at IS NULL)
   ),
   CONSTRAINT chk_work_order_operation_completion CHECK (
     (status = 'COMPLETED' AND completed_at IS NOT NULL)
@@ -277,6 +280,15 @@ BEGIN
   IF NEW.row_version <> OLD.row_version + 1 OR NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'work-order updates must increment row_version and updated_at'
       USING ERRCODE = '23514';
+  END IF;
+
+  IF (OLD.released_at IS NOT NULL AND
+      ROW(NEW.released_by_user_id, NEW.released_at) IS DISTINCT FROM ROW(OLD.released_by_user_id, OLD.released_at))
+    OR (OLD.completed_at IS NOT NULL AND NEW.completed_at IS DISTINCT FROM OLD.completed_at)
+    OR (OLD.cancelled_at IS NOT NULL AND
+      ROW(NEW.cancelled_by_user_id, NEW.cancelled_at) IS DISTINCT FROM ROW(OLD.cancelled_by_user_id, OLD.cancelled_at)) THEN
+    RAISE EXCEPTION 'work-order release, completion and cancellation evidence is immutable'
+      USING ERRCODE = '55000';
   END IF;
 
   IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
