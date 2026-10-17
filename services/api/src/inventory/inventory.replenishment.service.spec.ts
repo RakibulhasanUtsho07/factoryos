@@ -171,7 +171,7 @@ describe('InventoryReplenishmentService', () => {
     const sql = String(database.query.mock.calls[0]?.[0]);
     expect(sql).toContain("gr.status = 'POSTED'");
     expect(sql).toContain('pol.quantity - COALESCE(pr.received_quantity, 0)');
-    expect(sql).toContain('quantity_on_hand - quantity_reserved');
+    expect(sql).toContain('b.quantity_on_hand - b.quantity_reserved');
     expect(sql).toContain('uncovered_shortage_quantity');
     expect(sql).toContain('LIMIT $3');
   });
