@@ -12,12 +12,12 @@ import { ExpectedVersionDto } from './dto/expected-version.dto';
 import { ReplaceProductBomDto } from './dto/replace-product-bom.dto';
 import { ReplaceProductRoutingDto } from './dto/replace-product-routing.dto';
 
-interface ProductRow extends QueryResultRow {
+export interface ProductRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; inventory_item_id:string; product_code:string;
   product_name:string; product_type:string; base_unit:string; status:string; version:string;
   created_by_user_id:string; updated_by_user_id:string; created_at:string; updated_at:string;
 }
-interface VersionRow extends QueryResultRow {
+export interface VersionRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; product_id:string; version_number:number;
   state:'DRAFT'|'APPROVED'|'RETIRED'; effective_from:string; effective_to:string|null;
   expected_yield_percent:string; change_summary:string; row_version:string; idempotency_key:string;
@@ -26,7 +26,7 @@ interface VersionRow extends QueryResultRow {
   updated_by_user_id:string; approved_by_user_id:string|null; approved_at:string|null;
   created_at:string; updated_at:string;
 }
-interface WorkCentreRow extends QueryResultRow {
+export interface WorkCentreRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; code:string; name:string; status:string;
   capacity_units_per_hour:string|null; version:string; idempotency_key:string; request_hash:string;
   created_by_user_id:string; updated_by_user_id:string; created_at:string; updated_at:string;
@@ -40,7 +40,7 @@ interface UomQuantitySnapshot {
   denominator: string;
   roundingMode: 'REJECT' | 'HALF_UP';
 }
-interface AlternateRow extends QueryResultRow {
+export interface AlternateRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; product_id:string; product_version_id:string;
   bom_line_id:string; alternate_item_id:string; conversion_factor:string; unit:string; rationale:string;
   status:string; idempotency_key:string; request_hash:string; approval_idempotency_key:string|null;
