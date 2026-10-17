@@ -11,11 +11,13 @@ import { InventoryStockReconciliationService } from './inventory.stock-reconcili
 import { InventoryCycleCountService } from './inventory.cycle-count.service';
 import { InventoryService } from './inventory.service';
 import { InventoryLocationService } from './inventory.location.service';
+import { TraceabilityController } from './traceability.controller';
+import { TraceabilityService } from './traceability.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [InventoryController, InventoryLocationController],
-  providers: [InventoryService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService],
-  exports: [InventoryService, InventoryReservationService],
+  controllers: [InventoryController, InventoryLocationController, TraceabilityController],
+  providers: [InventoryService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService, TraceabilityService],
+  exports: [InventoryService, InventoryReservationService, TraceabilityService],
 })
 export class InventoryModule {}

@@ -10,6 +10,9 @@ DECLARE
   v_item UUID := gen_random_uuid();
   v_order UUID := gen_random_uuid();
   v_po_line UUID := gen_random_uuid();
+  v_grn_line UUID;
+  v_traceability_lot UUID := gen_random_uuid();
+  v_grn_lot_overflow_rejected BOOLEAN := FALSE;
   v_receipt_one UUID := gen_random_uuid();
   v_receipt_two UUID := gen_random_uuid();
   v_receipt_three UUID := gen_random_uuid();
@@ -120,7 +123,8 @@ BEGIN
   INSERT INTO goods_receipt_lines (
     tenant_id, factory_id, goods_receipt_id, purchase_order_id, purchase_order_line_id,
     inventory_item_id, received_quantity, rejected_quantity, rejection_reason
-  ) VALUES (v_tenant, v_factory, v_receipt_one, v_order, v_po_line, v_item, 6, 1, 'Damaged packaging');
+  ) VALUES (v_tenant, v_factory, v_receipt_one, v_order, v_po_line, v_item, 6, 1, 'Damaged packaging')
+  RETURNING id INTO v_grn_line;
 
   UPDATE inventory_stock_balances
   SET quantity_on_hand = quantity_on_hand + 5, version = version + 1, updated_at = clock_timestamp()
@@ -146,6 +150,55 @@ BEGIN
     v_trace, v_request, 'INTERNAL', jsonb_build_object('accepted_quantity', 5, 'rejected_quantity', 1)
   );
   UPDATE goods_receipts SET status = 'POSTED', posted_at = clock_timestamp() WHERE id = v_receipt_one;
+
+  -- Register accepted material as a lot; item and supplier provenance are derived from this posted GRN line.
+  INSERT INTO traceability_units (
+    id, tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+    inventory_item_id, quantity, unit, goods_receipt_id, goods_receipt_line_id,
+    idempotency_key, request_hash, created_by_user_id, correlation_id
+  ) VALUES (
+    v_traceability_lot, v_tenant, v_factory, 'LOT', 'MATERIAL',
+    'GRN-MATERIAL-LOT-001', 'QR-GRN-MATERIAL-LOT-001', v_item, 5, 'PCS',
+    v_receipt_one, v_grn_line, 'grn-traceability-material-lot', repeat('6', 64), v_approver, v_trace
+  );
+  INSERT INTO audit_events (
+    tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
+    correlation_id, request_id, data_class, payload
+  ) VALUES (
+    v_tenant, v_factory, v_approver, 'TRACEABILITY', 'REGISTERED', 'TRACEABILITY_UNIT', v_traceability_lot,
+    v_trace, v_request, 'INTERNAL', jsonb_build_object('unit_code','GRN-MATERIAL-LOT-001','quantity',5)
+  );
+  INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
+  VALUES (
+    v_tenant, v_factory, 'TRACEABILITY_UNIT', v_traceability_lot, 'TRACEABILITY.UNIT_REGISTERED',
+    jsonb_build_object('unit_id',v_traceability_lot,'unit_code','GRN-MATERIAL-LOT-001')
+  );
+  IF NOT EXISTS (
+    SELECT 1 FROM traceability_units
+    WHERE id = v_traceability_lot AND tenant_id = v_tenant AND factory_id = v_factory
+      AND inventory_item_id = v_item AND supplier_id = v_supplier
+      AND goods_receipt_id = v_receipt_one AND goods_receipt_line_id = v_grn_line
+      AND quantity = 5 AND unit = 'PCS'
+  ) THEN
+    RAISE EXCEPTION 'GRN-linked material lot did not preserve accepted item/supplier/source provenance';
+  END IF;
+  BEGIN
+    INSERT INTO traceability_units (
+      tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+      inventory_item_id, quantity, unit, goods_receipt_id, goods_receipt_line_id,
+      idempotency_key, request_hash, created_by_user_id, correlation_id
+    ) VALUES (
+      v_tenant, v_factory, 'LOT', 'MATERIAL', 'GRN-MATERIAL-LOT-OVERFLOW',
+      'QR-GRN-MATERIAL-LOT-OVERFLOW', v_item, 0.0001, 'PCS',
+      v_receipt_one, v_grn_line, 'grn-traceability-material-lot-overflow',
+      repeat('7', 64), v_approver, v_trace
+    );
+  EXCEPTION WHEN check_violation THEN
+    v_grn_lot_overflow_rejected := TRUE;
+  END;
+  IF NOT v_grn_lot_overflow_rejected THEN
+    RAISE EXCEPTION 'material lot identities exceeded the accepted GRN quantity';
+  END IF;
 
   SELECT received_quantity, rejected_quantity, accepted_quantity
   INTO v_received, v_rejected, v_accepted
