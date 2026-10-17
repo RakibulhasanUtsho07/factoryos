@@ -13,11 +13,13 @@ import { InventoryService } from './inventory.service';
 import { InventoryLocationService } from './inventory.location.service';
 import { TraceabilityController } from './traceability.controller';
 import { TraceabilityService } from './traceability.service';
+import { UnitOfMeasureController } from './uom.controller';
+import { UnitOfMeasureService } from './uom.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [InventoryController, InventoryLocationController, TraceabilityController],
-  providers: [InventoryService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService, TraceabilityService],
-  exports: [InventoryService, InventoryReservationService, TraceabilityService],
+  controllers: [InventoryController, InventoryLocationController, TraceabilityController, UnitOfMeasureController],
+  providers: [InventoryService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService, TraceabilityService, UnitOfMeasureService],
+  exports: [InventoryService, InventoryReservationService, TraceabilityService, UnitOfMeasureService],
 })
 export class InventoryModule {}

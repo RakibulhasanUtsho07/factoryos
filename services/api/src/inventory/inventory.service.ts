@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -14,6 +15,7 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { CreateStockMovementDto } from './dto/create-stock-movement.dto';
+import { UnitOfMeasureService } from './uom.service';
 
 type InventoryItemRow = QueryResultRow & {
   id: string;
@@ -38,6 +40,12 @@ type InventoryMovementRow = QueryResultRow & {
   location_id: string | null;
   movement_type: 'RECEIPT' | 'ISSUE';
   quantity: string;
+  input_quantity: string;
+  input_unit_code: string;
+  conversion_rule_id: string | null;
+  conversion_factor_numerator: string | null;
+  conversion_factor_denominator: string | null;
+  conversion_rounding_mode: 'REJECT' | 'HALF_UP' | null;
   quantity_delta: string;
   quantity_after: string;
   request_hash?: string;
@@ -58,6 +66,7 @@ export class InventoryService {
   constructor(
     private readonly database: DatabaseService,
     private readonly auditService: AuditService,
+    @Optional() private readonly uomService?: UnitOfMeasureService,
   ) {}
 
   async createItem(
@@ -239,8 +248,13 @@ export class InventoryService {
     if (!Number.isFinite(dto.quantity) || dto.quantity <= 0) {
       throw new BadRequestException('quantity must be a positive number');
     }
-    if (Math.abs(dto.quantity * 10000 - Math.round(dto.quantity * 10000)) > 0.000001) {
-      throw new BadRequestException('quantity supports at most 4 decimal places');
+    const inputUnitCode = dto.input_unit_code?.trim().toUpperCase() || null;
+    if (inputUnitCode && !/^[A-Z0-9][A-Z0-9._-]{0,49}$/.test(inputUnitCode)) {
+      throw new BadRequestException('input_unit_code must be a valid 1–50 character UoM code');
+    }
+    const inputPrecision = inputUnitCode ? 8 : 4;
+    if (Math.abs(dto.quantity * (10 ** inputPrecision) - Math.round(dto.quantity * (10 ** inputPrecision))) > 0.000001) {
+      throw new BadRequestException('quantity exceeds the supported input precision of ' + inputPrecision + ' decimal places');
     }
     if (!['RECEIPT', 'ISSUE'].includes(dto.movement_type)) {
       throw new BadRequestException('movement_type must be RECEIPT or ISSUE');
@@ -252,18 +266,18 @@ export class InventoryService {
     const referenceId = dto.reference_id?.toLowerCase() || null;
     if (referenceId) this.validateUuid(referenceId, 'reference_id');
     const notes = dto.notes?.trim() || null;
-    const quantity = dto.quantity.toFixed(4);
-    const requestHash = createHash('sha256')
-      .update(JSON.stringify({
-        itemId: itemId.toLowerCase(),
-        movementType: dto.movement_type,
-        locationId,
-        quantity,
-        referenceType,
-        referenceId,
-        notes,
-      }))
-      .digest('hex');
+    const quantityForHash = dto.quantity.toFixed(inputPrecision);
+    const hashInput: Record<string, unknown> = {
+      itemId: itemId.toLowerCase(),
+      movementType: dto.movement_type,
+      locationId,
+      quantity: quantityForHash,
+      referenceType,
+      referenceId,
+      notes,
+    };
+    if (inputUnitCode) hashInput.inputUnitCode = inputUnitCode;
+    const requestHash = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex');
 
     let result: InventoryMovementResult;
     try {
@@ -276,10 +290,10 @@ export class InventoryService {
           if (existingBeforeLock) return this.replayOrConflict(existingBeforeLock, requestHash);
 
           const itemResult = await client.query<{
-            id: string; sku: string; name: string; status: 'ACTIVE' | 'DISABLED';
+            id: string; sku: string; name: string; unit: string; status: 'ACTIVE' | 'DISABLED';
           }>(
             `
-            SELECT id::text AS id, sku, name, status
+            SELECT id::text AS id, sku, name, unit, status
             FROM inventory_items
             WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
             FOR UPDATE
@@ -317,7 +331,31 @@ export class InventoryService {
             );
           }
 
-          const delta = dto.movement_type === 'RECEIPT' ? dto.quantity : -dto.quantity;
+          let quantity: string;
+          let inputQuantity: string;
+          let movementInputUnitCode: string;
+          let conversionRuleId: string | null = null;
+          let conversionFactorNumerator: string | null = null;
+          let conversionFactorDenominator: string | null = null;
+          let conversionRoundingMode: 'REJECT' | 'HALF_UP' | null = null;
+          if (inputUnitCode) {
+            if (!this.uomService) throw new ConflictException('Unit-of-measure conversion service is unavailable');
+            const converted = await this.uomService.convertForStockMovement(
+              client, tenantId, factoryId, inputUnitCode, item.unit, dto.quantity.toFixed(8),
+            );
+            quantity = converted.quantity;
+            inputQuantity = converted.inputQuantity;
+            movementInputUnitCode = inputUnitCode;
+            conversionRuleId = converted.conversionRuleId;
+            conversionFactorNumerator = converted.factorNumerator;
+            conversionFactorDenominator = converted.factorDenominator;
+            conversionRoundingMode = converted.roundingMode;
+          } else {
+            quantity = dto.quantity.toFixed(4);
+            inputQuantity = dto.quantity.toFixed(8);
+            movementInputUnitCode = item.unit;
+          }
+          const delta = dto.movement_type === 'RECEIPT' ? quantity : '-' + quantity;
           const balanceResult = await client.query<{ quantity_on_hand: string }>(
             `
             UPDATE inventory_stock_balances
@@ -343,12 +381,15 @@ export class InventoryService {
             `
             INSERT INTO inventory_movements (
               tenant_id, factory_id, item_id, location_id, movement_type, quantity,
-              quantity_delta, quantity_after, idempotency_key, request_hash,
-              reference_type, reference_id, notes, created_by_user_id, correlation_id
+              quantity_delta, quantity_after, input_quantity, input_unit_code, conversion_rule_id,
+              conversion_factor_numerator, conversion_factor_denominator, conversion_rounding_mode,
+              idempotency_key, request_hash, reference_type, reference_id, notes,
+              created_by_user_id, correlation_id
             )
             VALUES (
               $1, $2, $3, $4::uuid, $5, $6::numeric, $7::numeric, $8::numeric,
-              $9, $10, $11, $12::uuid, $13, $14, $15::uuid
+              $9::numeric, $10, $11::uuid, $12::numeric, $13::numeric, $14,
+              $15, $16, $17, $18::uuid, $19, $20, $21::uuid
             )
             RETURNING
               id::text AS id,
@@ -358,6 +399,12 @@ export class InventoryService {
               location_id::text AS location_id,
               movement_type,
               quantity::text AS quantity,
+              input_quantity::text AS input_quantity,
+              input_unit_code,
+              conversion_rule_id::text AS conversion_rule_id,
+              conversion_factor_numerator::text AS conversion_factor_numerator,
+              conversion_factor_denominator::text AS conversion_factor_denominator,
+              conversion_rounding_mode,
               quantity_delta::text AS quantity_delta,
               quantity_after::text AS quantity_after,
               request_hash,
@@ -370,8 +417,9 @@ export class InventoryService {
             `,
             [
               tenantId, factoryId, itemId, locationId, dto.movement_type, quantity,
-              delta.toFixed(4), balance.quantity_on_hand, idempotencyKey,
-              requestHash, referenceType, referenceId, notes, userId, correlationId,
+              delta, balance.quantity_on_hand, inputQuantity, movementInputUnitCode, conversionRuleId,
+              conversionFactorNumerator, conversionFactorDenominator, conversionRoundingMode,
+              idempotencyKey, requestHash, referenceType, referenceId, notes, userId, correlationId,
             ],
           );
           const movement = movementResult.rows[0];
@@ -393,6 +441,12 @@ export class InventoryService {
                 location_id: movement.location_id,
                 movement_type: movement.movement_type,
                 quantity: movement.quantity,
+                input_quantity: movement.input_quantity,
+                input_unit_code: movement.input_unit_code,
+                conversion_rule_id: movement.conversion_rule_id,
+                conversion_factor_numerator: movement.conversion_factor_numerator,
+                conversion_factor_denominator: movement.conversion_factor_denominator,
+                conversion_rounding_mode: movement.conversion_rounding_mode,
                 quantity_delta: movement.quantity_delta,
                 quantity_after: movement.quantity_after,
                 reference_type: movement.reference_type,
@@ -422,6 +476,12 @@ export class InventoryService {
           location_id::text AS location_id,
           movement_type,
           quantity::text AS quantity,
+          input_quantity::text AS input_quantity,
+          input_unit_code,
+          conversion_rule_id::text AS conversion_rule_id,
+          conversion_factor_numerator::text AS conversion_factor_numerator,
+          conversion_factor_denominator::text AS conversion_factor_denominator,
+          conversion_rounding_mode,
           quantity_delta::text AS quantity_delta,
           quantity_after::text AS quantity_after,
           request_hash,
@@ -453,6 +513,9 @@ export class InventoryService {
           itemId,
           locationId: result.location_id,
           quantity: result.quantity,
+          inputQuantity: result.input_quantity,
+          inputUnitCode: result.input_unit_code,
+          conversionRuleId: result.conversion_rule_id,
           quantityAfter: result.quantity_after,
           referenceType: result.reference_type,
           referenceId: result.reference_id,
@@ -494,6 +557,12 @@ export class InventoryService {
         location_id::text AS location_id,
         movement_type,
         quantity::text AS quantity,
+        input_quantity::text AS input_quantity,
+        input_unit_code,
+        conversion_rule_id::text AS conversion_rule_id,
+        conversion_factor_numerator::text AS conversion_factor_numerator,
+        conversion_factor_denominator::text AS conversion_factor_denominator,
+        conversion_rounding_mode,
         quantity_delta::text AS quantity_delta,
         quantity_after::text AS quantity_after,
         reference_type,
@@ -529,6 +598,12 @@ export class InventoryService {
         location_id::text AS location_id,
         movement_type,
         quantity::text AS quantity,
+        input_quantity::text AS input_quantity,
+        input_unit_code,
+        conversion_rule_id::text AS conversion_rule_id,
+        conversion_factor_numerator::text AS conversion_factor_numerator,
+        conversion_factor_denominator::text AS conversion_factor_denominator,
+        conversion_rounding_mode,
         quantity_delta::text AS quantity_delta,
         quantity_after::text AS quantity_after,
         request_hash,
@@ -563,11 +638,15 @@ export class InventoryService {
   ): InventoryMovementResult {
     const {
       id, tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+      input_quantity, input_unit_code, conversion_rule_id, conversion_factor_numerator,
+      conversion_factor_denominator, conversion_rounding_mode,
       quantity_delta, quantity_after, reference_type, reference_id, notes,
       created_by_user_id, correlation_id, created_at,
     } = stored;
     return {
       id, tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+      input_quantity, input_unit_code, conversion_rule_id, conversion_factor_numerator,
+      conversion_factor_denominator, conversion_rounding_mode,
       quantity_delta, quantity_after, reference_type, reference_id, notes,
       created_by_user_id, correlation_id, created_at, replayed,
     };

@@ -12,9 +12,14 @@ export class CreateStockMovementDto {
   @IsIn(['RECEIPT', 'ISSUE'])
   movement_type!: 'RECEIPT' | 'ISSUE';
 
-  @IsNumber({ maxDecimalPlaces: 4 })
-  @Min(0.0001)
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(0.00000001)
   quantity!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  input_unit_code?: string;
 
   @IsOptional()
   @IsUUID()
