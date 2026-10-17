@@ -1270,6 +1270,402 @@ export class InventoryReservationService {
     return changedCount;
   }
 
+  /**
+   * Reserve one immutable work-order BOM requirement inside the caller's
+   * transaction. The caller owns work-order lifecycle/event atomicity.
+   */
+  async reserveWorkOrderMaterialRequirement(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrderId: string;
+      workOrderNumber: string;
+      requirementId: string;
+      bomLineId: string;
+      itemId: string;
+      itemUnit: string;
+      lineNumber: number;
+      quantity: string;
+      correlationId: string;
+    },
+  ): Promise<Array<{ reservationId: string; locationId: string; quantity: string }>> {
+    const itemResult = await client.query<{ id: string; status: string; unit: string }>(
+      `
+      SELECT id::text AS id, status, unit
+      FROM inventory_items
+      WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+      FOR UPDATE
+      `,
+      [input.itemId, input.tenantId, input.factoryId],
+    );
+    const item = itemResult.rows[0];
+    if (!item) throw new NotFoundException('A work-order BOM component is not in this factory');
+    if (item.status !== 'ACTIVE') throw new ConflictException('A work-order BOM component is disabled');
+    if (item.unit.trim().toUpperCase() !== input.itemUnit.trim().toUpperCase()) {
+      throw new ConflictException('The work-order material base unit no longer matches the inventory item unit');
+    }
+
+    const toUnits = (value: string): bigint => {
+      const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
+      if (!match) throw new ConflictException('Work-order material quantity is not a valid four-decimal value');
+      return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
+    };
+    const fromUnits = (value: bigint): string =>
+      `${value / 10000n}.${String(value % 10000n).padStart(4, '0')}`;
+    const requiredUnits = toUnits(input.quantity);
+    if (requiredUnits <= 0n) throw new ConflictException('Work-order material requirement must be positive');
+
+    const balanceBeforeResult = await client.query<BalanceRow>(
+      `
+      SELECT quantity_on_hand::text AS quantity_on_hand,
+             quantity_reserved::text AS quantity_reserved
+      FROM inventory_stock_balances
+      WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, input.itemId],
+    );
+    const balanceBefore = balanceBeforeResult.rows[0];
+    if (!balanceBefore) throw new ConflictException(`Inventory balance is unavailable for BOM line ${input.lineNumber}`);
+    if (toUnits(balanceBefore.quantity_on_hand) - toUnits(balanceBefore.quantity_reserved) < requiredUnits) {
+      throw new ConflictException(`Insufficient unreserved stock to release work-order BOM line ${input.lineNumber}`);
+    }
+
+    const locationsResult = await client.query<{
+      location_id: string; location_code: string; is_default: boolean; location_type: string;
+      quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `
+      SELECT lb.location_id::text AS location_id, l.location_code, l.is_default, l.location_type,
+             lb.quantity_on_hand::text AS quantity_on_hand,
+             lb.quantity_reserved::text AS quantity_reserved
+      FROM inventory_location_balances lb
+      JOIN inventory_locations l
+        ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id AND l.factory_id = lb.factory_id
+      LEFT JOIN inventory_locations parent
+        ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+      WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+        AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
+        AND lb.quantity_on_hand > lb.quantity_reserved
+        AND (
+          (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
+          OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')
+        )
+      ORDER BY l.is_default ASC, lower(l.location_code), lb.location_id
+      FOR UPDATE OF lb, l
+      `,
+      [input.tenantId, input.factoryId, input.itemId],
+    );
+
+    let remainingUnits = requiredUnits;
+    const allocations: Array<{ locationId: string; quantity: string }> = [];
+    for (const location of locationsResult.rows) {
+      if (remainingUnits === 0n) break;
+      const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
+      if (availableUnits <= 0n) continue;
+      const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
+      allocations.push({
+        locationId: location.location_id.toLowerCase(),
+        quantity: fromUnits(allocated),
+      });
+      remainingUnits -= allocated;
+    }
+    if (remainingUnits !== 0n) {
+      throw new ConflictException(
+        `Insufficient available quantity in active picking bins for work-order BOM line ${input.lineNumber}`,
+      );
+    }
+
+    const aggregateBalance = await client.query<BalanceRow>(
+      `
+      UPDATE inventory_stock_balances
+      SET quantity_reserved = quantity_reserved + $1::numeric,
+          version = version + 1, updated_at = clock_timestamp()
+      WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+        AND quantity_on_hand - quantity_reserved >= $1::numeric
+      RETURNING quantity_on_hand::text AS quantity_on_hand,
+                quantity_reserved::text AS quantity_reserved
+      `,
+      [input.quantity, input.tenantId, input.factoryId, input.itemId],
+    );
+    const balance = aggregateBalance.rows[0];
+    if (!balance) throw new ConflictException('Available stock changed while releasing the work order');
+
+    const notes = `Reserved for work order ${input.workOrderNumber} BOM line ${input.lineNumber}`;
+    const allocationsCreated: Array<{ reservationId: string; locationId: string; quantity: string }> = [];
+    for (const allocation of allocations) {
+      const locationBalance = await client.query<{ location_id: string }>(
+        `
+        UPDATE inventory_location_balances
+        SET quantity_reserved = quantity_reserved + $1::numeric,
+            version = version + 1, updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4 AND location_id = $5
+          AND quantity_on_hand - quantity_reserved >= $1::numeric
+        RETURNING location_id::text AS location_id
+        `,
+        [allocation.quantity, input.tenantId, input.factoryId, input.itemId, allocation.locationId],
+      );
+      if (!locationBalance.rows[0]) {
+        throw new ConflictException('Picking-bin stock changed while releasing the work order; transaction rolled back');
+      }
+
+      const referenceType = 'WORK_ORDER_MATERIAL';
+      const referenceId = input.workOrderId.toLowerCase();
+      const idempotencyKey =
+        `work-order:${input.workOrderId}:bom:${input.bomLineId}:bin:${allocation.locationId}:reserve:v1`;
+      const requestHash = this.hash({
+        itemId: input.itemId.toLowerCase(),
+        locationId: allocation.locationId,
+        quantity: allocation.quantity,
+        referenceType,
+        referenceId,
+        notes,
+      });
+      const inserted = await client.query<ReservationRow>(
+        `
+        INSERT INTO inventory_reservations (
+          tenant_id, factory_id, item_id, location_id, quantity, idempotency_key,
+          request_hash, reference_type, reference_id, notes, created_by_user_id, correlation_id
+        )
+        VALUES ($1, $2, $3, $4::uuid, $5::numeric, $6, $7, $8, $9::uuid, $10, $11, $12::uuid)
+        RETURNING ${RESERVATION_COLUMNS}
+        `,
+        [
+          input.tenantId, input.factoryId, input.itemId, allocation.locationId,
+          allocation.quantity, idempotencyKey, requestHash, referenceType,
+          referenceId, notes, input.userId, input.correlationId,
+        ],
+      );
+      const reservation = inserted.rows[0];
+      if (!reservation) throw new Error('WORK_ORDER_MATERIAL_RESERVATION_INSERT_FAILED');
+
+      await this.insertOutboxEvent(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        aggregateId: input.itemId,
+        eventType: 'INVENTORY.WORK_ORDER_MATERIAL_RESERVED',
+        correlationId: input.correlationId,
+        userId: input.userId,
+        payload: {
+          work_order_id: input.workOrderId,
+          work_order_number: input.workOrderNumber,
+          requirement_id: input.requirementId,
+          bom_line_id: input.bomLineId,
+          reservation: {
+            id: reservation.id, item_id: input.itemId, location_id: allocation.locationId,
+            quantity: allocation.quantity, status: 'RESERVED',
+          },
+          balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
+        },
+      });
+      allocationsCreated.push({
+        reservationId: reservation.id,
+        locationId: allocation.locationId,
+        quantity: allocation.quantity,
+      });
+    }
+    return allocationsCreated;
+  }
+
+  /**
+   * Releases or consumes every raw-material reservation attached to the work order.
+   * Must run in the same transaction as the caller's terminal state transition.
+   */
+  async transitionWorkOrderMaterialReservations(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrderId: string;
+      workOrderNumber: string;
+      correlationId: string;
+    },
+    targetStatus: 'RELEASED' | 'CONSUMED',
+  ): Promise<{ reservationCount: number; quantityByItem: Array<{ item_id: string; quantity: string }> }> {
+    const reservationResult = await client.query<ReservationRow>(
+      `
+      SELECT ${RESERVATION_COLUMNS}
+      FROM inventory_reservations
+      WHERE tenant_id = $1 AND factory_id = $2
+        AND reference_type = 'WORK_ORDER_MATERIAL'
+        AND reference_id = $3 AND status = 'RESERVED'
+      ORDER BY item_id, id
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, input.workOrderId],
+    );
+    const reservations = reservationResult.rows;
+    const itemIds = [...new Set(reservations.map((row) => row.item_id))].sort();
+    if (itemIds.length === 0) {
+      return { reservationCount: 0, quantityByItem: [] };
+    }
+
+    const itemResult = await client.query<{ id: string; status: string }>(
+      `
+      SELECT id::text AS id, status FROM inventory_items
+      WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])
+      ORDER BY id FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, itemIds],
+    );
+    if (itemResult.rows.length !== itemIds.length) {
+      throw new ConflictException('A work-order material reservation references an inventory item outside this factory');
+    }
+    const itemStatus = new Map(itemResult.rows.map((row) => [row.id, row.status] as const));
+    const toUnits = (value: string): bigint => {
+      const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
+      if (!match) throw new ConflictException('Work-order material quantity is not a valid four-decimal value');
+      return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
+    };
+    const fromUnits = (value: bigint): string =>
+      `${value / 10000n}.${String(value % 10000n).padStart(4, '0')}`;
+    const quantityByItem = new Map<string, bigint>();
+
+    for (const reservation of reservations) {
+      if (targetStatus === 'CONSUMED' && itemStatus.get(reservation.item_id) !== 'ACTIVE') {
+        throw new ConflictException(`Cannot consume reserved material for disabled item ${reservation.item_id}`);
+      }
+      const transitionKey =
+        `work-order:${input.workOrderId}:reservation:${reservation.id}:${targetStatus.toLowerCase()}:v1`;
+      const transitionHash = this.hash({
+        reservationId: reservation.id.toLowerCase(),
+        targetStatus,
+      });
+      if (reservation.location_id) {
+        await this.decreaseLocationReserved(
+          client, input.tenantId, input.factoryId, reservation.item_id,
+          reservation.location_id, reservation.quantity,
+        );
+      }
+      await client.query(
+        `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
+        [targetStatus === 'CONSUMED' ? (reservation.location_id ?? '') : ''],
+      );
+
+      const balanceResult = targetStatus === 'RELEASED'
+        ? await client.query<BalanceRow>(
+          `
+          UPDATE inventory_stock_balances
+          SET quantity_reserved = quantity_reserved - $1::numeric,
+              version = version + 1, updated_at = clock_timestamp()
+          WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+            AND quantity_reserved >= $1::numeric
+          RETURNING quantity_on_hand::text AS quantity_on_hand,
+                    quantity_reserved::text AS quantity_reserved
+          `,
+          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+        )
+        : await client.query<BalanceRow>(
+          `
+          UPDATE inventory_stock_balances
+          SET quantity_on_hand = quantity_on_hand - $1::numeric,
+              quantity_reserved = quantity_reserved - $1::numeric,
+              version = version + 1, updated_at = clock_timestamp()
+          WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+            AND quantity_reserved >= $1::numeric AND quantity_on_hand >= $1::numeric
+          RETURNING quantity_on_hand::text AS quantity_on_hand,
+                    quantity_reserved::text AS quantity_reserved
+          `,
+          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+        );
+      const balance = balanceResult.rows[0];
+      if (!balance) throw new ConflictException(`Inventory balance is inconsistent for material reservation ${reservation.id}`);
+
+      let consumedMovementId: string | null = null;
+      if (targetStatus === 'CONSUMED') {
+        const movementKey = 'reservation-consume-' + this.hash({
+          tenantId: input.tenantId, factoryId: input.factoryId,
+          reservationId: reservation.id, transitionKey,
+        }).slice(0, 48);
+        const movement = await client.query<MovementRow>(
+          `
+          INSERT INTO inventory_movements (
+            tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+            quantity_delta, quantity_after, idempotency_key, request_hash,
+            reference_type, reference_id, notes, created_by_user_id, correlation_id
+          )
+          VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
+            $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
+          RETURNING id::text AS id, quantity_after::text AS quantity_after
+          `,
+          [
+            input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
+            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            reservation.id, reservation.notes, input.userId, input.correlationId,
+          ],
+        );
+        consumedMovementId = movement.rows[0]?.id ?? null;
+        if (!consumedMovementId) throw new Error('WORK_ORDER_MATERIAL_ISSUE_MOVEMENT_INSERT_FAILED');
+        await this.insertOutboxEvent(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId,
+          aggregateId: reservation.item_id, eventType: 'INVENTORY.STOCK_ISSUED',
+          correlationId: input.correlationId, userId: input.userId,
+          payload: {
+            work_order_id: input.workOrderId,
+            work_order_number: input.workOrderNumber,
+            reservation_id: reservation.id,
+            movement: {
+              id: consumedMovementId,
+              item_id: reservation.item_id,
+              location_id: reservation.location_id,
+              movement_type: 'ISSUE',
+              quantity: reservation.quantity,
+              quantity_delta: `-${reservation.quantity}`,
+              quantity_after: balance.quantity_on_hand,
+            },
+          },
+        });
+      }
+
+      const updated = await client.query<ReservationRow>(
+        `
+        UPDATE inventory_reservations
+        SET status = $1, transition_idempotency_key = $2,
+            transition_request_hash = $3, consumed_movement_id = $4::uuid,
+            updated_at = clock_timestamp()
+        WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND item_id = $8
+          AND status = 'RESERVED'
+        RETURNING ${RESERVATION_COLUMNS}
+        `,
+        [
+          targetStatus, transitionKey, transitionHash, consumedMovementId,
+          reservation.id, input.tenantId, input.factoryId, reservation.item_id,
+        ],
+      );
+      if (!updated.rows[0]) throw new ConflictException('Work-order material reservation changed concurrently');
+      const units = toUnits(reservation.quantity);
+      quantityByItem.set(reservation.item_id, (quantityByItem.get(reservation.item_id) ?? 0n) + units);
+
+      await this.insertOutboxEvent(client, {
+        tenantId: input.tenantId, factoryId: input.factoryId,
+        aggregateId: reservation.item_id,
+        eventType: targetStatus === 'RELEASED'
+          ? 'INVENTORY.WORK_ORDER_MATERIAL_RESERVATION_RELEASED'
+          : 'INVENTORY.WORK_ORDER_MATERIAL_CONSUMED',
+        correlationId: input.correlationId, userId: input.userId,
+        payload: {
+          work_order_id: input.workOrderId,
+          work_order_number: input.workOrderNumber,
+          reservation: {
+            id: reservation.id, item_id: reservation.item_id,
+            location_id: reservation.location_id, quantity: reservation.quantity,
+            status: targetStatus, consumed_movement_id: consumedMovementId,
+          },
+          balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
+        },
+      });
+    }
+
+    return {
+      reservationCount: reservations.length,
+      quantityByItem: [...quantityByItem.entries()].sort(([a], [b]) => a.localeCompare(b))
+        .map(([item_id, units]) => ({ item_id, quantity: fromUnits(units) })),
+    };
+  }
+
   async listReservations(
     tenantId: string,
     factoryId: string,
