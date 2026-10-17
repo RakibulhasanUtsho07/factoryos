@@ -15,13 +15,13 @@ import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { ListPurchaseOrdersDto } from './dto/list-purchase-orders.dto';
 import { canTransitionPurchaseOrder, PurchaseOrderStatus, SupplierStatus } from './purchase-order-lifecycle';
 
-interface SupplierRow extends QueryResultRow {
+export interface SupplierRow extends QueryResultRow {
   id: string; tenant_id: string; code: string; name: string; status: SupplierStatus;
   country_code: string; email: string | null; phone: string | null; tax_reference: string | null;
   payment_terms_days: number; currency: string; address: string | null; notes: string | null;
   created_by_user_id: string; created_at: string; updated_at: string; version: string;
 }
-interface PurchaseOrderHeader extends QueryResultRow {
+export interface PurchaseOrderHeader extends QueryResultRow {
   id: string; tenant_id: string; factory_id: string; supplier_id: string; supplier_code: string;
   supplier_name: string; po_number: string; status: PurchaseOrderStatus; order_date: string;
   expected_delivery_date: string | null; currency: string; payment_terms_days: number;
@@ -31,11 +31,11 @@ interface PurchaseOrderHeader extends QueryResultRow {
   cancelled_by_user_id: string | null; cancelled_at: string | null; cancellation_reason: string | null;
   created_at: string; updated_at: string; version: string; total_amount: string; line_count: string;
 }
-interface PurchaseOrderLine extends QueryResultRow {
+export interface PurchaseOrderLine extends QueryResultRow {
   id: string; line_number: number; inventory_item_id: string | null; description: string;
   quantity: string; unit: string; unit_price: string; line_amount: string; notes: string | null;
 }
-interface PurchaseOrderHistory extends QueryResultRow {
+export interface PurchaseOrderHistory extends QueryResultRow {
   id: string; from_status: PurchaseOrderStatus | null; to_status: PurchaseOrderStatus;
   version: string; actor_user_id: string; reason: string | null; request_id: string | null;
   trace_id: string | null; created_at: string;
