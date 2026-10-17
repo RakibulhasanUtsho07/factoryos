@@ -490,6 +490,10 @@ export class MrpLiteService {
                   alternateStock?.quantity_on_hand ?? '0.0000', alternateStock?.quantity_reserved ?? '0.0000',
                 ),
                 incoming_quantity: incomingByItem.get(alternate.item_id) ?? '0.0000',
+                primary_material_shortage_quantity: allocation.shortageQuantity,
+                required_alternate_quantity: this.multiplyCeil4(
+                  allocation.shortageQuantity, alternate.quantity_per_component,
+                ),
                 scenario_type: 'WHAT_IF_ONLY',
               };
             })
@@ -690,5 +694,15 @@ export class MrpLiteService {
     const available = toInt(quantity) - toInt(reserved);
     const result = available > 0n ? available : 0n;
     return `${(result / 10_000n).toString()}.${(result % 10_000n).toString().padStart(4, '0')}`;
+  }
+  private multiplyCeil4(quantity: string, factor: string): string {
+    const toInt = (value: string) => {
+      if (!/^\d+(?:\.\d{1,4})?$/.test(value)) throw new Error('MRP quantity factor is not a non-negative decimal');
+      const [whole = '0', fraction = ''] = value.split('.');
+      return BigInt(whole) * 10_000n + BigInt((fraction + '0000').slice(0, 4));
+    };
+    const product = toInt(quantity) * toInt(factor);
+    const rounded = (product + 9_999n) / 10_000n;
+    return `${(rounded / 10_000n).toString()}.${(rounded % 10_000n).toString().padStart(4, '0')}`;
   }
 }
