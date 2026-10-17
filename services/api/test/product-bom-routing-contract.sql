@@ -16,10 +16,8 @@ DECLARE
     'product_routing_steps'
   ];
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM schema_migrations
-    WHERE version = '082_product_bom_routing_version_contracts'
-  ) THEN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '082_product_bom_routing_version_contracts')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '083_product_definition_idempotency_hardening') THEN
     RAISE EXCEPTION 'Product/BOM/routing migration marker is missing';
   END IF;
 
@@ -91,6 +89,11 @@ BEGIN
       AND conname = 'fk_product_routing_step_work_centre'
   ) THEN
     RAISE EXCEPTION 'BOM component and route work-centre scope constraints are missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_product_version_approval_idempotency')
+     OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_product_alternate_approval_idempotency') THEN
+    RAISE EXCEPTION 'Approval idempotency guards are missing';
   END IF;
 
   RAISE NOTICE 'Product/BOM/routing/version contract checks passed';
