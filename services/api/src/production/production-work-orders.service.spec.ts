@@ -74,6 +74,20 @@ describe('ProductionWorkOrdersService request contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('requires a device identifier for HMI operation commands before opening a transaction', async () => {
+    await expect(service.reportOperationEvent(
+      USER, TENANT, FACTORY, WORK_ORDER, OPERATION,
+      {
+        command: 'START',
+        source: 'HMI',
+        expected_work_order_version: 1,
+        expected_operation_version: 1,
+      } as never,
+      'hmi-start-42', null, null,
+    )).rejects.toThrow('device_id is required when event source is HMI');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires downtime reasons before recording the start of a downtime interval', async () => {
     await expect(service.reportOperationEvent(
       USER, TENANT, FACTORY, WORK_ORDER, OPERATION,
@@ -127,6 +141,22 @@ describe('ProductionWorkOrdersService request contracts', () => {
       } as never,
       'output-key', null, null,
     )).rejects.toThrow('good_quantity and scrap_quantity cannot both be zero');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires device evidence for machine-originated production output reports', async () => {
+    await expect(service.reportOutput(
+      USER, TENANT, FACTORY, WORK_ORDER,
+      {
+        operation_id: OPERATION,
+        expected_work_order_version: 1,
+        expected_operation_version: 1,
+        good_quantity: 10,
+        scrap_quantity: 0,
+        source: 'PLC',
+      } as never,
+      'plc-output-42', null, null,
+    )).rejects.toThrow('device_id is required when event source is PLC');
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
