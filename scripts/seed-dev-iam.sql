@@ -169,7 +169,12 @@ WHERE r.code = 'ORG_ADMIN'
     'growth.write',
     'growth.review',
     'mrp.read',
-    'mrp.write'
+    'mrp.write',
+    'production.workorders.read',
+    'production.workorders.write',
+    'production.workorders.release',
+    'production.operations.operate',
+    'production.output.report'
   );
 
 COMMIT;
