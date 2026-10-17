@@ -483,12 +483,12 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_operation_lifecycle();
 CREATE OR REPLACE FUNCTION factoryos_prevent_work_order_material_snapshot_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   RAISE EXCEPTION 'work-order material requirements and reservation links are immutable production evidence'
     USING ERRCODE = '55000';
 END;
-$;
+$$;
 
 CREATE TRIGGER trg_work_order_material_requirements_immutable
 BEFORE UPDATE OR DELETE ON work_order_material_requirements
@@ -540,7 +540,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_work_order_event_mutation();
 CREATE OR REPLACE FUNCTION factoryos_guard_work_order_event_payload()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_quantity TEXT;
 BEGIN
@@ -697,7 +697,7 @@ COMMIT;
 
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TRIGGER trg_work_order_event_payload_guard
 BEFORE INSERT ON work_order_events
