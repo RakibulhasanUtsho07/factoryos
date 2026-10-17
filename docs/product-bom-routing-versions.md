@@ -9,7 +9,7 @@ A factory-scoped product definition references one active finished-good inventor
 
 Every BOM line references active inventory in the same tenant and factory; has a positive quantity, unit, wastage assumption, unique line number, and optional alternate group. The BOM unit must match the item's base unit or have a **directionally approved** UoM conversion into that unit. Wastage is a planning assumption and does not directly post stock.
 
-An alternate is an explicit contract attached to a BOM line and product version: alternate material, positive conversion factor, unit, rationale, idempotency evidence and independent approval. It cannot refer to the primary component or an item outside the factory. Draft alternates block version approval. Routing steps have unique positive sequence numbers, operation code/name, active factory work centre, setup/run/queue/transfer time assumptions, optional skill/instructions and an optional quality gate. Steps whose four duration assumptions are all zero are rejected.
+An alternate is an explicit contract attached to a BOM line and product version: alternate material, positive conversion factor, unit, rationale, idempotency evidence and independent approval. It cannot refer to the primary component or an item outside the factory. BOM and alternate quantities persist the normalized inventory-base quantity and the approved UoM rule/version/factor/rounding mode used at entry, so later conversion retirement cannot silently reinterpret planning data. Draft alternates block version approval. Routing steps have unique positive sequence numbers, operation code/name, active factory work centre, setup/run/queue/transfer time assumptions, optional skill/instructions and an optional quality gate. Steps whose four duration assumptions are all zero are rejected.
 
 ## HTTP contract
 
@@ -33,7 +33,7 @@ All routes are under `/api`, require verified user/tenant and factory scope, and
 | `POST /api/products/:productId/versions/:versionId/approve` | `products.version.approve` | Release a revision; key and expected row version required |
 | `POST /api/products/:productId/versions/:versionId/retire` | `products.version.approve` | Retire an approved revision; key and expected row version required |
 
-BOM and route replacement bodies carry `expected_version`; stale updates fail with conflict instead of silently overwriting engineering changes. Each replacement accepts 1–200 lines/steps, and list limits are 1–100.
+BOM and route replacement bodies carry `expected_version`; stale updates fail with conflict instead of silently overwriting engineering changes. Each replacement accepts 1–200 lines/steps, and list limits are 1–100. BOM detail returns `base_quantity_per` in component inventory-base units; alternate detail returns `inventory_quantity_per_component`. Original entered quantity/unit and normalized quantity/unit remain visible.
 
 ## Persistence and safety
 

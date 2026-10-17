@@ -13,11 +13,15 @@ DECLARE
     'manufacturing_work_centres',
     'product_bom_lines',
     'product_bom_alternates',
-    'product_routing_steps'
+    'product_routing_steps',
+    'product_definition_idempotency'
   ];
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '082_product_bom_routing_version_contracts')
-     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '083_product_definition_idempotency_hardening') THEN
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '083_product_definition_idempotency_hardening')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '084_product_contract_maker_checker')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '085_product_alternate_retirement_lifecycle')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '086_product_bom_uom_snapshots') THEN
     RAISE EXCEPTION 'Product/BOM/routing migration marker is missing';
   END IF;
 
@@ -38,6 +42,13 @@ BEGIN
       RAISE EXCEPTION 'Tenant isolation policy % is missing', v_policy_name;
     END IF;
   END LOOP;
+
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='product_bom_lines' AND column_name='base_quantity_per')
+     OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='product_bom_alternates' AND column_name='inventory_quantity_per_component')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_lines'::regclass AND conname='chk_product_bom_line_uom_snapshot')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='product_bom_alternates'::regclass AND conname='chk_product_bom_alternate_uom_snapshot') THEN
+    RAISE EXCEPTION 'BOM/alternate UoM snapshots missing';
+  END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger

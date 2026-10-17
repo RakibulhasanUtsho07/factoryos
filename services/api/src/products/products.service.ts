@@ -38,6 +38,9 @@ interface AlternateRow extends QueryResultRow {
   approval_request_hash:string|null; created_by_user_id:string; approved_by_user_id:string|null;
   approved_at:string|null; retired_by_user_id:string|null; retired_at:string|null;
   retirement_idempotency_key:string|null; retirement_request_hash:string|null;
+  inventory_base_unit:string; inventory_quantity_per_component:string;
+  uom_conversion_rule_id:string|null; uom_conversion_rule_version:string|null;
+  uom_factor_numerator:string; uom_factor_denominator:string; uom_rounding_mode:'REJECT'|'HALF_UP';
   created_at:string; updated_at:string;
 }
 const PRODUCT_COLS=`p.id::text AS id,p.tenant_id::text AS tenant_id,p.factory_id::text AS factory_id,
@@ -60,7 +63,10 @@ const ALTERNATE_COLS=`id::text AS id,tenant_id::text AS tenant_id,factory_id::te
  approval_idempotency_key,approval_request_hash,created_by_user_id::text AS created_by_user_id,
  approved_by_user_id::text AS approved_by_user_id,approved_at::text AS approved_at,
  retired_by_user_id::text AS retired_by_user_id,retired_at::text AS retired_at,
- retirement_idempotency_key,retirement_request_hash,created_at::text AS created_at,updated_at::text AS updated_at`;
+ retirement_idempotency_key,retirement_request_hash,inventory_base_unit,inventory_quantity_per_component::text AS inventory_quantity_per_component,
+ uom_conversion_rule_id::text AS uom_conversion_rule_id,uom_conversion_rule_version::text AS uom_conversion_rule_version,
+ uom_factor_numerator::text AS uom_factor_numerator,uom_factor_denominator::text AS uom_factor_denominator,uom_rounding_mode,
+ created_at::text AS created_at,updated_at::text AS updated_at`;
 
 @Injectable()
 export class ProductDefinitionsService {
@@ -182,14 +188,20 @@ export class ProductDefinitionsService {
       const version=h.rows[0]; if(!version) throw new NotFoundException('Product version was not found in this factory');
       const bom=await client.query(`SELECT b.id::text AS id,b.line_number,b.component_item_id::text AS component_item_id,
         i.sku AS component_sku,i.name AS component_name,b.quantity_per::text AS quantity_per,b.unit,
-        b.wastage_percent::text AS wastage_percent,b.alternate_group_code,b.notes
+        b.wastage_percent::text AS wastage_percent,b.alternate_group_code,b.notes,
+        b.inventory_base_unit,b.base_quantity_per::text AS base_quantity_per,
+        b.uom_conversion_rule_id::text AS uom_conversion_rule_id,b.uom_conversion_rule_version::text AS uom_conversion_rule_version,
+        b.uom_factor_numerator::text AS uom_factor_numerator,b.uom_factor_denominator::text AS uom_factor_denominator,b.uom_rounding_mode
         FROM product_bom_lines b JOIN inventory_items i ON i.id=b.component_item_id AND i.tenant_id=b.tenant_id AND i.factory_id=b.factory_id
         WHERE b.product_version_id=$1 AND b.tenant_id=$2 AND b.factory_id=$3 ORDER BY b.line_number`,
         [version.id,tenantId,factoryId]);
       const alts=await client.query(`SELECT a.id::text AS id,a.bom_line_id::text AS bom_line_id,
         a.alternate_item_id::text AS alternate_item_id,i.sku AS alternate_sku,i.name AS alternate_name,
         a.conversion_factor::text AS conversion_factor,a.unit,a.rationale,a.status,
-        a.approved_by_user_id::text AS approved_by_user_id,a.approved_at::text AS approved_at,a.retired_by_user_id::text AS retired_by_user_id,a.retired_at::text AS retired_at
+        a.approved_by_user_id::text AS approved_by_user_id,a.approved_at::text AS approved_at,a.retired_by_user_id::text AS retired_by_user_id,a.retired_at::text AS retired_at,
+        a.inventory_base_unit,a.inventory_quantity_per_component::text AS inventory_quantity_per_component,
+        a.uom_conversion_rule_id::text AS uom_conversion_rule_id,a.uom_conversion_rule_version::text AS uom_conversion_rule_version,
+        a.uom_factor_numerator::text AS uom_factor_numerator,a.uom_factor_denominator::text AS uom_factor_denominator,a.uom_rounding_mode
         FROM product_bom_alternates a JOIN inventory_items i ON i.id=a.alternate_item_id AND i.tenant_id=a.tenant_id AND i.factory_id=a.factory_id
         WHERE a.product_version_id=$1 AND a.tenant_id=$2 AND a.factory_id=$3 ORDER BY a.bom_line_id,a.created_at,a.id`,
         [version.id,tenantId,factoryId]);
@@ -220,20 +232,29 @@ export class ProductDefinitionsService {
       const valid=await client.query<{id:string;unit:string}>(`SELECT id::text AS id,unit FROM inventory_items
         WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' AND id=ANY($3::uuid[])`,[tenantId,factoryId,ids]);
       if(valid.rows.length!==ids.length) throw new BadRequestException('BOM components must be active inventory items in the same factory');
+      const unitSnapshots=new Map<number,Awaited<ReturnType<ProductDefinitionsService['resolveQuantitySnapshot']>>>();
       for(const line of lines) {
         const item=valid.rows.find(x=>x.id===line.item);
-        if(item) await this.assertUnitCompatible(client,tenantId,factoryId,line.unit,item.unit,`BOM line ${line.line} unit`);
+        if(item) unitSnapshots.set(line.line,await this.resolveQuantitySnapshot(client,tenantId,factoryId,line.unit,item.unit,line.qty,4,`BOM line ${line.line} unit`));
       }
       const rowVersion=await this.bumpDraft(client,userId,tenantId,factoryId,p,v,dto.expected_version);
       await client.query('DELETE FROM product_bom_lines WHERE tenant_id=$1 AND factory_id=$2 AND product_id=$3 AND product_version_id=$4',[tenantId,factoryId,p,v]);
       const saved:QueryResultRow[]=[];
       for(const x of lines) {
+        const snap=unitSnapshots.get(x.line);
+        if(!snap) throw new Error('PRODUCT_BOM_UOM_SNAPSHOT_MISSING');
         const r=await client.query(`INSERT INTO product_bom_lines(tenant_id,factory_id,product_id,product_version_id,
-          line_number,component_item_id,quantity_per,unit,wastage_percent,alternate_group_code,notes,created_by_user_id)
-          VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9::numeric,$10,$11,$12)
+          line_number,component_item_id,quantity_per,unit,wastage_percent,alternate_group_code,notes,created_by_user_id,
+          inventory_base_unit,base_quantity_per,uom_conversion_rule_id,uom_conversion_rule_version,
+          uom_factor_numerator,uom_factor_denominator,uom_rounding_mode)
+          VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9::numeric,$10,$11,$12,$13,$14::numeric,$15::uuid,$16::bigint,$17::numeric,$18::numeric,$19)
           RETURNING id::text AS id,line_number,component_item_id::text AS component_item_id,quantity_per::text AS quantity_per,
-            unit,wastage_percent::text AS wastage_percent,alternate_group_code,notes`,
-          [tenantId,factoryId,p,v,x.line,x.item,x.qty,x.unit,x.wastage,x.group,x.notes,userId]);
+            unit,wastage_percent::text AS wastage_percent,alternate_group_code,notes,inventory_base_unit,
+            base_quantity_per::text AS base_quantity_per,uom_conversion_rule_id::text AS uom_conversion_rule_id,
+            uom_conversion_rule_version::text AS uom_conversion_rule_version,uom_factor_numerator::text AS uom_factor_numerator,
+            uom_factor_denominator::text AS uom_factor_denominator,uom_rounding_mode`,
+          [tenantId,factoryId,p,v,x.line,x.item,x.qty,x.unit,x.wastage,x.group,x.notes,userId,snap.baseUnit,
+            snap.baseQuantity,snap.ruleId,snap.ruleVersion,snap.numerator,snap.denominator,snap.roundingMode]);
         if(r.rows[0]) saved.push(r.rows[0]);
       }
       await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:v,event:'PRODUCT.BOM_REPLACED',correlation,requestId,userId,payload:{product_id:p,product_version_id:v,row_version:rowVersion,line_count:saved.length}});
@@ -308,12 +329,15 @@ export class ProductDefinitionsService {
         const item=await client.query<{unit:string;status:string}>(`SELECT unit,status FROM inventory_items
           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR KEY SHARE`,[altItem,tenantId,factoryId]);
         if(!item.rows[0]||item.rows[0].status!=='ACTIVE') throw new NotFoundException('Active alternate inventory item was not found in this factory');
-        await this.assertUnitCompatible(client,tenantId,factoryId,unit,item.rows[0].unit,'Alternate material unit');
+        const snap=await this.resolveQuantitySnapshot(client,tenantId,factoryId,unit,item.rows[0].unit,factor,6,'Alternate material unit');
         const r=await client.query<AlternateRow>(`INSERT INTO product_bom_alternates(
           tenant_id,factory_id,product_id,product_version_id,bom_line_id,alternate_item_id,conversion_factor,unit,rationale,
-          status,idempotency_key,request_hash,created_by_user_id)
-          VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,'DRAFT',$10,$11,$12) RETURNING ${ALTERNATE_COLS}`,
-          [tenantId,factoryId,p,v,l,altItem,factor,unit,rationale,key,hash,userId]);
+          status,idempotency_key,request_hash,created_by_user_id,inventory_base_unit,inventory_quantity_per_component,
+          uom_conversion_rule_id,uom_conversion_rule_version,uom_factor_numerator,uom_factor_denominator,uom_rounding_mode)
+          VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,'DRAFT',$10,$11,$12,$13,$14::numeric,$15::uuid,$16::bigint,$17::numeric,$18::numeric,$19)
+          RETURNING ${ALTERNATE_COLS}`,
+          [tenantId,factoryId,p,v,l,altItem,factor,unit,rationale,key,hash,userId,snap.baseUnit,snap.baseQuantity,
+            snap.ruleId,snap.ruleVersion,snap.numerator,snap.denominator,snap.roundingMode]);
         const alternate=r.rows[0]; if(!alternate) throw new Error('PRODUCT_ALTERNATE_INSERT_FAILED');
         const rowVersion=await this.bumpDraft(client,userId,tenantId,factoryId,p,v,dto.expected_version);
         await this.outbox(client,{tenantId,factoryId,type:'PRODUCT_VERSION',id:v,event:'PRODUCT.BOM_ALTERNATE_DRAFT_CREATED',correlation,requestId,userId,
@@ -494,16 +518,42 @@ export class ProductDefinitionsService {
     } catch(e) { this.uniqueConflict(e,'Work-centre code or idempotency key already exists in this factory'); throw e; }
   }
 
-  private async assertUnitCompatible(client:PoolClient,tenantId:string,factoryId:string,sourceUnit:string,targetUnit:string,label:string):Promise<void> {
-    if(sourceUnit.trim().toUpperCase()===targetUnit.trim().toUpperCase()) return;
-    const r=await client.query<{exists:boolean}>(`SELECT EXISTS (
-      SELECT 1 FROM uom_conversion_rules r
-      JOIN uom_units u_from ON u_from.id=r.from_unit_id AND u_from.tenant_id=r.tenant_id AND u_from.factory_id=r.factory_id
-      JOIN uom_units u_to ON u_to.id=r.to_unit_id AND u_to.tenant_id=r.tenant_id AND u_to.factory_id=r.factory_id
-      WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.status='APPROVED'
-        AND upper(u_from.unit_code)=upper($3) AND upper(u_to.unit_code)=upper($4)
-    ) AS exists`,[tenantId,factoryId,sourceUnit.trim(),targetUnit.trim()]);
-    if(!r.rows[0]?.exists) throw new BadRequestException(`${label} must match inventory base unit or have an approved conversion to ${targetUnit}`);
+  private async resolveQuantitySnapshot(client:PoolClient,tenantId:string,factoryId:string,sourceUnit:string,targetUnit:string,
+    quantity:string,scale:4|6,label:string):Promise<{
+      baseUnit:string;baseQuantity:string;ruleId:string|null;ruleVersion:string|null;
+      numerator:string;denominator:string;roundingMode:'REJECT'|'HALF_UP';
+    }> {
+    const from=sourceUnit.trim(),to=targetUnit.trim();
+    const scaled=this.quantityToScaledInteger(quantity,scale);
+    if(from.toUpperCase()===to.toUpperCase()) return {baseUnit:to,baseQuantity:quantity,ruleId:null,ruleVersion:null,numerator:'1',denominator:'1',roundingMode:'REJECT'};
+    const q=await client.query<{id:string;version:string;numerator:string;denominator:string;rounding_mode:'REJECT'|'HALF_UP'}>(
+      `SELECT r.id::text AS id,r.version::text AS version,r.factor_numerator::text AS numerator,
+        r.factor_denominator::text AS denominator,r.rounding_mode
+       FROM uom_conversion_rules r
+       JOIN uom_units f ON f.id=r.from_unit_id AND f.tenant_id=r.tenant_id AND f.factory_id=r.factory_id
+       JOIN uom_units t ON t.id=r.to_unit_id AND t.tenant_id=r.tenant_id AND t.factory_id=r.factory_id
+       WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.status='APPROVED'
+         AND upper(f.unit_code)=upper($3) AND upper(t.unit_code)=upper($4)
+       ORDER BY r.updated_at DESC,r.id LIMIT 2 FOR SHARE OF r`,[tenantId,factoryId,from,to]);
+    if(q.rows.length===0) throw new BadRequestException(`${label} must have an approved conversion from ${from} to ${to}`);
+    if(q.rows.length!==1) throw new ConflictException(`Multiple approved UoM conversions exist for ${label}`);
+    const rule=q.rows[0],den=BigInt(rule.denominator),num=BigInt(rule.numerator),product=scaled*num;
+    let quotient=product/den; const remainder=product%den;
+    if(rule.rounding_mode==='REJECT'&&remainder!==0n) throw new BadRequestException(`${label} conversion requires prohibited rounding`);
+    if(rule.rounding_mode==='HALF_UP'&&remainder*2n>=den) quotient+=1n;
+    if(quotient<=0n) throw new BadRequestException(`${label} converts to zero inventory-base quantity`);
+    const scaleFactor=10n**BigInt(scale);
+    const baseQuantity=String(quotient/scaleFactor)+'.'+String(quotient%scaleFactor).padStart(scale,'0');
+    return {baseUnit:to,baseQuantity,ruleId:rule.id,ruleVersion:rule.version,numerator:rule.numerator,denominator:rule.denominator,roundingMode:rule.rounding_mode};
+  }
+
+  private quantityToScaledInteger(value:string,scale:4|6):bigint {
+    const parts=value.split('.');
+    const whole=parts[0]??'0'; const fraction=(parts[1]??'').padEnd(scale,'0');
+    if(fraction.length>scale||!/^[0-9]+$/.test(whole)||!/^[0-9]*$/.test(fraction)) {
+      throw new BadRequestException(`Quantity must have at most ${scale} decimal places`);
+    }
+    return BigInt(whole)*10n**BigInt(scale)+BigInt(fraction||'0');
   }
 
   private async lockDraft(client:PoolClient,tenantId:string,factoryId:string,p:string,v:string,expected:number) {
