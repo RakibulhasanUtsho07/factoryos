@@ -430,6 +430,7 @@ DECLARE
   v_work_order_product_id UUID;
   v_work_order_product_version_id UUID;
   v_work_order_target_quantity NUMERIC(18,4);
+  v_other_wip_quantity NUMERIC(18,4);
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'work-order operations are retained; use an explicit skip event before release or completion'
@@ -476,8 +477,21 @@ BEGIN
   FROM work_orders
   WHERE id = NEW.work_order_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
 
-  IF NOT FOUND OR NEW.wip_quantity > v_work_order_target_quantity THEN
-    RAISE EXCEPTION 'reported operation WIP cannot exceed the work-order target quantity'
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'work-order operation has no matching parent work order'
+      USING ERRCODE = '23503';
+  END IF;
+
+  SELECT COALESCE(SUM(op.wip_quantity), 0)
+    INTO v_other_wip_quantity
+  FROM work_order_operations op
+  WHERE op.work_order_id = NEW.work_order_id
+    AND op.tenant_id = NEW.tenant_id AND op.factory_id = NEW.factory_id
+    AND op.id <> NEW.id;
+
+  IF NEW.wip_quantity < 0
+    OR v_other_wip_quantity + NEW.wip_quantity > v_work_order_target_quantity THEN
+    RAISE EXCEPTION 'aggregate WIP across all operations cannot be negative or exceed the work-order target'
       USING ERRCODE = '23514';
   END IF;
 
