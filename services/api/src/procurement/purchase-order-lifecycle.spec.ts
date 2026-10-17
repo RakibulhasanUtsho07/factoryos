@@ -48,6 +48,14 @@ describe('purchase-order lifecycle', () => {
 
     const validVersion = plainToInstance(UpdateSupplierDto, { expected_version: 2, name: 'Updated name' });
     expect(await validate(validVersion)).toHaveLength(0);
+
+    const invalidNulls = plainToInstance(UpdateSupplierDto, {
+      expected_version: 2, name: null, country_code: null, currency: null,
+    });
+    const invalidFields = await validate(invalidNulls);
+    expect(invalidFields.map(error => error.property)).toEqual(expect.arrayContaining([
+      'name', 'country_code', 'currency',
+    ]));
   });
 
   it('requires an aggregate version when changing supplier status', async () => {

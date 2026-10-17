@@ -108,6 +108,15 @@ export class ProcurementService {
     if (changedFields.length === 0) {
       throw new BadRequestException('At least one supplier profile field must be supplied');
     }
+    if (dto.name !== undefined && typeof dto.name !== 'string') {
+      throw new BadRequestException('name must be a string');
+    }
+    if (dto.country_code !== undefined && typeof dto.country_code !== 'string') {
+      throw new BadRequestException('country_code must be a string');
+    }
+    if (dto.currency !== undefined && typeof dto.currency !== 'string') {
+      throw new BadRequestException('currency must be a string');
+    }
 
     const updated = await this.database.transaction({
       tenantId, userId, requestId: this.uuidOrNull(requestId), traceId: this.uuidOrNull(traceId),
