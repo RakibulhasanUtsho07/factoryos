@@ -5,6 +5,7 @@ import {
   assertDowntimeCanStart,
   assertDowntimeCanEnd,
   assertWipSnapshotQuantity,
+  assertWipTransfer,
   assertReworkQuantity,
   nextOperationStatus,
 } from './work-order-lifecycle';
@@ -85,5 +86,22 @@ describe('production work-order lifecycle contracts', () => {
   it('requires positive rework quantities while preserving zero as a valid WIP snapshot', () => {
     expect(() => assertReworkQuantity(1n)).not.toThrow();
     expect(() => assertReworkQuantity(0n)).toThrow('REWORK_QUANTITY_MUST_BE_POSITIVE');
+  });
+
+  it('transfers WIP only when the source has enough quantity and the target remains within order target', () => {
+    expect(() => assertWipTransfer(500000n, 100000n, 250000n, 1000000n)).not.toThrow();
+    expect(() => assertWipTransfer(100000n, 0n, 100001n, 1000000n))
+      .toThrow('WIP_TRANSFER_EXCEEDS_SOURCE_OPERATION_QUANTITY');
+    expect(() => assertWipTransfer(500000n, 800000n, 300000n, 1000000n))
+      .toThrow('WIP_TRANSFER_EXCEEDS_WORK_ORDER_TARGET');
+    expect(() => assertWipTransfer(500000n, 0n, 0n, 1000000n))
+      .toThrow('INVALID_WIP_TRANSFER_QUANTITY');
+  });
+
+  it('keeps WIP transfer as a quantity event rather than an operation status transition', () => {
+    expect(nextOperationStatus('IN_PROGRESS', 'WIP_TRANSFERRED', false)).toBe('IN_PROGRESS');
+    expect(nextOperationStatus('PAUSED', 'WIP_TRANSFERRED', false)).toBe('PAUSED');
+    expect(() => nextOperationStatus('READY', 'WIP_TRANSFERRED', false))
+      .toThrow('INVALID_OPERATION_COMMAND:READY:WIP_TRANSFERRED');
   });
 });
