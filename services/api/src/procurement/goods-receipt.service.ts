@@ -11,6 +11,7 @@ export interface ReceiptHeaderRow extends QueryResultRow {
   tenant_id: string;
   factory_id: string;
   purchase_order_id: string;
+  location_id: string;
   po_number: string;
   receipt_number: string;
   status: 'POSTED';
@@ -262,17 +263,17 @@ export class GoodsReceiptService {
 
         await client.query(`
           INSERT INTO goods_receipts (
-            id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+            id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
             supplier_delivery_reference, received_at, notes, created_by_user_id,
             idempotency_key, request_hash, request_id, trace_id, correlation_id
           ) VALUES (
-            $1,$2,$3,$4,$5,'POSTING',$6,COALESCE($7::timestamptz, clock_timestamp()),
-            $8,$9,$10,$11,$12,$13,$14
+            $1,$2,$3,$4,$5,$6,'POSTING',$7,COALESCE($8::timestamptz, clock_timestamp()),
+            $9,$10,$11,$12,$13,$14,$15
           )
         `, [
-          receiptId, tenantId, factoryId, purchaseOrderId, receiptNumber, deliveryReference,
-          receivedAt?.toISOString() ?? null, notes, userId, idempotencyKey, requestHash,
-          requestUuid, traceUuid, correlationId,
+          receiptId, tenantId, factoryId, purchaseOrderId, targetLocationId, receiptNumber,
+          deliveryReference, receivedAt?.toISOString() ?? null, notes, userId, idempotencyKey,
+          requestHash, requestUuid, traceUuid, correlationId,
         ]);
 
         const postedLines: Array<Record<string, unknown>> = [];
@@ -412,7 +413,8 @@ export class GoodsReceiptService {
     this.validateUuid(receiptId, 'receiptId');
     const header = await this.database.query<ReceiptHeaderRow>(`
       SELECT gr.id::text AS id, gr.tenant_id::text AS tenant_id, gr.factory_id::text AS factory_id,
-        gr.purchase_order_id::text AS purchase_order_id, po.po_number, gr.receipt_number, gr.status,
+        gr.purchase_order_id::text AS purchase_order_id, gr.location_id::text AS location_id,
+        po.po_number, gr.receipt_number, gr.status,
         gr.supplier_delivery_reference, gr.received_at::text AS received_at, gr.notes,
         gr.created_by_user_id::text AS created_by_user_id, gr.request_id::text AS request_id,
         gr.trace_id::text AS trace_id, gr.correlation_id::text AS correlation_id,
@@ -464,7 +466,8 @@ export class GoodsReceiptService {
       line_count: number; total_received: string; total_rejected: string; total_accepted: string;
     }>(`
       SELECT gr.id::text AS id, gr.tenant_id::text AS tenant_id, gr.factory_id::text AS factory_id,
-        gr.purchase_order_id::text AS purchase_order_id, po.po_number, gr.receipt_number, gr.status,
+        gr.purchase_order_id::text AS purchase_order_id, gr.location_id::text AS location_id,
+        po.po_number, gr.receipt_number, gr.status,
         gr.supplier_delivery_reference, gr.received_at::text AS received_at, gr.notes,
         gr.created_by_user_id::text AS created_by_user_id, gr.request_id::text AS request_id,
         gr.trace_id::text AS trace_id, gr.correlation_id::text AS correlation_id,

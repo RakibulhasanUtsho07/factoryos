@@ -12,6 +12,7 @@ DECLARE
   v_po_line UUID := gen_random_uuid();
   v_receipt_one UUID := gen_random_uuid();
   v_receipt_two UUID := gen_random_uuid();
+  v_receipt_three UUID := gen_random_uuid();
   v_bad_receipt UUID := gen_random_uuid();
   v_location UUID;
   v_request UUID := gen_random_uuid();
@@ -78,7 +79,7 @@ BEGIN
   INSERT INTO purchase_order_lines (
     id, tenant_id, factory_id, purchase_order_id, line_number, inventory_item_id,
     description, quantity, unit, unit_price
-  ) VALUES (v_po_line, v_tenant, v_factory, v_order, 1, v_item, 'GRN test material', 10, 'PCS', 4);
+  ) VALUES (v_po_line, v_tenant, v_factory, v_order, 1, v_item, 'GRN test material', 12, 'PCS', 4);
   INSERT INTO purchase_order_status_history (
     tenant_id, factory_id, purchase_order_id, from_status, to_status, version, actor_user_id, reason
   ) VALUES (v_tenant, v_factory, v_order, NULL, 'DRAFT', 1, v_creator, 'PO created for GRN test');
@@ -108,11 +109,11 @@ BEGIN
 
   -- First partial GRN: six physically received, one rejected, five accepted to stock.
   INSERT INTO goods_receipts (
-    id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+    id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
     supplier_delivery_reference, notes, created_by_user_id, idempotency_key, request_hash,
     request_id, trace_id, correlation_id
   ) VALUES (
-    v_receipt_one, v_tenant, v_factory, v_order, 'GRN-TEST-001', 'POSTING',
+    v_receipt_one, v_tenant, v_factory, v_order, v_location, 'GRN-TEST-001', 'POSTING',
     'SUP-DELIVERY-001', 'First partial delivery', v_approver, 'grn-test-key-001',
     repeat('a', 64), v_request, v_trace, v_trace
   );
@@ -162,10 +163,10 @@ BEGIN
 
   -- Second partial GRN completes the PO line at ten received, but only nine good units enter stock.
   INSERT INTO goods_receipts (
-    id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+    id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
     created_by_user_id, idempotency_key, request_hash, request_id, trace_id, correlation_id
   ) VALUES (
-    v_receipt_two, v_tenant, v_factory, v_order, 'GRN-TEST-002', 'POSTING',
+    v_receipt_two, v_tenant, v_factory, v_order, v_location, 'GRN-TEST-002', 'POSTING',
     v_approver, 'grn-test-key-002', repeat('c', 64), v_request, v_trace, v_trace
   );
   INSERT INTO goods_receipt_lines (
@@ -198,24 +199,64 @@ BEGIN
   );
   UPDATE goods_receipts SET status = 'POSTED', posted_at = clock_timestamp() WHERE id = v_receipt_two;
 
+  -- Third receipt is entirely rejected: ordered quantity is consumed, but no stock is added.
+  INSERT INTO goods_receipts (
+    id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
+    supplier_delivery_reference, notes, created_by_user_id, idempotency_key, request_hash,
+    request_id, trace_id, correlation_id
+  ) VALUES (
+    v_receipt_three, v_tenant, v_factory, v_order, v_location, 'GRN-TEST-003', 'POSTING',
+    'SUP-DELIVERY-003', 'All units rejected', v_approver, 'grn-test-key-003',
+    repeat('9', 64), v_request, v_trace, v_trace
+  );
+  INSERT INTO goods_receipt_lines (
+    tenant_id, factory_id, goods_receipt_id, purchase_order_id, purchase_order_line_id,
+    inventory_item_id, received_quantity, rejected_quantity, rejection_reason
+  ) VALUES (v_tenant, v_factory, v_receipt_three, v_order, v_po_line, v_item, 2, 2, 'All units damaged');
+  INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
+  VALUES (v_tenant, v_factory, 'GOODS_RECEIPT', v_receipt_three, 'PROCUREMENT.GOODS_RECEIPT_POSTED',
+    jsonb_build_object('receipt_id', v_receipt_three, 'accepted_quantity', 0, 'rejected_quantity', 2));
+  INSERT INTO audit_events (
+    tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
+    correlation_id, request_id, data_class, payload
+  ) VALUES (
+    v_tenant, v_factory, v_approver, 'PROCUREMENT', 'POSTED', 'GOODS_RECEIPT', v_receipt_three,
+    v_trace, v_request, 'INTERNAL', jsonb_build_object('accepted_quantity', 0, 'rejected_quantity', 2)
+  );
+  UPDATE goods_receipts SET status = 'POSTED', posted_at = clock_timestamp() WHERE id = v_receipt_three;
+
   IF (SELECT quantity_on_hand FROM inventory_stock_balances WHERE item_id = v_item) <> 9 THEN
-    RAISE EXCEPTION 'Only nine accepted units should be added after receiving one rejected unit';
+    RAISE EXCEPTION 'Fully rejected goods must not increase stock';
   END IF;
-  IF (SELECT SUM(received_quantity) FROM goods_receipt_lines WHERE purchase_order_line_id = v_po_line) <> 10 THEN
-    RAISE EXCEPTION 'Partial receipts must accumulate against the ordered quantity';
+  IF (SELECT SUM(received_quantity) FROM goods_receipt_lines WHERE purchase_order_line_id = v_po_line) <> 12 THEN
+    RAISE EXCEPTION 'Partial and fully rejected receipts must accumulate against ordered quantity';
   END IF;
   IF (SELECT COUNT(*) FROM inventory_movements WHERE reference_type = 'GOODS_RECEIPT'
-      AND reference_id IN (v_receipt_one, v_receipt_two)) <> 2 THEN
-    RAISE EXCEPTION 'Each receipt with accepted quantity must post one stock movement';
+      AND reference_id IN (v_receipt_one, v_receipt_two, v_receipt_three)) <> 2 THEN
+    RAISE EXCEPTION 'Only accepted receipt lines may create stock movements';
   END IF;
+
+  -- A posted GRN cannot be augmented with a late stock movement.
+  BEGIN
+    INSERT INTO inventory_movements (
+      tenant_id, factory_id, item_id, location_id, movement_type, quantity, quantity_delta, quantity_after,
+      idempotency_key, request_hash, reference_type, reference_id, notes, created_by_user_id, correlation_id
+    ) VALUES (
+      v_tenant, v_factory, v_item, v_location, 'RECEIPT', 1, 1, 10,
+      'GRN:' || v_receipt_one::text || ':' || v_po_line::text || ':EXTRA', repeat('8', 64),
+      'GOODS_RECEIPT', v_receipt_one, 'must be rejected after posting', v_approver, v_trace
+    );
+    RAISE EXCEPTION 'Expected stock movement against a posted GRN to be rejected';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
 
   -- A reused request key cannot create a second GRN, even with another receipt id.
   BEGIN
     INSERT INTO goods_receipts (
-      id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+      id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
       created_by_user_id, idempotency_key, request_hash, correlation_id
     ) VALUES (
-      v_bad_receipt, v_tenant, v_factory, v_order, 'GRN-TEST-DUP', 'POSTING',
+      v_bad_receipt, v_tenant, v_factory, v_order, v_location, 'GRN-TEST-DUP', 'POSTING',
       v_approver, 'grn-test-key-001', repeat('a', 64), v_trace
     );
     RAISE EXCEPTION 'Expected duplicate GRN idempotency key to be rejected';
@@ -225,10 +266,10 @@ BEGIN
   -- Rejections need a reason; this failure is checked before PO balance/over-receipt validation.
   BEGIN
     INSERT INTO goods_receipts (
-      id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+      id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
       created_by_user_id, idempotency_key, request_hash, correlation_id
     ) VALUES (
-      v_bad_receipt, v_tenant, v_factory, v_order, 'GRN-TEST-NO-REASON', 'POSTING',
+      v_bad_receipt, v_tenant, v_factory, v_order, v_location, 'GRN-TEST-NO-REASON', 'POSTING',
       v_approver, 'grn-test-key-no-reason', repeat('e', 64), v_trace
     );
     INSERT INTO goods_receipt_lines (
@@ -242,10 +283,10 @@ BEGIN
   -- Rejected units count toward the ordered receipt total, so even an all-rejected over-receipt is invalid.
   BEGIN
     INSERT INTO goods_receipts (
-      id, tenant_id, factory_id, purchase_order_id, receipt_number, status,
+      id, tenant_id, factory_id, purchase_order_id, location_id, receipt_number, status,
       created_by_user_id, idempotency_key, request_hash, correlation_id
     ) VALUES (
-      v_bad_receipt, v_tenant, v_factory, v_order, 'GRN-TEST-OVER', 'POSTING',
+      v_bad_receipt, v_tenant, v_factory, v_order, v_location, 'GRN-TEST-OVER', 'POSTING',
       v_approver, 'grn-test-key-over', repeat('f', 64), v_trace
     );
     INSERT INTO goods_receipt_lines (
@@ -269,7 +310,7 @@ BEGIN
   ) THEN RAISE EXCEPTION 'GRN transactional outbox event is missing'; END IF;
 
   SET CONSTRAINTS ALL IMMEDIATE;
-  RAISE NOTICE 'GRN partial receipt, rejected quantity, duplicate-key, stock posting, and audit checks passed';
+  RAISE NOTICE 'GRN partial receipt, fully rejected receipt, duplicate-key, no-late-posting, stock, and audit checks passed';
 END;
 $$;
 ROLLBACK;

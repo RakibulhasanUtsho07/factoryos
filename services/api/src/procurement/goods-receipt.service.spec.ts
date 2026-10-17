@@ -113,6 +113,7 @@ describe('GoodsReceiptService', () => {
       tenant_id: TENANT_ID,
       factory_id: FACTORY_ID,
       purchase_order_id: PURCHASE_ORDER_ID,
+      location_id: randomUUID(),
       po_number: 'PO-REPLAY-001',
       receipt_number: 'GRN-20261017-REPLAY01',
       status: 'POSTED',
