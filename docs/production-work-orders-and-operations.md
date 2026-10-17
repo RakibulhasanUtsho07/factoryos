@@ -38,6 +38,19 @@ Creation requires a confirmed/in-progress order line mapped to an active finishe
 
 The work order copies the effective route into immutable operation snapshots, including step number, operation code/name, work centre, required skill/instructions, quality-gate flag and planned setup/run/queue/transfer times. Later engineering revisions cannot silently alter an already-created work order.
 
+The work order also snapshots one material requirement for every pinned BOM line. Quantities use the BOM line's immutable inventory-base-unit conversion snapshot and are rounded up to four decimal places:
+
+```text
+gross output target = work-order target quantity / (expected yield percent / 100)
+required component = gross output target
+                   * BOM base_quantity_per
+                   * (1 + wastage_percent / 100)
+required quantity = CEILING(required component to 0.0001)
+```
+
+This is the executable work-order material contract, not the MRP-lite advisory proposal. During release, every requirement must reserve its full quantity from unreserved inventory across active, pickable bins (or the configured eligible virtual/default picking location). A short component or insufficient eligible bin quantity blocks release atomically. The shared inventory reservation service updates aggregate/bin reserved balances, creates immutable reservation rows and writes inventory outbox events within the same transaction as the work-order release and operation readiness event. The requirement and reservation link records remain immutable and can be inspected in the work-order detail response.
+
+
 A release request requires `expected_version` and is permitted only while the source sales order is `IN_PROGRESS`. It rechecks that the pinned product revision remains approved/effective, BOM components are active, routing operations exist and work centres are active. The first operation becomes `READY`; later operations stay `PLANNED` until preceding operations complete or are explicitly skipped when non-quality-gated. If a later engineering revision supersedes the pinned version, the old draft cannot be released against a now-inapplicable route; create a new work order from the correct revision.
 
 ## Lifecycle rules
@@ -90,10 +103,12 @@ Output is reported only while the final routing operation is actively running ou
 
 The final operation cannot complete until cumulative good plus scrap equals its work-order target. A work order cannot complete until all operations are completed/skipped (quality gates cannot be skipped) and that target is fully reported. The sales order itself cannot transition to `COMPLETED` or `CANCELLED` while it has open work orders; cancel or complete the work orders explicitly first.
 
+Material reservations follow the same terminal transaction: an unstarted work order cancellation releases its raw-material reservations; a completed work order consumes them, decrements aggregate/bin on-hand and reserved balances, creates an ISSUE stock movement for every consumed reservation, and writes inventory outbox evidence. If any reservation, balance or movement is inconsistent, the parent work-order transition rolls back with it. A released work order therefore cannot silently complete without its linked material reservations being consumed.
+
 ## Evidence, security and boundaries
 
 Migration `090` adds composite tenant/factory/order-line/product-version/routing foreign keys, forced tenant RLS, guarded state transitions, optimistic row versions, idempotency uniqueness, a partial unique index permitting one running operation per work order, append-only event history, and an output-report link to the existing production report ledger. Work-in-progress and rework report quantities are preserved in the append-only shop-floor event ledger and aggregated in the operation detail response; good output/scrap remain separately recorded in the canonical production report ledger.
 
 Every command records event source (`API`, `HMI`, `MES`, `PLC`, `MOBILE` or `IMPORT`), client occurrence time, server record time, authenticated user, optional device ID and idempotency hash. Canonical state, event and transactional-outbox record commit together; the external audit sink is attempted after commit.
 
-MRP-lite remains the material-requirement/shortage planner. This lifecycle does **not** automatically reserve raw materials, issue/consume inventory, post finished goods, schedule finite capacity, infer skill certification, or execute quality disposition. Actual stock reservations and movements stay in the inventory lifecycle; the shop-floor events and output ledger provide the traceable production evidence for those downstream steps.
+MRP-lite remains the horizon-based material-requirement/shortage planner, including visibility into future approved PO supply. Work-order release is the execution boundary: it reserves actual available on-hand material, and completion consumes those reservations into inventory ISSUE movements. It does not auto-create/approve purchase orders, reserve future incoming supply, post finished goods receipts, schedule finite capacity, infer skill certification, or execute quality disposition. Finished-good stock posting remains an explicit inventory/production posting step outside this work-order completion transaction.
