@@ -12,6 +12,7 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateInventoryLocationDto } from './dto/create-inventory-location.dto';
 import { TransferInventoryLocationDto } from './dto/transfer-inventory-location.dto';
+import { UpdateInventoryLocationPolicyDto } from './dto/update-inventory-location-policy.dto';
 
 export interface InventoryLocationRow extends QueryResultRow {
   id: string;
@@ -23,6 +24,10 @@ export interface InventoryLocationRow extends QueryResultRow {
   location_type: 'WAREHOUSE' | 'BIN' | 'STAGING' | 'VIRTUAL';
   is_default: boolean;
   status: 'ACTIVE' | 'DISABLED';
+  putaway_enabled: boolean;
+  picking_enabled: boolean;
+  putaway_priority: number;
+  picking_priority: number;
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
@@ -61,6 +66,7 @@ const LOCATION_COLUMNS = `
   factory_id::text AS factory_id,
   parent_location_id::text AS parent_location_id,
   location_code, name, location_type, is_default, status,
+  putaway_enabled, picking_enabled, putaway_priority, picking_priority,
   created_by_user_id::text AS created_by_user_id,
   created_at::text AS created_at,
   updated_at::text AS updated_at
@@ -119,6 +125,16 @@ export class InventoryLocationService {
     if (locationType === 'BIN' && !parentLocationId) {
       throw new BadRequestException('parent_location_id is required for a BIN location');
     }
+    if (locationType === 'WAREHOUSE' && (dto.putaway_enabled === true || dto.picking_enabled === true)) {
+      throw new BadRequestException('WAREHOUSE locations are hierarchy nodes and cannot receive or pick stock directly');
+    }
+    const putawayEnabled = locationType === 'WAREHOUSE' ? false : (dto.putaway_enabled ?? true);
+    const pickingEnabled = locationType === 'WAREHOUSE' ? false : (dto.picking_enabled ?? true);
+    const putawayPriority = dto.putaway_priority ?? 100;
+    const pickingPriority = dto.picking_priority ?? 100;
+    if (![putawayPriority, pickingPriority].every((value) => Number.isInteger(value) && value >= 0 && value <= 10000)) {
+      throw new BadRequestException('Location priorities must be integers between 0 and 10000');
+    }
     if (parentLocationId) this.validateUuid(parentLocationId, 'parent_location_id');
 
     let created: InventoryLocationRow;
@@ -142,12 +158,17 @@ export class InventoryLocationService {
             `
             INSERT INTO inventory_locations (
               tenant_id, factory_id, parent_location_id,
-              location_code, name, location_type, created_by_user_id
+              location_code, name, location_type,
+              putaway_enabled, picking_enabled, putaway_priority, picking_priority,
+              created_by_user_id
             )
-            VALUES ($1, $2, $3::uuid, $4, $5, $6, $7)
+            VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING ${LOCATION_COLUMNS}
             `,
-            [tenantId, factoryId, parentLocationId, locationCode, name, locationType, userId],
+            [
+              tenantId, factoryId, parentLocationId, locationCode, name, locationType,
+              putawayEnabled, pickingEnabled, putawayPriority, pickingPriority, userId,
+            ],
           );
           const row = inserted.rows[0];
           if (!row) throw new Error('INVENTORY_LOCATION_INSERT_FAILED');
@@ -165,6 +186,10 @@ export class InventoryLocationService {
                 name: row.name,
                 location_type: row.location_type,
                 status: row.status,
+                putaway_enabled: row.putaway_enabled,
+                picking_enabled: row.picking_enabled,
+                putaway_priority: row.putaway_priority,
+                picking_priority: row.picking_priority,
               },
             },
           });
@@ -191,9 +216,122 @@ export class InventoryLocationService {
         locationCode: created.location_code,
         locationType: created.location_type,
         parentLocationId: created.parent_location_id,
+        putawayEnabled: created.putaway_enabled,
+        pickingEnabled: created.picking_enabled,
+        putawayPriority: created.putaway_priority,
+        pickingPriority: created.picking_priority,
       },
     });
     return created;
+  }
+
+  async updateLocationPolicy(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    locationId: string,
+    dto: UpdateInventoryLocationPolicyDto,
+    requestId: string | null,
+    traceId: string | null,
+  ): Promise<InventoryLocationRow> {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(locationId, 'locationId');
+    const entries = Object.entries(dto).filter(([, value]) => value !== undefined);
+    if (entries.length === 0) {
+      throw new BadRequestException('At least one location policy field must be supplied');
+    }
+    if (entries.some(([key, value]) =>
+      (key.endsWith('_priority') && (!Number.isInteger(value) || Number(value) < 0 || Number(value) > 10000))
+      || (key.endsWith('_enabled') && typeof value !== 'boolean')
+    )) {
+      throw new BadRequestException('Policy priorities must be integers between 0 and 10000 and policy flags must be boolean');
+    }
+
+    let updated: InventoryLocationRow;
+    try {
+      updated = await this.database.transaction({ tenantId, userId }, async (client) => {
+        const currentResult = await client.query<InventoryLocationRow>(
+          `
+          SELECT ${LOCATION_COLUMNS}
+          FROM inventory_locations
+          WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+          FOR UPDATE
+          `,
+          [locationId, tenantId, factoryId],
+        );
+        const current = currentResult.rows[0];
+        if (!current) throw new NotFoundException('Inventory location not found in this factory');
+        const putawayEnabled = dto.putaway_enabled ?? current.putaway_enabled;
+        const pickingEnabled = dto.picking_enabled ?? current.picking_enabled;
+        const putawayPriority = dto.putaway_priority ?? current.putaway_priority;
+        const pickingPriority = dto.picking_priority ?? current.picking_priority;
+        if (current.location_type === 'WAREHOUSE' && (putawayEnabled || pickingEnabled)) {
+          throw new BadRequestException('WAREHOUSE locations cannot receive or pick stock directly');
+        }
+        if (!pickingEnabled) {
+          const reservations = await client.query<{ exists: boolean }>(
+            `
+            SELECT EXISTS (
+              SELECT 1 FROM inventory_reservations
+              WHERE tenant_id = $1 AND factory_id = $2 AND location_id = $3
+                AND status = 'RESERVED'
+            ) AS exists
+            `,
+            [tenantId, factoryId, locationId],
+          );
+          if (reservations.rows[0]?.exists) {
+            throw new ConflictException('Picking cannot be disabled while active reservations are allocated to this location');
+          }
+        }
+        const result = await client.query<InventoryLocationRow>(
+          `
+          UPDATE inventory_locations
+          SET putaway_enabled = $1, picking_enabled = $2,
+              putaway_priority = $3, picking_priority = $4,
+              updated_at = clock_timestamp()
+          WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
+          RETURNING ${LOCATION_COLUMNS}
+          `,
+          [putawayEnabled, pickingEnabled, putawayPriority, pickingPriority, locationId, tenantId, factoryId],
+        );
+        const row = result.rows[0];
+        if (!row) throw new NotFoundException('Inventory location not found in this factory');
+        await this.insertOutboxEvent(client, {
+          tenantId, factoryId, aggregateType: 'INVENTORY_LOCATION', aggregateId: locationId,
+          eventType: 'INVENTORY.LOCATION_POLICY_UPDATED',
+          correlationId: this.correlationId(requestId, traceId),
+          userId,
+          payload: {
+            location_id: locationId,
+            policy: {
+              putaway_enabled: row.putaway_enabled,
+              picking_enabled: row.picking_enabled,
+              putaway_priority: row.putaway_priority,
+              picking_priority: row.picking_priority,
+            },
+          },
+        });
+        return row;
+      });
+    } catch (error) {
+      const code = this.errorCode(error);
+      if (code === '23514') {
+        throw new ConflictException(error instanceof Error ? error.message : 'Location policy violates inventory constraints');
+      }
+      throw error;
+    }
+
+    await this.recordAuditSafely({
+      tenantId, factoryId, userId, action: 'LOCATION_POLICY_UPDATE',
+      resourceId: updated.id, requestId, traceId,
+      payload: {
+        putawayEnabled: updated.putaway_enabled,
+        pickingEnabled: updated.picking_enabled,
+        putawayPriority: updated.putaway_priority,
+        pickingPriority: updated.picking_priority,
+      },
+    });
+    return updated;
   }
 
   async listLocations(

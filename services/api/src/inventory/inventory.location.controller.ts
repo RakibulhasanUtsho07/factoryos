@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  Patch,
   Param,
   ParseUUIDPipe,
   Post,
@@ -18,6 +19,7 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateInventoryLocationDto } from './dto/create-inventory-location.dto';
 import { TransferInventoryLocationDto } from './dto/transfer-inventory-location.dto';
+import { UpdateInventoryLocationPolicyDto } from './dto/update-inventory-location-policy.dto';
 import { InventoryLocationService } from './inventory.location.service';
 
 interface InventoryLocationRequestContext {
@@ -50,6 +52,22 @@ export class InventoryLocationController {
     return this.locationService.createLocation(
       context.userId, context.tenantId, context.factoryId,
       body, context.requestId, context.traceId,
+    );
+  }
+
+  @Patch('locations/:locationId/policy')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async updateLocationPolicy(
+    @Req() request: InventoryLocationRequest,
+    @Param('locationId', new ParseUUIDPipe()) locationId: string,
+    @Body() body: UpdateInventoryLocationPolicyDto,
+  ) {
+    const context = this.requireContext(request);
+    return this.locationService.updateLocationPolicy(
+      context.userId, context.tenantId, context.factoryId,
+      locationId, body, context.requestId, context.traceId,
     );
   }
 
