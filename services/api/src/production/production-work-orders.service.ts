@@ -79,6 +79,7 @@ interface OperationRow extends QueryResultRow {
   downtime_started_at: string | null;
   actual_run_minutes: string;
   downtime_minutes: string;
+  wip_quantity: string;
   row_version: number;
   updated_at: string;
 }
@@ -207,7 +208,7 @@ const OPERATION_COLUMNS = `
   op.started_at::text AS started_at, op.active_started_at::text AS active_started_at,
   op.completed_at::text AS completed_at, op.downtime_started_at::text AS downtime_started_at,
   op.actual_run_minutes::text AS actual_run_minutes, op.downtime_minutes::text AS downtime_minutes,
-  op.row_version::int AS row_version, op.updated_at::text AS updated_at
+  op.wip_quantity::text AS wip_quantity, op.row_version::int AS row_version, op.updated_at::text AS updated_at
 `;
 
 @Injectable()
@@ -614,10 +615,7 @@ export class ProductionWorkOrdersService {
         (SELECT COALESCE(SUM(r.scrap_quantity), 0)::text FROM order_production_reports r
           WHERE r.work_order_id = op.work_order_id AND r.work_order_operation_id = op.id
             AND r.tenant_id = op.tenant_id AND r.factory_id = op.factory_id) AS reported_scrap_quantity,
-        (SELECT COALESCE(SUM((e.payload->>'quantity')::numeric), 0)::text FROM work_order_events e
-          WHERE e.work_order_id = op.work_order_id AND e.operation_id = op.id
-            AND e.tenant_id = op.tenant_id AND e.factory_id = op.factory_id
-            AND e.event_type = 'WIP_REPORTED') AS reported_wip_quantity,
+        op.wip_quantity::text AS reported_wip_quantity,
         (SELECT COALESCE(SUM((e.payload->>'quantity')::numeric), 0)::text FROM work_order_events e
           WHERE e.work_order_id = op.work_order_id AND e.operation_id = op.id
             AND e.tenant_id = op.tenant_id AND e.factory_id = op.factory_id
@@ -1055,8 +1053,11 @@ export class ProductionWorkOrdersService {
     const key = this.requiredIdempotencyKey(rawIdempotencyKey);
     const command = dto.command as OperationCommand;
     const quantity = dto.quantity === undefined ? null : this.normalizeQuantity(dto.quantity, 'quantity');
-    if (['WIP_REPORTED', 'REWORK_REPORTED'].includes(command) && !quantity) {
+    if (['WIP_REPORTED', 'REWORK_REPORTED'].includes(command) && quantity === null) {
       throw new BadRequestException('quantity is required for WIP and rework events');
+    }
+    if (command === 'REWORK_REPORTED' && quantity !== null && this.toUnits(quantity) <= 0n) {
+      throw new BadRequestException('rework quantity must be greater than zero');
     }
     const reason = dto.reason?.trim() || null;
     if (['SKIP', 'HOLD', 'REWORK_REPORTED', 'DOWNTIME_START'].includes(command) && !reason) {
@@ -1149,7 +1150,7 @@ export class ProductionWorkOrdersService {
         activeStartedAt = null;
         actualRunExpression = 'actual_run_minutes';
       } else if (command === 'PAUSE') {
-        if (operation.downtime_started_at) throw new ConflictException('End the active downtime interval before pausing the operation');
+        if (!operation.active_started_at || operation.downtime_started_at) throw new ConflictException('Only an actively running operation outside downtime can be paused');
         actualRunExpression = 'actual_run_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - active_started_at)) / 60, 0)';
         activeStartedAt = null;
       } else if (command === 'RESUME') {
@@ -1239,18 +1240,24 @@ export class ProductionWorkOrdersService {
           nextOperationBecameReady = true;
         }
       } else if (command === 'DOWNTIME_START') {
-        if (operation.downtime_started_at) throw new ConflictException('A downtime interval is already open for this operation');
+        if (workOrder.status !== 'IN_PROGRESS' || !operation.active_started_at || operation.downtime_started_at) {
+          throw new ConflictException('Downtime can start only during an active operation run with no open downtime interval');
+        }
         actualRunExpression = 'actual_run_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - active_started_at)) / 60, 0)';
         activeStartedAt = null;
         downtimeStartedAt = null;
       } else if (command === 'DOWNTIME_END') {
-        if (!operation.downtime_started_at) throw new ConflictException('No downtime interval is open for this operation');
+        if (workOrder.status !== 'IN_PROGRESS' || !operation.downtime_started_at) throw new ConflictException('An active downtime interval on an in-progress work order is required');
         downtimeExpression = 'downtime_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - downtime_started_at)) / 60, 0)';
         downtimeStartedAt = null;
         activeStartedAt = null;
       } else if (command === 'WIP_REPORTED' || command === 'REWORK_REPORTED') {
-        // Event evidence is immutable; bump the operation version so concurrent shop-floor
-        // reporters must acknowledge the latest operation event sequence.
+        if (workOrder.status !== 'IN_PROGRESS') {
+          throw new ConflictException('WIP and rework can only be reported for an in-progress work order');
+        }
+        if (command === 'WIP_REPORTED' && quantity !== null && this.toUnits(quantity) > this.toUnits(workOrder.target_quantity)) {
+          throw new ConflictException('Reported WIP cannot exceed the work-order target quantity');
+        }
       }
 
       if (command === 'START') {
@@ -1280,22 +1287,26 @@ export class ProductionWorkOrdersService {
             downtime_started_at = ${downtimeAtExpression},
             actual_run_minutes = ${actualRunExpression},
             downtime_minutes = ${downtimeExpression},
+            wip_quantity = CASE WHEN $11::boolean THEN $12::numeric ELSE wip_quantity END,
             row_version = row_version + 1,
             updated_at = clock_timestamp()
         WHERE id = $2 AND work_order_id = $3 AND tenant_id = $4 AND factory_id = $5
           AND row_version = $10
         RETURNING row_version::int AS row_version, started_at::text AS started_at,
           active_started_at::text AS active_started_at,
-          actual_run_minutes::text AS actual_run_minutes, downtime_minutes::text AS downtime_minutes
+          actual_run_minutes::text AS actual_run_minutes, downtime_minutes::text AS downtime_minutes,
+          wip_quantity::text AS wip_quantity
       `, [
         nextStatus, operation.id, workOrder.id, tenantId, factoryId,
         startedAt, activeStartedAt, completedAt, downtimeStartedAt, operation.row_version,
+        command === 'WIP_REPORTED' && quantity !== null, quantity,
       ]);
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
       payload.started_at = operationUpdate.rows[0].started_at;
       payload.active_started_at = operationUpdate.rows[0].active_started_at;
       payload.actual_run_minutes = operationUpdate.rows[0].actual_run_minutes;
       payload.downtime_minutes = operationUpdate.rows[0].downtime_minutes;
+      payload.wip_quantity = operationUpdate.rows[0].wip_quantity;
 
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
