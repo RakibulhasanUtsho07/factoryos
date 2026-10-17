@@ -141,7 +141,6 @@ describe('allocateMrpRequirements', () => {
     expect(result[1]?.plannedIncomingAllocationQuantity).toBe('1.0000');
     expect(result[1]?.shortageQuantity).toBe('3.0000');
   });
-});
 
   it('uses non-overdue incoming supply even when its ETA is before a future planning horizon start', () => {
     const result = allocateMrpRequirements(
@@ -158,3 +157,4 @@ describe('allocateMrpRequirements', () => {
       allocationStatus: 'COVERED',
     });
   });
+});
