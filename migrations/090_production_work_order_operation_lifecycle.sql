@@ -396,6 +396,19 @@ BEGIN
     RAISE EXCEPTION 'completing a work order requires completion timestamp'
       USING ERRCODE = '23514';
   END IF;
+
+  IF NEW.status = 'COMPLETED' AND EXISTS (
+    SELECT 1 FROM work_order_operations op
+    WHERE op.work_order_id = NEW.id AND op.tenant_id = NEW.tenant_id AND op.factory_id = NEW.factory_id
+      AND (
+        (op.status <> 'COMPLETED' AND op.status <> 'SKIPPED')
+        OR op.wip_quantity > 0
+        OR (op.is_quality_gate AND op.status = 'SKIPPED')
+      )
+  ) THEN
+    RAISE EXCEPTION 'a work order cannot complete with unfinished operations or non-zero operation WIP'
+      USING ERRCODE = '23514';
+  END IF;
   IF NEW.status = 'CANCELLED' AND (NEW.cancelled_by_user_id IS NULL OR NEW.cancelled_at IS NULL) THEN
     RAISE EXCEPTION 'cancelling a work order requires actor and timestamp evidence'
       USING ERRCODE = '23514';
@@ -470,6 +483,11 @@ BEGIN
 
   IF NEW.is_quality_gate AND NEW.status = 'SKIPPED' THEN
     RAISE EXCEPTION 'quality-gate operations cannot be skipped by any persistence path'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.status = 'COMPLETED' AND NEW.wip_quantity > 0 THEN
+    RAISE EXCEPTION 'an operation cannot finish while its current WIP snapshot is non-zero'
       USING ERRCODE = '23514';
   END IF;
 
