@@ -369,7 +369,7 @@ export class InventoryService {
               AND quantity_on_hand + $1::numeric >= quantity_reserved
             RETURNING quantity_on_hand::text AS quantity_on_hand
             `,
-            [delta.toFixed(4), tenantId, factoryId, itemId],
+            [delta, tenantId, factoryId, itemId],
           );
           const balance = balanceResult.rows[0];
           if (!balance) {

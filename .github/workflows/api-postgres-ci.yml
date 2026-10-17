@@ -161,6 +161,7 @@ jobs:
             migrations/073_grn_stock_posting_guard.sql
             migrations/074_lot_serial_product_genealogy.sql
             migrations/075_uom_conversion_controls.sql
+            migrations/076_inventory_movement_uom_snapshot_compatibility.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
