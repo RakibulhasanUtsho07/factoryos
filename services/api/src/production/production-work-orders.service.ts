@@ -888,7 +888,8 @@ export class ProductionWorkOrdersService {
 
       let nextStatus = nextOperationStatus(operation.status, command, operation.is_quality_gate);
       let nextWorkOrderStatus: WorkOrderStatus = workOrder.status;
-      let eventType = this.operationEventType(command);
+      let workOrderStateEventType: 'WORK_ORDER_STARTED' | 'WORK_ORDER_HELD' | 'WORK_ORDER_RESUMED' | null = null;
+      const eventType = this.operationEventType(command);
       let payload: Record<string, unknown> = {
         command, quantity, reason, source, device_id: deviceId, occurred_at: occurredAt,
         expected_work_order_version: dto.expected_work_order_version,
@@ -898,7 +899,6 @@ export class ProductionWorkOrdersService {
       let activeStartedAt = operation.active_started_at;
       let completedAt = operation.completed_at;
       let downtimeStartedAt = operation.downtime_started_at;
-      let updateOperation = true;
       let actualRunExpression = 'actual_run_minutes';
       let downtimeExpression = 'downtime_minutes';
       let operationsToReady: OperationRow | null = null;
@@ -927,7 +927,6 @@ export class ProductionWorkOrdersService {
         startedAt = operation.started_at;
         activeStartedAt = null;
         actualRunExpression = 'actual_run_minutes';
-        payload.started_at = operation.started_at ?? 'SERVER_CLOCK_ON_COMMIT';
       } else if (command === 'PAUSE') {
         if (operation.downtime_started_at) throw new ConflictException('End the active downtime interval before pausing the operation');
         actualRunExpression = 'actual_run_minutes + GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - active_started_at)) / 60, 0)';
@@ -1041,7 +1040,13 @@ export class ProductionWorkOrdersService {
         : '$7::timestamptz';
       const completedAtExpression = command === 'COMPLETE' ? 'clock_timestamp()' : '$8::timestamptz';
       const downtimeAtExpression = command === 'DOWNTIME_START' ? 'clock_timestamp()' : '$9::timestamptz';
-      const operationUpdate = await client.query<{ row_version: number }>(`
+      const operationUpdate = await client.query<{
+        row_version: number;
+        started_at: string | null;
+        active_started_at: string | null;
+        actual_run_minutes: string;
+        downtime_minutes: string;
+      }>(`
         UPDATE work_order_operations
         SET status = $1,
             started_at = ${startedAtExpression},
@@ -1054,12 +1059,18 @@ export class ProductionWorkOrdersService {
             updated_at = clock_timestamp()
         WHERE id = $2 AND work_order_id = $3 AND tenant_id = $4 AND factory_id = $5
           AND row_version = $10
-        RETURNING row_version::int AS row_version
+        RETURNING row_version::int AS row_version, started_at::text AS started_at,
+          active_started_at::text AS active_started_at,
+          actual_run_minutes::text AS actual_run_minutes, downtime_minutes::text AS downtime_minutes
       `, [
         nextStatus, operation.id, workOrder.id, tenantId, factoryId,
         startedAt, activeStartedAt, completedAt, downtimeStartedAt, operation.row_version,
       ]);
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
+      payload.started_at = operationUpdate.rows[0].started_at;
+      payload.active_started_at = operationUpdate.rows[0].active_started_at;
+      payload.actual_run_minutes = operationUpdate.rows[0].actual_run_minutes;
+      payload.downtime_minutes = operationUpdate.rows[0].downtime_minutes;
 
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
@@ -1072,6 +1083,13 @@ export class ProductionWorkOrdersService {
         `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version]);
         if (!woUpdate.rows[0]) throw new ConflictException('Work order changed while recording the operation event');
         payload.work_order_row_version = woUpdate.rows[0].row_version;
+        if (workOrder.status === 'RELEASED' && nextWorkOrderStatus === 'IN_PROGRESS') {
+          workOrderStateEventType = 'WORK_ORDER_STARTED';
+        } else if (workOrder.status !== 'ON_HOLD' && nextWorkOrderStatus === 'ON_HOLD') {
+          workOrderStateEventType = 'WORK_ORDER_HELD';
+        } else if (workOrder.status === 'ON_HOLD' && nextWorkOrderStatus === 'IN_PROGRESS') {
+          workOrderStateEventType = 'WORK_ORDER_RESUMED';
+        }
       } else if (command === 'WIP_REPORTED' || command === 'REWORK_REPORTED') {
         // These events do not move the work-order state, but stale work-order clients should refresh.
         const woUpdate = await client.query(`
