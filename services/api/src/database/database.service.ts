@@ -42,6 +42,9 @@ export interface DatabaseContext {
 
   /** Optional per-operation isolation; default transaction behavior is unchanged. */
   isolationLevel?: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE';
+
+  /** Acquire a session advisory lock before BEGIN/snapshot creation, then release it. */
+  advisoryLockKey?: string | null;
 }
 
 type TransactionCallback<T> = (
@@ -322,8 +325,22 @@ export class DatabaseService
 
     const client =
       await this.pool.connect();
+    let sessionAdvisoryLockAcquired = false;
+    let destroyClientOnRelease = false;
 
     try {
+      // Acquire request-specific advisory locks outside the transaction.
+      // This keeps a waiting REPEATABLE READ transaction from pinning a
+      // snapshot before the previous idempotent request has committed.
+      const advisoryLockKey = context?.advisoryLockKey?.trim();
+      if (advisoryLockKey) {
+        await client.query(
+          'SELECT pg_advisory_lock(hashtextextended($1, 0))',
+          [advisoryLockKey],
+        );
+        sessionAdvisoryLockAcquired = true;
+      }
+
       // --------------------------------------------------------
       // BEGIN
       // --------------------------------------------------------
@@ -436,10 +453,20 @@ export class DatabaseService
 
       throw error;
     } finally {
-      /*
-       * Always return the connection to pg.Pool.
-       */
-      client.release();
+      if (sessionAdvisoryLockAcquired) {
+        try {
+          const unlock = await client.query<{ pg_advisory_unlock: boolean }>(
+            'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+            [context?.advisoryLockKey?.trim()],
+          );
+          destroyClientOnRelease = unlock.rows[0]?.pg_advisory_unlock !== true;
+        } catch {
+          // Never return a connection holding a session advisory lock to the pool.
+          destroyClientOnRelease = true;
+        }
+      }
+
+      client.release(destroyClientOnRelease);
     }
   }
 }
