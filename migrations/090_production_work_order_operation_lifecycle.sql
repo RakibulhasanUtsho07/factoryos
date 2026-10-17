@@ -131,6 +131,7 @@ CREATE TABLE work_order_operations (
   downtime_started_at TIMESTAMPTZ,
   actual_run_minutes NUMERIC(12,4) NOT NULL DEFAULT 0,
   downtime_minutes NUMERIC(12,4) NOT NULL DEFAULT 0,
+  wip_quantity NUMERIC(18,4) NOT NULL DEFAULT 0,
   row_version BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -157,6 +158,7 @@ CREATE TABLE work_order_operations (
   CONSTRAINT chk_work_order_operation_status CHECK (status IN ('PLANNED', 'READY', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD', 'COMPLETED', 'SKIPPED')),
   CONSTRAINT chk_work_order_operation_version CHECK (row_version > 0),
   CONSTRAINT chk_work_order_operation_actuals CHECK (actual_run_minutes >= 0 AND downtime_minutes >= 0),
+  CONSTRAINT chk_work_order_operation_wip_quantity CHECK (wip_quantity >= 0),
   CONSTRAINT chk_work_order_operation_active_timer CHECK (
     (status = 'IN_PROGRESS' AND completed_at IS NULL AND (
       (active_started_at IS NOT NULL AND downtime_started_at IS NULL)
@@ -414,6 +416,7 @@ AS $$
 DECLARE
   v_work_order_product_id UUID;
   v_work_order_product_version_id UUID;
+  v_work_order_target_quantity NUMERIC(18,4);
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'work-order operations are retained; use an explicit skip event before release or completion'
@@ -453,6 +456,15 @@ BEGIN
 
   IF NEW.row_version <> OLD.row_version + 1 OR NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'operation updates must increment row_version and updated_at'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT target_quantity INTO v_work_order_target_quantity
+  FROM work_orders
+  WHERE id = NEW.work_order_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+
+  IF NOT FOUND OR NEW.wip_quantity > v_work_order_target_quantity THEN
+    RAISE EXCEPTION 'reported operation WIP cannot exceed the work-order target quantity'
       USING ERRCODE = '23514';
   END IF;
 
@@ -546,143 +558,13 @@ DECLARE
 BEGIN
   IF NEW.event_type IN ('WIP_REPORTED', 'REWORK_REPORTED') THEN
     v_quantity := NEW.payload->>'quantity';
-    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\.[0-9]{1,4})?$' OR v_quantity::numeric <= 0 THEN
-CREATE OR REPLACE FUNCTION factoryos_guard_work_order_production_output()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  v_source_order_id UUID;
-  v_source_order_line_id UUID;
-  v_target_quantity NUMERIC(18,4);
-  v_work_order_status VARCHAR(24);
-  v_operation_step INTEGER;
-  v_last_step INTEGER;
-  v_operation_status VARCHAR(20);
-  v_active_started_at TIMESTAMPTZ;
-  v_downtime_started_at TIMESTAMPTZ;
-  v_prior_processed NUMERIC(18,4);
-BEGIN
-  IF NEW.work_order_id IS NULL AND NEW.work_order_operation_id IS NULL THEN
-    RETURN NEW;
-  END IF;
-
-  SELECT source_order_id, source_order_line_id, target_quantity, status
-    INTO v_source_order_id, v_source_order_line_id, v_target_quantity, v_work_order_status
-  FROM work_orders
-  WHERE id = NEW.work_order_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
-  FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'work-order output does not reference a work order in this factory'
-      USING ERRCODE = '23503';
-  END IF;
-  IF NEW.order_id <> v_source_order_id OR NEW.order_line_id <> v_source_order_line_id THEN
-    RAISE EXCEPTION 'work-order output must match its source sales order and line'
-      USING ERRCODE = '23514';
-  END IF;
-  IF v_work_order_status <> 'IN_PROGRESS' THEN
-    RAISE EXCEPTION 'work-order output is allowed only while the work order is in progress'
-      USING ERRCODE = '23514';
-  END IF;
-
-  SELECT step_number, status, active_started_at, downtime_started_at
-    INTO v_operation_step, v_operation_status, v_active_started_at, v_downtime_started_at
-  FROM work_order_operations
-  WHERE id = NEW.work_order_operation_id
-    AND work_order_id = NEW.work_order_id
-    AND tenant_id = NEW.tenant_id
-    AND factory_id = NEW.factory_id
-  FOR UPDATE;
-
-  IF NOT FOUND OR v_operation_status <> 'IN_PROGRESS'
-    OR v_active_started_at IS NULL OR v_downtime_started_at IS NOT NULL THEN
-    RAISE EXCEPTION 'output must be reported against the actively running final operation outside downtime'
-      USING ERRCODE = '23514';
-  END IF;
-
-  SELECT max(step_number) INTO v_last_step
-  FROM work_order_operations
-  WHERE work_order_id = NEW.work_order_id
-    AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
-  IF v_operation_step <> v_last_step THEN
-    RAISE EXCEPTION 'finished output can only be reported against the final routing operation'
-      USING ERRCODE = '23514';
-  END IF;
-
-  SELECT COALESCE(SUM(good_quantity + scrap_quantity), 0)
-    INTO v_prior_processed
-  FROM order_production_reports
-  WHERE work_order_id = NEW.work_order_id
-    AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
-
-  IF v_prior_processed + NEW.good_quantity + NEW.scrap_quantity > v_target_quantity THEN
-    RAISE EXCEPTION 'cumulative work-order processed output cannot exceed its target quantity'
-      USING ERRCODE = '23514';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trg_order_production_report_work_order_guard
-BEFORE INSERT ON order_production_reports
-FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_production_output();
-
-ALTER TABLE work_orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE work_orders FORCE ROW LEVEL SECURITY;
-CREATE POLICY work_orders_tenant_isolation ON work_orders
-  USING (tenant_id = factoryos_current_tenant_id())
-  WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-ALTER TABLE work_order_operations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE work_order_operations FORCE ROW LEVEL SECURITY;
-CREATE POLICY work_order_operations_tenant_isolation ON work_order_operations
-  USING (tenant_id = factoryos_current_tenant_id())
-  WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-ALTER TABLE work_order_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE work_order_events FORCE ROW LEVEL SECURITY;
-CREATE POLICY work_order_events_tenant_isolation ON work_order_events
-  USING (tenant_id = factoryos_current_tenant_id())
-  WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-ALTER TABLE work_order_material_requirements ENABLE ROW LEVEL SECURITY;
-ALTER TABLE work_order_material_requirements FORCE ROW LEVEL SECURITY;
-CREATE POLICY work_order_material_requirements_tenant_isolation ON work_order_material_requirements
-  USING (tenant_id = factoryos_current_tenant_id())
-  WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-ALTER TABLE work_order_material_reservations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE work_order_material_reservations FORCE ROW LEVEL SECURITY;
-CREATE POLICY work_order_material_reservations_tenant_isolation ON work_order_material_reservations
-  USING (tenant_id = factoryos_current_tenant_id())
-  WITH CHECK (tenant_id = factoryos_current_tenant_id());
-
-COMMENT ON TABLE work_orders IS
-  'Version-pinned production work orders created from factory-scoped sales-order lines; status changes require actor, version and immutable shop-floor event evidence.';
-COMMENT ON TABLE work_order_operations IS
-  'Immutable snapshots of the released product routing with guarded operation status, actual run time and downtime evidence.';
-COMMENT ON TABLE work_order_events IS
-  'Append-only shop-floor event log carrying source timestamp actor/device and idempotency evidence for start stop output WIP downtime hold release rework and scrap.';
-COMMENT ON TABLE work_order_material_requirements IS
-  'Immutable component requirements calculated from the work-order target, pinned BOM base-quantity snapshots, expected yield and wastage.';
-COMMENT ON TABLE work_order_material_reservations IS
-  'Immutable links from BOM material requirements to actual inventory reservations; release reserves atomically, cancellation releases and completion consumes them.';
-COMMENT ON COLUMN work_orders.target_quantity IS
-  'Planned units to process; reported good plus scrap quantities cannot exceed this value, while only good quantity fulfils the sales order.';
-COMMENT ON COLUMN work_order_operations.actual_run_minutes IS
-  'Server-measured accumulated active time across start/resume/pause/hold/complete intervals, excluding recorded downtime.';
-COMMENT ON COLUMN work_order_operations.downtime_minutes IS
-  'Server-measured accumulated downtime, recorded as matched downtime start/end events.';
-
-INSERT INTO schema_migrations (version, checksum)
-VALUES ('090_production_work_order_operation_lifecycle', NULL)
-ON CONFLICT (version) DO NOTHING;
-
-COMMIT;
- OR v_quantity::numeric <= 0 THEN
-      RAISE EXCEPTION 'WIP and rework events require a positive four-decimal quantity'
+    IF v_quantity IS NULL OR v_quantity !~ '^[0-9]+(\\.[0-9]{1,4})?$' THEN
+      RAISE EXCEPTION 'WIP and rework events require a four-decimal quantity'
+        USING ERRCODE = '23514';
+    END IF;
+    IF (NEW.event_type = 'WIP_REPORTED' AND v_quantity::numeric < 0)
+      OR (NEW.event_type = 'REWORK_REPORTED' AND v_quantity::numeric <= 0) THEN
+      RAISE EXCEPTION 'WIP cannot be negative and rework quantity must be positive'
         USING ERRCODE = '23514';
     END IF;
   END IF;
