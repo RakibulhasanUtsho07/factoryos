@@ -79,7 +79,7 @@ PLANNED/READY -> SKIPPED only when the operation is not a quality gate.
 
 Only one operation per work order may be running at once. An operation cannot start until every preceding step is `COMPLETED` or `SKIPPED`; skips are prohibited for quality-gate steps. Operation commands require both `expected_work_order_version` and `expected_operation_version`; stale writes fail with a conflict rather than overwriting another operator's work.
 
-The server measures active-run intervals on start/resume and closes them on pause/hold/downtime/complete. Downtime must have a matched start and end; its duration is accounted separately from active run time. WIP and rework event quantities must be positive. Skip, hold, rework and scrap require a reason.
+The server measures active-run intervals on start/resume and closes them on pause/hold/downtime/complete. Downtime must have a matched start and end; its duration is accounted separately from active run time, and a downtime interval can open only while an operation timer is actively running. Each `WIP_REPORTED` event replaces the operation’s current WIP snapshot (including an explicit `0` to clear it); WIP may not be negative or exceed the work-order target. Rework quantities must be positive and are retained as append-only rework evidence. Skip, hold, downtime-start, rework and scrap require a reason.
 
 ## Good output, scrap and order reconciliation
 
@@ -107,7 +107,7 @@ Material reservations follow the same terminal transaction: an unstarted work or
 
 ## Evidence, security and boundaries
 
-Migration `090` adds composite tenant/factory/order-line/product-version/routing foreign keys, forced tenant RLS, guarded state transitions, optimistic row versions, idempotency uniqueness, a partial unique index permitting one running operation per work order, append-only event history, and an output-report link to the existing production report ledger. Work-in-progress and rework report quantities are preserved in the append-only shop-floor event ledger and aggregated in the operation detail response; good output/scrap remain separately recorded in the canonical production report ledger.
+Migration `090` adds composite tenant/factory/order-line/product-version/routing foreign keys, forced tenant RLS, guarded state transitions, optimistic row versions, idempotency uniqueness, a partial unique index permitting one running operation per work order, append-only event history, and an output-report link to the existing production report ledger. Work-in-progress snapshots and rework quantities are preserved in the append-only shop-floor event ledger; operation detail returns the latest WIP quantity plus cumulative rework evidence. Good output/scrap remain separately recorded in the canonical production report ledger.
 
 Every command records event source (`API`, `HMI`, `MES`, `PLC`, `MOBILE` or `IMPORT`), client occurrence time, server record time, authenticated user, optional device ID and idempotency hash. Canonical state, event and transactional-outbox record commit together; the external audit sink is attempted after commit.
 
