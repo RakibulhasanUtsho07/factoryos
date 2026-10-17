@@ -190,7 +190,7 @@ BEGIN
       AND resource_id = v_supplier AND action = 'UPDATED'
       AND actor_user_id = v_creator AND request_id = v_request
       AND correlation_id = v_trace AND payload->>'version' = '2'
-      AND payload->'changed_fields' @> '[\"name\"]'::jsonb
+      AND payload->'changed_fields' @> '["name"]'::jsonb
   ) THEN
     RAISE EXCEPTION 'Expected correlated supplier profile update audit';
   END IF;
