@@ -486,8 +486,8 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  IF NEW.status = 'COMPLETED' AND NEW.wip_quantity > 0 THEN
-    RAISE EXCEPTION 'an operation cannot finish while its current WIP snapshot is non-zero'
+  IF NEW.status IN ('COMPLETED', 'SKIPPED') AND NEW.wip_quantity > 0 THEN
+    RAISE EXCEPTION 'an operation cannot finish or skip while its current WIP snapshot is non-zero'
       USING ERRCODE = '23514';
   END IF;
 
