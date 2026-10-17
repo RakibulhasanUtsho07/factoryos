@@ -19,7 +19,7 @@ export class OperationEventDto {
 
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 4 })
-  @Min(0.0001)
+  @Min(0)
   quantity?: number;
 
   @IsOptional()
