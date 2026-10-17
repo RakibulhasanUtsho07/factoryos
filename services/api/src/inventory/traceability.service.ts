@@ -21,7 +21,7 @@ interface StoredKeyRow extends QueryResultRow {
   id: string;
   request_hash: string;
 }
-interface UnitRow extends QueryResultRow {
+export interface UnitRow extends QueryResultRow {
   id: string;
   unit_code?: string;
   request_hash?: string;
