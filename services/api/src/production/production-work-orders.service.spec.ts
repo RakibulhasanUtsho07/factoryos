@@ -110,7 +110,33 @@ describe('ProductionWorkOrdersService request contracts', () => {
         expected_operation_version: 1,
       } as never,
       'wip-key', null, null,
-    )).rejects.toThrow('quantity is required for WIP and rework events');
+    )).rejects.toThrow('quantity is required for WIP, WIP transfer and rework events');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires an explicit target operation and positive quantity before starting WIP transfer', async () => {
+    await expect(service.reportOperationEvent(
+      USER, TENANT, FACTORY, WORK_ORDER, OPERATION,
+      {
+        command: 'WIP_TRANSFERRED',
+        quantity: 4,
+        expected_work_order_version: 1,
+        expected_operation_version: 1,
+      } as never,
+      'wip-transfer-missing-target', null, null,
+    )).rejects.toThrow('target_operation_id is required for WIP transfer');
+
+    await expect(service.reportOperationEvent(
+      USER, TENANT, FACTORY, WORK_ORDER, OPERATION,
+      {
+        command: 'WIP_TRANSFERRED',
+        quantity: 0,
+        target_operation_id: '7ffb7604-2066-4e94-8b9f-7bfb1cbef115',
+        expected_work_order_version: 1,
+        expected_operation_version: 1,
+      } as never,
+      'wip-transfer-zero', null, null,
+    )).rejects.toThrow('WIP transfer quantity must be greater than zero');
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
