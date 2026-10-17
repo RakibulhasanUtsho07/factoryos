@@ -1313,10 +1313,19 @@ export class ProductionWorkOrdersService {
           throw new ConflictException('WIP and rework can only be reported for an in-progress work order');
         }
         if (command === 'WIP_REPORTED' && quantity !== null) {
+          const otherWipResult = await client.query<{ quantity: string }>(`
+            SELECT COALESCE(SUM(wip_quantity), 0)::text AS quantity
+            FROM work_order_operations
+            WHERE work_order_id = $1 AND tenant_id = $2 AND factory_id = $3 AND id <> $4
+          `, [workOrderId, tenantId, factoryId, operation.id]);
           try {
-            assertWipSnapshotQuantity(this.toUnits(quantity), this.toUnits(workOrder.target_quantity));
+            assertWipSnapshotQuantity(
+              this.toUnits(quantity),
+              this.toUnits(workOrder.target_quantity),
+              this.toUnits(otherWipResult.rows[0]?.quantity ?? '0.0000'),
+            );
           } catch {
-            throw new ConflictException('Reported WIP must be non-negative and cannot exceed the work-order target quantity');
+            throw new ConflictException('Reported WIP plus WIP on other operations cannot exceed the work-order target quantity');
           }
           wipSnapshotToSet = quantity;
         }
