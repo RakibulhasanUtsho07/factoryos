@@ -54,7 +54,7 @@ interface ReplenishmentSignalRow extends QueryResultRow {
   uncovered_shortage_quantity: string;
   recommended_order_quantity: string;
   reorder_triggered: boolean;
-  recommendation_status: 'NOT_REQUIRED' | 'SUPPLIER_REQUIRED' | 'REVIEW_REQUIRED';
+  recommendation_status: 'NOT_REQUIRED' | 'COVERED_BY_INCOMING' | 'SUPPLIER_REQUIRED' | 'REVIEW_REQUIRED';
   next_incoming_date: string | null;
   estimated_replenishment_date: string;
 }
@@ -443,6 +443,8 @@ export class InventoryReplenishmentService {
         recommended_order_quantity::text AS recommended_order_quantity,
         (inventory_position <= minimum_quantity) AS reorder_triggered,
         CASE
+          WHEN recommended_order_quantity <= 0 AND physical_shortage_quantity > 0
+            THEN 'COVERED_BY_INCOMING'
           WHEN recommended_order_quantity <= 0 THEN 'NOT_REQUIRED'
           WHEN preferred_supplier_id IS NULL OR preferred_supplier_status IS DISTINCT FROM 'ACTIVE'
             THEN 'SUPPLIER_REQUIRED'
@@ -452,21 +454,21 @@ export class InventoryReplenishmentService {
         (CURRENT_DATE + lead_time_days)::text AS estimated_replenishment_date
       FROM recommendations
       WHERE (
-          ($5::text = 'POLICY' AND item_id = $6::uuid)
-          OR ($5::text = 'SHORTAGES' AND available_quantity < minimum_quantity)
-          OR ($5::text = 'RECOMMENDATIONS'
+          ($4::text = 'POLICY' AND item_id = $5::uuid)
+          OR ($4::text = 'SHORTAGES' AND available_quantity < minimum_quantity)
+          OR ($4::text = 'RECOMMENDATIONS'
               AND inventory_position <= minimum_quantity
               AND recommended_order_quantity > 0)
         )
       ORDER BY
-        CASE WHEN $5::text = 'POLICY' THEN 0 ELSE 1 END,
+        CASE WHEN $4::text = 'POLICY' THEN 0 ELSE 1 END,
         uncovered_shortage_quantity DESC,
         physical_shortage_quantity DESC,
         sku ASC,
         item_id ASC
       LIMIT $4
       `,
-      [tenantId, factoryId, null, limit, mode, itemId],
+      [tenantId, factoryId, limit, mode, itemId],
       { tenantId },
     );
     return result.rows;
