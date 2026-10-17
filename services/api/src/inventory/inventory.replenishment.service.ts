@@ -333,6 +333,8 @@ export class InventoryReplenishmentService {
       ),
       approved_po_lines AS (
         SELECT
+          po.tenant_id,
+          po.factory_id,
           pol.inventory_item_id,
           GREATEST(pol.quantity - COALESCE(pr.accepted_quantity, 0), 0)::numeric(18,4)
             AS outstanding_quantity,
@@ -353,13 +355,15 @@ export class InventoryReplenishmentService {
       ),
       incoming AS (
         SELECT
+          tenant_id,
+          factory_id,
           inventory_item_id,
           SUM(outstanding_quantity)::numeric(18,4) AS incoming_quantity,
           MIN(expected_delivery_date) FILTER (WHERE expected_delivery_date IS NOT NULL)
             AS next_incoming_date
         FROM approved_po_lines
         WHERE outstanding_quantity > 0
-        GROUP BY inventory_item_id
+        GROUP BY tenant_id, factory_id, inventory_item_id
       ),
       current_stock AS (
         SELECT
@@ -392,7 +396,10 @@ export class InventoryReplenishmentService {
           ON b.item_id = rp.item_id
          AND b.tenant_id = rp.tenant_id
          AND b.factory_id = rp.factory_id
-        LEFT JOIN incoming ON incoming.inventory_item_id = rp.item_id
+        LEFT JOIN incoming
+          ON incoming.inventory_item_id = rp.item_id
+         AND incoming.tenant_id = rp.tenant_id
+         AND incoming.factory_id = rp.factory_id
         LEFT JOIN suppliers s
           ON s.id = rp.preferred_supplier_id
          AND s.tenant_id = rp.tenant_id
