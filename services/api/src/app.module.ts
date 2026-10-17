@@ -18,6 +18,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
 import { OrdersModule } from './orders/orders.module';
+import { ProcurementModule } from './procurement/procurement.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { ResearchModule } from './research/research.module';
 import { GrowthModule } from './growth/growth.module';
@@ -68,6 +69,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     IamModule,
 
     OrdersModule,
+
+    ProcurementModule,
 
     InventoryModule,
 
