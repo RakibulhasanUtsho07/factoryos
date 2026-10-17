@@ -529,4 +529,131 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'location-reserved-001', requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
   });
+  it('enforces directed put-away/pick policies without stealing reserved stock', async () => {
+    const fixture = await createStockFixture('12.0000');
+    const { warehouse, binA, binB } = await createWarehouseAndBins(fixture.factoryId);
+    const staging = await locationService.createLocation(
+      userId, tenantId, fixture.factoryId,
+      {
+        location_code: 'STAGE-' + randomUUID().slice(0, 8),
+        name: 'Production staging',
+        location_type: 'STAGING',
+      },
+      requestId, traceId,
+    );
+
+    expect(warehouse).toMatchObject({ putaway_enabled: false, picking_enabled: false });
+    expect(binA).toMatchObject({ putaway_enabled: true, picking_enabled: true });
+    await locationService.updateLocationPolicy(
+      userId, tenantId, fixture.factoryId, binA.id,
+      { putaway_priority: 50 }, requestId, traceId,
+    );
+    await locationService.updateLocationPolicy(
+      userId, tenantId, fixture.factoryId, binB.id,
+      { putaway_priority: 10, picking_priority: 5 }, requestId, traceId,
+    );
+
+    const targets = await locationService.listPutawayTargets(tenantId, fixture.factoryId, fixture.itemId);
+    expect(targets[0]).toMatchObject({ location_id: binB.id, putaway_priority: 10 });
+
+    const putaway = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 7,
+        movement_purpose: 'PUT_AWAY',
+        notes: 'Directed put-away after receipt',
+      },
+      'directed-putaway-' + randomUUID(), requestId, traceId,
+    );
+    expect(putaway).toMatchObject({
+      movement_purpose: 'PUT_AWAY',
+      source_quantity_after: '5.0000',
+      destination_quantity_after: '7.0000',
+    });
+
+    const reservation = await reservationService.createReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { quantity: 5, location_id: binA.id },
+      'directed-pick-reserve-' + randomUUID(), requestId, traceId,
+    );
+    const sources = await locationService.listPickSources(tenantId, fixture.factoryId, fixture.itemId);
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({
+      location_id: binA.id,
+      quantity_on_hand: '7.0000',
+      quantity_reserved: '5.0000',
+      quantity_available: '2.0000',
+    });
+
+    await expect(locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: binA.id,
+        destination_location_id: staging.id,
+        quantity: 3,
+        movement_purpose: 'PICK',
+      },
+      'directed-pick-over-reservation-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const picked = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: binA.id,
+        destination_location_id: staging.id,
+        quantity: 2,
+        movement_purpose: 'PICK',
+        notes: 'Move only unreserved stock to staging',
+      },
+      'directed-pick-' + randomUUID(), requestId, traceId,
+    );
+    expect(picked).toMatchObject({
+      movement_purpose: 'PICK',
+      source_quantity_after: '5.0000',
+      destination_quantity_after: '2.0000',
+    });
+
+    await expect(locationService.updateLocationPolicy(
+      userId, tenantId, fixture.factoryId, binA.id,
+      { picking_enabled: false }, requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(inventoryService.createStockMovement(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { movement_type: 'RECEIPT', quantity: 1, location_id: warehouse.id },
+      'warehouse-direct-receipt-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const consumed = await reservationService.transitionReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId, reservation.id,
+      { target_status: 'CONSUMED' },
+      'directed-pick-consume-' + randomUUID(), requestId, traceId,
+    );
+    expect(consumed).toMatchObject({ status: 'CONSUMED', location_id: binA.id });
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const totals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(aggregate).toMatchObject({
+      quantity_on_hand: '7.0000',
+      quantity_reserved: '0.0000',
+    });
+    expect(totals?.sum).toBe(aggregate?.quantity_on_hand);
+
+    const after = await locationService.listItemBalances(
+      tenantId, fixture.factoryId, fixture.itemId,
+    );
+    expect(after.find((row) => row.location_id === fixture.defaultLocationId)?.quantity_on_hand).toBe('5.0000');
+    expect(after.find((row) => row.location_id === binA.id)).toMatchObject({
+      quantity_on_hand: '0.0000',
+      location_quantity_reserved: '0.0000',
+    });
+    expect(after.find((row) => row.location_id === staging.id)?.quantity_on_hand).toBe('2.0000');
+
+    const moves = await locationService.listTransfers(tenantId, fixture.factoryId, fixture.itemId);
+    expect(moves.filter((move) => move.movement_purpose === 'PUT_AWAY')).toHaveLength(1);
+    expect(moves.filter((move) => move.movement_purpose === 'PICK')).toHaveLength(1);
+  });
+
 });

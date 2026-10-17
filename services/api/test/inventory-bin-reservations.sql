@@ -16,6 +16,15 @@ DECLARE
   v_reservation_allocation_trigger BOOLEAN;
   v_order_allocation_function BOOLEAN;
   v_final_state_balance_guard BOOLEAN;
+  v_putaway_column BOOLEAN;
+  v_picking_column BOOLEAN;
+  v_putaway_priority_column BOOLEAN;
+  v_picking_priority_column BOOLEAN;
+  v_transfer_purpose_column BOOLEAN;
+  v_location_policy_trigger BOOLEAN;
+  v_movement_policy_trigger BOOLEAN;
+  v_transfer_policy_trigger BOOLEAN;
+  v_transfer_policy_function BOOLEAN;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
@@ -35,6 +44,12 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'WP02 final-state bin balance guard migration marker is missing';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version = '080_inventory_location_directed_policy'
+  ) THEN
+    RAISE EXCEPTION 'WP02 directed location policy migration marker is missing';
+  END IF;
 
   SELECT EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -49,6 +64,38 @@ BEGIN
       AND table_name = 'inventory_reservations'
       AND column_name = 'location_id'
   ) INTO v_location_column;
+
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'inventory_locations'
+      AND column_name = 'putaway_enabled') INTO v_putaway_column;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'inventory_locations'
+      AND column_name = 'picking_enabled') INTO v_picking_column;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'inventory_locations'
+      AND column_name = 'putaway_priority') INTO v_putaway_priority_column;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'inventory_locations'
+      AND column_name = 'picking_priority') INTO v_picking_priority_column;
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'inventory_location_transfers'
+      AND column_name = 'movement_purpose') INTO v_transfer_purpose_column;
+
+  SELECT EXISTS (SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'inventory_locations'::regclass
+      AND tgname = 'inventory_location_policy_guard'
+      AND NOT tgisinternal AND tgenabled <> 'D') INTO v_location_policy_trigger;
+  SELECT EXISTS (SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'inventory_movements'::regclass
+      AND tgname = 'inventory_movement_location_policy_guard'
+      AND NOT tgisinternal AND tgenabled <> 'D') INTO v_movement_policy_trigger;
+  SELECT EXISTS (SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'inventory_location_transfers'::regclass
+      AND tgname = 'inventory_location_transfer_policy_guard'
+      AND NOT tgisinternal AND tgenabled <> 'D') INTO v_transfer_policy_trigger;
+  SELECT position('PUT_AWAY' IN
+    pg_get_functiondef('factoryos_validate_inventory_location_transfer_policy()'::regprocedure)) > 0
+    INTO v_transfer_policy_function;
 
   SELECT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -126,13 +173,21 @@ BEGIN
      OR NOT v_reserved_stock_guard OR NOT v_balance_guard_trigger
      OR NOT v_balance_guard_function OR NOT v_multi_bin_unique_index
      OR NOT v_order_allocation_trigger OR NOT v_reservation_allocation_trigger
-     OR NOT v_order_allocation_function OR NOT v_final_state_balance_guard THEN
+     OR NOT v_order_allocation_function OR NOT v_final_state_balance_guard
+     OR NOT v_putaway_column OR NOT v_picking_column
+     OR NOT v_putaway_priority_column OR NOT v_picking_priority_column
+     OR NOT v_transfer_purpose_column OR NOT v_location_policy_trigger
+     OR NOT v_movement_policy_trigger OR NOT v_transfer_policy_trigger
+     OR NOT v_transfer_policy_function THEN
     RAISE EXCEPTION
-      'WP02 bin reservation schema is incomplete: reserved_column %, location_column %, location_fk %, balance_check %, reservation_consistency %, reserved_stock_guard %, balance_guard_trigger %, balance_guard_function %, multi_bin_unique %, order_guard %, reservation_guard %, order_guard_function %, final_state_balance_guard %',
+      'WP02 inventory policy schema is incomplete: reserved_column %, location_column %, location_fk %, balance_check %, reservation_consistency %, reserved_stock_guard %, balance_guard_trigger %, balance_guard_function %, multi_bin_unique %, order_guard %, reservation_guard %, order_guard_function %, final_state_balance_guard %, putaway_column %, picking_column %, putaway_priority %, picking_priority %, movement_purpose %, location_policy_trigger %, movement_policy_trigger %, transfer_policy_trigger %, transfer_policy_function %',
       v_reserved_column, v_location_column, v_location_fk, v_location_balance_check,
       v_location_balance_trigger, v_reserved_stock_guard, v_balance_guard_trigger,
       v_balance_guard_function, v_multi_bin_unique_index, v_order_allocation_trigger,
-      v_reservation_allocation_trigger, v_order_allocation_function, v_final_state_balance_guard;
+      v_reservation_allocation_trigger, v_order_allocation_function, v_final_state_balance_guard,
+      v_putaway_column, v_picking_column, v_putaway_priority_column, v_picking_priority_column,
+      v_transfer_purpose_column, v_location_policy_trigger, v_movement_policy_trigger,
+      v_transfer_policy_trigger, v_transfer_policy_function;
   END IF;
 
   RAISE NOTICE 'WP02 bin-bound reservation schema checks passed';
