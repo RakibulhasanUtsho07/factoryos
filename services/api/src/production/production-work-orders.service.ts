@@ -21,6 +21,7 @@ import {
   assertDowntimeCanStart,
   assertDowntimeCanEnd,
   assertWipSnapshotQuantity,
+  assertWipTransfer,
   assertReworkQuantity,
   nextOperationStatus,
   type OperationCommand,
@@ -1058,14 +1059,24 @@ export class ProductionWorkOrdersService {
     const key = this.requiredIdempotencyKey(rawIdempotencyKey);
     const command = dto.command as OperationCommand;
     const quantity = dto.quantity === undefined ? null : this.normalizeQuantity(dto.quantity, 'quantity');
-    if (['WIP_REPORTED', 'REWORK_REPORTED'].includes(command) && quantity === null) {
-      throw new BadRequestException('quantity is required for WIP and rework events');
+    if (['WIP_REPORTED', 'WIP_TRANSFERRED', 'REWORK_REPORTED'].includes(command) && quantity === null) {
+      throw new BadRequestException('quantity is required for WIP, WIP transfer and rework events');
     }
-    if (command === 'REWORK_REPORTED' && quantity !== null) {
+    if (['WIP_TRANSFERRED', 'REWORK_REPORTED'].includes(command) && quantity !== null) {
       try {
         assertReworkQuantity(this.toUnits(quantity));
       } catch {
-        throw new BadRequestException('rework quantity must be greater than zero');
+        throw new BadRequestException(command === 'WIP_TRANSFERRED'
+          ? 'WIP transfer quantity must be greater than zero'
+          : 'rework quantity must be greater than zero');
+      }
+    }
+    const targetOperationId = dto.target_operation_id?.toLowerCase() ?? null;
+    if (command === 'WIP_TRANSFERRED') {
+      if (!targetOperationId) throw new BadRequestException('target_operation_id is required for WIP transfer');
+      this.uuid(targetOperationId, 'target_operation_id');
+      if (targetOperationId === operationId.toLowerCase()) {
+        throw new BadRequestException('WIP cannot be transferred to the same operation');
       }
     }
     const reason = dto.reason?.trim() || null;
@@ -1078,7 +1089,8 @@ export class ProductionWorkOrdersService {
     this.assertDeviceSource(source, deviceId);
     const requestHash = this.hash({
       work_order_id: workOrderId.toLowerCase(), operation_id: operationId.toLowerCase(),
-      command, expected_work_order_version: dto.expected_work_order_version,
+      command, target_operation_id: targetOperationId,
+      expected_work_order_version: dto.expected_work_order_version,
       expected_operation_version: dto.expected_operation_version,
       quantity, reason, source, device_id: deviceId, occurred_at: occurredAt,
     });
@@ -1132,6 +1144,10 @@ export class ProductionWorkOrdersService {
       let downtimeStartedAt = operation.downtime_started_at;
       let actualRunExpression = 'actual_run_minutes';
       let downtimeExpression = 'downtime_minutes';
+      let wipSnapshotToSet: string | null = null;
+      let wipTransferTarget: OperationRow | null = null;
+      let wipTransferTargetQuantity: string | null = null;
+      let wipTransferTargetRowVersion: number | null = null;
       let operationsToReady: OperationRow | null = null;
       let nextOperationBecameReady = false;
 
@@ -1302,6 +1318,46 @@ export class ProductionWorkOrdersService {
           } catch {
             throw new ConflictException('Reported WIP must be non-negative and cannot exceed the work-order target quantity');
           }
+          wipSnapshotToSet = quantity;
+        }
+      } else if (command === 'WIP_TRANSFERRED') {
+        if (workOrder.status !== 'IN_PROGRESS' || !['IN_PROGRESS', 'PAUSED'].includes(operation.status)) {
+          throw new ConflictException('WIP can only be transferred from an active or paused operation on an in-progress work order');
+        }
+        if (operation.downtime_started_at) throw new ConflictException('End the active downtime interval before transferring WIP');
+        if (!targetOperationId || quantity === null) throw new BadRequestException('target_operation_id and quantity are required for WIP transfer');
+
+        const targetResult = await client.query<OperationRow>(`
+          SELECT ${OPERATION_COLUMNS}
+          FROM work_order_operations op
+          JOIN manufacturing_work_centres wc
+            ON wc.id = op.work_centre_id AND wc.tenant_id = op.tenant_id AND wc.factory_id = op.factory_id
+          WHERE op.id = $1 AND op.work_order_id = $2 AND op.tenant_id = $3 AND op.factory_id = $4
+          FOR UPDATE OF op
+        `, [targetOperationId, workOrderId, tenantId, factoryId]);
+        wipTransferTarget = targetResult.rows[0] ?? null;
+        if (!wipTransferTarget) throw new NotFoundException('WIP transfer target must be an operation in this work order');
+        const nextStep = await client.query<{ step_number: number }>(`
+          SELECT min(step_number)::int AS step_number
+          FROM work_order_operations
+          WHERE work_order_id = $1 AND tenant_id = $2 AND factory_id = $3 AND step_number > $4
+        `, [workOrderId, tenantId, factoryId, operation.step_number]);
+        if (wipTransferTarget.step_number !== nextStep.rows[0]?.step_number) {
+          throw new ConflictException('WIP must be transferred to the immediate next routing operation');
+        }
+        if (!['PLANNED', 'READY'].includes(wipTransferTarget.status)) {
+          throw new ConflictException('WIP transfer target must be planned or ready and not already running');
+        }
+        try {
+          const sourceBefore = this.toUnits(operation.wip_quantity);
+          const targetBefore = this.toUnits(wipTransferTarget.wip_quantity);
+          const transferUnits = this.toUnits(quantity);
+          assertWipTransfer(sourceBefore, targetBefore, transferUnits, this.toUnits(workOrder.target_quantity));
+          wipSnapshotToSet = this.fromUnits(sourceBefore - transferUnits);
+          wipTransferTargetQuantity = this.fromUnits(targetBefore + transferUnits);
+          wipTransferTargetRowVersion = wipTransferTarget.row_version;
+        } catch (error) {
+          throw new ConflictException(error instanceof Error ? error.message : 'WIP transfer quantity is invalid');
         }
       }
 
@@ -1348,7 +1404,8 @@ export class ProductionWorkOrdersService {
       `, [
         nextStatus, operation.id, workOrder.id, tenantId, factoryId,
         startedAt, activeStartedAt, completedAt, downtimeStartedAt, operation.row_version,
-        command === 'WIP_REPORTED' && quantity !== null, quantity,
+        ['WIP_REPORTED', 'WIP_TRANSFERRED'].includes(command) && wipSnapshotToSet !== null,
+        wipSnapshotToSet,
       ]);
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
       payload.started_at = operationUpdate.rows[0].started_at;
@@ -1358,8 +1415,34 @@ export class ProductionWorkOrdersService {
       payload.actual_run_minutes = operationUpdate.rows[0].actual_run_minutes;
       payload.downtime_minutes = operationUpdate.rows[0].downtime_minutes;
       payload.wip_quantity = operationUpdate.rows[0].wip_quantity;
-      if (command === 'WIP_REPORTED') payload.previous_wip_quantity = operation.wip_quantity;
+      if (command === 'WIP_REPORTED' || command === 'WIP_TRANSFERRED') payload.previous_wip_quantity = operation.wip_quantity;
       if (command === 'DOWNTIME_END') payload.previous_downtime_started_at = operation.downtime_started_at;
+
+      if (wipTransferTarget && wipTransferTargetQuantity !== null && wipTransferTargetRowVersion !== null) {
+        const targetWipUpdate = await client.query<{ row_version: number; wip_quantity: string }>(`
+          UPDATE work_order_operations
+          SET wip_quantity = $1::numeric, row_version = row_version + 1, updated_at = clock_timestamp()
+          WHERE id = $2 AND work_order_id = $3 AND tenant_id = $4 AND factory_id = $5
+            AND row_version = $6
+          RETURNING row_version::int AS row_version, wip_quantity::text AS wip_quantity
+        `, [
+          wipTransferTargetQuantity, wipTransferTarget.id, workOrder.id,
+          tenantId, factoryId, wipTransferTargetRowVersion,
+        ]);
+        if (!targetWipUpdate.rows[0]) throw new ConflictException('WIP transfer target changed during the transfer');
+        payload.wip_transfer = {
+          quantity,
+          source_operation_id: operation.id,
+          source_wip_before: operation.wip_quantity,
+          source_wip_after: operationUpdate.rows[0].wip_quantity,
+          source_operation_row_version: operationUpdate.rows[0].row_version,
+          target_operation_id: wipTransferTarget.id,
+          target_step_number: wipTransferTarget.step_number,
+          target_wip_before: wipTransferTarget.wip_quantity,
+          target_wip_after: targetWipUpdate.rows[0].wip_quantity,
+          target_operation_row_version: targetWipUpdate.rows[0].row_version,
+        };
+      }
 
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
@@ -1404,6 +1487,40 @@ export class ProductionWorkOrdersService {
         source, occurredAt, deviceId, idempotencyKey: eventKey, requestHash,
         actorUserId: userId, correlationId, requestId, payload,
       });
+
+      if (command === 'WIP_TRANSFERRED' && wipTransferTarget
+        && wipTransferTargetQuantity !== null && wipTransferTargetRowVersion !== null) {
+        await this.appendEvent(client, {
+          tenantId, factoryId, workOrderId: workOrder.id, operationId: operation.id,
+          eventType: 'WIP_REPORTED', fromStatus: operation.status, toStatus: operation.status,
+          source, occurredAt, deviceId,
+          idempotencyKey: this.scopedEventKey(workOrder.id, 'WIP_TRANSFER_SOURCE', eventKey),
+          requestHash: this.hash({ eventKey, operationId: operation.id, wipQuantity: operationUpdate.rows[0].wip_quantity }),
+          actorUserId: userId, correlationId, requestId,
+          payload: {
+            command: 'WIP_TRANSFERRED', quantity: operationUpdate.rows[0].wip_quantity,
+            wip_quantity: operationUpdate.rows[0].wip_quantity,
+            previous_wip_quantity: operation.wip_quantity,
+            operation_row_version: operationUpdate.rows[0].row_version,
+            transfer_event_id: event.id, target_operation_id: wipTransferTarget.id,
+          },
+        });
+        await this.appendEvent(client, {
+          tenantId, factoryId, workOrderId: workOrder.id, operationId: wipTransferTarget.id,
+          eventType: 'WIP_REPORTED', fromStatus: wipTransferTarget.status, toStatus: wipTransferTarget.status,
+          source, occurredAt, deviceId,
+          idempotencyKey: this.scopedEventKey(workOrder.id, 'WIP_TRANSFER_TARGET', eventKey),
+          requestHash: this.hash({ eventKey, operationId: wipTransferTarget.id, wipQuantity: wipTransferTargetQuantity }),
+          actorUserId: userId, correlationId, requestId,
+          payload: {
+            command: 'WIP_TRANSFERRED', quantity: wipTransferTargetQuantity,
+            wip_quantity: wipTransferTargetQuantity,
+            previous_wip_quantity: wipTransferTarget.wip_quantity,
+            operation_row_version: wipTransferTargetRowVersion + 1,
+            transfer_event_id: event.id, source_operation_id: operation.id,
+          },
+        });
+      }
 
       if (workOrderStateEventType) {
         await this.appendEvent(client, {
@@ -1663,6 +1780,7 @@ export class ProductionWorkOrdersService {
       DOWNTIME_START: 'DOWNTIME_STARTED',
       DOWNTIME_END: 'DOWNTIME_ENDED',
       WIP_REPORTED: 'WIP_REPORTED',
+      WIP_TRANSFERRED: 'WIP_TRANSFERRED',
       REWORK_REPORTED: 'REWORK_REPORTED',
     };
     return eventTypes[command];
@@ -1914,6 +2032,7 @@ function eventTypeForCommand(command: OperationCommand) {
     DOWNTIME_START: 'DOWNTIME_STARTED',
     DOWNTIME_END: 'DOWNTIME_ENDED',
     WIP_REPORTED: 'WIP_REPORTED',
+    WIP_TRANSFERRED: 'WIP_TRANSFERRED',
     REWORK_REPORTED: 'REWORK_REPORTED',
   };
   return mapping[command];
