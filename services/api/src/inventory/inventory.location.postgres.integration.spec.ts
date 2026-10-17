@@ -642,6 +642,11 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId, binA.id,
       { picking_enabled: false }, requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
+    await expect(adminPool.query(
+      `UPDATE inventory_locations SET status = 'DISABLED'
+       WHERE tenant_id = $1 AND factory_id = $2 AND id = $3`,
+      [tenantId, fixture.factoryId, binA.id],
+    )).rejects.toMatchObject({ code: '23514' });
 
     await expect(inventoryService.createStockMovement(
       userId, tenantId, fixture.factoryId, fixture.itemId,

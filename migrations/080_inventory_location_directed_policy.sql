@@ -53,12 +53,27 @@ BEGIN
     RAISE EXCEPTION 'picking cannot be disabled while active reservations are allocated to this location'
       USING ERRCODE = '23514';
   END IF;
+
+  IF TG_OP = 'UPDATE'
+     AND OLD.status = 'ACTIVE'
+     AND NEW.status = 'DISABLED'
+     AND EXISTS (
+       SELECT 1 FROM inventory_reservations r
+       WHERE r.tenant_id = OLD.tenant_id
+         AND r.factory_id = OLD.factory_id
+         AND r.location_id = OLD.id
+         AND r.status = 'RESERVED'
+     ) THEN
+    RAISE EXCEPTION 'location cannot be disabled while active inventory reservations are allocated to it'
+      USING ERRCODE = '23514';
+  END IF;
+
   RETURN NEW;
 END;
 $$;
 
 CREATE TRIGGER inventory_location_policy_guard
-BEFORE INSERT OR UPDATE OF location_type, putaway_enabled, picking_enabled
+BEFORE INSERT OR UPDATE OF location_type, putaway_enabled, picking_enabled, status
 ON inventory_locations
 FOR EACH ROW
 EXECUTE FUNCTION factoryos_guard_inventory_location_policy();
