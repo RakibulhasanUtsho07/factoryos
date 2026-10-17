@@ -2,7 +2,6 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
-import { CreateMrpLiteRunDto } from './dto/create-mrp-lite-run.dto';
 import { MrpLiteService } from './mrp-lite.service';
 
 const USER = '921382b8-e83f-43ab-a576-e3db6a06b70c';
