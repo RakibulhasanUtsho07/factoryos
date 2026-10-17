@@ -21,6 +21,7 @@ interface ReservationRow extends QueryResultRow {
   tenant_id: string;
   factory_id: string;
   item_id: string;
+  location_id: string | null;
   quantity: string;
   status: ReservationStatus;
   idempotency_key: string;
@@ -95,6 +96,7 @@ type ReservationResult = {
   tenant_id: string;
   factory_id: string;
   item_id: string;
+  location_id: string | null;
   quantity: string;
   status: ReservationStatus;
   reference_type: string | null;
@@ -113,6 +115,7 @@ const RESERVATION_COLUMNS = `
   tenant_id::text AS tenant_id,
   factory_id::text AS factory_id,
   item_id::text AS item_id,
+  location_id::text AS location_id,
   quantity::text AS quantity,
   status,
   idempotency_key,
@@ -153,9 +156,12 @@ export class InventoryReservationService {
     const referenceType = dto.reference_type?.trim().toUpperCase() || null;
     const referenceId = dto.reference_id?.trim().toLowerCase() || null;
     if (referenceId) this.validateUuid(referenceId, 'reference_id');
+    const locationId = dto.location_id?.trim().toLowerCase() || null;
+    if (locationId) this.validateUuid(locationId, 'location_id');
     const notes = dto.notes?.trim() || null;
     const requestHash = this.hash({
       itemId: itemId.toLowerCase(),
+      locationId,
       quantity,
       referenceType,
       referenceId,
@@ -190,6 +196,39 @@ export class InventoryReservationService {
           );
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
 
+          if (locationId) {
+            const locationResult = await client.query<{ id: string }>(
+              `
+              SELECT id::text AS id
+              FROM inventory_locations
+              WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+                AND status = 'ACTIVE' AND location_type = 'BIN'
+              FOR UPDATE
+              `,
+              [locationId, tenantId, factoryId],
+            );
+            if (!locationResult.rows[0]) {
+              throw new NotFoundException('Active BIN location not found in this factory');
+            }
+
+            const locationBalance = await client.query<{ location_id: string }>(
+              `
+              UPDATE inventory_location_balances
+              SET quantity_reserved = quantity_reserved + $1::numeric,
+                  version = version + 1,
+                  updated_at = clock_timestamp()
+              WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+                AND location_id = $5
+                AND quantity_on_hand - quantity_reserved >= $1::numeric
+              RETURNING location_id::text AS location_id
+              `,
+              [quantity, tenantId, factoryId, itemId, locationId],
+            );
+            if (!locationBalance.rows[0]) {
+              throw new ConflictException('Insufficient unreserved stock at the selected BIN');
+            }
+          }
+
           const balanceResult = await client.query<BalanceRow>(
             `
             UPDATE inventory_stock_balances
@@ -216,15 +255,15 @@ export class InventoryReservationService {
           const inserted = await client.query<ReservationRow>(
             `
             INSERT INTO inventory_reservations (
-              tenant_id, factory_id, item_id, quantity, idempotency_key,
+              tenant_id, factory_id, item_id, location_id, quantity, idempotency_key,
               request_hash, reference_type, reference_id, notes,
               created_by_user_id, correlation_id
             )
-            VALUES ($1, $2, $3, $4::numeric, $5, $6, $7, $8::uuid, $9, $10, $11::uuid)
+            VALUES ($1, $2, $3, $4::uuid, $5::numeric, $6, $7, $8, $9::uuid, $10, $11, $12::uuid)
             RETURNING ${RESERVATION_COLUMNS}
             `,
             [
-              tenantId, factoryId, itemId, quantity, idempotencyKey, requestHash,
+              tenantId, factoryId, itemId, locationId, quantity, idempotencyKey, requestHash,
               referenceType, referenceId, notes, userId, correlationId,
             ],
           );
@@ -236,7 +275,8 @@ export class InventoryReservationService {
             correlationId, userId,
             payload: {
               reservation: {
-                id: row.id, item_id: itemId, quantity: row.quantity, status: row.status,
+                id: row.id, item_id: itemId, location_id: row.location_id,
+                quantity: row.quantity, status: row.status,
                 reference_type: row.reference_type, reference_id: row.reference_id,
               },
               balance: {
@@ -268,7 +308,7 @@ export class InventoryReservationService {
       await this.recordAuditSafely({
         tenantId, factoryId, userId, action: 'RESERVATION_CREATE',
         resourceId: result.id, requestId, traceId,
-        payload: { itemId, quantity: result.quantity, referenceType, referenceId },
+        payload: { itemId, locationId, quantity: result.quantity, referenceType, referenceId },
       });
     }
     return result;
@@ -1249,6 +1289,18 @@ export class InventoryReservationService {
 
         let balance: BalanceRow | undefined;
         let consumedMovementId: string | null = null;
+        if (reservation.location_id) {
+          await this.decreaseLocationReserved(
+            client, tenantId, factoryId, itemId, reservation.location_id, reservation.quantity,
+          );
+          if (targetStatus === 'CONSUMED') {
+            await client.query(
+              `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
+              [reservation.location_id],
+            );
+          }
+        }
+
         if (targetStatus === 'RELEASED') {
           const balanceResult = await client.query<BalanceRow>(
             `
@@ -1293,16 +1345,17 @@ export class InventoryReservationService {
           const movementResult = await client.query<MovementRow>(
             `
             INSERT INTO inventory_movements (
-              tenant_id, factory_id, item_id, movement_type, quantity,
+              tenant_id, factory_id, item_id, location_id, movement_type, quantity,
               quantity_delta, quantity_after, idempotency_key, request_hash,
               reference_type, reference_id, notes, created_by_user_id, correlation_id
             )
-            VALUES ($1, $2, $3, 'ISSUE', $4::numeric, -$4::numeric, $5::numeric,
-              $6, $7, 'RESERVATION', $8::uuid, $9, $10, $11::uuid)
+            VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
+              $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
             RETURNING id::text AS id, quantity_after::text AS quantity_after
             `,
             [
-              tenantId, factoryId, itemId, reservation.quantity, balance.quantity_on_hand,
+              tenantId, factoryId, itemId, reservation.location_id,
+              reservation.quantity, balance.quantity_on_hand,
               movementKey, transitionHash, reservationId,
               reservation.notes, userId, correlationId,
             ],
@@ -1315,7 +1368,8 @@ export class InventoryReservationService {
             payload: {
               movement: {
                 id: consumedMovementId,
-                item_id: itemId, movement_type: 'ISSUE', quantity: reservation.quantity,
+                item_id: itemId, location_id: reservation.location_id,
+                movement_type: 'ISSUE', quantity: reservation.quantity,
                 quantity_delta: '-' + reservation.quantity, quantity_after: balance.quantity_on_hand,
                 reference_type: 'RESERVATION', reference_id: reservationId,
               },
@@ -1385,6 +1439,31 @@ export class InventoryReservationService {
     return result;
   }
 
+  private async decreaseLocationReserved(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+    locationId: string,
+    quantity: string,
+  ): Promise<void> {
+    const result = await client.query<{ location_id: string }>(
+      `
+      UPDATE inventory_location_balances
+      SET quantity_reserved = quantity_reserved - $1::numeric,
+          version = version + 1,
+          updated_at = clock_timestamp()
+      WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+        AND location_id = $5 AND quantity_reserved >= $1::numeric
+      RETURNING location_id::text AS location_id
+      `,
+      [quantity, tenantId, factoryId, itemId, locationId],
+    );
+    if (!result.rows[0]) {
+      throw new ConflictException('Location reservation balance is inconsistent; no transition was applied');
+    }
+  }
+
   private async findByIdempotencyKey(
     client: PoolClient,
     tenantId: string,
@@ -1414,6 +1493,7 @@ export class InventoryReservationService {
       tenant_id: row.tenant_id,
       factory_id: row.factory_id,
       item_id: row.item_id,
+      location_id: row.location_id,
       quantity: row.quantity,
       status: row.status,
       reference_type: row.reference_type,
