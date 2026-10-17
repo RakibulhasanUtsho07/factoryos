@@ -265,7 +265,7 @@ export class ProductionWorkOrdersService {
           FROM product_versions v
           WHERE v.product_id = p.id
             AND v.tenant_id = $1 AND v.factory_id = $2
-            AND v.state = 'APPROVED'
+            AND v.state IN ('APPROVED', 'RETIRED')
             AND v.effective_from <= $4::date
             AND COALESCE(v.effective_to_override, v.effective_to, 'infinity'::date) >= $4::date
           ORDER BY v.effective_from DESC, v.version_number DESC
@@ -592,7 +592,7 @@ export class ProductionWorkOrdersService {
         const currentRevision = await client.query<{ id: string }>(`
           SELECT id::text AS id FROM product_versions
           WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND product_id = $4
-            AND state = 'APPROVED' AND effective_from <= $5::date
+            AND state IN ('APPROVED', 'RETIRED') AND effective_from <= $5::date
             AND COALESCE(effective_to_override, effective_to, 'infinity'::date) >= $5::date
           FOR SHARE
         `, [workOrder.product_version_id, tenantId, factoryId, workOrder.product_id, workOrder.planned_start_date]);
