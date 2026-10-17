@@ -190,7 +190,7 @@ export class MrpLiteService {
           WHERE o.tenant_id = $1
             AND o.factory_id = $2
             AND o.status IN ('CONFIRMED', 'IN_PROGRESS')
-            AND COALESCE(ol.requested_delivery_date, o.requested_delivery_date, o.order_date)::date <= $4::date
+            AND COALESCE(ol.requested_delivery_date, o.requested_delivery_date, o.order_date)::date <= $3::date
             AND ol.quantity > COALESCE(production.good_quantity, 0)
         )
         SELECT
@@ -257,7 +257,7 @@ export class MrpLiteService {
          AND ci.tenant_id = $1
          AND ci.factory_id = $2
         ORDER BY ol.need_by_date, ol.order_date, ol.order_number, ol.order_line_number, b.line_number
-      `, [tenantId, factoryId, horizonStart, horizonEnd]);
+      `, [tenantId, factoryId, horizonEnd]);
 
       const exceptions: PlanException[] = [];
       const seenExceptions = new Set<string>();
@@ -432,31 +432,6 @@ export class MrpLiteService {
         const allocation = byRequirementId.get(candidate.id);
         if (!allocation) throw new Error('MRP_LITE_ALLOCATION_MISSING');
         const itemId = row.component_item_id as string;
-        const stock = stockMetadata.get(itemId);
-        const scenarios = allocation.shortageQuantity !== '0.0000'
-          ? (alternatesByBomLine.get(row.bom_line_id as string) ?? []).map((alternate) => {
-              const alternateStock = stockMetadata.get(alternate.item_id);
-              return {
-                alternate_id: alternate.id,
-                item_id: alternate.item_id,
-                sku: alternate.sku,
-                name: alternate.name,
-                unit: alternate.unit,
-                conversion_factor: alternate.conversion_factor,
-                inventory_quantity_per_component: alternate.quantity_per_component,
-                rationale: alternate.rationale,
-                on_hand_quantity: alternateStock?.quantity_on_hand ?? '0.0000',
-                allocated_quantity: alternateStock?.quantity_reserved ?? '0.0000',
-                available_on_hand_quantity: this.subtractFloor4(
-                  alternateStock?.quantity_on_hand ?? '0.0000',
-                  alternateStock?.quantity_reserved ?? '0.0000',
-                ),
-                incoming_quantity: incomingByItem.get(alternate.item_id) ?? '0.0000',
-                scenario_type: 'WHAT_IF_ONLY',
-              };
-            })
-          : [];
-
         if (allocation.allocationStatus === 'COVERED') coveredCount += 1;
         else if (allocation.allocationStatus === 'LATE_SUPPLY') lateCount += 1;
         else unsuppliedCount += 1;
@@ -472,43 +447,9 @@ export class MrpLiteService {
         total.required = this.add4(total.required, candidate.requiredQuantity);
         total.shortage = this.add4(total.shortage, allocation.shortageQuantity);
         materialTotals.set(itemId, total);
-
-        await client.query(`
-          INSERT INTO mrp_plan_requirements (
-            id, tenant_id, factory_id, plan_id, order_id, order_line_id, product_id,
-            product_version_id, bom_line_id, component_item_id, order_number, order_status,
-            order_line_number, need_by_date, product_code, product_name, product_version_number,
-            bom_line_number, component_sku, component_name, component_unit, remaining_finished_quantity,
-            expected_yield_percent, base_quantity_per, wastage_percent, required_quantity,
-            on_hand_quantity, allocated_quantity, available_on_hand_quantity, incoming_quantity,
-            planned_on_hand_allocation_quantity, planned_incoming_allocation_quantity,
-            available_by_need_date_quantity, shortage_quantity, shortage_date, projected_available_date,
-            allocation_status, substitute_scenarios
-          ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-            $22::numeric,$23::numeric,$24::numeric,$25::numeric,$26::numeric,$27::numeric,$28::numeric,
-            $29::numeric,$30::numeric,$31::numeric,$32::numeric,$33::numeric,$34::numeric,$35::date,
-            $36::date,$37,$38::jsonb
-          )
-        `, [
-          candidate.id, tenantId, factoryId, '', row.order_id, row.order_line_id, row.product_id,
-          row.product_version_id, row.bom_line_id, itemId, row.order_number, row.order_status,
-          row.order_line_number, row.need_by_date, row.product_code, row.product_name,
-          row.product_version_number, row.bom_line_number, row.component_sku, row.component_name,
-          row.component_unit, row.remaining_finished_quantity, row.expected_yield_percent,
-          row.base_quantity_per, row.wastage_percent, candidate.requiredQuantity,
-          allocation.onHandQuantity, allocation.allocatedQuantity, allocation.availableOnHandQuantity,
-          allocation.incomingQuantity, allocation.plannedOnHandAllocationQuantity,
-          allocation.plannedIncomingAllocationQuantity, allocation.availableByNeedDateQuantity,
-          allocation.shortageQuantity, allocation.shortageDate, allocation.projectedAvailableDate,
-          allocation.allocationStatus, JSON.stringify(scenarios),
-        ]);
       }
 
       const planId = randomUUID();
-      // The plan header is inserted after allocation calculation, before attaching the
-      // requirements. The temporary blank plan_id in each requirement is replaced below
-      // by using the real plan ID in the bulk insert path.
       await client.query(`
         INSERT INTO mrp_plans (
           id, tenant_id, factory_id, horizon_start, horizon_end, allocation_policy,
