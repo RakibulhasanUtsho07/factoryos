@@ -398,7 +398,8 @@ BEGIN
       JOIN purchase_orders po
         ON po.id = gr.purchase_order_id AND po.tenant_id = gr.tenant_id AND po.factory_id = gr.factory_id
       WHERE gl.id = NEW.goods_receipt_line_id
-        AND gl.tenant_id = NEW.tenant_id AND gl.factory_id = NEW.factory_id;
+        AND gl.tenant_id = NEW.tenant_id AND gl.factory_id = NEW.factory_id
+      FOR UPDATE OF gl;
 
       IF NOT FOUND OR v_receipt_status <> 'POSTED' OR v_accepted <= 0 THEN
         RAISE EXCEPTION 'material lot provenance must reference a posted GRN line with accepted quantity'
@@ -459,7 +460,8 @@ BEGIN
       SELECT r.order_id, r.order_line_id, r.good_quantity
         INTO v_report_order, v_report_line, v_good_quantity
       FROM order_production_reports r
-      WHERE r.id = NEW.production_report_id AND r.tenant_id = NEW.tenant_id AND r.factory_id = NEW.factory_id;
+      WHERE r.id = NEW.production_report_id AND r.tenant_id = NEW.tenant_id AND r.factory_id = NEW.factory_id
+      FOR UPDATE OF r;
 
       IF NOT FOUND OR v_good_quantity <= 0 THEN
         RAISE EXCEPTION 'finished-good provenance must reference a production report with good output'
@@ -652,7 +654,8 @@ BEGIN
     IF v_source_role = 'MATERIAL' THEN
       SELECT allocation_policy INTO v_policy
       FROM traceability_settings
-      WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+      WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+      FOR SHARE;
       IF v_policy = 'LOT' AND v_source_type <> 'LOT' THEN
         RAISE EXCEPTION 'factory allocation policy requires material lots'
           USING ERRCODE = '23514';
