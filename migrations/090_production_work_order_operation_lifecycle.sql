@@ -180,6 +180,87 @@ CREATE UNIQUE INDEX uq_work_order_single_in_progress_operation
   ON work_order_operations (tenant_id, factory_id, work_order_id)
   WHERE status = 'IN_PROGRESS';
 
+CREATE TABLE work_order_material_requirements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL,
+  factory_id UUID NOT NULL,
+  work_order_id UUID NOT NULL,
+  product_id UUID NOT NULL,
+  product_version_id UUID NOT NULL,
+  bom_line_id UUID NOT NULL,
+  component_item_id UUID NOT NULL,
+  line_number INTEGER NOT NULL,
+  component_sku VARCHAR(100) NOT NULL,
+  component_name VARCHAR(255) NOT NULL,
+  component_unit VARCHAR(50) NOT NULL,
+  base_quantity_per NUMERIC(18,4) NOT NULL,
+  expected_yield_percent NUMERIC(7,4) NOT NULL,
+  wastage_percent NUMERIC(7,4) NOT NULL,
+  required_quantity NUMERIC(18,4) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
+  CONSTRAINT uq_work_order_material_requirement_scope
+    UNIQUE (id, work_order_id, tenant_id, factory_id),
+  CONSTRAINT uq_work_order_material_requirement_bom
+    UNIQUE (work_order_id, bom_line_id),
+  CONSTRAINT fk_work_order_material_requirement_work_order
+    FOREIGN KEY (work_order_id, tenant_id, factory_id)
+    REFERENCES work_orders(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_material_requirement_product_version
+    FOREIGN KEY (product_version_id, tenant_id, factory_id, product_id)
+    REFERENCES product_versions(id, tenant_id, factory_id, product_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_material_requirement_bom_line
+    FOREIGN KEY (bom_line_id, product_version_id, tenant_id, factory_id)
+    REFERENCES product_bom_lines(id, product_version_id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_material_requirement_component
+    FOREIGN KEY (component_item_id, tenant_id, factory_id)
+    REFERENCES inventory_items(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_work_order_material_line CHECK (line_number > 0),
+  CONSTRAINT chk_work_order_material_sku CHECK (length(btrim(component_sku)) > 0),
+  CONSTRAINT chk_work_order_material_name CHECK (length(btrim(component_name)) > 0),
+  CONSTRAINT chk_work_order_material_unit CHECK (length(btrim(component_unit)) > 0),
+  CONSTRAINT chk_work_order_material_base_quantity CHECK (base_quantity_per > 0),
+  CONSTRAINT chk_work_order_material_yield CHECK (expected_yield_percent > 0 AND expected_yield_percent <= 100),
+  CONSTRAINT chk_work_order_material_wastage CHECK (wastage_percent >= 0 AND wastage_percent <= 100),
+  CONSTRAINT chk_work_order_material_required_quantity CHECK (required_quantity > 0)
+);
+
+CREATE INDEX idx_work_order_material_requirement_item
+  ON work_order_material_requirements (tenant_id, factory_id, component_item_id, work_order_id, line_number);
+
+CREATE TABLE work_order_material_reservations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL,
+  factory_id UUID NOT NULL,
+  work_order_id UUID NOT NULL,
+  requirement_id UUID NOT NULL,
+  reservation_id UUID NOT NULL,
+  item_id UUID NOT NULL,
+  quantity NUMERIC(18,4) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
+  CONSTRAINT uq_work_order_material_reservation_scope
+    UNIQUE (id, tenant_id, factory_id),
+  CONSTRAINT uq_work_order_material_reservation_inventory
+    UNIQUE (reservation_id),
+  CONSTRAINT fk_work_order_material_reservation_work_order
+    FOREIGN KEY (work_order_id, tenant_id, factory_id)
+    REFERENCES work_orders(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_material_reservation_requirement
+    FOREIGN KEY (requirement_id, work_order_id, tenant_id, factory_id)
+    REFERENCES work_order_material_requirements(id, work_order_id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_material_reservation_inventory
+    FOREIGN KEY (reservation_id, tenant_id, factory_id)
+    REFERENCES inventory_reservations(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_work_order_material_reservation_item
+    FOREIGN KEY (item_id, tenant_id, factory_id)
+    REFERENCES inventory_items(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_work_order_material_reservation_quantity CHECK (quantity > 0)
+);
+
+CREATE INDEX idx_work_order_material_reservations_work_order
+  ON work_order_material_reservations (tenant_id, factory_id, work_order_id, requirement_id);
+
 CREATE TABLE work_order_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -399,6 +480,24 @@ CREATE TRIGGER trg_work_order_operation_lifecycle
 BEFORE INSERT OR UPDATE OR DELETE ON work_order_operations
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_operation_lifecycle();
 
+CREATE OR REPLACE FUNCTION factoryos_prevent_work_order_material_snapshot_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  RAISE EXCEPTION 'work-order material requirements and reservation links are immutable production evidence'
+    USING ERRCODE = '55000';
+END;
+$;
+
+CREATE TRIGGER trg_work_order_material_requirements_immutable
+BEFORE UPDATE OR DELETE ON work_order_material_requirements
+FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_work_order_material_snapshot_mutation();
+
+CREATE TRIGGER trg_work_order_material_reservations_immutable
+BEFORE UPDATE OR DELETE ON work_order_material_reservations
+FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_work_order_material_snapshot_mutation();
+
 CREATE OR REPLACE FUNCTION factoryos_block_terminal_order_with_open_work_orders()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -548,12 +647,28 @@ CREATE POLICY work_order_events_tenant_isolation ON work_order_events
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
+ALTER TABLE work_order_material_requirements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_order_material_requirements FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_order_material_requirements_tenant_isolation ON work_order_material_requirements
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
+ALTER TABLE work_order_material_reservations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE work_order_material_reservations FORCE ROW LEVEL SECURITY;
+CREATE POLICY work_order_material_reservations_tenant_isolation ON work_order_material_reservations
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
 COMMENT ON TABLE work_orders IS
   'Version-pinned production work orders created from factory-scoped sales-order lines; status changes require actor, version and immutable shop-floor event evidence.';
 COMMENT ON TABLE work_order_operations IS
   'Immutable snapshots of the released product routing with guarded operation status, actual run time and downtime evidence.';
 COMMENT ON TABLE work_order_events IS
   'Append-only shop-floor event log carrying source timestamp actor/device and idempotency evidence for start stop output WIP downtime hold release rework and scrap.';
+COMMENT ON TABLE work_order_material_requirements IS
+  'Immutable component requirements calculated from the work-order target, pinned BOM base-quantity snapshots, expected yield and wastage.';
+COMMENT ON TABLE work_order_material_reservations IS
+  'Immutable links from BOM material requirements to actual inventory reservations; release reserves atomically, cancellation releases and completion consumes them.';
 COMMENT ON COLUMN work_orders.target_quantity IS
   'Planned units to process; reported good plus scrap quantities cannot exceed this value, while only good quantity fulfils the sales order.';
 COMMENT ON COLUMN work_order_operations.actual_run_minutes IS
