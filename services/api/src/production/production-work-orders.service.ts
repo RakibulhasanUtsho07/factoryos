@@ -1317,8 +1317,11 @@ export class ProductionWorkOrdersService {
         row_version: number;
         started_at: string | null;
         active_started_at: string | null;
+        completed_at: string | null;
+        downtime_started_at: string | null;
         actual_run_minutes: string;
         downtime_minutes: string;
+        wip_quantity: string;
       }>(`
         UPDATE work_order_operations
         SET status = $1,
@@ -1335,6 +1338,7 @@ export class ProductionWorkOrdersService {
           AND row_version = $10
         RETURNING row_version::int AS row_version, started_at::text AS started_at,
           active_started_at::text AS active_started_at,
+          completed_at::text AS completed_at, downtime_started_at::text AS downtime_started_at,
           actual_run_minutes::text AS actual_run_minutes, downtime_minutes::text AS downtime_minutes,
           wip_quantity::text AS wip_quantity
       `, [
@@ -1345,9 +1349,13 @@ export class ProductionWorkOrdersService {
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
       payload.started_at = operationUpdate.rows[0].started_at;
       payload.active_started_at = operationUpdate.rows[0].active_started_at;
+      payload.completed_at = operationUpdate.rows[0].completed_at;
+      payload.downtime_started_at = operationUpdate.rows[0].downtime_started_at;
       payload.actual_run_minutes = operationUpdate.rows[0].actual_run_minutes;
       payload.downtime_minutes = operationUpdate.rows[0].downtime_minutes;
       payload.wip_quantity = operationUpdate.rows[0].wip_quantity;
+      if (command === 'WIP_REPORTED') payload.previous_wip_quantity = operation.wip_quantity;
+      if (command === 'DOWNTIME_END') payload.previous_downtime_started_at = operation.downtime_started_at;
 
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
