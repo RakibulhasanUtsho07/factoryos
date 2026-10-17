@@ -90,9 +90,10 @@ export class ProductDefinitionsService {
           if(old.rows[0].request_hash!==hash) throw new ConflictException('Idempotency-Key was reused for a different product definition');
           return {product:old.rows[0],replayed:true};
         }
-        const item=await client.query<{id:string;status:string}>(`SELECT id::text AS id,status FROM inventory_items
+        const item=await client.query<{id:string;status:string;unit:string}>(`SELECT id::text AS id,status,unit FROM inventory_items
           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR KEY SHARE`,[itemId,tenantId,factoryId]);
         if(!item.rows[0]||item.rows[0].status!=='ACTIVE') throw new NotFoundException('Active inventory item was not found in this factory');
+        if(item.rows[0].unit.trim().toUpperCase()!==unit.toUpperCase()) throw new BadRequestException('base_unit must match the finished-good inventory item base unit');
         const r=await client.query<ProductRow>(`INSERT INTO product_definitions(
           tenant_id,factory_id,inventory_item_id,product_code,product_name,product_type,base_unit,status,version,
           created_by_user_id,updated_by_user_id)
@@ -199,9 +200,13 @@ export class ProductDefinitionsService {
     const result=await this.database.transaction({tenantId,userId},async client=>{
       await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
       const ids=[...new Set(lines.map(x=>x.item))];
-      const valid=await client.query<{id:string}>(`SELECT id::text AS id FROM inventory_items
+      const valid=await client.query<{id:string;unit:string}>(`SELECT id::text AS id,unit FROM inventory_items
         WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' AND id=ANY($3::uuid[])`,[tenantId,factoryId,ids]);
       if(valid.rows.length!==ids.length) throw new BadRequestException('BOM components must be active inventory items in the same factory');
+      for(const line of lines) {
+        const item=valid.rows.find(x=>x.id===line.item);
+        if(item) await this.assertUnitCompatible(client,tenantId,factoryId,line.unit,item.unit,`BOM line ${line.line} unit`);
+      }
       const rowVersion=await this.bumpDraft(client,userId,tenantId,factoryId,p,v,dto.expected_version);
       await client.query('DELETE FROM product_bom_lines WHERE tenant_id=$1 AND factory_id=$2 AND product_id=$3 AND product_version_id=$4',[tenantId,factoryId,p,v]);
       const saved:QueryResultRow[]=[];
@@ -283,6 +288,10 @@ export class ProductDefinitionsService {
           return {alternate:old.rows[0],row_version:parent.rows[0]?.row_version??'0',replayed:true};
         }
         await this.lockDraft(client,tenantId,factoryId,p,v,dto.expected_version);
+        const item=await client.query<{unit:string;status:string}>(`SELECT unit,status FROM inventory_items
+          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR KEY SHARE`,[altItem,tenantId,factoryId]);
+        if(!item.rows[0]||item.rows[0].status!=='ACTIVE') throw new NotFoundException('Active alternate inventory item was not found in this factory');
+        await this.assertUnitCompatible(client,tenantId,factoryId,unit,item.rows[0].unit,'Alternate material unit');
         const r=await client.query<AlternateRow>(`INSERT INTO product_bom_alternates(
           tenant_id,factory_id,product_id,product_version_id,bom_line_id,alternate_item_id,conversion_factor,unit,rationale,
           status,idempotency_key,request_hash,created_by_user_id)
@@ -411,6 +420,18 @@ export class ProductDefinitionsService {
       if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_WORK_CENTRE_CREATED',resource:'MANUFACTURING_WORK_CENTRE',id:result.work_centre.id,requestId,traceId,payload:{code,name,capacityUnitsPerHour:capacity}});
       return result;
     } catch(e) { this.uniqueConflict(e,'Work-centre code or idempotency key already exists in this factory'); throw e; }
+  }
+
+  private async assertUnitCompatible(client:PoolClient,tenantId:string,factoryId:string,sourceUnit:string,targetUnit:string,label:string):Promise<void> {
+    if(sourceUnit.trim().toUpperCase()===targetUnit.trim().toUpperCase()) return;
+    const r=await client.query<{exists:boolean}>(`SELECT EXISTS (
+      SELECT 1 FROM uom_conversion_rules r
+      JOIN uom_units u_from ON u_from.id=r.from_unit_id AND u_from.tenant_id=r.tenant_id AND u_from.factory_id=r.factory_id
+      JOIN uom_units u_to ON u_to.id=r.to_unit_id AND u_to.tenant_id=r.tenant_id AND u_to.factory_id=r.factory_id
+      WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.status='APPROVED'
+        AND upper(u_from.unit_code)=upper($3) AND upper(u_to.unit_code)=upper($4)
+    ) AS exists`,[tenantId,factoryId,sourceUnit.trim(),targetUnit.trim()]);
+    if(!r.rows[0]?.exists) throw new BadRequestException(`${label} must match inventory base unit or have an approved conversion to ${targetUnit}`);
   }
 
   private async lockDraft(client:PoolClient,tenantId:string,factoryId:string,p:string,v:string,expected:number) {
