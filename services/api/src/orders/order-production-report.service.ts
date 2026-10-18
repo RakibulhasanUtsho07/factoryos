@@ -262,6 +262,56 @@ export class OrderProductionReportService {
         const report = inserted.rows[0];
         if (!report) throw new Error('ORDER_PRODUCTION_REPORT_INSERT_FAILED');
 
+        const finishedGoodsReceipt = await this.inventoryReservationService.postFinishedGoodsOutputReceipt(
+          client,
+          {
+            userId, tenantId, factoryId,
+            workOrderId: null,
+            workOrderNumber: null,
+            orderId: normalizedOrderId,
+            orderNumber: order.order_number,
+            orderLineId: lineId,
+            finishedItemId: line.inventory_item_id,
+            productionReportId: report.id,
+            goodQuantity,
+            scrapQuantity,
+            yieldPercentage,
+            cumulativeYieldPercentage,
+            correlationId,
+          },
+        );
+        const postingHash = this.hash({
+          orderId: normalizedOrderId,
+          orderLineId: lineId,
+          productionReportId: report.id,
+          finishedItemId: line.inventory_item_id,
+          goodQuantity,
+          scrapQuantity,
+          yieldPercentage,
+          cumulativeYieldPercentage,
+          inventoryMovementId: finishedGoodsReceipt.movementId,
+          requestHash,
+        });
+        const outputPostingResult = await client.query<{ id: string }>(`
+          INSERT INTO production_output_postings (
+            tenant_id, factory_id, work_order_id, work_order_operation_id,
+            production_report_id, finished_item_id, inventory_movement_id,
+            good_quantity, scrap_quantity, yield_percentage, cumulative_yield_percentage,
+            idempotency_key, request_hash, created_by_user_id, correlation_id
+          ) VALUES (
+            $1, $2, NULL, NULL, $3, $4, $5::uuid,
+            $6::numeric, $7::numeric, $8::numeric, $9::numeric,
+            $10, $11, $12, $13::uuid
+          )
+          RETURNING id::text AS id
+        `, [
+          tenantId, factoryId, report.id, line.inventory_item_id, finishedGoodsReceipt.movementId,
+          goodQuantity, scrapQuantity, yieldPercentage, cumulativeYieldPercentage,
+          `order-production-output:${report.id}`, postingHash, userId, correlationId,
+        ]);
+        const productionOutputPostingId = outputPostingResult.rows[0]?.id;
+        if (!productionOutputPostingId) throw new Error('ORDER_PRODUCTION_OUTPUT_POSTING_INSERT_FAILED');
+
         await client.query(
           `
           INSERT INTO outbox_events (
