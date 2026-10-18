@@ -69,6 +69,31 @@ export class WorkforceService {
       );
       const worker = result.rows[0];
       if (!worker) throw new Error('WORKFORCE_WORKER_CREATE_FAILED');
+      if (payload.linked_user_id) {
+        const workerRole = await client.query<Row>(
+          `SELECT r.id::text AS id
+           FROM roles r
+           JOIN role_permissions rp ON rp.role_id=r.id
+           JOIN permissions p ON p.id=rp.permission_id AND p.code='workforce.self.read'
+           WHERE r.tenant_id=$1 AND r.code='WORKER'
+           LIMIT 1`,
+          [c.tenantId],
+        );
+        if (!workerRole.rows[0]) {
+          throw new Error('WORKFORCE_WORKER_SELF_SERVICE_ROLE_NOT_SEEDED');
+        }
+        await client.query(
+          `INSERT INTO user_roles (membership_id,role_id,factory_id)
+           SELECT tm.id,$4::uuid,$3::uuid
+           FROM tenant_memberships tm
+           WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.status='ACTIVE'
+             AND NOT EXISTS (
+               SELECT 1 FROM user_roles ur
+               WHERE ur.membership_id=tm.id AND ur.role_id=$4::uuid AND ur.factory_id=$3::uuid
+             )`,
+          [c.tenantId,payload.linked_user_id,c.factoryId,String(workerRole.rows[0].id)],
+        );
+      }
       return { ...(await this.workerDetail(client, c, String(worker.id))), replayed: false };
     });
   }
