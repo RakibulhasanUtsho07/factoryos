@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { IntegrationService } from './integration.service';
-import { createWebhookSignature } from './integration-contract';
+import { createWebhookSignature, integrationRequestHash } from './integration-contract';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
 
 interface IntegrationFixture {
@@ -133,6 +133,67 @@ describe('Signed webhook integration PostgreSQL boundary', () => {
       [fixture.tenant_id, connectorId, eventId],
     );
     expect(Number(receipts.rows[0]?.count)).toBe(1);
+  });
+
+  it('serializes concurrent retries into a single receipt and outbox event', async () => {
+    const eventId = 'ci-webhook-concurrent-' + runId;
+    const body = {
+      event_type: 'MES.PRODUCTION.COUNTED',
+      schema_version: 1,
+      payload: { work_order: 'WO-CONCURRENT-' + runId, good_quantity: 9 },
+    };
+    const rawBody = Buffer.from(JSON.stringify(body), 'utf8');
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = createWebhookSignature(secret, timestamp, eventId, rawBody);
+    const request = { rawBody, body };
+
+    const results = await Promise.all([
+      service.receiveWebhook(connectorId, request, timestamp, eventId, signature),
+      service.receiveWebhook(connectorId, request, timestamp, eventId, signature),
+    ]);
+    expect(results.filter((result) => result.duplicate === false)).toHaveLength(1);
+    expect(results.filter((result) => result.duplicate === true)).toHaveLength(1);
+    expect(results[0]?.event_id).toBe(results[1]?.event_id);
+
+    const receipts = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM integration_webhook_receipts WHERE tenant_id=$1 AND connector_id=$2 AND external_event_id=$3',
+      [fixture.tenant_id, connectorId, eventId],
+    );
+    const events = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 AND id=$3',
+      [fixture.tenant_id, fixture.factory_id, results[0]?.event_id],
+    );
+    expect(Number(receipts.rows[0]?.count)).toBe(1);
+    expect(Number(events.rows[0]?.count)).toBe(1);
+  });
+
+  it('rejects a receipt that attempts to point at a different provider event ID', async () => {
+    const eventId = 'ci-webhook-binding-' + runId;
+    const body = {
+      event_type: 'MES.PRODUCTION.COUNTED',
+      schema_version: 1,
+      payload: { work_order: 'WO-BINDING-' + runId, good_quantity: 11 },
+    };
+    const rawBody = Buffer.from(JSON.stringify(body), 'utf8');
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = createWebhookSignature(secret, timestamp, eventId, rawBody);
+    const accepted = await service.receiveWebhook(
+      connectorId, { rawBody, body }, timestamp, eventId, signature,
+    );
+    const fingerprint = integrationRequestHash({
+      event_type: body.event_type,
+      schema_version: body.schema_version,
+      correlation_id: null,
+      payload: body.payload,
+    });
+
+    await expect(adminPool.query(
+      'INSERT INTO integration_webhook_receipts(tenant_id,factory_id,connector_id,external_event_id,event_type,schema_version,payload_sha256,signature_timestamp,outbox_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+      [
+        fixture.tenant_id, fixture.factory_id, connectorId, eventId + '-forged',
+        body.event_type, body.schema_version, fingerprint, Number(timestamp), accepted.event_id,
+      ],
+    )).rejects.toThrow('webhook receipt must bind to its exact outbox event');
   });
 
   it('rejects invalid signatures and prevents an event id from being reused for different content', async () => {
