@@ -328,7 +328,7 @@ describe(
 
         if (replayReceipt.rows[0]?.exists) {
           await pool.query(
-            \`UPDATE outbox_events
+            `UPDATE outbox_events
              SET status='QUARANTINED',
                  next_attempt_at=clock_timestamp(),
                  locked_at=NULL,
@@ -336,7 +336,7 @@ describe(
                  quarantined_at=COALESCE(quarantined_at,clock_timestamp()),
                  quarantined_by=COALESCE(quarantined_by,'api-outbox-dlq-test-cleanup'),
                  quarantine_reason=COALESCE(quarantine_reason,'DLQ_TEST_FIXTURE_RETAINED_FOR_IMMUTABLE_RECEIPT')
-             WHERE id=$1 AND tenant_id=$2\`,
+             WHERE id=$1 AND tenant_id=$2`,
             [eventId, tenantId],
           );
         } else {
