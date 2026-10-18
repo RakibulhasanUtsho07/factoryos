@@ -12,7 +12,6 @@ import {
   Max,
   MaxLength,
   Min,
-  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -119,8 +118,4 @@ export class CreateWorkforceProductivityDto {
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 4, allowNaN: false, allowInfinity: false }) @Min(0.0001) @Max(1440) actual_minutes!: number;
   @IsOptional() @IsString() @MaxLength(2000) scrap_reason?: string;
   @IsOptional() @IsString() @MaxLength(4000) notes?: string;
-}
-export class WorkforceCorrectionRequestDto {
-  @IsString() @MaxLength(2000) reason!: string;
-  @IsObject() @ValidateNested() @Type(() => Object) evidence!: Record<string, unknown>;
 }
