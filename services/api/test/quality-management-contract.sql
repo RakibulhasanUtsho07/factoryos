@@ -122,7 +122,7 @@ BEGIN
     OR to_regprocedure('factoryos_quality_guard_inventory_reservation()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_hold()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_report()') IS NULL
-    OR position('NCR requires containment, corrective and preventive actions'
+    OR position('NCR closure requires CAPA evidence'
       IN pg_get_functiondef('factoryos_quality_guard_ncr_close()'::regprocedure)) = 0
     OR position('a resolved inspection and no active quality hold'
       IN pg_get_functiondef('factoryos_quality_guard_ncr_close()'::regprocedure)) = 0 THEN
