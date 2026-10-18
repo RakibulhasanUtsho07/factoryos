@@ -574,7 +574,18 @@ export class ProductionWorkOrdersService {
         (SELECT COALESCE(SUM(r.scrap_quantity), 0)::text FROM order_production_reports r
           WHERE r.work_order_id = wo.id AND r.tenant_id = wo.tenant_id AND r.factory_id = wo.factory_id) AS scrap_quantity,
         (SELECT COALESCE(SUM(r.good_quantity + r.scrap_quantity), 0)::text FROM order_production_reports r
-          WHERE r.work_order_id = wo.id AND r.tenant_id = wo.tenant_id AND r.factory_id = wo.factory_id) AS processed_quantity
+          WHERE r.work_order_id = wo.id AND r.tenant_id = wo.tenant_id AND r.factory_id = wo.factory_id) AS processed_quantity,
+        (SELECT COALESCE(ROUND(SUM(p.good_quantity) * 100 /
+          NULLIF(SUM(p.good_quantity + p.scrap_quantity), 0), 4), 0)::text
+          FROM production_output_postings p
+          WHERE p.work_order_id = wo.id AND p.tenant_id = wo.tenant_id AND p.factory_id = wo.factory_id) AS yield_percentage,
+        (SELECT COALESCE(SUM(p.good_quantity), 0)::text
+          FROM production_output_postings p
+          WHERE p.work_order_id = wo.id AND p.tenant_id = wo.tenant_id AND p.factory_id = wo.factory_id
+            AND p.inventory_movement_id IS NOT NULL) AS finished_good_stock_posted_quantity,
+        (SELECT count(*)::int
+          FROM production_output_postings p
+          WHERE p.work_order_id = wo.id AND p.tenant_id = wo.tenant_id AND p.factory_id = wo.factory_id) AS output_posting_count
       FROM work_orders wo
       WHERE wo.id = $1 AND wo.tenant_id = $2 AND wo.factory_id = $3
     `, [workOrderId, tenantId, factoryId], { tenantId, userId });
@@ -620,6 +631,16 @@ export class ProductionWorkOrdersService {
         (SELECT COALESCE(SUM(r.scrap_quantity), 0)::text FROM order_production_reports r
           WHERE r.work_order_id = op.work_order_id AND r.work_order_operation_id = op.id
             AND r.tenant_id = op.tenant_id AND r.factory_id = op.factory_id) AS reported_scrap_quantity,
+        (SELECT COALESCE(ROUND(SUM(p.good_quantity) * 100 /
+          NULLIF(SUM(p.good_quantity + p.scrap_quantity), 0), 4), 0)::text
+          FROM production_output_postings p
+          WHERE p.work_order_id = op.work_order_id AND p.work_order_operation_id = op.id
+            AND p.tenant_id = op.tenant_id AND p.factory_id = op.factory_id) AS reported_yield_percentage,
+        (SELECT COALESCE(SUM(p.good_quantity), 0)::text
+          FROM production_output_postings p
+          WHERE p.work_order_id = op.work_order_id AND p.work_order_operation_id = op.id
+            AND p.tenant_id = op.tenant_id AND p.factory_id = op.factory_id
+            AND p.inventory_movement_id IS NOT NULL) AS finished_good_stock_posted_quantity,
         op.wip_quantity::text AS reported_wip_quantity,
         (SELECT COALESCE(SUM((e.payload->>'quantity')::numeric), 0)::text FROM work_order_events e
           WHERE e.work_order_id = op.work_order_id AND e.operation_id = op.id
@@ -951,6 +972,32 @@ export class ProductionWorkOrdersService {
         `, [workOrder.id, tenantId, factoryId]);
         if (this.toUnits(processed.rows[0]?.processed_quantity ?? '0.0000') !== this.toUnits(workOrder.target_quantity)) {
           throw new ConflictException('Reported good plus scrap output must equal the work-order target before completion');
+        }
+        const outputPostingReadiness = await client.query<{
+          report_count: number;
+          posting_count: number;
+          reported_good_quantity: string;
+          posted_good_quantity: string;
+          reported_scrap_quantity: string;
+          posted_scrap_quantity: string;
+        }>(`
+          SELECT count(*)::int AS report_count,
+            count(p.id)::int AS posting_count,
+            COALESCE(SUM(r.good_quantity), 0)::text AS reported_good_quantity,
+            COALESCE(SUM(p.good_quantity), 0)::text AS posted_good_quantity,
+            COALESCE(SUM(r.scrap_quantity), 0)::text AS reported_scrap_quantity,
+            COALESCE(SUM(p.scrap_quantity), 0)::text AS posted_scrap_quantity
+          FROM order_production_reports r
+          LEFT JOIN production_output_postings p
+            ON p.production_report_id = r.id AND p.tenant_id = r.tenant_id AND p.factory_id = r.factory_id
+          WHERE r.work_order_id = $1 AND r.tenant_id = $2 AND r.factory_id = $3
+        `, [workOrder.id, tenantId, factoryId]);
+        const outputPosting = outputPostingReadiness.rows[0];
+        if (!outputPosting
+          || outputPosting.report_count !== outputPosting.posting_count
+          || this.toUnits(outputPosting.reported_good_quantity) !== this.toUnits(outputPosting.posted_good_quantity)
+          || this.toUnits(outputPosting.reported_scrap_quantity) !== this.toUnits(outputPosting.posted_scrap_quantity)) {
+          throw new ConflictException('Every production report must have matching yield/scrap evidence and its accepted finished-good inventory posting before work-order completion');
         }
         const requirements = await client.query<{ requirement_count: number; reservation_count: number }>(`
           SELECT
@@ -1629,7 +1676,40 @@ export class ProductionWorkOrdersService {
     }, async (client) => {
       const eventKey = this.scopedEventKey(workOrderId, 'OUTPUT', key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
-      if (replay) return { workOrderId, replayed: true as const };
+      if (replay) {
+        const previous = await client.query<{
+          production_report_id: string;
+          production_output_posting_id: string | null;
+          inventory_movement_id: string | null;
+          yield_percentage: string | null;
+          cumulative_yield_percentage: string | null;
+        }>(`
+          SELECT r.id::text AS production_report_id, p.id::text AS production_output_posting_id,
+            p.inventory_movement_id::text AS inventory_movement_id,
+            p.yield_percentage::text AS yield_percentage,
+            p.cumulative_yield_percentage::text AS cumulative_yield_percentage
+          FROM order_production_reports r
+          LEFT JOIN production_output_postings p
+            ON p.production_report_id = r.id AND p.tenant_id = r.tenant_id AND p.factory_id = r.factory_id
+          WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.work_order_id = $3
+            AND r.idempotency_key = $4
+          LIMIT 1
+        `, [tenantId, factoryId, workOrderId, `work-order-output:${eventKey}`]);
+        const previousOutput = previous.rows[0];
+        if (!previousOutput?.production_report_id || !previousOutput.production_output_posting_id
+          || previousOutput.yield_percentage === null || previousOutput.cumulative_yield_percentage === null) {
+          throw new ConflictException('The original output report has no matching inventory/yield posting; reconcile the historical report before retrying');
+        }
+        return {
+          workOrderId,
+          productionReportId: previousOutput.production_report_id,
+          productionOutputPostingId: previousOutput.production_output_posting_id,
+          inventoryMovementId: previousOutput.inventory_movement_id,
+          yieldPercentage: previousOutput.yield_percentage,
+          cumulativeYieldPercentage: previousOutput.cumulative_yield_percentage,
+          replayed: true as const,
+        };
+      }
 
       const woResult = await client.query<WorkOrderRow>(`
         SELECT ${WORK_ORDER_COLUMNS} FROM work_orders
@@ -1685,6 +1765,10 @@ export class ProductionWorkOrdersService {
       if (priorGood + goodUnits > this.toUnits(sourceOrder.line_quantity)) {
         throw new ConflictException('Reported good output would exceed the sales-order line target');
       }
+      const reportProcessedUnits = goodUnits + scrapUnits;
+      const yieldPercentage = this.percentageFromUnits(goodUnits, reportProcessedUnits);
+      const cumulativeProcessedUnits = priorGood + priorScrap + reportProcessedUnits;
+      const cumulativeYieldPercentage = this.percentageFromUnits(priorGood + goodUnits, cumulativeProcessedUnits);
       const createdReport = await client.query<{ id: string }>(`
         INSERT INTO order_production_reports (
           tenant_id, factory_id, order_id, order_line_id, good_quantity, scrap_quantity,
@@ -1704,6 +1788,54 @@ export class ProductionWorkOrdersService {
       ]);
       const productionReportId = createdReport.rows[0]?.id;
       if (!productionReportId) throw new Error('WORK_ORDER_OUTPUT_REPORT_INSERT_FAILED');
+
+      const finishedGoodsReceipt = await this.inventoryReservationService.postWorkOrderFinishedGoodsReceipt(
+        client,
+        {
+          userId, tenantId, factoryId,
+          workOrderId: workOrder.id,
+          workOrderNumber: workOrder.work_order_number,
+          finishedItemId: workOrder.finished_item_id,
+          productionReportId,
+          goodQuantity,
+          scrapQuantity,
+          yieldPercentage,
+          cumulativeYieldPercentage,
+          correlationId,
+        },
+      );
+      const postingHash = this.hash({
+        work_order_id: workOrder.id,
+        operation_id: operation.id,
+        production_report_id: productionReportId,
+        finished_item_id: workOrder.finished_item_id,
+        good_quantity: goodQuantity,
+        scrap_quantity: scrapQuantity,
+        yield_percentage: yieldPercentage,
+        cumulative_yield_percentage: cumulativeYieldPercentage,
+        inventory_movement_id: finishedGoodsReceipt.movementId,
+        request_hash: requestHash,
+      });
+      const outputPostingResult = await client.query<{ id: string }>(`
+        INSERT INTO production_output_postings (
+          tenant_id, factory_id, work_order_id, work_order_operation_id,
+          production_report_id, finished_item_id, inventory_movement_id,
+          good_quantity, scrap_quantity, yield_percentage, cumulative_yield_percentage,
+          idempotency_key, request_hash, created_by_user_id, correlation_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7::uuid,
+          $8::numeric, $9::numeric, $10::numeric, $11::numeric,
+          $12, $13, $14, $15::uuid
+        )
+        RETURNING id::text AS id
+      `, [
+        tenantId, factoryId, workOrder.id, operation.id,
+        productionReportId, workOrder.finished_item_id, finishedGoodsReceipt.movementId,
+        goodQuantity, scrapQuantity, yieldPercentage, cumulativeYieldPercentage,
+        `work-order-output:${eventKey}`, postingHash, userId, correlationId,
+      ]);
+      const productionOutputPostingId = outputPostingResult.rows[0]?.id;
+      if (!productionOutputPostingId) throw new Error('PRODUCTION_OUTPUT_POSTING_INSERT_FAILED');
 
       const newWorkOrderVersion = workOrder.row_version + 1;
       const woUpdate = await client.query(`
@@ -1725,15 +1857,25 @@ export class ProductionWorkOrdersService {
         source, occurredAt, deviceId, idempotencyKey: eventKey, requestHash, actorUserId: userId,
         correlationId, requestId,
         payload: {
-          production_report_id: productionReportId, good_quantity: goodQuantity,
-          scrap_quantity: scrapQuantity, scrap_reason: scrapReason, notes,
+          production_report_id: productionReportId,
+          production_output_posting_id: productionOutputPostingId,
+          finished_item_id: workOrder.finished_item_id,
+          finished_good_movement_id: finishedGoodsReceipt.movementId,
+          finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
+          good_quantity: goodQuantity, scrap_quantity: scrapQuantity, scrap_reason: scrapReason, notes,
+          yield_percentage: yieldPercentage,
+          cumulative_yield_percentage: cumulativeYieldPercentage,
           cumulative_good_quantity: this.fromUnits(priorGood + goodUnits),
           cumulative_scrap_quantity: this.fromUnits(priorScrap + scrapUnits),
           work_order_row_version: newWorkOrderVersion,
           operation_row_version: operation.row_version + 1,
         },
       });
-      return { workOrderId, productionReportId, replayed: false as const };
+      return {
+        workOrderId, productionReportId, productionOutputPostingId,
+        inventoryMovementId: finishedGoodsReceipt.movementId,
+        yieldPercentage, cumulativeYieldPercentage, replayed: false as const,
+      };
     });
 
     const workOrder = await this.getWorkOrder(userId, tenantId, factoryId, result.workOrderId);
@@ -1743,11 +1885,23 @@ export class ProductionWorkOrdersService {
         id: result.workOrderId, requestId, traceId,
         payload: {
           productionReportId: result.productionReportId,
-          goodQuantity, scrapQuantity, replayed: false,
+          productionOutputPostingId: result.productionOutputPostingId,
+          inventoryMovementId: result.inventoryMovementId,
+          goodQuantity, scrapQuantity, yieldPercentage: result.yieldPercentage,
+          cumulativeYieldPercentage: result.cumulativeYieldPercentage,
+          replayed: false,
         },
       });
     }
-    return { ...workOrder, production_report_id: 'productionReportId' in result ? result.productionReportId : null, replayed: result.replayed };
+    return {
+      ...workOrder,
+      production_report_id: result.productionReportId,
+      production_output_posting_id: result.productionOutputPostingId,
+      finished_good_movement_id: result.inventoryMovementId,
+      output_yield_percentage: result.yieldPercentage,
+      cumulative_yield_percentage: result.cumulativeYieldPercentage,
+      replayed: result.replayed,
+    };
   }
 
   private async lockSourceOrder(
@@ -2020,6 +2174,15 @@ export class ProductionWorkOrdersService {
   private fromUnits(units: bigint) {
     if (units < 0n) throw new BadRequestException('Quantity cannot be negative');
     return `${(units / 10_000n).toString()}.${(units % 10_000n).toString().padStart(4, '0')}`;
+  }
+
+  private percentageFromUnits(numeratorUnits: bigint, denominatorUnits: bigint) {
+    if (denominatorUnits <= 0n || numeratorUnits < 0n || numeratorUnits > denominatorUnits) {
+      throw new BadRequestException('Yield requires a positive total quantity and a good quantity within that total');
+    }
+    // Percentage scaled to four decimal places; integer rounding avoids floating-point drift.
+    const scaled = (numeratorUnits * 1_000_000n + denominatorUnits / 2n) / denominatorUnits;
+    return `${scaled / 10_000n}.${(scaled % 10_000n).toString().padStart(4, '0')}`;
   }
 
   private limit(value: number) {
