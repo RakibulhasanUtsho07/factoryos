@@ -23,8 +23,7 @@ import {
   type FinanceConnectorMode,
   type FinanceFactType,
 } from './finance-contract';
-import {
-  CreateFinanceConnectorDto,
+import { FinanceFileImportDto, CreateFinanceConnectorDto,
   FinanceFactInputDto,
   FinanceMarginInputsQueryDto,
   FinanceWorkingCapitalQueryDto,
@@ -34,6 +33,7 @@ import {
   ReviewFinanceReconciliationDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
+import { parseFinanceFileImport, type ParsedFinanceFileImport } from './finance-file-import';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -353,6 +353,28 @@ export class FinanceService {
     );
   }
 
+  async importFactsFile(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    dto: FinanceFileImportDto,
+    idempotencyKeyInput: string | null,
+    ctx: FinanceEventContext,
+  ) {
+    const parsed = parseFinanceFileImport(dto);
+    return this.ingestFacts(
+      userId,
+      tenantId,
+      factoryId,
+      connectorId,
+      parsed.batch,
+      idempotencyKeyInput,
+      ctx,
+      parsed,
+    );
+  }
+
   async ingestFacts(
     userId: string,
     tenantId: string,
@@ -361,6 +383,7 @@ export class FinanceService {
     dto: IngestFinanceFactsDto,
     idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
+    sourceFileImport?: ParsedFinanceFileImport,
   ) {
     const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
     const batchReference = dto.external_batch_ref.trim();
@@ -377,6 +400,11 @@ export class FinanceService {
       external_batch_ref: batchReference,
       source_occurred_at: dto.source_occurred_at ?? null,
       facts: normalizedFacts,
+      source_file_import: sourceFileImport ? {
+        file_name: sourceFileImport.sourceFileName,
+        format: sourceFileImport.sourceFormat,
+        payload_sha256: sourceFileImport.sourcePayloadSha256,
+      } : null,
     });
 
     return this.database.transaction(
@@ -396,6 +424,13 @@ export class FinanceService {
         const connector = connectorResult.rows[0];
         if (!connector) throw new NotFoundException('Finance connector not found in the active factory scope');
 
+        if (sourceFileImport && connector.integration_mode !== 'FILE_IMPORT') {
+          throw new ConflictException('File import is only permitted for connectors configured with FILE_IMPORT mode');
+        }
+        if (!sourceFileImport && connector.integration_mode === 'FILE_IMPORT') {
+          throw new ConflictException('FILE_IMPORT connectors must use the validated file-import endpoint');
+        }
+
         for (const fact of normalizedFacts) {
           try {
             assertFactCompatibleWithDomain(connector.domain, fact.fact_type);
@@ -411,7 +446,8 @@ export class FinanceService {
           received_count: number; accepted_count: number; mismatch_count: number;
           completed_at: string;
         }>(
-          'SELECT id::text,request_hash,status,received_count,accepted_count,mismatch_count,completed_at::text ' +
+          'SELECT id::text,request_hash,status,received_count,accepted_count,mismatch_count,completed_at::text,' +
+          'source_file_name,source_format,source_payload_sha256 ' +
           'FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND idempotency_key=$4 FOR UPDATE',
           [tenantId, factoryId, connectorId, idempotencyKey],
         );
@@ -452,14 +488,19 @@ export class FinanceService {
         }>(
           'INSERT INTO finance_connector_runs(' +
           'id,tenant_id,factory_id,connector_id,external_batch_ref,idempotency_key,request_hash,status,' +
-          'received_count,accepted_count,mismatch_count,source_occurred_at,actor_user_id,request_id,trace_id' +
-          ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14) ' +
-          'RETURNING id::text,status,received_count,accepted_count,mismatch_count,completed_at::text',
+          'received_count,accepted_count,mismatch_count,source_occurred_at,actor_user_id,request_id,trace_id,' +
+          'source_file_name,source_format,source_payload_sha256' +
+          ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16,$17) ' +
+          'RETURNING id::text,status,received_count,accepted_count,mismatch_count,completed_at::text,' +
+          'source_file_name,source_format,source_payload_sha256',
           [
             runId, tenantId, factoryId, connectorId, batchRef, idempotencyKey, batchHash,
             mismatches > 0 ? 'COMPLETED_WITH_MISMATCHES' : 'COMPLETED',
             normalizedFacts.length, mismatches, dto.source_occurred_at ?? null, userId,
             this.uuidOrNull(ctx.requestId), this.uuidOrNull(ctx.traceId),
+            sourceFileImport?.sourceFileName ?? null,
+            sourceFileImport?.sourceFormat ?? null,
+            sourceFileImport?.sourcePayloadSha256 ?? null,
           ],
         );
 
@@ -501,6 +542,9 @@ export class FinanceService {
           'finance_connector_runs', runId, ctx, {
             connector_id: connectorId, connector_code: connector.connector_code,
             external_batch_ref: batchRef, accepted_count: normalizedFacts.length, mismatch_count: mismatches,
+            source_format: sourceFileImport?.sourceFormat ?? null,
+            source_file_name: sourceFileImport?.sourceFileName ?? null,
+            source_payload_sha256: sourceFileImport?.sourcePayloadSha256 ?? null,
           });
         await this.outbox(client, tenantId, factoryId, runId, 'FINANCIAL_FACT_BATCH_INGESTED', userId, ctx,
           {

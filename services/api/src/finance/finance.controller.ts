@@ -20,6 +20,7 @@ import {
   CreateFinanceConnectorDto,
   FinanceMarginInputsQueryDto,
   FinanceWorkingCapitalQueryDto,
+  FinanceFileImportDto,
   IngestFinanceFactsDto,
   ListFinanceConnectorsDto,
   ListFinanceFactsDto,
@@ -134,6 +135,20 @@ export class FinanceConnectorsController {
   ) {
     const ctx = context(request);
     return this.service.transitionConnector(ctx.userId, ctx.tenantId, ctx.factoryId, id, 'PAUSE', body, ctx.eventContext);
+  }
+
+  @Post(':connectorId/file-import')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.ingest')
+  @RequireFactoryScope()
+  async importFile(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Body() body: FinanceFileImportDto,
+    @Headers('idempotency-key') key?: string,
+  ) {
+    const ctx = context(request);
+    return this.service.importFactsFile(ctx.userId, ctx.tenantId, ctx.factoryId, id, body, key ?? null, ctx.eventContext);
   }
 
   @Post(':connectorId/facts')

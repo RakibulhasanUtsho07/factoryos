@@ -17,7 +17,7 @@ BEGIN
         (source_file_name IS NULL AND source_format IS NULL AND source_payload_sha256 IS NULL)
         OR (
           length(btrim(source_file_name)) BETWEEN 1 AND 200
-          AND source_file_name !~ '[/\\]'
+          AND position('/' in source_file_name)=0 AND position(chr(92) in source_file_name)=0
           AND source_file_name !~ '[[:cntrl:]]'
           AND source_format IN ('CSV','JSON')
           AND source_payload_sha256 ~ '^[0-9a-f]{64}$'
