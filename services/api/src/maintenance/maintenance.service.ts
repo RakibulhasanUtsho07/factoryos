@@ -403,7 +403,8 @@ export class MaintenanceService {
       if(asset.rows[0].status!=='ACTIVE') throw new ConflictException('Breakdown work orders require an active asset');
       if(dto.assigned_to_user_id) {
         const membership=await client.query<Row>(
-          `SELECT 1 FROM tenant_memberships WHERE user_id=$1 AND tenant_id=$2 AND status='ACTIVE' LIMIT 1`,
+          `SELECT 1 FROM tenant_memberships tm JOIN users u ON u.id=tm.user_id
+           WHERE tm.user_id=$1 AND tm.tenant_id=$2 AND tm.status='ACTIVE' AND u.status='ACTIVE' LIMIT 1`,
           [dto.assigned_to_user_id,c.tenantId],
         );
         if(!membership.rows[0]) throw new BadRequestException('assigned_to_user_id must belong to an active membership in this tenant');
