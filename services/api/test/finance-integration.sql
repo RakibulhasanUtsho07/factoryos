@@ -372,5 +372,11 @@ BEGIN
   END IF;
 END $$;
 
-DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM permissions WHERE code='finance.facts.export') THEN RAISE EXCEPTION 'finance.facts.export permission is missing'; END IF; END $$;
+DO $
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM permissions WHERE code='finance.facts.export') THEN RAISE EXCEPTION 'finance.facts.export permission is missing'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='128_finance_erp_transfer_modes') THEN RAISE EXCEPTION 'ERP transfer migration is not registered'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.finance_connectors'::regclass AND conname='chk_finance_erp_transfer_configuration') THEN RAISE EXCEPTION 'ERP transfer configuration guard is missing'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.finance_connectors'::regclass AND conname='chk_finance_connector_mode' AND pg_get_constraintdef(oid) LIKE '%ERP_IMPORT%' AND pg_get_constraintdef(oid) LIKE '%ERP_EXPORT%') THEN RAISE EXCEPTION 'ERP transfer connector modes are not registered'; END IF;
+END $;
 ROLLBACK;

@@ -213,6 +213,7 @@ jobs:
             migrations/125_finance_file_import_report_commit.sql
             migrations/126_finance_file_export_receipts.sql
             migrations/127_finance_file_export_permission.sql
+            migrations/128_finance_erp_transfer_modes.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
