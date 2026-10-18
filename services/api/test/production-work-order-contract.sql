@@ -252,7 +252,9 @@ BEGIN
      OR position('matching yield/scrap and inventory posting before commit'
        IN pg_get_functiondef('factoryos_require_production_output_posting()'::regprocedure)) = 0
      OR position('accepted good output'
-       IN pg_get_functiondef('factoryos_require_production_output_before_order_completion()'::regprocedure)) = 0 THEN
+       IN pg_get_functiondef('factoryos_require_production_output_before_order_completion()'::regprocedure)) = 0
+     OR position('wo.status = ''COMPLETED'''
+       IN pg_get_functiondef('factoryos_require_production_output_before_order_completion()'::regprocedure)) > 0 THEN
     RAISE EXCEPTION 'Output posting and sales-order completion functions do not enforce inventory/yield/fulfillment consistency';
   END IF;
 
