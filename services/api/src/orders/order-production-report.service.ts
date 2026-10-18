@@ -182,17 +182,33 @@ export class OrderProductionReportService {
           throw new ConflictException('Production reports are only allowed for an in-progress order');
         }
 
-        const lineResult = await client.query<{ id: string; quantity: string; product_code: string }>(
+        const lineResult = await client.query<{
+          id: string;
+          quantity: string;
+          product_code: string;
+          inventory_item_id: string | null;
+          inventory_item_status: string | null;
+        }>(
           `
-          SELECT id::text AS id, quantity::text AS quantity, product_code
-          FROM order_lines
-          WHERE id = $1 AND order_id = $2 AND tenant_id = $3 AND factory_id = $4
-          FOR UPDATE
+          SELECT ol.id::text AS id, ol.quantity::text AS quantity, ol.product_code,
+            ol.inventory_item_id::text AS inventory_item_id, item.status AS inventory_item_status
+          FROM order_lines ol
+          LEFT JOIN inventory_items item
+            ON item.id = ol.inventory_item_id
+           AND item.tenant_id = ol.tenant_id AND item.factory_id = ol.factory_id
+          WHERE ol.id = $1 AND ol.order_id = $2 AND ol.tenant_id = $3 AND ol.factory_id = $4
+          FOR UPDATE OF ol
           `,
           [lineId, normalizedOrderId, tenantId, factoryId],
         );
         const line = lineResult.rows[0];
         if (!line) throw new NotFoundException('Order line not found in this factory order');
+        if (!line.inventory_item_id) {
+          throw new ConflictException('Order line must be mapped to a finished-good inventory item before reporting production output');
+        }
+        if (this.toUnits(goodQuantity) > 0n && line.inventory_item_status !== 'ACTIVE') {
+          throw new ConflictException('Finished-good inventory item must be active to post accepted production output');
+        }
 
         const totalsResult = await client.query<ProductionTotalsRow>(
           `
