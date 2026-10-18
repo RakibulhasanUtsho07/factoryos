@@ -342,43 +342,44 @@ export class QualityService {
   }
 
 
-  async createDefectLink(c:QualityContext,defectId:string,dto:CreateQualityDefectLinkDto,rawKey:string|null){
-    this.validateScope(c);this.uuid(defectId,'defectId');
+  async createDefectLink(c: QualityContext, defectId: string, dto: CreateQualityDefectLinkDto, rawKey: string | null) {
+    this.validateScope(c); this.uuid(defectId,'defectId');
     const key=this.key(rawKey),targetId=this.uuidValue(dto.target_id,'target_id');
     const quantity=dto.affected_quantity===undefined?null:this.quantity(dto.affected_quantity,'affected_quantity');
     const notes=dto.notes?.trim()||null,evidence=this.jsonObject(dto.evidence),correlation=this.correlation(c);
     const hash=this.hash({defect_id:defectId,link_type:dto.link_type,target_id:targetId,affected_quantity:quantity,notes,evidence});
     const result=await this.database.transaction(c,async client=>{
       await this.lockKey(client,c,'defect-link',key);
-      const replay=await client.query("SELECT id::text AS id,request_hash FROM quality_defect_links WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+      const old=await client.query("SELECT id::text AS id,request_hash FROM quality_defect_links WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
         [c.tenantId,c.factoryId,key]);
-      if(replay.rows[0]){
-        if(String(replay.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for another defect link');
-        return{id:String(replay.rows[0].id),replayed:true};
+      if(old.rows[0]){
+        if(String(old.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for another defect link');
+        return{id:String(old.rows[0].id),replayed:true};
       }
-      const d=await client.query("SELECT d.id::text AS id,d.inspection_id::text AS inspection_id FROM quality_defects d WHERE d.id=$1 AND d.tenant_id=$2 AND d.factory_id=$3 FOR UPDATE",
+      const d=await client.query("SELECT id::text AS id FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
         [defectId,c.tenantId,c.factoryId]);
       if(!d.rows[0])throw new NotFoundException('Quality defect was not found in this factory');
       const link=await this.insertDefectLink(client,c,{
         defectId,linkType:dto.link_type,targetId,source:'OPERATOR',quantity,notes,evidence,key,correlation,
       });
-      return{id:link.id,replayed:false,inspectionId:String(d.rows[0].inspection_id)};
+      return{id:link.id,replayed:false};
     });
     return {...(await this.getDefectLink(c,result.id)),replayed:result.replayed};
   }
 
-  async getDefectLink(c:QualityContext,linkId:string){
+  async getDefectLink(c: QualityContext, linkId: string) {
     this.validateScope(c);this.uuid(linkId,'linkId');
     const q=await this.database.query(`
       SELECT l.id::text AS id,l.defect_id::text AS defect_id,l.link_type,
         COALESCE(l.inventory_item_id,l.traceability_unit_id,l.order_id,l.order_line_id,l.work_order_id,
-          l.work_order_operation_id,l.production_report_id,l.goods_receipt_line_id)::text AS target_id,
+          l.work_order_operation_id,l.production_report_id,l.goods_receipt_line_id,l.rework_order_id)::text AS target_id,
         l.inventory_item_id::text AS inventory_item_id,l.traceability_unit_id::text AS traceability_unit_id,
         l.order_id::text AS order_id,l.order_line_id::text AS order_line_id,
         l.work_order_id::text AS work_order_id,l.work_order_operation_id::text AS work_order_operation_id,
         l.production_report_id::text AS production_report_id,l.goods_receipt_id::text AS goods_receipt_id,
-        l.goods_receipt_line_id::text AS goods_receipt_line_id,l.affected_quantity::text AS affected_quantity,
-        l.link_source,l.notes,l.evidence,l.created_by_user_id::text AS created_by_user_id,l.created_at::text AS created_at,
+        l.goods_receipt_line_id::text AS goods_receipt_line_id,l.rework_order_id::text AS rework_order_id,
+        l.affected_quantity::text AS affected_quantity,l.link_source,l.notes,l.evidence,
+        l.created_by_user_id::text AS created_by_user_id,l.created_at::text AS created_at,
         u.unit_code,u.unit_type,u.product_role,u.status AS traceability_status,
         o.order_number,wo.work_order_number,op.operation_code,op.operation_name,
         r.good_quantity::text AS reported_good_quantity,r.scrap_quantity::text AS reported_scrap_quantity,
@@ -399,7 +400,7 @@ export class QualityService {
     return q.rows[0];
   }
 
-  async getDefectTraceability(c:QualityContext,defectId:string){
+  async getDefectTraceability(c: QualityContext, defectId: string) {
     this.validateScope(c);this.uuid(defectId,'defectId');
     const d=await this.database.query(`
       SELECT d.id::text AS id,d.defect_code,d.severity,d.affected_quantity::text AS affected_quantity,
@@ -417,10 +418,9 @@ export class QualityService {
       SELECT l.id::text AS id,l.link_type,
         COALESCE(l.inventory_item_id,l.traceability_unit_id,l.order_id,l.order_line_id,l.work_order_id,
           l.work_order_operation_id,l.production_report_id,l.goods_receipt_line_id,l.rework_order_id)::text AS target_id,
-        l.affected_quantity::text AS affected_quantity,l.link_source,l.notes,l.evidence,
-        l.created_at::text AS created_at,u.unit_code,u.unit_type,u.product_role,u.status AS unit_status,
-        o.order_number,wo.work_order_number,op.operation_code,
-        r.good_quantity::text AS reported_good_quantity,r.scrap_quantity::text AS reported_scrap_quantity,
+        l.affected_quantity::text AS affected_quantity,l.link_source,l.notes,l.evidence,l.created_at::text AS created_at,
+        u.unit_code,u.unit_type,u.product_role,u.status AS unit_status,o.order_number,wo.work_order_number,
+        op.operation_code,r.good_quantity::text AS reported_good_quantity,r.scrap_quantity::text AS reported_scrap_quantity,
         i.sku AS inventory_sku,i.name AS inventory_name
       FROM quality_defect_links l
       LEFT JOIN traceability_units u ON u.id=l.traceability_unit_id AND u.tenant_id=l.tenant_id AND u.factory_id=l.factory_id
@@ -429,8 +429,7 @@ export class QualityService {
       LEFT JOIN work_order_operations op ON op.id=l.work_order_operation_id AND op.work_order_id=l.work_order_id AND op.tenant_id=l.tenant_id AND op.factory_id=l.factory_id
       LEFT JOIN order_production_reports r ON r.id=l.production_report_id AND r.tenant_id=l.tenant_id AND r.factory_id=l.factory_id
       LEFT JOIN inventory_items i ON i.id=l.inventory_item_id AND i.tenant_id=l.tenant_id AND i.factory_id=l.factory_id
-      WHERE l.defect_id=$1 AND l.tenant_id=$2 AND l.factory_id=$3
-      ORDER BY l.created_at,l.id
+      WHERE l.defect_id=$1 AND l.tenant_id=$2 AND l.factory_id=$3 ORDER BY l.created_at,l.id
     `,[defectId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
     const rework=await this.database.query("SELECT id::text AS id,rework_number,status,input_quantity::text AS input_quantity,recovered_quantity::text AS recovered_quantity,scrap_quantity::text AS scrap_quantity,source_traceability_unit_id::text AS source_traceability_unit_id,output_traceability_unit_id::text AS output_traceability_unit_id,follow_up_inspection_id::text AS follow_up_inspection_id,created_at::text AS created_at FROM quality_rework_orders WHERE defect_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
       [defectId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
@@ -439,53 +438,45 @@ export class QualityService {
 
   private async linkDefectToInspection(client:PoolClient,c:QualityContext,inspectionId:string,defectId:string,
     affectedQuantity:string,correlation:string){
-    const found=await client.query("SELECT id::text AS id,target_type,target_id::text AS target_id,inventory_item_id::text AS inventory_item_id,traceability_unit_id::text AS traceability_unit_id FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE",
+    const found=await client.query("SELECT target_type,target_id::text AS target_id,inventory_item_id::text AS inventory_item_id,traceability_unit_id::text AS traceability_unit_id FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE",
       [inspectionId,c.tenantId,c.factoryId]);
     const qi=found.rows[0];if(!qi)throw new NotFoundException('Quality inspection was not found');
     const refs:{type:string;id:string}[]=[],seen=new Set<string>();
     const add=(type:string,id:unknown)=>{if(typeof id!=='string'||!id)return;const k=type+':'+id;if(!seen.has(k)){seen.add(k);refs.push({type,id});}};
-    if(qi.inventory_item_id)add('INVENTORY_ITEM',String(qi.inventory_item_id));
-    if(qi.traceability_unit_id)add('TRACEABILITY_UNIT',String(qi.traceability_unit_id));
+    add('INVENTORY_ITEM',qi.inventory_item_id);
+    add('TRACEABILITY_UNIT',qi.traceability_unit_id);
     if(qi.target_type==='INVENTORY_ITEM') add('INVENTORY_ITEM',String(qi.target_id));
     if(qi.target_type==='TRACEABILITY_UNIT'){
-      const unit=await client.query("SELECT id::text AS id,inventory_item_id::text AS inventory_item_id,order_id::text AS order_id,order_line_id::text AS order_line_id,production_report_id::text AS production_report_id,goods_receipt_id::text AS goods_receipt_id,goods_receipt_line_id::text AS goods_receipt_line_id FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      const q=await client.query("SELECT inventory_item_id::text AS inventory_item_id,order_id::text AS order_id,order_line_id::text AS order_line_id,production_report_id::text AS production_report_id,goods_receipt_line_id::text AS goods_receipt_line_id FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
         [qi.target_id,c.tenantId,c.factoryId]);
-      const u=unit.rows[0];
-      if(u){add('INVENTORY_ITEM',u.inventory_item_id);add('ORDER',u.order_id);add('ORDER_LINE',u.order_line_id);add('PRODUCTION_REPORT',u.production_report_id);add('GOODS_RECEIPT_LINE',u.goods_receipt_line_id);
-        if(u.production_report_id){
-          const report=await client.query("SELECT work_order_id::text AS work_order_id FROM order_production_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[u.production_report_id,c.tenantId,c.factoryId]);
-          add('WORK_ORDER',report.rows[0]?.work_order_id);
-        }
-      }
+      const u=q.rows[0];
+      if(u){add('INVENTORY_ITEM',u.inventory_item_id);add('ORDER',u.order_id);add('ORDER_LINE',u.order_line_id);add('PRODUCTION_REPORT',u.production_report_id);add('GOODS_RECEIPT_LINE',u.goods_receipt_line_id);}
     } else if(qi.target_type==='GOODS_RECEIPT_LINE'){
-      const line=await client.query("SELECT goods_receipt_id::text AS goods_receipt_id,inventory_item_id::text AS inventory_item_id FROM goods_receipt_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      add('GOODS_RECEIPT_LINE',String(qi.target_id));
+      const q=await client.query("SELECT inventory_item_id::text AS inventory_item_id FROM goods_receipt_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
         [qi.target_id,c.tenantId,c.factoryId]);
-      const gl=line.rows[0];if(gl){add('GOODS_RECEIPT_LINE',String(qi.target_id));add('INVENTORY_ITEM',gl.inventory_item_id);}
+      add('INVENTORY_ITEM',q.rows[0]?.inventory_item_id);
       const units=await client.query("SELECT id::text AS id FROM traceability_units WHERE goods_receipt_line_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
         [qi.target_id,c.tenantId,c.factoryId]);
-      for(const unit of units.rows)add('TRACEABILITY_UNIT',String(unit.id));
+      for(const u of units.rows)add('TRACEABILITY_UNIT',String(u.id));
     } else if(qi.target_type==='PRODUCTION_REPORT'){
-      const report=await client.query("SELECT id::text AS id,order_id::text AS order_id,order_line_id::text AS order_line_id,work_order_id::text AS work_order_id FROM order_production_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      const q=await client.query("SELECT id::text AS id,order_id::text AS order_id,order_line_id::text AS order_line_id,work_order_id::text AS work_order_id FROM order_production_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
         [qi.target_id,c.tenantId,c.factoryId]);
-      const r=report.rows[0];if(r){add('PRODUCTION_REPORT',String(r.id));add('ORDER',r.order_id);add('ORDER_LINE',r.order_line_id);add('WORK_ORDER',r.work_order_id);}
+      const r=q.rows[0];if(r){add('PRODUCTION_REPORT',String(r.id));add('ORDER',r.order_id);add('ORDER_LINE',r.order_line_id);add('WORK_ORDER',r.work_order_id);}
       const units=await client.query("SELECT id::text AS id FROM traceability_units WHERE production_report_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
         [qi.target_id,c.tenantId,c.factoryId]);
-      for(const unit of units.rows)add('TRACEABILITY_UNIT',String(unit.id));
+      for(const u of units.rows)add('TRACEABILITY_UNIT',String(u.id));
     } else if(qi.target_type==='WORK_ORDER'){
-      const work=await client.query("SELECT id::text AS id,source_order_id::text AS order_id,source_order_line_id::text AS order_line_id,finished_item_id::text AS inventory_item_id FROM work_orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      const q=await client.query("SELECT id::text AS id,source_order_id::text AS order_id,source_order_line_id::text AS order_line_id,finished_item_id::text AS inventory_item_id FROM work_orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
         [qi.target_id,c.tenantId,c.factoryId]);
-      const w=work.rows[0];if(w){add('WORK_ORDER',String(w.id));add('ORDER',w.order_id);add('ORDER_LINE',w.order_line_id);add('INVENTORY_ITEM',w.inventory_item_id);}
+      const wo=q.rows[0];if(wo){add('WORK_ORDER',String(wo.id));add('ORDER',wo.order_id);add('ORDER_LINE',wo.order_line_id);add('INVENTORY_ITEM',wo.inventory_item_id);}
       const ops=await client.query("SELECT id::text AS id FROM work_order_operations WHERE work_order_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY step_number",
-        [qi.target_id,c.tenantId,c.factoryId]);
-      for(const op of ops.rows)add('WORK_ORDER_OPERATION',String(op.id));
+        [qi.target_id,c.tenantId,c.factoryId]);for(const op of ops.rows)add('WORK_ORDER_OPERATION',String(op.id));
       const reports=await client.query("SELECT id::text AS id FROM order_production_reports WHERE work_order_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
         [qi.target_id,c.tenantId,c.factoryId]);
-      for(const report of reports.rows){
-        add('PRODUCTION_REPORT',String(report.id));
+      for(const r of reports.rows){add('PRODUCTION_REPORT',String(r.id));
         const units=await client.query("SELECT id::text AS id FROM traceability_units WHERE production_report_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
-          [report.id,c.tenantId,c.factoryId]);
-        for(const unit of units.rows)add('TRACEABILITY_UNIT',String(unit.id));
-      }
+          [r.id,c.tenantId,c.factoryId]);for(const u of units.rows)add('TRACEABILITY_UNIT',String(u.id));}
     }
     for(const ref of refs){
       await this.insertDefectLink(client,c,{defectId,linkType:ref.type,targetId:ref.id,source:'INSPECTION_TARGET',
@@ -499,32 +490,30 @@ export class QualityService {
     defectId:string;linkType:string;targetId:string;source:'INSPECTION_TARGET'|'OPERATOR'|'REWORK_OUTPUT';
     quantity:string|null;notes:string|null;evidence:Record<string,unknown>;key:string;correlation:string;reworkOrderId?:string;
   }){
-    const existing=await client.query("SELECT id::text AS id,request_hash FROM quality_defect_links WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
-      [c.tenantId,c.factoryId,input.key]);
     const hash=this.hash({defect_id:input.defectId,link_type:input.linkType,target_id:input.targetId,source:input.source,
       quantity:input.quantity,notes:input.notes,evidence:input.evidence,rework_order_id:input.reworkOrderId??null});
+    const existing=await client.query("SELECT id::text AS id,request_hash FROM quality_defect_links WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+      [c.tenantId,c.factoryId,input.key]);
     if(existing.rows[0]){
       if(String(existing.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for another defect traceability link');
       return{id:String(existing.rows[0].id),replayed:true};
     }
-    const columnMap:Record<string,string>={
-      INVENTORY_ITEM:'inventory_item_id',TRACEABILITY_UNIT:'traceability_unit_id',ORDER:'order_id',
+    const columnMap:Record<string,string>={INVENTORY_ITEM:'inventory_item_id',TRACEABILITY_UNIT:'traceability_unit_id',ORDER:'order_id',
       ORDER_LINE:'order_line_id',WORK_ORDER:'work_order_id',WORK_ORDER_OPERATION:'work_order_operation_id',
-      PRODUCTION_REPORT:'production_report_id',GOODS_RECEIPT_LINE:'goods_receipt_line_id',REWORK_OUTPUT:'traceability_unit_id',
-    };
+      PRODUCTION_REPORT:'production_report_id',GOODS_RECEIPT_LINE:'goods_receipt_line_id',REWORK_OUTPUT:'traceability_unit_id'};
     const targetColumn=columnMap[input.linkType];if(!targetColumn)throw new BadRequestException('Unsupported defect traceability link type');
     const fields:Record<string,string>={[targetColumn]:input.targetId};
     if(input.linkType==='ORDER_LINE'){
-      const q=await client.query("SELECT order_id::text AS order_id FROM order_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
-        [input.targetId,c.tenantId,c.factoryId]);if(!q.rows[0])throw new NotFoundException('Order line was not found in this factory');fields.order_id=String(q.rows[0].order_id);
+      const q=await client.query("SELECT order_id::text AS order_id FROM order_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[input.targetId,c.tenantId,c.factoryId]);
+      if(!q.rows[0])throw new NotFoundException('Order line was not found in this factory');fields.order_id=String(q.rows[0].order_id);
     }
     if(input.linkType==='WORK_ORDER_OPERATION'){
-      const q=await client.query("SELECT work_order_id::text AS work_order_id FROM work_order_operations WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
-        [input.targetId,c.tenantId,c.factoryId]);if(!q.rows[0])throw new NotFoundException('Work-order operation was not found in this factory');fields.work_order_id=String(q.rows[0].work_order_id);
+      const q=await client.query("SELECT work_order_id::text AS work_order_id FROM work_order_operations WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[input.targetId,c.tenantId,c.factoryId]);
+      if(!q.rows[0])throw new NotFoundException('Work-order operation was not found in this factory');fields.work_order_id=String(q.rows[0].work_order_id);
     }
     if(input.linkType==='GOODS_RECEIPT_LINE'){
-      const q=await client.query("SELECT goods_receipt_id::text AS goods_receipt_id FROM goods_receipt_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
-        [input.targetId,c.tenantId,c.factoryId]);if(!q.rows[0])throw new NotFoundException('Goods-receipt line was not found in this factory');fields.goods_receipt_id=String(q.rows[0].goods_receipt_id);
+      const q=await client.query("SELECT goods_receipt_id::text AS goods_receipt_id FROM goods_receipt_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[input.targetId,c.tenantId,c.factoryId]);
+      if(!q.rows[0])throw new NotFoundException('Goods-receipt line was not found in this factory');fields.goods_receipt_id=String(q.rows[0].goods_receipt_id);
     }
     if(input.linkType==='REWORK_OUTPUT'){
       if(!input.reworkOrderId)throw new BadRequestException('rework_order_id is required for a rework output link');fields.rework_order_id=input.reworkOrderId;
@@ -1544,11 +1533,9 @@ export class QualityService {
   private correlation(c:QualityContext){if(c.traceId&&isUUID(c.traceId))return c.traceId;if(c.requestId&&isUUID(c.requestId))return c.requestId;return randomUUID();}
 }
 +(index+1)).join(',');
-    const inserted=await client.query("INSERT INTO quality_defect_links ("+columns.join(',')+") VALUES ("+placeholders+") RETURNING id::text AS id",
-      values);
+    const inserted=await client.query("INSERT INTO quality_defect_links ("+columns.join(',')+") VALUES ("+placeholders+") RETURNING id::text AS id",values);
     const id=String(inserted.rows[0]?.id??'');if(!id)throw new Error('QUALITY_DEFECT_LINK_INSERT_FAILED');
-    const inspection=await client.query("SELECT inspection_id::text AS inspection_id FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
-      [input.defectId,c.tenantId,c.factoryId]);
+    const inspection=await client.query("SELECT inspection_id::text AS inspection_id FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[input.defectId,c.tenantId,c.factoryId]);
     await this.auditOutbox(client,c,{inspectionId:inspection.rows[0]?.inspection_id?String(inspection.rows[0].inspection_id):undefined,
       defectId:input.defectId,action:'DEFECT_TRACEABILITY_LINKED',correlation:input.correlation,
       payload:{link_id:id,link_type:input.linkType,target_id:input.targetId,link_source:input.source,affected_quantity:input.quantity,notes:input.notes},
