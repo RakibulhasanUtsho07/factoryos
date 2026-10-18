@@ -456,20 +456,84 @@ export class WorkforceService {
     this.validateContext(c);
     const day=this.dateOnly(query.shift_date,'shift_date');
     const limit=this.limit(rawLimit);
-    const result=await this.database.query<Row>(
-      `SELECT e.id::text AS id,e.event_type,e.source_type,e.source_event_id,e.occurred_at::text AS occurred_at,
-              e.shift_assignment_id::text AS shift_assignment_id,e.worker_id::text AS worker_id,
-              w.employee_code,w.display_name,a.shift_date::text AS shift_date,a.status AS assignment_status,
-              e.capture_metadata,e.created_at::text AS captured_at
-       FROM workforce_attendance_events e
-       JOIN workforce_workers w ON w.id=e.worker_id AND w.tenant_id=e.tenant_id AND w.factory_id=e.factory_id
-       JOIN workforce_shift_assignments a ON a.id=e.shift_assignment_id AND a.tenant_id=e.tenant_id AND a.factory_id=e.factory_id
-       WHERE e.tenant_id=$1 AND e.factory_id=$2 AND a.shift_date=$3::date
-         AND ($4::uuid IS NULL OR a.shift_template_id=$4::uuid)
-       ORDER BY e.occurred_at,e.id LIMIT $5`,
-      [c.tenantId,c.factoryId,day,query.shift_template_id??null,limit],this.dbContext(c),
-    );
-    return {items:result.rows,shift_date:day,limit};
+    const [events, summaries]=await Promise.all([
+      this.database.query<Row>(
+        `SELECT e.id::text AS id,e.event_type,e.source_type,e.source_event_id,e.occurred_at::text AS occurred_at,
+                e.shift_assignment_id::text AS shift_assignment_id,e.worker_id::text AS worker_id,
+                w.employee_code,w.display_name,a.shift_date::text AS shift_date,a.status AS assignment_status,
+                e.capture_metadata,e.created_at::text AS captured_at
+         FROM workforce_attendance_events e
+         JOIN workforce_workers w ON w.id=e.worker_id AND w.tenant_id=e.tenant_id AND w.factory_id=e.factory_id
+         JOIN workforce_shift_assignments a ON a.id=e.shift_assignment_id AND a.tenant_id=e.tenant_id AND a.factory_id=e.factory_id
+         WHERE e.tenant_id=$1 AND e.factory_id=$2 AND a.shift_date=$3::date
+           AND ($4::uuid IS NULL OR a.shift_template_id=$4::uuid)
+         ORDER BY e.occurred_at,e.id LIMIT $5`,
+        [c.tenantId,c.factoryId,day,query.shift_template_id??null,limit],this.dbContext(c),
+      ),
+      this.database.query<Row>(
+        `SELECT a.id::text AS shift_assignment_id,a.worker_id::text AS worker_id,
+          w.employee_code,w.display_name,s.shift_code,s.name AS shift_name,a.shift_date::text AS shift_date,
+          a.status AS assignment_status,a.planned_start_at::text AS planned_start_at,
+          a.planned_end_at::text AS planned_end_at,ci.occurred_at::text AS clock_in_at,
+          co.occurred_at::text AS clock_out_at,
+          EXISTS(SELECT 1 FROM workforce_attendance_events absent
+            WHERE absent.shift_assignment_id=a.id AND absent.tenant_id=a.tenant_id AND absent.factory_id=a.factory_id
+              AND absent.event_type='ABSENCE_RECORDED') AS absence_recorded,
+          ROUND(COALESCE(br.break_minutes,0),2)::text AS recorded_break_minutes,
+          CASE WHEN ci.occurred_at IS NOT NULL AND co.occurred_at IS NOT NULL
+            THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (co.occurred_at-ci.occurred_at))/60))::int
+            ELSE NULL END AS gross_minutes,
+          CASE WHEN ci.occurred_at IS NOT NULL AND co.occurred_at IS NOT NULL
+            THEN GREATEST(0,FLOOR(
+              EXTRACT(EPOCH FROM (co.occurred_at-ci.occurred_at))/60
+              - GREATEST(COALESCE(br.break_minutes,0),s.unpaid_break_minutes)
+            ))::int
+            ELSE NULL END AS worked_minutes,
+          CASE WHEN ci.occurred_at IS NOT NULL
+            THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (ci.occurred_at-a.planned_start_at))/60)
+              - s.late_grace_minutes)::int
+            ELSE NULL END AS late_minutes
+         FROM workforce_shift_assignments a
+         JOIN workforce_workers w ON w.id=a.worker_id AND w.tenant_id=a.tenant_id AND w.factory_id=a.factory_id
+         JOIN workforce_shift_templates s ON s.id=a.shift_template_id AND s.tenant_id=a.tenant_id AND s.factory_id=a.factory_id
+         LEFT JOIN workforce_attendance_events ci ON ci.shift_assignment_id=a.id AND ci.tenant_id=a.tenant_id
+            AND ci.factory_id=a.factory_id AND ci.event_type='CLOCK_IN'
+         LEFT JOIN workforce_attendance_events co ON co.shift_assignment_id=a.id AND co.tenant_id=a.tenant_id
+            AND co.factory_id=a.factory_id AND co.event_type='CLOCK_OUT'
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (be.occurred_at-bs.occurred_at))/60),0) AS break_minutes
+           FROM workforce_attendance_events bs
+           JOIN LATERAL (
+             SELECT candidate.occurred_at
+             FROM workforce_attendance_events candidate
+             WHERE candidate.shift_assignment_id=a.id AND candidate.tenant_id=a.tenant_id
+               AND candidate.factory_id=a.factory_id AND candidate.event_type='BREAK_END'
+               AND candidate.occurred_at>bs.occurred_at
+             ORDER BY candidate.occurred_at LIMIT 1
+           ) be ON TRUE
+           WHERE bs.shift_assignment_id=a.id AND bs.tenant_id=a.tenant_id
+             AND bs.factory_id=a.factory_id AND bs.event_type='BREAK_START'
+         ) br ON TRUE
+         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.shift_date=$3::date
+           AND ($4::uuid IS NULL OR a.shift_template_id=$4::uuid)
+         ORDER BY a.planned_start_at,w.employee_code LIMIT $5`,
+        [c.tenantId,c.factoryId,day,query.shift_template_id??null,limit],this.dbContext(c),
+      ),
+    ]);
+    return {
+      items:events.rows,
+      shifts:summaries.rows,
+      shift_date:day,
+      limit,
+      attendance_summary:{
+        rostered:summaries.rows.length,
+        present:summaries.rows.filter(row=>row.clock_in_at!==null&&row.clock_in_at!==undefined).length,
+        absent:summaries.rows.filter(row=>row.absence_recorded===true).length,
+        clocked_out:summaries.rows.filter(row=>row.clock_out_at!==null&&row.clock_out_at!==undefined).length,
+        finalized_worked_minutes:summaries.rows.reduce((sum,row)=>sum+(row.worked_minutes===null?0:Number(row.worked_minutes)),0),
+        finalized_shifts:summaries.rows.filter(row=>row.worked_minutes!==null&&row.worked_minutes!==undefined).length,
+      },
+    };
   }
 
   async createOvertime(c: WorkforceContext, dto: CreateWorkforceOvertimeDto, rawKey: string | null) {
@@ -621,32 +685,56 @@ export class WorkforceService {
     this.validateContext(c);
     const from=this.dateOnly(query.from_date,'from_date'),to=this.dateOnly(query.to_date,'to_date');
     if(from>to) throw new BadRequestException('from_date cannot be after to_date');
-    const result=await this.database.query<Row>(
-      `SELECT p.id::text AS id,p.worker_id::text AS worker_id,w.employee_code,w.display_name,
-       p.shift_assignment_id::text AS shift_assignment_id,a.shift_date::text AS shift_date,
-       p.work_order_id::text AS work_order_id,p.work_order_operation_id::text AS work_order_operation_id,
-       p.operation_code,p.production_started_at::text AS production_started_at,p.production_ended_at::text AS production_ended_at,
-       p.good_quantity::text AS good_quantity,p.scrap_quantity::text AS scrap_quantity,
-       p.standard_minutes_per_unit::text AS standard_minutes_per_unit,p.actual_minutes::text AS actual_minutes,
-       p.earned_minutes::text AS earned_minutes,p.efficiency_percent::text AS efficiency_percent,
-       p.scrap_reason,p.notes,p.created_at::text AS captured_at
-       FROM workforce_productivity_reports p
-       JOIN workforce_workers w ON w.id=p.worker_id AND w.tenant_id=p.tenant_id AND w.factory_id=p.factory_id
-       JOIN workforce_shift_assignments a ON a.id=p.shift_assignment_id AND a.tenant_id=p.tenant_id AND a.factory_id=p.factory_id
-       WHERE p.tenant_id=$1 AND p.factory_id=$2 AND a.shift_date BETWEEN $3::date AND $4::date
-        AND ($5::uuid IS NULL OR p.worker_id=$5::uuid)
-       ORDER BY a.shift_date DESC,p.created_at DESC,p.id LIMIT $6`,
-      [c.tenantId,c.factoryId,from,to,query.worker_id??null,this.limit(query.limit)],this.dbContext(c),
-    );
-    const items=result.rows;
-    const totals=items.reduce((acc,row)=>{
-      acc.good_quantity+=Number(row.good_quantity);
-      acc.scrap_quantity+=Number(row.scrap_quantity);
-      acc.earned_minutes+=Number(row.earned_minutes);
-      acc.actual_minutes+=Number(row.actual_minutes);
-      return acc;
-    },{good_quantity:0,scrap_quantity:0,earned_minutes:0,actual_minutes:0});
-    return {items,totals,weighted_efficiency_percent:totals.actual_minutes>0?Math.round(totals.earned_minutes*10000/totals.actual_minutes)/100:0,from_date:from,to_date:to};
+    const limit=this.limit(query.limit);
+    const filters=[c.tenantId,c.factoryId,from,to,query.worker_id??null];
+    const [result,aggregate]=await Promise.all([
+      this.database.query<Row>(
+        `SELECT p.id::text AS id,p.worker_id::text AS worker_id,w.employee_code,w.display_name,
+         p.shift_assignment_id::text AS shift_assignment_id,a.shift_date::text AS shift_date,
+         p.work_order_id::text AS work_order_id,p.work_order_operation_id::text AS work_order_operation_id,
+         p.operation_code,p.production_started_at::text AS production_started_at,p.production_ended_at::text AS production_ended_at,
+         p.good_quantity::text AS good_quantity,p.scrap_quantity::text AS scrap_quantity,
+         p.standard_minutes_per_unit::text AS standard_minutes_per_unit,p.actual_minutes::text AS actual_minutes,
+         p.earned_minutes::text AS earned_minutes,p.efficiency_percent::text AS efficiency_percent,
+         p.scrap_reason,p.notes,p.created_at::text AS captured_at
+         FROM workforce_productivity_reports p
+         JOIN workforce_workers w ON w.id=p.worker_id AND w.tenant_id=p.tenant_id AND w.factory_id=p.factory_id
+         JOIN workforce_shift_assignments a ON a.id=p.shift_assignment_id AND a.tenant_id=p.tenant_id AND a.factory_id=p.factory_id
+         WHERE p.tenant_id=$1 AND p.factory_id=$2 AND a.shift_date BETWEEN $3::date AND $4::date
+          AND ($5::uuid IS NULL OR p.worker_id=$5::uuid)
+         ORDER BY a.shift_date DESC,p.created_at DESC,p.id LIMIT $6`,
+        [...filters,limit],this.dbContext(c),
+      ),
+      this.database.query<Row>(
+        `SELECT COUNT(*)::int AS report_count,
+          COALESCE(SUM(p.good_quantity),0)::text AS good_quantity,
+          COALESCE(SUM(p.scrap_quantity),0)::text AS scrap_quantity,
+          COALESCE(SUM(p.earned_minutes),0)::text AS earned_minutes,
+          COALESCE(SUM(p.actual_minutes),0)::text AS actual_minutes
+         FROM workforce_productivity_reports p
+         JOIN workforce_shift_assignments a ON a.id=p.shift_assignment_id AND a.tenant_id=p.tenant_id AND a.factory_id=p.factory_id
+         WHERE p.tenant_id=$1 AND p.factory_id=$2 AND a.shift_date BETWEEN $3::date AND $4::date
+          AND ($5::uuid IS NULL OR p.worker_id=$5::uuid)`,
+        filters,this.dbContext(c),
+      ),
+    ]);
+    const row=aggregate.rows[0]??{};
+    const totals={
+      report_count:Number(row.report_count??0),
+      good_quantity:Number(row.good_quantity??0),
+      scrap_quantity:Number(row.scrap_quantity??0),
+      earned_minutes:Number(row.earned_minutes??0),
+      actual_minutes:Number(row.actual_minutes??0),
+    };
+    return {
+      items:result.rows,
+      totals,
+      returned_count:result.rows.length,
+      weighted_efficiency_percent:totals.actual_minutes>0?Math.round(totals.earned_minutes*10000/totals.actual_minutes)/100:0,
+      from_date:from,
+      to_date:to,
+      limit,
+    };
   }
 
   async staffingCoverage(c: WorkforceContext, query: WorkforceDateQueryDto) {
