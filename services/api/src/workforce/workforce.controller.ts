@@ -208,7 +208,7 @@ export class WorkforceController {
 
   @Get('overtime')
   @UseGuards(PermissionGuard)
-  @RequirePermission('workforce.attendance.read')
+  @RequirePermission('workforce.overtime.read')
   @RequireFactoryScope()
   listOvertime(@Req() request: WorkforceRequest, @Query() query: WorkforceDateRangeQueryDto) {
     return this.service.listOvertime(this.context(request), query);
