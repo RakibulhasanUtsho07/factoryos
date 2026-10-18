@@ -73,6 +73,18 @@ export class CreateWorkforceShiftDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(180) late_grace_minutes?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(1440) overtime_threshold_minutes?: number;
 }
+export class UpdateWorkforceShiftDto {
+  @Type(() => Number) @IsInt() @Min(1) expected_version!: number;
+  @IsOptional() @IsString() @MaxLength(255) name?: string;
+  @IsOptional() @Matches(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/) starts_at_local?: string;
+  @IsOptional() @Matches(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/) ends_at_local?: string;
+  @IsOptional() @IsString() @MaxLength(80) timezone_name?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(360) unpaid_break_minutes?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(180) late_grace_minutes?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(1440) overtime_threshold_minutes?: number;
+  @IsOptional() @IsIn([...WORKFORCE_STATUSES]) status?: typeof WORKFORCE_STATUSES[number];
+  @IsString() @MaxLength(2000) reason!: string;
+}
 export class CreateWorkforceAssignmentDto {
   @IsUUID() shift_template_id!: string;
   @IsUUID() worker_id!: string;
@@ -94,6 +106,11 @@ export class CreateWorkforceAttendanceEventDto {
   @IsOptional() @IsString() @MaxLength(255) source_event_id?: string;
   @IsDateString() occurred_at!: string;
   @IsOptional() @IsObject() capture_metadata?: Record<string, unknown>;
+}
+export class CreateWorkforceAttendanceCorrectionDto {
+  @IsIn([...WORKFORCE_EVENT_TYPES]) corrected_event_type!: typeof WORKFORCE_EVENT_TYPES[number];
+  @IsDateString() corrected_occurred_at!: string;
+  @IsString() @MaxLength(2000) reason!: string;
 }
 export class CreateWorkforceOvertimeDto {
   @IsUUID() shift_assignment_id!: string;
