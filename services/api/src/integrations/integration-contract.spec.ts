@@ -68,8 +68,11 @@ describe('Integration webhook contract', () => {
     }, 3, schema as unknown as Record<string, unknown>)).toThrow('does not match');
     expect(() => assertPayloadSchema({ type: 'object', properties: { constructor: { type: 'string' } } }))
       .toThrow('unsafe property');
-    expect(() => assertPayloadSchema({ type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'array', items: { type: 'string' } } } } } } } } } } }))
-      .toThrow('maximum schema depth');
+    let deeplyNestedSchema: Record<string, unknown> = { type: 'string' };
+    for (let depth = 0; depth < 9; depth += 1) {
+      deeplyNestedSchema = { type: 'array', items: deeplyNestedSchema };
+    }
+    expect(() => assertPayloadSchema(deeplyNestedSchema)).toThrow('maximum schema depth');
   });
 
   it('signs exact raw bytes and binds the signature to timestamp and provider event id', () => {

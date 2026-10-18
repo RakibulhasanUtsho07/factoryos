@@ -278,6 +278,7 @@ jobs:
           GRANT USAGE ON SCHEMA public TO factoryos_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO factoryos_app;
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO factoryos_app;
+           GRANT EXECUTE ON FUNCTION public.factoryos_resolve_integration_webhook(uuid) TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
