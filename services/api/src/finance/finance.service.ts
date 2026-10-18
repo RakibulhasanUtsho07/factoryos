@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
@@ -62,6 +62,26 @@ interface ConnectorRow extends QueryResultRow {
   decision_reason?: string | null;
   created_at?: string;
   updated_at?: string;
+}
+interface FinanceFileValidationIssue {
+  row: number | null;
+  field: string;
+  code: string;
+  message: string;
+}
+interface FinanceFileValidationReportRow extends QueryResultRow {
+  id: string;
+  connector_id: string;
+  external_batch_ref: string;
+  source_file_name: string | null;
+  source_format: string | null;
+  source_payload_sha256: string;
+  status: 'VALID' | 'INVALID';
+  row_count: number;
+  valid_row_count: number;
+  invalid_row_count: number;
+  validation_report: { errors: FinanceFileValidationIssue[]; truncated: boolean; checks: string[] };
+  created_at: string;
 }
 interface NormalizedFact {
   external_fact_id: string;
@@ -361,6 +381,250 @@ export class FinanceService {
         return this.connectorResponse(updated.rows[0], false);
       },
     );
+  }
+
+
+  async validateFactsFile(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    dto: FinanceFileImportDto,
+    idempotencyKeyInput: string | null,
+    ctx: FinanceEventContext,
+  ) {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const submittedContent = typeof dto.content_base64 === 'string' ? dto.content_base64.trim() : '';
+    const submittedDigest = /^[A-Za-z0-9+/]+={0,2}$/.test(submittedContent) && submittedContent.length % 4 === 0
+      ? createHash('sha256').update(Buffer.from(submittedContent, 'base64')).digest('hex')
+      : createHash('sha256').update(submittedContent, 'utf8').digest('hex');
+    const requestHash = financeRequestHash({
+      external_batch_ref: dto.external_batch_ref,
+      format: dto.format,
+      file_name: dto.file_name,
+      source_payload_sha256: submittedDigest,
+    });
+    const safeFileName = typeof dto.file_name === 'string' &&
+      dto.file_name.trim().length > 0 && dto.file_name.trim().length <= 200 &&
+      !dto.file_name.includes('/') && !dto.file_name.includes(String.fromCharCode(92)) &&
+      !/[\u0000-\u001f\u007f]/.test(dto.file_name)
+      ? dto.file_name.trim() : null;
+    const safeFormat = dto.format === 'CSV' || dto.format === 'JSON' ? dto.format : null;
+    const issues: FinanceFileValidationIssue[] = [];
+    let parsed: ParsedFinanceFileImport | null = null;
+    try {
+      parsed = parseFinanceFileImport(dto);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'File validation failed';
+      issues.push({ row: null, field: 'file', code: 'FILE_CONTRACT_INVALID', message: message.slice(0, 300) });
+    }
+
+    return this.database.transaction({
+      tenantId,
+      userId,
+      requestId: this.uuidOrNull(ctx.requestId),
+      traceId: this.uuidOrNull(ctx.traceId),
+      advisoryLockKey: 'finance-file-validation:' + tenantId + ':' + factoryId + ':' + connectorId + ':' + idempotencyKey,
+    }, async (client) => {
+      const connectorResult = await client.query<ConnectorRow>(
+        'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version::int AS row_version,' +
+        'created_by_user_id::text FROM finance_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE',
+        [connectorId, tenantId, factoryId],
+      );
+      const connector = connectorResult.rows[0];
+      if (!connector) throw new NotFoundException('Finance connector not found in the active factory scope');
+
+      const existingReport = await client.query<FinanceFileValidationReportRow & { request_hash: string }>(
+        'SELECT id::text,connector_id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,' +
+        'status,row_count,valid_row_count,invalid_row_count,validation_report,created_at::text,request_hash ' +
+        'FROM finance_file_import_validation_reports WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND idempotency_key=$4 FOR UPDATE',
+        [tenantId, factoryId, connectorId, idempotencyKey],
+      );
+      if (existingReport.rows[0]) {
+        if (existingReport.rows[0].request_hash !== requestHash) {
+          throw new ConflictException('Idempotency-Key was already used for a different file validation request');
+        }
+        return { ...existingReport.rows[0], replayed: true };
+      }
+      if (connector.status !== 'ACTIVE') {
+        throw new ConflictException('File validation requires an approved active finance connector');
+      }
+      if (!['FILE_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
+        throw new ConflictException('File validation requires a FILE_IMPORT or SFTP_IMPORT connector');
+      }
+
+      const facts = parsed?.batch.facts ?? [];
+      const normalizedByRow = new Map<number, NormalizedFact>();
+      const seenIds = new Map<string, number>();
+      for (let index = 0; index < facts.length; index += 1) {
+        const row = index + 1;
+        try {
+          const normalized = this.normalizeFact(facts[index]);
+          const priorRow = seenIds.get(normalized.external_fact_id);
+          if (priorRow !== undefined) {
+            issues.push({ row, field: 'external_fact_id', code: 'DUPLICATE_IN_FILE', message: 'external_fact_id duplicates row ' + priorRow });
+            continue;
+          }
+          seenIds.set(normalized.external_fact_id, row);
+          try {
+            assertFactCompatibleWithDomain(connector.domain, normalized.fact_type);
+          } catch {
+            issues.push({
+              row, field: 'fact_type', code: 'CONNECTOR_DOMAIN_MISMATCH',
+              message: 'Fact type is not permitted for connector domain ' + connector.domain,
+            });
+            continue;
+          }
+          normalizedByRow.set(row, normalized);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Fact normalization failed';
+          issues.push({ row, field: 'fact', code: 'ROW_INVALID', message: message.slice(0, 300) });
+        }
+      }
+
+      if (parsed && parsed.batch.facts.length > 0) {
+        const priorBatch = await client.query<{ id: string }>(
+          'SELECT id::text FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_batch_ref=$4 LIMIT 1',
+          [tenantId, factoryId, connectorId, parsed.batch.external_batch_ref.trim()],
+        );
+        if (priorBatch.rows[0]) {
+          issues.push({ row: null, field: 'external_batch_ref', code: 'BATCH_ALREADY_IMPORTED', message: 'This external finance batch was already ingested' });
+        }
+        const validExternalIds = [...new Set([...normalizedByRow.values()].map((fact) => fact.external_fact_id))];
+        if (validExternalIds.length > 0) {
+          const existingFacts = await client.query<{ external_fact_id: string }>(
+            'SELECT external_fact_id FROM financial_facts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_fact_id = ANY($4::varchar[])',
+            [tenantId, factoryId, connectorId, validExternalIds],
+          );
+          const existingIds = new Set(existingFacts.rows.map((row) => row.external_fact_id));
+          for (const [row, fact] of normalizedByRow) {
+            if (existingIds.has(fact.external_fact_id)) {
+              issues.push({ row, field: 'external_fact_id', code: 'FACT_ALREADY_IMPORTED', message: 'This external fact ID has already been ingested' });
+            }
+          }
+        }
+        for (const [row, fact] of normalizedByRow) {
+          if (!fact.reconciliation) continue;
+          try {
+            const operational = await resolveFinanceOperationalSource(
+              client, tenantId, factoryId,
+              fact.reconciliation.expected_source_type as FinanceReconciliationSourceType,
+              fact.reconciliation.expected_source_ref,
+            );
+            assertFinanceOperationalSourceMatches(
+              fact.currency, fact.reconciliation.expected_quantity, fact.reconciliation.expected_rate,
+              fact.reconciliation.uom_code, operational,
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Operational reconciliation validation failed';
+            issues.push({ row, field: 'reconciliation', code: 'RECONCILIATION_INVALID', message: message.slice(0, 300) });
+          }
+        }
+      }
+
+      const rowCount = facts.length;
+      const invalidRowNumbers = new Set(issues.filter((issue) => issue.row !== null).map((issue) => issue.row as number));
+      const hasFileLevelError = issues.some((issue) => issue.row === null);
+      const validRowCount = hasFileLevelError ? 0 : Math.max(0, rowCount - invalidRowNumbers.size);
+      const invalidRowCount = hasFileLevelError ? Math.max(1, rowCount) : invalidRowNumbers.size;
+      const status = issues.length === 0 && parsed ? 'VALID' : 'INVALID';
+      const report = {
+        errors: issues.slice(0, 200),
+        truncated: issues.length > 200,
+        checks: ['encoding_and_size', 'file_structure', 'schema', 'row_normalization', 'connector_domain', 'duplicate_prevention', 'operational_reconciliation'],
+      };
+      const reportId = randomUUID();
+      const insert = await client.query<FinanceFileValidationReportRow>(
+        'INSERT INTO finance_file_import_validation_reports(' +
+        'id,tenant_id,factory_id,connector_id,external_batch_ref,idempotency_key,request_hash,source_file_name,source_format,' +
+        'source_payload_sha256,status,row_count,valid_row_count,invalid_row_count,validation_report,actor_user_id,request_id,trace_id' +
+        ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18) ' +
+        'RETURNING id::text,connector_id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,status,' +
+        'row_count,valid_row_count,invalid_row_count,validation_report,created_at::text',
+        [
+          reportId, tenantId, factoryId, connectorId,
+          parsed?.batch.external_batch_ref.trim() || String(dto.external_batch_ref ?? '').trim().slice(0, 200) || 'INVALID_FILE',
+          idempotencyKey, requestHash, safeFileName, safeFormat, parsed?.sourcePayloadSha256 ?? submittedDigest,
+          status, rowCount, validRowCount, invalidRowCount, JSON.stringify(report), userId,
+          this.uuidOrNull(ctx.requestId), this.uuidOrNull(ctx.traceId),
+        ],
+      );
+      await this.audit(client, tenantId, factoryId, userId, 'FINANCE_FILE_IMPORT_VALIDATED', 'VALIDATE',
+        'finance_file_import_validation_reports', reportId, ctx, {
+          connector_id: connectorId, status, source_file_name: safeFileName, source_format: safeFormat,
+          source_payload_sha256: parsed?.sourcePayloadSha256 ?? submittedDigest,
+          row_count: rowCount, valid_row_count: validRowCount, invalid_row_count: invalidRowCount, error_count: issues.length,
+        });
+      await this.outbox(client, tenantId, factoryId, reportId, 'FINANCE_FILE_IMPORT_VALIDATED', userId, ctx, {
+        connector_id: connectorId, status, row_count: rowCount,
+        valid_row_count: validRowCount, invalid_row_count: invalidRowCount,
+        source_payload_sha256: parsed?.sourcePayloadSha256 ?? submittedDigest,
+      });
+      return { ...insert.rows[0], replayed: false };
+    });
+  }
+
+  async listFileImportValidationReports(userId: string, tenantId: string, factoryId: string, connectorId: string) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
+      const result = await client.query<FinanceFileValidationReportRow>(
+        'SELECT id::text,connector_id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,' +
+        'status,row_count,valid_row_count,invalid_row_count,validation_report,created_at::text ' +
+        'FROM finance_file_import_validation_reports WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 ORDER BY created_at DESC LIMIT 100',
+        [tenantId, factoryId, connectorId],
+      );
+      return result.rows;
+    });
+  }
+
+  async getFileImportValidationReport(userId: string, tenantId: string, factoryId: string, connectorId: string, reportId: string) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
+      const result = await client.query<FinanceFileValidationReportRow>(
+        'SELECT id::text,connector_id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,' +
+        'status,row_count,valid_row_count,invalid_row_count,validation_report,created_at::text ' +
+        'FROM finance_file_import_validation_reports WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND id=$4',
+        [tenantId, factoryId, connectorId, reportId],
+      );
+      if (!result.rows[0]) throw new NotFoundException('Finance file validation report was not found');
+      return result.rows[0];
+    });
+  }
+
+  async listFileImportReceipts(userId: string, tenantId: string, factoryId: string, connectorId: string) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
+      const result = await client.query(
+        'SELECT id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,status,' +
+        'received_count,accepted_count,mismatch_count,completed_at::text,created_at::text,request_id::text,trace_id::text ' +
+        'FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND source_file_name IS NOT NULL ' +
+        'ORDER BY completed_at DESC LIMIT 100',
+        [tenantId, factoryId, connectorId],
+      );
+      return result.rows;
+    });
+  }
+
+  async getFileImportReceipt(userId: string, tenantId: string, factoryId: string, connectorId: string, runId: string) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
+      const result = await client.query(
+        'SELECT id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,status,' +
+        'received_count,accepted_count,mismatch_count,completed_at::text,created_at::text,actor_user_id::text,request_id::text,trace_id::text ' +
+        'FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND id=$4 AND source_file_name IS NOT NULL',
+        [tenantId, factoryId, connectorId, runId],
+      );
+      if (!result.rows[0]) throw new NotFoundException('Finance file import receipt was not found');
+      return { ...result.rows[0], receipt_type: 'FINANCE_FILE_IMPORT', immutable: true };
+    });
+  }
+
+  private async assertFinanceConnectorExists(client: PoolClient, tenantId: string, factoryId: string, connectorId: string) {
+    const result = await client.query<{ id: string }>(
+      'SELECT id::text FROM finance_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [connectorId, tenantId, factoryId],
+    );
+    if (!result.rows[0]) throw new NotFoundException('Finance connector not found in the active factory scope');
   }
 
   async importFactsFile(
