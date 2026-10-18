@@ -9,9 +9,10 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityDefectLinkDto, CreateQualityInspectionDto,
   CreateQualityInspectionPlanDto, CreateQualityInspectionResultDto, CreateQualityNcrActionDto,
-  ListQualityInspectionsQueryDto, ListQualityPlansQueryDto, QualityDispositionDto,
-  QualityInspectionDecisionDto, QualityInspectionPlanTransitionDto, QualityNcrActionTransitionDto,
-  QualityNcrActionVerificationDto,
+  CreateQualityReworkOrderDto, ListQualityInspectionsQueryDto, ListQualityPlansQueryDto,
+  ListQualityReworkOrdersQueryDto, QualityDispositionDto, QualityInspectionDecisionDto,
+  QualityInspectionPlanTransitionDto, QualityNcrActionTransitionDto, QualityNcrActionVerificationDto,
+  QualityReworkTransitionDto,
 } from './quality.dto';
 import { QualityService } from './quality.service';
 
@@ -132,6 +133,46 @@ export class QualityController {
     @Body() body: QualityDispositionDto, @Headers('idempotency-key') idempotencyKey?: string) {
     const c = this.requireContext(request);
     return this.qualityService.disposeInspection(c, inspectionId, body, idempotencyKey ?? null);
+  }
+
+
+  @Post('defects/:defectId/rework-orders')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.rework.manage')
+  @RequireFactoryScope()
+  async createReworkOrder(@Req() request: QualityRequest,
+    @Param('defectId', new ParseUUIDPipe()) defectId: string,
+    @Body() body: CreateQualityReworkOrderDto,
+    @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.createReworkOrder(this.requireContext(request), defectId, body, idempotencyKey ?? null);
+  }
+
+  @Get('rework-orders')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.inspections.read')
+  @RequireFactoryScope()
+  async listReworkOrders(@Req() request: QualityRequest, @Query() query: ListQualityReworkOrdersQueryDto) {
+    return this.qualityService.listReworkOrders(this.requireContext(request), query);
+  }
+
+  @Get('rework-orders/:reworkOrderId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.inspections.read')
+  @RequireFactoryScope()
+  async getReworkOrder(@Req() request: QualityRequest,
+    @Param('reworkOrderId', new ParseUUIDPipe()) reworkOrderId: string) {
+    return this.qualityService.getReworkOrder(this.requireContext(request), reworkOrderId);
+  }
+
+  @Post('rework-orders/:reworkOrderId/transition')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.rework.manage')
+  @RequireFactoryScope()
+  async transitionReworkOrder(@Req() request: QualityRequest,
+    @Param('reworkOrderId', new ParseUUIDPipe()) reworkOrderId: string,
+    @Body() body: QualityReworkTransitionDto,
+    @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.transitionReworkOrder(this.requireContext(request), reworkOrderId, body, idempotencyKey ?? null);
   }
 
   @Get('holds')
