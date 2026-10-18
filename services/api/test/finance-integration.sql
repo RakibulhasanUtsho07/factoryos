@@ -39,6 +39,9 @@ BEGIN
     'finance.reconciliation.review','finance.margin.read','finance.working_capital.read'
   );
   IF permission_count<>9 THEN RAISE EXCEPTION 'Finance integration IAM permissions are incomplete'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='uq_finance_domain_reporting_source') THEN
+    RAISE EXCEPTION 'Single reporting-source constraint is missing';
+  END IF;
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='114_finance_integration_contract') THEN
     RAISE EXCEPTION 'Finance integration migration is not registered';
   END IF;
@@ -61,6 +64,20 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
 END $$;
+
+  BEGIN
+    INSERT INTO finance_connectors(
+      tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
+      is_reporting_source,configuration,status,row_version,idempotency_key,request_hash,created_by_user_id
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'CI-FINANCE-AR-DUP','Duplicate reporting authority','Other accounting sandbox','AR','MANUAL',
+      true,'{}'::jsonb,'PENDING_APPROVAL',1,'ci-finance-connector-duplicate',repeat('1',64),
+      '921382b8-e83f-43ab-a576-e3db6a06b70c'
+    );
+    RAISE EXCEPTION 'Two pending/active reporting authorities were accepted for the same domain';
+  EXCEPTION WHEN unique_violation THEN NULL;
+  END;
 
 INSERT INTO finance_connectors(
  id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
@@ -232,6 +249,27 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
 END $$;
+
+DO $
+BEGIN
+  BEGIN
+    INSERT INTO financial_facts(
+      tenant_id,factory_id,connector_id,connector_run_id,external_fact_id,source_fact_key,
+      fact_type,source_record_type,source_record_ref,effective_at,currency,amount,
+      source_quantity,source_rate,source_uom_code,metadata_snapshot,fact_hash,ingested_by_user_id
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000001','da100000-0000-4000-8000-000000000002',
+      'CI-AR-MISSING-RECON','CI-AR-MISSING-RECON','AR_OPEN','AR_INVOICE','AR-INVOICE-MISSING-RECON',
+      clock_timestamp(),'BDT',100,1,100,'PCS','{}'::jsonb,repeat('9',64),
+      '921382b8-e83f-43ab-a576-e3db6a06b70c'
+    );
+    SET CONSTRAINTS trg_financial_facts_reconciliation_required IMMEDIATE;
+    RAISE EXCEPTION 'Financial fact source quantity/rate was committed without reconciliation';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $;
+SET CONSTRAINTS trg_financial_facts_reconciliation_required DEFERRED;
 
 SELECT set_config('app.user_id',(SELECT id::text FROM users WHERE email='manager@factoryos.local'),true);
 UPDATE finance_fact_reconciliations

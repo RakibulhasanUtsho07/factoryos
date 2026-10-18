@@ -124,7 +124,10 @@ export class FinanceService {
     if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(connectorCode)) {
       throw new BadRequestException('connector_code must be a stable uppercase identifier');
     }
-    const isSystemOfRecord = dto.is_reporting_source ?? true;
+    const isReportingSource = dto.is_reporting_source ?? dto.domain !== 'CUSTOM';
+    if (dto.domain === 'CUSTOM' && isReportingSource) {
+      throw new BadRequestException('CUSTOM connectors are enrichment-only; map reporting facts to their governed source domain');
+    }
     const endpointUrl = this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
     const secretReference = this.secretReference(dto.secret_reference ?? null);
     const configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
@@ -142,7 +145,7 @@ export class FinanceService {
       source_system: sourceSystem,
       domain: dto.domain,
       integration_mode: dto.integration_mode,
-      is_reporting_source: isSystemOfRecord,
+      is_reporting_source: isReportingSource,
       endpoint_url: endpointUrl,
       secret_reference: secretReference,
       configuration,
@@ -170,9 +173,22 @@ export class FinanceService {
           return this.connectorResponse(prior.rows[0], true);
         }
 
+        if (isReportingSource && dto.domain !== 'CUSTOM') {
+          const existingSource = await client.query<{ id: string }>(
+            'SELECT id::text FROM finance_connectors WHERE tenant_id=$1 AND factory_id=$2 AND domain=$3 ' +
+            'AND is_reporting_source AND status IN (\'PENDING_APPROVAL\',\'ACTIVE\') LIMIT 1',
+            [tenantId, factoryId, dto.domain],
+          );
+          if (existingSource.rows[0]) {
+            throw new ConflictException('A reporting source already exists for domain ' + dto.domain + '; reject or pause it before replacing it');
+          }
+        }
+
         const id = randomUUID();
-        const inserted = await client.query<ConnectorRow>(
-          'INSERT INTO finance_connectors(' +
+        let inserted: { rows: ConnectorRow[] };
+        try {
+          inserted = await client.query<ConnectorRow>(
+            'INSERT INTO finance_connectors(' +
           'id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,' +
           'endpoint_url,secret_reference,configuration,is_reporting_source,status,row_version,idempotency_key,request_hash,created_by_user_id' +
           ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,\'PENDING_APPROVAL\',1,$13,$14,$15) ' +
@@ -181,9 +197,17 @@ export class FinanceService {
           [
             id, tenantId, factoryId, connectorCode, displayName, sourceSystem,
             dto.domain, dto.integration_mode, endpointUrl, secretReference, JSON.stringify(configuration),
-            isSystemOfRecord, idempotencyKey, requestHash, userId,
+            isReportingSource, idempotencyKey, requestHash, userId,
           ],
-        );
+          );
+        } catch (error) {
+          if (error && typeof error === 'object' &&
+              'constraint' in error &&
+              error.constraint === 'uq_finance_domain_reporting_source') {
+            throw new ConflictException('A reporting source already exists for domain ' + dto.domain);
+          }
+          throw error;
+        }
         await this.connectorHistory(client, tenantId, factoryId, id, 'CREATED', userId,
           'Created pending independent approval', ctx, { domain: dto.domain, mode: dto.integration_mode });
         await this.audit(client, tenantId, factoryId, userId, 'FINANCE_CONNECTOR_CREATED', 'CREATE',
@@ -207,7 +231,7 @@ export class FinanceService {
         'SELECT c.id::text,c.connector_code,c.display_name,c.source_system,c.domain,c.integration_mode,c.status,' +
         'c.row_version::int AS row_version,c.created_by_user_id::text,c.reviewed_by_user_id::text,' +
         'c.reviewed_at::text,c.paused_at::text,c.decision_reason,c.created_at::text,c.updated_at::text,' +
-        'c.endpoint_url,c.configuration,(c.secret_reference IS NOT NULL) AS has_secret_reference,' +
+        'c.endpoint_url,c.configuration,c.is_reporting_source,(c.secret_reference IS NOT NULL) AS has_secret_reference,' +
         '(SELECT r.completed_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_at,' +
         '(SELECT r.source_occurred_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_source_occurred_at,' +
         '(SELECT r.status FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_status,' +
@@ -244,7 +268,7 @@ export class FinanceService {
         'SELECT c.id::text,c.connector_code,c.display_name,c.source_system,c.domain,c.integration_mode,c.status,' +
         'c.row_version::int AS row_version,c.created_by_user_id::text,c.reviewed_by_user_id::text,' +
         'c.reviewed_at::text,c.paused_at::text,c.decision_reason,c.created_at::text,c.updated_at::text,' +
-        'c.endpoint_url,c.configuration,(c.secret_reference IS NOT NULL) AS has_secret_reference,' +
+        'c.endpoint_url,c.configuration,c.is_reporting_source,(c.secret_reference IS NOT NULL) AS has_secret_reference,' +
         '(SELECT r.completed_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_at,' +
         '(SELECT r.source_occurred_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_source_occurred_at,' +
         '(SELECT r.status FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_status,' +
@@ -279,7 +303,7 @@ export class FinanceService {
       async (client) => {
         const found = await client.query<ConnectorRow>(
           'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
-          'row_version::int AS row_version,created_by_user_id::text FROM finance_connectors ' +
+          'row_version::int AS row_version,created_by_user_id::text,is_reporting_source FROM finance_connectors ' +
           'WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
           [connectorId, tenantId, factoryId],
         );
@@ -313,7 +337,7 @@ export class FinanceService {
           'decision_reason=$3,updated_at=clock_timestamp() ' +
           'WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7 ' +
           'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
-          'endpoint_url,configuration,(secret_reference IS NOT NULL) AS has_secret_reference',
+          'endpoint_url,configuration,is_reporting_source,(secret_reference IS NOT NULL) AS has_secret_reference',
           [nextStatus, userId, reason, connectorId, tenantId, factoryId, dto.expected_version],
         );
         if (!updated.rows[0]) throw new ConflictException('Finance connector transition lost an optimistic-concurrency race');
@@ -365,7 +389,7 @@ export class FinanceService {
       async (client) => {
         const connectorResult = await client.query<ConnectorRow>(
           'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
-          'row_version::int AS row_version,created_by_user_id::text FROM finance_connectors ' +
+          'row_version::int AS row_version,created_by_user_id::text,is_reporting_source FROM finance_connectors ' +
           'WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE',
           [connectorId, tenantId, factoryId],
         );
@@ -535,7 +559,6 @@ export class FinanceService {
       const rows = await client.query(
         'WITH actual_events AS (' +
         ' SELECT f.* FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
         ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
         ' AND f.fact_type IN (\'ACTUAL_REVENUE\',\'ACTUAL_COST\',\'ACTUAL_CONTRIBUTION_COST\') ' +
         ' AND f.effective_at >= $3 AND f.effective_at <= $4 ' +

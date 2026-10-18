@@ -27,7 +27,7 @@ Connector and financial-fact read APIs intentionally omit secret material. Crede
 
 ## Connector domains and fact mapping
 
-A connector is scoped to one tenant and factory and has a stable code, source-system label, domain, declared mode and optional endpoint/secret reference. Configuration, connector code and the system-of-record flag are immutable after creation; to change the integration contract, register a new code. At most one pending or active connector per standard domain (GL/AP/AR/bank/tax) may be marked as reporting authority in a tenant/factory, preventing two configured accounting sources from being silently aggregated. A creator cannot approve or reject their own connector. Pause is the reversible operational safety switch.
+A connector is scoped to one tenant and factory and has a stable code, source-system label, domain, declared mode and optional endpoint/secret reference. Configuration, connector code and the system-of-record flag are immutable after creation; to change the integration contract, register a new code. At most one pending or active connector per standard domain (GL/AP/AR/bank/tax) may be marked as a reporting source in a tenant/factory, preventing two configured accounting sources from being silently aggregated. Reporting fact types are deliberately partitioned: GL owns cost/GL/inventory facts, AR owns revenue/shipment/receivable facts, AP owns payable/commitment/LC facts, bank owns bank balance, and tax/e-invoice owns tax liability. CUSTOM connectors are enrichment-only and cannot feed aggregate financial reports until their facts are mapped into an owned domain. A creator cannot approve or reject their own connector. Pause is the reversible operational safety switch.
 
 | Domain | Allowed fact types |
 |---|---|
