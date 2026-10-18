@@ -1,11 +1,13 @@
 import {
   assertPayloadSchema,
   assertValidWebhookSignature,
+  assertWebhookEventTypeAllowed,
   createWebhookSignature,
   IntegrationContractError,
   integrationRequestHash,
   validateWebhookEnvelope,
   validateWebhookSecretReference,
+  validateAllowedWebhookEventTypes,
 } from './integration-contract';
 
 describe('Integration webhook contract', () => {
@@ -102,6 +104,26 @@ describe('Integration webhook contract', () => {
     expect(validateWebhookSecretReference('env://WEBHOOK_SECRET_ERP_A')).toBe('WEBHOOK_SECRET_ERP_A');
     expect(() => validateWebhookSecretReference('vault://prod/team')).toThrow('env://WEBHOOK_SECRET_');
     expect(() => validateWebhookSecretReference('env://WEBHOOK_SECRET_x;DROP')).toThrow('env://WEBHOOK_SECRET_');
+  });
+
+
+  it('requires a non-empty unique allowlist of canonical event types', () => {
+    expect(validateAllowedWebhookEventTypes(['MES.PRODUCTION.COUNTED', 'ORDER.CONFIRMED']))
+      .toEqual(['MES.PRODUCTION.COUNTED', 'ORDER.CONFIRMED']);
+    expect(() => validateAllowedWebhookEventTypes([])).toThrow('1 to 100');
+    expect(() => validateAllowedWebhookEventTypes(['MES.EVENT', 'MES.EVENT'])).toThrow('duplicate');
+    expect(() => validateAllowedWebhookEventTypes(['lower.case'])).toThrow('canonical uppercase');
+    expect(() => assertWebhookEventTypeAllowed('ORDER.CANCELLED', ['ORDER.CONFIRMED']))
+      .toThrow('not registered');
+    expect(() => assertWebhookEventTypeAllowed('ORDER.CONFIRMED', ['ORDER.CONFIRMED'])).not.toThrow();
+  });
+
+  it('rejects schemas that accept credential-like payload properties', () => {
+    expect(() => assertPayloadSchema({
+      type: 'object',
+      properties: { access_token: { type: 'string', maxLength: 200 } },
+      required: ['access_token'],
+    })).toThrow('credential-like properties');
   });
 
   it('produces stable request hashes independent of JSON property order', () => {

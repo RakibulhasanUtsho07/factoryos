@@ -101,6 +101,9 @@ function validateSchemaNode(value: unknown, path: string, depth: number): assert
       if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
         throw new IntegrationContractError('WEBHOOK_SCHEMA_UNSAFE_PROPERTY', path + ' contains an unsafe property name');
       }
+      if (/(password|token|secret|credential|api.?key|authorization|private.?key|client.?secret)/i.test(key)) {
+        throw new IntegrationContractError('WEBHOOK_SCHEMA_SENSITIVE_PROPERTY', path + ' cannot accept credential-like properties');
+      }
       validateSchemaNode(child, path + '.properties.' + key, depth + 1);
     }
   } else if (type === 'array') {
@@ -232,6 +235,32 @@ export function validateWebhookEnvelope(
     ...(typeof value.correlation_id === 'string' ? { correlation_id: value.correlation_id } : {}),
     payload: value.payload,
   };
+}
+
+
+export function validateAllowedWebhookEventTypes(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
+    throw new IntegrationContractError('WEBHOOK_EVENT_TYPES_INVALID', 'allowed_event_types must contain 1 to 100 event identifiers');
+  }
+  const eventTypes: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !EVENT_TYPE.test(entry) || entry !== entry.trim()) {
+      throw new IntegrationContractError('WEBHOOK_EVENT_TYPES_INVALID', 'allowed_event_types must use canonical uppercase event identifiers');
+    }
+    if (seen.has(entry)) {
+      throw new IntegrationContractError('WEBHOOK_EVENT_TYPES_DUPLICATE', 'allowed_event_types cannot contain duplicate identifiers');
+    }
+    seen.add(entry);
+    eventTypes.push(entry);
+  }
+  return eventTypes;
+}
+
+export function assertWebhookEventTypeAllowed(eventType: string, allowedEventTypes: readonly string[]): void {
+  if (!allowedEventTypes.includes(eventType)) {
+    throw new IntegrationContractError('WEBHOOK_EVENT_TYPE_NOT_ALLOWED', 'event_type is not registered for this connector');
+  }
 }
 
 export function validateWebhookSecretReference(reference: string): string {

@@ -1,4 +1,8 @@
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
   IsIn,
   IsInt,
   IsObject,
@@ -27,6 +31,14 @@ export class RegisterIntegrationConnectorDto {
   @Min(1)
   @Max(10000)
   schema_version!: number;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @Matches(/^[A-Z][A-Z0-9_.-]{0,149}$/, { each: true })
+  allowed_event_types!: string[];
 
   @IsObject()
   payload_schema!: Record<string, unknown>;
