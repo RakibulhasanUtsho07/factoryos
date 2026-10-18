@@ -199,7 +199,21 @@ WHERE r.code = 'ORG_ADMIN'
     'workforce.overtime.approve',
     'workforce.productivity.read',
     'workforce.productivity.capture',
-    'workforce.self.read'
+    'workforce.self.read',
+    'utilities.meters.read',
+    'utilities.meters.manage',
+    'utilities.readings.read',
+    'utilities.readings.capture',
+    'utilities.events.read',
+    'utilities.events.manage',
+    'ehs.permits.read',
+    'ehs.permits.manage',
+    'ehs.permits.approve',
+    'ehs.permits.execute',
+    'ehs.incidents.read',
+    'ehs.incidents.report',
+    'ehs.incidents.manage',
+    'ehs.corrective_actions.verify'
   );
 
 COMMIT;
