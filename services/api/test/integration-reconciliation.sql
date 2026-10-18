@@ -45,6 +45,15 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.integration_reconciliation_cases'::regclass AND conname='chk_integration_reconciliation_case_resolution') THEN
     RAISE EXCEPTION 'reconciliation case resolution state constraints are missing';
   END IF;
+  IF NOT EXISTS(
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.integration_reconciliation_cases'::regclass
+      AND conname='chk_integration_reconciliation_case_type'
+      AND position('DUPLICATE_BUSINESS_EVENT' in pg_get_constraintdef(oid))>0
+      AND position('BUSINESS_EVENT_CONFLICT' in pg_get_constraintdef(oid))>0
+  ) THEN
+    RAISE EXCEPTION 'business-key duplicate and conflict case types are missing';
+  END IF;
   IF NOT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='uq_integration_reconciliation_open_case_key') THEN
     RAISE EXCEPTION 'open reconciliation cases must be idempotently keyed';
   END IF;
