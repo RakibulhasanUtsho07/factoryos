@@ -177,8 +177,10 @@ export class MaintenanceService {
         );
         if(open.rows[0]) throw new ConflictException('An asset with open maintenance work orders cannot be inactivated or retired');
       }
-      const proposedCommissioned=fields.find(([column])=>column==='commissioned_on')?.[1] ?? row.commissioned_on;
-      const proposedWarranty=fields.find(([column])=>column==='warranty_expires_on')?.[1] ?? row.warranty_expires_on;
+      const commissionedChange=fields.find(([column])=>column==='commissioned_on');
+      const warrantyChange=fields.find(([column])=>column==='warranty_expires_on');
+      const proposedCommissioned=commissionedChange ? commissionedChange[1] : row.commissioned_on;
+      const proposedWarranty=warrantyChange ? warrantyChange[1] : row.warranty_expires_on;
       if (proposedCommissioned && proposedWarranty && String(proposedWarranty).slice(0,10) < String(proposedCommissioned).slice(0,10)) {
         throw new BadRequestException('warranty_expires_on cannot be before commissioned_on');
       }
