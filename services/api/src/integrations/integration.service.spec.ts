@@ -169,7 +169,7 @@ describe('IntegrationService signed webhook ingress', () => {
     expect(harness.database.query).not.toHaveBeenCalled();
   });
 
-  it('rejects a modified signature before opening a database transaction', async () => {
+  it('rejects a modified signature before opening the webhook intake transaction', async () => {
     const harness = setup();
     const signed = signedRequest('mes-event-103');
     await expect(harness.service.receiveWebhook(
