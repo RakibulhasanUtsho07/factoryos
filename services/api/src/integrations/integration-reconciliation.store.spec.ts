@@ -9,6 +9,7 @@ describe('operational event reconciliation contract', () => {
     expect(classifyOperationalDomain('MES.PRODUCTION.COUNTED')).toBe('PRODUCTION');
     expect(classifyOperationalDomain('QUALITY.INSPECTION.PASSED')).toBe('QUALITY');
     expect(classifyOperationalDomain('ORDER.CREATED')).toBeNull();
+    expect(classifyOperationalDomain('WORKFORCE.SKILL.CERTIFIED')).toBeNull();
   });
 
   it('normalizes a canonical sequence event and preserves only comparison evidence hashes', () => {
@@ -48,11 +49,17 @@ describe('operational event reconciliation contract', () => {
       eventType: 'QUALITY.INSPECTION.RESULT',
       payload: { event_time: 'not-a-time' },
     });
+    const timezoneFree = normalizeOperationalEvent({
+      eventType: 'ATTENDANCE.CLOCK_IN',
+      payload: { occurred_at: '2026-10-18T08:00:00' },
+    });
 
     expect(missing?.timeIssue).toBe('MISSING_EVENT_TIME');
     expect(missing?.occurredAt).toBeNull();
     expect(malformed?.timeIssue).toBe('INVALID_EVENT_TIME');
     expect(malformed?.occurredAt).toBeNull();
+    expect(timezoneFree?.timeIssue).toBe('INVALID_EVENT_TIME');
+    expect(timezoneFree?.occurredAt).toBeNull();
   });
 
   it('rejects unsafe sequence values and sequences without an explicit stream key', () => {
