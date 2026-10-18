@@ -1789,12 +1789,15 @@ export class ProductionWorkOrdersService {
       const productionReportId = createdReport.rows[0]?.id;
       if (!productionReportId) throw new Error('WORK_ORDER_OUTPUT_REPORT_INSERT_FAILED');
 
-      const finishedGoodsReceipt = await this.inventoryReservationService.postWorkOrderFinishedGoodsReceipt(
+      const finishedGoodsReceipt = await this.inventoryReservationService.postFinishedGoodsOutputReceipt(
         client,
         {
           userId, tenantId, factoryId,
           workOrderId: workOrder.id,
           workOrderNumber: workOrder.work_order_number,
+          orderId: workOrder.source_order_id,
+          orderNumber: sourceOrder.order_number,
+          orderLineId: workOrder.source_order_line_id,
           finishedItemId: workOrder.finished_item_id,
           productionReportId,
           goodQuantity,
