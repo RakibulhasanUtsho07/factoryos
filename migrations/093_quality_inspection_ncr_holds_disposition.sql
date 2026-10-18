@@ -140,6 +140,7 @@ CREATE TABLE quality_holds (
   inspection_id UUID NOT NULL,
   inventory_item_id UUID,
   traceability_unit_id UUID,
+  work_order_id UUID,
   status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
   quarantined_by_quality BOOLEAN NOT NULL DEFAULT FALSE,
   reason TEXT NOT NULL,
@@ -158,9 +159,11 @@ CREATE TABLE quality_holds (
     REFERENCES inventory_items(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_quality_hold_traceability_unit FOREIGN KEY (traceability_unit_id, tenant_id, factory_id)
     REFERENCES traceability_units(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_quality_hold_work_order FOREIGN KEY (work_order_id, tenant_id, factory_id)
+    REFERENCES work_orders(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_quality_hold_creator FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_quality_hold_releaser FOREIGN KEY (released_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
-  CONSTRAINT chk_quality_hold_target CHECK (inventory_item_id IS NOT NULL OR traceability_unit_id IS NOT NULL),
+  CONSTRAINT chk_quality_hold_target CHECK (inventory_item_id IS NOT NULL OR traceability_unit_id IS NOT NULL OR work_order_id IS NOT NULL),
   CONSTRAINT chk_quality_hold_status CHECK (status IN ('ACTIVE', 'RELEASED', 'DISPOSED')),
   CONSTRAINT chk_quality_hold_reason CHECK (length(btrim(reason)) > 0),
   CONSTRAINT chk_quality_hold_release_evidence CHECK (
@@ -208,7 +211,7 @@ CREATE TABLE quality_dispositions (
   CONSTRAINT chk_quality_disposition_action CHECK (action IN ('RELEASE', 'USE_AS_IS', 'REWORK', 'SCRAP', 'RETURN_TO_SUPPLIER')),
   CONSTRAINT chk_quality_disposition_status CHECK (status IN ('RECORDED', 'PENDING_INVENTORY', 'COMPLETED')),
   CONSTRAINT chk_quality_disposition_quantity CHECK (
-    (action IN ('SCRAP', 'RETURN_TO_SUPPLIER') AND quantity > 0 AND inventory_item_id IS NOT NULL)
+    (action IN ('SCRAP', 'RETURN_TO_SUPPLIER') AND quantity IS NOT NULL AND quantity > 0 AND inventory_item_id IS NOT NULL)
     OR (action NOT IN ('SCRAP', 'RETURN_TO_SUPPLIER') AND quantity IS NULL)
   ),
   CONSTRAINT chk_quality_disposition_inventory_evidence CHECK (
@@ -338,7 +341,7 @@ BEGIN
     IF NOT (
       (OLD.status IN ('OPEN', 'ON_HOLD') AND NEW.status = 'IN_PROGRESS')
       OR (OLD.status = 'IN_PROGRESS' AND NEW.status IN ('PASSED', 'FAILED', 'ON_HOLD', 'CANCELLED'))
-      OR (OLD.status IN ('FAILED', 'ON_HOLD') AND NEW.status = 'DISPOSITIONED')
+      OR (OLD.status IN ('FAILED', 'ON_HOLD') AND NEW.status IN ('DISPOSITIONED', 'ON_HOLD'))
     ) THEN
       RAISE EXCEPTION 'invalid quality inspection transition: % -> %', OLD.status, NEW.status
         USING ERRCODE = '23514';
@@ -387,20 +390,23 @@ BEGIN
 
   IF NEW.target_type = 'TRACEABILITY_UNIT' THEN
     IF v_unit IS NULL THEN RAISE EXCEPTION 'traceability unit is not in this factory' USING ERRCODE = '23503'; END IF;
-    IF NEW.traceability_unit_id IS DISTINCT FROM NEW.target_id THEN
+    IF NEW.traceability_unit_id IS NOT NULL AND NEW.traceability_unit_id IS DISTINCT FROM NEW.target_id THEN
       RAISE EXCEPTION 'quality traceability target binding is invalid' USING ERRCODE = '23514';
     END IF;
-    IF NEW.inventory_item_id IS DISTINCT FROM v_item THEN
+    IF NEW.inventory_item_id IS NOT NULL AND NEW.inventory_item_id IS DISTINCT FROM v_item THEN
       RAISE EXCEPTION 'quality traceability inventory mapping is invalid' USING ERRCODE = '23514';
     END IF;
+    NEW.traceability_unit_id := NEW.target_id;
+    NEW.inventory_item_id := v_item;
   ELSE
     IF NOT FOUND THEN RAISE EXCEPTION 'quality inspection target was not found in this factory' USING ERRCODE = '23503'; END IF;
     IF NEW.traceability_unit_id IS NOT NULL THEN
       RAISE EXCEPTION 'only traceability-unit inspections may link a traceability unit' USING ERRCODE = '23514';
     END IF;
-    IF NEW.inventory_item_id IS DISTINCT FROM v_item THEN
+    IF NEW.inventory_item_id IS NOT NULL AND NEW.inventory_item_id IS DISTINCT FROM v_item THEN
       RAISE EXCEPTION 'quality inspection inventory mapping must be resolved by the database' USING ERRCODE = '23514';
     END IF;
+    NEW.inventory_item_id := v_item;
   END IF;
   RETURN NEW;
 END;
@@ -531,11 +537,11 @@ BEGIN
     RETURN NEW;
   END IF;
   IF ROW(NEW.id, NEW.tenant_id, NEW.factory_id, NEW.inspection_id, NEW.inventory_item_id,
-      NEW.traceability_unit_id, NEW.quarantined_by_quality, NEW.reason, NEW.created_by_user_id,
+      NEW.traceability_unit_id, NEW.work_order_id, NEW.quarantined_by_quality, NEW.reason, NEW.created_by_user_id,
       NEW.correlation_id, NEW.created_at)
     IS DISTINCT FROM
     ROW(OLD.id, OLD.tenant_id, OLD.factory_id, OLD.inspection_id, OLD.inventory_item_id,
-      OLD.traceability_unit_id, OLD.quarantined_by_quality, OLD.reason, OLD.created_by_user_id,
+      OLD.traceability_unit_id, OLD.work_order_id, OLD.quarantined_by_quality, OLD.reason, OLD.created_by_user_id,
       OLD.correlation_id, OLD.created_at)
     OR OLD.status <> 'ACTIVE' OR NEW.status NOT IN ('RELEASED', 'DISPOSED')
     OR NEW.released_by_user_id IS DISTINCT FROM factoryos_current_user_id()
@@ -773,9 +779,9 @@ BEGIN
     completed_at = clock_timestamp()
   WHERE id = v_disposition.id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
 
-  UPDATE quality_holds SET status = 'DISPOSED', released_by_user_id = v_disposition.created_by_user_id,
+  UPDATE quality_holds SET status = 'DISPOSED', released_by_user_id = NEW.created_by_user_id,
     released_at = clock_timestamp(), release_reason = v_disposition.reason, updated_at = clock_timestamp()
-  WHERE inventory_item_id = NEW.item_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+  WHERE inspection_id = v_disposition.inspection_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
     AND status = 'ACTIVE';
   RETURN NULL;
 END;
