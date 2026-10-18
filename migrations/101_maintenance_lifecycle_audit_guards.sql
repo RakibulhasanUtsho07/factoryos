@@ -1,5 +1,62 @@
 BEGIN;
 
+-- Parent assignment and deletion guards preserve the asset tree and records.
+CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_asset_hierarchy()
+RETURNS trigger LANGUAGE plpgsql AS $
+DECLARE
+  v_parent UUID;
+  v_parent_status VARCHAR(16);
+  v_seen UUID[] := ARRAY[]::UUID[];
+BEGIN
+  IF NEW.parent_asset_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.parent_asset_id = NEW.id THEN
+    RAISE EXCEPTION 'An asset cannot be its own parent' USING ERRCODE='23514';
+  END IF;
+  SELECT a.parent_asset_id,a.status INTO v_parent,v_parent_status
+  FROM maintenance_assets a
+  WHERE a.id=NEW.parent_asset_id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Parent asset must belong to the same tenant and factory' USING ERRCODE='23503';
+  END IF;
+  IF v_parent_status <> 'ACTIVE' THEN
+    RAISE EXCEPTION 'An asset must be linked under an active parent' USING ERRCODE='23514';
+  END IF;
+  v_seen:=array_append(v_seen,NEW.parent_asset_id);
+  WHILE v_parent IS NOT NULL LOOP
+    IF v_parent=NEW.id OR v_parent=ANY(v_seen) THEN
+      RAISE EXCEPTION 'Asset hierarchy cannot contain a cycle' USING ERRCODE='23514';
+    END IF;
+    v_seen:=array_append(v_seen,v_parent);
+    SELECT a.parent_asset_id INTO v_parent
+    FROM maintenance_assets a
+    WHERE a.id=v_parent AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Asset ancestry must remain inside the same factory' USING ERRCODE='23503';
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END;
+$;
+
+CREATE OR REPLACE FUNCTION factoryos_prevent_maintenance_entity_delete()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+  RAISE EXCEPTION 'Maintenance registry, plan and work-order records are retained for audit; use lifecycle transitions'
+    USING ERRCODE='55000';
+END;
+$;
+CREATE TRIGGER trg_maintenance_asset_delete_guard
+BEFORE DELETE ON maintenance_assets
+FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
+CREATE TRIGGER trg_maintenance_pm_plan_delete_guard
+BEFORE DELETE ON maintenance_pm_plans
+FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
+CREATE TRIGGER trg_maintenance_work_order_delete_guard
+BEFORE DELETE ON maintenance_work_orders
+FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
+
 -- A changed maintenance record must advance exactly one version. The service
 -- records the matching immutable event in the same transaction.
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_asset_update()
