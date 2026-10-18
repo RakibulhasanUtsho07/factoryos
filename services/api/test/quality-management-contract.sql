@@ -102,12 +102,29 @@ BEGIN
     RAISE EXCEPTION 'Versioned inspection-plan, criterion and result guards are missing';
   END IF;
 
+  IF factoryos_evaluate_quality_criterion(
+      '{"value_type":"NUMERIC","comparison_operator":"BETWEEN","lower_limit":10,"upper_limit":12}'::jsonb,
+      '11.5') <> 'PASS'
+    OR factoryos_evaluate_quality_criterion(
+      '{"value_type":"NUMERIC","comparison_operator":"BETWEEN","lower_limit":10,"upper_limit":12}'::jsonb,
+      '12.5') <> 'FAIL'
+    OR factoryos_evaluate_quality_criterion(
+      '{"value_type":"ENUM","comparison_operator":"IN","allowed_values":["A","B"]}'::jsonb,
+      'B') <> 'PASS'
+    OR factoryos_evaluate_quality_criterion(
+      '{"value_type":"BOOLEAN","comparison_operator":"EQ","target_value":"true"}'::jsonb,
+      'false') <> 'FAIL' THEN
+    RAISE EXCEPTION 'Inspection-criterion evaluator returned an incorrect acceptance result';
+  END IF;
+
   IF to_regprocedure('factoryos_quality_sync_traceability_hold()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_inventory_issue()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_inventory_reservation()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_hold()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_report()') IS NULL
     OR position('NCR requires containment, corrective and preventive actions'
+      IN pg_get_functiondef('factoryos_quality_guard_ncr_close()'::regprocedure)) = 0
+    OR position('a resolved inspection and no active quality hold'
       IN pg_get_functiondef('factoryos_quality_guard_ncr_close()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'Quality-to-traceability, inventory, work-order or CAPA enforcement is incomplete';
   END IF;

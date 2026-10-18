@@ -31,7 +31,7 @@ All endpoints are mounted under `/api`. They require authenticated actor, verifi
 }
 ```
 
-Supported targets are `INVENTORY_ITEM`, `TRACEABILITY_UNIT`, `GOODS_RECEIPT_LINE`, `PRODUCTION_REPORT` and `WORK_ORDER`. Inspection types are `INCOMING`, `IN_PROCESS`, `FINAL`, `INVENTORY` and `SUPPLIER`. Item, GRN, production report and work-order references must exist inside the authenticated factory. A GRN inspection requires a posted receipt. The selected `plan_code` is retained with the inspection; reusable versioned plan authoring and measured results per inspection criterion are a separate follow-up, not inferred from this field.
+Supported targets are `INVENTORY_ITEM`, `TRACEABILITY_UNIT`, `GOODS_RECEIPT_LINE`, `PRODUCTION_REPORT` and `WORK_ORDER`. Inspection types are `INCOMING`, `IN_PROCESS`, `FINAL`, `INVENTORY` and `SUPPLIER`. Item, GRN, production report and work-order references must exist inside the authenticated factory. A GRN inspection requires a posted receipt. Incoming, in-process and final inspections require an ACTIVE versioned plan with criteria; the selected plan revision is snapshotted onto the inspection. Inventory and supplier inspections may omit a plan only when the factory process does not require one.
 
 ## Versioned inspection plans and measured results
 
@@ -56,7 +56,7 @@ An ON_HOLD inspection can return to IN_PROGRESS only after a REWORK disposition 
 
 Every decision checks `expected_version`. A stale update returns a conflict instead of overwriting another inspector's work. Repeating the same key with the same request replays the original record; the same key with a different request conflicts. Defects may only be reported against OPEN or IN_PROGRESS inspections, require a valid defect code, a `CRITICAL`, `MAJOR` or `MINOR` severity, positive affected quantity and non-empty description. Evidence JSON can hold measurement links, certificates or operator notes. Defect reporting is append-only evidence; the permitted disposition is recorded separately.
 
-`FAIL` requires at least one open defect. `PASS` is blocked while defects remain OPEN. Rework defects are resolved by a successful follow-up inspection; an inspection cannot be cancelled while defects remain OPEN/REWORK. FAIL/HOLD creates an active hold and a corresponding NCR. An NCR cannot close until all three action types—`CONTAINMENT`, `CORRECTIVE` and `PREVENTIVE`—are recorded and no defect for the inspection remains OPEN or in REWORK.
+`FAIL` requires at least one open defect. `PASS` is blocked while defects remain OPEN. Rework defects are resolved by a successful follow-up inspection; an inspection cannot be cancelled while defects remain OPEN/REWORK. FAIL/HOLD creates an active hold and a corresponding NCR. An NCR cannot close until all three action types—`CONTAINMENT`, `CORRECTIVE` and `PREVENTIVE`—are recorded, no defect for the inspection remains OPEN or in REWORK, the inspection is `PASSED` or `DISPOSITIONED`, and no active quality hold remains. The service and database guard both enforce this gate.
 
 ## Quarantine and disposition
 
