@@ -8,6 +8,7 @@ DECLARE
   v_parent_status VARCHAR(16);
   v_seen UUID[] := ARRAY[]::UUID[];
 BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text || ':' || NEW.factory_id::text || ':maintenance-asset-tree',0));
   IF NEW.parent_asset_id IS NULL THEN
     RETURN NEW;
   END IF;
@@ -60,8 +61,9 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
 -- A changed maintenance record must advance exactly one version. The service
 -- records the matching immutable event in the same transaction.
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_asset_update()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $
 BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text || ':' || NEW.factory_id::text || ':maintenance-asset-tree',0));
   IF NEW.row_version <> OLD.row_version + 1 THEN
     RAISE EXCEPTION 'Asset updates must increment row_version exactly once' USING ERRCODE='23514';
   END IF;
