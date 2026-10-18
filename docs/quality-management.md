@@ -91,3 +91,7 @@ Regression coverage:
 - `services/api/test/quality-management-contract.sql` — migration, tenant RLS and cross-module enforcement contract.
 
 **Current boundary:** the workflow supports reusable versioned inspection plans, per-criterion acceptance rules/measurement records, defect evidence, hold/release/disposition and NCR/CAPA. Physical QR/barcode rendering, RFID capture, offline mobile sync and lot-aware partial stock consumption remain separate integration capabilities.
+
+## External inspection and quality event reconciliation
+
+External QMS/MES event streams use the signed integration contract described in [operational event reconciliation](./operational-event-reconciliation.md). Stable reconciliation keys allow the system to surface duplicate or conflicting inspection evidence across connectors, while source event IDs and sequence/watermark fields expose delivery gaps. Reconciliation cases are review evidence only: resolving a mismatch does not change inspection results, NCR/CAPA status, disposition or active quality holds. Those decisions must still pass the quality endpoints, permissions and lifecycle guards documented above.
