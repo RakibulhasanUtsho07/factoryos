@@ -96,7 +96,7 @@ BEGIN
     occurred_at,idempotency_key,request_hash,capture_metadata,recorded_by_user_id,correlation_id
   ) VALUES (
     v_tenant,v_factory,v_assignment,v_worker,'CLOCK_IN','BIOMETRIC','ci-wfc-clock-in-001',
-    v_start+INTERVAL '5 minutes','ci-wfc-clock-in-001',v_hash,'{"device":"CI-reader"}'::jsonb,
+    v_start+INTERVAL '5 minutes','ci-wfc-clock-in-001',v_hash,'{"device_id":"CI-reader"}'::jsonb,
     v_actor,gen_random_uuid()
   );
   INSERT INTO workforce_attendance_events (
@@ -118,7 +118,7 @@ BEGIN
     request_hash,capture_metadata,recorded_by_user_id,correlation_id
   ) VALUES (
     v_tenant,v_factory,v_assignment,v_worker,'CLOCK_OUT','MANUAL',
-    v_end+INTERVAL '45 minutes','ci-wfc-clock-out-001',v_hash,'{"supervisor_checked":true}'::jsonb,v_actor,gen_random_uuid()
+    v_end+INTERVAL '45 minutes','ci-wfc-clock-out-001',v_hash,'{"capture_method":"MANUAL_SUPERVISOR_VERIFIED"}'::jsonb,v_actor,gen_random_uuid()
   );
 
   -- Attendance correction is a versioned overlay; the original reader event remains unchanged.
