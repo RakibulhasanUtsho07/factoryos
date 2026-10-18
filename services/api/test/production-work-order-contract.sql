@@ -247,6 +247,8 @@ BEGIN
      OR to_regprocedure('factoryos_require_production_output_before_order_completion()') IS NULL
      OR position('finished-good inventory movement must receipt exactly'
        IN pg_get_functiondef('factoryos_guard_production_output_posting()'::regprocedure)) = 0
+     OR position('aggregate inventory balance'
+       IN pg_get_functiondef('factoryos_guard_production_output_posting()'::regprocedure)) = 0
      OR position('matching yield/scrap and inventory posting before commit'
        IN pg_get_functiondef('factoryos_require_production_output_posting()'::regprocedure)) = 0
      OR position('accepted good output'
