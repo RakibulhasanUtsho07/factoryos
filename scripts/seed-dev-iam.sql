@@ -182,7 +182,24 @@ WHERE r.code = 'ORG_ADMIN'
     'maintenance.workorders.read',
     'maintenance.workorders.manage',
     'maintenance.workorders.execute',
-    'maintenance.parts.manage'
+    'maintenance.parts.manage',
+    'workforce.workers.read',
+    'workforce.workers.manage',
+    'workforce.skills.read',
+    'workforce.skills.manage',
+    'workforce.shifts.read',
+    'workforce.shifts.manage',
+    'workforce.staffing.read',
+    'workforce.staffing.manage',
+    'workforce.attendance.read',
+    'workforce.attendance.capture',
+    'workforce.attendance.correct',
+    'workforce.overtime.read',
+    'workforce.overtime.request',
+    'workforce.overtime.approve',
+    'workforce.productivity.read',
+    'workforce.productivity.capture',
+    'workforce.self.read'
   );
 
 COMMIT;

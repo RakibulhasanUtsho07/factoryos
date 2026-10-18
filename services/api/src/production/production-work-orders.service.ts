@@ -705,7 +705,15 @@ export class ProductionWorkOrdersService {
     }, async (client) => {
       const eventKey = this.scopedEventKey(workOrderId, command, key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
-      if (replay) return { workOrderId, replayed: true as const };
+      if (replay) {
+        const priorEvent = await client.query<{ id: string }>(`
+          SELECT id::text AS id FROM work_order_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+          LIMIT 1
+        `, [tenantId, factoryId, eventKey]);
+        if (!priorEvent.rows[0]) throw new ConflictException('The prior shop-floor command has no canonical event record');
+        return { workOrderId, eventId: priorEvent.rows[0].id, replayed: true as const };
+      }
 
       const orderResult = await client.query<WorkOrderRow>(`
         SELECT ${WORK_ORDER_COLUMNS}
@@ -1149,7 +1157,17 @@ export class ProductionWorkOrdersService {
     }, async (client) => {
       const eventKey = this.scopedEventKey(workOrderId, 'OPERATION_EVENT', key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
-      if (replay) return { workOrderId, replayed: true as const };
+      if (replay) {
+        const priorEvent = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM work_order_events
+           WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3`,
+          [tenantId, factoryId, eventKey],
+        );
+        if (!priorEvent.rows[0]) {
+          throw new ConflictException('The idempotent shop-floor event exists without retrievable source evidence');
+        }
+        return { workOrderId, eventId: priorEvent.rows[0].id, replayed: true as const };
+      }
 
       const parentResult = await client.query<WorkOrderRow>(`
         SELECT ${WORK_ORDER_COLUMNS}
@@ -1633,7 +1651,11 @@ export class ProductionWorkOrdersService {
         });
       }
     }
-    return { ...workOrder, replayed: result.replayed };
+    return {
+      ...workOrder,
+      source_operation_event_id: result.eventId,
+      replayed: result.replayed,
+    };
   }
 
   async reportOutput(
@@ -1681,23 +1703,29 @@ export class ProductionWorkOrdersService {
           production_report_id: string;
           production_output_posting_id: string | null;
           inventory_movement_id: string | null;
+          source_operation_event_id: string | null;
           yield_percentage: string | null;
           cumulative_yield_percentage: string | null;
         }>(`
           SELECT r.id::text AS production_report_id, p.id::text AS production_output_posting_id,
             p.inventory_movement_id::text AS inventory_movement_id,
+            e.id::text AS source_operation_event_id,
             p.yield_percentage::text AS yield_percentage,
             p.cumulative_yield_percentage::text AS cumulative_yield_percentage
           FROM order_production_reports r
           LEFT JOIN production_output_postings p
             ON p.production_report_id = r.id AND p.tenant_id = r.tenant_id AND p.factory_id = r.factory_id
+          LEFT JOIN work_order_events e
+            ON e.work_order_id=r.work_order_id AND e.operation_id=r.work_order_operation_id
+              AND e.tenant_id=r.tenant_id AND e.factory_id=r.factory_id
+              AND e.event_type='OUTPUT_REPORTED' AND e.payload->>'production_report_id'=r.id::text
           WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.work_order_id = $3
             AND r.idempotency_key = $4
           LIMIT 1
         `, [tenantId, factoryId, workOrderId, `work-order-output:${eventKey}`]);
         const previousOutput = previous.rows[0];
         if (!previousOutput?.production_report_id || !previousOutput.production_output_posting_id
-          || previousOutput.yield_percentage === null || previousOutput.cumulative_yield_percentage === null) {
+          || !previousOutput.source_operation_event_id || previousOutput.yield_percentage === null || previousOutput.cumulative_yield_percentage === null) {
           throw new ConflictException('The original output report has no matching inventory/yield posting; reconcile the historical report before retrying');
         }
         return {
@@ -1705,6 +1733,7 @@ export class ProductionWorkOrdersService {
           productionReportId: previousOutput.production_report_id,
           productionOutputPostingId: previousOutput.production_output_posting_id,
           inventoryMovementId: previousOutput.inventory_movement_id,
+          sourceOperationEventId: previousOutput.source_operation_event_id,
           yieldPercentage: previousOutput.yield_percentage,
           cumulativeYieldPercentage: previousOutput.cumulative_yield_percentage,
           replayed: true as const,
@@ -1854,7 +1883,7 @@ export class ProductionWorkOrdersService {
       `, [operation.id, workOrder.id, tenantId, factoryId, operation.row_version]);
       if (opUpdate.rowCount !== 1) throw new ConflictException('Operation changed while output was reported');
 
-      await this.appendEvent(client, {
+      const outputEvent = await this.appendEvent(client, {
         tenantId, factoryId, workOrderId: workOrder.id, operationId: operation.id,
         eventType: 'OUTPUT_REPORTED', fromStatus: operation.status, toStatus: operation.status,
         source, occurredAt, deviceId, idempotencyKey: eventKey, requestHash, actorUserId: userId,
@@ -1877,6 +1906,7 @@ export class ProductionWorkOrdersService {
       return {
         workOrderId, productionReportId, productionOutputPostingId,
         inventoryMovementId: finishedGoodsReceipt.movementId,
+        sourceOperationEventId: outputEvent.id,
         yieldPercentage, cumulativeYieldPercentage, replayed: false as const,
       };
     });
@@ -1900,6 +1930,7 @@ export class ProductionWorkOrdersService {
       ...workOrder,
       production_report_id: result.productionReportId,
       production_output_posting_id: result.productionOutputPostingId,
+      source_operation_event_id: result.sourceOperationEventId,
       finished_good_movement_id: result.inventoryMovementId,
       output_yield_percentage: result.yieldPercentage,
       cumulative_yield_percentage: result.cumulativeYieldPercentage,

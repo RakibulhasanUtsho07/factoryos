@@ -187,6 +187,12 @@ jobs:
             migrations/099_maintenance_assets_and_pm_plans.sql
             migrations/100_maintenance_work_orders_and_spares.sql
             migrations/101_maintenance_lifecycle_audit_guards.sql
+            migrations/102_workforce_shift_attendance_productivity.sql
+            migrations/103_workforce_lifecycle_audit_guards.sql
+            migrations/104_workforce_command_idempotency.sql
+            migrations/105_workforce_self_service_role.sql
+            migrations/106_workforce_consent_timeline_and_output_attribution.sql
+            migrations/107_workforce_shift_revision_and_attendance_corrections.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -272,6 +278,8 @@ jobs:
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-management-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/workforce-management-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/workforce-lifecycle.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
