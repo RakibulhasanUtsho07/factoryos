@@ -1011,7 +1011,6 @@ export class OrdersService {
                     AND wo.source_order_line_id = ol.id
                     AND wo.tenant_id = ol.tenant_id
                     AND wo.factory_id = ol.factory_id
-                    AND wo.status = 'COMPLETED'
                 )
                 AND COALESCE((
                   SELECT SUM(r.good_quantity)
