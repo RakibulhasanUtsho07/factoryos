@@ -190,6 +190,7 @@ jobs:
             migrations/102_workforce_shift_attendance_productivity.sql
             migrations/103_workforce_lifecycle_audit_guards.sql
             migrations/104_workforce_command_idempotency.sql
+            migrations/105_workforce_self_service_role.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
