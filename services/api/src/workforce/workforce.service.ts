@@ -509,7 +509,7 @@ export class WorkforceService {
     const key=this.idempotencyKey(rawKey);
     const reason=this.requiredText(dto.reason,'reason',2000);
     const approvedMinutes=dto.action==='APPROVE'?(dto.approved_minutes??0):0;
-    if(dto.action==='APPROVE'&&approvedMinutes<1) throw new BadRequestException('approved_minutes must be positive for approval');
+    if(dto.action==='APPROVE'&&(approvedMinutes<1||approvedMinutes>1440)) throw new BadRequestException('approved_minutes must be between 1 and 1440 for approval');
     if(dto.action==='REJECT'&&(dto.approved_minutes??0)!==0) throw new BadRequestException('approved_minutes must be zero when rejecting overtime');
     const hash=this.hash({overtime_id:id,expected_version:dto.expected_version,action:dto.action,approved_minutes:approvedMinutes,reason});
     return this.transaction(c,`workforce:overtime-decision:${key}`,async(client)=>{
@@ -673,7 +673,7 @@ export class WorkforceService {
     const gaps=await Promise.all(uncovered.map(async(row)=>{
       const candidates=await this.database.query<Row>(
         `SELECT w.id::text AS worker_id,w.employee_code,w.display_name,
-          count(DISTINCT ws.skill_id)::int AS active_skill_count
+          count(DISTINCT sk.id)::int AS active_skill_count
          FROM workforce_workers w
          LEFT JOIN workforce_worker_skills ws ON ws.worker_id=w.id AND ws.tenant_id=w.tenant_id AND ws.factory_id=w.factory_id
           AND ws.status='ACTIVE' AND (ws.certificate_expires_on IS NULL OR ws.certificate_expires_on >= $4::date)
@@ -692,7 +692,7 @@ export class WorkforceService {
               AND tstzrange(other.planned_start_at,other.planned_end_at,'[)')
                 && tstzrange($7::timestamptz,$8::timestamptz,'[)'))
          GROUP BY w.id,w.employee_code,w.display_name
-         ORDER BY count(DISTINCT ws.skill_id) DESC,w.employee_code LIMIT 5`,
+         ORDER BY count(DISTINCT sk.id) DESC,w.employee_code LIMIT 5`,
         [c.tenantId,c.factoryId,String(row.worker_id),day,row.required_skill_code??null,String(row.assignment_id),
           String(row.planned_start_at),String(row.planned_end_at)],this.dbContext(c),
       );
