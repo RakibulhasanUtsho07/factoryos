@@ -5,7 +5,9 @@ BEGIN;
 CREATE OR REPLACE FUNCTION factoryos_seed_workforce_worker_role()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $
 DECLARE
   v_role_id UUID;
 BEGIN
@@ -25,6 +27,7 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION factoryos_seed_workforce_worker_role() FROM PUBLIC;
 CREATE TRIGGER trg_tenants_seed_workforce_worker_role
 AFTER INSERT ON tenants
 FOR EACH ROW EXECUTE FUNCTION factoryos_seed_workforce_worker_role();
