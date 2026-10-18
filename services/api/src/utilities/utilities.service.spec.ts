@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { UtilitiesService } from './utilities.service';
-import type { CreateUtilityEventDto, CreateUtilityMeterDto, ListUtilityReadingsQueryDto, RecordUtilityReadingDto } from './utilities.dto';
+import type { CreateUtilityMeterDto, ListUtilityReadingsQueryDto, RecordUtilityReadingDto, TransitionUtilityEventDto } from './utilities.dto';
 
 const USER='921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TENANT='faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -60,8 +60,8 @@ describe('UtilitiesService request validation',()=>{
   });
 
   it('requires resolution evidence for utility-event completion',async()=>{
-    const dto={action:'RESOLVE',expected_version:2,reason:'Restored'} as CreateUtilityEventDto;
-    await expect(service.transitionEvent(context,METER,dto as never)).rejects.toBeInstanceOf(BadRequestException);
+    const dto={action:'RESOLVE',expected_version:2,reason:'Restored'} as TransitionUtilityEventDto;
+    await expect(service.transitionEvent(context,METER,dto).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
 });
