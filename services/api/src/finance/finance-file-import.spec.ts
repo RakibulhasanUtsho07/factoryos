@@ -77,7 +77,7 @@ describe('finance file import contract', () => {
     expect(() => parseFinanceFileImport({
       ...fileDto('JSON', JSON.stringify([fact])),
       content_base64: '!!bad!!',
-    })).toThrow('exceeds 2 MiB');
+    })).toThrow('canonical base64');
     expect(() => parseFinanceFileImport({
       ...fileDto('JSON', JSON.stringify([fact])),
       format: 'XML' as 'JSON',
@@ -86,6 +86,6 @@ describe('finance file import contract', () => {
     expect(() => parseFinanceFileImport({
       ...fileDto('JSON', JSON.stringify([fact])),
       content_base64: oversized,
-    })).toThrow('canonical base64');
+    })).toThrow('exceeds 2 MiB');
   });
 });
