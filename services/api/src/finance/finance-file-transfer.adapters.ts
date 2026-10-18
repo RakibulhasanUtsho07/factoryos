@@ -21,6 +21,12 @@ export interface FinanceSftpUploadResult {
 
 export interface FinanceSftpTransport {
   /**
+   * Implementations must make upload idempotent: the caller uses a content-
+   * digest-derived basename. If that name already exists, verify the remote
+   * bytes have the same SHA-256 rather than silently replacing different bytes.
+   * Upload via a temporary file followed by an atomic rename where supported.
+   */
+  /**
    * Deployment adapter contract. The implementation must resolve auth material
    * via secret_reference, pin/verify host keys, constrain egress and protect
    * temporary files. Credential bytes must never be returned to callers/logs.
@@ -54,6 +60,28 @@ export interface FinanceSftpTransport {
     content: Buffer;
     sha256: string;
   }): Promise<FinanceSftpUploadResult>;
+}
+
+export function matchesFinanceSftpFilePattern(configuration: FinanceSftpConfiguration, fileName: string): boolean {
+  if (!configuration.file_pattern) return true;
+  const escaped = configuration.file_pattern
+    .split('*')
+    .map((part) => part.replace(/\./g, '\\.'))
+    .join('.*');
+  return new RegExp('^' + escaped + '
+export function assertFinanceSftpRemoteFilePath(configuration: FinanceSftpConfiguration, remotePath: string, fileName: string): void {
+  const directory = configuration.remote_directory.replace(/\/+$/, '') || '/';
+  const expectedPrefix = directory === '/' ? '/' : directory + '/';
+  if (typeof remotePath !== 'string' || !remotePath.startsWith(expectedPrefix) ||
+      remotePath.length > 768 || remotePath.slice(expectedPrefix.length).includes('/') ||
+      remotePath.slice(expectedPrefix.length).includes('\\') ||
+      remotePath.slice(expectedPrefix.length) !== fileName ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(fileName) ||
+      fileName === '.' || fileName === '..') {
+    throw new Error('FINANCE_SFTP_REMOTE_PATH_OUTSIDE_CONFIGURED_DIRECTORY');
+  }
+}
+).test(fileName);
 }
 
 /** Fail closed if the adapter returns a path outside the configured folder or a non-basename. */

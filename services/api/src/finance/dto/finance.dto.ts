@@ -369,23 +369,3 @@ export class FinanceFileExportDto {
   @IsIn(FINANCE_FACT_TYPES)
   fact_type?: (typeof FINANCE_FACT_TYPES)[number];
 }
-
-
-export class FinanceFileExportDto {
-  @IsString()
-  @IsIn(['CSV', 'JSON'])
-  format!: 'CSV' | 'JSON';
-
-  @IsOptional()
-  @IsDateString()
-  from?: string;
-
-  @IsOptional()
-  @IsDateString()
-  to?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(FINANCE_FACT_TYPES)
-  fact_type?: (typeof FINANCE_FACT_TYPES)[number];
-}

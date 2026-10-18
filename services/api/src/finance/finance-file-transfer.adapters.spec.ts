@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { assertFinanceSftpRemoteFilePath } from './finance-file-transfer.adapters';
+import { assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern } from './finance-file-transfer.adapters';
 import type { FinanceSftpConfiguration } from './finance-contract';
 
 const config: FinanceSftpConfiguration = {
@@ -12,6 +12,12 @@ const config: FinanceSftpConfiguration = {
 };
 
 describe('finance SFTP transport boundary', () => {
+  it('matches configured file patterns without accepting path syntax', () => {
+    expect(matchesFinanceSftpFilePattern({ ...config, file_pattern: 'finance-*.csv' }, 'finance-20261018.csv')).toBe(true);
+    expect(matchesFinanceSftpFilePattern({ ...config, file_pattern: 'finance-*.csv' }, 'secrets.csv')).toBe(false);
+    expect(matchesFinanceSftpFilePattern({ ...config, file_pattern: 'finance-*.csv' }, 'finance-../secrets.csv')).toBe(false);
+  });
+
   it('accepts only simple file paths directly beneath the configured remote directory', () => {
     expect(() => assertFinanceSftpRemoteFilePath(config, '/incoming/finance/batch-01.csv', 'batch-01.csv')).not.toThrow();
     expect(() => assertFinanceSftpRemoteFilePath(config, '/incoming/finance/../secrets.csv', '../secrets.csv'))

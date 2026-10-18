@@ -41,7 +41,7 @@ import { FinanceFileImportDto, CreateFinanceConnectorDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
 import { FinanceFileValidationError, parseFinanceFileImport, type ParsedFinanceFileImport } from './finance-file-import';
-import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, type FinanceSftpTransport } from './finance-file-transfer.adapters';
+import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpTransport } from './finance-file-transfer.adapters';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -461,6 +461,9 @@ export class FinanceService {
       throw new ServiceUnavailableException('SFTP host-key verification failed; refusing to read or acknowledge the remote file');
     }
     assertFinanceSftpRemoteFilePath(configuration, download.remote_path, download.file_name);
+    if (!matchesFinanceSftpFilePattern(configuration, download.file_name)) {
+      throw new BadRequestException('SFTP filename does not match the configured file_pattern; refusing to acknowledge it');
+    }
 
     const contentHash = createHash('sha256').update(download.content).digest('hex');
     const prior = await this.database.query<{

@@ -278,11 +278,13 @@ export class FinanceConnectorsController {
   async importFile(
     @Req() request: FinanceRequest,
     @Param('connectorId', new ParseUUIDPipe()) id: string,
-    @Body() body: FinanceFileImportDto,
+    @Body() body: FinanceFileImportCommitDto,
     @Headers('idempotency-key') key?: string,
   ) {
     const ctx = context(request);
-    return this.service.importFactsFile(ctx.userId, ctx.tenantId, ctx.factoryId, id, body, key ?? null, ctx.eventContext);
+    return this.service.importFactsFile(
+      ctx.userId, ctx.tenantId, ctx.factoryId, id, body, key ?? null, ctx.eventContext, body.validation_report_id,
+    );
   }
 
   @Post(':connectorId/facts')
