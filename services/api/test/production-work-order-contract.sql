@@ -102,8 +102,11 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'orders'::regclass
       AND tgname = 'trg_order_terminal_work_order_guard' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'orders'::regclass
+      AND tgname = 'trg_order_production_output_fulfillment_guard' AND NOT tgisinternal AND tgenabled <> 'D'
   ) THEN
-    RAISE EXCEPTION 'Work-order lifecycle, immutable event or sales-order terminal guards are missing';
+    RAISE EXCEPTION 'Work-order lifecycle, immutable event or production-linked sales-order completion guards are missing';
   END IF;
 
   IF NOT EXISTS (
@@ -241,11 +244,14 @@ BEGIN
 
   IF to_regprocedure('factoryos_guard_production_output_posting()') IS NULL
      OR to_regprocedure('factoryos_require_production_output_posting()') IS NULL
+     OR to_regprocedure('factoryos_require_production_output_before_order_completion()') IS NULL
      OR position('finished-good inventory movement must receipt exactly'
        IN pg_get_functiondef('factoryos_guard_production_output_posting()'::regprocedure)) = 0
      OR position('matching yield/scrap and inventory posting before commit'
-       IN pg_get_functiondef('factoryos_require_production_output_posting()'::regprocedure)) = 0 THEN
-    RAISE EXCEPTION 'Output posting trigger functions do not enforce stock-movement and yield/scrap consistency';
+       IN pg_get_functiondef('factoryos_require_production_output_posting()'::regprocedure)) = 0
+     OR position('accepted good output'
+       IN pg_get_functiondef('factoryos_require_production_output_before_order_completion()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'Output posting and sales-order completion functions do not enforce inventory/yield/fulfillment consistency';
   END IF;
 
   RAISE NOTICE 'Production work-order lifecycle, yield/scrap, finished-goods inventory linkage, IAM and tenant contracts passed';
