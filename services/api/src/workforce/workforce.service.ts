@@ -261,21 +261,6 @@ export class WorkforceService {
          new Date(String(found.biometric_consent_withdrawn_at)).getTime()<new Date(String(found.biometric_consent_at)).getTime());
       if(dto.consent_granted && consentActive) throw new ConflictException('Biometric consent is already active');
       if(!dto.consent_granted && !consentActive) throw new ConflictException('Cannot withdraw biometric consent that is not active');
-      if(dto.consent_granted) {
-        await client.query(
-          `UPDATE workforce_workers SET biometric_consent_at=clock_timestamp(),biometric_consent_withdrawn_at=NULL,
-           row_version=row_version+1,updated_by_user_id=$4,last_change_reason=$5,updated_at=clock_timestamp()
-           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
-          [worker,c.tenantId,c.factoryId,c.userId,payload.reason],
-        );
-      } else {
-        await client.query(
-          `UPDATE workforce_workers SET biometric_consent_withdrawn_at=clock_timestamp(),
-           row_version=row_version+1,updated_by_user_id=$4,last_change_reason=$5,updated_at=clock_timestamp()
-           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
-          [worker,c.tenantId,c.factoryId,c.userId,payload.reason],
-        );
-      }
       await client.query(
         `INSERT INTO workforce_biometric_consent_events
           (tenant_id,factory_id,worker_id,consent_granted,purpose,reason,idempotency_key,request_hash,recorded_by_user_id,correlation_id)
