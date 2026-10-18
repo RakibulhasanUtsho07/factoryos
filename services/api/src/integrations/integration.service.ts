@@ -9,7 +9,8 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { isUUID } from 'class-validator';
 import { DatabaseService } from '../database/database.service';
 import {
@@ -402,7 +403,7 @@ export class IntegrationService {
     }, { tenantId, userId });
   }
 
-  private async findConnector(client: { query: (...args: any[]) => Promise<any> }, tenantId: string, factoryId: string, connectorId: string, forUpdate: boolean): Promise<ConnectorRow> {
+  private async findConnector(client: PoolClient, tenantId: string, factoryId: string, connectorId: string, forUpdate: boolean): Promise<ConnectorRow> {
     if (!isUUID(connectorId)) throw new BadRequestException('connectorId must be a UUID');
     const result = await client.query<ConnectorRow>(
       'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3' + (forUpdate ? ' FOR UPDATE' : ''),
@@ -414,7 +415,7 @@ export class IntegrationService {
   }
 
   private async appendHistory(
-    client: { query: (...args: any[]) => Promise<any> },
+    client: PoolClient,
     tenantId: string,
     factoryId: string,
     connectorId: string,
