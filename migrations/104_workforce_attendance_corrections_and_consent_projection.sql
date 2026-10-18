@@ -192,7 +192,81 @@ CREATE POLICY workforce_attendance_corrections_tenant_isolation
   USING (tenant_id=factoryos_current_tenant_id())
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
-CREATE OR REPLACE FUNCTION factoryos_guard_workforce_attendance_correction()
+ALTER TABLE workforce_audit_events DROP CONSTRAINT chk_workforce_audit_entity_type;
+ALTER TABLE workforce_audit_events ADD CONSTRAINT chk_workforce_audit_entity_type CHECK (entity_type IN (
+  'WORKER','SKILL','WORKER_SKILL','SHIFT_TEMPLATE','SHIFT_ASSIGNMENT','ATTENDANCE_EVENT',
+  'ATTENDANCE_CORRECTION','OVERTIME_REQUEST','PRODUCTIVITY_REPORT','BIOMETRIC_CONSENT'
+));
+
+CREATE OR REPLACE FUNCTION factoryos_append_workforce_audit_event()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_row JSONB := to_jsonb(NEW);
+  v_actor UUID;
+  v_entity_type VARCHAR(48);
+  v_action VARCHAR(48);
+  v_version BIGINT;
+  v_event_data JSONB;
+BEGIN
+  v_entity_type := CASE TG_TABLE_NAME
+    WHEN 'workforce_workers' THEN 'WORKER'
+    WHEN 'workforce_skills' THEN 'SKILL'
+    WHEN 'workforce_worker_skills' THEN 'WORKER_SKILL'
+    WHEN 'workforce_shift_templates' THEN 'SHIFT_TEMPLATE'
+    WHEN 'workforce_shift_assignments' THEN 'SHIFT_ASSIGNMENT'
+    WHEN 'workforce_attendance_events' THEN 'ATTENDANCE_EVENT'
+    WHEN 'workforce_attendance_corrections' THEN 'ATTENDANCE_CORRECTION'
+    WHEN 'workforce_overtime_requests' THEN 'OVERTIME_REQUEST'
+    WHEN 'workforce_productivity_reports' THEN 'PRODUCTIVITY_REPORT'
+    WHEN 'workforce_biometric_consent_events' THEN 'BIOMETRIC_CONSENT'
+    ELSE NULL
+  END;
+  v_actor := COALESCE(
+    NULLIF(v_row->>'updated_by_user_id','')::UUID,
+    NULLIF(v_row->>'created_by_user_id','')::UUID,
+    NULLIF(v_row->>'recorded_by_user_id','')::UUID,
+    NULLIF(v_row->>'corrected_by_user_id','')::UUID,
+    NULLIF(v_row->>'decided_by_user_id','')::UUID,
+    NULLIF(v_row->>'actor_user_id','')::UUID,
+    factoryos_current_user_id()
+  );
+  v_version := COALESCE(NULLIF(v_row->>'row_version','')::BIGINT,NULLIF(v_row->>'correction_version','')::BIGINT,1);
+  v_action := CASE
+    WHEN TG_TABLE_NAME='workforce_biometric_consent_events'
+      THEN CASE WHEN COALESCE((v_row->>'consent_granted')::BOOLEAN,FALSE) THEN 'CONSENT_GRANTED' ELSE 'CONSENT_WITHDRAWN' END
+    WHEN TG_TABLE_NAME='workforce_attendance_events' THEN COALESCE(v_row->>'event_type','ATTENDANCE_CAPTURED')
+    WHEN TG_TABLE_NAME='workforce_attendance_corrections' THEN 'CORRECTED'
+    WHEN TG_TABLE_NAME='workforce_overtime_requests' AND TG_OP='UPDATE' THEN COALESCE(v_row->>'status','UPDATED')
+    WHEN TG_OP='INSERT' THEN 'CREATED'
+    ELSE 'UPDATED'
+  END;
+  v_event_data := jsonb_strip_nulls(jsonb_build_object(
+    'status',v_row->>'status','row_version',v_version,'event_type',v_row->>'event_type',
+    'source_type',v_row->>'source_type','operation_code',v_row->>'operation_code',
+    'requested_minutes',v_row->>'requested_minutes','approved_minutes',v_row->>'approved_minutes',
+    'consent_granted',v_row->>'consent_granted','original_event_id',v_row->>'original_event_id',
+    'correction_version',v_row->>'correction_version','corrected_event_type',v_row->>'corrected_event_type',
+    'good_quantity',v_row->>'good_quantity','scrap_quantity',v_row->>'scrap_quantity',
+    'efficiency_percent',v_row->>'efficiency_percent'
+  ));
+  IF v_actor IS NULL OR v_entity_type IS NULL THEN
+    RAISE EXCEPTION 'Workforce audit requires a known entity and authenticated actor' USING ERRCODE='42501';
+  END IF;
+  INSERT INTO workforce_audit_events (
+    tenant_id,factory_id,entity_type,entity_id,entity_version,action,actor_user_id,reason,event_data,correlation_id
+  ) VALUES (
+    (v_row->>'tenant_id')::UUID,(v_row->>'factory_id')::UUID,v_entity_type,
+    (v_row->>'id')::UUID,v_version,v_action,v_actor,
+    COALESCE(v_row->>'last_change_reason',v_row->>'reason',v_row->>'decision_reason'),
+    v_event_data,NULLIF(v_row->>'correlation_id','')::UUID
+  );
+  RETURN NEW;
+END;
+$;
+
+CREATE OR REPLACE FUNCTION factoryos_guard_workforce_productivity()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
