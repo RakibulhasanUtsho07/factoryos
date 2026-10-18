@@ -98,7 +98,7 @@ CREATE TABLE quality_inspection_plan_criteria (
     AND (value_type = 'NUMERIC' OR comparison_operator NOT IN ('GT','GTE','LT','LTE','BETWEEN'))
     AND (comparison_operator <> 'CONTAINS' OR value_type = 'TEXT')
     AND (comparison_operator <> 'IN' OR jsonb_typeof(allowed_values) = 'array')
-    AND (value_type <> 'ENUM' OR jsonb_array_length(allowed_values) > 0)
+    AND (value_type <> 'ENUM' OR comparison_operator <> 'IN' OR jsonb_array_length(allowed_values) > 0)
   ),
   CONSTRAINT chk_quality_plan_criterion_allowed_values CHECK (jsonb_typeof(allowed_values) = 'array'),
   CONSTRAINT chk_quality_plan_criterion_sequence CHECK (sequence_number > 0),
@@ -297,6 +297,9 @@ BEGIN
   END IF;
   IF NEW.value_type = 'NUMERIC' AND NEW.comparison_operator = 'IN' AND jsonb_array_length(NEW.allowed_values) = 0 THEN
     RAISE EXCEPTION 'numeric IN quality criterion requires allowed_values' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.comparison_operator = 'IN' AND jsonb_array_length(NEW.allowed_values) = 0 THEN
+    RAISE EXCEPTION 'IN quality criterion requires non-empty allowed_values' USING ERRCODE = '23514';
   END IF;
   IF NEW.value_type = 'NUMERIC' AND NEW.comparison_operator = 'BETWEEN'
     AND (NEW.lower_limit IS NULL OR NEW.upper_limit IS NULL) THEN

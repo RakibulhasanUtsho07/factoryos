@@ -45,6 +45,12 @@ export class QualityService {
         if (String(old.rows[0].request_hash).trim() !== hash) throw new ConflictException('Idempotency-Key was already used for another quality inspection');
         return { id: String(old.rows[0].id), replayed: true };
       }
+      if (planCode) {
+        const activePlan = await client.query(
+          "SELECT id FROM quality_inspection_plans WHERE tenant_id=$1 AND factory_id=$2 AND lower(plan_code)=lower($3) AND inspection_type=$4 AND status='ACTIVE' LIMIT 1",
+          [c.tenantId, c.factoryId, planCode, dto.inspection_type]);
+        if (!activePlan.rows[0]) throw new ConflictException('No ACTIVE inspection plan matches plan_code and inspection_type in this factory');
+      }
       const target = await this.resolveTarget(client, c, dto.target_type, targetId);
       const inserted = await client.query(
         "INSERT INTO quality_inspections (tenant_id,factory_id,inspection_type,target_type,target_id,inventory_item_id,traceability_unit_id,plan_code,sample_quantity,notes,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id) " +
@@ -354,7 +360,7 @@ export class QualityService {
           const required=criteria.filter(criterion=>criterion.is_required!==false);
           const latest=await client.query("SELECT DISTINCT ON (criterion_code) criterion_code,outcome FROM quality_inspection_results WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY criterion_code,attempt DESC,created_at DESC",
             [id,c.tenantId,c.factoryId]);
-          const outcomes=new Map(latest.rows.map((row:Record<string,unknown>)=>[String(row.criterion_code),String(row.outcome)]));
+          const outcomes=new Map<string,string>(latest.rows.map((row:Record<string,unknown>)=>[String(row.criterion_code),String(row.outcome)] as const));
           for(const criterion of required){
             const code=String(criterion.criterion_code);
             if(!outcomes.has(code)) throw new ConflictException('Record a result for every required inspection criterion before PASS: '+code);
@@ -543,8 +549,8 @@ export class QualityService {
     if (operator === 'IN' && allowed.length < 1) throw new BadRequestException('IN requires a non-empty allowed_values list');
     if (operator !== 'BETWEEN' && operator !== 'IN' && !targetValue) throw new BadRequestException('target_value is required for this comparison operator');
     if (valueType === 'BOOLEAN' && !['true','false'].includes((targetValue ?? '').toLowerCase())) throw new BadRequestException('BOOLEAN target_value must be true or false');
-    if (valueType === 'NUMERIC' && targetValue !== null && !Number.isFinite(Number(targetValue))) throw new BadRequestException('NUMERIC target_value must be numeric');
-    if (valueType === 'NUMERIC' && allowed.some(value => !Number.isFinite(Number(value)))) throw new BadRequestException('NUMERIC allowed_values must contain numbers');
+    if (valueType === 'NUMERIC' && targetValue !== null && (!Number.isFinite(Number(targetValue)) || Math.abs(Number(targetValue)*1e6-Math.round(Number(targetValue)*1e6)>0.000001)) throw new BadRequestException('NUMERIC target_value must be numeric with at most six decimal places');
+    if (valueType === 'NUMERIC' && allowed.some(value => !Number.isFinite(Number(value)) || Math.abs(Number(value)*1e6-Math.round(Number(value)*1e6)>0.000001)) throw new BadRequestException('NUMERIC allowed_values must contain numbers with at most six decimal places');
     return {
       criterion_code:code,name,description,value_type:valueType,comparison_operator:operator,target_value:targetValue,
       lower_limit:lower,upper_limit:upper,allowed_values:allowed,unit,is_required:required,is_critical:critical,
