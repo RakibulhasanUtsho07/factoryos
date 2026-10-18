@@ -480,8 +480,8 @@ export class WorkforceService {
     const payload={shift_assignment_id:assignment,requested_minutes:dto.requested_minutes,reason};
     const hash=this.hash(payload);
     return this.transaction(c,`workforce:overtime:${key}`,async(client)=>{
-      const replay=await this.findCommandReceipt(client,c,key,hash);
-      if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
+      const replay=await this.findIdempotent(client,'workforce_overtime_requests',c,key,hash);
+      if(replay) return { ...(await this.overtimeDetail(client,c,replay.id)),replayed:true };
       const assignmentRow=await client.query<Row>(
         `SELECT worker_id::text AS worker_id,status FROM workforce_shift_assignments
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE`,
@@ -513,8 +513,8 @@ export class WorkforceService {
     if(dto.action==='REJECT'&&(dto.approved_minutes??0)!==0) throw new BadRequestException('approved_minutes must be zero when rejecting overtime');
     const hash=this.hash({overtime_id:id,expected_version:dto.expected_version,action:dto.action,approved_minutes:approvedMinutes,reason});
     return this.transaction(c,`workforce:overtime-decision:${key}`,async(client)=>{
-      const replay=await this.findIdempotent(client,'workforce_overtime_requests',c,key,hash);
-      if(replay) return { ...(await this.overtimeDetail(client,c,replay.id)),replayed:true };
+      const replay=await this.findCommandReceipt(client,c,key,hash);
+      if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
       const current=await client.query<Row>(
         `SELECT id::text AS id,status,requested_minutes,created_by_user_id::text AS created_by_user_id,row_version::int AS row_version
          FROM workforce_overtime_requests WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,
