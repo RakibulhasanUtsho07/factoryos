@@ -63,7 +63,8 @@ export interface FinanceSftpTransport {
 }
 
 export function matchesFinanceSftpFilePattern(configuration: FinanceSftpConfiguration, fileName: string): boolean {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(fileName) || fileName === '.' || fileName === '..') {
+  const anchor = String.fromCharCode(36);
+  if (!new RegExp('^[A-Za-z0-9][A-Za-z0-9._-]{0,199}' + anchor).test(fileName) || fileName === '.' || fileName === '..') {
     return false;
   }
   if (!configuration.file_pattern) return true;
@@ -71,32 +72,18 @@ export function matchesFinanceSftpFilePattern(configuration: FinanceSftpConfigur
     .split('*')
     .map((part) => part.replace(/\./g, '\\.'))
     .join('.*');
-  return new RegExp('^' + escaped + '
-export function assertFinanceSftpRemoteFilePath(configuration: FinanceSftpConfiguration, remotePath: string, fileName: string): void {
-  const directory = configuration.remote_directory.replace(/\/+$/, '') || '/';
-  const expectedPrefix = directory === '/' ? '/' : directory + '/';
-  if (typeof remotePath !== 'string' || !remotePath.startsWith(expectedPrefix) ||
-      remotePath.length > 768 || remotePath.slice(expectedPrefix.length).includes('/') ||
-      remotePath.slice(expectedPrefix.length).includes('\\') ||
-      remotePath.slice(expectedPrefix.length) !== fileName ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(fileName) ||
-      fileName === '.' || fileName === '..') {
-    throw new Error('FINANCE_SFTP_REMOTE_PATH_OUTSIDE_CONFIGURED_DIRECTORY');
-  }
-}
-).test(fileName);
+  return new RegExp('^' + escaped + anchor).test(fileName);
 }
 
-/** Fail closed if the adapter returns a path outside the configured folder or a non-basename. */
 export function assertFinanceSftpRemoteFilePath(configuration: FinanceSftpConfiguration, remotePath: string, fileName: string): void {
-  const directory = configuration.remote_directory.replace(/\/+$/, '') || '/';
+  let directory = configuration.remote_directory;
+  while (directory.length > 1 && directory.endsWith('/')) directory = directory.slice(0, -1);
   const expectedPrefix = directory === '/' ? '/' : directory + '/';
   if (typeof remotePath !== 'string' || !remotePath.startsWith(expectedPrefix) ||
       remotePath.length > 768 || remotePath.slice(expectedPrefix.length).includes('/') ||
       remotePath.slice(expectedPrefix.length).includes('\\') ||
       remotePath.slice(expectedPrefix.length) !== fileName ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(fileName) ||
-      fileName === '.' || fileName === '..') {
+      !matchesFinanceSftpFilePattern({ ...configuration, file_pattern: undefined }, fileName)) {
     throw new Error('FINANCE_SFTP_REMOTE_PATH_OUTSIDE_CONFIGURED_DIRECTORY');
   }
 }

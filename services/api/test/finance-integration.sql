@@ -333,7 +333,7 @@ BEGIN
   END LOOP;
 END $$;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='123_finance_file_exchange_validation_reports') THEN
     RAISE EXCEPTION 'finance file exchange migration is not registered';
@@ -344,9 +344,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.finance_connectors'::regclass AND conname='chk_finance_sftp_configuration') THEN
     RAISE EXCEPTION 'pinned SFTP connector configuration guard is missing';
   END IF;
-END $;
+END $$;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='124_finance_file_import_validation_reports') THEN
     RAISE EXCEPTION 'finance file import validation-report migration is not registered';
@@ -357,9 +357,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.finance_file_import_validation_reports'::regclass AND tgname='trg_finance_file_validation_report_immutable' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'finance file validation reports must be immutable';
   END IF;
-END $;
+END $$;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='126_finance_file_export_receipts') THEN
     RAISE EXCEPTION 'finance file export receipt migration is not registered';
@@ -370,7 +370,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.finance_file_export_receipts'::regclass AND tgname='trg_finance_export_receipt_immutable' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'finance file export receipts must be immutable';
   END IF;
-END $;
+END $$;
 
-DO $ BEGIN IF NOT EXISTS(SELECT 1 FROM permissions WHERE code='finance.facts.export') THEN RAISE EXCEPTION 'finance.facts.export permission is missing'; END IF; END $;
+DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM permissions WHERE code='finance.facts.export') THEN RAISE EXCEPTION 'finance.facts.export permission is missing'; END IF; END $$;
 ROLLBACK;

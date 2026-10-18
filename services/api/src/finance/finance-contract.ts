@@ -244,7 +244,10 @@ export function validateFinanceSftpConfiguration(
   if (!remoteDirectory.startsWith('/') || remoteDirectory.length > 512 ||
       remoteDirectory.includes(String.fromCharCode(92)) ||
       remoteDirectory.split('/').some((segment) => segment === '..' || segment === '.') ||
-      /[\u0000-\u001f\u007f]/.test(remoteDirectory)) {
+      Array.from(remoteDirectory).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127;
+      })) {
     throw new Error('FINANCE_SFTP_REMOTE_DIRECTORY_INVALID');
   }
   if (value.file_format !== 'CSV' && value.file_format !== 'JSON') {

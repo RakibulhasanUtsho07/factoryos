@@ -812,7 +812,10 @@ export class FinanceService {
     const safeFileName = typeof dto.file_name === 'string' &&
       dto.file_name.trim().length > 0 && dto.file_name.trim().length <= 200 &&
       !dto.file_name.includes('/') && !dto.file_name.includes(String.fromCharCode(92)) &&
-      !/[\u0000-\u001f\u007f]/.test(dto.file_name)
+      !Array.from(dto.file_name).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127;
+      })
       ? dto.file_name.trim() : null;
     const safeFormat = dto.format === 'CSV' || dto.format === 'JSON' ? dto.format : null;
     const issues: FinanceFileValidationIssue[] = [];
