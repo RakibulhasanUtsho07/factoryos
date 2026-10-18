@@ -349,17 +349,7 @@ BEGIN
 END;
 $$;
 
--- Every operator attribution must point to one immutable operation event. This
--- prevents output from being invented or counted against multiple source events.
-ALTER TABLE workforce_productivity_reports
-  ADD COLUMN source_operation_event_id UUID;
-ALTER TABLE workforce_productivity_reports
-  ADD CONSTRAINT fk_workforce_productivity_source_event
-    FOREIGN KEY (source_operation_event_id,tenant_id,factory_id)
-    REFERENCES work_order_events(id,tenant_id,factory_id) ON DELETE RESTRICT;
-CREATE UNIQUE INDEX uq_workforce_productivity_source_event_worker
-  ON workforce_productivity_reports (source_operation_event_id,worker_id)
-  WHERE source_operation_event_id IS NOT NULL;
+-- Productivity attribution schema and source-event index are established by migration 106.
 
 CREATE OR REPLACE FUNCTION factoryos_guard_workforce_overtime()
 RETURNS trigger
