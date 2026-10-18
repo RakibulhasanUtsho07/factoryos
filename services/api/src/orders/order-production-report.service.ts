@@ -306,7 +306,7 @@ export class OrderProductionReportService {
           )
           RETURNING id::text AS id
         `, [
-          tenantId, factoryId, report.id, line.inventory_item_id, finishedGoodsReceipt.movementId,
+          tenantId, factoryId, report.id, finishedItemId, finishedGoodsReceipt.movementId,
           goodQuantity, scrapQuantity, yieldPercentage, cumulativeYieldPercentage,
           `order-production-output:${report.id}`, postingHash, userId, correlationId,
         ]);
@@ -393,9 +393,9 @@ export class OrderProductionReportService {
             cumulativeGoodQuantity: result.cumulative_good_quantity,
             cumulativeScrapQuantity: result.cumulative_scrap_quantity,
             yieldPercent: result.yield_percent,
-      reportYieldPercent: result.report_yield_percent,
-      productionOutputPostingId: result.production_output_posting_id,
-      finishedGoodMovementId: result.finished_good_movement_id,
+            reportYieldPercent: result.report_yield_percent,
+            productionOutputPostingId: result.production_output_posting_id,
+            finishedGoodMovementId: result.finished_good_movement_id,
           },
         });
       } catch {
