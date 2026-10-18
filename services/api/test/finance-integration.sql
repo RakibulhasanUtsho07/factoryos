@@ -48,6 +48,9 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='115_finance_file_import_metadata') THEN
     RAISE EXCEPTION 'Finance file import migration is not registered';
   END IF;
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='116_finance_file_import_metadata_integrity') THEN
+    RAISE EXCEPTION 'Finance file import integrity migration is not registered';
+  END IF;
   SELECT id INTO reviewer_id FROM users WHERE email='manager@factoryos.local';
   IF reviewer_id IS NULL THEN RAISE EXCEPTION 'Independent finance review test user is missing'; END IF;
 END $$;

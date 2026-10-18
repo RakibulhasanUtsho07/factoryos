@@ -201,6 +201,7 @@ jobs:
             migrations/113_deterministic_should_cost_engine.sql
             migrations/114_finance_integration_contract.sql
             migrations/115_finance_file_import_metadata.sql
+            migrations/116_finance_file_import_metadata_integrity.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
