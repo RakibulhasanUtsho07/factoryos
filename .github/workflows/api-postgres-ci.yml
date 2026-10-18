@@ -178,6 +178,7 @@ jobs:
             migrations/090_production_work_order_operation_lifecycle.sql
             migrations/091_production_output_inventory_posting.sql
             migrations/092_order_production_report_work_order_routing_guard.sql
+            migrations/093_quality_inspection_ncr_holds_disposition.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -223,6 +224,8 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/traceability.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-management-contract.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql

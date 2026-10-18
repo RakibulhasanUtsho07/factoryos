@@ -7,7 +7,9 @@ import {
   CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityNcrActionDto,
   ListQualityInspectionsQueryDto, QualityDispositionDto, QualityInspectionDecisionDto,
 } from './quality.dto';
-import type { QualityContext } from './quality.controller';
+interface QualityContext {
+  userId: string; tenantId: string; factoryId: string; requestId?: string | null; traceId?: string | null;
+}
 
 const INSPECTION_COLUMNS =
   "id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id, " +
@@ -359,7 +361,7 @@ export class QualityService {
     const found=await client.query("SELECT status,row_version::int AS row_version FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",[id,c.tenantId,c.factoryId]);
     const row=found.rows[0];if(!row)throw new NotFoundException('Quality defect was not found');
     if(Number(row.row_version)!==expected)throw new ConflictException('Quality defect version is stale');
-    if(row.status!=='OPEN')throw new ConflictException('Only open defects can be disposed by this action');
+    if(row.status!=='OPEN' && !(row.status==='REWORK' && status==='RESOLVED'))throw new ConflictException('Only open defects or rework defects being resolved can be updated');
     const upd=await client.query("UPDATE quality_defects SET status=$1,row_version=row_version+1,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",
       [status,c.userId,id,c.tenantId,c.factoryId,expected]);
     const version=Number(upd.rows[0]?.row_version??0);if(!version)throw new ConflictException('Quality defect changed during disposition');

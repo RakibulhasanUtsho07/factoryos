@@ -341,7 +341,7 @@ BEGIN
     IF NOT (
       (OLD.status IN ('OPEN', 'ON_HOLD') AND NEW.status = 'IN_PROGRESS')
       OR (OLD.status = 'IN_PROGRESS' AND NEW.status IN ('PASSED', 'FAILED', 'ON_HOLD', 'CANCELLED'))
-      OR (OLD.status IN ('FAILED', 'ON_HOLD') AND NEW.status IN ('DISPOSITIONED', 'ON_HOLD'))
+      OR (OLD.status IN ('FAILED', 'ON_HOLD', 'PASSED') AND NEW.status IN ('DISPOSITIONED', 'ON_HOLD'))
     ) THEN
       RAISE EXCEPTION 'invalid quality inspection transition: % -> %', OLD.status, NEW.status
         USING ERRCODE = '23514';
@@ -484,7 +484,8 @@ BEGIN
     ROW(OLD.id, OLD.tenant_id, OLD.factory_id, OLD.inspection_id, OLD.defect_code, OLD.severity,
       OLD.affected_quantity, OLD.description, OLD.evidence, OLD.idempotency_key, OLD.request_hash,
       OLD.reported_by_user_id, OLD.correlation_id, OLD.created_at)
-    OR OLD.status <> 'OPEN' OR NEW.status NOT IN ('ACCEPTED', 'REWORK', 'RESOLVED', 'SCRAPPED', 'RETURNED')
+    OR OLD.status NOT IN ('OPEN', 'REWORK') OR NEW.status NOT IN ('ACCEPTED', 'REWORK', 'RESOLVED', 'SCRAPPED', 'RETURNED')
+    OR (OLD.status = 'REWORK' AND NEW.status <> 'RESOLVED')
     OR NEW.row_version <> OLD.row_version + 1 OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
     OR NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'quality defect evidence is immutable except for a single evidenced disposition'
