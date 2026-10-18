@@ -19,7 +19,7 @@ DECLARE
     'trg_workforce_attendance_event_guard','trg_workforce_overtime_guard','trg_workforce_productivity_guard',
     'trg_workforce_workers_audit','trg_workforce_skills_audit','trg_workforce_worker_skills_audit',
     'trg_workforce_shifts_audit','trg_workforce_assignments_audit','trg_workforce_attendance_audit',
-    'trg_workforce_overtime_audit','trg_workforce_productivity_audit','trg_workforce_biometric_consent_audit','trg_workforce_biometric_consent_actor_guard',
+    'trg_workforce_overtime_audit','trg_workforce_productivity_audit','trg_workforce_biometric_consent_audit','trg_workforce_biometric_consent_actor_guard','trg_workforce_consent_projection',
     'trg_workforce_attendance_evidence_immutable','trg_workforce_productivity_evidence_immutable',
     'trg_workforce_biometric_consent_immutable','trg_workforce_audit_evidence_immutable',
     'trg_workforce_command_receipt_immutable','trg_tenants_seed_workforce_worker_role',
