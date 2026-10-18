@@ -32,6 +32,7 @@ import { UtilitiesModule } from './utilities/utilities.module';
 import { EhsModule } from './ehs/ehs.module';
 import { CommercialModule } from './commercial/commercial.module';
 import { ShouldCostModule } from './should-cost/should-cost.module';
+import { FinanceModule } from './finance/finance.module';
 import { WorkforceModule } from './workforce/workforce.module';
 
 import { PolicyModule } from './policy/policy.module';
@@ -83,6 +84,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     CommercialModule,
 
     ShouldCostModule,
+
+    FinanceModule,
 
     ProcurementModule,
 
