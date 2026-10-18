@@ -59,4 +59,4 @@ The resulting manufacturing order starts in DRAFT; order confirmation, inventory
 |---|---|
 | FR-FIN-01 — versioned quotation-to-order commercial records, price, currency, tax, incoterms/payment terms, customer rules and approval history | Implemented with version snapshots, pricing rules, effective-dated FX, lifecycle/approval trail and accepted-quote conversion |
 | FR-SUP-04 — quote/order/approval commercial history | Quotation history and order-linked conversion record implemented; RFQ, customer complaint/RMA and external customer communications remain separate slices |
-| AS-61 / FR-FIN-02 — deterministic should-cost evidence and approval gating | Implemented in docs/should-cost-engine.md; full FR-FIN-03 profitability and actual-cost/variance reporting remain separate work |
+| AS-61 / FR-FIN-02 — deterministic should-cost evidence and approval gating | Implemented in docs/should-cost-engine.md; finance fact ingestion and first actual/forecast margin inputs are documented in docs/finance-integration-contract.md; automatic actual-cost feeds and full profitability workbench remain separate |

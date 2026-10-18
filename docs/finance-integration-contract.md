@@ -1,0 +1,101 @@
+# Finance integration contract and governed financial facts
+
+**SRS traceability:** FactoryOS AI SRS v2.1 — FR-FIN-03 (P1), FR-FIN-04 (P1), FR-FIN-08 (P1), FR-FIN-09 (P0), with the existing commercial quotation lifecycle (FR-FIN-01) and should-cost engine (FR-FIN-02).
+
+This is a read-side integration and financial-input contract. An external accounting platform remains authoritative for its GL, AP, AR, bank-reconciliation and tax/e-invoice records. FactoryOS stores attributed, immutable copies of explicitly mapped facts so operations and finance can explain margin and working-capital drivers. It does **not** post journal entries, payments, bank transactions, tax submissions or accounting changes.
+
+## API contract
+
+All endpoints use the authenticated tenant and factory context, PostgreSQL tenant RLS, IAM permission guards and existing request/trace correlation. The caller cannot choose a different tenant or factory via the financial fact body. Write calls require the **Idempotency-Key** header; a repeated key with a different normalized request returns **409 Conflict**.
+
+| Method and route | Permission | Purpose |
+|---|---|---|
+| POST /api/finance/connectors | finance.connectors.write | Register a connector in PENDING_APPROVAL |
+| GET /api/finance/connectors | finance.connectors.read | List factory-scoped connector configurations |
+| POST /api/finance/connectors/:id/approve | finance.connectors.approve | Activate a connector using independent maker-checker approval |
+| POST /api/finance/connectors/:id/reject | finance.connectors.approve | Reject a pending connector with a reason |
+| POST /api/finance/connectors/:id/pause | finance.connectors.write | Pause an active connector without deleting history |
+| POST /api/finance/connectors/:id/facts | finance.facts.ingest | Ingest a normalized, idempotent batch of 1–500 facts |
+| GET /api/finance/facts | finance.facts.read | Query immutable source facts and reconciliation status |
+| GET /api/finance/reconciliations | finance.reconciliation.read | List open/resolved/waived quantity or rate mismatches |
+| POST /api/finance/reconciliations/:id/review | finance.reconciliation.review | Resolve or waive a mismatch with reviewer/reason retained |
+| GET /api/finance/margin/inputs | finance.margin.read | Read period-scoped actual/forecast revenue, cost, margin and variance inputs |
+| GET /api/finance/working-capital/inputs | finance.working_capital.read | Read currency-separated positions and horizon cash inputs |
+
+Connector and financial-fact read APIs intentionally omit secret material. Credentials are represented only by a secret-manager reference (vault://... or secret://...), never an inline token/password/API key. Live endpoints must use HTTPS without credentials embedded in the URL.
+
+## Connector domains and fact mapping
+
+A connector is scoped to one tenant and factory and has a stable code, source-system label, domain, declared mode and optional endpoint/secret reference. Configuration and connector code are immutable after creation; to change the integration contract, register a new code. A creator cannot approve or reject their own connector. Pause is the reversible operational safety switch.
+
+| Domain | Allowed fact types |
+|---|---|
+| GL | GL_BALANCE, INVENTORY_VALUE, actual/forecast revenue, cost and contribution-cost facts |
+| AP | AP_OPEN, OPEN_PO_COMMITMENT, LC_EXPOSURE, TAX_LIABILITY |
+| AR | AR_OPEN, SHIPMENT_MILESTONE, actual/forecast revenue |
+| BANK_RECONCILIATION | BANK_BALANCE |
+| TAX_EINVOICE | TAX_LIABILITY, ACTUAL_REVENUE |
+| CUSTOM | A specifically governed custom mapping, within the same source/actor guards |
+
+The allowed domain-to-fact mapping is checked both in the API and in the database trigger. An AR connector cannot write arbitrary cost facts. A connector run and each fact retain the connector, external record key, source record reference, effective/due timestamps, currency, dimensions, normalized payload snapshot and SHA-256 request/fact hash. An external fact ID can be ingested only once per connector scope; an idempotent retry returns the existing batch rather than duplicating balances or revenue.
+
+MANUAL, REST_API, WEBHOOK and FILE_IMPORT are declared contract modes. This slice supplies the normalized authenticated ingestion endpoint, persistence/guardrails and reporting inputs; it does not yet ship product-specific polling agents, webhook signature profiles, file parsers or credential-fetching adapters. Those adapters must translate external records to this contract and retain source references; they must not bypass the governed API/DB invariants.
+
+## Governed financial facts
+
+The financial_facts ledger is append-only. Corrections must arrive as a new externally identified source record/revision rather than mutating old evidence. Each row has a source system/connector, a source fact key, source record type/reference, effective_at, optional due_at, currency, exact decimal amount, and optional customer/product/order/cost-centre/shipment dimensions. Product/order foreign keys, when supplied, must belong to the same tenant and factory.
+
+Amounts and quantity/rate evidence remain decimal strings through API validation and use PostgreSQL numeric, not binary floating point. Currency codes use uppercase three-letter codes. Amount signs are allowed for GL/bank balances and for actual/forecast revenue/cost adjustment events; open AR/AP, inventory, purchase commitment, LC, shipment and tax-liability values must be non-negative.
+
+For period margin inputs, effective_at is the accounting/forecast period date. For balance-position inputs, it is the effective date of the position snapshot. Forecast snapshots are selected by connector + fact type + source fact key + currency and the latest ingested version; balance positions are selected as of the requested date using the latest effective snapshot, rather than summing all prior daily balances. Integrators should use a stable source_fact_key for each distinct line/position and include period identity in the key when multiple forecast periods are present.
+
+## Operational quantity/rate reconciliation (FR-FIN-08)
+
+A fact can include source quantity, source rate and UOM as a complete evidence tuple. A reconciliation additionally names the expected internal/source record and quantity/rate values with explicit non-negative tolerances. Comparison is exact decimal arithmetic. The UOM must match exactly after normalization; convert quantities before submitting if source and expected UOMs differ.
+
+MATCHED versus MISMATCH is computed from source-vs-expected quantity and rate deltas in the service and re-derived by a database trigger. Reconciliation values must match the immutable financial fact's own source evidence. An open mismatch remains visible and sets the affected margin or working-capital response reporting_ready=false. Only a different reviewer from the fact ingester may transition an open mismatch to RESOLVED or WAIVED, and an explanatory reason plus reviewer/time are retained. Waiving does not erase the mismatch evidence.
+
+## Margin input semantics (FR-FIN-03)
+
+GET /api/finance/margin/inputs?from=...&to=... returns groups by currency, customer, product, order and cost centre. It never adds unlike currencies together; no implicit FX conversion is made. Finance teams must explicitly map facts into a single supported reporting currency through their connector/mapping before cross-currency rollups.
+
+- actual_gross_margin = actual_revenue - actual_cost
+- actual_contribution_margin = actual_revenue - actual_contribution_cost
+- forecast_gross_margin = forecast_revenue - forecast_cost
+- forecast_contribution_margin = forecast_revenue - forecast_contribution_cost
+- Revenue, cost and gross-margin variances are actual minus forecast. A positive cost variance is an unfavorable cost overrun; a positive revenue/margin variance is above forecast.
+
+Contribution-cost input is kept separate from gross cost so factory teams can decide which variable/direct cost classes belong in the contribution definition. It must be sourced/mapped explicitly; FactoryOS will not silently estimate contribution cost from gross cost. If there are no suitable facts for a group, returned sums are zero for the requested window, while missing actual revenue leaves margin-percent undefined (null), not 0%.
+
+This is a governed input/query layer, not yet a full profitability workbench with internal operational-cost auto-posting, allocation policies, customer dashboards, forecast creation/revision workflow or reconciliation to every production/inventory ledger. Use the should-cost assessment as a separately governed planned-cost snapshot; do not label it as actual cost.
+
+## Working-capital and cash inputs (FR-FIN-04)
+
+GET /api/finance/working-capital/inputs?as_of=...&horizon_days=30 selects latest eligible position facts as of as_of and returns one row per currency. Source facts include:
+
+- AR_OPEN: open receivables (with due date).
+- AP_OPEN: open payables (with due date).
+- BANK_BALANCE: current reconciled bank balance; signed balances/overdrafts are allowed.
+- INVENTORY_VALUE: inventory value at an as-of date.
+- OPEN_PO_COMMITMENT: unreceived/open purchase commitments (with expected due date).
+- LC_EXPOSURE: outstanding letter-of-credit exposure (with expected due date).
+- SHIPMENT_MILESTONE: expected shipment-linked cash/inflow milestone not already represented by an open invoice.
+- TAX_LIABILITY: tax/e-invoice liability (with due date).
+
+The output's net_working_capital = receivables + inventory_value - payables. forecast_inflows combines receivables due by the horizon with shipment inflow milestones dated within the horizon. forecast_outflows combines payables, open PO commitments, LC exposure and tax liabilities due by the horizon. projected_cash_at_horizon = bank_balance + forecast_inflows - forecast_outflows. These are transparent source-based inputs, not a bank-reconciled cash ledger, accounting valuation or probabilistic prediction. Avoid representing the same shipment value both as SHIPMENT_MILESTONE and AR_OPEN, or it will be counted twice.
+
+Working capital and margin amounts are reported independently by currency so users do not mistake a mixture of BDT, USD, EUR and other currencies for a valid total. The caller should compare data freshness from effective_at/due_at and connector runs before relying on the forecast; absent/incomplete upstream domains are not synthesized by this slice.
+
+## Database safeguards and eventing
+
+Migration 114_finance_integration_contract.sql introduces five forced-RLS tables: finance_connectors, finance_connector_runs, financial_facts, finance_fact_reconciliations and finance_connector_history. Composite foreign keys preserve tenant/factory scope, unique external IDs and idempotency keys block replay duplicates, triggers enforce immutable facts and reconciliation evidence, connector-domain compatibility, maker-checker approval and secret-key exclusion in JSON snapshots. Connector changes, fact batch ingestion and reconciliation review append audit events and transactional outbox events.
+
+## SRS traceability and limits
+
+| Requirement | Status of this slice |
+|---|---|
+| FR-FIN-03 — actual/forecast revenue, gross/contribution margin, variance by business dimension | Governed fact schema, read API, grouped gross/contribution margin + revenue/cost/gross-margin variance inputs; full workbench/allocation and automatic operational actual-cost feeds remain separate |
+| FR-FIN-04 — AR/AP, inventory value, open PO, LC and shipment cash forecast | Currency-separated inputs, as-of position semantics and deterministic horizon arithmetic provided; automatic feeds, bank reconciliation adapter and advanced cash scenarios remain separate |
+| FR-FIN-08 — reconcile operational quantities/rates before finance reporting | Exact qty/rate/UOM matching, immutable evidence, reviewer disposition and reporting_ready gates implemented; per-source mappings/adapters must submit the records |
+| FR-FIN-09 — configurable GL/AP/AR/bank/tax connectors and explicit system-of-record boundaries | Connector registry, permissions/maker-checker, secured read-side ingestion and no-posting boundary implemented; provider-specific transport/polling/webhook/file adapters remain separate |
+| FR-FIN-01 / FR-FIN-02 | Continue to use docs/commercial-quotation-lifecycle.md and docs/should-cost-engine.md; finance facts do not replace quotation revisions or should-cost evidence |
