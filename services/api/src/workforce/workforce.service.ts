@@ -456,7 +456,7 @@ export class WorkforceService {
     this.validateContext(c);
     const day=this.dateOnly(query.shift_date,'shift_date');
     const limit=this.limit(rawLimit);
-    const [events, summaries]=await Promise.all([
+    const [events, summaries, aggregate]=await Promise.all([
       this.database.query<Row>(
         `SELECT e.id::text AS id,e.event_type,e.source_type,e.source_event_id,e.occurred_at::text AS occurred_at,
                 e.shift_assignment_id::text AS shift_assignment_id,e.worker_id::text AS worker_id,
@@ -519,19 +519,59 @@ export class WorkforceService {
          ORDER BY a.planned_start_at,w.employee_code LIMIT $5`,
         [c.tenantId,c.factoryId,day,query.shift_template_id??null,limit],this.dbContext(c),
       ),
+      this.database.query<Row>(
+        `SELECT COUNT(*)::int AS rostered,
+          COUNT(*) FILTER (WHERE ci.occurred_at IS NOT NULL)::int AS present,
+          COUNT(*) FILTER (WHERE absent.has_absence)::int AS absent,
+          COUNT(*) FILTER (WHERE co.occurred_at IS NOT NULL)::int AS clocked_out,
+          COUNT(*) FILTER (WHERE ci.occurred_at IS NOT NULL AND co.occurred_at IS NOT NULL)::int AS finalized_shifts,
+          COALESCE(SUM(CASE WHEN ci.occurred_at IS NOT NULL AND co.occurred_at IS NOT NULL
+            THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (co.occurred_at-ci.occurred_at))/60
+              - GREATEST(COALESCE(br.break_minutes,0),s.unpaid_break_minutes))::int)
+            ELSE 0 END),0)::int AS finalized_worked_minutes
+         FROM workforce_shift_assignments a
+         JOIN workforce_shift_templates s ON s.id=a.shift_template_id AND s.tenant_id=a.tenant_id AND s.factory_id=a.factory_id
+         LEFT JOIN workforce_attendance_events ci ON ci.shift_assignment_id=a.id AND ci.tenant_id=a.tenant_id
+           AND ci.factory_id=a.factory_id AND ci.event_type='CLOCK_IN'
+         LEFT JOIN workforce_attendance_events co ON co.shift_assignment_id=a.id AND co.tenant_id=a.tenant_id
+           AND co.factory_id=a.factory_id AND co.event_type='CLOCK_OUT'
+         LEFT JOIN LATERAL (
+           SELECT EXISTS(SELECT 1 FROM workforce_attendance_events absent_event
+             WHERE absent_event.shift_assignment_id=a.id AND absent_event.tenant_id=a.tenant_id
+               AND absent_event.factory_id=a.factory_id AND absent_event.event_type='ABSENCE_RECORDED') AS has_absence
+         ) absent ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (be.occurred_at-bs.occurred_at))/60),0) AS break_minutes
+           FROM workforce_attendance_events bs
+           JOIN LATERAL (
+             SELECT candidate.occurred_at
+             FROM workforce_attendance_events candidate
+             WHERE candidate.shift_assignment_id=a.id AND candidate.tenant_id=a.tenant_id
+               AND candidate.factory_id=a.factory_id AND candidate.event_type='BREAK_END'
+               AND candidate.occurred_at>bs.occurred_at
+             ORDER BY candidate.occurred_at LIMIT 1
+           ) be ON TRUE
+           WHERE bs.shift_assignment_id=a.id AND bs.tenant_id=a.tenant_id
+             AND bs.factory_id=a.factory_id AND bs.event_type='BREAK_START'
+         ) br ON TRUE
+         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.shift_date=$3::date
+           AND ($4::uuid IS NULL OR a.shift_template_id=$4::uuid)`,
+        [c.tenantId,c.factoryId,day,query.shift_template_id??null],this.dbContext(c),
+      ),
     ]);
+    const aggregateRow=aggregate.rows[0]??{};
     return {
       items:events.rows,
       shifts:summaries.rows,
       shift_date:day,
       limit,
       attendance_summary:{
-        rostered:summaries.rows.length,
-        present:summaries.rows.filter(row=>row.clock_in_at!==null&&row.clock_in_at!==undefined).length,
-        absent:summaries.rows.filter(row=>row.absence_recorded===true).length,
-        clocked_out:summaries.rows.filter(row=>row.clock_out_at!==null&&row.clock_out_at!==undefined).length,
-        finalized_worked_minutes:summaries.rows.reduce((sum,row)=>sum+(row.worked_minutes===null?0:Number(row.worked_minutes)),0),
-        finalized_shifts:summaries.rows.filter(row=>row.worked_minutes!==null&&row.worked_minutes!==undefined).length,
+        rostered:Number(aggregateRow.rostered??0),
+        present:Number(aggregateRow.present??0),
+        absent:Number(aggregateRow.absent??0),
+        clocked_out:Number(aggregateRow.clocked_out??0),
+        finalized_worked_minutes:Number(aggregateRow.finalized_worked_minutes??0),
+        finalized_shifts:Number(aggregateRow.finalized_shifts??0),
       },
     };
   }
