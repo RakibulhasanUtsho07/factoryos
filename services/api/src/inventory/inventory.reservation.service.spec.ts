@@ -225,12 +225,15 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([{ id: movementId, quantity_after: '62.5000' }]))
       .mockResolvedValueOnce(queryRows([])); // inventory outbox event
 
-    const result = await service.postWorkOrderFinishedGoodsReceipt(client as never, {
+    const result = await service.postFinishedGoodsOutputReceipt(client as never, {
       userId: USER_ID,
       tenantId: TENANT_ID,
       factoryId: FACTORY_ID,
       workOrderId,
       workOrderNumber: 'WO-OUTPUT-001',
+      orderId: randomUUID(),
+      orderNumber: 'ORD-OUTPUT-001',
+      orderLineId: ORDER_LINE_ID,
       finishedItemId: ITEM_ID,
       productionReportId: reportId,
       goodQuantity: '12.5000',
@@ -263,12 +266,15 @@ describe('InventoryReservationService', () => {
   });
 
   it('does not create a finished-good stock receipt when reported output is entirely scrap', async () => {
-    const result = await service.postWorkOrderFinishedGoodsReceipt(client as never, {
+    const result = await service.postFinishedGoodsOutputReceipt(client as never, {
       userId: USER_ID,
       tenantId: TENANT_ID,
       factoryId: FACTORY_ID,
       workOrderId: randomUUID(),
       workOrderNumber: 'WO-SCRAP-ONLY',
+      orderId: randomUUID(),
+      orderNumber: 'ORD-SCRAP-ONLY',
+      orderLineId: ORDER_LINE_ID,
       finishedItemId: ITEM_ID,
       productionReportId: randomUUID(),
       goodQuantity: '0.0000',
@@ -285,12 +291,15 @@ describe('InventoryReservationService', () => {
   it('fails closed when the finished-good inventory item is disabled', async () => {
     client.query.mockResolvedValueOnce(queryRows([{ id: ITEM_ID, unit: 'EA', status: 'DISABLED' }]));
 
-    await expect(service.postWorkOrderFinishedGoodsReceipt(client as never, {
+    await expect(service.postFinishedGoodsOutputReceipt(client as never, {
       userId: USER_ID,
       tenantId: TENANT_ID,
       factoryId: FACTORY_ID,
       workOrderId: randomUUID(),
       workOrderNumber: 'WO-DISABLED-FG',
+      orderId: randomUUID(),
+      orderNumber: 'ORD-DISABLED-FG',
+      orderLineId: ORDER_LINE_ID,
       finishedItemId: ITEM_ID,
       productionReportId: randomUUID(),
       goodQuantity: '1.0000',
