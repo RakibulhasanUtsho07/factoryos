@@ -5,6 +5,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
   ServiceUnavailableException,
+  TooManyRequestsException,
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -315,6 +316,37 @@ export class IntegrationService {
     } catch (error) {
       if (error instanceof InternalServerErrorException) throw error;
       throw this.contractException(error);
+    }
+
+    const limitRaw = this.config.get<string>('WEBHOOK_RATE_LIMIT_PER_MINUTE');
+    const rateLimit = limitRaw === undefined ? 600 : Number(limitRaw);
+    if (!Number.isInteger(rateLimit) || rateLimit < 1 || rateLimit > 10000) {
+      throw new InternalServerErrorException('WEBHOOK_RATE_LIMIT_PER_MINUTE must be an integer between 1 and 10000');
+    }
+    const requestCount = await this.database.transaction(async (client) => {
+      const result = await client.query<{ request_count: number }>(
+        `INSERT INTO public.integration_webhook_rate_limits AS existing
+          (tenant_id,factory_id,connector_id,window_started_at,request_count)
+         VALUES($1,$2,$3,to_timestamp((floor(extract(epoch from clock_timestamp()) / 60) * 60)::double precision),1)
+         ON CONFLICT(connector_id) DO UPDATE
+         SET tenant_id=EXCLUDED.tenant_id,
+             factory_id=EXCLUDED.factory_id,
+             window_started_at=EXCLUDED.window_started_at,
+             request_count=CASE
+               WHEN existing.window_started_at=EXCLUDED.window_started_at
+                 THEN LEAST(existing.request_count+1,10001)
+               ELSE 1
+             END,
+             updated_at=clock_timestamp()
+         WHERE existing.tenant_id=EXCLUDED.tenant_id AND existing.factory_id=EXCLUDED.factory_id
+         RETURNING request_count`,
+        [scope.tenant_id, scope.factory_id, connectorId],
+      );
+      if (!result.rows[0]) throw new NotFoundException('Integration webhook endpoint not found');
+      return Number(result.rows[0].request_count);
+    }, { tenantId: scope.tenant_id });
+    if (requestCount > rateLimit) {
+      throw new TooManyRequestsException('Webhook connector rate limit exceeded; retry after the current minute window');
     }
 
     let envelope: WebhookEnvelope;

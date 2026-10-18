@@ -1,4 +1,4 @@
-import { BadRequestException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, TooManyRequestsException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 import {
   createWebhookSignature,
@@ -46,9 +46,12 @@ describe('IntegrationService signed webhook ingress', () => {
     payload_sha256: string;
     event_type: string;
     schema_version: number;
-  }) {
+  }, options: { rateLimit?: string; requestCount?: number } = {}) {
     let transactionCount = 0;
-    const clientQuery = jest.fn(async (sql: string) => {
+    const clientQuery = jest.fn(async (sql: string, _values?: unknown[]) => {
+      if (sql.includes('INSERT INTO public.integration_webhook_rate_limits')) {
+        return { rows: [{ request_count: options.requestCount ?? 1 }], rowCount: 1 };
+      }
       if (sql.includes('FROM integration_webhook_receipts')) {
         return { rows: existingReceipt ? [existingReceipt] : [], rowCount: existingReceipt ? 1 : 0 };
       }
@@ -71,7 +74,7 @@ describe('IntegrationService signed webhook ingress', () => {
         return callback(client);
       }),
     };
-    const config = { get: jest.fn((key: string) => key === 'WEBHOOK_SECRET_MES' ? secret : undefined) };
+    const config = { get: jest.fn((key: string) => key === 'WEBHOOK_SECRET_MES' ? secret : key === 'WEBHOOK_RATE_LIMIT_PER_MINUTE' ? options.rateLimit : undefined) };
     return {
       service: new IntegrationService(database as never, config as never),
       database,
@@ -117,7 +120,7 @@ describe('IntegrationService signed webhook ingress', () => {
       event_type: envelope.event_type, schema_version: envelope.schema_version,
       correlation_id: null, payload: envelope.payload,
     }));
-    expect(harness.transactionCount).toBe(1);
+    expect(harness.transactionCount).toBe(2);
   });
 
   it('acknowledges the same external event again without creating a second outbox event', async () => {
@@ -153,6 +156,7 @@ describe('IntegrationService signed webhook ingress', () => {
     });
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
+    expect(harness.transactionCount).toBe(2);
   });
 
   it('rejects non-canonical whitespace in provider event IDs instead of normalizing an idempotency key', async () => {
@@ -179,7 +183,7 @@ describe('IntegrationService signed webhook ingress', () => {
   });
 
 
-  it('rejects signed events that are not registered in the connector allowlist before opening a transaction', async () => {
+  it('rejects signed events that are not registered in the connector allowlist before creating an outbox event', async () => {
     const harness = setup();
     const unregistered = signedRequest('mes-event-unregistered', {
       event_type: 'ORDER.CANCELLED',
@@ -193,7 +197,8 @@ describe('IntegrationService signed webhook ingress', () => {
       unregistered.eventId,
       unregistered.signature,
     )).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(harness.transactionCount).toBe(0);
+    expect(harness.transactionCount).toBe(1);
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
   });
 
   it('rejects stale signatures and schema-version mismatch as non-retryable client errors', async () => {
@@ -220,6 +225,17 @@ describe('IntegrationService signed webhook ingress', () => {
       wrongVersion.eventId,
       wrongVersion.signature,
     )).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(harness.transactionCount).toBe(0);
+    expect(harness.transactionCount).toBe(1);
+  });
+
+  it('returns HTTP 429 when a connector exceeds its configured signed-request rate', async () => {
+    const harness = setup(undefined, { rateLimit: '1', requestCount: 2 });
+    const signed = signedRequest('mes-event-over-rate-limit');
+    await expect(harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+    )).rejects.toBeInstanceOf(TooManyRequestsException);
+    expect(harness.transactionCount).toBe(1);
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
   });
 });
