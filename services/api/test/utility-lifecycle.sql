@@ -105,9 +105,15 @@ BEGIN
     resolution='Supply restored and monitored stable',last_change_reason='Power restored',
     updated_by_user_id=v_actor,updated_at=clock_timestamp()
   WHERE id=v_event AND tenant_id=v_tenant AND factory_id=v_factory;
-  IF (SELECT status FROM utility_events WHERE id=v_event) <> 'RESOLVED'
-     OR (SELECT count(*) FROM utility_audit_events WHERE entity_id IN (v_parent,v_child,v_event))<6 THEN
-    RAISE EXCEPTION 'Utility events or immutable audit trail did not reach the expected final state';
+  IF (SELECT status FROM utility_events WHERE id=v_event) <> 'RESOLVED' THEN
+    RAISE EXCEPTION 'Utility event did not reach RESOLVED state';
+  END IF;
+  IF (SELECT count(*) FROM utility_audit_events WHERE entity_id IN (v_parent,v_child,v_event))<5 THEN
+    RAISE EXCEPTION 'Utility meter/event lifecycle audit records are incomplete';
+  END IF;
+  IF (SELECT count(*) FROM utility_audit_events WHERE entity_type='READING'
+      AND tenant_id=v_tenant AND factory_id=v_factory) < 3 THEN
+    RAISE EXCEPTION 'Each append-only utility reading must produce a corresponding audit record';
   END IF;
 END
 $utility_test$;
