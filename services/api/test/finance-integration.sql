@@ -333,4 +333,17 @@ BEGIN
   END LOOP;
 END $$;
 
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='123_finance_file_exchange_validation_reports') THEN
+    RAISE EXCEPTION 'finance file exchange migration is not registered';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.finance_connectors'::regclass AND conname='chk_finance_connector_mode' AND pg_get_constraintdef(oid) LIKE '%SFTP_IMPORT%' AND pg_get_constraintdef(oid) LIKE '%SFTP_EXPORT%' AND pg_get_constraintdef(oid) LIKE '%FILE_EXPORT%') THEN
+    RAISE EXCEPTION 'finance connector file/SFTP modes are not constrained';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.finance_connectors'::regclass AND conname='chk_finance_sftp_configuration') THEN
+    RAISE EXCEPTION 'pinned SFTP connector configuration guard is missing';
+  END IF;
+END $;
+
 ROLLBACK;

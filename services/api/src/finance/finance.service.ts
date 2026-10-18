@@ -19,6 +19,7 @@ import {
   reconciliationMatches,
   validateFinanceEndpoint,
   validateFinanceSecretReference,
+  validateFinanceSftpConfiguration,
   type FinanceConnectorDomain,
   type FinanceConnectorMode,
   type FinanceFactType,
@@ -130,9 +131,16 @@ export class FinanceService {
     if (dto.domain === 'CUSTOM' && isReportingSource) {
       throw new BadRequestException('CUSTOM connectors are enrichment-only; map reporting facts to their governed source domain');
     }
-    const endpointUrl = this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
+    const sftpMode = dto.integration_mode === 'SFTP_IMPORT' || dto.integration_mode === 'SFTP_EXPORT';
+    if (sftpMode && dto.endpoint_url) throw new BadRequestException('SFTP connectors use pinned host configuration, not endpoint_url');
+    const endpointUrl = sftpMode ? null : this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
     const secretReference = this.secretReference(dto.secret_reference ?? null);
-    const configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
+    let configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
+    if (sftpMode) {
+      if (!secretReference) throw new BadRequestException('SFTP connectors require a secret-manager reference for the authentication key');
+      try { configuration = validateFinanceSftpConfiguration(dto.integration_mode, configuration) as unknown as Record<string, unknown>; }
+      catch (error) { throw new BadRequestException(error instanceof Error ? error.message : 'Invalid SFTP connector configuration'); }
+    }
     const displayName = dto.display_name.trim();
     const sourceSystem = dto.source_system.trim();
     if (displayName.length < 2 || displayName.length > 160) {
