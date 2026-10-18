@@ -63,13 +63,13 @@ INSERT INTO should_cost_profiles(
 INSERT INTO should_cost_profile_components(
   tenant_id,factory_id,profile_id,category,calculation_method,is_required,base_categories,guidance,created_by_user_id
 ) VALUES
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','MATERIAL','DIRECT_RATE',true,ARRAY[]::varchar(20[]),'Quantity and supplier rate evidence','921382b8-e83f-43ab-a576-e3db6a06b70c'),
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','LABOUR','DIRECT_RATE',true,ARRAY[]::varchar(20[]),'Routing time and labour rate evidence','921382b8-e83f-43ab-a576-e3db6a06b70c'),
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','ENERGY','DIRECT_RATE',true,ARRAY[]::varchar(20[]),'Meter consumption and energy rate evidence','921382b8-e83f-43ab-a576-e3db6a06b70c'),
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','FREIGHT','FIXED_PER_BATCH',true,ARRAY[]::varchar(20[]),'Shipment quote and batch allocation','921382b8-e83f-43ab-a576-e3db6a06b70c'),
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','DUTY','PERCENT_OF_BASE',true,ARRAY['MATERIAL','FREIGHT']::varchar(20[]),'Effective duty schedule','921382b8-e83f-43ab-a576-e3db6a06b70c'),
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','OVERHEAD','PERCENT_OF_BASE',true,ARRAY['LABOUR','ENERGY']::varchar(20[]),'Approved overhead rate card','921382b8-e83f-43ab-a576-e3db6a06b70c'),
- ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','SCRAP','SCRAP_GROSS_UP',true,ARRAY['MATERIAL','LABOUR','ENERGY']::varchar(20[]),'Approved process scrap allowance','921382b8-e83f-43ab-a576-e3db6a06b70c');
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','MATERIAL','DIRECT_RATE',true,ARRAY[]::varchar(20)[],'Quantity and supplier rate evidence','921382b8-e83f-43ab-a576-e3db6a06b70c'),
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','LABOUR','DIRECT_RATE',true,ARRAY[]::varchar(20)[],'Routing time and labour rate evidence','921382b8-e83f-43ab-a576-e3db6a06b70c'),
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','ENERGY','DIRECT_RATE',true,ARRAY[]::varchar(20)[],'Meter consumption and energy rate evidence','921382b8-e83f-43ab-a576-e3db6a06b70c'),
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','FREIGHT','FIXED_PER_BATCH',true,ARRAY[]::varchar(20)[],'Shipment quote and batch allocation','921382b8-e83f-43ab-a576-e3db6a06b70c'),
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','DUTY','PERCENT_OF_BASE',true,ARRAY['MATERIAL','FREIGHT']::varchar(20)[],'Effective duty schedule','921382b8-e83f-43ab-a576-e3db6a06b70c'),
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','OVERHEAD','PERCENT_OF_BASE',true,ARRAY['LABOUR','ENERGY']::varchar(20)[],'Approved overhead rate card','921382b8-e83f-43ab-a576-e3db6a06b70c'),
+ ('faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7','d7f8f399-17a4-4a2e-b0c0-6c2192ca7001','SCRAP','SCRAP_GROSS_UP',true,ARRAY['MATERIAL','LABOUR','ENERGY']::varchar(20)[],'Approved process scrap allowance','921382b8-e83f-43ab-a576-e3db6a06b70c');
 
 DO $$
 BEGIN
@@ -79,7 +79,7 @@ BEGIN
     ) VALUES (
       'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
       'd7f8f399-17a4-4a2e-b0c0-6c2192ca7002','MATERIAL','PERCENT_OF_BASE',true,
-      ARRAY['SCRAP']::varchar(20[]),'invalid forward dependency','921382b8-e83f-43ab-a576-e3db6a06b70c'
+      ARRAY['SCRAP']::varchar(20)[],'invalid forward dependency','921382b8-e83f-43ab-a576-e3db6a06b70c'
     );
     RAISE EXCEPTION 'Unsupported/cyclic profile formula was accepted';
   EXCEPTION WHEN check_violation THEN NULL;
