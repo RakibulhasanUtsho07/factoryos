@@ -231,7 +231,12 @@ export class OrderProductionReportService {
           );
         }
 
-        const correlationId = traceId ?? requestId ?? randomUUID();
+        const processedUnits = this.toUnits(goodQuantity) + this.toUnits(scrapQuantity);
+        const yieldPercentage = this.percentageFromUnits(this.toUnits(goodQuantity), processedUnits);
+        const cumulativeYieldPercentage = this.percentageFromUnits(nextGood, nextGood + nextScrap);
+        const correlationId = traceId && isUUID(traceId)
+          ? traceId
+          : requestId && isUUID(requestId) ? requestId : randomUUID();
         const inserted = await client.query<ProductionReportRow>(
           `
           INSERT INTO order_production_reports (
