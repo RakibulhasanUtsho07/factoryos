@@ -115,7 +115,8 @@ All paths below are beneath `/api/finance/connectors`, authenticated with tenant
 | POST `/:connectorId/file-import/commit` | `finance.facts.ingest` | Import only against the matching `VALID` report |
 | GET `/:connectorId/file-imports/receipts` | `finance.facts.read` | List immutable successful import receipts |
 | GET `/:connectorId/file-imports/:runId/receipt` | `finance.facts.read` | Read one file-import receipt |
-| POST `/:connectorId/sftp-import/process` | `finance.facts.ingest` | Poll one file via the registered, host-key-verifying transport adapter |
+| POST `/:connectorId/sftp-import/process` | `finance.facts.ingest` | Poll one file through the registered, host-key-verifying SFTP adapter |
+| POST `/:connectorId/erp-import/process` | `finance.facts.ingest` | Poll and validate one provider batch through the registered ERP adapter; durable receipt is required before acknowledgement |
 | POST `/:connectorId/file-export` | `finance.facts.read` | Export approved active reporting facts to CSV/JSON (max 500 rows / 2 MiB) |
 | GET `/:connectorId/file-exports/receipts` | `finance.facts.read` | List immutable export receipts |
 | GET `/:connectorId/file-exports/:receiptId` | `finance.facts.read` | Retrieve the receipt and, for file exports, the base64 artifact |
