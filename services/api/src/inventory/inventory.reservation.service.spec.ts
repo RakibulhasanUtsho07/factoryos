@@ -245,7 +245,7 @@ describe('InventoryReservationService', () => {
     expect(client.query.mock.calls[2]?.[1]).toContain('12.5000');
     expect(String(client.query.mock.calls[3]?.[0])).toContain('INSERT INTO inventory_movements');
     expect(String(client.query.mock.calls[3]?.[0])).toContain("'PRODUCTION_OUTPUT'");
-    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_RECEIVED');
+    expect(client.query.mock.calls[4]?.[1]?.[3]).toBe('INVENTORY.STOCK_RECEIVED');
     const outboxPayload = JSON.parse(String(client.query.mock.calls[4]?.[1]?.[7])) as {
       purpose: string;
       good_quantity: string;
