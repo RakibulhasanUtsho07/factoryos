@@ -549,8 +549,8 @@ export class QualityService {
     if (operator === 'IN' && allowed.length < 1) throw new BadRequestException('IN requires a non-empty allowed_values list');
     if (operator !== 'BETWEEN' && operator !== 'IN' && !targetValue) throw new BadRequestException('target_value is required for this comparison operator');
     if (valueType === 'BOOLEAN' && !['true','false'].includes((targetValue ?? '').toLowerCase())) throw new BadRequestException('BOOLEAN target_value must be true or false');
-    if (valueType === 'NUMERIC' && targetValue !== null && (!Number.isFinite(Number(targetValue)) || Math.abs(Number(targetValue)*1e6-Math.round(Number(targetValue)*1e6)>0.000001)) throw new BadRequestException('NUMERIC target_value must be numeric with at most six decimal places');
-    if (valueType === 'NUMERIC' && allowed.some(value => !Number.isFinite(Number(value)) || Math.abs(Number(value)*1e6-Math.round(Number(value)*1e6)>0.000001)) throw new BadRequestException('NUMERIC allowed_values must contain numbers with at most six decimal places');
+    if (valueType === 'NUMERIC' && targetValue !== null && (!Number.isFinite(Number(targetValue)) || Math.abs(Number(targetValue)*1e6-Math.round(Number(targetValue)*1e6)) > 0.000001) throw new BadRequestException('NUMERIC target_value must be numeric with at most six decimal places');
+    if (valueType === 'NUMERIC' && allowed.some(value => !Number.isFinite(Number(value)) || Math.abs(Number(value)*1e6-Math.round(Number(value)*1e6)) > 0.000001) throw new BadRequestException('NUMERIC allowed_values must contain numbers with at most six decimal places');
     return {
       criterion_code:code,name,description,value_type:valueType,comparison_operator:operator,target_value:targetValue,
       lower_limit:lower,upper_limit:upper,allowed_values:allowed,unit,is_required:required,is_critical:critical,
