@@ -36,7 +36,7 @@ import { FinanceFileImportDto, CreateFinanceConnectorDto,
   ReviewFinanceReconciliationDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
-import { parseFinanceFileImport, type ParsedFinanceFileImport } from './finance-file-import';
+import { FinanceFileValidationError, parseFinanceFileImport, type ParsedFinanceFileImport } from './finance-file-import';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -417,8 +417,12 @@ export class FinanceService {
     try {
       parsed = parseFinanceFileImport(dto);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'File validation failed';
-      issues.push({ row: null, field: 'file', code: 'FILE_CONTRACT_INVALID', message: message.slice(0, 300) });
+      if (error instanceof FinanceFileValidationError) {
+        issues.push(...error.validationIssues);
+      } else {
+        const message = error instanceof Error ? error.message : 'File validation failed';
+        issues.push({ row: null, field: 'file', code: 'FILE_CONTRACT_INVALID', message: message.slice(0, 300) });
+      }
     }
 
     return this.database.transaction({

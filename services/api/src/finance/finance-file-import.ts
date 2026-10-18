@@ -1,8 +1,47 @@
 import { BadRequestException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
+import type { ValidationError } from 'class-validator';
 import { createHash } from 'node:crypto';
 import { FinanceFileImportDto, IngestFinanceFactsDto } from './dto/finance.dto';
+
+
+export interface FinanceFileValidationIssue {
+  row: number | null;
+  field: string;
+  code: string;
+  message: string;
+}
+
+export class FinanceFileValidationError extends BadRequestException {
+  constructor(public readonly validationIssues: FinanceFileValidationIssue[]) {
+    super('Finance import contract validation failed: ' +
+      validationIssues.map((issue) =>
+        (issue.row === null ? 'file' : 'row ' + issue.row) + '.' + issue.field,
+      ).join(', '));
+  }
+}
+
+function flattenValidationErrors(nodes: ValidationError[], prefix = ''): FinanceFileValidationIssue[] {
+  const issues: FinanceFileValidationIssue[] = [];
+  for (const node of nodes) {
+    const path = prefix ? prefix + '.' + (node.property ?? 'unknown') : (node.property ?? 'unknown');
+    if (node.children?.length) {
+      issues.push(...flattenValidationErrors(node.children, path));
+    } else {
+      for (const [constraint, message] of Object.entries(node.constraints ?? {})) {
+        const match = path.match(/^facts\.(\d+)(?:\.(.*))?$/);
+        issues.push({
+          row: match ? Number(match[1]) + 1 : null,
+          field: match ? (match[2] || 'fact') : path,
+          code: constraint.toUpperCase(),
+          message: message.slice(0, 300),
+        });
+      }
+    }
+  }
+  return issues;
+}
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_ROWS = 500;
@@ -214,11 +253,7 @@ export function parseFinanceFileImport(dto: FinanceFileImportDto): ParsedFinance
     forbidUnknownValues: true,
   });
   if (issues.length) {
-    const paths = issues.map((issue) => {
-      const childPaths = (issue.children ?? []).map((child) => child.property);
-      return [issue.property, ...childPaths].join('.');
-    });
-    throw new BadRequestException('Finance import contract validation failed: ' + paths.join(', '));
+    throw new FinanceFileValidationError(flattenValidationErrors(issues));
   }
 
   return {
