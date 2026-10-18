@@ -35,6 +35,12 @@ BEGIN
     RAISE EXCEPTION 'Versioned inspection-plan and measurement migration marker is missing';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version = '095_quality_ncr_resolution_gate'
+  ) THEN
+    RAISE EXCEPTION 'NCR resolution gate migration marker is missing';
+  END IF;
+
   FOREACH t IN ARRAY required_tables LOOP
     SELECT c.relrowsecurity, c.relforcerowsecurity INTO enabled, forced
     FROM pg_class c WHERE c.oid = to_regclass(t);

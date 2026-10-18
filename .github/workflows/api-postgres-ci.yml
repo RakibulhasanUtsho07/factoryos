@@ -180,6 +180,7 @@ jobs:
             migrations/092_order_production_report_work_order_routing_guard.sql
             migrations/093_quality_inspection_ncr_holds_disposition.sql
             migrations/094_quality_inspection_plans_and_results.sql
+            migrations/095_quality_ncr_resolution_gate.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

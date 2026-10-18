@@ -186,6 +186,11 @@ export class QualityService {
       const status = String(plan.status);
       if (dto.action === 'ACTIVATE') {
         if (status !== 'DRAFT') throw new ConflictException('Only a draft inspection plan can be activated');
+        await this.lockKey(client,c,'plan-code',String(plan.plan_code).toUpperCase()+':'+String(plan.inspection_type));
+        const activeRevision = await client.query(
+          "SELECT id::text AS id FROM quality_inspection_plans WHERE tenant_id=$1 AND factory_id=$2 AND lower(plan_code)=lower($3) AND inspection_type=$4 AND status='ACTIVE' FOR UPDATE",
+          [c.tenantId,c.factoryId,plan.plan_code,plan.inspection_type]);
+        if (activeRevision.rows[0]) throw new ConflictException('Retire the currently active plan revision before activating its replacement');
         const count = await client.query(
           "SELECT count(*)::int AS count FROM quality_inspection_plan_criteria WHERE plan_id=$1 AND tenant_id=$2 AND factory_id=$3",
           [planId,c.tenantId,c.factoryId]);
@@ -525,10 +530,16 @@ export class QualityService {
   async closeNcr(c:QualityContext,ncrId:string,dto:CloseQualityNcrDto){
     this.validateScope(c);this.uuid(ncrId,'ncrId');const reason=this.text(dto.reason,'reason',2000),correlation=this.correlation(c);
     const result=await this.database.transaction(c,async client=>{
-      const found=await client.query("SELECT id::text AS id,inspection_id::text AS inspection_id,status,row_version::int AS row_version,closure_reason FROM quality_ncrs WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",[ncrId,c.tenantId,c.factoryId]);
+      const found=await client.query("SELECT n.id::text AS id,n.inspection_id::text AS inspection_id,n.status,n.row_version::int AS row_version,n.closure_reason,qi.status AS inspection_status FROM quality_ncrs n JOIN quality_inspections qi ON qi.id=n.inspection_id AND qi.tenant_id=n.tenant_id AND qi.factory_id=n.factory_id WHERE n.id=$1 AND n.tenant_id=$2 AND n.factory_id=$3 FOR UPDATE OF n",[ncrId,c.tenantId,c.factoryId]);
       const n=found.rows[0];if(!n)throw new NotFoundException('NCR was not found in this factory');
       if(n.status==='CLOSED'){if(n.closure_reason===reason)return{replayed:true};throw new ConflictException('NCR is already closed with a different closure reason');}
       if(Number(n.row_version)!==dto.expected_version)throw new ConflictException('NCR version is stale');
+      if(!['PASSED','DISPOSITIONED'].includes(String(n.inspection_status))) {
+        throw new ConflictException('Resolve or disposition the inspection before closing its NCR');
+      }
+      const activeHold=await client.query("SELECT 1 FROM quality_holds WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='ACTIVE' LIMIT 1",
+        [n.inspection_id,c.tenantId,c.factoryId]);
+      if(activeHold.rows[0]) throw new ConflictException('Release or dispose the active quality hold before closing its NCR');
       const actions=await client.query("SELECT action_type FROM quality_ncr_actions WHERE ncr_id=$1 AND tenant_id=$2 AND factory_id=$3",[ncrId,c.tenantId,c.factoryId]);
       const types=new Set(actions.rows.map((x:Record<string,unknown>)=>String(x.action_type)));
       if(!['CONTAINMENT','CORRECTIVE','PREVENTIVE'].every(x=>types.has(x)))throw new ConflictException('NCR closure requires containment, corrective and preventive action evidence');
