@@ -1,9 +1,10 @@
 import {
-  ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsNotEmpty, IsNumber,
+  ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsNotEmpty, IsNumber,
   IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { QUOTATION_STATUSES, QuotationStatus } from '../quotation-lifecycle';
+import { QUOTATION_STATUSES } from '../quotation-lifecycle';
+import type { QuotationStatus } from '../quotation-lifecycle';
 
 export class QuotationLineDto {
   @Type(() => Number) @IsInt() @Min(1) line_number!: number;
@@ -50,7 +51,7 @@ export class ConvertQuotationDto extends TransitionQuotationDto {
   @IsString() @IsNotEmpty() @MaxLength(100) order_number!: string;
 }
 export class ListQuotationsDto {
-  @IsOptional() @IsEnum(QUOTATION_STATUSES) status?: QuotationStatus;
+  @IsOptional() @IsIn(QUOTATION_STATUSES) status?: QuotationStatus;
   @IsOptional() @IsString() @MaxLength(255) search?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) page = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;

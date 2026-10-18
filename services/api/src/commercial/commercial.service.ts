@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
-  calculateCommercialLines, canTransitionQuotation, convertAmountToBase, formatScaled,
+  calculateCommercialLines, canTransitionQuotation, convertAmountToBase, decimalScaled, formatScaled,
   normalizeCurrency, type CommercialLineInput, type QuotationStatus,
 } from './quotation-lifecycle';
 import {
@@ -327,7 +327,7 @@ export class CommercialService {
       this.checkVersion(quote,expectedVersion);
       const current = await this.currentTerms(client,tenantId,factoryId,quoteId);
       let nextStatus: QuotationStatus = quote.status;
-      let historyAction = action;
+      let historyAction: string = action;
       switch (action) {
         case 'SUBMIT':
           if (quote.status !== 'DRAFT') throw new ConflictException('Only a draft quotation can be submitted');
