@@ -41,7 +41,7 @@ CREATE OR REPLACE FUNCTION factoryos_finance_json_has_sensitive_key(p_value json
 RETURNS boolean
 LANGUAGE plpgsql
 IMMUTABLE
-AS $
+AS $$
 DECLARE
  entry record;
  child jsonb;

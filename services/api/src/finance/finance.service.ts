@@ -942,7 +942,7 @@ export class FinanceService {
       endpoint_url: row.endpoint_url ?? null,
       configuration: row.configuration ?? {},
       has_secret_reference: row.has_secret_reference === true || row.has_secret_reference === 't',
-      is_reporting_source: row.is_reporting_source === true || row.is_reporting_source === 't',
+      is_reporting_source: row.is_reporting_source === true,
       replayed,
       system_of_record_boundary: 'EXTERNAL_SOURCE_REMAINS_AUTHORITATIVE',
       write_policy: 'READ_ONLY_INGESTION_NO_GL_JOURNAL_PAYMENT_OR_TAX_POSTING',
