@@ -1,5 +1,17 @@
 BEGIN;
 
+-- Attendance correction is intentionally a separate permission from read/capture.
+INSERT INTO permissions (code, description)
+VALUES ('workforce.attendance.correct', 'Append a reasoned, versioned correction to factory-scoped attendance evidence')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id,p.id
+FROM roles r
+JOIN permissions p ON p.code='workforce.attendance.correct'
+WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER')
+ON CONFLICT (role_id,permission_id) DO NOTHING;
+
 -- Shift template maintenance is versioned. Existing rosters keep their resolved
 -- timestamp snapshots; template edits affect future roster calculations only.
 ALTER TABLE workforce_shift_templates ADD COLUMN last_change_reason TEXT;
