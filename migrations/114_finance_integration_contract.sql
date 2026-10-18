@@ -128,7 +128,7 @@ CREATE TABLE finance_connector_runs (
  external_batch_ref varchar(200) NOT NULL,
  idempotency_key varchar(200) NOT NULL,
  request_hash varchar(64) NOT NULL,
- status varchar(20) NOT NULL DEFAULT 'COMPLETED',
+ status varchar(32) NOT NULL DEFAULT 'COMPLETED',
  received_count integer NOT NULL,
  accepted_count integer NOT NULL,
  mismatch_count integer NOT NULL DEFAULT 0,
