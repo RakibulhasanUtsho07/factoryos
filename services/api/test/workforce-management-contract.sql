@@ -86,7 +86,9 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_workforce_correction_parent')
      OR NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='workforce_attendance_events_effective' AND relkind='v')
      OR (SELECT count(*) FROM pg_attribute a
-         WHERE a.attrelid='workforce_shift_templates'::regclass AND a.attname='last_change_reason') <> 1 THEN
+         WHERE a.attrelid='workforce_shift_templates'::regclass AND a.attname='last_change_reason') <> 1
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_workforce_command_receipt_type')
+     OR NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='workforce_attendance_events_effective' AND relkind='v') THEN
     RAISE EXCEPTION 'Versioned attendance correction, effective timeline view and shift revision schema are required';
   END IF;
 
