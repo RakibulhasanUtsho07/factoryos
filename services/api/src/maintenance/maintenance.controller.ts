@@ -89,6 +89,14 @@ export class MaintenanceController {
     return this.service.createPmPlan(this.context(request), dto, idempotencyKey ?? null);
   }
 
+  @Get('pm-plans/:planId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('maintenance.pm.read')
+  @RequireFactoryScope()
+  getPmPlan(@Req() request: MaintenanceRequest, @Param('planId', new ParseUUIDPipe()) planId: string) {
+    return this.service.getPmPlan(this.context(request), planId);
+  }
+
   @Post('pm-plans/:planId/transition')
   @UseGuards(PermissionGuard)
   @RequirePermission('maintenance.pm.manage')
