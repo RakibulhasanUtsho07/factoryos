@@ -31,7 +31,13 @@ DECLARE
     'trg_maintenance_work_order_parts_event_required',
     'trg_maintenance_asset_delete_guard',
     'trg_maintenance_pm_plan_delete_guard',
-    'trg_maintenance_work_order_delete_guard'
+    'trg_maintenance_work_order_delete_guard',
+    'trg_maintenance_asset_initial_state_guard',
+    'trg_maintenance_pm_plan_initial_state_guard',
+    'trg_maintenance_work_order_initial_state_guard',
+    'trg_maintenance_task_initial_state_guard',
+    'trg_maintenance_part_initial_state_guard',
+    'trg_maintenance_work_order_asset_active_guard'
   ];
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='099_maintenance_assets_and_pm_plans')
