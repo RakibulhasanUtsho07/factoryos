@@ -42,7 +42,7 @@ import { FinanceFileExportDto, FinanceFileImportDto, CreateFinanceConnectorDto,
 } from './dto/finance.dto';
 import { deriveFinanceValidationCounts, FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv, type ParsedFinanceFileImport } from './finance-file-import';
 import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpDownload, type FinanceSftpTransport } from './finance-file-transfer.adapters';
-import { FINANCE_ERP_TRANSFER, normalizeFinanceErpOpaqueReference, type FinanceErpTransferAdapter } from './finance-erp-transfer.adapters';
+import { FINANCE_ERP_TRANSFER, normalizeFinanceErpOpaqueReference, type FinanceErpFileDownload, type FinanceErpTransferAdapter } from './finance-erp-transfer.adapters';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -565,7 +565,7 @@ export class FinanceService {
       throw new ServiceUnavailableException('ERP connector endpoint or secret-manager reference is missing');
     }
 
-    let download;
+    let download: FinanceErpFileDownload | null;
     try {
       download = await this.erpTransfer.downloadNext({
         tenant_id: tenantId,
@@ -874,7 +874,6 @@ export class FinanceService {
           throw new ServiceUnavailableException('ERP upload verification failed; an immutable export receipt was not issued');
         }
         remoteReference = 'erp:' + providerReference;
-      }
       }
 
       const receiptId = randomUUID();
