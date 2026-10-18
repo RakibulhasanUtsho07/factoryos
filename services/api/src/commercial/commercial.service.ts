@@ -431,6 +431,7 @@ export class CommercialService {
       [tenantId,factoryId,customerRef,requestedRule],
     );
     const rule = result.rows[0];
+    if (requestedRule && !rule) throw new BadRequestException('Requested pricing rule is not active for this customer and factory');
     const ruleCode = rule?.rule_code ?? 'DEFAULT_BDT';
     const baseCurrency = this.currency(rule?.base_currency ?? 'BDT','base_currency');
     const currency = this.currency(rawCurrency,'currency');
@@ -445,7 +446,7 @@ export class CommercialService {
     const total = formatScaled(calculated.totals.total_scaled,4);
     const totalBase = convertAmountToBase(calculated.totals.total_scaled,fx.rate);
     const threshold = rule?.approval_total_threshold ? String(rule.approval_total_threshold) : null;
-    const approvedByThreshold = threshold !== null && Number(totalBase) >= Number(threshold);
+    const approvedByThreshold = threshold !== null && decimalScaled(totalBase,4) >= decimalScaled(threshold,4);
     const approvedByDiscount = calculated.maxLineDiscountPercent > Number(rule?.approval_discount_threshold_percent ?? 0);
     const approvalRequired = (rule?.approval_required ?? true) || approvedByThreshold || approvedByDiscount;
     return {
@@ -578,7 +579,7 @@ export class CommercialService {
   }
 
   private async activeFactory(client: PoolClient, tenantId: string, factoryId: string) {
-    const result = await client.query('SELECT 1 FROM factories WHERE id=$1 AND tenant_id=$2 AND status=\\'ACTIVE\\'', [factoryId,tenantId]);
+    const result = await client.query('SELECT 1 FROM factories WHERE id=$1 AND tenant_id=$2 AND status=$3', [factoryId,tenantId,'ACTIVE']);
     if (!result.rows[0]) throw new ForbiddenException('Factory is not active or not scoped to the authenticated tenant');
   }
 

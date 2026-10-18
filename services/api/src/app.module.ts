@@ -30,6 +30,7 @@ import { QualityModule } from './quality/quality.module';
 import { MaintenanceModule } from './maintenance/maintenance.module';
 import { UtilitiesModule } from './utilities/utilities.module';
 import { EhsModule } from './ehs/ehs.module';
+import { CommercialModule } from './commercial/commercial.module';
 import { WorkforceModule } from './workforce/workforce.module';
 
 import { PolicyModule } from './policy/policy.module';
@@ -77,6 +78,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     IamModule,
 
     OrdersModule,
+
+    CommercialModule,
 
     ProcurementModule,
 
