@@ -45,14 +45,19 @@ export class MaintenanceService {
     const name = this.requiredText(dto.name, 'name', 255);
     const assetType = this.requiredText(dto.asset_type, 'asset_type', 80).toUpperCase();
     const parentId = this.optionalUuid(dto.parent_asset_id, 'parent_asset_id');
+    const commissionedOn = dto.commissioned_on ? this.dateOnly(dto.commissioned_on, 'commissioned_on') : null;
+    const warrantyExpiresOn = dto.warranty_expires_on ? this.dateOnly(dto.warranty_expires_on, 'warranty_expires_on') : null;
+    if (commissionedOn && warrantyExpiresOn && warrantyExpiresOn < commissionedOn) {
+      throw new BadRequestException('warranty_expires_on cannot be before commissioned_on');
+    }
     const criticality = dto.criticality ?? 'MEDIUM';
     const payload = {
       asset_code: assetCode, name, asset_type: assetType, parent_asset_id: parentId,
       manufacturer: this.optionalText(dto.manufacturer, 160),
       model: this.optionalText(dto.model, 160),
       serial_number: this.optionalText(dto.serial_number, 160), criticality,
-      location: this.optionalText(dto.location, 255), commissioned_on: dto.commissioned_on ?? null,
-      warranty_expires_on: dto.warranty_expires_on ?? null,
+      location: this.optionalText(dto.location, 255), commissioned_on: commissionedOn,
+      warranty_expires_on: warrantyExpiresOn,
       notes: this.optionalText(dto.notes, 4000),
     };
     const hash = this.hash(payload);
@@ -134,8 +139,8 @@ export class MaintenanceService {
     add('criticality',dto.criticality);
     add('status',dto.status);
     add('location',dto.location,v=>this.optionalText(v as string|null,255));
-    add('commissioned_on',dto.commissioned_on);
-    add('warranty_expires_on',dto.warranty_expires_on);
+    add('commissioned_on',dto.commissioned_on,v=>v===null?null:this.dateOnly(String(v),'commissioned_on'));
+    add('warranty_expires_on',dto.warranty_expires_on,v=>v===null?null:this.dateOnly(String(v),'warranty_expires_on'));
     add('notes',dto.notes,v=>this.optionalText(v as string|null,4000));
     if (!fields.length) throw new BadRequestException('At least one asset field must be changed');
     const payload={assetId:assetId.toLowerCase(),expected_version:dto.expected_version,reason,changes:fields};
@@ -171,6 +176,11 @@ export class MaintenanceService {
           [assetId,c.tenantId,c.factoryId],
         );
         if(open.rows[0]) throw new ConflictException('An asset with open maintenance work orders cannot be inactivated or retired');
+      }
+      const proposedCommissioned=fields.find(([column])=>column==='commissioned_on')?.[1] ?? row.commissioned_on;
+      const proposedWarranty=fields.find(([column])=>column==='warranty_expires_on')?.[1] ?? row.warranty_expires_on;
+      if (proposedCommissioned && proposedWarranty && String(proposedWarranty).slice(0,10) < String(proposedCommissioned).slice(0,10)) {
+        throw new BadRequestException('warranty_expires_on cannot be before commissioned_on');
       }
       const parent=fields.find(([column])=>column==='parent_asset_id')?.[1];
       if(parent && parent!==null) {
@@ -232,6 +242,9 @@ export class MaintenanceService {
       );
       if(!asset.rows[0]) throw new NotFoundException('Asset was not found in this factory');
       if(asset.rows[0].status!=='ACTIVE') throw new ConflictException('Preventive maintenance can only be planned for an active asset');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text,0))',[
+        `${c.tenantId}:${c.factoryId}:${assetId}:${planCode.toLowerCase()}:pm-revision`,
+      ]);
       const revision=await client.query<Row>(
         `SELECT COALESCE(MAX(revision),0)+1 AS revision FROM maintenance_pm_plans
          WHERE tenant_id=$1 AND factory_id=$2 AND asset_id=$3 AND lower(plan_code)=lower($4)`,
