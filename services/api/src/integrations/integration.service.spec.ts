@@ -1,0 +1,188 @@
+import { UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
+import { jest } from '@jest/globals';
+import {
+  createWebhookSignature,
+  integrationRequestHash,
+} from './integration-contract';
+import { IntegrationService } from './integration.service';
+
+describe('IntegrationService signed webhook ingress', () => {
+  const secret = 'factoryos-webhook-test-secret-0123456789';
+  const tenantId = '9ba278d1-166b-4bf0-a3bc-5b427a983391';
+  const factoryId = 'a3e61b54-3b8a-4c35-bf0b-0c2d58b0534d';
+  const connectorId = '4b6d2019-a69d-43d1-a9d2-ec97a71e2c49';
+  const payloadSchema = {
+    type: 'object',
+    properties: {
+      order_number: { type: 'string', minLength: 1, maxLength: 40 },
+      quantity: { type: 'integer', minimum: 1 },
+    },
+    required: ['order_number', 'quantity'],
+  };
+
+  const connector = {
+    id: connectorId,
+    tenant_id: tenantId,
+    factory_id: factoryId,
+    display_name: 'MES webhook',
+    source_system: 'MES',
+    connector_type: 'SIGNED_WEBHOOK',
+    status: 'ACTIVE',
+    secret_reference: 'env://WEBHOOK_SECRET_MES',
+    schema_version: 1,
+    payload_schema: payloadSchema,
+    created_by_user_id: '822753dc-ef72-44a0-a23d-04748105c92a',
+    reviewed_by_user_id: 'b1a13175-599e-46e9-b82a-e92965b1db6f',
+    reviewed_at: new Date(),
+    paused_at: null,
+    decision_reason: null,
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+
+  function setup(existingReceipt?: {
+    outbox_event_id: string;
+    payload_sha256: string;
+    event_type: string;
+    schema_version: number;
+  }) {
+    let transactionCount = 0;
+    const clientQuery = jest.fn(async (sql: string) => {
+      if (sql.includes('FROM integration_webhook_receipts')) {
+        return { rows: existingReceipt ? [existingReceipt] : [], rowCount: existingReceipt ? 1 : 0 };
+      }
+      if (sql.includes('FROM integration_connectors') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ status: 'ACTIVE', secret_reference: connector.secret_reference, schema_version: connector.schema_version }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    const client = { query: clientQuery };
+    const database = {
+      query: jest.fn(async (sql: string) => {
+        if (sql.includes('factoryos_resolve_integration_webhook')) {
+          return { rows: [{ tenant_id: tenantId, factory_id: factoryId }], rowCount: 1 };
+        }
+        return { rows: [connector], rowCount: 1 };
+      }),
+      transaction: jest.fn(async (...args: unknown[]) => {
+        transactionCount += 1;
+        const callback = args[0] as (value: typeof client) => Promise<unknown>;
+        return callback(client);
+      }),
+    };
+    const config = { get: jest.fn(() => secret) };
+    return {
+      service: new IntegrationService(database as never, config as never),
+      database,
+      clientQuery,
+      get transactionCount() { return transactionCount; },
+    };
+  }
+
+  function signedRequest(eventId: string, bodyInput?: Record<string, unknown>, timestampInput?: string) {
+    const body = bodyInput ?? {
+      event_type: 'ORDER.CONFIRMED',
+      schema_version: 1,
+      payload: { order_number: 'SO-100', quantity: 12 },
+    };
+    const rawBody = Buffer.from(JSON.stringify(body), 'utf8');
+    const timestamp = timestampInput ?? Math.floor(Date.now() / 1000).toString();
+    return {
+      request: { rawBody, body },
+      timestamp,
+      eventId,
+      signature: createWebhookSignature(secret, timestamp, eventId, rawBody),
+    };
+  }
+
+  it('atomically queues an accepted event and stores one receipt', async () => {
+    const harness = setup();
+    const signed = signedRequest('mes-event-101');
+    const result = await harness.service.receiveWebhook(
+      connectorId,
+      signed.request,
+      signed.timestamp,
+      signed.eventId,
+      signed.signature,
+    );
+    expect(result).toEqual(expect.objectContaining({ accepted: true, duplicate: false }));
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(true);
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(true);
+    expect(harness.transactionCount).toBe(1);
+  });
+
+  it('acknowledges the same external event again without creating a second outbox event', async () => {
+    const signed = signedRequest('mes-event-102');
+    const envelope = signed.request.body as {
+      event_type: string;
+      schema_version: number;
+      payload: Record<string, unknown>;
+    };
+    const payloadHash = integrationRequestHash({
+      event_type: envelope.event_type,
+      schema_version: envelope.schema_version,
+      correlation_id: null,
+      payload: envelope.payload,
+    });
+    const harness = setup({
+      outbox_event_id: '1f9de978-f66f-43c9-8683-d6d06ac0c5ab',
+      payload_sha256: payloadHash,
+      event_type: envelope.event_type,
+      schema_version: envelope.schema_version,
+    });
+    const result = await harness.service.receiveWebhook(
+      connectorId,
+      signed.request,
+      signed.timestamp,
+      signed.eventId,
+      signed.signature,
+    );
+    expect(result).toEqual({
+      accepted: true,
+      duplicate: true,
+      event_id: '1f9de978-f66f-43c9-8683-d6d06ac0c5ab',
+    });
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
+    expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
+  });
+
+  it('rejects a modified signature before opening a database transaction', async () => {
+    const harness = setup();
+    const signed = signedRequest('mes-event-103');
+    await expect(harness.service.receiveWebhook(
+      connectorId,
+      signed.request,
+      signed.timestamp,
+      signed.eventId,
+      'sha256=' + '0'.repeat(64),
+    )).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(harness.transactionCount).toBe(0);
+  });
+
+  it('rejects stale signatures and schema-version mismatch as non-retryable client errors', async () => {
+    const harness = setup();
+    const staleTime = (Math.floor(Date.now() / 1000) - 600).toString();
+    const stale = signedRequest('mes-event-104', undefined, staleTime);
+    await expect(harness.service.receiveWebhook(
+      connectorId,
+      stale.request,
+      stale.timestamp,
+      stale.eventId,
+      stale.signature,
+    )).rejects.toBeInstanceOf(UnauthorizedException);
+
+    const wrongVersion = signedRequest('mes-event-105', {
+      event_type: 'ORDER.CONFIRMED',
+      schema_version: 2,
+      payload: { order_number: 'SO-100', quantity: 12 },
+    });
+    await expect(harness.service.receiveWebhook(
+      connectorId,
+      wrongVersion.request,
+      wrongVersion.timestamp,
+      wrongVersion.eventId,
+      wrongVersion.signature,
+    )).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(harness.transactionCount).toBe(0);
+  });
+});
