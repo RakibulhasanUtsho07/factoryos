@@ -215,6 +215,7 @@ jobs:
             migrations/127_finance_file_export_permission.sql
             migrations/128_finance_erp_transfer_modes.sql
             migrations/129_finance_erp_export_receipt_guard.sql
+            migrations/130_integration_operational_reconciliation.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -312,6 +313,7 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-integration.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-dlq-replay-idempotency.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-webhook.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-reconciliation.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
