@@ -372,7 +372,7 @@ BEGIN
   END IF;
 END $$;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS(SELECT 1 FROM permissions WHERE code='finance.facts.export') THEN RAISE EXCEPTION 'finance.facts.export permission is missing'; END IF;
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='128_finance_erp_transfer_modes') THEN RAISE EXCEPTION 'ERP transfer migration is not registered'; END IF;
@@ -380,5 +380,5 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.finance_connectors'::regclass AND conname='chk_finance_connector_mode' AND pg_get_constraintdef(oid) LIKE '%ERP_IMPORT%' AND pg_get_constraintdef(oid) LIKE '%ERP_EXPORT%') THEN RAISE EXCEPTION 'ERP transfer connector modes are not registered'; END IF;
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='129_finance_erp_export_receipt_guard') THEN RAISE EXCEPTION 'ERP export receipt guard migration is not registered'; END IF;
   IF position('ERP_EXPORT' in pg_get_functiondef('public.factoryos_guard_finance_file_export_receipt()'::regprocedure))=0 THEN RAISE EXCEPTION 'ERP export receipt trigger guard is missing'; END IF;
-END $;
+END $$;
 ROLLBACK;
