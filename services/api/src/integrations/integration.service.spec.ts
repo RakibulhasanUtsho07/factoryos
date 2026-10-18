@@ -1,4 +1,4 @@
-import { BadRequestException, TooManyRequestsException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, HttpException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 import {
   createWebhookSignature,
@@ -233,7 +233,7 @@ describe('IntegrationService signed webhook ingress', () => {
     const signed = signedRequest('mes-event-over-rate-limit');
     await expect(harness.service.receiveWebhook(
       connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
-    )).rejects.toBeInstanceOf(TooManyRequestsException);
+    )).rejects.toMatchObject({ status: 429 });
     expect(harness.transactionCount).toBe(1);
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);

@@ -1,11 +1,12 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
   ServiceUnavailableException,
-  TooManyRequestsException,
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -346,7 +347,7 @@ export class IntegrationService {
       return Number(result.rows[0].request_count);
     }, { tenantId: scope.tenant_id });
     if (requestCount > rateLimit) {
-      throw new TooManyRequestsException('Webhook connector rate limit exceeded; retry after the current minute window');
+      throw new HttpException('Webhook connector rate limit exceeded; retry after the current minute window', HttpStatus.TOO_MANY_REQUESTS);
     }
 
     let envelope: WebhookEnvelope;
