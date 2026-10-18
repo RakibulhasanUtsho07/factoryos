@@ -90,3 +90,27 @@ export async function resolveFinanceOperationalSource(
     throw new BadRequestException('Operational source returned invalid financial reconciliation evidence');
   }
 }
+
+export function assertFinanceOperationalSourceMatches(
+  factCurrency: string,
+  expectedQuantity: string,
+  expectedRate: string,
+  expectedUomCode: string,
+  evidence: FinanceOperationalSourceEvidence,
+): void {
+  if (normalizeFinanceCurrency(factCurrency) !== evidence.currency) {
+    throw new BadRequestException(
+      'Financial fact currency must match the operational source currency (' + evidence.currency +
+      '); convert the source amount explicitly before ingestion',
+    );
+  }
+  if (
+    normalizeFinanceDecimal(expectedQuantity) !== evidence.quantity ||
+    normalizeFinanceDecimal(expectedRate) !== evidence.rate ||
+    expectedUomCode.trim().toUpperCase() !== evidence.uomCode
+  ) {
+    throw new BadRequestException(
+      'Expected reconciliation quantity, rate and UOM must match the current governed operational source record',
+    );
+  }
+}

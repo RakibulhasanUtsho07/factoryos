@@ -24,7 +24,7 @@ import {
   type FinanceFactType,
   type FinanceReconciliationSourceType,
 } from './finance-contract';
-import { resolveFinanceOperationalSource } from './finance-operational-source';
+import { assertFinanceOperationalSourceMatches, resolveFinanceOperationalSource } from './finance-operational-source';
 import { FinanceFileImportDto, CreateFinanceConnectorDto,
   FinanceFactInputDto,
   FinanceMarginInputsQueryDto,
@@ -490,21 +490,13 @@ export class FinanceService {
             reconciliation.expected_source_type as FinanceReconciliationSourceType,
             reconciliation.expected_source_ref,
           );
-          if (fact.currency !== operational.currency) {
-            throw new BadRequestException(
-              'Financial fact currency must match the operational source currency (' + operational.currency +
-              '); convert the source amount explicitly before ingestion',
-            );
-          }
-          if (
-            normalizeFinanceDecimal(reconciliation.expected_quantity) !== operational.quantity ||
-            normalizeFinanceDecimal(reconciliation.expected_rate) !== operational.rate ||
-            reconciliation.uom_code.trim().toUpperCase() !== operational.uomCode
-          ) {
-            throw new BadRequestException(
-              'Expected reconciliation quantity, rate and UOM must match the current governed operational source record',
-            );
-          }
+          assertFinanceOperationalSourceMatches(
+            fact.currency,
+            reconciliation.expected_quantity,
+            reconciliation.expected_rate,
+            reconciliation.uom_code,
+            operational,
+          );
         }
 
         const mismatches = normalizedFacts.filter((fact) =>

@@ -16,7 +16,8 @@ All endpoints use the authenticated tenant and factory context, PostgreSQL tenan
 | POST /api/finance/connectors/:id/approve | finance.connectors.approve | Activate a connector using independent maker-checker approval |
 | POST /api/finance/connectors/:id/reject | finance.connectors.approve | Reject a pending connector with a reason |
 | POST /api/finance/connectors/:id/pause | finance.connectors.write | Pause an active connector without deleting history |
-| POST /api/finance/connectors/:id/facts | finance.facts.ingest | Ingest a normalized, idempotent batch of 1–500 facts |
+| POST /api/finance/connectors/:id/facts | finance.facts.ingest | Ingest a normalized, idempotent batch of 1–500 facts (non-FILE_IMPORT modes) |
+| POST /api/finance/connectors/:id/file-import | finance.facts.ingest | Import a validated CSV or JSON file through a FILE_IMPORT connector, retaining source filename, format and payload SHA-256 |
 | GET /api/finance/facts | finance.facts.read | Query immutable source facts and reconciliation status |
 | GET /api/finance/reconciliations | finance.reconciliation.read | List open/resolved/waived quantity or rate mismatches |
 | POST /api/finance/reconciliations/:id/review | finance.reconciliation.review | Resolve or waive a mismatch with reviewer/reason retained |
@@ -40,7 +41,7 @@ A connector is scoped to one tenant and factory and has a stable code, source-sy
 
 The allowed domain-to-fact mapping is checked both in the API and in the database trigger. Each standard domain has at most one pending/active reporting source; reports include only active reporting connectors, and response readiness flags list missing required domains. Pausing a source stops its facts from being treated as current reporting input until another source is approved. An AR connector cannot write arbitrary cost facts. A connector run and each fact retain the connector, external record key, source record reference, effective/due timestamps, currency, dimensions, normalized payload snapshot and SHA-256 request/fact hash. An external fact ID can be ingested only once per connector scope; an idempotent retry returns the existing batch rather than duplicating balances or revenue.
 
-MANUAL, REST_API, WEBHOOK and FILE_IMPORT are declared contract modes. This slice supplies the normalized authenticated ingestion endpoint, persistence/guardrails and reporting inputs; it does not yet ship product-specific polling agents, webhook signature profiles, file parsers or credential-fetching adapters. Those adapters must translate external records to this contract and retain source references; they must not bypass the governed API/DB invariants.
+MANUAL, REST_API, WEBHOOK and FILE_IMPORT are declared contract modes. The normalized authenticated ingestion endpoint and bounded UTF-8 CSV/JSON file import (up to 2 MiB / 500 facts) share the same idempotency, domain and evidence gates. File-import runs retain filename, format and SHA-256 provenance. Product-specific REST polling agents, signed webhook profiles and credential-fetching adapters still require a provider/secret-manager contract. Those adapters must translate external records to this contract and retain source references; they must not bypass the governed API/DB invariants.
 
 ## Governed financial facts
 
@@ -52,7 +53,7 @@ For period margin inputs, effective_at is the accounting/forecast period date. F
 
 ## Operational quantity/rate reconciliation (FR-FIN-08)
 
-A fact can include source quantity, source rate and UOM as a complete evidence tuple. Once that tuple is supplied, a reconciliation is mandatory in the same transaction; a deferred database constraint prevents quantity/rate facts from committing without reconciliation evidence. A reconciliation additionally names the expected internal/source record and quantity/rate values with explicit non-negative tolerances. Comparison is exact decimal arithmetic. The UOM must match exactly after normalization; convert quantities before submitting if source and expected UOMs differ.
+A fact can include source quantity, source rate and UOM as a complete evidence tuple. Once that tuple is supplied, a reconciliation is mandatory in the same transaction; a deferred database constraint prevents quantity/rate facts from committing without reconciliation evidence. A reconciliation additionally names the expected internal/source record and quantity/rate values with explicit non-negative tolerances. Expected quantity/rate/UOM are resolved against an in-scope approved operational record, not trusted from the caller: an approved order line, approved PO line, posted goods-receipt line or utility meter reading. The caller-supplied expected values must exactly match that authoritative record; source amount currency must match as well. Only the incoming financial fact's observed quantity/rate is compared to the operational evidence using the explicit tolerances. Comparison uses exact decimal arithmetic. Convert quantities before submitting if source and expected UOMs differ.
 
 MATCHED versus MISMATCH is computed from source-vs-expected quantity and rate deltas in the service and re-derived by a database trigger. Reconciliation values must match the immutable financial fact's own source evidence. An open mismatch remains visible and sets the affected margin or working-capital response reporting_ready=false. Only a different reviewer from the fact ingester may transition an open mismatch to RESOLVED or WAIVED, and an explanatory reason plus reviewer/time are retained. Waiving does not erase the mismatch evidence.
 

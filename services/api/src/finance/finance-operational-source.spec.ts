@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { PoolClient } from 'pg';
-import { resolveFinanceOperationalSource } from './finance-operational-source';
+import { assertFinanceOperationalSourceMatches, resolveFinanceOperationalSource } from './finance-operational-source';
 
 function fakeClient(rows: Array<Record<string, unknown>>) {
   const query = jest.fn(async (_sql: string, _params: unknown[]) => ({ rows, rowCount: rows.length }));
@@ -59,5 +59,21 @@ describe('finance operational source resolver', () => {
     await expect(resolveFinanceOperationalSource(
       incomplete.client, 'tenant-1', 'factory-1', 'UTILITY_METER_READING', 'reading-1',
     )).rejects.toThrow('must expose quantity, rate, UOM and currency');
+  });
+});
+
+describe('finance operational source assertions', () => {
+  const evidence = { quantity: '9.5', rate: '3.25', uomCode: 'KG', currency: 'USD' };
+
+  it('accepts exact source values only when currency, quantity, rate and UOM agree', () => {
+    expect(() => assertFinanceOperationalSourceMatches('USD', '9.5000', '3.2500', 'kg', evidence)).not.toThrow();
+    expect(() => assertFinanceOperationalSourceMatches('BDT', '9.5', '3.25', 'KG', evidence))
+      .toThrow('must match the operational source currency');
+    expect(() => assertFinanceOperationalSourceMatches('USD', '9.4', '3.25', 'KG', evidence))
+      .toThrow('must match the current governed operational source record');
+    expect(() => assertFinanceOperationalSourceMatches('USD', '9.5', '3.26', 'KG', evidence))
+      .toThrow('must match the current governed operational source record');
+    expect(() => assertFinanceOperationalSourceMatches('USD', '9.5', '3.25', 'PCS', evidence))
+      .toThrow('must match the current governed operational source record');
   });
 });

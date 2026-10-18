@@ -62,7 +62,7 @@ describe('finance file import contract', () => {
       .toThrow('Finance import contract validation failed');
 
     const base = 'external_fact_id,source_fact_key,fact_type,source_record_type,source_record_ref,effective_at,currency,amount';
-    expect(() => parseFinanceFileImport(fileDto('CSV', base + ',amount\n'))).toThrow('cannot repeat column headers');
+    expect(() => parseFinanceFileImport(fileDto('CSV', base + ',amount\nx,y,AR_OPEN,AR_INVOICE,INV-1,2026-10-01T00:00:00Z,BDT,1,2\n'))).toThrow('cannot repeat column headers');
     expect(() => parseFinanceFileImport(fileDto('CSV', base + ',inline_secret\nx,y,z,a,b,2026-10-01T00:00:00Z,BDT,1,supersecret')))
       .toThrow('unsupported columns');
     expect(() => parseFinanceFileImport(fileDto('CSV', base + '\n"broken,id,AR_OPEN,AR_INVOICE,INV-1,2026-10-01T00:00:00Z,BDT,1')))
@@ -82,5 +82,10 @@ describe('finance file import contract', () => {
       ...fileDto('JSON', JSON.stringify([fact])),
       format: 'XML' as 'JSON',
     })).toThrow('Unsupported finance file format');
+    const oversized = Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64');
+    expect(() => parseFinanceFileImport({
+      ...fileDto('JSON', JSON.stringify([fact])),
+      content_base64: oversized,
+    })).toThrow('canonical base64');
   });
 });
