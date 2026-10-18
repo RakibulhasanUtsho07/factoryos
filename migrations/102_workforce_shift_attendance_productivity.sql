@@ -212,7 +212,6 @@ CREATE TABLE workforce_shift_assignments (
   CONSTRAINT uq_workforce_assignment_scope UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT uq_workforce_assignment_worker_scope UNIQUE (id, worker_id, tenant_id, factory_id),
   CONSTRAINT uq_workforce_assignment_idempotency UNIQUE (tenant_id, factory_id, idempotency_key),
-  CONSTRAINT uq_workforce_assignment_shift_worker_date UNIQUE (tenant_id, factory_id, shift_template_id, worker_id, shift_date),
   CONSTRAINT fk_workforce_assignment_shift FOREIGN KEY (shift_template_id, tenant_id, factory_id)
     REFERENCES workforce_shift_templates(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_workforce_assignment_worker FOREIGN KEY (worker_id, tenant_id, factory_id)
@@ -244,6 +243,11 @@ CREATE INDEX idx_workforce_assignment_roster
 CREATE INDEX idx_workforce_assignment_worker_window
   ON workforce_shift_assignments (tenant_id, factory_id, worker_id, planned_start_at, planned_end_at)
   WHERE status IN ('PLANNED','CONFIRMED');
+-- Keep at most one non-cancelled assignment for one worker/shift/date.
+-- A cancelled assignment remains in audit history but must not prevent a replacement.
+CREATE UNIQUE INDEX uq_workforce_assignment_shift_worker_date
+  ON workforce_shift_assignments (tenant_id, factory_id, shift_template_id, worker_id, shift_date)
+  WHERE status <> 'CANCELLED';
 
 CREATE TABLE workforce_attendance_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
