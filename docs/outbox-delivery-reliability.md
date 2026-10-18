@@ -28,7 +28,7 @@ The dispatcher uses an initial five-second retry delay, exponential backoff (5, 
 
 ## Automated verification
 
-The PostgreSQL CI migration list includes migrations 001–117 and fails closed when a migration file is omitted. The SQL contract test verifies the replay ledger, forced RLS, tenant policy, uniqueness constraint and migration registration. Integration coverage verifies concurrent outbox claims, stale lease recovery, restart after consumer success but before publish-state commit, inbox duplicate suppression and rollback-on-handler-failure, maximum-attempt quarantine, factory/tenant-scoped DLQ access, and replay receipt idempotency/conflict behavior.
+The PostgreSQL CI migration list includes migrations 001–122 and fails closed when a migration file is omitted. The SQL contract test verifies the replay ledger, forced RLS, tenant policy, uniqueness constraint and migration registration. Integration coverage verifies concurrent outbox claims, stale lease recovery, restart after consumer success but before publish-state commit, inbox duplicate suppression and rollback-on-handler-failure, maximum-attempt quarantine, factory/tenant-scoped DLQ access, and replay receipt idempotency/conflict behavior.
 
 ## Transport boundary
 
@@ -37,4 +37,4 @@ The current \`OutboxPublisher\` is the local transport boundary and emits a vali
 
 ## Signed webhook connectors
 
-Signed webhook ingress, tenant/factory-scoped connector registration, HMAC replay protection, strict schema/version validation and transactionally idempotent acceptance are specified in [signed-webhook-connector-contract.md](signed-webhook-connector-contract.md). Registry/receipt migration integrity is verified by PostgreSQL CI; accepted events continue through the outbox retry and DLQ path described above.
+Signed webhook ingress, per-connector rate limiting, tenant/factory-scoped connector registration, HMAC replay protection, strict schema/version validation, exact receipt/outbox provenance binding and transactionally idempotent acceptance are specified in [signed-webhook-connector-contract.md](signed-webhook-connector-contract.md). Registry/receipt migration integrity is verified by PostgreSQL CI; accepted events continue through the outbox retry and DLQ path described above.

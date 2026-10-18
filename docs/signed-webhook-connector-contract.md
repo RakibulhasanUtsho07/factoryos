@@ -2,7 +2,7 @@
 
 ## SRS / architecture traceability
 
-This slice implements the SRS integration/event-processing scope and the v2.1 HLD/LLD integration flow:
+This slice maps to SRS v2.1 FR-PROD-12 (governed gateway/schema/scope/rate limits, P0), FR-PROD-13 (idempotency, P0), FR-PROD-14 (signed webhooks/retries/DLQ/replay, P1), and FR-PROD-16 (canonical versioned events/provenance/correlation, P0), plus Engineering Blueprint WP03 (event/integration fabric):
 
 External connector -> signature verification -> strict envelope and payload validation -> tenant/factory-scoped transaction -> immutable inbound receipt + transactional outbox -> existing publisher/consumer retry, quarantine and DLQ tooling.
 
@@ -32,7 +32,7 @@ The HMAC-SHA256 input is the exact UTF-8 byte sequence:
 timestamp + "." + event_id + "." + raw_request_body
 \`\`\`
 
-The original JSON bytes are retained by the HTTP body parser only for this webhook route. Signature comparison is constant-time. The default clock-skew allowance is 300 seconds; \`WEBHOOK_SIGNATURE_TOLERANCE_SECONDS\` may be set between 60 and 900 seconds. Missing/malformed/stale timestamps and invalid signatures are rejected before the database transaction starts.
+The original JSON bytes are retained by the HTTP body parser only for this webhook route. Signature comparison is constant-time. The default clock-skew allowance is 300 seconds; \`WEBHOOK_SIGNATURE_TOLERANCE_SECONDS\` may be set between 60 and 900 seconds. Missing/malformed/stale timestamps and invalid signatures are rejected before the database transaction starts. After valid HMAC verification, a database-backed per-connector minute-window limiter runs before payload-schema processing: `WEBHOOK_RATE_LIMIT_PER_MINUTE` accepts integer values from 1 to 10000, defaults to 600, and returns HTTP 429 when the signed-request budget is exceeded. Only the current UTC-minute counter is kept for each connector, under forced tenant RLS.
 
 Signing keys use references shaped like \`env://WEBHOOK_SECRET_ERP_A\`. The referenced environment value must be present and at least 32 UTF-8 bytes. This implementation deliberately stores neither key material nor credentials inside connector configuration, logs, event receipts or API responses. A Vault/KMS-backed secret-provider adapter is not included in this slice; the current resolver is environment-backed.
 
@@ -58,7 +58,7 @@ The payload schema is a bounded JSON Schema subset for object, array, string, nu
 
 ## Transactional intake, duplicate delivery and safe retry
 
-After signature and schema verification, FactoryOS acquires a database advisory lock keyed by connector + external event ID. Within a tenant/factory-scoped transaction it checks an immutable receipt, rechecks connector state/version/secret reference, inserts a canonical event into \`outbox_events\`, then inserts the corresponding immutable \`integration_webhook_receipts\` row. Receipt and outbox event commit atomically; a successful HTTP acceptance therefore means the event is durably queued, not that downstream business processing has already finished.
+After signature and schema verification, FactoryOS acquires a database advisory lock keyed by connector + external event ID. Within a tenant/factory-scoped transaction it checks an immutable receipt, rechecks connector state/version/secret reference, inserts a canonical event into \`outbox_events\`, then inserts the corresponding immutable \`integration_webhook_receipts\` row. Receipt and outbox event commit atomically; a successful HTTP acceptance therefore means the event is durably queued, not that downstream business processing has already finished. The canonical envelope fingerprint (`request_fingerprint_sha256`) accompanies the event in the outbox payload. A database guard verifies tenant/factory, connector aggregate, provider event ID, source system, event/schema version and fingerprint all match the exact outbox row before allowing the immutable receipt to be inserted.
 
 - First valid delivery returns HTTP 202 with \`accepted=true\`, \`duplicate=false\` and the internal outbox event ID.
 - A repeated event ID with the same canonical payload returns HTTP 202 with \`duplicate=true\`; a second outbox event is not created.
@@ -71,6 +71,6 @@ The ingress does not execute business mutations directly. It records a validated
 ## Verification
 
 - \`integration-contract.spec.ts\`: canonical raw-byte signing, constant-time verification path, timestamp freshness, secret-reference rules and strict schema validation.
-- \`integration.service.spec.ts\`: accepted-event transaction, duplicate suppression, invalid-signature rejection before transaction, stale timestamp and schema-version mismatch.
-- \`services/api/test/integration-webhook.sql\`: registry/receipt/history RLS, append-only guards, internal route-table isolation, scoped resolver function permission and migration registration.
+- \`integration.service.spec.ts\`: accepted-event/outbox fingerprint consistency, canonical event IDs, rate-limit HTTP 429, duplicate suppression, invalid-signature rejection before the intake transaction, stale timestamp and schema-version mismatch.
+- \`services/api/test/integration-webhook.sql\`: registry/receipt/rate-limit RLS, append-only guards, internal route-table isolation, scoped resolver function permission, exact receipt/outbox-binding guard and migration registration. PostgreSQL integration tests cover concurrent retries and attempts to forge receipt provenance.
 - The PostgreSQL CI workflow fails if the new migration or SQL schema contract test is not registered.
