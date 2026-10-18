@@ -38,7 +38,7 @@ export class CreateEhsPermitDto {
 export class ListEhsQueryDto {
   @IsOptional() @Type(()=>Number) @IsInt() @Min(1) @Max(200) limit?:number;
   @IsOptional() @IsString() @MaxLength(32) status?:string;
-  @IsOptional() @IsIn([...EHS_SEVERITIES]) severity?:typeof EHS_SEVERITIES[number];
+  @IsOptional() @IsIn([...EHS_RISK_LEVELS]) risk_level?:typeof EHS_RISK_LEVELS[number];
 }
 export class TransitionEhsPermitDto {
   @Type(()=>Number) @IsInt() @Min(1) expected_version!:number;
