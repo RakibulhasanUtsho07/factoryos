@@ -37,9 +37,6 @@ BEGIN
     v_worker,v_tenant,v_factory,'CI-WFC-001','CI consented operator','ACTIVE',1,'ci-wfc-worker-001',v_hash,
     v_actor,v_actor,v_corr
   );
-  UPDATE workforce_workers SET biometric_consent_at=clock_timestamp(),
-    row_version=2,updated_by_user_id=v_actor,last_change_reason='CI consent fixture',updated_at=clock_timestamp()
-  WHERE id=v_worker AND tenant_id=v_tenant AND factory_id=v_factory;
   INSERT INTO workforce_biometric_consent_events (
     tenant_id,factory_id,worker_id,consent_granted,purpose,reason,idempotency_key,request_hash,
     recorded_by_user_id,correlation_id
