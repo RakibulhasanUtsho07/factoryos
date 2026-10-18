@@ -88,8 +88,11 @@ CREATE TABLE ehs_safety_permits (
   CONSTRAINT chk_ehs_permit_approval_evidence CHECK (
     (status IN ('APPROVED','ACTIVE','CLOSED','EXPIRED') AND approved_by_user_id IS NOT NULL
       AND approved_at IS NOT NULL AND approved_by_user_id<>requested_by_user_id)
-    OR (status IN ('DRAFT','PENDING_APPROVAL','REJECTED','CANCELLED')
-      AND (status='REJECTED' OR (approved_by_user_id IS NULL AND approved_at IS NULL)))
+    OR (status IN ('DRAFT','PENDING_APPROVAL') AND approved_by_user_id IS NULL AND approved_at IS NULL)
+    OR (status IN ('REJECTED','CANCELLED') AND (
+      (approved_by_user_id IS NULL AND approved_at IS NULL)
+      OR (approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL AND approved_by_user_id<>requested_by_user_id)
+    ))
   ),
   CONSTRAINT chk_ehs_permit_activation_evidence CHECK (
     (status IN ('ACTIVE','CLOSED','EXPIRED') AND activated_by_user_id IS NOT NULL AND activated_at IS NOT NULL)
