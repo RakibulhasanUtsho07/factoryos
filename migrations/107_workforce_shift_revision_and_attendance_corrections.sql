@@ -110,7 +110,7 @@ LEFT JOIN LATERAL (
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='factoryos_app') THEN
-    GRANT SELECT ON workforce_attendance_events_effective TO factoryos_app;
+    EXECUTE 'GRANT SELECT ON workforce_attendance_events_effective TO factoryos_app';
   END IF;
 END;
 $$;
