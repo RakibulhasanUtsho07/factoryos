@@ -15,6 +15,8 @@ import {
   CreateWorkforceOvertimeDto,
   CreateWorkforceProductivityDto,
   CreateWorkforceShiftDto,
+  UpdateWorkforceShiftDto,
+  CreateWorkforceAttendanceCorrectionDto,
   CreateWorkforceSkillDto,
   CreateWorkforceWorkerDto,
   DecideWorkforceOvertimeDto,
@@ -303,6 +305,73 @@ export class WorkforceService {
       const shift=result.rows[0];
       if(!shift) throw new Error('WORKFORCE_SHIFT_CREATE_FAILED');
       return { ...(await this.shiftDetail(client,c,String(shift.id))),replayed:false };
+    });
+  }
+
+
+  async updateShift(c: WorkforceContext, shiftId: string, dto: UpdateWorkforceShiftDto, rawKey: string | null) {
+    this.validateContext(c);
+    const id=this.uuid(shiftId,'shift_id');
+    const key=this.idempotencyKey(rawKey);
+    const reason=this.requiredText(dto.reason,'reason',2000);
+    const changes:Record<string,unknown>={};
+    if(dto.name!==undefined) changes.name=this.requiredText(dto.name,'name',255);
+    if(dto.starts_at_local!==undefined) changes.starts_at_local=this.time(dto.starts_at_local,'starts_at_local');
+    if(dto.ends_at_local!==undefined) changes.ends_at_local=this.time(dto.ends_at_local,'ends_at_local');
+    if(dto.timezone_name!==undefined) changes.timezone_name=this.timezone(dto.timezone_name);
+    if(dto.unpaid_break_minutes!==undefined) changes.unpaid_break_minutes=this.boundedInteger(dto.unpaid_break_minutes,'unpaid_break_minutes',0,360);
+    if(dto.late_grace_minutes!==undefined) changes.late_grace_minutes=this.boundedInteger(dto.late_grace_minutes,'late_grace_minutes',0,180);
+    if(dto.overtime_threshold_minutes!==undefined) changes.overtime_threshold_minutes=this.boundedInteger(dto.overtime_threshold_minutes,'overtime_threshold_minutes',0,1440);
+    if(dto.status!==undefined) changes.status=dto.status;
+    if(Object.keys(changes).length===0) throw new BadRequestException('At least one shift field must be changed');
+    const hash=this.hash({shift_id:id,expected_version:dto.expected_version,changes,reason});
+    return this.transaction(c,'workforce:command:'+key,async(client)=>{
+      const replay=await this.findCommandReceipt(client,c,key,hash);
+      if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
+      const current=await client.query<Row>(
+        `SELECT id::text AS id,shift_code,name,starts_at_local::text AS starts_at_local,
+          ends_at_local::text AS ends_at_local,timezone_name,unpaid_break_minutes,late_grace_minutes,
+          overtime_threshold_minutes,status,row_version::int AS row_version
+         FROM workforce_shift_templates WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,
+        [id,c.tenantId,c.factoryId],
+      );
+      const row=current.rows[0];
+      if(!row) throw new NotFoundException('Shift template was not found in this factory');
+      if(Number(row.row_version)!==dto.expected_version) throw new ConflictException('Shift-template version is stale; reload before editing');
+      const next={
+        name:changes.name??String(row.name),
+        starts_at_local:changes.starts_at_local??String(row.starts_at_local),
+        ends_at_local:changes.ends_at_local??String(row.ends_at_local),
+        timezone_name:changes.timezone_name??String(row.timezone_name),
+        unpaid_break_minutes:changes.unpaid_break_minutes??Number(row.unpaid_break_minutes),
+        late_grace_minutes:changes.late_grace_minutes??Number(row.late_grace_minutes),
+        overtime_threshold_minutes:changes.overtime_threshold_minutes??Number(row.overtime_threshold_minutes),
+        status:changes.status??String(row.status),
+      };
+      if(next.starts_at_local===next.ends_at_local) throw new BadRequestException('Shift start and end times must differ');
+      if(next.status===row.status && next.name===row.name && next.starts_at_local===row.starts_at_local
+        && next.ends_at_local===row.ends_at_local && next.timezone_name===row.timezone_name
+        && next.unpaid_break_minutes===Number(row.unpaid_break_minutes)
+        && next.late_grace_minutes===Number(row.late_grace_minutes)
+        && next.overtime_threshold_minutes===Number(row.overtime_threshold_minutes)) {
+        throw new BadRequestException('Shift update does not change any field');
+      }
+      const updated=await client.query<Row>(
+        `UPDATE workforce_shift_templates
+         SET name=$4,starts_at_local=$5::time,ends_at_local=$6::time,timezone_name=$7,
+             unpaid_break_minutes=$8,late_grace_minutes=$9,overtime_threshold_minutes=$10,
+             status=$11,row_version=row_version+1,updated_by_user_id=$12,last_change_reason=$13,
+             updated_at=clock_timestamp()
+         WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$14
+         RETURNING id::text AS id,row_version::int AS row_version,status`,
+        [id,c.tenantId,c.factoryId,next.name,next.starts_at_local,next.ends_at_local,next.timezone_name,
+          next.unpaid_break_minutes,next.late_grace_minutes,next.overtime_threshold_minutes,next.status,
+          c.userId,reason,dto.expected_version],
+      );
+      if(!updated.rows[0]) throw new ConflictException('Shift template changed while being updated');
+      const response={...(await this.shiftDetail(client,c,id)),replayed:false};
+      await this.storeCommandReceipt(client,c,key,hash,'SHIFT_TEMPLATE',id,response);
+      return response;
     });
   }
 
