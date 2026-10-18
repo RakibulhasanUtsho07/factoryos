@@ -227,7 +227,7 @@ BEGIN
                 AND r.tenant_id=u.tenant_id AND r.factory_id=u.factory_id
               WHERE u.id=v_inspection.target_id AND r.work_order_id=wo.id
                 AND u.tenant_id=wo.tenant_id AND u.factory_id=wo.factory_id))
-      ) INTO v_related;
+      )) INTO v_related;
     WHEN 'PRODUCTION_REPORT' THEN
       SELECT EXISTS (
         SELECT 1 FROM order_production_reports r WHERE r.id=NEW.production_report_id
