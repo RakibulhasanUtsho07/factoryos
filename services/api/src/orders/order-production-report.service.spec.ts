@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals';
+import { createHash } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
 import type { QueryResultRow } from 'pg';
 
@@ -222,9 +223,18 @@ describe('OrderProductionReportService', () => {
   });
 
   it('replays the stored inventory/yield links without posting stock twice', async () => {
+    const expectedRequestHash = createHash('sha256').update(JSON.stringify({
+      orderId: ORDER,
+      orderLineId: ORDER_LINE,
+      goodQuantity: '9.0000',
+      scrapQuantity: '1.0000',
+      scrapReason: 'Failed final inspection',
+      notes: null,
+    })).digest('hex');
     client.query
       .mockResolvedValueOnce(rows([])) // scoped advisory lock
       .mockResolvedValueOnce(rows([reportRow({
+        request_hash: expectedRequestHash,
         report_yield_percent: '90.0000',
         production_output_posting_id: POSTING,
         inventory_movement_id: MOVEMENT,
