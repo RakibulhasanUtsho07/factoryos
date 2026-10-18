@@ -22,7 +22,12 @@ import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { CreateStockMovementDto } from './dto/create-stock-movement.dto';
 import { CreateInventoryReservationDto } from './dto/create-inventory-reservation.dto';
 import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
+import { CreateInventoryStockReconciliationDto } from './dto/create-inventory-stock-reconciliation.dto';
+import { CreateInventoryCycleCountDto } from './dto/create-inventory-cycle-count.dto';
+import { ReviewInventoryCycleCountDto } from './dto/review-inventory-cycle-count.dto';
 import { InventoryReservationService } from './inventory.reservation.service';
+import { InventoryStockReconciliationService } from './inventory.stock-reconciliation.service';
+import { InventoryCycleCountService } from './inventory.cycle-count.service';
 import { InventoryService } from './inventory.service';
 
 interface FactoryOsRequestContext {
@@ -44,6 +49,8 @@ export class InventoryController {
   constructor(
     private readonly inventoryService: InventoryService,
     private readonly reservationService: InventoryReservationService,
+    private readonly reconciliationService: InventoryStockReconciliationService,
+    private readonly cycleCountService: InventoryCycleCountService,
   ) {}
 
   @Post()
@@ -104,6 +111,117 @@ export class InventoryController {
       idempotencyKey ?? null,
       context.requestId,
       context.traceId,
+    );
+  }
+
+  @Post(':itemId/reconciliations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.reconcile.direct')
+  @RequireFactoryScope()
+  async reconcileStock(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: CreateInventoryStockReconciliationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.reconciliationService.recordReconciliation(
+      context.userId,
+      context.tenantId,
+      context.factoryId,
+      itemId,
+      body,
+      idempotencyKey ?? null,
+      context.requestId,
+      context.traceId,
+    );
+  }
+
+  @Post(':itemId/cycle-counts')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.reconcile')
+  @RequireFactoryScope()
+  async submitCycleCount(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: CreateInventoryCycleCountDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.cycleCountService.submitCycleCount(
+      context.userId, context.tenantId, context.factoryId, itemId,
+      body, idempotencyKey ?? null, context.requestId, context.traceId,
+    );
+  }
+
+  @Get(':itemId/cycle-counts')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listCycleCounts(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('status') status?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.cycleCountService.listCycleCounts(
+      context.tenantId, context.factoryId, itemId,
+      { status, limit: rawLimit === undefined ? 50 : Number(rawLimit) },
+    );
+  }
+
+  @Post(':itemId/cycle-counts/:proposalId/approve')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.cycle-count.review')
+  @RequireFactoryScope()
+  async approveCycleCount(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Param('proposalId', new ParseUUIDPipe()) proposalId: string,
+    @Body() body: ReviewInventoryCycleCountDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.cycleCountService.approveCycleCount(
+      context.userId, context.tenantId, context.factoryId, itemId, proposalId,
+      body, idempotencyKey ?? null, context.requestId, context.traceId,
+    );
+  }
+
+  @Post(':itemId/cycle-counts/:proposalId/reject')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.cycle-count.review')
+  @RequireFactoryScope()
+  async rejectCycleCount(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Param('proposalId', new ParseUUIDPipe()) proposalId: string,
+    @Body() body: ReviewInventoryCycleCountDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.cycleCountService.rejectCycleCount(
+      context.userId, context.tenantId, context.factoryId, itemId, proposalId,
+      body, idempotencyKey ?? null, context.requestId, context.traceId,
+    );
+  }
+
+  @Get(':itemId/reconciliations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listReconciliations(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.reconciliationService.listReconciliations(
+      context.tenantId,
+      context.factoryId,
+      itemId,
+      rawLimit === undefined ? 50 : Number(rawLimit),
     );
   }
 

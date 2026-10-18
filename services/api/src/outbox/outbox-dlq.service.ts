@@ -1,8 +1,11 @@
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 
 import {
   isUUID,
@@ -130,6 +133,19 @@ export interface ReplayOutboxInput {
   requestFactoryId:
     | string
     | null;
+
+  idempotencyKey: string | null;
+}
+
+interface DlqReplayReceiptRow {
+  event_id: string;
+  request_hash: string;
+  factory_id: string | null;
+  event_type: string;
+  event_version: number;
+  replay_count: number;
+  previous_attempts: number;
+  correlation_id: string | null;
 }
 
 @Injectable()
@@ -400,323 +416,139 @@ export class OutboxDlqService {
     };
   }
 
-  async replay(
-    input: ReplayOutboxInput,
-  ) {
-    this.assertUuid(
-      input.tenantId,
-      'tenantId',
+  async replay(input: ReplayOutboxInput) {
+    this.assertUuid(input.tenantId, 'tenantId');
+    this.assertUuid(input.actorUserId, 'actorUserId');
+    this.assertUuid(input.eventId, 'eventId');
+    if (input.requestId) this.assertUuid(input.requestId, 'requestId');
+    if (input.traceId) this.assertUuid(input.traceId, 'traceId');
+    if (input.requestFactoryId) this.assertUuid(input.requestFactoryId, 'requestFactoryId');
+
+    const idempotencyKey = this.requireIdempotencyKey(input.idempotencyKey);
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify({ operation: 'OUTBOX_DLQ_REPLAY', version: 1, event_id: input.eventId }))
+      .digest('hex');
+
+    const updated = await this.database.transaction(
+      async (client) => {
+        const priorResult = await client.query<DlqReplayReceiptRow>(
+          "SELECT event_id::text AS event_id,request_hash,factory_id::text AS factory_id,event_type,event_version,replay_count,previous_attempts,correlation_id::text AS correlation_id FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND idempotency_key=$2 FOR UPDATE",
+          [input.tenantId, idempotencyKey],
+        );
+        const prior = priorResult.rows[0];
+        if (prior) {
+          if (prior.event_id !== input.eventId || prior.request_hash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used for a different DLQ replay request');
+          }
+          if (prior.factory_id && input.requestFactoryId && prior.factory_id !== input.requestFactoryId) {
+            throw new NotFoundException('Quarantined outbox event not found');
+          }
+          return { ...prior, replayedRequest: true };
+        }
+
+        const currentResult = await client.query<{
+          id: string;
+          factory_id: string | null;
+          event_type: string;
+          event_version: number;
+          attempts: number;
+          replay_count: number;
+          status: string;
+          correlation_id: string | null;
+        }>(
+          "SELECT id::text AS id,factory_id::text AS factory_id,event_type,event_version,attempts,replay_count,status,correlation_id::text AS correlation_id FROM outbox_events WHERE tenant_id=$1 AND id=$2 AND status='QUARANTINED' FOR UPDATE",
+          [input.tenantId, input.eventId],
+        );
+        const current = currentResult.rows[0];
+        if (!current) throw new NotFoundException('Quarantined outbox event not found');
+        if (current.factory_id && input.requestFactoryId && current.factory_id !== input.requestFactoryId) {
+          throw new NotFoundException('Quarantined outbox event not found');
+        }
+
+        const updateResult = await client.query<{
+          id: string;
+          event_type: string;
+          event_version: number;
+          replay_count: number;
+        }>(
+          "UPDATE outbox_events SET status='PENDING',next_attempt_at=clock_timestamp(),locked_at=NULL,locked_by=NULL,last_replayed_at=clock_timestamp(),last_replayed_by=$2,quarantined_at=NULL,quarantined_by=NULL,quarantine_reason=NULL,replay_count=replay_count+1 WHERE id=$1 AND tenant_id=$3 AND status='QUARANTINED' RETURNING id::text AS id,event_type,event_version,replay_count",
+          [input.eventId, input.actorUserId, input.tenantId],
+        );
+        if (updateResult.rowCount !== 1) throw new NotFoundException('Quarantined outbox event not found');
+
+        const row = updateResult.rows[0];
+        const previousAttempts = Number(current.attempts);
+        await client.query(
+          "INSERT INTO outbox_dlq_replay_requests(tenant_id,factory_id,event_id,idempotency_key,request_hash,actor_user_id,event_type,event_version,replay_count,previous_attempts,correlation_id,request_id,trace_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+          [
+            input.tenantId, current.factory_id, input.eventId, idempotencyKey, requestHash,
+            input.actorUserId, row.event_type, row.event_version, Number(row.replay_count),
+            previousAttempts, current.correlation_id, input.requestId, input.traceId,
+          ],
+        );
+
+        return {
+          event_id: row.id,
+          event_type: row.event_type,
+          event_version: row.event_version,
+          factory_id: current.factory_id,
+          correlation_id: current.correlation_id,
+          replay_count: Number(row.replay_count),
+          previous_attempts: previousAttempts,
+          replayedRequest: false,
+        };
+      },
+      {
+        tenantId: input.tenantId,
+        userId: input.actorUserId,
+        advisoryLockKey: 'outbox-dlq-replay:' + input.tenantId + ':' + idempotencyKey,
+      },
     );
 
-    this.assertUuid(
-      input.actorUserId,
-      'actorUserId',
-    );
-
-    this.assertUuid(
-      input.eventId,
-      'eventId',
-    );
-
-    if (
-      input.requestId
-    ) {
-      this.assertUuid(
-        input.requestId,
-        'requestId',
-      );
-    }
-
-    if (
-      input.traceId
-    ) {
-      this.assertUuid(
-        input.traceId,
-        'traceId',
-      );
-    }
-
-    if (
-      input.requestFactoryId
-    ) {
-      this.assertUuid(
-        input.requestFactoryId,
-        'requestFactoryId',
-      );
-    }
-
-    const updated =
-      await this.database.transaction(
-        async (
-          client,
-        ) => {
-          const currentResult =
-            await client.query<{
-              id: string;
-
-              factory_id:
-                | string
-                | null;
-
-              event_type: string;
-
-              event_version: number;
-
-              attempts: number;
-
-              replay_count: number;
-
-              status: string;
-
-              correlation_id:
-                | string
-                | null;
-            }>(
-              `
-              SELECT
-                id::text AS id,
-
-                factory_id::text
-                  AS factory_id,
-
-                event_type,
-
-                event_version,
-
-                attempts,
-
-                replay_count,
-
-                status,
-
-                correlation_id::text
-                  AS correlation_id
-
-              FROM outbox_events
-
-              WHERE
-                tenant_id = $1
-
-                AND id = $2
-
-                AND status =
-                  'QUARANTINED'
-
-              FOR UPDATE
-              `,
-              [
-                input.tenantId,
-                input.eventId,
-              ],
-            );
-
-          const current =
-            currentResult.rows[0];
-
-          if (
-            !current
-          ) {
-            throw new NotFoundException(
-              'Quarantined outbox event not found',
-            );
-          }
-
-          if (
-            current.factory_id &&
-            input.requestFactoryId &&
-            current.factory_id !==
-              input.requestFactoryId
-          ) {
-            throw new NotFoundException(
-              'Quarantined outbox event not found',
-            );
-          }
-
-          const updateResult =
-            await client.query<{
-              id: string;
-
-              event_type: string;
-
-              event_version: number;
-
-              replay_count: number;
-            }>(
-              `
-              UPDATE outbox_events
-
-              SET
-                status =
-                  'PENDING',
-
-                next_attempt_at =
-                  clock_timestamp(),
-
-                locked_at =
-                  NULL,
-
-                locked_by =
-                  NULL,
-
-                last_replayed_at =
-                  clock_timestamp(),
-
-                last_replayed_by =
-                  $2,
-
-                quarantined_at =
-                  NULL,
-
-                quarantined_by =
-                  NULL,
-
-                quarantine_reason =
-                  NULL,
-
-                replay_count =
-                  replay_count + 1
-
-              WHERE
-                id = $1
-
-                AND tenant_id = $3
-
-                AND status =
-                  'QUARANTINED'
-
-              RETURNING
-                id::text AS id,
-
-                event_type,
-
-                event_version,
-
-                replay_count
-              `,
-              [
-                input.eventId,
-
-                input.actorUserId,
-
-                input.tenantId,
-              ],
-            );
-
-          if (
-            updateResult.rowCount !==
-            1
-          ) {
-            throw new NotFoundException(
-              'Quarantined outbox event not found',
-            );
-          }
-
-          const row =
-            updateResult.rows[0];
-
-          return {
-            ...row,
-
-            previousAttempts:
-              Number(
-                current.attempts,
-              ),
-
-            correlationId:
-              current.correlation_id,
-
-            factoryId:
-              current.factory_id,
-          };
-        },
-        {
-          tenantId:
-            input.tenantId,
-
-          userId:
-            input.actorUserId,
-        },
-      );
-
-    try {
-      await this.auditService.record({
-        tenantId:
-          input.tenantId,
-
-        factoryId:
-          updated.factoryId,
-
-        actorUserId:
-          input.actorUserId,
-
-        eventType:
-          'OUTBOX_EVENT',
-
-        action:
-          'REPLAY_REQUESTED',
-
-        resourceType:
-          'OUTBOX_EVENT',
-
-        resourceId:
-          input.eventId,
-
-        correlationId:
-          input.traceId ??
-          updated.correlationId,
-
-        requestId:
-          input.requestId,
-
-        dataClass:
-          'INTERNAL',
-
-        payload: {
-          event_id:
-            input.eventId,
-
-          event_type:
-            updated.event_type,
-
-          event_version:
-            updated.event_version,
-
-          previous_attempts:
-            updated.previousAttempts,
-
-          replay_count:
-            Number(
-              updated.replay_count,
-            ),
-        },
-      });
-    } catch {
-      /*
-       * Replay already committed.
-       */
+    if (!updated.replayedRequest) {
+      try {
+        await this.auditService.record({
+          tenantId: input.tenantId,
+          factoryId: updated.factory_id,
+          actorUserId: input.actorUserId,
+          eventType: 'OUTBOX_EVENT',
+          action: 'REPLAY_REQUESTED',
+          resourceType: 'OUTBOX_EVENT',
+          resourceId: input.eventId,
+          correlationId: input.traceId ?? updated.correlation_id,
+          requestId: input.requestId,
+          dataClass: 'INTERNAL',
+          payload: {
+            event_id: input.eventId,
+            event_type: updated.event_type,
+            event_version: updated.event_version,
+            previous_attempts: updated.previous_attempts,
+            replay_count: updated.replay_count,
+            request_hash: requestHash,
+          },
+        });
+      } catch {
+        // Replay receipt and state transition are committed atomically in the replay ledger.
+      }
     }
 
     return {
-      event_id:
-        updated.id,
-
-      event_type:
-        updated.event_type,
-
-      event_version:
-        updated.event_version,
-
-      status:
-        'PENDING',
-
-      replay_count:
-        Number(
-          updated.replay_count,
-        ),
-
-      previous_attempts:
-        updated.previousAttempts,
+      event_id: input.eventId,
+      event_type: updated.event_type,
+      event_version: Number(updated.event_version),
+      status: 'PENDING',
+      replay_count: Number(updated.replay_count),
+      previous_attempts: Number(updated.previous_attempts),
+      replayed_request: updated.replayedRequest,
     };
+  }
+
+  private requireIdempotencyKey(value: string | null): string {
+    const key = value?.trim() ?? '';
+    if (!/^[\x21-\x7e]{1,200}$/.test(key)) {
+      throw new BadRequestException('Idempotency-Key is required and must contain 1 to 200 visible ASCII characters');
+    }
+    return key;
   }
 
   private assertUuid(

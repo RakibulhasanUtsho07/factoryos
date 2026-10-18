@@ -412,6 +412,45 @@ describe(
     );
 
     it(
+      'should execute exactly one handler for concurrent duplicate deliveries',
+      async () => {
+        const consumerName = 'integration-concurrent-' + runId;
+        let handlerCalls = 0;
+
+        const deliver = () => service.executeOnce(
+          event.tenant_id,
+          consumerName,
+          event.id,
+          async (client) => {
+            handlerCalls += 1;
+            await client.query(
+              'INSERT INTO ' + businessTable + ' (run_id,marker) VALUES ($1,$2)',
+              [runId, 'concurrent-delivery'],
+            );
+            return { processed: true };
+          },
+        );
+
+        const results = await Promise.all([deliver(), deliver()]);
+        expect(results.filter((result) => !result.duplicate)).toHaveLength(1);
+        expect(results.filter((result) => result.duplicate)).toHaveLength(1);
+        expect(handlerCalls).toBe(1);
+
+        const inboxResult = await pool.query<{ count: number }>(
+          'SELECT COUNT(*)::int AS count FROM inbox_events WHERE consumer_name=$1 AND event_id=$2',
+          [consumerName, event.id],
+        );
+        expect(inboxResult.rows[0]?.count).toBe(1);
+
+        const effectResult = await pool.query<{ count: number }>(
+          'SELECT COUNT(*)::int AS count FROM ' + businessTable + ' WHERE run_id=$1 AND marker=$2',
+          [runId, 'concurrent-delivery'],
+        );
+        expect(effectResult.rows[0]?.count).toBe(1);
+      },
+    );
+
+    it(
       'should rollback inbox and business side effect when the handler fails',
       async () => {
         const consumerName =

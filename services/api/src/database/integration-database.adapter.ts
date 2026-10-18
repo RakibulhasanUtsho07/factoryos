@@ -176,13 +176,21 @@ export class IntegrationDatabaseAdapter {
       );
     }
 
-    const client =
-      await this.pool.connect();
+    const client = await this.pool.connect();
+    let sessionAdvisoryLockAcquired = false;
+    let destroyClientOnRelease = false;
 
     try {
-      await client.query(
-        'BEGIN',
-      );
+      const advisoryLockKey = context?.advisoryLockKey?.trim();
+      if (advisoryLockKey) {
+        await client.query(
+          'SELECT pg_advisory_lock(hashtextextended($1, 0))',
+          [advisoryLockKey],
+        );
+        sessionAdvisoryLockAcquired = true;
+      }
+
+      await client.query('BEGIN');
 
       const hasContext =
         context?.tenantId !==
@@ -241,7 +249,18 @@ export class IntegrationDatabaseAdapter {
 
       throw error;
     } finally {
-      client.release();
+      if (sessionAdvisoryLockAcquired) {
+        try {
+          const unlock = await client.query<{ pg_advisory_unlock: boolean }>(
+            'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+            [context?.advisoryLockKey?.trim()],
+          );
+          destroyClientOnRelease = unlock.rows[0]?.pg_advisory_unlock !== true;
+        } catch {
+          destroyClientOnRelease = true;
+        }
+      }
+      client.release(destroyClientOnRelease);
     }
   }
 }

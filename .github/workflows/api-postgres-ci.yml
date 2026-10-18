@@ -145,6 +145,77 @@ jobs:
             migrations/057_ai_operational_forecast_numeric_consistency.sql
             migrations/058_inventory_reservations.sql
             migrations/059_order_line_inventory_binding.sql
+            migrations/060_order_material_dispositions.sql
+            migrations/061_inventory_stock_reconciliation.sql
+            migrations/062_inventory_cycle_count_approval.sql
+            migrations/063_order_production_yield_scrap_tracking.sql
+            migrations/064_inventory_storage_locations.sql
+            migrations/065_inventory_bin_reservations.sql
+            migrations/066_inventory_bin_reservation_balance_guard.sql
+            migrations/067_supplier_purchase_order_lifecycle.sql
+            migrations/068_purchase_order_lifecycle_integrity.sql
+            migrations/069_supplier_po_transactional_audit.sql
+            migrations/070_purchase_order_actor_binding.sql
+            migrations/071_supplier_audit_correlation.sql
+            migrations/072_goods_receipt_grn.sql
+            migrations/073_grn_stock_posting_guard.sql
+            migrations/074_lot_serial_product_genealogy.sql
+            migrations/075_uom_conversion_controls.sql
+            migrations/076_inventory_movement_uom_snapshot_compatibility.sql
+            migrations/077_uom_base_quantity_precision_guard.sql
+            migrations/078_multi_bin_order_reservation_allocation.sql
+            migrations/079_inventory_bin_balance_deferred_final_state_guard.sql
+            migrations/080_inventory_location_directed_policy.sql
+            migrations/081_inventory_reorder_replenishment.sql
+            migrations/082_product_bom_routing_version_contracts.sql
+            migrations/083_product_definition_idempotency_hardening.sql
+            migrations/084_product_contract_maker_checker.sql
+            migrations/085_product_alternate_retirement_lifecycle.sql
+            migrations/086_product_bom_uom_snapshots.sql
+            migrations/087_product_bom_contract_retention_guards.sql
+            migrations/088_product_version_supersession_and_release_readiness.sql
+            migrations/089_mrp_lite_material_planning.sql
+            migrations/090_production_work_order_operation_lifecycle.sql
+            migrations/091_production_output_inventory_posting.sql
+            migrations/092_order_production_report_work_order_routing_guard.sql
+            migrations/093_quality_inspection_ncr_holds_disposition.sql
+            migrations/094_quality_inspection_plans_and_results.sql
+            migrations/095_quality_ncr_resolution_gate.sql
+            migrations/096_quality_capa_action_lifecycle.sql
+            migrations/097_quality_defect_order_traceability.sql
+            migrations/098_quality_rework_execution_and_verification.sql
+            migrations/099_maintenance_assets_and_pm_plans.sql
+            migrations/100_maintenance_work_orders_and_spares.sql
+            migrations/101_maintenance_lifecycle_audit_guards.sql
+            migrations/102_workforce_shift_attendance_productivity.sql
+            migrations/103_workforce_lifecycle_audit_guards.sql
+            migrations/104_workforce_command_idempotency.sql
+            migrations/105_workforce_self_service_role.sql
+            migrations/106_workforce_consent_timeline_and_output_attribution.sql
+            migrations/107_workforce_shift_revision_and_attendance_corrections.sql
+            migrations/108_energy_utility_events.sql
+            migrations/109_utility_lifecycle_cost_and_audit_guards.sql
+            migrations/110_ehs_safety_permits_incidents_actions.sql
+            migrations/111_ehs_lifecycle_safety_guards.sql
+            migrations/112_commercial_quotation_lifecycle.sql
+            migrations/113_deterministic_should_cost_engine.sql
+            migrations/114_finance_integration_contract.sql
+            migrations/115_finance_file_import_metadata.sql
+            migrations/116_finance_file_import_metadata_integrity.sql
+            migrations/117_outbox_dlq_replay_idempotency.sql
+            migrations/118_outbox_dlq_replay_receipt_guards.sql
+            migrations/119_integration_connector_registry.sql
+            migrations/120_integration_connector_event_allowlist.sql
+            migrations/121_integration_webhook_rate_limits.sql
+            migrations/122_integration_receipt_outbox_binding.sql
+            migrations/123_finance_file_exchange_validation_reports.sql
+            migrations/124_finance_file_import_validation_reports.sql
+            migrations/125_finance_file_import_report_commit.sql
+            migrations/126_finance_file_export_receipts.sql
+            migrations/127_finance_file_export_permission.sql
+            migrations/128_finance_erp_transfer_modes.sql
+            migrations/129_finance_erp_export_receipt_guard.sql
+            migrations/130_integration_operational_reconciliation.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -176,6 +247,31 @@ jobs:
               -v ON_ERROR_STOP=1 -f "$migration"
           done
 
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/inventory-replenishment.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/purchase-order-lifecycle.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/goods-receipt.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/traceability.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-management-contract.sql
+
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
+
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
@@ -193,6 +289,7 @@ jobs:
           GRANT USAGE ON SCHEMA public TO factoryos_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO factoryos_app;
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO factoryos_app;
+           GRANT EXECUTE ON FUNCTION public.factoryos_resolve_integration_webhook(uuid) TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO factoryos_app;
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
@@ -203,6 +300,28 @@ jobs:
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-management-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/workforce-management-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/workforce-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-management-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-management-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/commercial-quotation.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/should-cost.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-integration.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-dlq-replay-idempotency.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-webhook.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-reconciliation.sql
+
+          # Production lifecycle contract requires the development admin and factory-manager role grants.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/production-work-order-contract.sql
+
+          # This contract also checks demo-role grants, so run it after the development role seeds.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
 
           # B19 tests clone only this dedicated, idle template DB.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" \

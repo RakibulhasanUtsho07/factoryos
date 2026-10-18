@@ -1,0 +1,133 @@
+import {
+  ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
+  IsString, IsUUID, Max, MaxLength, Min,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export const TRACEABILITY_UNIT_TYPES = [
+  'LOT', 'SERIAL', 'PALLET', 'CARTON', 'BUNDLE', 'FINISHED_GOOD', 'SHIPMENT',
+] as const;
+export const TRACEABILITY_PRODUCT_ROLES = [
+  'MATERIAL', 'FINISHED_GOOD', 'PACKAGING', 'SHIPMENT', 'OTHER',
+] as const;
+export const TRACEABILITY_STATUSES = [
+  'ACTIVE', 'QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED',
+] as const;
+export const GENEALOGY_RELATIONSHIP_TYPES = [
+  'CONSUMED_INTO', 'PROCESSED_INTO', 'SPLIT_INTO', 'MERGED_INTO',
+  'PACKED_INTO', 'SHIPPED_AS', 'REWORKED_INTO',
+] as const;
+
+export class CreateTraceabilityUnitDto {
+  @IsIn([...TRACEABILITY_UNIT_TYPES])
+  unit_type!: (typeof TRACEABILITY_UNIT_TYPES)[number];
+  @IsIn([...TRACEABILITY_PRODUCT_ROLES])
+  product_role!: (typeof TRACEABILITY_PRODUCT_ROLES)[number];
+  @IsString()
+  @MaxLength(160)
+  unit_code!: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  barcode_value?: string;
+  @IsOptional()
+  @IsUUID()
+  inventory_item_id?: string;
+  @IsOptional()
+  @IsUUID()
+  goods_receipt_line_id?: string;
+  @IsOptional()
+  @IsUUID()
+  order_id?: string;
+  @IsOptional()
+  @IsUUID()
+  order_line_id?: string;
+  @IsOptional()
+  @IsUUID()
+  production_report_id?: string;
+  @IsOptional()
+  @IsUUID()
+  label_template_id?: string;
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  quantity!: number;
+  @IsString()
+  @MaxLength(50)
+  unit!: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  external_reference?: string;
+  @IsOptional()
+  @IsDateString()
+  manufactured_at?: string;
+  @IsOptional()
+  @IsDateString()
+  expires_at?: string;
+  @IsOptional()
+  @IsObject()
+  attributes?: Record<string, unknown>;
+}
+
+export class CreateGenealogyEventDto {
+  @IsUUID()
+  source_unit_id!: string;
+  @IsUUID()
+  target_unit_id!: string;
+  @IsIn([...GENEALOGY_RELATIONSHIP_TYPES])
+  relationship_type!: (typeof GENEALOGY_RELATIONSHIP_TYPES)[number];
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  quantity!: number;
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+  @IsOptional()
+  @IsObject()
+  evidence?: Record<string, unknown>;
+}
+
+export class ChangeTraceabilityUnitStatusDto {
+  @IsIn([...TRACEABILITY_STATUSES])
+  target_status!: (typeof TRACEABILITY_STATUSES)[number];
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+}
+
+export class CreateTraceabilityLabelTemplateDto {
+  @IsString()
+  @MaxLength(100)
+  template_code!: string;
+  @IsString()
+  @MaxLength(255)
+  name!: string;
+  @IsIn(['QR', 'CODE128', 'DATAMATRIX', 'GS1_128'])
+  symbology!: 'QR' | 'CODE128' | 'DATAMATRIX' | 'GS1_128';
+  @IsArray()
+  @ArrayUnique()
+  @IsIn([...TRACEABILITY_UNIT_TYPES], { each: true })
+  supported_unit_types!: Array<(typeof TRACEABILITY_UNIT_TYPES)[number]>;
+  @IsOptional()
+  @IsObject()
+  label_layout?: Record<string, unknown>;
+}
+
+export class UpdateTraceabilitySettingsDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  retention_years?: number;
+  @IsOptional()
+  @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
+  allocation_policy?: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+}

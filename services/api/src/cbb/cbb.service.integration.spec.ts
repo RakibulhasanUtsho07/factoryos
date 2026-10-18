@@ -863,6 +863,7 @@ describe(
                 `,
               );
             }
+            await adminPool.query('ALTER TABLE inventory_locations DISABLE TRIGGER USER');
 
             /*
              * Clear current-version pointers before removing the
@@ -955,6 +956,17 @@ describe(
              */
             await adminPool.query(
               `
+              DELETE FROM inventory_locations
+              WHERE factory_id IN ($1, $2)
+              `,
+              [
+                factoryAId,
+                factoryBId,
+              ],
+            );
+
+            await adminPool.query(
+              `
               DELETE FROM factories
               WHERE
                 id IN (
@@ -983,6 +995,7 @@ describe(
               ],
             );
           } finally {
+            await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
             for (
               const table
               of immutableTables

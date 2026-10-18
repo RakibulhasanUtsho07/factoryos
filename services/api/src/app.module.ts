@@ -18,10 +18,23 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IamModule } from './iam/iam.module';
 import { OrdersModule } from './orders/orders.module';
+import { ProcurementModule } from './procurement/procurement.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { ProductDefinitionsModule } from './products/products.module';
+import { MrpLiteModule } from './mrp-lite/mrp-lite.module';
+import { ProductionWorkOrdersModule } from './production/production-work-orders.module';
 import { ResearchModule } from './research/research.module';
 import { GrowthModule } from './growth/growth.module';
 import { OutboxModule } from './outbox/outbox.module';
+import { QualityModule } from './quality/quality.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
+import { UtilitiesModule } from './utilities/utilities.module';
+import { EhsModule } from './ehs/ehs.module';
+import { CommercialModule } from './commercial/commercial.module';
+import { ShouldCostModule } from './should-cost/should-cost.module';
+import { FinanceModule } from './finance/finance.module';
+import { WorkforceModule } from './workforce/workforce.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
@@ -69,7 +82,31 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 
     OrdersModule,
 
+    CommercialModule,
+
+    ShouldCostModule,
+
+    FinanceModule,
+
+    ProcurementModule,
+
     InventoryModule,
+
+    ProductDefinitionsModule,
+
+    MrpLiteModule,
+
+    ProductionWorkOrdersModule,
+
+    QualityModule,
+
+    MaintenanceModule,
+
+    UtilitiesModule,
+
+    EhsModule,
+
+    WorkforceModule,
 
     ResearchModule,
 
@@ -90,6 +127,7 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     // ----------------------------------------------------------
 
     OutboxModule,
+    IntegrationsModule,
   ],
 
   controllers: [
