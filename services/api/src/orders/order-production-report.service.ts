@@ -10,6 +10,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
+import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { CreateOrderProductionReportDto } from './dto/create-order-production-report.dto';
 
 interface ProductionReportRow extends QueryResultRow {
@@ -30,6 +31,9 @@ interface ProductionReportRow extends QueryResultRow {
   correlation_id: string;
   created_at: string;
   yield_percent: string;
+  report_yield_percent: string | null;
+  production_output_posting_id: string | null;
+  inventory_movement_id: string | null;
 }
 
 interface ProductionTotalsRow extends QueryResultRow {
@@ -54,6 +58,21 @@ const PRODUCTION_REPORT_COLUMNS = `
   created_by_user_id::text AS created_by_user_id,
   correlation_id::text AS correlation_id,
   created_at::text AS created_at,
+  (SELECT p.yield_percentage::text FROM production_output_postings p
+    WHERE p.production_report_id = order_production_reports.id
+      AND p.tenant_id = order_production_reports.tenant_id
+      AND p.factory_id = order_production_reports.factory_id
+    LIMIT 1) AS report_yield_percent,
+  (SELECT p.id::text FROM production_output_postings p
+    WHERE p.production_report_id = order_production_reports.id
+      AND p.tenant_id = order_production_reports.tenant_id
+      AND p.factory_id = order_production_reports.factory_id
+    LIMIT 1) AS production_output_posting_id,
+  (SELECT p.inventory_movement_id::text FROM production_output_postings p
+    WHERE p.production_report_id = order_production_reports.id
+      AND p.tenant_id = order_production_reports.tenant_id
+      AND p.factory_id = order_production_reports.factory_id
+    LIMIT 1) AS inventory_movement_id,
   round(
     cumulative_good_quantity * 100
       / NULLIF(cumulative_good_quantity + cumulative_scrap_quantity, 0),
@@ -77,6 +96,9 @@ type ProductionReportResult = {
   correlation_id: string;
   created_at: string;
   yield_percent: string;
+  report_yield_percent: string | null;
+  production_output_posting_id: string | null;
+  finished_good_movement_id: string | null;
   replayed: boolean;
 };
 
@@ -85,6 +107,7 @@ export class OrderProductionReportService {
   constructor(
     private readonly database: DatabaseService,
     private readonly auditService: AuditService,
+    private readonly inventoryReservationService: InventoryReservationService,
   ) {}
 
   async createReport(
