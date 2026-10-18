@@ -592,6 +592,27 @@ describe(
       },
     );
 
+    it(
+      'should reject a replay request without an idempotency key before opening a transaction',
+      async () => {
+        const database = createIntegrationDatabase(appPool);
+        const service = new OutboxDlqService(
+          database as never,
+          new AuditService(database as never),
+        );
+
+        await expect(service.replay({
+          tenantId,
+          actorUserId,
+          eventId,
+          requestId: null,
+          traceId: null,
+          requestFactoryId: factoryId,
+          idempotencyKey: null,
+        })).rejects.toThrow('Idempotency-Key is required');
+      },
+    );
+
     // ==========================================================
     // REPLAY
     // ==========================================================
@@ -714,6 +735,12 @@ describe(
           [tenantId, eventId, replayIdempotencyKey],
         );
         expect(Number(receiptResult.rows[0]?.receipt_count)).toBe(1);
+
+        await expect(pool.query(
+          "DELETE FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND event_id=$2 AND idempotency_key=$3",
+          [tenantId, eventId, replayIdempotencyKey],
+        )).rejects.toThrow('DLQ replay receipts are immutable and cannot be changed or deleted');
+
 
         expect(
           result.event_id,

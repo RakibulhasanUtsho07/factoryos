@@ -24,7 +24,7 @@ The dispatcher uses an initial five-second retry delay, exponential backoff (5, 
 - \`POST /api/outbox/:eventId/replay\` requires \`outbox.dlq.replay\` and a visible-ASCII \`Idempotency-Key\` (1–200 characters).
 - A first valid replay changes only dispatch state: \`QUARANTINED\` to \`PENDING\`, clears the active lease/quarantine markers, sets the next attempt time to now, preserves the immutable event payload and historical attempt count, and increments \`replay_count\`.
 - The event-state transition and row in \`outbox_dlq_replay_requests\` commit atomically. Repeating the same tenant/key/event returns the stored replay result and does not queue a second replay. Reusing the key for a different event returns \`409 Conflict\`; trying to replay a non-quarantined event with a new key returns not found.
-- The replay receipt contains actor, source event/version, replay count, historical attempt count and correlation/request/trace IDs. The ledger has forced tenant RLS, a unique tenant/key constraint and a unique event/replay-count constraint. The regular audit log is also attempted; a transient audit-service failure cannot erase the committed replay receipt.
+- The replay receipt contains actor, source event/version, replay count, historical attempt count and correlation/request/trace IDs. The ledger has forced tenant RLS, a unique tenant/key constraint and a unique event/replay-count constraint. Database constraints bind the receipt to the same tenant and factory as the source event, and an append-only trigger prevents receipt edits/deletions and binds the actor to the authenticated database context. The regular audit log is also attempted; a transient audit-service failure cannot erase the committed replay receipt.
 
 ## Automated verification
 
