@@ -302,7 +302,8 @@ BEGIN
       ON e.shift_assignment_id=a.id AND e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
       AND e.event_type='CLOCK_OUT'
     WHERE a.id=NEW.shift_assignment_id AND a.worker_id=NEW.worker_id
-      AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id;
+      AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
+      AND a.status IN ('CONFIRMED','COMPLETED');
     IF NOT FOUND OR COALESCE(v_actual_overtime,0) <= COALESCE(v_threshold,0) THEN
       RAISE EXCEPTION 'Overtime requires clock-out evidence beyond the configured threshold' USING ERRCODE='23514';
     END IF;
