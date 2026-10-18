@@ -1,10 +1,7 @@
 -- Atomically connect accepted production output, yield/scrap evidence and finished-goods stock.
 BEGIN;
 
--- Composite identity is needed so a posting cannot reference a movement from another scope.
-ALTER TABLE inventory_movements
-  ADD CONSTRAINT uq_inventory_movement_identity_scope
-  UNIQUE (id, tenant_id, factory_id);
+-- Reuse the inventory ledger's existing (id, tenant_id, factory_id) candidate key for scoped foreign keys.
 
 CREATE TABLE production_output_postings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
