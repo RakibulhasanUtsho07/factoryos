@@ -54,6 +54,14 @@ BEGIN
     RAISE EXCEPTION 'Workforce identity, scope and creation evidence are immutable'
       USING ERRCODE='23514';
   END IF;
+  IF TG_TABLE_NAME='workforce_workers' AND OLD.status='ACTIVE' AND NEW.status='INACTIVE'
+     AND EXISTS (
+       SELECT 1 FROM workforce_shift_assignments a
+       WHERE a.worker_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
+         AND a.status IN ('PLANNED','CONFIRMED') AND a.planned_end_at>clock_timestamp()
+     ) THEN
+    RAISE EXCEPTION 'A worker with future active shift assignments cannot be inactivated' USING ERRCODE='23514';
+  END IF;
   RETURN NEW;
 END;
 $$;
