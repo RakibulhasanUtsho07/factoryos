@@ -359,4 +359,17 @@ BEGIN
   END IF;
 END $;
 
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='126_finance_file_export_receipts') THEN
+    RAISE EXCEPTION 'finance file export receipt migration is not registered';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid='public.finance_file_export_receipts'::regclass AND relrowsecurity AND relforcerowsecurity) THEN
+    RAISE EXCEPTION 'finance file export receipts must force tenant RLS';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.finance_file_export_receipts'::regclass AND tgname='trg_finance_export_receipt_immutable' AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'finance file export receipts must be immutable';
+  END IF;
+END $;
+
 ROLLBACK;
