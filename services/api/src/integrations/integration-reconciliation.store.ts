@@ -75,7 +75,8 @@ function parseOccurredAt(payload: Record<string, unknown>): {
   const present = keys.find((key) => Object.hasOwn(payload, key));
   if (!present) return { value: null, issue: 'MISSING_EVENT_TIME' };
   const raw = payload[present];
-  if (typeof raw !== 'string' || raw.trim().length < 10 || raw.length > 80) {
+  if (typeof raw !== 'string' || raw.length < 20 || raw.length > 80 ||
+      !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,9})?)?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(raw)) {
     return { value: null, issue: 'INVALID_EVENT_TIME' };
   }
   const milliseconds = Date.parse(raw);
@@ -122,10 +123,15 @@ export function normalizeOperationalEvent(
   }
 
   const comparisonFields = [
-    'worker_id', 'shift_assignment_id', 'work_order_id', 'operation_id',
-    'inspection_id', 'quality_inspection_id', 'target_id', 'quantity',
-    'good_quantity', 'scrap_quantity', 'defect_code', 'disposition',
-    'result', 'severity', 'status',
+    'worker_id', 'worker_code', 'employee_id', 'employee_code', 'source_employee_id',
+    'shift_assignment_id', 'shift_code', 'clock_type', 'attendance_status',
+    'work_order_id', 'work_order_number', 'operation_id', 'operation_code',
+    'product_id', 'sku', 'batch_id', 'lot_id', 'serial_id', 'machine_id',
+    'inspection_id', 'quality_inspection_id', 'inspection_type', 'plan_code',
+    'criterion_code', 'target_id', 'quantity', 'good_quantity', 'pass_quantity',
+    'scrap_quantity', 'fail_quantity', 'rejected_quantity', 'measured_value',
+    'uom', 'unit', 'defect_code', 'reason_code', 'disposition',
+    'result', 'severity', 'status', 'event_status',
   ];
   const comparisonEvidence: Record<string, unknown> = {
     event_type: input.eventType,
