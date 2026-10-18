@@ -146,7 +146,7 @@ export class ShouldCostEvidenceDto {
   source_reference?: string;
 
   @ValidateIf((value: ShouldCostEvidenceDto) => value.applicable)
-  @IsDateString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
   source_as_of?: string;
 
   @IsOptional()

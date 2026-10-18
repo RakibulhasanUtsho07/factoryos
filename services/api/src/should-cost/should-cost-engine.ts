@@ -91,8 +91,10 @@ const PERCENT_DENOMINATOR = 100n * 10n ** BigInt(PERCENT_SCALE);
 
 function roundDivide(numerator: bigint, denominator: bigint): bigint {
   if (denominator <= 0n) throw new RangeError('Denominator must be positive');
-  const half = denominator / 2n;
-  return (numerator + half) / denominator;
+  const negative = numerator < 0n;
+  const absolute = negative ? -numerator : numerator;
+  const rounded = (absolute + denominator / 2n) / denominator;
+  return negative ? -rounded : rounded;
 }
 
 export function toScaled(value: string | number, scale: number, field = 'value'): bigint {
