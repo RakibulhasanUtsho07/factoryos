@@ -193,6 +193,7 @@ WHERE r.code = 'ORG_ADMIN'
     'workforce.staffing.manage',
     'workforce.attendance.read',
     'workforce.attendance.capture',
+    'workforce.attendance.correct',
     'workforce.overtime.read',
     'workforce.overtime.request',
     'workforce.overtime.approve',
