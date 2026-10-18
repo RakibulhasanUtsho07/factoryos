@@ -1491,7 +1491,7 @@ export class InventoryReservationService {
       correlationId: string;
     },
   ): Promise<{ movementId: string | null; quantityAfter: string | null }> {
-    const match = /^(\\d+)(?:\\.(\\d{1,4}))?$/.exec(String(input.goodQuantity).trim());
+    const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(input.goodQuantity).trim());
     if (!match) {
       throw new ConflictException('Finished-good output quantity must use non-negative four-decimal precision');
     }
