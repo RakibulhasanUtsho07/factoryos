@@ -179,7 +179,76 @@ BEGIN
     RAISE EXCEPTION 'Operation WIP snapshot, aggregate WIP, active/downtime timing or work-order completion evidence constraints are missing';
   END IF;
 
-  RAISE NOTICE 'Production work-order lifecycle schema, IAM, tenant scope and output-link contracts passed';
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version = '091_production_output_inventory_posting'
+  ) OR to_regclass('production_output_postings') IS NULL THEN
+    RAISE EXCEPTION 'Production output/inventory posting migration or table is missing';
+  END IF;
+
+  SELECT c.relrowsecurity, c.relforcerowsecurity
+    INTO v_enabled, v_forced
+  FROM pg_class c WHERE c.oid = to_regclass('production_output_postings');
+  IF COALESCE(v_enabled, FALSE) IS NOT TRUE OR COALESCE(v_forced, FALSE) IS NOT TRUE
+     OR NOT EXISTS (
+       SELECT 1 FROM pg_policy p
+       WHERE p.polrelid = to_regclass('production_output_postings')
+         AND p.polname = 'production_output_postings_tenant_isolation'
+     ) THEN
+    RAISE EXCEPTION 'Production output posting requires forced tenant RLS and its isolation policy';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute a
+    WHERE a.attrelid = to_regclass('production_output_postings')
+      AND a.attname = 'yield_percentage' AND NOT a.attisdropped
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_attribute a
+    WHERE a.attrelid = to_regclass('production_output_postings')
+      AND a.attname = 'cumulative_yield_percentage' AND NOT a.attisdropped
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    WHERE c.conrelid = to_regclass('production_output_postings')
+      AND c.conname = 'fk_production_output_posting_report'
+      AND pg_get_constraintdef(c.oid) LIKE '%production_report_id, tenant_id, factory_id%'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    WHERE c.conrelid = to_regclass('inventory_movements')
+      AND c.conname = 'uq_inventory_movement_identity_scope'
+  ) THEN
+    RAISE EXCEPTION 'Production posting yield columns or tenant/factory scoped report/movement links are missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgrelid = to_regclass('production_output_postings')
+      AND t.tgname = 'trg_production_output_posting_guard'
+      AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgrelid = to_regclass('production_output_postings')
+      AND t.tgname = 'trg_production_output_postings_immutable'
+      AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgrelid = to_regclass('order_production_reports')
+      AND t.tgname = 'trg_order_production_report_inventory_posting_required'
+      AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+      AND t.tgdeferrable AND t.tginitdeferred
+  ) THEN
+    RAISE EXCEPTION 'Output posting integrity, append-only or deferred report-to-inventory guards are missing';
+  END IF;
+
+  IF to_regprocedure('factoryos_guard_production_output_posting()') IS NULL
+     OR to_regprocedure('factoryos_require_production_output_posting()') IS NULL
+     OR position('finished-good inventory movement must receipt exactly'
+       IN pg_get_functiondef('factoryos_guard_production_output_posting()'::regprocedure)) = 0
+     OR position('matching yield/scrap and inventory posting before commit'
+       IN pg_get_functiondef('factoryos_require_production_output_posting()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'Output posting trigger functions do not enforce stock-movement and yield/scrap consistency';
+  END IF;
+
+  RAISE NOTICE 'Production work-order lifecycle, yield/scrap, finished-goods inventory linkage, IAM and tenant contracts passed';
 END;
 $$;
 
