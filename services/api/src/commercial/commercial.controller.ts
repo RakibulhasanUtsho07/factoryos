@@ -75,6 +75,15 @@ export class QuotationsController {
     return this.service.getQuotation(ctx.userId, ctx.tenantId, ctx.factoryId, quoteId);
   }
 
+  @Get(':quotationId/revisions')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quotations.read')
+  @RequireFactoryScope()
+  async revisions(@Req() req: CommercialRequest, @Param('quotationId', new ParseUUIDPipe()) quoteId: string) {
+    const ctx = context(req);
+    return this.service.listQuotationRevisions(ctx.userId,ctx.tenantId,ctx.factoryId,quoteId);
+  }
+
   @Patch(':quotationId/revise')
   @UseGuards(PermissionGuard)
   @RequirePermission('quotations.write')

@@ -125,6 +125,47 @@ export class CommercialService {
     });
   }
 
+  async listQuotationRevisions(userId: string, tenantId: string, factoryId: string, quoteId: string) {
+    this.ids(userId,tenantId,factoryId,quoteId);
+    return this.database.transaction({tenantId,userId},async (client) => {
+      const quote = await client.query(
+        'SELECT id::text AS id FROM sales_quotations WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+        [quoteId,tenantId,factoryId],
+      );
+      if (!quote.rows[0]) throw new NotFoundException('Quotation not found');
+      const versions = await client.query(
+        `SELECT id::text AS quotation_version_id,revision_number,currency,base_currency,
+            exchange_rate_to_base::text AS exchange_rate_to_base,exchange_rate_as_of::text AS exchange_rate_as_of,
+            exchange_rate_source,requested_delivery_date::text AS requested_delivery_date,
+            valid_until::text AS valid_until,incoterms,payment_terms,notes,
+            subtotal::text AS subtotal,discount_total::text AS discount_total,tax_total::text AS tax_total,
+            total::text AS total,total_base::text AS total_base,approval_required,
+            approval_total_threshold::text AS approval_total_threshold,
+            approval_discount_threshold_percent::text AS approval_discount_threshold_percent,
+            pricing_rule_code,pricing_rule_version,pricing_rule_snapshot,
+            created_by_user_id::text AS created_by_user_id,created_at::text AS created_at
+         FROM quotation_versions WHERE quotation_id=$1 AND tenant_id=$2 AND factory_id=$3
+         ORDER BY revision_number DESC`,
+        [quoteId,tenantId,factoryId],
+      );
+      const items = [];
+      for (const version of versions.rows) {
+        const lines = await client.query(
+          `SELECT id::text AS id,line_number,product_code,product_name,quantity::text AS quantity,unit,
+              unit_price::text AS unit_price,discount_percent::text AS discount_percent,
+              tax_percent::text AS tax_percent,line_subtotal::text AS line_subtotal,
+              line_discount::text AS line_discount,line_tax::text AS line_tax,
+              line_total::text AS line_total,notes
+           FROM quotation_lines WHERE tenant_id=$1 AND factory_id=$2 AND quotation_id=$3
+             AND quotation_version_id=$4 ORDER BY line_number`,
+          [tenantId,factoryId,quoteId,version.quotation_version_id],
+        );
+        items.push({...version,lines:lines.rows});
+      }
+      return {quotation_id:quoteId,items};
+    });
+  }
+
   async getQuotation(userId: string, tenantId: string, factoryId: string, quoteId: string) {
     this.ids(userId,tenantId,factoryId,quoteId);
     return this.database.transaction({tenantId,userId},async (client) => {

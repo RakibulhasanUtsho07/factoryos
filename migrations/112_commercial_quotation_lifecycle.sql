@@ -511,4 +511,8 @@ BEGIN
 END;
 $$;
 
+INSERT INTO schema_migrations (version, checksum)
+VALUES ('112_commercial_quotation_lifecycle', NULL)
+ON CONFLICT (version) DO NOTHING;
+
 COMMIT;
