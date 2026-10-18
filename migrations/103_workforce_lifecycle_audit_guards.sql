@@ -173,13 +173,17 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_assignment RECORD;
-  v_consent_at TIMESTAMPTZ;
-  v_consent_withdrawn_at TIMESTAMPTZ;
+  v_stream RECORD;
+  v_previous_type VARCHAR(24);
+  v_previous_at TIMESTAMPTZ;
 BEGIN
   IF NEW.recorded_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
     RAISE EXCEPTION 'Attendance recorder must match authenticated database context' USING ERRCODE='42501';
   END IF;
 
+  -- Lock the assignment while reconstructing the event stream. Delayed/offline
+  -- device events are accepted only when the complete timestamp-ordered stream
+  -- remains valid; arrival order does not rewrite event time.
   SELECT a.worker_id,a.status,a.planned_start_at,a.planned_end_at,w.status AS worker_status,
          w.biometric_consent_at,w.biometric_consent_withdrawn_at
   INTO v_assignment
@@ -190,19 +194,17 @@ BEGIN
     AND a.worker_id=NEW.worker_id
     AND a.tenant_id=NEW.tenant_id
     AND a.factory_id=NEW.factory_id
-  FOR SHARE OF a,w;
+  FOR UPDATE OF a,w;
   IF NOT FOUND OR v_assignment.status='CANCELLED' THEN
     RAISE EXCEPTION 'Attendance requires an existing non-cancelled worker assignment' USING ERRCODE='23514';
   END IF;
   IF v_assignment.worker_status <> 'ACTIVE' THEN
     RAISE EXCEPTION 'Attendance cannot be captured for an inactive worker' USING ERRCODE='23514';
   END IF;
-
   IF NEW.occurred_at < v_assignment.planned_start_at - INTERVAL '12 hours'
      OR NEW.occurred_at > v_assignment.planned_end_at + INTERVAL '24 hours' THEN
     RAISE EXCEPTION 'Attendance event timestamp is outside the assignment capture window' USING ERRCODE='23514';
   END IF;
-
   IF NEW.source_type='BIOMETRIC' AND (
     v_assignment.biometric_consent_at IS NULL
     OR (v_assignment.biometric_consent_withdrawn_at IS NOT NULL
@@ -210,24 +212,52 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Biometric attendance requires current, explicit worker consent' USING ERRCODE='42501';
   END IF;
-
-  IF NEW.event_type='ABSENCE_RECORDED' AND EXISTS (
-    SELECT 1 FROM workforce_attendance_events e
-    WHERE e.shift_assignment_id=NEW.shift_assignment_id AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
-  ) THEN
-    RAISE EXCEPTION 'An absence record cannot coexist with clock or break events' USING ERRCODE='23514';
-  END IF;
-  IF NEW.event_type<>'ABSENCE_RECORDED' AND EXISTS (
-    SELECT 1 FROM workforce_attendance_events e
-    WHERE e.shift_assignment_id=NEW.shift_assignment_id AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
-      AND e.event_type='ABSENCE_RECORDED'
-  ) THEN
-    RAISE EXCEPTION 'A recorded absence must be corrected before attendance events are accepted' USING ERRCODE='23514';
-  END IF;
-
   IF jsonb_typeof(NEW.capture_metadata) <> 'object' THEN
     RAISE EXCEPTION 'Attendance capture metadata must be a JSON object' USING ERRCODE='23514';
   END IF;
+  IF EXISTS (
+    SELECT 1 FROM workforce_attendance_events e
+    WHERE e.shift_assignment_id=NEW.shift_assignment_id
+      AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
+      AND e.occurred_at=NEW.occurred_at
+  ) THEN
+    RAISE EXCEPTION 'Attendance events for one shift must have distinct occurrence timestamps' USING ERRCODE='23514';
+  END IF;
+
+  v_previous_type := NULL;
+  v_previous_at := NULL;
+  FOR v_stream IN
+    SELECT stream.event_type,stream.occurred_at,stream.id
+    FROM (
+      SELECT e.event_type,e.occurred_at,e.id
+      FROM workforce_attendance_events e
+      WHERE e.shift_assignment_id=NEW.shift_assignment_id
+        AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
+      UNION ALL
+      SELECT NEW.event_type,NEW.occurred_at,NEW.id
+    ) AS stream
+    ORDER BY stream.occurred_at,stream.id
+  LOOP
+    IF v_previous_at IS NULL THEN
+      IF v_stream.event_type NOT IN ('CLOCK_IN','ABSENCE_RECORDED') THEN
+        RAISE EXCEPTION 'First attendance event must be clock-in or an absence record' USING ERRCODE='23514';
+      END IF;
+    ELSIF v_previous_type='ABSENCE_RECORDED' OR v_previous_type='CLOCK_OUT' THEN
+      RAISE EXCEPTION 'No attendance events are allowed after absence or clock-out' USING ERRCODE='23514';
+    ELSIF v_previous_type='CLOCK_IN' OR v_previous_type='BREAK_END' THEN
+      IF v_stream.event_type NOT IN ('BREAK_START','CLOCK_OUT') THEN
+        RAISE EXCEPTION 'Attendance events must follow clock-in, paired breaks and clock-out order' USING ERRCODE='23514';
+      END IF;
+    ELSIF v_previous_type='BREAK_START' THEN
+      IF v_stream.event_type <> 'BREAK_END' THEN
+        RAISE EXCEPTION 'A break must end before another break or clock-out can be captured' USING ERRCODE='23514';
+      END IF;
+    ELSE
+      RAISE EXCEPTION 'Unsupported attendance event sequence' USING ERRCODE='23514';
+    END IF;
+    v_previous_type := v_stream.event_type;
+    v_previous_at := v_stream.occurred_at;
+  END LOOP;
   RETURN NEW;
 END;
 $$;
@@ -310,11 +340,15 @@ AS $$
 DECLARE
   v_assignment RECORD;
   v_operation RECORD;
-  v_has_clock_in BOOLEAN;
+  v_clock_in TIMESTAMPTZ;
+  v_clock_out TIMESTAMPTZ;
+  v_duration_minutes NUMERIC;
 BEGIN
   IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
     RAISE EXCEPTION 'Productivity recorder must match authenticated database context' USING ERRCODE='42501';
   END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.shift_assignment_id::text || ':workforce-productivity',0));
+
   SELECT a.id,a.worker_id,a.work_order_id,a.work_order_operation_id,a.status,a.shift_date
   INTO v_assignment
   FROM workforce_shift_assignments a
@@ -324,7 +358,6 @@ BEGIN
   IF NOT FOUND OR v_assignment.status IN ('CANCELLED','PLANNED') THEN
     RAISE EXCEPTION 'Productivity requires a confirmed/completed worker assignment' USING ERRCODE='23514';
   END IF;
-
   SELECT id,work_order_id,operation_code,required_skill,status,run_minutes_per_unit
   INTO v_operation
   FROM work_order_operations
@@ -346,13 +379,33 @@ BEGIN
     RAISE EXCEPTION 'Productivity operation must match the worker assignment' USING ERRCODE='23514';
   END IF;
 
-  SELECT EXISTS (
-    SELECT 1 FROM workforce_attendance_events e
-    WHERE e.shift_assignment_id=NEW.shift_assignment_id AND e.worker_id=NEW.worker_id
-      AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id AND e.event_type='CLOCK_IN'
-  ) INTO v_has_clock_in;
-  IF NOT v_has_clock_in THEN
+  SELECT occurred_at INTO v_clock_in
+  FROM workforce_attendance_events
+  WHERE shift_assignment_id=NEW.shift_assignment_id AND worker_id=NEW.worker_id
+    AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND event_type='CLOCK_IN';
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'Productivity capture requires a recorded worker clock-in' USING ERRCODE='23514';
+  END IF;
+  SELECT occurred_at INTO v_clock_out
+  FROM workforce_attendance_events
+  WHERE shift_assignment_id=NEW.shift_assignment_id AND worker_id=NEW.worker_id
+    AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND event_type='CLOCK_OUT';
+  IF NEW.production_started_at < v_clock_in
+     OR (v_clock_out IS NOT NULL AND NEW.production_ended_at > v_clock_out) THEN
+    RAISE EXCEPTION 'Productivity interval must be contained inside recorded attendance' USING ERRCODE='23514';
+  END IF;
+  v_duration_minutes := EXTRACT(EPOCH FROM (NEW.production_ended_at-NEW.production_started_at))/60;
+  IF NEW.actual_minutes > v_duration_minutes THEN
+    RAISE EXCEPTION 'Actual labor minutes cannot exceed the captured production interval' USING ERRCODE='23514';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM workforce_productivity_reports p
+    WHERE p.shift_assignment_id=NEW.shift_assignment_id AND p.worker_id=NEW.worker_id
+      AND p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id
+      AND tstzrange(p.production_started_at,p.production_ended_at,'[)')
+          && tstzrange(NEW.production_started_at,NEW.production_ended_at,'[)')
+  ) THEN
+    RAISE EXCEPTION 'Productivity labor intervals for a worker cannot overlap' USING ERRCODE='23514';
   END IF;
 
   IF v_operation.required_skill IS NOT NULL AND NOT EXISTS (
