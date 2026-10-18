@@ -372,4 +372,5 @@ BEGIN
   END IF;
 END $;
 
+DO $ BEGIN IF NOT EXISTS(SELECT 1 FROM permissions WHERE code='finance.facts.export') THEN RAISE EXCEPTION 'finance.facts.export permission is missing'; END IF; END $;
 ROLLBACK;

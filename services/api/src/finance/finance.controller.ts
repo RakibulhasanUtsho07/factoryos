@@ -154,7 +154,7 @@ export class FinanceConnectorsController {
 
   @Post(':connectorId/file-export')
   @UseGuards(PermissionGuard)
-  @RequirePermission('finance.facts.read')
+  @RequirePermission('finance.facts.export')
   @RequireFactoryScope()
   async exportFile(
     @Req() request: FinanceRequest,
@@ -180,7 +180,7 @@ export class FinanceConnectorsController {
 
   @Get(':connectorId/file-exports/:receiptId')
   @UseGuards(PermissionGuard)
-  @RequirePermission('finance.facts.read')
+  @RequirePermission('finance.facts.export')
   @RequireFactoryScope()
   async fileExportReceipt(
     @Req() request: FinanceRequest,
