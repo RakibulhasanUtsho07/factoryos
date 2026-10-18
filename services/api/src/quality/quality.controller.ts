@@ -7,8 +7,9 @@ import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
-  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityNcrActionDto,
-  ListQualityInspectionsQueryDto, QualityDispositionDto, QualityInspectionDecisionDto,
+  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityInspectionPlanDto,
+  CreateQualityInspectionResultDto, CreateQualityNcrActionDto, ListQualityInspectionsQueryDto,
+  ListQualityPlansQueryDto, QualityDispositionDto, QualityInspectionDecisionDto, QualityInspectionPlanTransitionDto,
 } from './quality.dto';
 import { QualityService } from './quality.service';
 
@@ -24,6 +25,40 @@ type QualityRequest = Request & { factoryos?: QualityRequestContext };
 @Controller('quality')
 export class QualityController {
   constructor(private readonly qualityService: QualityService) {}
+
+  @Post('plans')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.plans.manage')
+  @RequireFactoryScope()
+  async createInspectionPlan(@Req() request: QualityRequest, @Body() body: CreateQualityInspectionPlanDto,
+    @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.createInspectionPlan(this.requireContext(request), body, idempotencyKey ?? null);
+  }
+
+  @Get('plans')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.inspections.read')
+  @RequireFactoryScope()
+  async listInspectionPlans(@Req() request: QualityRequest, @Query() query: ListQualityPlansQueryDto) {
+    return this.qualityService.listInspectionPlans(this.requireContext(request), query);
+  }
+
+  @Get('plans/:planId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.inspections.read')
+  @RequireFactoryScope()
+  async getInspectionPlan(@Req() request: QualityRequest, @Param('planId', new ParseUUIDPipe()) planId: string) {
+    return this.qualityService.getInspectionPlan(this.requireContext(request), planId);
+  }
+
+  @Post('plans/:planId/transition')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.plans.manage')
+  @RequireFactoryScope()
+  async transitionInspectionPlan(@Req() request: QualityRequest,
+    @Param('planId', new ParseUUIDPipe()) planId: string, @Body() body: QualityInspectionPlanTransitionDto) {
+    return this.qualityService.transitionInspectionPlan(this.requireContext(request), planId, body);
+  }
 
   @Post('inspections')
   @UseGuards(PermissionGuard)
@@ -63,6 +98,16 @@ export class QualityController {
     @Body() body: CreateQualityDefectDto, @Headers('idempotency-key') idempotencyKey?: string) {
     const c = this.requireContext(request);
     return this.qualityService.recordDefect(c, inspectionId, body, idempotencyKey ?? null);
+  }
+
+  @Post('inspections/:inspectionId/results')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.inspections.write')
+  @RequireFactoryScope()
+  async recordInspectionResult(@Req() request: QualityRequest,
+    @Param('inspectionId', new ParseUUIDPipe()) inspectionId: string,
+    @Body() body: CreateQualityInspectionResultDto, @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.recordInspectionResult(this.requireContext(request), inspectionId, body, idempotencyKey ?? null);
   }
 
   @Post('inspections/:inspectionId/decision')
