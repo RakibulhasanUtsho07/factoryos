@@ -77,7 +77,20 @@ BEGIN
     OR NEW.request_hash IS DISTINCT FROM OLD.request_hash THEN
     RAISE EXCEPTION 'Asset identity, scope and creation evidence are immutable' USING ERRCODE='23514';
   END IF;
-  IF NEW.status <> 'ACTIVE' AND OLD.status='ACTIVE' THEN
+  IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
+    (OLD.status='ACTIVE' AND NEW.status IN ('INACTIVE','RETIRED')) OR
+    (OLD.status='INACTIVE' AND NEW.status IN ('ACTIVE','RETIRED'))
+  ) THEN
+    RAISE EXCEPTION 'Invalid asset lifecycle transition: % -> %',OLD.status,NEW.status USING ERRCODE='23514';
+  END IF;
+  IF NEW.status='ACTIVE' AND NEW.parent_asset_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM maintenance_assets parent
+    WHERE parent.id=NEW.parent_asset_id AND parent.tenant_id=NEW.tenant_id
+      AND parent.factory_id=NEW.factory_id AND parent.status='ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'An active asset must have an active parent in the same factory' USING ERRCODE='23514';
+  END IF;
+  IF NEW.status <> 'ACTIVE' AND OLD.status <> NEW.status THEN
     IF EXISTS (SELECT 1 FROM maintenance_assets child
       WHERE child.parent_asset_id=OLD.id AND child.tenant_id=OLD.tenant_id AND child.factory_id=OLD.factory_id
         AND child.status='ACTIVE') THEN
@@ -171,6 +184,9 @@ BEGIN
   IF NEW.completed_by_user_id IS NULL OR NEW.completed_at IS NULL
     OR NEW.completion_reason IS NULL OR length(btrim(NEW.completion_reason))=0 THEN
     RAISE EXCEPTION 'Checklist completion requires an actor, timestamp and reason' USING ERRCODE='23514';
+  END IF;
+  IF NEW.evidence IS NULL OR jsonb_typeof(NEW.evidence) <> 'object' OR jsonb_object_length(NEW.evidence)=0 THEN
+    RAISE EXCEPTION 'Checklist completion requires non-empty structured evidence' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END;
