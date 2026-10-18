@@ -190,4 +190,31 @@ describe('WorkforceService input and policy validation',()=>{
     },'worker-status-no-reason')).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
+  it('rejects biometric templates and fingerprint fields from attendance metadata',async()=>{
+    await expect(service.captureAttendance(context,{
+      shift_assignment_id:ASSIGNMENT,event_type:'CLOCK_IN',source_type:'BIOMETRIC',
+      occurred_at:'2026-10-18T10:00:00Z',
+      capture_metadata:{device_id:'reader-01',fingerprint_template:'base64-secret'},
+    },'attendance-reject-biometric-payload')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects arbitrary nested blobs in attendance metadata',async()=>{
+    await expect(service.captureAttendance(context,{
+      shift_assignment_id:ASSIGNMENT,event_type:'CLOCK_IN',source_type:'QR',
+      occurred_at:'2026-10-18T10:00:00Z',
+      capture_metadata:{device_id:'reader-01',payload:{sample:'opaque-data'}},
+    },'attendance-reject-nested-payload')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects control characters in attendance diagnostic metadata',async()=>{
+    await expect(service.captureAttendance(context,{
+      shift_assignment_id:ASSIGNMENT,event_type:'CLOCK_IN',source_type:'API',
+      occurred_at:'2026-10-18T10:00:00Z',
+      capture_metadata:{reader_id:'reader-01\\nforged-event'},
+    },'attendance-reject-control')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
 });
