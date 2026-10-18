@@ -20,6 +20,7 @@ import {
   CreateFinanceConnectorDto,
   FinanceMarginInputsQueryDto,
   FinanceWorkingCapitalQueryDto,
+  FinanceFileExportDto,
   FinanceFileImportCommitDto,
   FinanceFileImportDto,
   IngestFinanceFactsDto,
@@ -136,6 +137,58 @@ export class FinanceConnectorsController {
   ) {
     const ctx = context(request);
     return this.service.transitionConnector(ctx.userId, ctx.tenantId, ctx.factoryId, id, 'PAUSE', body, ctx.eventContext);
+  }
+
+
+  @Post(':connectorId/sftp-import/process')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.ingest')
+  @RequireFactoryScope()
+  async processSftpImport(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+  ) {
+    const ctx = context(request);
+    return this.service.processSftpImport(ctx.userId, ctx.tenantId, ctx.factoryId, id, ctx.eventContext);
+  }
+
+  @Post(':connectorId/file-export')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async exportFile(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Body() body: FinanceFileExportDto,
+    @Headers('idempotency-key') key?: string,
+  ) {
+    const ctx = context(request);
+    return this.service.exportFactsFile(ctx.userId, ctx.tenantId, ctx.factoryId, id, body, key ?? null, ctx.eventContext);
+  }
+
+  @Get(':connectorId/file-exports/receipts')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async listFileExportReceipts(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+  ) {
+    const ctx = context(request);
+    return this.service.listFileExportReceipts(ctx.userId, ctx.tenantId, ctx.factoryId, id);
+  }
+
+  @Get(':connectorId/file-exports/:receiptId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async fileExportReceipt(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Param('receiptId', new ParseUUIDPipe()) receiptId: string,
+  ) {
+    const ctx = context(request);
+    return this.service.getFileExportReceipt(ctx.userId, ctx.tenantId, ctx.factoryId, id, receiptId);
   }
 
   @Post(':connectorId/file-import/validate')
