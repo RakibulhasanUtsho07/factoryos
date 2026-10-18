@@ -61,7 +61,7 @@ All routes below are under /api/integrations, require an authenticated actor, tr
 
 | Method and route | Purpose |
 |---|---|
-| GET /reconciliation/report?domain=ATTENDANCE&since=...&until=... | Per-domain accepted/late event counts, missing event-time count, watermark activity, duplicate/conflict attempts, cross-source matches and open reconciliation cases. All three domains are returned if domain is omitted. |
+| GET /reconciliation/report?domain=ATTENDANCE&since=...&until=... | Per-domain accepted/late event counts, separate open missing/invalid event-time cases, watermark activity, duplicate/conflict attempts, cross-source matches and open reconciliation cases. All three domains are returned if domain is omitted. |
 | GET /reconciliation/events?domain=PRODUCTION&source_system=MES&delivery_class=LATE&limit=100 | Read scoped source event/checksum/sequence/receipt metadata without modifying an operational ledger. |
 | GET /reconciliation/cases?domain=QUALITY&status=OPEN&case_type=CROSS_SOURCE_CONFLICT&limit=100 | Triage open warnings/errors and view their evidence summary. limit is 1–200. |
 | GET /reconciliation/cases/:caseId/history | Read append-only case history. |
