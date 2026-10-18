@@ -140,6 +140,18 @@ export class FinanceConnectorsController {
   }
 
 
+  @Post(':connectorId/erp-import/process')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.ingest')
+  @RequireFactoryScope()
+  async processErpImport(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+  ) {
+    const ctx = context(request);
+    return this.service.processErpImport(ctx.userId, ctx.tenantId, ctx.factoryId, id, ctx.eventContext);
+  }
+
   @Post(':connectorId/sftp-import/process')
   @UseGuards(PermissionGuard)
   @RequirePermission('finance.facts.ingest')

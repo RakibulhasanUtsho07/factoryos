@@ -863,7 +863,7 @@ export class FinanceService {
           payload_sha256: payloadSha256,
         });
         if (uploaded.payload_sha256 !== payloadSha256 || uploaded.bytes_written !== content.length ||
-            !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(uploaded.provider_reference)) {
+            !(typeof uploaded.provider_reference === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(uploaded.provider_reference))) {
           throw new ServiceUnavailableException('ERP upload verification failed; an immutable export receipt was not issued');
         }
         remoteReference = 'erp:' + uploaded.provider_reference;
@@ -893,7 +893,7 @@ export class FinanceService {
         });
       await this.outbox(client, tenantId, factoryId, receiptId, 'FINANCE_FILE_EXPORT_COMPLETED', userId, ctx, {
         connector_id: connectorId, format: dto.format, file_name: fileName, payload_sha256: payloadSha256,
-        record_count: facts.length, remote_delivery: connector.integration_mode === 'SFTP_EXPORT',
+        record_count: facts.length, remote_delivery: ['ERP_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode),
       });
       const { content: storedContent, ...safeReceipt } = inserted.rows[0];
       void storedContent;
@@ -1025,7 +1025,7 @@ export class FinanceService {
         throw new ConflictException('File validation requires an approved active finance connector');
       }
       if (!['FILE_IMPORT', 'ERP_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
-        throw new ConflictException('File validation requires a FILE_IMPORT or SFTP_IMPORT connector');
+        throw new ConflictException('File validation requires a FILE_IMPORT, ERP_IMPORT or SFTP_IMPORT connector');
       }
 
       const facts = parsed?.batch.facts ?? [];
