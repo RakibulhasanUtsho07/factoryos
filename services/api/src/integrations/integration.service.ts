@@ -26,6 +26,11 @@ import {
   validateAllowedWebhookEventTypes,
 } from './integration-contract';
 import type { WebhookEnvelope } from './integration-contract';
+import {
+  recordOperationalWebhookEvent,
+  recordOperationalWebhookReplay,
+  type OperationalWebhookInput,
+} from './integration-reconciliation.store';
 
 interface ConnectorRow {
   id: string;
@@ -363,8 +368,22 @@ export class IntegrationService {
       correlation_id: envelope.correlation_id ?? null,
       payload: envelope.payload,
     });
+    const reconciliationInput: OperationalWebhookInput = {
+      tenantId: scope.tenant_id,
+      factoryId: scope.factory_id,
+      connectorId,
+      sourceSystem: connector.source_system,
+      externalEventId,
+      eventType: envelope.event_type,
+      schemaVersion: envelope.schema_version,
+      payloadSha256: payloadHash,
+      correlationId: envelope.correlation_id ?? null,
+      payload: envelope.payload,
+    };
+    let conflictingReplay: OperationalWebhookInput | null = null;
 
-    return this.database.transaction(async (client) => {
+    try {
+    return await this.database.transaction(async (client) => {
       const existingResult = await client.query<WebhookReceiptRow>(
         'SELECT outbox_event_id::text AS outbox_event_id,payload_sha256,event_type,schema_version FROM integration_webhook_receipts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_event_id=$4 FOR UPDATE',
         [scope.tenant_id, scope.factory_id, connectorId, externalEventId],
@@ -372,8 +391,10 @@ export class IntegrationService {
       const existing = existingResult.rows[0];
       if (existing) {
         if (existing.payload_sha256 !== payloadHash || existing.event_type !== envelope.event_type || Number(existing.schema_version) !== envelope.schema_version) {
+          conflictingReplay = reconciliationInput;
           throw new ConflictException('X-FactoryOS-Event-Id was already accepted with a different payload');
         }
+        await recordOperationalWebhookReplay(client, reconciliationInput, 'DUPLICATE_REPLAY');
         return { accepted: true, duplicate: true, event_id: existing.outbox_event_id };
       }
 
@@ -432,11 +453,26 @@ export class IntegrationService {
         'INSERT INTO integration_webhook_receipts(tenant_id,factory_id,connector_id,external_event_id,event_type,schema_version,payload_sha256,signature_timestamp,outbox_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
         [scope.tenant_id, scope.factory_id, connectorId, externalEventId, envelope.event_type, envelope.schema_version, payloadHash, signatureTimestamp, outboxId],
       );
+      await recordOperationalWebhookEvent(client, reconciliationInput);
       return { accepted: true, duplicate: false, event_id: outboxId };
     }, {
       tenantId: scope.tenant_id,
       advisoryLockKey: 'integration-webhook:' + connectorId + ':' + externalEventId,
     });
+    } catch (error) {
+      if (conflictingReplay) {
+        try {
+          await this.database.transaction(async (client) => {
+            await recordOperationalWebhookReplay(client, conflictingReplay!, 'CONFLICTING_DUPLICATE');
+          }, { tenantId: scope.tenant_id });
+        } catch {
+          throw new InternalServerErrorException(
+            'A conflicting webhook replay was detected but its reconciliation case could not be recorded',
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   async listHistory(userId: string, tenantId: string, factoryId: string, connectorId: string) {
