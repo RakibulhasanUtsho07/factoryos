@@ -332,12 +332,55 @@ export class QualityService {
       if(!defectId) throw new Error('QUALITY_DEFECT_INSERT_FAILED');
       await client.query("INSERT INTO quality_defect_events (tenant_id,factory_id,defect_id,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,NULL,'OPEN','REPORTED',$4,$5,$6,$7,$8::uuid)",
         [c.tenantId,c.factoryId,defectId,description,key+':reported',this.hash({defect_id:defectId,hash,action:'REPORTED'}),c.userId,correlation]);
+      await this.linkDefectToInspection(client,c,inspectionId,defectId,quantity,correlation);
       await this.auditOutbox(client,c,{inspectionId,defectId,action:'DEFECT_RECORDED',correlation,payload:{defect_code:code,severity:dto.severity,affected_quantity:quantity}});
       return {id:defectId,replayed:false};
     });
     const defect=await this.database.query("SELECT id::text AS id,inspection_id::text AS inspection_id,defect_code,severity,affected_quantity::text AS affected_quantity,description,evidence,status,row_version::int AS row_version,created_at::text AS created_at FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
       [result.id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
     return {...defect.rows[0],replayed:result.replayed};
+  }
+
+
+  async createDefectLink(c:QualityContext,defectId:string,dto:CreateQualityDefectLinkDto,rawKey:string|null){
+    this.validateScope(c);this.uuid(defectId,'defectId');
+    const key=this.key(rawKey),targetId=this.uuidValue(dto.target_id,'target_id');
+    const quantity=dto.affected_quantity===undefined?null:this.quantity(dto.affected_quantity,'affected_quantity');
+    const notes=dto.notes?.trim()||null,evidence=this.jsonObject(dto.evidence),correlation=this.correlation(c);
+    const hash=this.hash({defect_id:defectId,link_type:dto.link_type,target_id:targetId,quantity,notes,evidence});
+    const result=await this.database.transaction(c,async client=>{
+      await this.lockKey(client,c,'defect-link',key);
+      const old=await client.query("SELECT id::text AS id,request_hash FROM quality_defect_links WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",[c.tenantId,c.factoryId,key]);
+      if(old.rows[0]){
+        if(String(old.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for another defect link');
+        return{id:String(old.rows[0].id),replayed:true};
+      }
+      const d=await client.query("SELECT id FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",[defectId,c.tenantId,c.factoryId]);
+      if(!d.rows[0])throw new NotFoundException('Quality defect was not found in this factory');
+      const row=await this.insertDefectLink(client,c,{defectId,linkType:dto.link_type,targetId,source:'OPERATOR',quantity,notes,evidence,key,correlation});
+      return{id:row.id,replayed:false};
+    });
+    return{...(await this.getDefectLink(c,result.id)),replayed:result.replayed};
+  }
+
+  async getDefectLink(c:QualityContext,linkId:string){
+    this.validateScope(c);this.uuid(linkId,'linkId');
+    const q=await this.database.query("SELECT id::text AS id,defect_id::text AS defect_id,link_type,COALESCE(inventory_item_id,traceability_unit_id,order_id,order_line_id,work_order_id,work_order_operation_id,production_report_id,goods_receipt_line_id,rework_order_id)::text AS target_id,inventory_item_id::text AS inventory_item_id,traceability_unit_id::text AS traceability_unit_id,order_id::text AS order_id,order_line_id::text AS order_line_id,work_order_id::text AS work_order_id,work_order_operation_id::text AS work_order_operation_id,production_report_id::text AS production_report_id,goods_receipt_id::text AS goods_receipt_id,goods_receipt_line_id::text AS goods_receipt_line_id,rework_order_id::text AS rework_order_id,affected_quantity::text AS affected_quantity,link_source,notes,evidence,created_at::text AS created_at FROM quality_defect_links WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      [linkId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    if(!q.rows[0])throw new NotFoundException('Defect traceability link was not found in this factory');
+    return q.rows[0];
+  }
+
+  async getDefectTraceability(c:QualityContext,defectId:string){
+    this.validateScope(c);this.uuid(defectId,'defectId');
+    const defect=await this.database.query("SELECT d.id::text AS id,d.defect_code,d.severity,d.affected_quantity::text AS affected_quantity,d.description,d.status,d.row_version::int AS row_version,qi.id::text AS inspection_id,qi.inspection_type,qi.status AS inspection_status,qi.target_type,qi.target_id::text AS target_id,n.id::text AS ncr_id,n.ncr_number,n.status AS ncr_status FROM quality_defects d JOIN quality_inspections qi ON qi.id=d.inspection_id AND qi.tenant_id=d.tenant_id AND qi.factory_id=d.factory_id LEFT JOIN quality_ncrs n ON n.inspection_id=qi.id AND n.tenant_id=qi.tenant_id AND n.factory_id=qi.factory_id WHERE d.id=$1 AND d.tenant_id=$2 AND d.factory_id=$3",
+      [defectId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    if(!defect.rows[0])throw new NotFoundException('Quality defect was not found in this factory');
+    const links=await this.database.query("SELECT l.id::text AS id,l.link_type,COALESCE(l.inventory_item_id,l.traceability_unit_id,l.order_id,l.order_line_id,l.work_order_id,l.work_order_operation_id,l.production_report_id,l.goods_receipt_line_id,l.rework_order_id)::text AS target_id,l.affected_quantity::text AS affected_quantity,l.link_source,l.notes,l.evidence,l.created_at::text AS created_at,u.unit_code,u.unit_type,u.product_role,u.status AS unit_status,o.order_number,wo.work_order_number,op.operation_code,r.good_quantity::text AS reported_good_quantity,r.scrap_quantity::text AS reported_scrap_quantity FROM quality_defect_links l LEFT JOIN traceability_units u ON u.id=l.traceability_unit_id AND u.tenant_id=l.tenant_id AND u.factory_id=l.factory_id LEFT JOIN orders o ON o.id=l.order_id AND o.tenant_id=l.tenant_id AND o.factory_id=l.factory_id LEFT JOIN work_orders wo ON wo.id=l.work_order_id AND wo.tenant_id=l.tenant_id AND wo.factory_id=l.factory_id LEFT JOIN work_order_operations op ON op.id=l.work_order_operation_id AND op.work_order_id=l.work_order_id AND op.tenant_id=l.tenant_id AND op.factory_id=l.factory_id LEFT JOIN order_production_reports r ON r.id=l.production_report_id AND r.tenant_id=l.tenant_id AND r.factory_id=l.factory_id WHERE l.defect_id=$1 AND l.tenant_id=$2 AND l.factory_id=$3 ORDER BY l.created_at,l.id",
+      [defectId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    const rework=await this.database.query("SELECT id::text AS id,rework_number,status,input_quantity::text AS input_quantity,recovered_quantity::text AS recovered_quantity,scrap_quantity::text AS scrap_quantity,source_traceability_unit_id::text AS source_traceability_unit_id,output_traceability_unit_id::text AS output_traceability_unit_id,follow_up_inspection_id::text AS follow_up_inspection_id FROM quality_rework_orders WHERE defect_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
+      [defectId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    return{...defect.rows[0],links:links.rows,rework_orders:rework.rows};
   }
 
   async decideInspection(c: QualityContext,id: string,dto: QualityInspectionDecisionDto,rawKey: string|null) {
