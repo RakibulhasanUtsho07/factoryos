@@ -24,5 +24,5 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.outbox_dlq_replay_requests'::regclass AND tgname='trg_outbox_dlq_replay_receipt_immutable' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'DLQ replay receipt immutability trigger is missing';
   END IF;
-END $;
+END $$;
 SELECT 'outbox DLQ replay idempotency schema verification passed' AS result;
