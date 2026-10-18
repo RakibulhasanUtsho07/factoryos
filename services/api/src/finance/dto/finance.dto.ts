@@ -21,6 +21,7 @@ import {
   FINANCE_CONNECTOR_DOMAINS,
   FINANCE_CONNECTOR_MODES,
   FINANCE_FACT_TYPES,
+  FINANCE_RECONCILABLE_SOURCE_TYPES,
 } from '../finance-contract';
 
 const DECIMAL = /^-?(?:0|[1-9]\d{0,15})(?:\.\d{1,8})?$/;
@@ -104,8 +105,8 @@ export class TransitionFinanceConnectorDto {
 
 export class FinanceFactReconciliationInputDto {
   @IsString()
-  @Length(2, 80)
-  expected_source_type!: string;
+  @IsIn(FINANCE_RECONCILABLE_SOURCE_TYPES)
+  expected_source_type!: (typeof FINANCE_RECONCILABLE_SOURCE_TYPES)[number];
 
   @IsString()
   @Length(1, 240)

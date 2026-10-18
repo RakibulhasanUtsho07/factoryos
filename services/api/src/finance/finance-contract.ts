@@ -20,6 +20,11 @@ export const FINANCE_FACT_TYPES = [
 
 export type FinanceFactType = (typeof FINANCE_FACT_TYPES)[number];
 
+export const FINANCE_RECONCILABLE_SOURCE_TYPES = [
+  'ORDER_LINE', 'PURCHASE_ORDER_LINE', 'GOODS_RECEIPT_LINE', 'UTILITY_METER_READING',
+] as const;
+export type FinanceReconciliationSourceType = (typeof FINANCE_RECONCILABLE_SOURCE_TYPES)[number];
+
 export const FINANCE_CONNECTOR_DOMAINS = [
   'GL',
   'AP',
