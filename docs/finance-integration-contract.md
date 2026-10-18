@@ -117,7 +117,7 @@ All paths below are beneath `/api/finance/connectors`, authenticated with tenant
 | GET `/:connectorId/file-imports/:runId/receipt` | `finance.facts.read` | Read one file-import receipt |
 | POST `/:connectorId/sftp-import/process` | `finance.facts.ingest` | Poll one file through the registered, host-key-verifying SFTP adapter |
 | POST `/:connectorId/erp-import/process` | `finance.facts.ingest` | Poll and validate one provider batch through the registered ERP adapter; durable receipt is required before acknowledgement |
-| POST `/:connectorId/file-export` | `finance.facts.read` | Export approved active reporting facts to CSV/JSON (max 500 rows / 2 MiB) |
+| POST `/:connectorId/file-export` | `finance.facts.export` | Export approved active reporting facts to CSV/JSON (max 500 rows / 2 MiB) |
 | GET `/:connectorId/file-exports/receipts` | `finance.facts.read` | List immutable export receipts |
 | GET `/:connectorId/file-exports/:receiptId` | `finance.facts.read` | Retrieve the receipt and, for file exports, the base64 artifact |
 
@@ -129,8 +129,8 @@ All paths below are beneath `/api/finance/connectors`, authenticated with tenant
 - A successful import creates an immutable run receipt in the same transaction as the financial facts, reconciliation evidence, audit event and outbox event. A repeated identical key returns the same receipt; a different request under the same key conflicts.
 - Export selection includes only facts from the active reporting source for that domain. It does not post to the accounting system or mutate source facts. Exports over 500 rows or 2 MiB must use the existing governed tenant-export job instead. File artifacts use content-derived names and SHA-256 checksums.
 - SFTP remote paths must be direct children of the configured remote directory; basename validation and an optional configured file pattern run before acknowledgement. A successfully imported duplicate payload is recognized by SHA-256. Validation failures are quarantined where the configured adapter supports archive/quarantine, while archive failures return an explicit pending status for safe retry.
-- The connector registry and host-key checks define the security boundary; actual transport credentials are never stored inline. The SFTP transport token is intentionally optional so environments without a reviewed secret-manager/SSH adapter cannot accidentally perform network I/O.
+- The connector registry and pinned endpoint/host-key checks define the security boundary; actual transport credentials are never stored inline. The `FINANCE_SFTP_TRANSPORT` and `FINANCE_ERP_TRANSFER` adapters are optional and the API fails closed if a reviewed deployment adapter is not registered.
 
 ### SRS coverage boundary
 
-FR-PROD-15 is covered for bounded finance ERP file exchange by dry-run validation, stored validation/error reports, import/export receipts, checksums, idempotent commit/replay, audit events and tenant scope. The pre-existing SaaS tenant export/migration job remains the asynchronous path for larger tenant-wide datasets. Live vendor-specific ERP REST polling/mapping and production SFTP network transport remain adapter deployment work; this slice does not claim a specific ERP vendor connection is live.
+FR-PROD-15 is covered for bounded finance ERP file exchange by dry-run validation, stored validation/error reports, import/export receipts, checksums, idempotent commit/replay, audit events and tenant scope. The pre-existing SaaS tenant export/migration job remains the asynchronous path for larger tenant-wide datasets. ERP import/export now has a governed provider-adapter contract and shared validation/receipt pipeline; vendor-specific mapping, secret-manager integration, endpoint allowlists/DNS pinning, and production REST/SFTP transport implementations remain deployment work. This slice does not claim a specific ERP vendor connection is live.
