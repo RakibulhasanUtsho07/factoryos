@@ -150,6 +150,8 @@ export class ShouldCostService {
     const rules:ShouldCostRule[]=cr.rows.map(row=>({category:row.category,calculation_method:row.calculation_method,is_required:row.is_required,base_categories:row.base_categories}));
     if(rules.length!==7) throw new ConflictException('Profile does not contain all seven approved formulas');
     const target=await this.resolveTarget(client,tenantId,factoryId,dto.scope_type,dto.target_id);
+    if(dto.target_unit.trim().toUpperCase()!==profile.output_unit.trim().toUpperCase()) throw new BadRequestException('target_unit must match the approved profile output_unit');
+    if(dto.scope_type==='PRODUCT_VERSION'&&target.base_unit&&dto.target_unit.trim().toUpperCase()!==String(target.base_unit).trim().toUpperCase()) throw new BadRequestException('Product-version target_unit must match the product base unit');
     if(profile.product_id&&(dto.scope_type!=='PRODUCT_VERSION'||profile.product_id!==target.product_id)) throw new BadRequestException('Product-specific profile may only cost its own product version');
     if(dto.scope_type!=='PRODUCT_VERSION'&&profile.product_id) throw new BadRequestException('Order and quotation assessments require a factory-level profile');
     const inputs:ShouldCostEvidenceInput[]=[];
@@ -216,7 +218,7 @@ export class ShouldCostService {
 
  private async resolveTarget(client:PoolClient,tenantId:string,factoryId:string,scopeType:ScopeType,targetId:string):Promise<TargetSnapshot> {
   if(scopeType==='PRODUCT_VERSION') {
-   const result=await client.query("SELECT pv.id::text AS id,pv.product_id::text AS product_id,p.product_code,p.product_name,pv.state,pv.expected_yield_percent::text AS expected_yield_percent FROM product_versions pv JOIN product_definitions p ON p.id=pv.product_id AND p.tenant_id=pv.tenant_id AND p.factory_id=pv.factory_id WHERE pv.id=$1 AND pv.tenant_id=$2 AND pv.factory_id=$3",[targetId,tenantId,factoryId]);
+   const result=await client.query("SELECT pv.id::text AS id,pv.product_id::text AS product_id,p.product_code,p.product_name,p.base_unit,pv.state,pv.expected_yield_percent::text AS expected_yield_percent FROM product_versions pv JOIN product_definitions p ON p.id=pv.product_id AND p.tenant_id=pv.tenant_id AND p.factory_id=pv.factory_id WHERE pv.id=$1 AND pv.tenant_id=$2 AND pv.factory_id=$3",[targetId,tenantId,factoryId]);
    const row=result.rows[0] as Record<string,any>|undefined;
    if(!row) throw new NotFoundException('Product version was not found in this factory');
    if(row.state!=='APPROVED') throw new ConflictException('Should-cost requires an approved product version');
@@ -276,6 +278,7 @@ export class ShouldCostService {
    quantitySnapshot={source_type:'MANUAL_APPROVED',source_reference:line.quantity_source_reference,source_snapshot:line.quantity_source_snapshot};
   }
   let fxRate:string|null=null,fxDate:string|null=null,fxSource:string|null=null;
+  if(!['DIRECT_RATE','FIXED_PER_BATCH'].includes(rule.calculation_method)&&sourceCurrency!==null) throw new BadRequestException(line.category+' percentage-based formulas must not declare a source currency');
   if(['DIRECT_RATE','FIXED_PER_BATCH'].includes(rule.calculation_method)) {
    if(sourceCurrency==null) throw new BadRequestException(line.category+' source_currency is required');
    if(sourceCurrency===costCurrency) {fxRate='1.0000000000';fxDate=sourceDate;fxSource='IDENTITY';}
@@ -294,7 +297,8 @@ export class ShouldCostService {
   const row=q.rows[0] as Record<string,any>|undefined;
   if(!row||row.state!=='APPROVED') throw new NotFoundException('BOM quantity source must be an approved same-factory BOM line');
   await this.assertTargetHasProduct(client,tenantId,factoryId,scopeType,targetId,target,row.product_code,row.product_version_id);
-  const expectedResult=await client.query<{quantity:string}>('SELECT round($1::numeric*$2::numeric*(1+$3::numeric/100),6)::text AS quantity',[targetQty,row.quantity_per,row.wastage_percent]);
+  const scopedQty=await this.scopedProductQuantity(client,tenantId,factoryId,scopeType,targetId,row.product_code,targetQty);
+  const expectedResult=await client.query<{quantity:string}>('SELECT round($1::numeric*$2::numeric*(1+$3::numeric/100),6)::text AS quantity',[scopedQty,row.quantity_per,row.wastage_percent]);
   const quantity=expectedResult.rows[0]?.quantity??'0';
   if(inputQty==null||toScaled(inputQty,6,'input_quantity')!==toScaled(quantity,6,'expected BOM quantity')) throw new BadRequestException('MATERIAL quantity must match BOM quantity plus configured wastage');
   if(!unitCode||unitCode.trim().toUpperCase()!==String(row.unit).trim().toUpperCase()) throw new BadRequestException('MATERIAL unit must match the BOM unit');
@@ -309,7 +313,8 @@ export class ShouldCostService {
   const row=q.rows[0] as Record<string,any>|undefined;
   if(!row||row.state!=='APPROVED') throw new NotFoundException('Routing source must be an approved same-factory step');
   await this.assertTargetHasProduct(client,tenantId,factoryId,scopeType,targetId,target,row.product_code,row.product_version_id);
-  const expectedResult=await client.query<{quantity:string}>('SELECT round(($1::numeric+$2::numeric*$3::numeric+$4::numeric+$5::numeric)/60,6)::text AS quantity',[row.setup_minutes,row.run_minutes_per_unit,targetQty,row.queue_minutes,row.transfer_minutes]);
+  const scopedQty=await this.scopedProductQuantity(client,tenantId,factoryId,scopeType,targetId,row.product_code,targetQty);
+  const expectedResult=await client.query<{quantity:string}>('SELECT round(($1::numeric+$2::numeric*$3::numeric+$4::numeric+$5::numeric)/60,6)::text AS quantity',[row.setup_minutes,row.run_minutes_per_unit,scopedQty,row.queue_minutes,row.transfer_minutes]);
   const quantity=expectedResult.rows[0]?.quantity??'0';
   if(inputQty==null||toScaled(inputQty,6,'input_quantity')!==toScaled(quantity,6,'expected routing hours')) throw new BadRequestException('LABOUR quantity must match approved routing time for the target quantity');
   if(!unitCode||!['HOUR','HOURS','HR','HRS'].includes(unitCode.trim().toUpperCase())) throw new BadRequestException('ROUTING labour quantity must use HOUR units');
@@ -338,6 +343,22 @@ export class ShouldCostService {
    utility_type:row.utility_type,consumption_quantity:row.consumption_quantity,production_quantity:row.production_quantity,
    allocated_quantity:quantity,unit_code:row.unit_code,unit_cost_snapshot:row.unit_cost_snapshot,
    historical_cost_amount:row.historical_cost_amount,currency:row.currency_code}};
+ }
+
+
+ private async scopedProductQuantity(client:PoolClient,tenantId:string,factoryId:string,scopeType:ScopeType,targetId:string,productCode:string,fallback:number) {
+  if(scopeType==='PRODUCT_VERSION') return fallback;
+  const result=scopeType==='ORDER'
+    ? await client.query<{quantity:string;unit_count:string}>(
+      "SELECT COALESCE(SUM(quantity),0)::numeric(20,6)::text AS quantity,COUNT(DISTINCT upper(unit))::text AS unit_count FROM order_lines WHERE order_id=$1 AND tenant_id=$2 AND factory_id=$3 AND lower(product_code)=lower($4)",
+      [targetId,tenantId,factoryId,productCode])
+    : await client.query<{quantity:string;unit_count:string}>(
+      "SELECT COALESCE(SUM(l.quantity),0)::numeric(20,6)::text AS quantity,COUNT(DISTINCT upper(l.unit))::text AS unit_count FROM sales_quotations q JOIN quotation_lines l ON l.quotation_id=q.id AND l.tenant_id=q.tenant_id AND l.factory_id=q.factory_id JOIN quotation_versions v ON v.id=l.quotation_version_id AND v.quotation_id=q.id AND v.tenant_id=q.tenant_id AND v.factory_id=q.factory_id WHERE q.id=$1 AND q.tenant_id=$2 AND q.factory_id=$3 AND v.revision_number=q.current_revision AND lower(l.product_code)=lower($4)",
+      [targetId,tenantId,factoryId,productCode]);
+  const row=result.rows[0];
+  if(!row||Number(row.quantity)<=0) throw new BadRequestException('No positive target quantity exists for quantity-source product '+productCode);
+  if(Number(row.unit_count)!==1) throw new BadRequestException('Target order/quotation line quantities for '+productCode+' use inconsistent units');
+  return row.quantity;
  }
 
  private async assertTargetHasProduct(client:PoolClient,tenantId:string,factoryId:string,scopeType:ScopeType,targetId:string,target:TargetSnapshot,productCode:string,versionId:string) {
