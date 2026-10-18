@@ -7,9 +7,11 @@ import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
-  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityInspectionPlanDto,
-  CreateQualityInspectionResultDto, CreateQualityNcrActionDto, ListQualityInspectionsQueryDto,
-  ListQualityPlansQueryDto, QualityDispositionDto, QualityInspectionDecisionDto, QualityInspectionPlanTransitionDto,
+  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityDefectLinkDto, CreateQualityInspectionDto,
+  CreateQualityInspectionPlanDto, CreateQualityInspectionResultDto, CreateQualityNcrActionDto,
+  ListQualityInspectionsQueryDto, ListQualityPlansQueryDto, QualityDispositionDto,
+  QualityInspectionDecisionDto, QualityInspectionPlanTransitionDto, QualityNcrActionTransitionDto,
+  QualityNcrActionVerificationDto,
 } from './quality.dto';
 import { QualityService } from './quality.service';
 
@@ -151,6 +153,60 @@ export class QualityController {
     @Body() body: CreateQualityNcrActionDto, @Headers('idempotency-key') idempotencyKey?: string) {
     const c = this.requireContext(request);
     return this.qualityService.recordNcrAction(c, ncrId, body, idempotencyKey ?? null);
+  }
+
+
+  @Post('ncrs/:ncrId/actions/:actionId/transition')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.ncr.manage')
+  @RequireFactoryScope()
+  async transitionNcrAction(@Req() request: QualityRequest,
+    @Param('ncrId', new ParseUUIDPipe()) ncrId: string,
+    @Param('actionId', new ParseUUIDPipe()) actionId: string,
+    @Body() body: QualityNcrActionTransitionDto,
+    @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.transitionNcrAction(this.requireContext(request), ncrId, actionId, body, idempotencyKey ?? null);
+  }
+
+  @Post('ncrs/:ncrId/actions/:actionId/verify')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.capa.verify')
+  @RequireFactoryScope()
+  async verifyNcrAction(@Req() request: QualityRequest,
+    @Param('ncrId', new ParseUUIDPipe()) ncrId: string,
+    @Param('actionId', new ParseUUIDPipe()) actionId: string,
+    @Body() body: QualityNcrActionVerificationDto,
+    @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.verifyNcrAction(this.requireContext(request), ncrId, actionId, body, idempotencyKey ?? null);
+  }
+
+  @Post('defects/:defectId/links')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.defects.trace')
+  @RequireFactoryScope()
+  async createDefectLink(@Req() request: QualityRequest,
+    @Param('defectId', new ParseUUIDPipe()) defectId: string,
+    @Body() body: CreateQualityDefectLinkDto,
+    @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.qualityService.createDefectLink(this.requireContext(request), defectId, body, idempotencyKey ?? null);
+  }
+
+  @Get('defect-links/:linkId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.inspections.read')
+  @RequireFactoryScope()
+  async getDefectLink(@Req() request: QualityRequest,
+    @Param('linkId', new ParseUUIDPipe()) linkId: string) {
+    return this.qualityService.getDefectLink(this.requireContext(request), linkId);
+  }
+
+  @Get('defects/:defectId/traceability')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('quality.defects.trace')
+  @RequireFactoryScope()
+  async getDefectTraceability(@Req() request: QualityRequest,
+    @Param('defectId', new ParseUUIDPipe()) defectId: string) {
+    return this.qualityService.getDefectTraceability(this.requireContext(request), defectId);
   }
 
   @Post('ncrs/:ncrId/close')
