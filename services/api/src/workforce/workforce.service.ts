@@ -920,6 +920,8 @@ export class WorkforceService {
     if(v.length>max) throw new BadRequestException(`Text value exceeds ${max} characters`);
     return v||null;
   }
+  private dateOnly(value:string|undefined,field:string):string;
+  private dateOnly(value:string|undefined,field:string,optional:true):string|null;
   private dateOnly(value:string|undefined,field:string,optional=false):string|null {
     if(!value&&optional) return null;
     if(!value||!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new BadRequestException(`${field} must be a valid YYYY-MM-DD date`);
