@@ -57,6 +57,13 @@ describe('WorkforceService input and policy validation',()=>{
       .toThrow(BadRequestException);
   });
 
+  it('requires a reason for versioned shift-template edits before database access',async()=>{
+    await expect(service.updateShift(context,ASSIGNMENT,{
+      expected_version:1,name:'Revised day shift',reason:'   ',
+    },'shift-update-no-reason')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects an unrecognized time zone before creating a shift template',async()=>{
     await expect(service.createShift(context,{
       shift_code:'DAY',name:'Day shift',starts_at_local:'08:00',ends_at_local:'16:00',
@@ -125,6 +132,13 @@ describe('WorkforceService input and policy validation',()=>{
       from_date:'2026-10-20',to_date:'2026-10-19',
     })).rejects.toBeInstanceOf(BadRequestException);
     expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('requires an explicit UTC offset for attendance correction timestamps',async()=>{
+    await expect(service.correctAttendance(context,ASSIGNMENT,{
+      corrected_event_type:'CLOCK_IN',corrected_occurred_at:'2026-10-18T09:00:00',reason:'Correct manual entry',
+    },'attendance-correction-no-offset')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
   it('rejects an attendance timestamp with no explicit UTC offset',async()=>{
