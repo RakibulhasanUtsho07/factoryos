@@ -263,3 +263,19 @@ export function parseFinanceFileImport(dto: FinanceFileImportDto): ParsedFinance
     sourcePayloadSha256: createHash('sha256').update(bytes).digest('hex'),
   };
 }
+
+export function serializeFinanceFactsCsv(facts: Array<Record<string, unknown>>): string {
+  const headers = [
+    'external_fact_id','source_fact_key','fact_type','source_record_type','source_record_ref',
+    'effective_at','due_at','currency','amount','customer_ref','product_id','product_ref','order_id','order_ref',
+    'cost_center_ref','shipment_ref','source_quantity','source_rate','source_uom_code','metadata_snapshot','reconciliation',
+  ];
+  const csvValue = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  };
+  return headers.join(',') + '\r\n' +
+    facts.map((fact) => headers.map((header) => csvValue(fact[header])).join(',')).join('\r\n') + '\r\n';
+}
+

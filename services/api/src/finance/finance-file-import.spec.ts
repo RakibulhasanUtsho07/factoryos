@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { FinanceFileImportDto } from './dto/finance.dto';
-import { parseFinanceFileImport } from './finance-file-import';
+import { parseFinanceFileImport, serializeFinanceFactsCsv } from './finance-file-import';
 
 function fileDto(format: 'CSV' | 'JSON', text: string): FinanceFileImportDto {
   return {
@@ -87,5 +87,30 @@ describe('finance file import contract', () => {
       ...fileDto('JSON', JSON.stringify([fact])),
       content_base64: oversized,
     })).toThrow('exceeds 2 MiB');
+  });
+});
+
+
+describe('finance file export serialization', () => {
+  it('round-trips CSV export facts including decimals, commas and JSON evidence columns', () => {
+    const exportCsv = serializeFinanceFactsCsv([{
+      external_fact_id: 'row-1',
+      source_fact_key: 'line-1',
+      fact_type: 'AR_OPEN',
+      source_record_type: 'AR_INVOICE',
+      source_record_ref: 'INV-1',
+      effective_at: '2026-10-01T00:00:00.000Z',
+      due_at: '2026-10-31T00:00:00.000Z',
+      currency: 'BDT',
+      amount: '1234.5000',
+      customer_ref: 'Customer, "Preferred" Ltd',
+      metadata_snapshot: { region: 'BD', verified: true },
+      reconciliation: null,
+    }]);
+    const parsed = parseFinanceFileImport(fileDto('CSV', exportCsv));
+    expect(parsed.batch.facts).toHaveLength(1);
+    expect(parsed.batch.facts[0].amount).toBe('1234.5000');
+    expect(parsed.batch.facts[0].customer_ref).toBe('Customer, "Preferred" Ltd');
+    expect(parsed.batch.facts[0].metadata_snapshot).toEqual({ region: 'BD', verified: true });
   });
 });
