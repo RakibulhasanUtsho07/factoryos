@@ -37,6 +37,30 @@ WHERE r.code='FACTORY_MANAGER' AND r.is_system=false
   )
 ON CONFLICT (role_id,permission_id) DO NOTHING;
 
+CREATE OR REPLACE FUNCTION factoryos_finance_json_has_sensitive_key(p_value jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $
+DECLARE
+ entry record;
+ child jsonb;
+BEGIN
+ IF jsonb_typeof(p_value)='object' THEN
+   FOR entry IN SELECT key,value FROM jsonb_each(p_value) LOOP
+     IF entry.key ~* '(password|token|secret|credential|api.?key|authorization|private.?key|client.?secret)'
+        OR factoryos_finance_json_has_sensitive_key(entry.value) THEN
+       RETURN true;
+     END IF;
+   END LOOP;
+ ELSIF jsonb_typeof(p_value)='array' THEN
+   FOR child IN SELECT value FROM jsonb_array_elements(p_value) LOOP
+     IF factoryos_finance_json_has_sensitive_key(child) THEN RETURN true; END IF;
+   END LOOP;
+ END IF;
+ RETURN false;
+END $;
+
 CREATE TABLE finance_connectors (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  tenant_id uuid NOT NULL,
@@ -80,7 +104,7 @@ CREATE TABLE finance_connectors (
  CONSTRAINT chk_finance_connector_endpoint CHECK(endpoint_url IS NULL OR endpoint_url ~ '^https://'),
  CONSTRAINT chk_finance_connector_secret_ref CHECK(secret_reference IS NULL OR secret_reference ~ '^(vault|secret)://[A-Za-z0-9._/-]+$'),
  CONSTRAINT chk_finance_connector_mode_endpoint CHECK(integration_mode NOT IN ('REST_API','WEBHOOK') OR endpoint_url IS NOT NULL),
- CONSTRAINT chk_finance_connector_config_object CHECK(jsonb_typeof(configuration)='object'),
+ CONSTRAINT chk_finance_connector_config_object CHECK(jsonb_typeof(configuration)='object' AND NOT factoryos_finance_json_has_sensitive_key(configuration)),
  CONSTRAINT chk_finance_connector_decision CHECK(
    (status='PENDING_APPROVAL' AND reviewed_by_user_id IS NULL AND reviewed_at IS NULL)
    OR (status IN ('ACTIVE','REJECTED') AND reviewed_by_user_id IS NOT NULL AND reviewed_at IS NOT NULL)
@@ -193,7 +217,7 @@ CREATE TABLE financial_facts (
    (source_quantity IS NULL AND source_rate IS NULL AND source_uom_code IS NULL)
    OR (source_quantity IS NOT NULL AND source_rate IS NOT NULL AND source_uom_code IS NOT NULL)
  ),
- CONSTRAINT chk_financial_fact_metadata CHECK(jsonb_typeof(metadata_snapshot)='object'),
+ CONSTRAINT chk_financial_fact_metadata CHECK(jsonb_typeof(metadata_snapshot)='object' AND NOT factoryos_finance_json_has_sensitive_key(metadata_snapshot)),
  CONSTRAINT chk_financial_fact_hash CHECK(fact_hash ~ '^[0-9a-f]{64}$')
 );
 CREATE INDEX idx_financial_facts_scope_type_time
@@ -348,20 +372,33 @@ CREATE TRIGGER trg_finance_connector_runs_guard
 CREATE OR REPLACE FUNCTION factoryos_guard_financial_fact()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE connector_status text;
+DECLARE connector_domain text;
 BEGIN
  IF TG_OP<>'INSERT' THEN
    RAISE EXCEPTION 'Governed financial facts are immutable; ingest a new source revision'
      USING ERRCODE='55000';
  END IF;
- SELECT status INTO connector_status FROM finance_connectors
+ SELECT status,domain INTO connector_status,connector_domain FROM finance_connectors
  WHERE id=NEW.connector_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
  IF connector_status IS DISTINCT FROM 'ACTIVE'
     OR NEW.ingested_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
    RAISE EXCEPTION 'Financial facts require an active connector and authenticated ingester'
      USING ERRCODE='42501';
  END IF;
+ IF connector_domain<>'CUSTOM' AND NOT (
+   (connector_domain='GL' AND NEW.fact_type IN (
+     'GL_BALANCE','INVENTORY_VALUE','ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST',
+     'FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST'))
+   OR (connector_domain='AP' AND NEW.fact_type IN ('AP_OPEN','OPEN_PO_COMMITMENT','LC_EXPOSURE','TAX_LIABILITY'))
+   OR (connector_domain='AR' AND NEW.fact_type IN ('AR_OPEN','SHIPMENT_MILESTONE','ACTUAL_REVENUE','FORECAST_REVENUE'))
+   OR (connector_domain='BANK_RECONCILIATION' AND NEW.fact_type='BANK_BALANCE')
+   OR (connector_domain='TAX_EINVOICE' AND NEW.fact_type IN ('TAX_LIABILITY','ACTUAL_REVENUE'))
+ ) THEN
+   RAISE EXCEPTION 'Financial fact type % is not permitted for connector domain %',NEW.fact_type,connector_domain
+     USING ERRCODE='23514';
+ END IF;
  RETURN NEW;
-END $$;
+END $;
 CREATE TRIGGER trg_financial_facts_guard
  BEFORE INSERT OR UPDATE OR DELETE ON financial_facts
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_financial_fact();
@@ -369,14 +406,26 @@ CREATE TRIGGER trg_financial_facts_guard
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_fact_reconciliation()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE fact_actor uuid;
+DECLARE fact_quantity numeric(24,8);
+DECLARE fact_rate numeric(24,8);
+DECLARE fact_uom varchar(24);
 DECLARE computed_status text;
 BEGIN
  IF TG_OP='INSERT' THEN
-   SELECT ingested_by_user_id INTO fact_actor FROM financial_facts
+   SELECT ingested_by_user_id,source_quantity,source_rate,source_uom_code
+     INTO fact_actor,fact_quantity,fact_rate,fact_uom
+   FROM financial_facts
    WHERE id=NEW.fact_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
    IF fact_actor IS NULL THEN
      RAISE EXCEPTION 'Reconciliation fact must exist in the same tenant and factory'
        USING ERRCODE='23503';
+   END IF;
+   IF fact_quantity IS NULL OR fact_rate IS NULL OR fact_uom IS NULL
+      OR NEW.source_quantity IS DISTINCT FROM fact_quantity
+      OR NEW.source_rate IS DISTINCT FROM fact_rate
+      OR NEW.uom_code IS DISTINCT FROM fact_uom THEN
+     RAISE EXCEPTION 'Reconciliation quantities, rates and UOM must match the immutable fact evidence'
+       USING ERRCODE='23514';
    END IF;
    -- Generated columns are not populated until after BEFORE triggers execute.
    -- Derive the decision from their immutable base inputs instead.

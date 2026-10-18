@@ -27,6 +27,12 @@ BEGIN
     IF policies<>1 THEN RAISE EXCEPTION 'Tenant isolation policy missing for %',table_name; END IF;
   END LOOP;
 
+  IF NOT factoryos_finance_json_has_sensitive_key('{"metadata":{"api_key":"never store"}}'::jsonb) THEN
+    RAISE EXCEPTION 'Nested secret-like finance configuration keys were not detected';
+  END IF;
+  IF factoryos_finance_json_has_sensitive_key('{"accounting":{"cost_center":"FIN-01"}}'::jsonb) THEN
+    RAISE EXCEPTION 'Ordinary finance metadata was misclassified as a secret';
+  END IF;
   SELECT count(*) INTO permission_count FROM permissions WHERE code IN (
     'finance.connectors.read','finance.connectors.write','finance.connectors.approve',
     'finance.facts.read','finance.facts.ingest','finance.reconciliation.read',
@@ -53,6 +59,19 @@ INSERT INTO finance_connectors(
 
 DO $$
 BEGIN
+  BEGIN
+    INSERT INTO finance_connectors(
+      tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
+      configuration,status,row_version,idempotency_key,request_hash,created_by_user_id
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'CI-FINANCE-SECRET','Secret config rejection','External Accounting Sandbox','AR','MANUAL',
+      '{"nested":{"api_key":"must-not-be-stored"}}'::jsonb,'PENDING_APPROVAL',1,
+      'ci-finance-secret-config',repeat('e',64),'921382b8-e83f-43ab-a576-e3db6a06b70c'
+    );
+    RAISE EXCEPTION 'Secret-like keys were accepted in connector configuration';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
   BEGIN
     UPDATE finance_connectors SET status='ACTIVE',row_version=2,
       reviewed_by_user_id=factoryos_current_user_id(),reviewed_at=clock_timestamp(),
@@ -125,6 +144,19 @@ BEGIN
     );
     RAISE EXCEPTION 'Duplicate external finance fact unexpectedly succeeded';
   EXCEPTION WHEN unique_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO finance_fact_reconciliations(
+      tenant_id,factory_id,fact_id,expected_source_type,expected_source_ref,
+      source_quantity,expected_quantity,quantity_tolerance,source_rate,expected_rate,rate_tolerance,
+      uom_code,match_status
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000003','SUPPLIER_INVOICE','SUPPLIER-INVOICE-100',
+      11,9.5,0.1,100,100,0,'PCS','MISMATCH'
+    );
+    RAISE EXCEPTION 'Reconciliation with fabricated source quantity was accepted';
+  EXCEPTION WHEN check_violation THEN NULL;
   END;
   BEGIN
     UPDATE finance_fact_reconciliations

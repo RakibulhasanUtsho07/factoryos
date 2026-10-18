@@ -56,12 +56,6 @@ function context(request: FinanceRequest) {
   };
 }
 
-function assertSameFactory(bodyFactoryId: string, authenticatedFactoryId: string) {
-  if (bodyFactoryId.toLowerCase() !== authenticatedFactoryId.toLowerCase()) {
-    throw new ForbiddenException('factory_id must match the authenticated factory scope');
-  }
-}
-
 @Controller('finance/connectors')
 export class FinanceConnectorsController {
   constructor(private readonly service: FinanceService) {}
@@ -76,8 +70,6 @@ export class FinanceConnectorsController {
     @Headers('idempotency-key') key?: string,
   ) {
     const ctx = context(request);
-    const scopedBody = body as CreateFinanceConnectorDto & { factory_id?: string };
-    if (scopedBody.factory_id) assertSameFactory(scopedBody.factory_id, ctx.factoryId);
     return this.service.createConnector(
       ctx.userId,
       ctx.tenantId,
