@@ -214,6 +214,96 @@ describe('InventoryReservationService', () => {
     expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_RESERVATION_RELEASED');
   });
 
+  it('posts accepted finished goods as an inventory receipt with durable outbox evidence', async () => {
+    const workOrderId = randomUUID();
+    const reportId = randomUUID();
+    const movementId = randomUUID();
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, unit: 'EA', status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(queryRows([])) // reset the transaction-local location to UNASSIGNED
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '62.5000' }]))
+      .mockResolvedValueOnce(queryRows([{ id: movementId, quantity_after: '62.5000' }]))
+      .mockResolvedValueOnce(queryRows([])); // inventory outbox event
+
+    const result = await service.postWorkOrderFinishedGoodsReceipt(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId,
+      workOrderNumber: 'WO-OUTPUT-001',
+      finishedItemId: ITEM_ID,
+      productionReportId: reportId,
+      goodQuantity: '12.5000',
+      scrapQuantity: '1.0000',
+      yieldPercentage: '92.5926',
+      cumulativeYieldPercentage: '92.5926',
+      correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual({ movementId, quantityAfter: '62.5000' });
+    expect(String(client.query.mock.calls[2]?.[0])).toContain('UPDATE inventory_stock_balances');
+    expect(client.query.mock.calls[2]?.[1]).toContain('12.5000');
+    expect(String(client.query.mock.calls[3]?.[0])).toContain('INSERT INTO inventory_movements');
+    expect(client.query.mock.calls[3]?.[1]).toContain('PRODUCTION_OUTPUT');
+    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_RECEIVED');
+    const outboxPayload = JSON.parse(String(client.query.mock.calls[4]?.[1]?.[7])) as {
+      purpose: string;
+      good_quantity: string;
+      scrap_quantity: string;
+      yield_percentage: string;
+      movement: { quantity: string; reference_id: string };
+    };
+    expect(outboxPayload).toMatchObject({
+      purpose: 'PRODUCTION_OUTPUT',
+      good_quantity: '12.5000',
+      scrap_quantity: '1.0000',
+      yield_percentage: '92.5926',
+      movement: { quantity: '12.5000', reference_id: reportId },
+    });
+  });
+
+  it('does not create a finished-good stock receipt when reported output is entirely scrap', async () => {
+    const result = await service.postWorkOrderFinishedGoodsReceipt(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId: randomUUID(),
+      workOrderNumber: 'WO-SCRAP-ONLY',
+      finishedItemId: ITEM_ID,
+      productionReportId: randomUUID(),
+      goodQuantity: '0.0000',
+      scrapQuantity: '2.0000',
+      yieldPercentage: '0.0000',
+      cumulativeYieldPercentage: '0.0000',
+      correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual({ movementId: null, quantityAfter: null });
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the finished-good inventory item is disabled', async () => {
+    client.query.mockResolvedValueOnce(queryRows([{ id: ITEM_ID, unit: 'EA', status: 'DISABLED' }]));
+
+    await expect(service.postWorkOrderFinishedGoodsReceipt(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId: randomUUID(),
+      workOrderNumber: 'WO-DISABLED-FG',
+      finishedItemId: ITEM_ID,
+      productionReportId: randomUUID(),
+      goodQuantity: '1.0000',
+      scrapQuantity: '0.0000',
+      yieldPercentage: '100.0000',
+      cumulativeYieldPercentage: '100.0000',
+      correlationId: TRACE_ID,
+    })).rejects.toThrow('Finished-good inventory item must remain active');
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE inventory_stock_balances'))).toBe(false);
+  });
+
   it('requires an idempotency key for reservation creation', async () => {
     await expect(service.createReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID,
