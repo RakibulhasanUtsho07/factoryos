@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Query, Req,
+  BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Query, Req,
   UnauthorizedException, UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -40,8 +40,17 @@ export class EhsController{
   @RequirePermission('ehs.permits.execute')
   @RequireFactoryScope()
   transitionPermit(@Req() req:EhsRequest,@Param('permitId',new ParseUUIDPipe()) id:string,@Body() dto:TransitionEhsPermitDto){
-    const permission=dto.action==='APPROVE'||dto.action==='REJECT'?'ehs.permits.approve':'ehs.permits.execute';
-    return this.service.transitionPermitWithAuthorization(this.context(req),id,dto,permission);
+    if(dto.action==='APPROVE'||dto.action==='REJECT')throw new BadRequestException('Use the independent permit decision endpoint for approve/reject');
+    return this.service.transitionPermit(this.context(req),id,dto);
+  }
+
+  @Post('permits/:permitId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ehs.permits.approve')
+  @RequireFactoryScope()
+  decidePermit(@Req() req:EhsRequest,@Param('permitId',new ParseUUIDPipe()) id:string,@Body() dto:TransitionEhsPermitDto){
+    if(dto.action!=='APPROVE'&&dto.action!=='REJECT')throw new BadRequestException('Decision action must be APPROVE or REJECT');
+    return this.service.transitionPermit(this.context(req),id,dto);
   }
 
   @Get('incidents')
@@ -87,7 +96,16 @@ export class EhsController{
   @RequirePermission('ehs.incidents.manage')
   @RequireFactoryScope()
   transitionAction(@Req() req:EhsRequest,@Param('actionId',new ParseUUIDPipe()) id:string,@Body() dto:TransitionEhsCorrectiveActionDto){
-    if(dto.action==='VERIFY')return this.service.transitionCorrectiveActionWithPermission(this.context(req),id,dto,'ehs.corrective_actions.verify');
+    if(dto.action==='VERIFY')throw new BadRequestException('Use the independent corrective-action verification endpoint');
+    return this.service.transitionCorrectiveAction(this.context(req),id,dto);
+  }
+
+  @Post('corrective-actions/:actionId/verify')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ehs.corrective_actions.verify')
+  @RequireFactoryScope()
+  verifyAction(@Req() req:EhsRequest,@Param('actionId',new ParseUUIDPipe()) id:string,@Body() dto:TransitionEhsCorrectiveActionDto){
+    if(dto.action!=='VERIFY')throw new BadRequestException('Action must be VERIFY');
     return this.service.transitionCorrectiveAction(this.context(req),id,dto);
   }
 
