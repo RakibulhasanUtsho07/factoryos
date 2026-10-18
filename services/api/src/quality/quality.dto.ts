@@ -285,3 +285,138 @@ export class ListQualityPlansQueryDto {
   @Max(100)
   limit?: number;
 }
+
+export class QualityNcrActionTransitionDto {
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+
+  @IsIn(['START', 'COMPLETE'])
+  action!: 'START' | 'COMPLETE';
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  @IsOptional()
+  @IsObject()
+  evidence?: Record<string, unknown>;
+}
+
+export class QualityNcrActionVerificationDto {
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+
+  @IsIn(['PASS', 'FAIL'])
+  decision!: 'PASS' | 'FAIL';
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  @IsObject()
+  evidence!: Record<string, unknown>;
+}
+
+export const QUALITY_DEFECT_LINK_TYPES = [
+  'INVENTORY_ITEM', 'TRACEABILITY_UNIT', 'ORDER', 'ORDER_LINE',
+  'WORK_ORDER', 'WORK_ORDER_OPERATION', 'PRODUCTION_REPORT', 'GOODS_RECEIPT_LINE',
+] as const;
+
+export class CreateQualityDefectLinkDto {
+  @IsIn([...QUALITY_DEFECT_LINK_TYPES])
+  link_type!: (typeof QUALITY_DEFECT_LINK_TYPES)[number];
+
+  @IsUUID()
+  target_id!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  affected_quantity?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+
+  @IsOptional()
+  @IsObject()
+  evidence?: Record<string, unknown>;
+}
+
+export class CreateQualityReworkOrderDto {
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  input_quantity!: number;
+
+  @IsOptional()
+  @IsUUID()
+  source_traceability_unit_id?: string;
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  instructions?: string;
+
+  @IsOptional()
+  @IsObject()
+  evidence?: Record<string, unknown>;
+}
+
+export class QualityReworkTransitionDto {
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+
+  @IsIn(['APPROVE', 'START', 'COMPLETE', 'VERIFY', 'RESTART', 'CANCEL'])
+  action!: 'APPROVE' | 'START' | 'COMPLETE' | 'VERIFY' | 'RESTART' | 'CANCEL';
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  recovered_quantity?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  scrap_quantity?: number;
+
+  @IsOptional()
+  @IsUUID()
+  output_traceability_unit_id?: string;
+
+  @IsOptional()
+  @IsUUID()
+  follow_up_inspection_id?: string;
+
+  @IsOptional()
+  @IsObject()
+  evidence?: Record<string, unknown>;
+}
+
+export class ListQualityReworkOrdersQueryDto {
+  @IsOptional()
+  @IsIn(['DRAFT','APPROVED','IN_PROGRESS','COMPLETED','REWORK_REQUIRED','VERIFIED','CANCELLED'])
+  status?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
