@@ -162,7 +162,12 @@ function decodeUtf8(bytes: Buffer): string {
 
 export function parseFinanceFileImport(dto: FinanceFileImportDto): ParsedFinanceFileImport {
   const fileName = dto.file_name.trim();
-  if (!fileName || fileName.length > 200 || /[\\/\u0000-\u001f\u007f]/.test(fileName) ||
+  const hasPathSeparator = fileName.includes('/') || fileName.includes(String.fromCharCode(92));
+  const hasControlCharacter = Array.from(fileName).some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127;
+  });
+  if (!fileName || fileName.length > 200 || hasPathSeparator || hasControlCharacter ||
       fileName === '.' || fileName === '..') {
     throw new BadRequestException('file_name must be a simple filename without path separators or control characters');
   }

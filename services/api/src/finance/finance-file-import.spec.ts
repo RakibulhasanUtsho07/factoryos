@@ -48,7 +48,7 @@ describe('finance file import contract', () => {
   });
 
   it('accepts a JSON wrapper only when it contains facts and no shadow batch metadata', () => {
-    expect(parseFinanceFileImport(fileDto('JSON', JSON.stringify({ facts: [fact] })).batch.facts).toHaveLength(1);
+    expect(parseFinanceFileImport(fileDto('JSON', JSON.stringify({ facts: [fact] }))).batch.facts).toHaveLength(1);
     expect(() => parseFinanceFileImport(fileDto('JSON', JSON.stringify({
       external_batch_ref: 'shadowed-batch',
       facts: [fact],
