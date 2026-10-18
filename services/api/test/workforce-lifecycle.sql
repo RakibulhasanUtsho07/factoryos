@@ -131,7 +131,7 @@ BEGIN
       v_tenant,v_factory,v_assignment,v_worker,'BREAK_START','MANUAL',
       v_start+INTERVAL '2 hours','ci-wfc-invalid-break-order',v_hash,'{}'::jsonb,v_actor,gen_random_uuid()
     );
-    RAISE EXCEPTION 'expected the ordered attendance stream guard to reject a nested break';
+    RAISE EXCEPTION 'expected the ordered attendance stream guard to reject a nested break' USING ERRCODE='P0001';
   EXCEPTION WHEN check_violation THEN
     NULL;
   END;
@@ -152,7 +152,7 @@ BEGIN
       v_tenant,v_factory,v_alt_shift,v_worker,v_date,v_start,v_end,
       'PLANNED',1,'ci-wfc-overlap-assignment',v_hash,v_actor,v_actor,gen_random_uuid()
     );
-    RAISE EXCEPTION 'expected overlap protection to reject a second active assignment';
+    RAISE EXCEPTION 'expected overlap protection to reject a second active assignment' USING ERRCODE='P0001';
   EXCEPTION WHEN check_violation THEN
     NULL;
   END;
@@ -176,7 +176,7 @@ BEGIN
       v_tenant,v_factory,v_nonconsenting_assignment,v_nonconsenting_worker,'CLOCK_IN','BIOMETRIC',
       v_start+INTERVAL '5 minutes','ci-wfc-biometric-without-consent',v_hash,'{}'::jsonb,v_actor,gen_random_uuid()
     );
-    RAISE EXCEPTION 'expected unconsented biometric capture to be denied';
+    RAISE EXCEPTION 'expected unconsented biometric capture to be denied' USING ERRCODE='P0001';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -194,7 +194,7 @@ BEGIN
       updated_by_user_id=v_actor,decided_by_user_id=v_actor,decided_at=clock_timestamp(),
       decision_reason='Attempted self approval',row_version=2,updated_at=clock_timestamp()
     WHERE id=v_overtime AND tenant_id=v_tenant AND factory_id=v_factory;
-    RAISE EXCEPTION 'expected overtime maker-checker to reject self-approval';
+    RAISE EXCEPTION 'expected overtime maker-checker to reject self-approval' USING ERRCODE='P0001';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -209,7 +209,7 @@ BEGIN
   BEGIN
     UPDATE workforce_command_receipts SET response_snapshot='{}'::jsonb
     WHERE tenant_id=v_tenant AND factory_id=v_factory AND idempotency_key='ci-wfc-command-receipt';
-    RAISE EXCEPTION 'expected command receipt immutability';
+    RAISE EXCEPTION 'expected command receipt immutability' USING ERRCODE='P0001';
   EXCEPTION WHEN object_not_in_prerequisite_state THEN
     NULL;
   END;
@@ -217,7 +217,7 @@ BEGIN
   BEGIN
     UPDATE workforce_attendance_events SET capture_metadata='{"tampered":true}'::jsonb
     WHERE shift_assignment_id=v_assignment AND worker_id=v_worker AND event_type='CLOCK_IN';
-    RAISE EXCEPTION 'expected immutable attendance evidence';
+    RAISE EXCEPTION 'expected immutable attendance evidence' USING ERRCODE='P0001';
   EXCEPTION WHEN object_not_in_prerequisite_state THEN
     NULL;
   END;
