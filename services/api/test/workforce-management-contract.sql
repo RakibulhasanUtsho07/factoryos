@@ -52,14 +52,14 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF (SELECT count(*) FROM permissions WHERE code LIKE 'workforce.%') <> 16 THEN
+  IF (SELECT count(*) FROM permissions WHERE code LIKE 'workforce.%') <> 17 THEN
     RAISE EXCEPTION 'Workforce IAM permission catalogue must include the full permission set';
   END IF;
   IF EXISTS (
     SELECT 1 FROM roles r
     WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER')
       AND (SELECT count(*) FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
-           WHERE rp.role_id=r.id AND p.code LIKE 'workforce.%') <> 16
+           WHERE rp.role_id=r.id AND p.code LIKE 'workforce.%') <> 17
   ) THEN
     RAISE EXCEPTION 'Seeded admin/factory-manager roles must receive the full Workforce permission set';
   END IF;
