@@ -23,10 +23,12 @@ All routes below require a bearer token. Except `GET /api/workforce/self/records
 | `POST /api/workforce/workers/:workerId/skills` | `workforce.skills.manage` | Set skill level and certification dates; active certification cannot have inverted dates |
 | `POST /api/workforce/workers/:workerId/biometric-consent` | `workforce.workers.manage` | Record a consent grant or withdrawal with purpose and reason |
 | `GET /api/workforce/shifts`, `POST /api/workforce/shifts` | `workforce.shifts.read/manage` | Read/create shift templates |
+| `POST /api/workforce/shifts/:shiftId/update` | `workforce.shifts.manage` | Versioned schedule/threshold edits or status transition with optimistic version and reason |
 | `POST /api/workforce/staffing` | `workforce.staffing.manage` | Assign a worker to a shift/date; optionally bind work order, operation and required skill |
 | `POST /api/workforce/staffing/:assignmentId/transition` | `workforce.staffing.manage` | Confirm, cancel or complete a roster assignment with optimistic version and reason |
 | `GET /api/workforce/staffing/coverage?shift_date=YYYY-MM-DD` | `workforce.staffing.read` | Compare roster to attendance and suggest non-overlapping backfill with valid required skill |
 | `POST /api/workforce/attendance/events` | `workforce.attendance.capture` | Append clock-in, break-start/end, clock-out or absence event |
+| `POST /api/workforce/attendance/events/:eventId/correction` | `workforce.attendance.correct` | Append a versioned correction overlay to an original attendance event; requires a reason and idempotency key |
 | `GET /api/workforce/attendance?shift_date=YYYY-MM-DD` | `workforce.attendance.read` | Read ordered attendance and worked/late-minute summaries |
 | `POST /api/workforce/overtime` | `workforce.overtime.request` | Request observed overtime |
 | `GET /api/workforce/overtime?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD` | `workforce.overtime.read` | Read overtime queue and decision evidence |
@@ -50,7 +52,9 @@ All routes below require a bearer token. Except `GET /api/workforce/self/records
 - Biometric events are accepted only when an explicit consent grant was effective at the event's occurrence time and no withdrawal had already become effective. Consent evidence distinguishes effective time from later ingestion time; source attendance records are not rewritten.
 - Event source IDs and idempotency keys are unique within the factory scope. Reusing a key with different request data returns a conflict.
 - RLS is forced on Workforce records. Worker, tenant and factory identifiers are resolved/validated by backend context rather than trusted from request-body input. Audit evidence is appended by database triggers and retained against deletion.
-- The current route set exposes immutable attendance capture and read views; an HR approval workflow for attendance-correction overlays and a worker-facing UI/offline queue are not represented as delivered features by this backend task.
+- Attendance correction is append-only evidence layered over the original device/manual event. Newest correction version drives the effective attendance view; the correction guard revalidates event ordering and refuses changes that would invalidate recorded overtime requests or productivity intervals. Correction permission is separately granted from ordinary attendance read/capture.
+- Shift-template updates are versioned with an expected row version and reason. Existing shift assignments keep their resolved planned start/end snapshots, so changing a template does not silently rewrite a published roster.
+- A Bangla worker PWA, offline client queue, external biometric device connector, HR approval/review of correction requests, and notification/reminder scheduler are not included as shipped UI/integration capabilities in this backend task.
 
 ## Overtime policy
 
@@ -87,4 +91,4 @@ Use the `source_operation_event_id` returned by the production work-order operat
 
 ## Verification
 
-The PostgreSQL CI schema list includes migrations 102–106 in explicit order. The Workforce SQL contract asserts RLS, permissions, immutable/actor guards and the source-event/consent constraints. The lifecycle SQL contract covers ordered attendance, biometric-consent denial, roster overlap, overtime maker-checker and immutable source evidence; unit tests cover input validation, explicit timestamp offsets, productivity interval/quantity consistency and range-wide calculations.
+The PostgreSQL CI schema list includes migrations 102–107 in explicit order. The Workforce SQL contract asserts RLS, permissions, immutable/actor guards and the source-event/consent constraints. The lifecycle SQL contract covers ordered attendance, biometric-consent denial, roster overlap, correction version chaining with raw-event preservation, overtime maker-checker and immutable source evidence; the schema contract verifies the correction view/RLS/triggers and shift revision guard. Unit tests cover input validation, explicit timestamp offsets, productivity interval/quantity consistency and range-wide calculations.
