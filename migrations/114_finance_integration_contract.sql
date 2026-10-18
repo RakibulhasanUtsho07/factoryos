@@ -374,9 +374,11 @@ BEGIN
      RAISE EXCEPTION 'Reconciliation fact must exist in the same tenant and factory'
        USING ERRCODE='23503';
    END IF;
+   -- Generated columns are not populated until after BEFORE triggers execute.
+   -- Derive the decision from their immutable base inputs instead.
    computed_status := CASE
-     WHEN abs(NEW.quantity_delta)<=NEW.quantity_tolerance
-      AND abs(NEW.rate_delta)<=NEW.rate_tolerance THEN 'MATCHED'
+     WHEN abs(NEW.source_quantity-NEW.expected_quantity)<=NEW.quantity_tolerance
+      AND abs(NEW.source_rate-NEW.expected_rate)<=NEW.rate_tolerance THEN 'MATCHED'
      ELSE 'MISMATCH' END;
    IF NEW.match_status IS DISTINCT FROM computed_status
       OR NEW.review_status<>'OPEN'
@@ -391,13 +393,13 @@ BEGIN
    RAISE EXCEPTION 'Finance reconciliation evidence cannot be deleted' USING ERRCODE='55000';
  END IF;
  IF ROW(NEW.tenant_id,NEW.factory_id,NEW.fact_id,NEW.expected_source_type,NEW.expected_source_ref,
-        NEW.source_quantity,NEW.expected_quantity,NEW.quantity_tolerance,NEW.quantity_delta,
-        NEW.source_rate,NEW.expected_rate,NEW.rate_tolerance,NEW.rate_delta,NEW.uom_code,
+        NEW.source_quantity,NEW.expected_quantity,NEW.quantity_tolerance,
+        NEW.source_rate,NEW.expected_rate,NEW.rate_tolerance,NEW.uom_code,
         NEW.match_status,NEW.created_at)
     IS DISTINCT FROM
     ROW(OLD.tenant_id,OLD.factory_id,OLD.fact_id,OLD.expected_source_type,OLD.expected_source_ref,
-        OLD.source_quantity,OLD.expected_quantity,OLD.quantity_tolerance,OLD.quantity_delta,
-        OLD.source_rate,OLD.expected_rate,OLD.rate_tolerance,OLD.rate_delta,OLD.uom_code,
+        OLD.source_quantity,OLD.expected_quantity,OLD.quantity_tolerance,
+        OLD.source_rate,OLD.expected_rate,OLD.rate_tolerance,OLD.uom_code,
         OLD.match_status,OLD.created_at) THEN
    RAISE EXCEPTION 'Finance reconciliation evidence is immutable' USING ERRCODE='55000';
  END IF;

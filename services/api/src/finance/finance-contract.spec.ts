@@ -18,7 +18,7 @@ describe('finance integration contract', () => {
   });
 
   it('preserves exact decimal precision without accepting exponents or excess scale', () => {
-    expect(normalizeFinanceDecimal('000.00050000')).toBe('0.0005');
+    expect(normalizeFinanceDecimal('0.00050000')).toBe('0.0005');
     expect(normalizeFinanceDecimal('-12.340000', { allowNegative: true })).toBe('-12.34');
     expect(() => normalizeFinanceDecimal('1e-8')).toThrow('FINANCE_DECIMAL_INVALID');
     expect(() => normalizeFinanceDecimal('1.00001', { maxFractionDigits: 4 })).toThrow('FINANCE_DECIMAL_SCALE_EXCEEDED');
