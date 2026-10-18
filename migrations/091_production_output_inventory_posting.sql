@@ -35,7 +35,8 @@ CREATE TABLE production_output_postings (
     FOREIGN KEY (work_order_operation_id, work_order_id, tenant_id, factory_id)
     REFERENCES work_order_operations(id, work_order_id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_production_output_posting_report
-    FOREIGN KEY (production_report_id) REFERENCES order_production_reports(id) ON DELETE RESTRICT,
+    FOREIGN KEY (production_report_id, tenant_id, factory_id)
+    REFERENCES order_production_reports(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_production_output_posting_item
     FOREIGN KEY (finished_item_id, tenant_id, factory_id)
     REFERENCES inventory_items(id, tenant_id, factory_id) ON DELETE RESTRICT,
@@ -93,7 +94,11 @@ BEGIN
     AND r.factory_id = NEW.factory_id
   FOR SHARE;
 
-  IF NOT FOUND OR v_report.work_order_id IS NULL
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'production output report was not found in this tenant/factory'
+      USING ERRCODE = '23503';
+  END IF;
+  IF v_report.work_order_id IS NULL
      OR v_report.work_order_id <> NEW.work_order_id
      OR v_report.work_order_operation_id <> NEW.work_order_operation_id
      OR v_report.good_quantity <> NEW.good_quantity
@@ -110,7 +115,11 @@ BEGIN
     AND wo.factory_id = NEW.factory_id
   FOR SHARE;
 
-  IF NOT FOUND OR v_work_order.finished_item_id <> NEW.finished_item_id THEN
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'production work order was not found in this tenant/factory'
+      USING ERRCODE = '23503';
+  END IF;
+  IF v_work_order.finished_item_id <> NEW.finished_item_id THEN
     RAISE EXCEPTION 'production output must post the work order finished-good item'
       USING ERRCODE = '23514';
   END IF;
@@ -159,8 +168,11 @@ BEGIN
       AND m.factory_id = NEW.factory_id
     FOR SHARE;
 
-    IF NOT FOUND
-       OR v_movement.item_id <> NEW.finished_item_id
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'finished-good inventory movement was not found in this tenant/factory'
+        USING ERRCODE = '23503';
+    END IF;
+    IF v_movement.item_id <> NEW.finished_item_id
        OR v_movement.movement_type <> 'RECEIPT'
        OR v_movement.quantity <> NEW.good_quantity
        OR v_movement.quantity_delta <> NEW.good_quantity
@@ -177,7 +189,7 @@ END;
 $$;
 
 CREATE TRIGGER trg_production_output_posting_guard
-BEFORE INSERT OR UPDATE OR DELETE ON production_output_postings
+BEFORE INSERT ON production_output_postings
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_production_output_posting();
 
 CREATE OR REPLACE FUNCTION factoryos_require_production_output_posting()
@@ -198,8 +210,11 @@ BEGIN
     AND p.tenant_id = NEW.tenant_id
     AND p.factory_id = NEW.factory_id;
 
-  IF NOT FOUND
-     OR v_posting.work_order_id <> NEW.work_order_id
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'every work-order output report requires a matching yield/scrap and inventory posting before commit'
+      USING ERRCODE = '23514';
+  END IF;
+  IF v_posting.work_order_id <> NEW.work_order_id
      OR v_posting.work_order_operation_id <> NEW.work_order_operation_id
      OR v_posting.good_quantity <> NEW.good_quantity
      OR v_posting.scrap_quantity <> NEW.scrap_quantity THEN
