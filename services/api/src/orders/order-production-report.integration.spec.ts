@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { AuditService } from '../audit/audit.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
 import { DatabaseService } from '../database/database.service';
+import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { CreateOrderProductionReportDto } from './dto/create-order-production-report.dto';
 import { OrderProductionReportService } from './order-production-report.service';
 
@@ -17,12 +18,30 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
   let service!: OrderProductionReportService;
   let tenantId!: string;
   let factoryId!: string;
-  const fixtures: Array<{ orderId: string; lineId: string }> = [];
+  const fixtures: Array<{ orderId: string; lineId: string; itemId: string }> = [];
 
   const createFixture = async (
     status = 'IN_PROGRESS',
     targetQuantity = '10.0000',
-  ): Promise<{ orderId: string; lineId: string }> => {
+  ): Promise<{ orderId: string; lineId: string; itemId: string }> => {
+    const itemId = randomUUID();
+    await pool.query(
+      `
+      INSERT INTO inventory_items (
+        id, tenant_id, factory_id, sku, name, unit, status, created_by_user_id
+      )
+      VALUES ($1, $2, $3, $4, 'Production report finished-good fixture', 'PCS', 'ACTIVE', $5)
+      `,
+      [itemId, tenantId, factoryId, `PRODUCTION-REPORT-ITEM-${randomUUID()}`, TEST_USER_ID],
+    );
+    await pool.query(
+      `
+      INSERT INTO inventory_stock_balances (tenant_id, factory_id, item_id, quantity_on_hand)
+      VALUES ($1, $2, $3, 0)
+      `,
+      [tenantId, factoryId, itemId],
+    );
+
     const orderResult = await pool.query<{ id: string }>(
       `
       INSERT INTO orders (
@@ -40,17 +59,17 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
       `
       INSERT INTO order_lines (
         tenant_id, factory_id, order_id, line_number,
-        product_code, product_name, quantity, unit
+        product_code, product_name, quantity, unit, inventory_item_id
       )
-      VALUES ($1, $2, $3, 1, 'FINISHED-GOOD', 'Finished good fixture', $4::numeric, 'PCS')
+      VALUES ($1, $2, $3, 1, 'FINISHED-GOOD', 'Finished good fixture', $4::numeric, 'PCS', $5)
       RETURNING id::text AS id
       `,
-      [tenantId, factoryId, orderId, targetQuantity],
+      [tenantId, factoryId, orderId, targetQuantity, itemId],
     );
     const lineId = lineResult.rows[0]?.id;
     if (!lineId) throw new Error('Production-report line fixture was not created');
 
-    const fixture = { orderId, lineId };
+    const fixture = { orderId, lineId, itemId };
     fixtures.push(fixture);
     return fixture;
   };
@@ -98,20 +117,50 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
 
     database = createIntegrationDatabase(appPool) as never;
     const auditService = { record: async () => 'audit-event-id' } as unknown as AuditService;
-    service = new OrderProductionReportService(database, auditService);
+    const inventoryService = new InventoryReservationService(database, auditService);
+    service = new OrderProductionReportService(database, auditService, inventoryService);
   });
 
   afterAll(async () => {
     if (pool && fixtures.length) {
       const orderIds = fixtures.map((fixture) => fixture.orderId);
-      await pool.query('ALTER TABLE order_production_reports DISABLE TRIGGER USER');
+      const itemIds = fixtures.map((fixture) => fixture.itemId);
+      // The output ledger and stock movement are immutable during normal operation.
+      // Only this test's random fixture rows are removed with user triggers disabled.
+      const triggerTables = [
+        'order_production_reports',
+        'production_output_postings',
+        'inventory_movements',
+        'inventory_stock_balances',
+        'inventory_location_balances',
+      ];
+      for (const table of triggerTables) {
+        await pool.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
+      }
       try {
         await pool.query(
-          'DELETE FROM order_production_reports WHERE tenant_id = $1 AND factory_id = $2 AND order_id = ANY($3::uuid[])',
+          `DELETE FROM outbox_events
+           WHERE tenant_id = $1 AND factory_id = $2
+             AND (aggregate_id = ANY($3::uuid[]) OR aggregate_id = ANY($4::uuid[]))`,
+          [tenantId, factoryId, orderIds, itemIds],
+        );
+        await pool.query(
+          `DELETE FROM production_output_postings
+           WHERE tenant_id = $1 AND factory_id = $2
+             AND production_report_id IN (
+               SELECT id FROM order_production_reports
+               WHERE tenant_id = $1 AND factory_id = $2 AND order_id = ANY($3::uuid[])
+             )`,
           [tenantId, factoryId, orderIds],
         );
         await pool.query(
-          'DELETE FROM outbox_events WHERE tenant_id = $1 AND factory_id = $2 AND aggregate_id = ANY($3::uuid[])',
+          `DELETE FROM inventory_movements
+           WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])
+             AND reference_type = 'PRODUCTION_OUTPUT'`,
+          [tenantId, factoryId, itemIds],
+        );
+        await pool.query(
+          'DELETE FROM order_production_reports WHERE tenant_id = $1 AND factory_id = $2 AND order_id = ANY($3::uuid[])',
           [tenantId, factoryId, orderIds],
         );
         await pool.query(
@@ -122,8 +171,22 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
           'DELETE FROM orders WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])',
           [tenantId, factoryId, orderIds],
         );
+        await pool.query(
+          'DELETE FROM inventory_location_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, itemIds],
+        );
+        await pool.query(
+          'DELETE FROM inventory_stock_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, itemIds],
+        );
+        await pool.query(
+          'DELETE FROM inventory_items WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])',
+          [tenantId, factoryId, itemIds],
+        );
       } finally {
-        await pool.query('ALTER TABLE order_production_reports ENABLE TRIGGER USER');
+        for (const table of triggerTables.reverse()) {
+          await pool.query(`ALTER TABLE ${table} ENABLE TRIGGER USER`);
+        }
       }
     }
     await appPool?.end();
