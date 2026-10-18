@@ -292,7 +292,7 @@ export class FinanceService {
         tenantId, userId,
         requestId: this.uuidOrNull(ctx.requestId),
         traceId: this.uuidOrNull(ctx.traceId),
-        advisoryLockKey: 'finance-fact-ingest:' + tenantId + ':' + factoryId + ':' + connectorId + ':' + idempotencyKey,
+        advisoryLockKey: 'finance-fact-ingest:' + tenantId + ':' + factoryId + ':' + connectorId,
       },
       async (client) => {
         const connectorResult = await client.query<ConnectorRow>(
@@ -333,11 +333,27 @@ export class FinanceService {
           throw new ConflictException('Financial facts may only be ingested through an approved active connector');
         }
 
+        const batchRef = dto.external_batch_ref.trim();
+        const priorBatch = await client.query<{ id: string }>(
+          'SELECT id::text FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_batch_ref=$4 FOR UPDATE',
+          [tenantId, factoryId, connectorId, batchRef],
+        );
+        if (priorBatch.rows[0]) {
+          throw new ConflictException('This external finance batch was already ingested with a different idempotency key');
+        }
+        const existingFacts = await client.query<{ external_fact_id: string }>(
+          'SELECT external_fact_id FROM financial_facts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_fact_id = ANY($4::varchar[])',
+          [tenantId, factoryId, connectorId, externalIds],
+        );
+        if (existingFacts.rows.length > 0) {
+          throw new ConflictException('External finance fact IDs were already ingested: ' +
+            existingFacts.rows.map((row) => row.external_fact_id).join(', '));
+        }
+
         const mismatches = normalizedFacts.filter((fact) =>
           fact.reconciliation?.match_status === 'MISMATCH',
         ).length;
         const runId = randomUUID();
-        const batchRef = dto.external_batch_ref.trim();
         const runResult = await client.query<{
           id: string; status: string; received_count: number; accepted_count: number; mismatch_count: number;
           completed_at: string;
@@ -459,9 +475,9 @@ export class FinanceService {
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
         ' AND f.fact_type IN (\'FORECAST_REVENUE\',\'FORECAST_COST\',\'FORECAST_CONTRIBUTION_COST\') ' +
-        ' AND f.effective_at <= $4 AND ($5::uuid IS NULL OR f.order_id=$5) ' +
+        ' AND f.effective_at >= $3 AND f.effective_at <= $4 AND ($5::uuid IS NULL OR f.order_id=$5) ' +
         ' AND ($6::uuid IS NULL OR f.product_id=$6) AND ($7::text IS NULL OR f.customer_ref=$7) ' +
-        ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
+        ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.created_at DESC' +
         '), selected AS (SELECT * FROM actual_events UNION ALL SELECT * FROM latest_forecasts)' +
         ' SELECT currency,customer_ref,product_id::text,product_ref,order_id::text,order_ref,cost_center_ref,' +
         ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)::text AS actual_revenue,' +
@@ -475,6 +491,9 @@ export class FinanceService {
         ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0))::text AS forecast_gross_margin,' +
         ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_CONTRIBUTION_COST\'),0))::text AS forecast_contribution_margin,' +
         ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0))::text AS cost_variance,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0))::text AS revenue_variance,' +
+        ' ((COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0))-' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0)))::text AS gross_margin_variance,' +
         ' CASE WHEN COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)=0 THEN NULL ' +
         ' ELSE ROUND((COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0))/' +
         ' NULLIF(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)*100,4)::text END AS actual_gross_margin_percent ' +
@@ -548,9 +567,16 @@ export class FinanceService {
         [tenantId, factoryId, asOf, horizonEnd],
       );
       const unresolved = await client.query<{ unresolved_count: string }>(
-        'SELECT count(*)::text AS unresolved_count FROM finance_fact_reconciliations ' +
-        'WHERE tenant_id=$1 AND factory_id=$2 AND match_status=\'MISMATCH\' AND review_status=\'OPEN\'',
-        [tenantId, factoryId],
+        'WITH latest_positions AS (' +
+        ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.id,f.tenant_id,f.factory_id ' +
+        ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 AND f.effective_at <= $3 ' +
+        ' AND f.fact_type IN (\'AR_OPEN\',\'AP_OPEN\',\'BANK_BALANCE\',\'INVENTORY_VALUE\',\'OPEN_PO_COMMITMENT\',' +
+        '\'LC_EXPOSURE\',\'SHIPMENT_MILESTONE\',\'TAX_LIABILITY\',\'GL_BALANCE\') ' +
+        ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
+        ') SELECT count(*)::text AS unresolved_count FROM finance_fact_reconciliations r ' +
+        'JOIN latest_positions f ON f.id=r.fact_id AND f.tenant_id=r.tenant_id AND f.factory_id=r.factory_id ' +
+        'WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.match_status=\'MISMATCH\' AND r.review_status=\'OPEN\'',
+        [tenantId, factoryId, asOf],
       );
       const mismatchCount = Number(unresolved.rows[0]?.unresolved_count ?? 0);
       return {
@@ -672,6 +698,10 @@ export class FinanceService {
       const expectedRate = this.decimal(input.reconciliation.expected_rate, false, 'expected_rate');
       const quantityTolerance = this.decimal(input.reconciliation.quantity_tolerance ?? '0', false, 'quantity_tolerance');
       const rateTolerance = this.decimal(input.reconciliation.rate_tolerance ?? '0', false, 'rate_tolerance');
+      const reconciliationUom = input.reconciliation.uom_code.trim().toUpperCase();
+      if (sourceUomCode !== reconciliationUom) {
+        throw new BadRequestException('Reconciliation UOM must match source UOM; convert quantities before comparison');
+      }
       reconciliation = {
         expected_source_type: input.reconciliation.expected_source_type.trim(),
         expected_source_ref: input.reconciliation.expected_source_ref.trim(),
@@ -679,7 +709,7 @@ export class FinanceService {
         quantity_tolerance: quantityTolerance,
         expected_rate: expectedRate,
         rate_tolerance: rateTolerance,
-        uom_code: input.reconciliation.uom_code.trim().toUpperCase(),
+        uom_code: reconciliationUom,
         match_status: reconciliationMatches(sourceQuantity, expectedQuantity, quantityTolerance, sourceRate, expectedRate, rateTolerance)
           ? 'MATCHED'
           : 'MISMATCH',

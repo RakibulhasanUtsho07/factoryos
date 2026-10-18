@@ -115,6 +115,10 @@ CREATE TABLE finance_connector_runs (
    REFERENCES finance_connectors(id,tenant_id,factory_id) ON DELETE RESTRICT,
  CONSTRAINT fk_finance_run_actor FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE RESTRICT,
  CONSTRAINT chk_finance_run_status CHECK(status IN ('COMPLETED','COMPLETED_WITH_MISMATCHES')),
+ CONSTRAINT chk_finance_run_status_counts CHECK(
+   (status='COMPLETED' AND mismatch_count=0)
+   OR (status='COMPLETED_WITH_MISMATCHES' AND mismatch_count>0)
+ ),
  CONSTRAINT chk_finance_run_counts CHECK(
    received_count BETWEEN 1 AND 500 AND accepted_count=received_count
    AND mismatch_count BETWEEN 0 AND accepted_count
