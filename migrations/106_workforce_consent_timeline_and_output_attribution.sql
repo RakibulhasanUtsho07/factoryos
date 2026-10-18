@@ -109,6 +109,8 @@ BEGIN
     END IF;
   ELSIF v_projection_active THEN
     RAISE EXCEPTION 'Biometric consent cannot be activated without immutable consent evidence' USING ERRCODE='23514';
+  ELSIF NOT NEW.consent_granted THEN
+    RAISE EXCEPTION 'Consent cannot be withdrawn before an explicit grant event' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END;
