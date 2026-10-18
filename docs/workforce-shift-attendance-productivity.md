@@ -47,7 +47,7 @@ All routes below require a bearer token. Except `GET /api/workforce/self/records
 
 ## Attendance and privacy
 
-- Attendance is append-only evidence. Events carry occurrence time, capture source, an optional device/source event ID, JSON metadata, actor, correlation ID and an idempotency key.
+- Attendance is append-only evidence. Events carry occurrence time, capture source, optional device/source event ID, correlation ID and an idempotency key. `capture_metadata` accepts only a bounded flat set of non-sensitive scalar diagnostics (`device_id`, `reader_id`, `terminal_id`, `site_code`, `source_sequence`, `sync_batch_id`, `capture_method`, `reader_timestamp`, `firmware_version`, `signal_quality`, `device_event_type`, `client_version`, `device_timezone`, `offline_synced`, `latency_ms`, `batch_id`, `protocol_version`, `reader_status`, `status_code`, `error_code`, `integration_id`); nested objects, unknown fields, images, biometric templates and arbitrary blobs are rejected by both API validation and PostgreSQL.
 - Timestamps must use an explicit UTC designator or offset (for example `2026-10-18T08:05:00+06:00`). Timestamp order, paired breaks and the final clock-out are validated against the whole occurred-at timeline, allowing an offline device to upload earlier events later if the effective timeline remains valid.
 - Biometric events are accepted only when an explicit consent grant was effective at the event's occurrence time and no withdrawal had already become effective. Consent evidence distinguishes effective time from later ingestion time; source attendance records are not rewritten.
 - Event source IDs and idempotency keys are unique within the factory scope. Reusing a key with different request data returns a conflict.
