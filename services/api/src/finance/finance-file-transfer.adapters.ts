@@ -63,6 +63,9 @@ export interface FinanceSftpTransport {
 }
 
 export function matchesFinanceSftpFilePattern(configuration: FinanceSftpConfiguration, fileName: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(fileName) || fileName === '.' || fileName === '..') {
+    return false;
+  }
   if (!configuration.file_pattern) return true;
   const escaped = configuration.file_pattern
     .split('*')

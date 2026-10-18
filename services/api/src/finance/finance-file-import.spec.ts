@@ -55,6 +55,21 @@ describe('finance file import contract', () => {
     })))).toThrow('Finance JSON file object may contain only the facts array');
   });
 
+  it('returns precise row, field and constraint codes for DTO validation errors', () => {
+    let thrown: unknown;
+    try {
+      parseFinanceFileImport(fileDto('JSON', JSON.stringify([{ ...fact, amount: 42 }])));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).toMatchObject({
+      validationIssues: expect.arrayContaining([
+        expect.objectContaining({ row: 1, field: 'amount', code: 'ISSTRING' }),
+      ]),
+    });
+  });
+
   it('rejects incomplete facts, duplicate headers, unknown columns and malformed CSV quoting', () => {
     const missingFact = { ...fact } as Record<string, unknown>;
     delete missingFact.amount;

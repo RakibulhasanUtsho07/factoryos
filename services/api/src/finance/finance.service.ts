@@ -41,7 +41,7 @@ import { FinanceFileImportDto, CreateFinanceConnectorDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
 import { FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, type ParsedFinanceFileImport } from './finance-file-import';
-import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpTransport } from './finance-file-transfer.adapters';
+import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpDownload, type FinanceSftpTransport } from './finance-file-transfer.adapters';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -444,7 +444,7 @@ export class FinanceService {
       throw new BadRequestException(error instanceof Error ? error.message : 'Invalid SFTP import configuration');
     }
 
-    let download;
+    let download: FinanceSftpDownload | null;
     try {
       download = await this.sftpTransport.downloadNext({
         tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
@@ -585,11 +585,12 @@ export class FinanceService {
           throw new ConflictException('Idempotency-Key was already used for a different file export request');
         }
         const receipt = prior.rows[0];
+        const { content: storedContent, ...safeReceipt } = receipt;
         return {
-          ...receipt,
+          ...safeReceipt,
           replayed: true,
           ...(connector.integration_mode === 'FILE_EXPORT'
-            ? { content_base64: receipt.content?.toString('base64') ?? '' }
+            ? { content_base64: storedContent?.toString('base64') ?? '' }
             : {}),
         };
       }
@@ -738,8 +739,10 @@ export class FinanceService {
         connector_id: connectorId, format: dto.format, file_name: fileName, payload_sha256: payloadSha256,
         record_count: facts.length, remote_delivery: connector.integration_mode === 'SFTP_EXPORT',
       });
+      const { content: storedContent, ...safeReceipt } = inserted.rows[0];
+      void storedContent;
       return {
-        ...inserted.rows[0],
+        ...safeReceipt,
         replayed: false,
         ...(connector.integration_mode === 'FILE_EXPORT' ? { content_base64: content.toString('base64') } : {}),
       };
@@ -772,11 +775,12 @@ export class FinanceService {
       );
       const receipt = result.rows[0];
       if (!receipt) throw new NotFoundException('Finance file export receipt was not found');
+      const { content: storedContent, ...safeReceipt } = receipt;
       return {
-        ...receipt,
+        ...safeReceipt,
         receipt_type: 'FINANCE_FILE_EXPORT',
         immutable: true,
-        ...(receipt.content ? { content_base64: receipt.content.toString('base64') } : {}),
+        ...(storedContent ? { content_base64: storedContent.toString('base64') } : {}),
       };
     });
   }
