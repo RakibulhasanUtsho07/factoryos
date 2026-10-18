@@ -253,7 +253,7 @@ BEGIN
   END;
 END $$;
 
-DO $
+DO $$
 BEGIN
   BEGIN
     INSERT INTO financial_facts(
@@ -271,7 +271,7 @@ BEGIN
     RAISE EXCEPTION 'Financial fact source quantity/rate was committed without reconciliation';
   EXCEPTION WHEN check_violation THEN NULL;
   END;
-END $;
+END $$;
 SET CONSTRAINTS trg_financial_facts_reconciliation_required DEFERRED;
 
 SELECT set_config('app.user_id',(SELECT id::text FROM users WHERE email='manager@factoryos.local'),true);
