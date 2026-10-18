@@ -1098,11 +1098,11 @@ export class WorkforceService {
     return value;
   }
   private timestamp(value:string,field:string) {
-    if(typeof value!=='string' || !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(value)) {
-      throw new BadRequestException(`${field} must be an ISO-8601 timestamp with an explicit UTC offset`);
+    if(typeof value!=='string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+      throw new BadRequestException(field + ' must be an ISO-8601 timestamp with an explicit UTC offset');
     }
     const d=new Date(value);
-    if(Number.isNaN(d.getTime())) throw new BadRequestException(`${field} must be a valid ISO-8601 timestamp`);
+    if(Number.isNaN(d.getTime())) throw new BadRequestException(field + ' must be a valid ISO-8601 timestamp');
     return d.toISOString();
   }
   private time(value:string,field:string) {
