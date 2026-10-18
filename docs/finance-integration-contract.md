@@ -27,7 +27,7 @@ Connector and financial-fact read APIs intentionally omit secret material. Crede
 
 ## Connector domains and fact mapping
 
-A connector is scoped to one tenant and factory and has a stable code, source-system label, domain, declared mode and optional endpoint/secret reference. Configuration and connector code are immutable after creation; to change the integration contract, register a new code. A creator cannot approve or reject their own connector. Pause is the reversible operational safety switch.
+A connector is scoped to one tenant and factory and has a stable code, source-system label, domain, declared mode and optional endpoint/secret reference. Configuration, connector code and the system-of-record flag are immutable after creation; to change the integration contract, register a new code. At most one pending or active connector per standard domain (GL/AP/AR/bank/tax) may be marked as reporting authority in a tenant/factory, preventing two configured accounting sources from being silently aggregated. A creator cannot approve or reject their own connector. Pause is the reversible operational safety switch.
 
 | Domain | Allowed fact types |
 |---|---|
@@ -48,11 +48,11 @@ The financial_facts ledger is append-only. Corrections must arrive as a new exte
 
 Amounts and quantity/rate evidence remain decimal strings through API validation and use PostgreSQL numeric, not binary floating point. Currency codes use uppercase three-letter codes. Amount signs are allowed for GL/bank balances and for actual/forecast revenue/cost adjustment events; open AR/AP, inventory, purchase commitment, LC, shipment and tax-liability values must be non-negative.
 
-For period margin inputs, effective_at is the accounting/forecast period date. For balance-position inputs, it is the effective date of the position snapshot. Forecast snapshots are selected by connector + fact type + source fact key + currency and the latest ingested version; balance positions are selected as of the requested date using the latest effective snapshot, rather than summing all prior daily balances. Integrators should use a stable source_fact_key for each distinct line/position and include period identity in the key when multiple forecast periods are present.
+For period margin inputs, effective_at is the accounting/forecast period date. For balance-position inputs, it is the effective date of the position snapshot. Margin and working-capital calculations include only connectors marked as the standard domain’s reporting authority. Forecast snapshots are selected by connector + fact type + source fact key + currency and the latest ingested version; balance positions are selected as of the requested date using the latest effective snapshot, rather than summing all prior daily balances. Integrators should use a stable source_fact_key for each distinct line/position and include period identity in the key when multiple forecast periods are present.
 
 ## Operational quantity/rate reconciliation (FR-FIN-08)
 
-A fact can include source quantity, source rate and UOM as a complete evidence tuple. A reconciliation additionally names the expected internal/source record and quantity/rate values with explicit non-negative tolerances. Comparison is exact decimal arithmetic. The UOM must match exactly after normalization; convert quantities before submitting if source and expected UOMs differ.
+A fact can include source quantity, source rate and UOM as a complete evidence tuple. Once that tuple is supplied, a reconciliation is mandatory in the same transaction; a deferred database constraint prevents quantity/rate facts from committing without reconciliation evidence. A reconciliation additionally names the expected internal/source record and quantity/rate values with explicit non-negative tolerances. Comparison is exact decimal arithmetic. The UOM must match exactly after normalization; convert quantities before submitting if source and expected UOMs differ.
 
 MATCHED versus MISMATCH is computed from source-vs-expected quantity and rate deltas in the service and re-derived by a database trigger. Reconciliation values must match the immutable financial fact's own source evidence. An open mismatch remains visible and sets the affected margin or working-capital response reporting_ready=false. Only a different reviewer from the fact ingester may transition an open mismatch to RESOLVED or WAIVED, and an explanatory reason plus reviewer/time are retained. Waiving does not erase the mismatch evidence.
 

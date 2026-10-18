@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
@@ -47,6 +48,10 @@ export class CreateFinanceConnectorDto {
   @IsString()
   @IsIn(FINANCE_CONNECTOR_MODES)
   integration_mode!: (typeof FINANCE_CONNECTOR_MODES)[number];
+
+  @IsOptional()
+  @IsBoolean()
+  is_system_of_record?: boolean;
 
   @IsOptional()
   @IsString()

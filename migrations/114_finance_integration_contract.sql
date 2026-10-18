@@ -70,6 +70,7 @@ CREATE TABLE finance_connectors (
  source_system varchar(120) NOT NULL,
  domain varchar(30) NOT NULL,
  integration_mode varchar(24) NOT NULL,
+ is_system_of_record boolean NOT NULL DEFAULT true,
  endpoint_url text,
  secret_reference text,
  configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -114,6 +115,9 @@ CREATE TABLE finance_connectors (
 );
 CREATE INDEX idx_finance_connectors_scope_status
  ON finance_connectors(tenant_id,factory_id,status,domain,created_at DESC);
+CREATE UNIQUE INDEX uq_finance_domain_reporting_source
+ ON finance_connectors(tenant_id,factory_id,domain)
+ WHERE is_system_of_record AND domain<>'CUSTOM' AND status IN ('PENDING_APPROVAL','ACTIVE');
 
 CREATE TABLE finance_connector_runs (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -153,6 +157,8 @@ CREATE TABLE finance_connector_runs (
 );
 CREATE INDEX idx_finance_runs_scope_time
  ON finance_connector_runs(tenant_id,factory_id,connector_id,completed_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_financial_scope ON orders(id,tenant_id,factory_id);
 
 CREATE TABLE financial_facts (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -317,11 +323,11 @@ BEGIN
    RETURN NEW;
  END IF;
  IF ROW(NEW.tenant_id,NEW.factory_id,NEW.connector_code,NEW.display_name,NEW.source_system,
-        NEW.domain,NEW.integration_mode,NEW.endpoint_url,NEW.secret_reference,NEW.configuration,
+        NEW.domain,NEW.integration_mode,NEW.is_system_of_record,NEW.endpoint_url,NEW.secret_reference,NEW.configuration,
         NEW.idempotency_key,NEW.request_hash,NEW.created_by_user_id,NEW.created_at)
     IS DISTINCT FROM
     ROW(OLD.tenant_id,OLD.factory_id,OLD.connector_code,OLD.display_name,OLD.source_system,
-        OLD.domain,OLD.integration_mode,OLD.endpoint_url,OLD.secret_reference,OLD.configuration,
+        OLD.domain,OLD.integration_mode,OLD.is_system_of_record,OLD.endpoint_url,OLD.secret_reference,OLD.configuration,
         OLD.idempotency_key,OLD.request_hash,OLD.created_by_user_id,OLD.created_at) THEN
    RAISE EXCEPTION 'Finance connector configuration is immutable; create a new connector code'
      USING ERRCODE='55000';
@@ -484,6 +490,23 @@ END $$;
 CREATE TRIGGER trg_finance_fact_reconciliations_guard
  BEFORE INSERT OR UPDATE OR DELETE ON finance_fact_reconciliations
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_fact_reconciliation();
+
+CREATE OR REPLACE FUNCTION factoryos_require_finance_fact_reconciliation()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+ IF NEW.source_quantity IS NOT NULL AND NOT EXISTS (
+   SELECT 1 FROM finance_fact_reconciliations r
+   WHERE r.fact_id=NEW.id AND r.tenant_id=NEW.tenant_id AND r.factory_id=NEW.factory_id
+ ) THEN
+   RAISE EXCEPTION 'Source quantity/rate evidence requires a matching governed reconciliation record'
+     USING ERRCODE='23514';
+ END IF;
+ RETURN NULL;
+END $;
+CREATE CONSTRAINT TRIGGER trg_financial_facts_reconciliation_required
+ AFTER INSERT ON financial_facts
+ DEFERRABLE INITIALLY DEFERRED
+ FOR EACH ROW EXECUTE FUNCTION factoryos_require_finance_fact_reconciliation();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_append_only()
 RETURNS trigger LANGUAGE plpgsql AS $$
