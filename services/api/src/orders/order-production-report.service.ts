@@ -203,7 +203,8 @@ export class OrderProductionReportService {
         );
         const line = lineResult.rows[0];
         if (!line) throw new NotFoundException('Order line not found in this factory order');
-        if (!line.inventory_item_id) {
+        const finishedItemId = line.inventory_item_id;
+        if (!finishedItemId) {
           throw new ConflictException('Order line must be mapped to a finished-good inventory item before reporting production output');
         }
         if (this.toUnits(goodQuantity) > 0n && line.inventory_item_status !== 'ACTIVE') {
@@ -271,7 +272,7 @@ export class OrderProductionReportService {
             orderId: normalizedOrderId,
             orderNumber: order.order_number,
             orderLineId: lineId,
-            finishedItemId: line.inventory_item_id,
+            finishedItemId,
             productionReportId: report.id,
             goodQuantity,
             scrapQuantity,
@@ -284,7 +285,7 @@ export class OrderProductionReportService {
           orderId: normalizedOrderId,
           orderLineId: lineId,
           productionReportId: report.id,
-          finishedItemId: line.inventory_item_id,
+          finishedItemId,
           goodQuantity,
           scrapQuantity,
           yieldPercentage,
@@ -353,7 +354,7 @@ export class OrderProductionReportService {
                 finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
               },
               inventory: {
-                finished_item_id: line.inventory_item_id,
+                finished_item_id: finishedItemId,
                 accepted_good_quantity: goodQuantity,
                 scrap_quantity_not_stocked: scrapQuantity,
               },
