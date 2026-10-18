@@ -547,6 +547,103 @@ export class QualityService {
     return {disposition:disp.rows[0],replayed:result.replayed,next_inventory_action:result.nextInventoryAction};
   }
 
+
+  async createReworkOrder(c:QualityContext,defectId:string,dto:CreateQualityReworkOrderDto,rawKey:string|null){
+    this.validateScope(c);this.uuid(defectId,'defectId');
+    const key=this.key(rawKey),quantity=this.quantity(dto.input_quantity,'input_quantity');
+    const reason=this.text(dto.reason,'reason',2000),instructions=dto.instructions?.trim()||null;
+    const sourceUnit=dto.source_traceability_unit_id?this.uuidValue(dto.source_traceability_unit_id,'source_traceability_unit_id'):null;
+    const evidence=this.jsonObject(dto.evidence),correlation=this.correlation(c);
+    const hash=this.hash({defect_id:defectId,input_quantity:quantity,reason,instructions,source_traceability_unit_id:sourceUnit,evidence});
+    const result=await this.database.transaction(c,async client=>{
+      await this.lockKey(client,c,'rework-create',key);
+      const old=await client.query("SELECT id::text AS id,request_hash FROM quality_rework_orders WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+        [c.tenantId,c.factoryId,key]);
+      if(old.rows[0]){
+        if(String(old.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for a different rework order');
+        return{id:String(old.rows[0].id),replayed:true};
+      }
+      const defectResult=await client.query("SELECT d.id::text AS id,d.affected_quantity::text AS affected_quantity,d.status AS defect_status,qi.id::text AS inspection_id,qi.status AS inspection_status,n.id::text AS ncr_id FROM quality_defects d JOIN quality_inspections qi ON qi.id=d.inspection_id AND qi.tenant_id=d.tenant_id AND qi.factory_id=d.factory_id LEFT JOIN quality_ncrs n ON n.inspection_id=qi.id AND n.tenant_id=qi.tenant_id AND n.factory_id=qi.factory_id AND n.status<>'CLOSED' WHERE d.id=$1 AND d.tenant_id=$2 AND d.factory_id=$3 FOR UPDATE OF d,qi",
+        [defectId,c.tenantId,c.factoryId]);
+      const d=defectResult.rows[0];
+      if(!d)throw new NotFoundException('Quality defect was not found in this factory');
+      if(!['OPEN','REWORK'].includes(String(d.defect_status)))throw new ConflictException('Only open or rework defects can have a rework task');
+      if(!['FAILED','ON_HOLD','DISPOSITIONED'].includes(String(d.inspection_status)))throw new ConflictException('Rework requires a failed, held or dispositioned source inspection');
+      if(Number(quantity)>Number(d.affected_quantity))throw new ConflictException('Rework input cannot exceed defect affected quantity');
+      const links=await client.query("SELECT l.link_type,l.inventory_item_id::text AS inventory_item_id,l.traceability_unit_id::text AS traceability_unit_id,l.order_id::text AS order_id,l.order_line_id::text AS order_line_id,l.work_order_id::text AS work_order_id,l.work_order_operation_id::text AS work_order_operation_id,l.production_report_id::text AS production_report_id,l.goods_receipt_id::text AS goods_receipt_id,l.goods_receipt_line_id::text AS goods_receipt_line_id FROM quality_defect_links l WHERE l.defect_id=$1 AND l.tenant_id=$2 AND l.factory_id=$3 ORDER BY l.created_at,l.id",
+        [defectId,c.tenantId,c.factoryId]);
+      const rows=links.rows as Record<string,unknown>[];
+      const unitLink=sourceUnit?rows.find(x=>x.link_type==='TRACEABILITY_UNIT'&&String(x.traceability_unit_id)===sourceUnit):rows.find(x=>x.link_type==='TRACEABILITY_UNIT');
+      if(sourceUnit&&!unitLink)throw new BadRequestException('source_traceability_unit_id must already be linked to this defect');
+      const itemLink=rows.find(x=>x.link_type==='INVENTORY_ITEM');
+      let itemId=itemLink?.inventory_item_id?String(itemLink.inventory_item_id):null;
+      if(sourceUnit){
+        const unit=await client.query("SELECT inventory_item_id::text AS inventory_item_id,quantity::text AS quantity,status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE",
+          [sourceUnit,c.tenantId,c.factoryId]);
+        if(!unit.rows[0])throw new NotFoundException('Source lot/serial was not found in this factory');
+        if(Number(quantity)>Number(unit.rows[0].quantity))throw new ConflictException('Rework input cannot exceed source lot/serial quantity');
+        if(unit.rows[0].status!=='QUARANTINED')throw new ConflictException('Rework source lot/serial must remain quarantined until a disposition releases it');
+        if(unit.rows[0].inventory_item_id)itemId=String(unit.rows[0].inventory_item_id);
+      }
+      const orderRow=rows.find(x=>x.order_id);
+      const lineRow=rows.find(x=>x.order_line_id);
+      const workRow=rows.find(x=>x.work_order_id);
+      const operationRow=rows.find(x=>x.work_order_operation_id);
+      const receiptRow=rows.find(x=>x.goods_receipt_line_id);
+      const reportRow=rows.find(x=>x.production_report_id);
+      let orderId=orderRow?.order_id?String(orderRow.order_id):null;
+      let orderLineId=lineRow?.order_line_id?String(lineRow.order_line_id):null;
+      let reportId=reportRow?.production_report_id?String(reportRow.production_report_id):null;
+      if(reportId){
+        const report=await client.query("SELECT order_id::text AS order_id,order_line_id::text AS order_line_id,work_order_id::text AS work_order_id FROM order_production_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+          [reportId,c.tenantId,c.factoryId]);
+        if(report.rows[0]){orderId=orderId??String(report.rows[0].order_id);orderLineId=orderLineId??String(report.rows[0].order_line_id);}
+      }
+      const reworkNumber='RWK-'+randomUUID().replace(/-/g,'').slice(0,12).toUpperCase();
+      const inserted=await client.query("INSERT INTO quality_rework_orders (tenant_id,factory_id,rework_number,defect_id,inspection_id,ncr_id,source_inventory_item_id,source_traceability_unit_id,source_order_id,source_order_line_id,source_work_order_id,source_work_order_operation_id,source_production_report_id,source_goods_receipt_id,source_goods_receipt_line_id,input_quantity,recovered_quantity,scrap_quantity,reason,instructions,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6::uuid,$7::uuid,$8::uuid,$9::uuid,$10::uuid,$11::uuid,$12::uuid,$13::uuid,$14::uuid,$15::uuid,$16::numeric,0,0,$17,$18,$19,$20,$21,$21,$22::uuid) RETURNING id::text AS id,row_version::int AS row_version,status",
+        [c.tenantId,c.factoryId,reworkNumber,defectId,d.inspection_id,d.ncr_id??null,itemId,sourceUnit,orderId,orderLineId,workRow?.work_order_id??null,operationRow?.work_order_operation_id??null,reportId,receiptRow?.goods_receipt_id??null,receiptRow?.goods_receipt_line_id??null,quantity,reason,instructions,key,hash,c.userId,correlation]);
+      const id=String(inserted.rows[0]?.id??'');if(!id)throw new Error('QUALITY_REWORK_INSERT_FAILED');
+      const evt=await this.insertQualityReworkEvent(client,c,{reworkOrderId:id,defectId,version:1,from:null,to:'DRAFT',command:'CREATED',reason,evidence,
+        key:key+':created',hash:this.hash({rework_id:id,source_hash:hash,command:'CREATED'}),correlation});
+      await this.auditOutbox(client,c,{inspectionId:String(d.inspection_id),defectId,action:'QUALITY_REWORK_CREATED',correlation,
+        payload:{rework_order_id:id,rework_event_id:evt.eventId,rework_number:reworkNumber,input_quantity:quantity,reason},
+        aggregateType:'QUALITY_REWORK',aggregateId:id,outboxEvent:'QUALITY.REWORK_CHANGED'});
+      return{id,replayed:false};
+    });
+    return{...(await this.getReworkOrder(c,result.id)),replayed:result.replayed};
+  }
+
+  async listReworkOrders(c:QualityContext,query:ListQualityReworkOrdersQueryDto){
+    this.validateScope(c);const limit=query.limit??50;
+    if(!Number.isInteger(limit)||limit<1||limit>100)throw new BadRequestException('limit must be between 1 and 100');
+    const result=await this.database.query("SELECT r.id::text AS id,r.rework_number,r.defect_id::text AS defect_id,r.inspection_id::text AS inspection_id,r.ncr_id::text AS ncr_id,r.status,r.input_quantity::text AS input_quantity,r.recovered_quantity::text AS recovered_quantity,r.scrap_quantity::text AS scrap_quantity,r.source_traceability_unit_id::text AS source_traceability_unit_id,r.output_traceability_unit_id::text AS output_traceability_unit_id,r.follow_up_inspection_id::text AS follow_up_inspection_id,r.reason,r.row_version::int AS row_version,r.created_at::text AS created_at,d.defect_code,d.severity,n.ncr_number FROM quality_rework_orders r JOIN quality_defects d ON d.id=r.defect_id AND d.tenant_id=r.tenant_id AND d.factory_id=r.factory_id LEFT JOIN quality_ncrs n ON n.id=r.ncr_id AND n.tenant_id=r.tenant_id AND n.factory_id=r.factory_id WHERE r.tenant_id=$1 AND r.factory_id=$2 AND ($3::text IS NULL OR r.status=$3) ORDER BY CASE WHEN r.status IN ('IN_PROGRESS','REWORK_REQUIRED') THEN 0 ELSE 1 END,r.created_at DESC,r.id DESC LIMIT $4",
+      [c.tenantId,c.factoryId,query.status??null,limit],{tenantId:c.tenantId,userId:c.userId});
+    return result.rows;
+  }
+
+  async getReworkOrder(c:QualityContext,reworkOrderId:string){
+    this.validateScope(c);this.uuid(reworkOrderId,'reworkOrderId');
+    const r=await this.database.query("SELECT q.id::text AS id,q.rework_number,q.defect_id::text AS defect_id,q.inspection_id::text AS inspection_id,q.ncr_id::text AS ncr_id,q.source_inventory_item_id::text AS source_inventory_item_id,q.source_traceability_unit_id::text AS source_traceability_unit_id,q.source_order_id::text AS source_order_id,q.source_order_line_id::text AS source_order_line_id,q.source_work_order_id::text AS source_work_order_id,q.source_work_order_operation_id::text AS source_work_order_operation_id,q.source_production_report_id::text AS source_production_report_id,q.source_goods_receipt_id::text AS source_goods_receipt_id,q.source_goods_receipt_line_id::text AS source_goods_receipt_line_id,q.input_quantity::text AS input_quantity,q.recovered_quantity::text AS recovered_quantity,q.scrap_quantity::text AS scrap_quantity,q.output_traceability_unit_id::text AS output_traceability_unit_id,q.follow_up_inspection_id::text AS follow_up_inspection_id,q.status,q.reason,q.instructions,q.completion_reason,q.verification_reason,q.cancellation_reason,q.row_version::int AS row_version,q.created_by_user_id::text AS created_by_user_id,q.approved_by_user_id::text AS approved_by_user_id,q.started_by_user_id::text AS started_by_user_id,q.completed_by_user_id::text AS completed_by_user_id,q.verified_by_user_id::text AS verified_by_user_id,q.cancelled_by_user_id::text AS cancelled_by_user_id,q.approved_at::text AS approved_at,q.started_at::text AS started_at,q.completed_at::text AS completed_at,q.verified_at::text AS verified_at,q.cancelled_at::text AS cancelled_at,q.created_at::text AS created_at,q.updated_at::text AS updated_at,d.defect_code,d.severity,d.affected_quantity::text AS defect_affected_quantity,qi.status AS source_inspection_status,n.ncr_number FROM quality_rework_orders q JOIN quality_defects d ON d.id=q.defect_id AND d.tenant_id=q.tenant_id AND d.factory_id=q.factory_id JOIN quality_inspections qi ON qi.id=q.inspection_id AND qi.tenant_id=q.tenant_id AND qi.factory_id=q.factory_id LEFT JOIN quality_ncrs n ON n.id=q.ncr_id AND n.tenant_id=q.tenant_id AND n.factory_id=q.factory_id WHERE q.id=$1 AND q.tenant_id=$2 AND q.factory_id=$3",
+      [reworkOrderId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    if(!r.rows[0])throw new NotFoundException('Quality rework order was not found in this factory');
+    const events=await this.database.query("SELECT id::text AS id,version::int AS version,from_status,to_status,command,reason,evidence,payload,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_rework_events WHERE rework_order_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY version",
+      [reworkOrderId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    return{...r.rows[0],events:events.rows};
+  }
+
+  private async insertQualityReworkEvent(client:PoolClient,c:QualityContext,input:{
+    reworkOrderId:string;defectId:string;version:number;from:string|null;to:string;command:string;reason:string;
+    evidence:Record<string,unknown>;payload?:Record<string,unknown>;key:string;hash:string;correlation:string;
+  }){
+    const insert=await client.query("INSERT INTO quality_rework_events (tenant_id,factory_id,rework_order_id,version,from_status,to_status,command,reason,evidence,payload,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14::uuid) RETURNING id::text AS id",
+      [c.tenantId,c.factoryId,input.reworkOrderId,input.version,input.from,input.to,input.command,input.reason,JSON.stringify(input.evidence),JSON.stringify(input.payload??{}),input.key,input.hash,c.userId,input.correlation]);
+    const eventId=String(insert.rows[0]?.id??'');if(!eventId)throw new Error('QUALITY_REWORK_EVENT_INSERT_FAILED');
+    await this.auditOutbox(client,c,{inspectionId:undefined,defectId:input.defectId,action:'QUALITY_REWORK_EVENT',correlation:input.correlation,
+      payload:{rework_event_id:eventId,rework_order_id:input.reworkOrderId,version:input.version,from_status:input.from,to_status:input.to,command:input.command,reason,...(input.payload??{})},
+      aggregateType:'QUALITY_REWORK',aggregateId:input.reworkOrderId,outboxEvent:'QUALITY.REWORK_CHANGED'});
+    return{eventId};
+  }
+
   async listHolds(c:QualityContext,rawStatus?:string,rawLimit?:number){
     this.validateScope(c);const status=rawStatus?.trim().toUpperCase()||null;
     if(status&&!['ACTIVE','RELEASED','DISPOSED'].includes(status)) throw new BadRequestException('status must be ACTIVE, RELEASED or DISPOSED');
