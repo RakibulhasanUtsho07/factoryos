@@ -184,6 +184,9 @@ jobs:
             migrations/096_quality_capa_action_lifecycle.sql
             migrations/097_quality_defect_order_traceability.sql
             migrations/098_quality_rework_execution_and_verification.sql
+            migrations/099_maintenance_assets_and_pm_plans.sql
+            migrations/100_maintenance_work_orders_and_spares.sql
+            migrations/101_maintenance_lifecycle_audit_guards.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -231,6 +234,9 @@ jobs:
             -v ON_ERROR_STOP=1 -f services/api/test/traceability.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-management-contract.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \\
+            -v ON_ERROR_STOP=1 -f services/api/test/maintenance-management-contract.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql
