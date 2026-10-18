@@ -1,6 +1,6 @@
 import {
-  ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsNotEmpty,
-  IsNumber, IsObject, IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested,
+  ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty,
+  IsNumber, IsObject, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import {
@@ -120,7 +120,7 @@ export class ShouldCostEvidenceDto {
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0)
-  @Max(9999999999999999)
+  @Max(999999999999)
   fixed_amount?: number;
 
   @IsOptional()

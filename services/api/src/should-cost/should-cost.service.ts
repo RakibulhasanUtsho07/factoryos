@@ -251,7 +251,7 @@ export class ShouldCostService {
   if(ds.rows[0]?.future) throw new BadRequestException(line.category+' source_as_of cannot be in the future');
   const rateSnapshot=line.source_snapshot;
   if(!rateSnapshot||!Object.keys(rateSnapshot).length) throw new BadRequestException(line.category+' needs a structured rate/source snapshot');
-  let quantitySnapshot:PlainObject|null=null,inputQuantity=line.input_quantity,unitCode=line.unit_code?.trim()??null,unitRate=line.unit_rate;
+  let quantitySnapshot:PlainObject|null=null,inputQuantity:string|number|undefined=line.input_quantity,unitCode=line.unit_code?.trim()??null,unitRate:string|number|undefined=line.unit_rate;
   let sourceCurrency=line.source_currency?this.currency(line.source_currency):null;
   if(['MATERIAL','LABOUR','ENERGY'].includes(line.category)) {
    if(!line.quantity_source_type||!line.quantity_source_reference?.trim()) throw new BadRequestException(line.category+' requires a quantity source as well as rate evidence');
