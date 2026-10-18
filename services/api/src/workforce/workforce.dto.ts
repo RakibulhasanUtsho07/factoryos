@@ -1,9 +1,9 @@
 import {
-  IsArray,
   IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
@@ -113,10 +113,10 @@ export class CreateWorkforceProductivityDto {
   @IsUUID() work_order_operation_id!: string;
   @IsDateString() production_started_at!: string;
   @IsDateString() production_ended_at!: string;
-  @Type(() => Number) good_quantity!: number;
-  @Type(() => Number) @Min(0) scrap_quantity = 0;
-  @Type(() => Number) @Min(0.0001) standard_minutes_per_unit!: number;
-  @Type(() => Number) @Min(0.0001) actual_minutes!: number;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 4, allowNaN: false, allowInfinity: false }) @Min(0) good_quantity!: number;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 4, allowNaN: false, allowInfinity: false }) @Min(0) scrap_quantity = 0;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 4, allowNaN: false, allowInfinity: false }) @Min(0.0001) standard_minutes_per_unit!: number;
+  @Type(() => Number) @IsNumber({ maxDecimalPlaces: 4, allowNaN: false, allowInfinity: false }) @Min(0.0001) @Max(1440) actual_minutes!: number;
   @IsOptional() @IsString() @MaxLength(2000) scrap_reason?: string;
   @IsOptional() @IsString() @MaxLength(4000) notes?: string;
 }
