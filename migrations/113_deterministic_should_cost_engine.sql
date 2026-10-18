@@ -571,7 +571,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_should_cost_component_evidence();
 CREATE OR REPLACE FUNCTION factoryos_assert_should_cost_assessment_evidence()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_category_count integer;
 BEGIN
@@ -595,7 +595,7 @@ BEGIN
   END IF;
   RETURN NULL;
 END;
-$;
+$$;
 CREATE CONSTRAINT TRIGGER trg_should_cost_assessment_evidence_complete
 AFTER INSERT ON should_cost_assessments
 DEFERRABLE INITIALLY DEFERRED
@@ -604,7 +604,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_assert_should_cost_assessment_evidence()
 CREATE OR REPLACE FUNCTION factoryos_guard_should_cost_evidence_profile_match()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_method text;
   v_required boolean;
@@ -627,7 +627,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_should_cost_evidence_profile_match
 BEFORE INSERT ON should_cost_component_evidence
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_should_cost_evidence_profile_match();
