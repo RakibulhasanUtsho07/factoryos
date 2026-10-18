@@ -119,22 +119,22 @@ export class EhsService {
       if(action!=='VERIFY_ISOLATION'&&!(allowed[String(row.status)]??[]).includes(next))
         throw new ConflictException(`Invalid permit transition from ${row.status} to ${next}`);
       await client.query(
-        `UPDATE ehs_safety_permits SET status=$4,
-          approved_by_user_id=CASE WHEN $5 IN ('APPROVED','REJECTED') THEN $6::uuid ELSE approved_by_user_id END,
-          approved_at=CASE WHEN $5 IN ('APPROVED','REJECTED') THEN clock_timestamp() ELSE approved_at END,
-          decision_reason=CASE WHEN $5 IN ('APPROVED','REJECTED') THEN $7 ELSE decision_reason END,
-          isolation_verification=CASE WHEN $8::jsonb IS NOT NULL THEN $8::jsonb ELSE isolation_verification END,
-          isolation_verified_by_user_id=CASE WHEN $8::jsonb IS NOT NULL THEN $6::uuid ELSE isolation_verified_by_user_id END,
-          isolation_verified_at=CASE WHEN $8::jsonb IS NOT NULL THEN clock_timestamp() ELSE isolation_verified_at END,
-          activated_by_user_id=CASE WHEN $5='ACTIVE' THEN $6::uuid ELSE activated_by_user_id END,
-          activated_at=CASE WHEN $5='ACTIVE' THEN clock_timestamp() ELSE activated_at END,
-          closed_by_user_id=CASE WHEN $5='CLOSED' THEN $6::uuid ELSE closed_by_user_id END,
-          closed_at=CASE WHEN $5='CLOSED' THEN clock_timestamp() ELSE closed_at END,
-          closure_evidence=CASE WHEN $5='CLOSED' THEN $9::jsonb ELSE closure_evidence END,
-          closure_reason=CASE WHEN $5='CLOSED' THEN $10 ELSE closure_reason END,
+        `UPDATE ehs_safety_permits SET status=$5,
+          approved_by_user_id=CASE WHEN $4 IN ('APPROVE','REJECT') THEN $6::uuid ELSE approved_by_user_id END,
+          approved_at=CASE WHEN $4 IN ('APPROVE','REJECT') THEN clock_timestamp() ELSE approved_at END,
+          decision_reason=CASE WHEN $4 IN ('APPROVE','REJECT') THEN $7 ELSE decision_reason END,
+          isolation_verification=CASE WHEN $4='VERIFY_ISOLATION' THEN $8::jsonb ELSE isolation_verification END,
+          isolation_verified_by_user_id=CASE WHEN $4='VERIFY_ISOLATION' THEN $6::uuid ELSE isolation_verified_by_user_id END,
+          isolation_verified_at=CASE WHEN $4='VERIFY_ISOLATION' THEN clock_timestamp() ELSE isolation_verified_at END,
+          activated_by_user_id=CASE WHEN $4='ACTIVATE' THEN $6::uuid ELSE activated_by_user_id END,
+          activated_at=CASE WHEN $4='ACTIVATE' THEN clock_timestamp() ELSE activated_at END,
+          closed_by_user_id=CASE WHEN $4='CLOSE' THEN $6::uuid ELSE closed_by_user_id END,
+          closed_at=CASE WHEN $4='CLOSE' THEN clock_timestamp() ELSE closed_at END,
+          closure_evidence=CASE WHEN $4='CLOSE' THEN $9::jsonb ELSE closure_evidence END,
+          closure_reason=CASE WHEN $4='CLOSE' THEN $10 ELSE closure_reason END,
           last_change_reason=$11,updated_by_user_id=$6,row_version=row_version+1,updated_at=clock_timestamp()
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
-        [id,c.tenantId,c.factoryId,next,c.userId ? next : next,c.userId,dto.decision_reason?.trim()??null,
+        [id,c.tenantId,c.factoryId,action,next,c.userId,dto.decision_reason?.trim()??null,
           verification?JSON.stringify(verification):null,dto.closure_evidence?JSON.stringify(dto.closure_evidence):null,
           dto.closure_reason?.trim()??null,reason]);
       return this.permitDetail(client,c,id);
