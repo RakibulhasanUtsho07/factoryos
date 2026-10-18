@@ -153,6 +153,18 @@ export class MaintenanceService {
       const changesStatus=fields.find(([column])=>column==='status')?.[1];
       const proposedStatus=changesStatus ?? row.status;
       if(proposedStatus!=='ACTIVE' && row.status==='ACTIVE') {
+        const activeChildren=await client.query<Row>(
+          `SELECT 1 FROM maintenance_assets WHERE parent_asset_id=$1 AND tenant_id=$2 AND factory_id=$3
+           AND status='ACTIVE' LIMIT 1`,
+          [assetId,c.tenantId,c.factoryId],
+        );
+        if(activeChildren.rows[0]) throw new ConflictException('Active child assets must be moved or inactivated before this asset');
+        const activePlans=await client.query<Row>(
+          `SELECT 1 FROM maintenance_pm_plans WHERE asset_id=$1 AND tenant_id=$2 AND factory_id=$3
+           AND status='ACTIVE' LIMIT 1`,
+          [assetId,c.tenantId,c.factoryId],
+        );
+        if(activePlans.rows[0]) throw new ConflictException('Pause or retire active preventive-maintenance plans before inactivating this asset');
         const open=await client.query<Row>(
           `SELECT 1 FROM maintenance_work_orders WHERE asset_id=$1 AND tenant_id=$2 AND factory_id=$3
            AND status NOT IN ('COMPLETED','CANCELLED') LIMIT 1`,
