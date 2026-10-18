@@ -256,7 +256,11 @@ export class WorkforceService {
       );
       const found=current.rows[0];
       if(!found) throw new NotFoundException('Active worker was not found in this factory');
-      if(!dto.consent_granted && !found.biometric_consent_at) throw new ConflictException('Cannot withdraw biometric consent that was never granted');
+      const consentActive=found.biometric_consent_at!==null &&
+        (found.biometric_consent_withdrawn_at===null ||
+         new Date(String(found.biometric_consent_withdrawn_at)).getTime()<new Date(String(found.biometric_consent_at)).getTime());
+      if(dto.consent_granted && consentActive) throw new ConflictException('Biometric consent is already active');
+      if(!dto.consent_granted && !consentActive) throw new ConflictException('Cannot withdraw biometric consent that is not active');
       if(dto.consent_granted) {
         await client.query(
           `UPDATE workforce_workers SET biometric_consent_at=clock_timestamp(),biometric_consent_withdrawn_at=NULL,
@@ -539,7 +543,7 @@ export class WorkforceService {
            WHERE bs.shift_assignment_id=a.id AND bs.tenant_id=a.tenant_id
              AND bs.factory_id=a.factory_id AND bs.event_type='BREAK_START'
          ) br ON TRUE
-         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.shift_date=$3::date
+         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.shift_date=$3::date AND a.status<>'CANCELLED'
            AND ($4::uuid IS NULL OR a.shift_template_id=$4::uuid)
          ORDER BY a.planned_start_at,w.employee_code LIMIT $5`,
         [c.tenantId,c.factoryId,day,query.shift_template_id??null,limit],this.dbContext(c),
@@ -696,6 +700,7 @@ export class WorkforceService {
     const assignment=this.uuid(dto.shift_assignment_id,'shift_assignment_id');
     const order=this.uuid(dto.work_order_id,'work_order_id');
     const operation=this.uuid(dto.work_order_operation_id,'work_order_operation_id');
+    const sourceOperationEvent=this.uuid(dto.source_operation_event_id,'source_operation_event_id');
     const started=this.timestamp(dto.production_started_at,'production_started_at');
     const ended=this.timestamp(dto.production_ended_at,'production_ended_at');
     if(ended<=started) throw new BadRequestException('production_ended_at must be after production_started_at');
@@ -710,7 +715,7 @@ export class WorkforceService {
     const scrapReason=this.optionalText(dto.scrap_reason,2000);
     if(scrap>0&&!scrapReason) throw new BadRequestException('scrap_reason is required when scrap_quantity is positive');
     const payload={shift_assignment_id:assignment,work_order_id:order,work_order_operation_id:operation,
-      production_started_at:started,production_ended_at:ended,good_quantity:good,scrap_quantity:scrap,
+      source_operation_event_id:sourceOperationEvent,production_started_at:started,production_ended_at:ended,good_quantity:good,scrap_quantity:scrap,
       standard_minutes_per_unit:standard,actual_minutes:actual,scrap_reason:scrapReason,notes:this.optionalText(dto.notes,4000)};
     const hash=this.hash(payload);
     return this.transaction(c,`workforce:productivity:${key}`,async(client)=>{
@@ -728,16 +733,26 @@ export class WorkforceService {
         [operation,order,c.tenantId,c.factoryId],
       );
       if(!op.rows[0]) throw new NotFoundException('Work-order operation was not found in this factory');
+      const sourceEvent=await client.query<Row>(
+        `SELECT id::text AS id,event_type,payload
+         FROM work_order_events
+         WHERE id=$1 AND work_order_id=$2 AND operation_id=$3 AND tenant_id=$4 AND factory_id=$5`,
+        [sourceOperationEvent,order,operation,c.tenantId,c.factoryId],
+      );
+      if(!sourceEvent.rows[0]) throw new NotFoundException('Source shop-floor event was not found for this operation and factory');
+      if(!['OUTPUT_REPORTED','WIP_TRANSFERRED'].includes(String(sourceEvent.rows[0].event_type))) {
+        throw new BadRequestException('Productivity must reference an OUTPUT_REPORTED or WIP_TRANSFERRED event');
+      }
       if(Number(op.rows[0].run_minutes_per_unit)!==standard) throw new ConflictException('standard_minutes_per_unit must match the released routing snapshot');
       const result=await client.query<Row>(
         `INSERT INTO workforce_productivity_reports
-         (tenant_id,factory_id,shift_assignment_id,worker_id,work_order_id,work_order_operation_id,operation_code,
+         (tenant_id,factory_id,shift_assignment_id,worker_id,work_order_id,work_order_operation_id,source_operation_event_id,operation_code,
           production_started_at,production_ended_at,good_quantity,scrap_quantity,standard_minutes_per_unit,actual_minutes,
           scrap_reason,notes,idempotency_key,request_hash,created_by_user_id,correlation_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9::timestamptz,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::uuid)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::timestamptz,$10::timestamptz,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::uuid)
          RETURNING id::text AS id,good_quantity::text AS good_quantity,scrap_quantity::text AS scrap_quantity,
            earned_minutes::text AS earned_minutes,efficiency_percent::text AS efficiency_percent`,
-        [c.tenantId,c.factoryId,assignment,String(assignmentRow.rows[0].worker_id),order,operation,String(op.rows[0].operation_code),
+        [c.tenantId,c.factoryId,assignment,String(assignmentRow.rows[0].worker_id),order,operation,sourceOperationEvent,String(op.rows[0].operation_code),
           started,ended,good,scrap,standard,actual,scrapReason,payload.notes,key,hash,c.userId,this.correlationId(c)],
       );
       const report=result.rows[0];
@@ -974,7 +989,7 @@ export class WorkforceService {
     const r=await client.query<Row>(
       `SELECT p.id::text AS id,p.worker_id::text AS worker_id,w.employee_code,w.display_name,
        p.shift_assignment_id::text AS shift_assignment_id,p.work_order_id::text AS work_order_id,
-       p.work_order_operation_id::text AS work_order_operation_id,p.operation_code,
+       p.work_order_operation_id::text AS work_order_operation_id,p.source_operation_event_id::text AS source_operation_event_id,p.operation_code,
        p.production_started_at::text AS production_started_at,p.production_ended_at::text AS production_ended_at,
        p.good_quantity::text AS good_quantity,p.scrap_quantity::text AS scrap_quantity,
        p.standard_minutes_per_unit::text AS standard_minutes_per_unit,p.actual_minutes::text AS actual_minutes,
@@ -1083,6 +1098,9 @@ export class WorkforceService {
     return value;
   }
   private timestamp(value:string,field:string) {
+    if(typeof value!=='string' || !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(value)) {
+      throw new BadRequestException(`${field} must be an ISO-8601 timestamp with an explicit UTC offset`);
+    }
     const d=new Date(value);
     if(Number.isNaN(d.getTime())) throw new BadRequestException(`${field} must be a valid ISO-8601 timestamp`);
     return d.toISOString();
