@@ -212,7 +212,7 @@ describe('WorkforceService input and policy validation',()=>{
     await expect(service.captureAttendance(context,{
       shift_assignment_id:ASSIGNMENT,event_type:'CLOCK_IN',source_type:'API',
       occurred_at:'2026-10-18T10:00:00Z',
-      capture_metadata:{reader_id:'reader-01\\nforged-event'},
+      capture_metadata:{reader_id:'reader-01\nforged-event'},
     },'attendance-reject-control')).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
