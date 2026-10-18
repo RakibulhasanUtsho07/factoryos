@@ -137,6 +137,70 @@ export class FinanceConnectorsController {
     return this.service.transitionConnector(ctx.userId, ctx.tenantId, ctx.factoryId, id, 'PAUSE', body, ctx.eventContext);
   }
 
+  @Post(':connectorId/file-import/validate')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.ingest')
+  @RequireFactoryScope()
+  async validateFile(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Body() body: FinanceFileImportDto,
+    @Headers('idempotency-key') key?: string,
+  ) {
+    const ctx = context(request);
+    return this.service.validateFactsFile(ctx.userId, ctx.tenantId, ctx.factoryId, id, body, key ?? null, ctx.eventContext);
+  }
+
+  @Get(':connectorId/file-import/reports')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async listFileValidationReports(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+  ) {
+    const ctx = context(request);
+    return this.service.listFileImportValidationReports(ctx.userId, ctx.tenantId, ctx.factoryId, id);
+  }
+
+  @Get(':connectorId/file-import/reports/:reportId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async fileValidationReport(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Param('reportId', new ParseUUIDPipe()) reportId: string,
+  ) {
+    const ctx = context(request);
+    return this.service.getFileImportValidationReport(ctx.userId, ctx.tenantId, ctx.factoryId, id, reportId);
+  }
+
+  @Get(':connectorId/file-imports/receipts')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async listFileImportReceipts(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+  ) {
+    const ctx = context(request);
+    return this.service.listFileImportReceipts(ctx.userId, ctx.tenantId, ctx.factoryId, id);
+  }
+
+  @Get(':connectorId/file-imports/:runId/receipt')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.read')
+  @RequireFactoryScope()
+  async fileImportReceipt(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Param('runId', new ParseUUIDPipe()) runId: string,
+  ) {
+    const ctx = context(request);
+    return this.service.getFileImportReceipt(ctx.userId, ctx.tenantId, ctx.factoryId, id, runId);
+  }
+
   @Post(':connectorId/file-import')
   @UseGuards(PermissionGuard)
   @RequirePermission('finance.facts.ingest')
