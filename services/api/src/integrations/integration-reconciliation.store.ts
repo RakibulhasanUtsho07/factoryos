@@ -39,8 +39,11 @@ export interface NormalizedOperationalEvent {
 }
 
 export function classifyOperationalDomain(eventType: string): OperationalDomain | null {
-  if (/^(?:ATTENDANCE|WORKFORCE)\./.test(eventType)) return 'ATTENDANCE';
-  if (/^(?:PRODUCTION|OPERATION)\./.test(eventType) || /^MES\.(?:PRODUCTION|OPERATION)\./.test(eventType)) {
+  if (/^(?:ATTENDANCE|WORKFORCE\.ATTENDANCE|MES\.ATTENDANCE)\./.test(eventType) ||
+      /^WORKFORCE\.(?:CLOCK_IN|CLOCK_OUT|BREAK_START|BREAK_END|ABSENCE_RECORDED)(?:\.|$)/.test(eventType)) {
+    return 'ATTENDANCE';
+  }
+  if (/^(?:PRODUCTION|OPERATION|MES\.PRODUCTION|MES\.OPERATION)\./.test(eventType)) {
     return 'PRODUCTION';
   }
   if (/^(?:QUALITY|INSPECTION|NCR|QC)\./.test(eventType)) return 'QUALITY';
