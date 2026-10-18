@@ -8,6 +8,7 @@ DECLARE
   v_parent_status VARCHAR(16);
   v_seen UUID[] := ARRAY[]::UUID[];
 BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text || ':' || NEW.factory_id::text || ':maintenance-asset-tree',0));
   IF NEW.parent_asset_id IS NULL THEN
     RETURN NEW;
   END IF;
@@ -62,8 +63,12 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_asset_update()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text || ':' || NEW.factory_id::text || ':maintenance-asset-tree',0));
   IF NEW.row_version <> OLD.row_version + 1 THEN
     RAISE EXCEPTION 'Asset updates must increment row_version exactly once' USING ERRCODE='23514';
+  END IF;
+  IF NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'Asset updater must match the authenticated database context' USING ERRCODE='42501';
   END IF;
   IF NEW.asset_code IS DISTINCT FROM OLD.asset_code THEN
     RAISE EXCEPTION 'Asset codes are immutable; register a replacement asset instead' USING ERRCODE='23514';
@@ -120,6 +125,9 @@ BEGIN
   IF NEW.row_version <> OLD.row_version + 1 THEN
     RAISE EXCEPTION 'Preventive-maintenance plan updates must increment row_version exactly once' USING ERRCODE='23514';
   END IF;
+  IF NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'Preventive-maintenance plan updater must match the authenticated database context' USING ERRCODE='42501';
+  END IF;
   IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
     OR NEW.factory_id IS DISTINCT FROM OLD.factory_id OR NEW.asset_id IS DISTINCT FROM OLD.asset_id
     OR NEW.plan_code IS DISTINCT FROM OLD.plan_code OR NEW.revision IS DISTINCT FROM OLD.revision
@@ -143,8 +151,9 @@ BEGIN
     RAISE EXCEPTION 'Invalid preventive-maintenance plan transition: % -> %',OLD.status,NEW.status USING ERRCODE='23514';
   END IF;
   IF NEW.status='ACTIVE' AND OLD.status <> 'ACTIVE' THEN
-    IF NEW.approved_by_user_id IS NULL OR NEW.approved_by_user_id=NEW.created_by_user_id THEN
-      RAISE EXCEPTION 'Activating a preventive-maintenance plan requires an independent approver' USING ERRCODE='23514';
+    IF NEW.approved_by_user_id IS NULL OR NEW.approved_by_user_id=NEW.created_by_user_id
+      OR NEW.approved_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+      RAISE EXCEPTION 'Activating a preventive-maintenance plan requires an independent authenticated approver' USING ERRCODE='23514';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM maintenance_assets a
       WHERE a.id=NEW.asset_id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id AND a.status='ACTIVE') THEN
@@ -165,6 +174,7 @@ BEGIN
     RAISE EXCEPTION 'Maintenance checklist tasks cannot be deleted' USING ERRCODE='55000';
   END IF;
   IF NEW.row_version <> OLD.row_version + 1
+    OR NEW.completed_by_user_id IS DISTINCT FROM factoryos_current_user_id()
     OR OLD.status <> 'PENDING' OR NEW.status <> 'COMPLETED'
     OR NEW.work_order_id <> OLD.work_order_id
     OR NEW.task_code <> OLD.task_code
@@ -204,6 +214,7 @@ BEGIN
     RAISE EXCEPTION 'Maintenance spare-part evidence cannot be deleted' USING ERRCODE='55000';
   END IF;
   IF NEW.row_version <> OLD.row_version + 1
+    OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
     OR NEW.work_order_id <> OLD.work_order_id
     OR NEW.inventory_item_id <> OLD.inventory_item_id
     OR NEW.required_quantity <> OLD.required_quantity
@@ -242,6 +253,9 @@ BEGIN
   IF NEW.row_version <> OLD.row_version + 1 OR NEW.status IS NOT DISTINCT FROM OLD.status THEN
     RAISE EXCEPTION 'Maintenance work-order writes must be a single audited status transition with a version increment' USING ERRCODE='23514';
   END IF;
+  IF NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'Work-order updater must match the authenticated database context' USING ERRCODE='42501';
+  END IF;
   IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
     OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
     OR NEW.work_order_number IS DISTINCT FROM OLD.work_order_number
@@ -263,6 +277,9 @@ BEGIN
     IF NEW.started_by_user_id IS NULL OR NEW.started_at IS NULL THEN
       RAISE EXCEPTION 'Starting or resuming work requires original start actor and timestamp' USING ERRCODE='23514';
     END IF;
+    IF OLD.started_by_user_id IS NULL AND NEW.started_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+      RAISE EXCEPTION 'First work-order start actor must match the authenticated user' USING ERRCODE='42501';
+    END IF;
     IF OLD.started_by_user_id IS NOT NULL AND NEW.started_by_user_id IS DISTINCT FROM OLD.started_by_user_id THEN
       RAISE EXCEPTION 'The original work-order starter is immutable' USING ERRCODE='23514';
     END IF;
@@ -274,7 +291,8 @@ BEGIN
     RAISE EXCEPTION 'Start evidence can only be set by the first start transition' USING ERRCODE='23514';
   END IF;
   IF NEW.status='COMPLETED' THEN
-    IF NEW.completed_by_user_id IS NULL OR NEW.completed_at IS NULL THEN
+    IF NEW.completed_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+      OR NEW.completed_at IS NULL THEN
       RAISE EXCEPTION 'Completed work orders require completion actor and timestamp' USING ERRCODE='23514';
     END IF;
   ELSIF NEW.completed_by_user_id IS DISTINCT FROM OLD.completed_by_user_id
@@ -282,7 +300,7 @@ BEGIN
     RAISE EXCEPTION 'Completion evidence can only be set when completing a work order' USING ERRCODE='23514';
   END IF;
   IF NEW.status='CANCELLED' THEN
-    IF NEW.cancelled_by_user_id IS NULL OR NEW.cancelled_at IS NULL
+    IF NEW.cancelled_by_user_id IS DISTINCT FROM factoryos_current_user_id() OR NEW.cancelled_at IS NULL
       OR NEW.cancellation_reason IS NULL OR length(btrim(NEW.cancellation_reason))=0 THEN
       RAISE EXCEPTION 'Cancelled work orders require actor, timestamp and reason' USING ERRCODE='23514';
     END IF;
@@ -354,23 +372,42 @@ BEGIN
   END IF;
   CASE TG_TABLE_NAME
     WHEN 'maintenance_assets' THEN
+      IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+        OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+        RAISE EXCEPTION 'Asset creator/updater must match the authenticated user' USING ERRCODE='42501';
+      END IF;
       IF NEW.status <> 'ACTIVE' THEN
         RAISE EXCEPTION 'Newly registered assets must start ACTIVE' USING ERRCODE='23514';
       END IF;
     WHEN 'maintenance_pm_plans' THEN
+      IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+        OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+        RAISE EXCEPTION 'PM plan creator/updater must match the authenticated user' USING ERRCODE='42501';
+      END IF;
       IF NEW.status <> 'DRAFT' OR NEW.approved_by_user_id IS NOT NULL OR NEW.approved_at IS NOT NULL THEN
         RAISE EXCEPTION 'Preventive-maintenance plans must be created as unapproved drafts' USING ERRCODE='23514';
       END IF;
     WHEN 'maintenance_work_orders' THEN
+      IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+        OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+        RAISE EXCEPTION 'Work-order creator/updater must match the authenticated user' USING ERRCODE='42501';
+      END IF;
       IF NEW.status <> 'PLANNED' OR NEW.started_at IS NOT NULL OR NEW.completed_at IS NOT NULL
         OR NEW.cancelled_at IS NOT NULL THEN
         RAISE EXCEPTION 'Maintenance work orders must be created in PLANNED state' USING ERRCODE='23514';
       END IF;
     WHEN 'maintenance_work_order_tasks' THEN
+      IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+        RAISE EXCEPTION 'Checklist task creator must match the authenticated user' USING ERRCODE='42501';
+      END IF;
       IF NEW.status <> 'PENDING' OR NEW.completed_by_user_id IS NOT NULL OR NEW.completed_at IS NOT NULL THEN
         RAISE EXCEPTION 'Maintenance checklist tasks must be created as pending' USING ERRCODE='23514';
       END IF;
     WHEN 'maintenance_work_order_parts' THEN
+      IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+        OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+        RAISE EXCEPTION 'Spare-part creator/updater must match the authenticated user' USING ERRCODE='42501';
+      END IF;
       IF NEW.issued_quantity <> 0 THEN
         RAISE EXCEPTION 'A spare-part requirement cannot start with issued stock' USING ERRCODE='23514';
       END IF;
