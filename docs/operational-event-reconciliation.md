@@ -4,7 +4,7 @@
 
 ## Scope and safety boundary
 
-External attendance, production-operation and quality-inspection events are observed through the existing signed integration webhook. Only canonical event types whose prefix identifies ATTENDANCE, WORKFORCE.ATTENDANCE, MES.ATTENDANCE, PRODUCTION, OPERATION, MES.PRODUCTION, MES.OPERATION, QUALITY, INSPECTION, NCR or QC are routed into operational reconciliation. Attendance also recognizes the explicitly named WORKFORCE.CLOCK_IN/CLOCK_OUT/BREAK_START/BREAK_END/ABSENCE_RECORDED event family. Unrelated signed integration event types continue to use the existing inbox/outbox contract without being misclassified.
+External attendance, production-operation and quality-inspection events are observed through the existing signed integration webhook. Only canonical event types whose prefix identifies ATTENDANCE, WORKFORCE.ATTENDANCE, MES.ATTENDANCE, PRODUCTION, OPERATION, MES.PRODUCTION, MES.OPERATION, QUALITY, INSPECTION, NCR, QC, MES.QUALITY, MES.INSPECTION, QMS.QUALITY or QMS.INSPECTION are routed into operational reconciliation. Attendance also recognizes the explicitly named WORKFORCE.CLOCK_IN/CLOCK_OUT/BREAK_START/BREAK_END/ABSENCE_RECORDED event family. Unrelated signed integration event types continue to use the existing inbox/outbox contract without being misclassified.
 
 Reconciliation is an evidence and review layer. It does not clock an employee in/out, complete a production operation, post inventory quantity, change an inspection result, release a quality hold or merge source records. An authorized operator must resolve the source-system or business record separately. The event evidence is immutable, and a disposition adds actor, time, expected row version and reason.
 
