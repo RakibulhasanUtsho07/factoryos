@@ -115,6 +115,11 @@ BEGIN
 END;
 $$;
 
+ALTER TABLE workforce_command_receipts DROP CONSTRAINT chk_workforce_command_receipt_type;
+ALTER TABLE workforce_command_receipts ADD CONSTRAINT chk_workforce_command_receipt_type CHECK (
+  entity_type IN ('WORKER','SHIFT_ASSIGNMENT','OVERTIME_REQUEST','SHIFT_TEMPLATE','ATTENDANCE_CORRECTION')
+);
+
 ALTER TABLE workforce_audit_events DROP CONSTRAINT chk_workforce_audit_entity_type;
 ALTER TABLE workforce_audit_events ADD CONSTRAINT chk_workforce_audit_entity_type CHECK (entity_type IN (
   'WORKER','SKILL','WORKER_SKILL','SHIFT_TEMPLATE','SHIFT_ASSIGNMENT','ATTENDANCE_EVENT',
