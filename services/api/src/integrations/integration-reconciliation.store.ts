@@ -515,7 +515,25 @@ export async function recordOperationalWebhookReplay(
     if (eventId) await recordAttempt(client, input, domain, outcome, eventId);
     return;
   }
-  if (!eventId) return;
+  if (!eventId) {
+    await recordAttempt(client, input, domain, outcome, null);
+    await openCase(client, {
+      tenantId: input.tenantId,
+      factoryId: input.factoryId,
+      connectorId: input.connectorId,
+      eventId: null,
+      domain,
+      type: 'CONFLICTING_DUPLICATE',
+      key: caseKey('CONFLICTING_DUPLICATE', [input.connectorId, input.externalEventId, input.payloadSha256]),
+      severity: 'ERROR',
+      details: {
+        source_event_id: input.externalEventId,
+        accepted_operational_evidence_available: false,
+        conflicting_payload_sha256: input.payloadSha256,
+      },
+    });
+    return;
+  }
   await recordAttempt(client, input, domain, outcome, eventId);
   await openCase(client, {
     tenantId: input.tenantId,
