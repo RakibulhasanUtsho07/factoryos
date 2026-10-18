@@ -68,6 +68,29 @@ export class CreateFinanceConnectorDto {
   configuration?: Record<string, unknown>;
 }
 
+export class FinanceFileImportDto {
+  @IsString()
+  @Length(1, 200)
+  @Matches(/\S/)
+  external_batch_ref!: string;
+
+  @IsOptional()
+  @IsDateString()
+  source_occurred_at?: string;
+
+  @IsString()
+  @IsIn(['CSV', 'JSON'])
+  format!: 'CSV' | 'JSON';
+
+  @IsString()
+  @Length(1, 200)
+  file_name!: string;
+
+  @IsString()
+  @Length(4, 2796204)
+  content_base64!: string;
+}
+
 export class TransitionFinanceConnectorDto {
   @Type(() => Number)
   @IsInt()
