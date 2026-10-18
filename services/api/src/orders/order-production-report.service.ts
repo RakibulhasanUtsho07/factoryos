@@ -188,10 +188,19 @@ export class OrderProductionReportService {
           product_code: string;
           inventory_item_id: string | null;
           inventory_item_status: string | null;
+          has_production_work_order: boolean;
         }>(
           `
           SELECT ol.id::text AS id, ol.quantity::text AS quantity, ol.product_code,
-            ol.inventory_item_id::text AS inventory_item_id, item.status AS inventory_item_status
+            ol.inventory_item_id::text AS inventory_item_id, item.status AS inventory_item_status,
+            EXISTS (
+              SELECT 1
+              FROM work_orders wo
+              WHERE wo.source_order_id = ol.order_id
+                AND wo.source_order_line_id = ol.id
+                AND wo.tenant_id = ol.tenant_id
+                AND wo.factory_id = ol.factory_id
+            ) AS has_production_work_order
           FROM order_lines ol
           LEFT JOIN inventory_items item
             ON item.id = ol.inventory_item_id
@@ -203,6 +212,11 @@ export class OrderProductionReportService {
         );
         const line = lineResult.rows[0];
         if (!line) throw new NotFoundException('Order line not found in this factory order');
+        if (line.has_production_work_order) {
+          throw new ConflictException(
+            'This order line has production work-order history; create a replacement work order and report output through its final routing operation',
+          );
+        }
         const finishedItemId = line.inventory_item_id;
         if (!finishedItemId) {
           throw new ConflictException('Order line must be mapped to a finished-good inventory item before reporting production output');

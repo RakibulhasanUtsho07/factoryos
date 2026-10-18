@@ -100,6 +100,36 @@ describe('OrderProductionReportService', () => {
     expect(audit.record).not.toHaveBeenCalled();
   });
 
+  it('requires work-order-managed lines to report output through their final operation', async () => {
+    client.query
+      .mockResolvedValueOnce(rows([])) // scoped advisory lock
+      .mockResolvedValueOnce(rows([])) // idempotency key not used
+      .mockResolvedValueOnce(rows([{ id: ORDER, order_number: 'ORD-100', status: 'IN_PROGRESS' }]))
+      .mockResolvedValueOnce(rows([{
+        id: ORDER_LINE,
+        quantity: '10.0000',
+        product_code: 'SKU-100',
+        inventory_item_id: FINISHED_ITEM,
+        inventory_item_status: 'ACTIVE',
+        has_production_work_order: true,
+      }]));
+
+    await expect(service.createReport(
+      USER, TENANT, FACTORY, ORDER,
+      {
+        order_line_id: ORDER_LINE,
+        good_quantity: 9,
+        scrap_quantity: 1,
+        scrap_reason: 'Failed final inspection',
+      } as CreateOrderProductionReportDto,
+      'report-work-order-managed', TRACE, TRACE,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO order_production_reports'))).toBe(false);
+    expect(inventory.postFinishedGoodsOutputReceipt).not.toHaveBeenCalled();
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
   it('posts good output, yield/scrap evidence and finished-good inventory receipt atomically', async () => {
     client.query
       .mockResolvedValueOnce(rows([])) // scoped advisory lock
