@@ -482,7 +482,7 @@ export class MaintenanceService {
       if(!allowed) throw new ConflictException(`Work order cannot transition from ${from} using ${dto.action}`);
       const updated=await client.query<Row>(
         `UPDATE maintenance_work_orders SET status=$1,updated_by_user_id=$2,row_version=row_version+1,
-           started_by_user_id=CASE WHEN $1='IN_PROGRESS' AND status IN ('APPROVED','ON_HOLD') THEN $2 ELSE started_by_user_id END,
+           started_by_user_id=CASE WHEN $1='IN_PROGRESS' AND started_by_user_id IS NULL THEN $2 ELSE started_by_user_id END,
            started_at=CASE WHEN $1='IN_PROGRESS' AND started_at IS NULL THEN clock_timestamp() ELSE started_at END,
            completed_by_user_id=CASE WHEN $1='COMPLETED' THEN $2 ELSE completed_by_user_id END,
            completed_at=CASE WHEN $1='COMPLETED' THEN clock_timestamp() ELSE completed_at END,
