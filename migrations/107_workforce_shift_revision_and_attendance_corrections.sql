@@ -308,7 +308,7 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_workforce_attendance_event()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   v_assignment RECORD;
   v_stream RECORD;
