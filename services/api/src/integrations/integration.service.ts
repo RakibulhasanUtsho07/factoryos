@@ -15,7 +15,7 @@ import { isUUID } from 'class-validator';
 import { DatabaseService } from '../database/database.service';
 import {
   assertPayloadSchema,
-  assertAllowedWebhookEventType,
+  assertWebhookEventTypeAllowed,
   assertValidWebhookSignature,
   integrationRequestHash,
   IntegrationContractError,
@@ -320,7 +320,7 @@ export class IntegrationService {
     let envelope: WebhookEnvelope;
     try {
       envelope = validateWebhookEnvelope(request.body, connector.schema_version, connector.payload_schema);
-      assertAllowedWebhookEventType(envelope.event_type, connector.allowed_event_types);
+      assertWebhookEventTypeAllowed(envelope.event_type, connector.allowed_event_types);
     } catch (error) {
       throw this.contractException(error);
     }
