@@ -33,7 +33,7 @@ BEGIN
   END IF;
   IF NOT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname='uq_utility_reading_source_event')
      OR NOT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname='uq_utility_meter_code')
-     OR NOT EXISTS(SELECT 1 FROM pg_constraints WHERE conname='chk_utility_reading_cost') THEN
+     OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='chk_utility_reading_cost') THEN
     RAISE EXCEPTION 'Utility source deduplication, meter identity or cost contract is missing';
   END IF;
   IF EXISTS(SELECT 1 FROM roles r WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER')
