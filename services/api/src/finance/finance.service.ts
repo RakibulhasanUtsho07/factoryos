@@ -559,7 +559,7 @@ export class FinanceService {
       const rows = await client.query(
         'WITH actual_events AS (' +
         ' SELECT f.* FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ' +
         ' AND f.fact_type IN (\'ACTUAL_REVENUE\',\'ACTUAL_COST\',\'ACTUAL_CONTRIBUTION_COST\') ' +
         ' AND f.effective_at >= $3 AND f.effective_at <= $4 ' +
         ' AND ($5::uuid IS NULL OR f.order_id=$5) AND ($6::uuid IS NULL OR f.product_id=$6) ' +
@@ -567,8 +567,7 @@ export class FinanceService {
         '), latest_forecasts AS (' +
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ' +
         ' AND f.fact_type IN (\'FORECAST_REVENUE\',\'FORECAST_COST\',\'FORECAST_CONTRIBUTION_COST\') ' +
         ' AND f.effective_at >= $3 AND f.effective_at <= $4 AND ($5::uuid IS NULL OR f.order_id=$5) ' +
         ' AND ($6::uuid IS NULL OR f.product_id=$6) AND ($7::text IS NULL OR f.customer_ref=$7) ' +
@@ -604,15 +603,23 @@ export class FinanceService {
         'JOIN financial_facts f ON f.id=r.fact_id AND f.tenant_id=r.tenant_id AND f.factory_id=r.factory_id ' +
         'WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.match_status=\'MISMATCH\' AND r.review_status=\'OPEN\' ' +
         'AND f.effective_at >= $3 AND f.effective_at <= $4 ' +
+        'AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ' +
         'AND ($5::uuid IS NULL OR f.order_id=$5) AND ($6::uuid IS NULL OR f.product_id=$6) ' +
         'AND ($7::text IS NULL OR f.customer_ref=$7)',
         [tenantId, factoryId, from, to, query.order_id ?? null, query.product_id ?? null, query.customer_ref?.trim() || null],
       );
       const unresolved = Number(count.rows[0]?.unresolved_count ?? 0);
+      const missingDomains = await client.query<{ domain: string }>(
+        'SELECT expected.domain FROM unnest($3::text[]) AS expected(domain) ' +
+        'WHERE NOT EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.tenant_id=$1 AND fc.factory_id=$2 ' +
+        'AND fc.domain=expected.domain AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ORDER BY expected.domain',
+        [tenantId, factoryId, ['AR', 'GL']],
+      );
       return {
         window: { from, to },
-        reporting_ready: unresolved === 0,
+        reporting_ready: unresolved === 0 && missingDomains.rows.length === 0,
         unresolved_reconciliation_count: unresolved,
+        missing_reporting_domains: missingDomains.rows.map((row) => row.domain),
         currency_policy: 'Results are grouped by currency; unlike currencies are never summed together.',
         rows: rows.rows,
       };
@@ -633,8 +640,7 @@ export class FinanceService {
         'WITH latest_positions AS (' +
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 AND f.effective_at <= $3 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ' +
         ' AND f.fact_type IN (\'AR_OPEN\',\'AP_OPEN\',\'BANK_BALANCE\',\'INVENTORY_VALUE\',\'OPEN_PO_COMMITMENT\',' +
         '\'LC_EXPOSURE\',\'SHIPMENT_MILESTONE\',\'TAX_LIABILITY\',\'GL_BALANCE\') ' +
         ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
@@ -670,7 +676,7 @@ export class FinanceService {
         'WITH latest_positions AS (' +
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.id,f.tenant_id,f.factory_id ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 AND f.effective_at <= $3 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ' +
         ' AND f.fact_type IN (\'AR_OPEN\',\'AP_OPEN\',\'BANK_BALANCE\',\'INVENTORY_VALUE\',\'OPEN_PO_COMMITMENT\',' +
         '\'LC_EXPOSURE\',\'SHIPMENT_MILESTONE\',\'TAX_LIABILITY\',\'GL_BALANCE\') ' +
         ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
@@ -680,12 +686,19 @@ export class FinanceService {
         [tenantId, factoryId, asOf],
       );
       const mismatchCount = Number(unresolved.rows[0]?.unresolved_count ?? 0);
+      const missingDomains = await client.query<{ domain: string }>(
+        'SELECT expected.domain FROM unnest($3::text[]) AS expected(domain) ' +
+        'WHERE NOT EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.tenant_id=$1 AND fc.factory_id=$2 ' +
+        'AND fc.domain=expected.domain AND fc.is_reporting_source AND fc.status=\'ACTIVE\') ORDER BY expected.domain',
+        [tenantId, factoryId, ['AR', 'AP', 'BANK_RECONCILIATION', 'GL', 'TAX_EINVOICE']],
+      );
       return {
         as_of: asOf,
         horizon_days: horizon,
         horizon_end: horizonEnd,
-        reporting_ready: mismatchCount === 0,
+        reporting_ready: mismatchCount === 0 && missingDomains.rows.length === 0,
         unresolved_reconciliation_count: mismatchCount,
+        missing_reporting_domains: missingDomains.rows.map((row) => row.domain),
         currency_policy: 'Each currency is reported separately; no implicit FX conversion is applied.',
         rows: result.rows,
       };

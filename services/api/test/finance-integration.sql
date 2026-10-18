@@ -65,6 +65,19 @@ BEGIN
   END;
 END $$;
 
+INSERT INTO finance_connectors(
+ id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
+ endpoint_url,secret_reference,configuration,status,row_version,idempotency_key,request_hash,created_by_user_id
+) VALUES(
+ 'da100000-0000-4000-8000-000000000001',
+ 'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+ 'CI-FINANCE-AR','CI finance receivables source','External Accounting Sandbox',
+ 'AR','MANUAL',NULL,NULL,'{}'::jsonb,'PENDING_APPROVAL',1,
+ 'ci-finance-connector-1',repeat('a',64),'921382b8-e83f-43ab-a576-e3db6a06b70c'
+);
+
+DO $$
+BEGIN
   BEGIN
     INSERT INTO finance_connectors(
       tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
@@ -78,17 +91,7 @@ END $$;
     RAISE EXCEPTION 'Two pending/active reporting authorities were accepted for the same domain';
   EXCEPTION WHEN unique_violation THEN NULL;
   END;
-
-INSERT INTO finance_connectors(
- id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
- endpoint_url,secret_reference,configuration,status,row_version,idempotency_key,request_hash,created_by_user_id
-) VALUES(
- 'da100000-0000-4000-8000-000000000001',
- 'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
- 'CI-FINANCE-AR','CI finance receivables source','External Accounting Sandbox',
- 'AR','MANUAL',NULL,NULL,'{}'::jsonb,'PENDING_APPROVAL',1,
- 'ci-finance-connector-1',repeat('a',64),'921382b8-e83f-43ab-a576-e3db6a06b70c'
-);
+END $$;
 
 DO $$
 BEGIN
