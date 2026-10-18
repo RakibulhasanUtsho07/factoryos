@@ -46,6 +46,22 @@ BEGIN
   IF reviewer_id IS NULL THEN RAISE EXCEPTION 'Independent finance review test user is missing'; END IF;
 END $$;
 
+DO $
+BEGIN
+  BEGIN
+    INSERT INTO finance_connector_history(
+      tenant_id,factory_id,connector_id,action,actor_user_id,reason,details
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000001','CREATED',
+      (SELECT id FROM users WHERE email='manager@factoryos.local'),
+      'Spoofed finance connector history actor','{}'::jsonb
+    );
+    RAISE EXCEPTION 'Finance connector history accepted a spoofed actor';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $;
+
 INSERT INTO finance_connectors(
  id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
  endpoint_url,secret_reference,configuration,status,row_version,idempotency_key,request_hash,created_by_user_id
@@ -111,6 +127,25 @@ INSERT INTO financial_facts(
  clock_timestamp(),clock_timestamp()+interval '15 days','BDT',1000,'CI-CUSTOMER',
  10,100,'PCS','{}'::jsonb,repeat('c',64),'921382b8-e83f-43ab-a576-e3db6a06b70c'
 );
+
+SELECT set_config('app.user_id',(SELECT id::text FROM users WHERE email='manager@factoryos.local'),true);
+DO $
+BEGIN
+  BEGIN
+    INSERT INTO finance_fact_reconciliations(
+      tenant_id,factory_id,fact_id,expected_source_type,expected_source_ref,
+      source_quantity,expected_quantity,quantity_tolerance,source_rate,expected_rate,rate_tolerance,
+      uom_code,match_status
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000003','SUPPLIER_INVOICE','SUPPLIER-INVOICE-100',
+      10,9.5,0.1,100,100,0,'PCS','MISMATCH'
+    );
+    RAISE EXCEPTION 'A different actor was allowed to attach reconciliation evidence to another user fact';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $;
+SELECT set_config('app.user_id','921382b8-e83f-43ab-a576-e3db6a06b70c',true);
 
 INSERT INTO finance_fact_reconciliations(
  tenant_id,factory_id,fact_id,expected_source_type,expected_source_ref,

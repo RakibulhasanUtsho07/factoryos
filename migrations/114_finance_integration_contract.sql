@@ -219,6 +219,7 @@ CREATE TABLE financial_facts (
    (source_quantity IS NULL AND source_rate IS NULL AND source_uom_code IS NULL)
    OR (source_quantity IS NOT NULL AND source_rate IS NOT NULL AND source_uom_code IS NOT NULL)
  ),
+ CONSTRAINT chk_financial_fact_source_uom CHECK(source_uom_code IS NULL OR source_uom_code=upper(source_uom_code)),
  CONSTRAINT chk_financial_fact_metadata CHECK(jsonb_typeof(metadata_snapshot)='object' AND NOT factoryos_finance_json_has_sensitive_key(metadata_snapshot)),
  CONSTRAINT chk_financial_fact_hash CHECK(fact_hash ~ '^[0-9a-f]{64}$')
 );
@@ -264,7 +265,7 @@ CREATE TABLE finance_fact_reconciliations (
    source_quantity>=0 AND expected_quantity>=0 AND source_rate>=0 AND expected_rate>=0
    AND quantity_tolerance>=0 AND rate_tolerance>=0
  ),
- CONSTRAINT chk_finance_reconciliation_references CHECK(length(btrim(expected_source_type))>0 AND length(btrim(expected_source_ref))>0),
+ CONSTRAINT chk_finance_reconciliation_references CHECK(length(btrim(expected_source_type))>0 AND length(btrim(expected_source_ref))>0 AND uom_code=upper(uom_code)),
  CONSTRAINT chk_finance_reconciliation_status CHECK(match_status IN ('MATCHED','MISMATCH')),
  CONSTRAINT chk_finance_reconciliation_review CHECK(
    (review_status='OPEN' AND reviewed_by_user_id IS NULL AND reviewed_at IS NULL AND review_reason IS NULL)
@@ -428,6 +429,10 @@ BEGIN
      RAISE EXCEPTION 'Reconciliation fact must exist in the same tenant and factory'
        USING ERRCODE='23503';
    END IF;
+   IF fact_actor IS DISTINCT FROM factoryos_current_user_id() THEN
+     RAISE EXCEPTION 'Reconciliation evidence must be ingested by the authenticated fact actor'
+       USING ERRCODE='42501';
+   END IF;
    IF fact_quantity IS NULL OR fact_rate IS NULL OR fact_uom IS NULL
       OR NEW.source_quantity IS DISTINCT FROM fact_quantity
       OR NEW.source_rate IS DISTINCT FROM fact_rate
@@ -481,12 +486,19 @@ CREATE TRIGGER trg_finance_fact_reconciliations_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_fact_reconciliation();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_append_only()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $
 BEGIN
+ IF TG_OP='INSERT' THEN
+   IF NEW.actor_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+     RAISE EXCEPTION 'Finance connector history actor must match the authenticated user'
+       USING ERRCODE='42501';
+   END IF;
+   RETURN NEW;
+ END IF;
  RAISE EXCEPTION 'Finance connector history is append-only' USING ERRCODE='55000';
-END $$;
+END $;
 CREATE TRIGGER trg_finance_connector_history_append_only
- BEFORE UPDATE OR DELETE ON finance_connector_history
+ BEFORE INSERT OR UPDATE OR DELETE ON finance_connector_history
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_append_only();
 
 DO $$
