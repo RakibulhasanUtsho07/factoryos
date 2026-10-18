@@ -10,9 +10,11 @@ import {
   AssignWorkforceSkillDto,
   CreateWorkforceAssignmentDto,
   CreateWorkforceAttendanceEventDto,
+  CreateWorkforceAttendanceCorrectionDto,
   CreateWorkforceOvertimeDto,
   CreateWorkforceProductivityDto,
   CreateWorkforceShiftDto,
+  UpdateWorkforceShiftDto,
   CreateWorkforceSkillDto,
   CreateWorkforceWorkerDto,
   DecideWorkforceOvertimeDto,
@@ -137,6 +139,20 @@ export class WorkforceController {
     return this.service.createShift(this.context(request), dto, idempotencyKey ?? null);
   }
 
+
+  @Post('shifts/:shiftId/update')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('workforce.shifts.manage')
+  @RequireFactoryScope()
+  updateShift(
+    @Req() request: WorkforceRequest,
+    @Param('shiftId', new ParseUUIDPipe()) shiftId: string,
+    @Body() dto: UpdateWorkforceShiftDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.updateShift(this.context(request), shiftId, dto, idempotencyKey ?? null);
+  }
+
   @Post('staffing')
   @UseGuards(PermissionGuard)
   @RequirePermission('workforce.staffing.manage')
@@ -180,6 +196,20 @@ export class WorkforceController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.service.captureAttendance(this.context(request), dto, idempotencyKey ?? null);
+  }
+
+
+  @Post('attendance/events/:eventId/correction')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('workforce.attendance.correct')
+  @RequireFactoryScope()
+  correctAttendance(
+    @Req() request: WorkforceRequest,
+    @Param('eventId', new ParseUUIDPipe()) eventId: string,
+    @Body() dto: CreateWorkforceAttendanceCorrectionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.correctAttendance(this.context(request), eventId, dto, idempotencyKey ?? null);
   }
 
   @Get('attendance')
