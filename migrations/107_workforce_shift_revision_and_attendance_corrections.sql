@@ -288,7 +288,7 @@ DECLARE
   ];
 BEGIN
   IF p_metadata IS NULL OR jsonb_typeof(p_metadata)<>'object'
-     OR jsonb_object_length(p_metadata)>20 THEN
+     OR (SELECT count(*) FROM jsonb_object_keys(p_metadata))>20 THEN
     RETURN FALSE;
   END IF;
   FOR item IN SELECT key,value FROM jsonb_each(p_metadata) LOOP
