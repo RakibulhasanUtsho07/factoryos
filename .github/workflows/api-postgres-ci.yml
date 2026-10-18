@@ -210,6 +210,7 @@ jobs:
             migrations/122_integration_receipt_outbox_binding.sql
             migrations/123_finance_file_exchange_validation_reports.sql
             migrations/124_finance_file_import_validation_reports.sql
+            migrations/125_finance_file_import_report_commit.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

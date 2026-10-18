@@ -147,7 +147,9 @@ export class FinanceService {
     if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(connectorCode)) {
       throw new BadRequestException('connector_code must be a stable uppercase identifier');
     }
-    const isReportingSource = dto.is_reporting_source ?? dto.domain !== 'CUSTOM';
+    const outboundMode = dto.integration_mode === 'FILE_EXPORT' || dto.integration_mode === 'SFTP_EXPORT';
+    const isReportingSource = dto.is_reporting_source ?? (dto.domain !== 'CUSTOM' && !outboundMode);
+    if (outboundMode && isReportingSource) throw new BadRequestException('Outbound export connectors cannot be reporting sources');
     if (dto.domain === 'CUSTOM' && isReportingSource) {
       throw new BadRequestException('CUSTOM connectors are enrichment-only; map reporting facts to their governed source domain');
     }
@@ -635,6 +637,7 @@ export class FinanceService {
     dto: FinanceFileImportDto,
     idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
+    validationReportId?: string,
   ) {
     const parsed = parseFinanceFileImport(dto);
     return this.ingestFacts(
@@ -646,6 +649,7 @@ export class FinanceService {
       idempotencyKeyInput,
       ctx,
       parsed,
+      validationReportId,
     );
   }
 
@@ -658,6 +662,7 @@ export class FinanceService {
     idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
     sourceFileImport?: ParsedFinanceFileImport,
+    validationReportId?: string,
   ) {
     const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
     const batchReference = dto.external_batch_ref.trim();
@@ -698,11 +703,14 @@ export class FinanceService {
         const connector = connectorResult.rows[0];
         if (!connector) throw new NotFoundException('Finance connector not found in the active factory scope');
 
-        if (sourceFileImport && connector.integration_mode !== 'FILE_IMPORT') {
-          throw new ConflictException('File import is only permitted for connectors configured with FILE_IMPORT mode');
+        if (sourceFileImport && !['FILE_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
+          throw new ConflictException('File import is only permitted for FILE_IMPORT or SFTP_IMPORT connectors');
         }
-        if (!sourceFileImport && connector.integration_mode === 'FILE_IMPORT') {
-          throw new ConflictException('FILE_IMPORT connectors must use the validated file-import endpoint');
+        if (!sourceFileImport && ['FILE_IMPORT', 'SFTP_IMPORT', 'FILE_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode)) {
+          throw new ConflictException('File connectors must use the governed file-exchange endpoints');
+        }
+        if (validationReportId && !sourceFileImport) {
+          throw new BadRequestException('A validation report can only be committed with the matching source file');
         }
 
         for (const fact of normalizedFacts) {
@@ -733,6 +741,25 @@ export class FinanceService {
         }
         if (connector.status !== 'ACTIVE') {
           throw new ConflictException('Financial facts may only be ingested through an approved active connector');
+        }
+        if (validationReportId && sourceFileImport) {
+          const reportResult = await client.query<{
+            id: string; status: string; external_batch_ref: string;
+            source_payload_sha256: string; source_file_name: string | null; source_format: string | null;
+          }>(
+            'SELECT id::text,status,external_batch_ref,source_payload_sha256,source_file_name,source_format ' +
+            'FROM finance_file_import_validation_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND connector_id=$4 FOR SHARE',
+            [validationReportId, tenantId, factoryId, connectorId],
+          );
+          const report = reportResult.rows[0];
+          if (!report) throw new NotFoundException('File validation report was not found in the active connector scope');
+          if (report.status !== 'VALID' ||
+              report.external_batch_ref !== batchReference ||
+              report.source_payload_sha256 !== sourceFileImport.sourcePayloadSha256 ||
+              report.source_file_name !== sourceFileImport.sourceFileName ||
+              report.source_format !== sourceFileImport.sourceFormat) {
+            throw new ConflictException('Only a VALID report for the exact same file, batch and connector can be committed');
+          }
         }
 
         const batchRef = batchReference;
@@ -782,10 +809,10 @@ export class FinanceService {
           'INSERT INTO finance_connector_runs(' +
           'id,tenant_id,factory_id,connector_id,external_batch_ref,idempotency_key,request_hash,status,' +
           'received_count,accepted_count,mismatch_count,source_occurred_at,actor_user_id,request_id,trace_id,' +
-          'source_file_name,source_format,source_payload_sha256' +
-          ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16,$17) ' +
+          'source_file_name,source_format,source_payload_sha256,validation_report_id' +
+          ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ' +
           'RETURNING id::text,status,received_count,accepted_count,mismatch_count,completed_at::text,' +
-          'source_file_name,source_format,source_payload_sha256',
+          'source_file_name,source_format,source_payload_sha256,validation_report_id::text AS validation_report_id',
           [
             runId, tenantId, factoryId, connectorId, batchRef, idempotencyKey, batchHash,
             mismatches > 0 ? 'COMPLETED_WITH_MISMATCHES' : 'COMPLETED',
@@ -794,6 +821,7 @@ export class FinanceService {
             sourceFileImport?.sourceFileName ?? null,
             sourceFileImport?.sourceFormat ?? null,
             sourceFileImport?.sourcePayloadSha256 ?? null,
+            validationReportId ?? null,
           ],
         );
 
@@ -838,6 +866,7 @@ export class FinanceService {
             source_format: sourceFileImport?.sourceFormat ?? null,
             source_file_name: sourceFileImport?.sourceFileName ?? null,
             source_payload_sha256: sourceFileImport?.sourcePayloadSha256 ?? null,
+            validation_report_id: validationReportId ?? null,
           });
         await this.outbox(client, tenantId, factoryId, runId, 'FINANCIAL_FACT_BATCH_INGESTED', userId, ctx,
           {

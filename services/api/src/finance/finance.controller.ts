@@ -20,6 +20,7 @@ import {
   CreateFinanceConnectorDto,
   FinanceMarginInputsQueryDto,
   FinanceWorkingCapitalQueryDto,
+  FinanceFileImportCommitDto,
   FinanceFileImportDto,
   IngestFinanceFactsDto,
   ListFinanceConnectorsDto,
@@ -199,6 +200,22 @@ export class FinanceConnectorsController {
   ) {
     const ctx = context(request);
     return this.service.getFileImportReceipt(ctx.userId, ctx.tenantId, ctx.factoryId, id, runId);
+  }
+
+  @Post(':connectorId/file-import/commit')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.facts.ingest')
+  @RequireFactoryScope()
+  async commitFileImport(
+    @Req() request: FinanceRequest,
+    @Param('connectorId', new ParseUUIDPipe()) id: string,
+    @Body() body: FinanceFileImportCommitDto,
+    @Headers('idempotency-key') key?: string,
+  ) {
+    const ctx = context(request);
+    return this.service.importFactsFile(
+      ctx.userId, ctx.tenantId, ctx.factoryId, id, body, key ?? null, ctx.eventContext, body.validation_report_id,
+    );
   }
 
   @Post(':connectorId/file-import')

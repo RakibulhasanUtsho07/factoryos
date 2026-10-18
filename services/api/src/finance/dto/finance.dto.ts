@@ -342,3 +342,10 @@ export class ReviewFinanceReconciliationDto {
   @Length(8, 500)
   reason!: string;
 }
+
+
+export class FinanceFileImportCommitDto extends FinanceFileImportDto {
+  @IsString()
+  @IsUUID()
+  validation_report_id!: string;
+}
