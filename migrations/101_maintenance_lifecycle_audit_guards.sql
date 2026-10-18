@@ -185,7 +185,7 @@ BEGIN
     OR NEW.completion_reason IS NULL OR length(btrim(NEW.completion_reason))=0 THEN
     RAISE EXCEPTION 'Checklist completion requires an actor, timestamp and reason' USING ERRCODE='23514';
   END IF;
-  IF NEW.evidence IS NULL OR jsonb_typeof(NEW.evidence) <> 'object' OR jsonb_object_length(NEW.evidence)=0 THEN
+  IF NEW.evidence IS NULL OR jsonb_typeof(NEW.evidence) <> 'object' OR NOT EXISTS (SELECT 1 FROM jsonb_each(NEW.evidence)) THEN
     RAISE EXCEPTION 'Checklist completion requires non-empty structured evidence' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
