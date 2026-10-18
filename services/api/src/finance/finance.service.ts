@@ -743,6 +743,41 @@ export class FinanceService {
     });
   }
 
+
+  async listFileExportReceipts(userId: string, tenantId: string, factoryId: string, connectorId: string) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
+      const result = await client.query(
+        'SELECT id::text,connector_id::text,format,file_name,payload_sha256,payload_bytes,record_count,status,' +
+        'remote_reference,created_at::text,actor_user_id::text,request_id::text,trace_id::text ' +
+        'FROM finance_file_export_receipts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 ' +
+        'ORDER BY created_at DESC LIMIT 100',
+        [tenantId, factoryId, connectorId],
+      );
+      return result.rows;
+    });
+  }
+
+  async getFileExportReceipt(userId: string, tenantId: string, factoryId: string, connectorId: string, receiptId: string) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
+      const result = await client.query<FinanceFileExportReceiptRow>(
+        'SELECT id::text,connector_id::text,idempotency_key,request_hash,format,file_name,payload_sha256,' +
+        'payload_bytes,record_count,status,remote_reference,content,created_at::text ' +
+        'FROM finance_file_export_receipts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND id=$4',
+        [tenantId, factoryId, connectorId, receiptId],
+      );
+      const receipt = result.rows[0];
+      if (!receipt) throw new NotFoundException('Finance file export receipt was not found');
+      return {
+        ...receipt,
+        receipt_type: 'FINANCE_FILE_EXPORT',
+        immutable: true,
+        ...(receipt.content ? { content_base64: receipt.content.toString('base64') } : {}),
+      };
+    });
+  }
+
   private financeFactsToCsv(facts: Array<Record<string, unknown>>): string {
     const headers = [
       'external_fact_id','source_fact_key','fact_type','source_record_type','source_record_ref',
