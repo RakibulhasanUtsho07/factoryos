@@ -18,11 +18,13 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   IntegrationConnectorDecisionDto,
+  IntegrationReconciliationCaseDecisionDto,
   ListIntegrationConnectorsDto,
   RegisterIntegrationConnectorDto,
   RotateIntegrationSecretDto,
 } from './dto/integration.dto';
 import { IntegrationService } from './integration.service';
+import { IntegrationReconciliationService } from './integration-reconciliation.service';
 
 interface IntegrationRequestContext {
   requestId: string | null;
@@ -46,7 +48,10 @@ function scope(request: AuthenticatedIntegrationRequest) {
 
 @Controller('integrations')
 export class IntegrationsController {
-  constructor(private readonly service: IntegrationService) {}
+  constructor(
+    private readonly service: IntegrationService,
+    private readonly reconciliationService: IntegrationReconciliationService,
+  ) {}
 
   @Post('connectors')
   @UseGuards(PermissionGuard)
@@ -160,6 +165,86 @@ export class IntegrationsController {
   ) {
     const ctx = scope(request);
     return this.service.rotateSecret(ctx.userId, ctx.tenantId, ctx.factoryId, connectorId, body.secret_reference, body.reason);
+  }
+
+
+  @Get('reconciliation/report')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('integrations.reconciliation.read')
+  @RequireFactoryScope()
+  async reconciliationReport(
+    @Req() request: AuthenticatedIntegrationRequest,
+    @Query('domain') domain?: string,
+    @Query('since') since?: string,
+    @Query('until') until?: string,
+  ) {
+    const ctx = scope(request);
+    return this.reconciliationService.report(ctx, { domain, since, until });
+  }
+
+  @Get('reconciliation/events')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('integrations.reconciliation.read')
+  @RequireFactoryScope()
+  async reconciliationEvents(
+    @Req() request: AuthenticatedIntegrationRequest,
+    @Query('domain') domain?: string,
+    @Query('source_system') sourceSystem?: string,
+    @Query('delivery_class') deliveryClass?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const ctx = scope(request);
+    return this.reconciliationService.listEvents(ctx, {
+      domain,
+      source_system: sourceSystem,
+      delivery_class: deliveryClass,
+      limit,
+    });
+  }
+
+  @Get('reconciliation/cases')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('integrations.reconciliation.read')
+  @RequireFactoryScope()
+  async reconciliationCases(
+    @Req() request: AuthenticatedIntegrationRequest,
+    @Query('domain') domain?: string,
+    @Query('status') status?: string,
+    @Query('case_type') caseType?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const ctx = scope(request);
+    return this.reconciliationService.listCases(ctx, {
+      domain,
+      status,
+      case_type: caseType,
+      limit,
+    });
+  }
+
+  @Get('reconciliation/cases/:caseId/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('integrations.reconciliation.read')
+  @RequireFactoryScope()
+  async reconciliationCaseHistory(
+    @Req() request: AuthenticatedIntegrationRequest,
+    @Param('caseId', new ParseUUIDPipe()) caseId: string,
+  ) {
+    const ctx = scope(request);
+    return this.reconciliationService.caseHistory(ctx, caseId);
+  }
+
+  @Post('reconciliation/cases/:caseId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('integrations.reconciliation.review')
+  @RequireFactoryScope()
+  async decideReconciliationCase(
+    @Req() request: AuthenticatedIntegrationRequest,
+    @Param('caseId', new ParseUUIDPipe()) caseId: string,
+    @Body() body: IntegrationReconciliationCaseDecisionDto,
+  ) {
+    const ctx = scope(request);
+    return this.reconciliationService.decideCase(ctx, caseId, body);
   }
 
   @Post('webhooks/:connectorId')
