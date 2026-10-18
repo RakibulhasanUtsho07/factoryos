@@ -583,7 +583,7 @@ export class WorkforceService {
            WHERE bs.shift_assignment_id=a.id AND bs.tenant_id=a.tenant_id
              AND bs.factory_id=a.factory_id AND bs.event_type='BREAK_START'
          ) br ON TRUE
-         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.shift_date=$3::date
+         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.shift_date=$3::date AND a.status<>'CANCELLED'
            AND ($4::uuid IS NULL OR a.shift_template_id=$4::uuid)`,
         [c.tenantId,c.factoryId,day,query.shift_template_id??null],this.dbContext(c),
       ),
@@ -772,7 +772,7 @@ export class WorkforceService {
         `SELECT p.id::text AS id,p.worker_id::text AS worker_id,w.employee_code,w.display_name,
          p.shift_assignment_id::text AS shift_assignment_id,a.shift_date::text AS shift_date,
          p.work_order_id::text AS work_order_id,p.work_order_operation_id::text AS work_order_operation_id,
-         p.operation_code,p.production_started_at::text AS production_started_at,p.production_ended_at::text AS production_ended_at,
+         p.source_operation_event_id::text AS source_operation_event_id,p.operation_code,p.production_started_at::text AS production_started_at,p.production_ended_at::text AS production_ended_at,
          p.good_quantity::text AS good_quantity,p.scrap_quantity::text AS scrap_quantity,
          p.standard_minutes_per_unit::text AS standard_minutes_per_unit,p.actual_minutes::text AS actual_minutes,
          p.earned_minutes::text AS earned_minutes,p.efficiency_percent::text AS efficiency_percent,
