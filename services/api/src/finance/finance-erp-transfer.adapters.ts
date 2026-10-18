@@ -63,3 +63,15 @@ export interface FinanceErpTransferAdapter {
     payload_sha256: string;
   }): Promise<FinanceErpUploadResult>;
 }
+
+
+export function normalizeFinanceErpOpaqueReference(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new Error('FINANCE_ERP_REFERENCE_INVALID:' + field);
+  }
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(normalized)) {
+    throw new Error('FINANCE_ERP_REFERENCE_INVALID:' + field);
+  }
+  return normalized;
+}

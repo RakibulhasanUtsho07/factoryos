@@ -42,7 +42,7 @@ import { FinanceFileExportDto, FinanceFileImportDto, CreateFinanceConnectorDto,
 } from './dto/finance.dto';
 import { deriveFinanceValidationCounts, FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv, type ParsedFinanceFileImport } from './finance-file-import';
 import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpDownload, type FinanceSftpTransport } from './finance-file-transfer.adapters';
-import { FINANCE_ERP_TRANSFER, type FinanceErpTransferAdapter } from './finance-erp-transfer.adapters';
+import { FINANCE_ERP_TRANSFER, normalizeFinanceErpOpaqueReference, type FinanceErpTransferAdapter } from './finance-erp-transfer.adapters';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -582,10 +582,12 @@ export class FinanceService {
     if (!Buffer.isBuffer(download.content) || download.content.length < 1 || download.content.length > 2 * 1024 * 1024) {
       throw new BadRequestException('ERP import payload must be a non-empty file up to 2 MiB');
     }
-    const sourceBatchRef = typeof download.source_batch_ref === 'string' ? download.source_batch_ref.trim() : '';
-    const providerReference = typeof download.provider_reference === 'string' ? download.provider_reference.trim() : '';
-    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(sourceBatchRef) ||
-        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(providerReference)) {
+    let sourceBatchRef: string;
+    let providerReference: string;
+    try {
+      sourceBatchRef = normalizeFinanceErpOpaqueReference(download.source_batch_ref, 'source_batch_ref');
+      providerReference = normalizeFinanceErpOpaqueReference(download.provider_reference, 'provider_reference');
+    } catch {
       throw new BadRequestException('ERP adapter returned an invalid opaque batch or provider reference');
     }
     if (download.format !== 'CSV' && download.format !== 'JSON') {
@@ -862,11 +864,16 @@ export class FinanceService {
           content,
           payload_sha256: payloadSha256,
         });
-        if (uploaded.payload_sha256 !== payloadSha256 || uploaded.bytes_written !== content.length ||
-            !(typeof uploaded.provider_reference === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(uploaded.provider_reference))) {
+        let providerReference: string;
+        try {
+          providerReference = normalizeFinanceErpOpaqueReference(uploaded.provider_reference, 'provider_reference');
+        } catch {
+          throw new ServiceUnavailableException('ERP adapter returned an invalid provider reference; an export receipt was not issued');
+        }
+        if (uploaded.payload_sha256 !== payloadSha256 || uploaded.bytes_written !== content.length) {
           throw new ServiceUnavailableException('ERP upload verification failed; an immutable export receipt was not issued');
         }
-        remoteReference = 'erp:' + uploaded.provider_reference;
+        remoteReference = 'erp:' + providerReference;
       }
       }
 
