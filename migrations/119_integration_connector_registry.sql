@@ -266,7 +266,9 @@ BEGIN
     IF NOT EXISTS(
       SELECT 1 FROM outbox_events e
       WHERE e.id=NEW.outbox_event_id AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
-        AND e.event_type=NEW.event_type AND e.event_version=NEW.schema_version
+        AND e.event_type='INTEGRATION.WEBHOOK_RECEIVED' AND e.event_version=1
+        AND e.payload->>'source_event_type'=NEW.event_type
+        AND e.payload->>'source_schema_version'=NEW.schema_version::text
     ) THEN
       RAISE EXCEPTION 'webhook receipt must bind to its exact outbox event'
         USING ERRCODE='23503';

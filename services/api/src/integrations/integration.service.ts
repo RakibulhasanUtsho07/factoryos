@@ -361,19 +361,18 @@ export class IntegrationService {
         connector_id: connector.id,
         source_system: connector.source_system,
         external_event_id: externalEventId,
-        schema_version: envelope.schema_version,
+        source_event_type: envelope.event_type,
+        source_schema_version: envelope.schema_version,
         ...(envelope.correlation_id ? { external_correlation_id: envelope.correlation_id } : {}),
         payload: envelope.payload,
       };
       await client.query(
-        'INSERT INTO outbox_events(id,tenant_id,factory_id,aggregate_type,aggregate_id,event_type,event_version,payload,status,attempts,next_attempt_at,occurred_at,correlation_id,actor,source) VALUES($1,$2,$3,$4,$1,$5,$6,$7::jsonb,$8,0,clock_timestamp(),clock_timestamp(),$9,NULL,$10::jsonb)',
+        "INSERT INTO outbox_events(id,tenant_id,factory_id,aggregate_type,aggregate_id,event_type,event_version,payload,status,attempts,next_attempt_at,occurred_at,correlation_id,actor,source) VALUES($1,$2,$3,$4,$1,'INTEGRATION.WEBHOOK_RECEIVED',1,$5::jsonb,$6,0,clock_timestamp(),clock_timestamp(),$7,NULL,$8::jsonb)",
         [
           outboxId,
           scope.tenant_id,
           scope.factory_id,
           'INTEGRATION_CONNECTOR',
-          envelope.event_type,
-          envelope.schema_version,
           JSON.stringify(outboxPayload),
           'PENDING',
           envelope.correlation_id ?? null,
