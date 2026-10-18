@@ -262,6 +262,12 @@ export class MaintenanceService {
     return {plans:result.rows,count:result.rows.length};
   }
 
+  async getPmPlan(c: MaintenanceContext, planId: string) {
+    this.validateContext(c);
+    this.validateUuid(planId, 'planId');
+    return this.database.transaction({ tenantId: c.tenantId, userId: c.userId }, client => this.pmPlanDetail(client, c, planId));
+  }
+
   async transitionPmPlan(c: MaintenanceContext, planId: string, dto: MaintenancePmPlanTransitionDto, rawKey: string | null) {
     this.validateContext(c);this.validateUuid(planId,'planId');
     const key=this.idempotencyKey(rawKey);
@@ -397,7 +403,7 @@ export class MaintenanceService {
       if(asset.rows[0].status!=='ACTIVE') throw new ConflictException('Breakdown work orders require an active asset');
       if(dto.assigned_to_user_id) {
         const membership=await client.query<Row>(
-          `SELECT 1 FROM memberships WHERE user_id=$1 AND tenant_id=$2 AND status='ACTIVE' LIMIT 1`,
+          `SELECT 1 FROM tenant_memberships WHERE user_id=$1 AND tenant_id=$2 AND status='ACTIVE' LIMIT 1`,
           [dto.assigned_to_user_id,c.tenantId],
         );
         if(!membership.rows[0]) throw new BadRequestException('assigned_to_user_id must belong to an active membership in this tenant');
