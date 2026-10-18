@@ -100,7 +100,7 @@ export class WorkforceService {
     const key = this.idempotencyKey(rawKey);
     const reason = this.requiredText(dto.reason, 'reason', 1000);
     const hash = this.hash({ worker_id:id,status:dto.status,expected_version:dto.expected_version,reason });
-    return this.transaction(c, `workforce:worker-transition:${key}`, async (client) => {
+    return this.transaction(c, `workforce:command:${key}`, async (client) => {
       const replay = await this.findCommandReceipt(client,c,key,hash);
       if (replay) return { ...(replay.response_snapshot as Record<string,unknown>), replayed:true };
       const current = await client.query<Row>(
@@ -380,7 +380,7 @@ export class WorkforceService {
     const key=this.idempotencyKey(rawKey);
     const reason=this.requiredText(dto.reason,'reason',1000);
     const hash=this.hash({assignment_id:id,expected_version:dto.expected_version,action:dto.action,reason});
-    return this.transaction(c,`workforce:assignment-transition:${key}`,async(client)=>{
+    return this.transaction(c,`workforce:command:${key}`,async(client)=>{
       const replay=await this.findCommandReceipt(client,c,key,hash);
       if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
       const current=await client.query<Row>(
@@ -512,7 +512,7 @@ export class WorkforceService {
     if(dto.action==='APPROVE'&&(approvedMinutes<1||approvedMinutes>1440)) throw new BadRequestException('approved_minutes must be between 1 and 1440 for approval');
     if(dto.action==='REJECT'&&(dto.approved_minutes??0)!==0) throw new BadRequestException('approved_minutes must be zero when rejecting overtime');
     const hash=this.hash({overtime_id:id,expected_version:dto.expected_version,action:dto.action,approved_minutes:approvedMinutes,reason});
-    return this.transaction(c,`workforce:overtime-decision:${key}`,async(client)=>{
+    return this.transaction(c,`workforce:command:${key}`,async(client)=>{
       const replay=await this.findCommandReceipt(client,c,key,hash);
       if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
       const current=await client.query<Row>(
@@ -667,9 +667,9 @@ export class WorkforceService {
       [c.tenantId,c.factoryId,day,query.shift_template_id??null],this.dbContext(c),
     );
     const now=Date.now();
-    const uncovered=assigned.rows.filter((row)=>row.assignment_status==='CONFIRMED'&&(
+    const uncovered=assigned.rows.filter((row)=>
       row.absence_recorded===true || (row.clocked_in!==true&&now>=new Date(String(row.planned_start_at)).getTime()+Number(row.late_grace_minutes)*60000)
-    ));
+    );
     const gaps=await Promise.all(uncovered.map(async(row)=>{
       const candidates=await this.database.query<Row>(
         `SELECT w.id::text AS worker_id,w.employee_code,w.display_name,
@@ -699,7 +699,7 @@ export class WorkforceService {
       return {
         assignment_id:row.assignment_id,shift_template_id:row.shift_template_id,shift_name:row.shift_name,
         missing_worker:{worker_id:row.worker_id,employee_code:row.employee_code,display_name:row.display_name},
-        reason:row.absence_recorded===true?'ABSENCE_RECORDED':'NO_CLOCK_IN_AFTER_GRACE',
+        reason:row.absence_recorded===true?'ABSENCE_RECORDED':(row.assignment_status==='PLANNED'?'UNCONFIRMED_ASSIGNMENT':'NO_CLOCK_IN_AFTER_GRACE'),
         required_skill_code:row.required_skill_code??null,backfill_candidates:candidates.rows,
       };
     }));
@@ -959,11 +959,19 @@ export class WorkforceService {
         const actual=Object.fromEntries(formatter.formatToParts(new Date(candidate)).map(p=>[p.type,p.value]));
         if(Number(actual.year)!==year||Number(actual.month)!==month||Number(actual.day)!==day||
           Number(actual.hour)!==hour||Number(actual.minute)!==minute||Number(actual.second)!==(second??0)) break;
+        for(const delta of [-60*60*1000,60*60*1000]) {
+          const alternative=new Date(candidate+delta);
+          const alternate=Object.fromEntries(formatter.formatToParts(alternative).map(p=>[p.type,p.value]));
+          if(Number(alternate.year)===year&&Number(alternate.month)===month&&Number(alternate.day)===day&&
+             Number(alternate.hour)===hour&&Number(alternate.minute)===minute&&Number(alternate.second)===(second??0)) {
+            throw new BadRequestException(`Local shift time ${date} ${time} is ambiguous in ${zone}; the shift must not cross a daylight-saving overlap`);
+          }
+        }
         return new Date(candidate);
       }
       candidate+=difference;
     }
-    throw new BadRequestException(`Local shift time ${date} ${time} does not exist unambiguously in ${zone}`);
+    throw new BadRequestException(`Local shift time ${date} ${time} does not exist or is ambiguous in ${zone}`);
   }
   private addDays(date:string,amount:number) {
     const d=new Date(`${date}T00:00:00.000Z`);
