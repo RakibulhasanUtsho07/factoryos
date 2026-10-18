@@ -215,10 +215,11 @@ BEGIN
       AND c.conname = 'fk_production_output_posting_report'
       AND pg_get_constraintdef(c.oid) LIKE '%production_report_id, tenant_id, factory_id%'
   ) OR NOT EXISTS (
-    SELECT 1 FROM pg_constraint c
-    WHERE c.conrelid = to_regclass('inventory_movements')
-      AND c.contype = 'u'
-      AND pg_get_constraintdef(c.oid) LIKE '%UNIQUE (id, tenant_id, factory_id)%'
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND tablename = 'inventory_movements'
+      AND indexname = 'uq_inventory_movements_id_scope'
+      AND indexdef LIKE 'CREATE UNIQUE INDEX%'
   ) THEN
     RAISE EXCEPTION 'Production posting yield columns or tenant/factory scoped report/movement links are missing';
   END IF;
