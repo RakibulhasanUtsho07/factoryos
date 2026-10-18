@@ -4,7 +4,7 @@ BEGIN;
 SELECT set_config('app.tenant_id','faaab63d-c447-46ce-950d-deebdd7f5f30',true);
 SELECT set_config('app.user_id','921382b8-e83f-43ab-a576-e3db6a06b70c',true);
 
-DO $$
+DO $$$
 DECLARE
   table_name text;
   rls_enabled boolean;
@@ -46,7 +46,7 @@ BEGIN
   IF reviewer_id IS NULL THEN RAISE EXCEPTION 'Independent finance review test user is missing'; END IF;
 END $$;
 
-DO $
+DO $$
 BEGIN
   BEGIN
     INSERT INTO finance_connector_history(
@@ -60,7 +60,7 @@ BEGIN
     RAISE EXCEPTION 'Finance connector history accepted a spoofed actor';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
-END $;
+END $$;
 
 INSERT INTO finance_connectors(
  id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,
@@ -73,7 +73,7 @@ INSERT INTO finance_connectors(
  'ci-finance-connector-1',repeat('a',64),'921382b8-e83f-43ab-a576-e3db6a06b70c'
 );
 
-DO $$
+DO $$$
 BEGIN
   BEGIN
     INSERT INTO finance_connectors(
@@ -129,7 +129,7 @@ INSERT INTO financial_facts(
 );
 
 SELECT set_config('app.user_id',(SELECT id::text FROM users WHERE email='manager@factoryos.local'),true);
-DO $
+DO $$
 BEGIN
   BEGIN
     INSERT INTO finance_fact_reconciliations(
@@ -144,7 +144,7 @@ BEGIN
     RAISE EXCEPTION 'A different actor was allowed to attach reconciliation evidence to another user fact';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
-END $;
+END $$;
 SELECT set_config('app.user_id','921382b8-e83f-43ab-a576-e3db6a06b70c',true);
 
 INSERT INTO finance_fact_reconciliations(
@@ -157,7 +157,7 @@ INSERT INTO finance_fact_reconciliations(
  10,9.5,0.1,100,100,0,'PCS','MISMATCH'
 );
 
-DO $$
+DO $$$
 BEGIN
   BEGIN
     UPDATE financial_facts SET amount=2000
@@ -240,7 +240,7 @@ SET review_status='RESOLVED',review_reason='Matched to reviewed supplier invoice
 WHERE fact_id='da100000-0000-4000-8000-000000000003'
   AND review_status='OPEN' AND match_status='MISMATCH';
 
-DO $$
+DO $$$
 BEGIN
   IF NOT EXISTS(
     SELECT 1 FROM finance_fact_reconciliations
@@ -252,7 +252,7 @@ END $$;
 -- Verify row filtering with a non-superuser application role, not only RLS catalog flags.
 SET LOCAL ROLE factoryos_app;
 SELECT set_config('app.tenant_id','00000000-0000-4000-8000-000000000099',true);
-DO $
+DO $$
 DECLARE
   table_name text;
   visible_rows bigint;
@@ -266,6 +266,6 @@ BEGIN
       RAISE EXCEPTION 'Cross-tenant finance rows are visible through %',table_name;
     END IF;
   END LOOP;
-END $;
+END $$;
 
 ROLLBACK;

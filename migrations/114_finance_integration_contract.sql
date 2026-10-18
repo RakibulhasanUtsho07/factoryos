@@ -59,7 +59,7 @@ BEGIN
    END LOOP;
  END IF;
  RETURN false;
-END $;
+END $$;
 
 CREATE TABLE finance_connectors (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -301,7 +301,7 @@ CREATE INDEX idx_finance_connector_history_scope_time
  ON finance_connector_history(tenant_id,factory_id,connector_id,created_at DESC);
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_connector()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$$
 BEGIN
  IF TG_OP='DELETE' THEN
    RAISE EXCEPTION 'Finance connector configuration is immutable; pause it instead'
@@ -359,7 +359,7 @@ CREATE TRIGGER trg_finance_connectors_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_connector();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_connector_run()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$$
 DECLARE s text;
 BEGIN
  IF TG_OP<>'INSERT' THEN
@@ -379,7 +379,7 @@ CREATE TRIGGER trg_finance_connector_runs_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_connector_run();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_financial_fact()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$$
 DECLARE connector_status text;
 DECLARE connector_domain text;
 BEGIN
@@ -407,13 +407,13 @@ BEGIN
      USING ERRCODE='23514';
  END IF;
  RETURN NEW;
-END $;
+END $$;
 CREATE TRIGGER trg_financial_facts_guard
  BEFORE INSERT OR UPDATE OR DELETE ON financial_facts
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_financial_fact();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_fact_reconciliation()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$$
 DECLARE fact_actor uuid;
 DECLARE fact_quantity numeric(24,8);
 DECLARE fact_rate numeric(24,8);
@@ -486,7 +486,7 @@ CREATE TRIGGER trg_finance_fact_reconciliations_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_fact_reconciliation();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_append_only()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_OP='INSERT' THEN
    IF NEW.actor_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
@@ -496,7 +496,7 @@ BEGIN
    RETURN NEW;
  END IF;
  RAISE EXCEPTION 'Finance connector history is append-only' USING ERRCODE='55000';
-END $;
+END $$;
 CREATE TRIGGER trg_finance_connector_history_append_only
  BEFORE INSERT OR UPDATE OR DELETE ON finance_connector_history
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_append_only();
