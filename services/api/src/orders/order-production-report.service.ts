@@ -346,14 +346,28 @@ export class OrderProductionReportService {
                 cumulative_good_quantity: report.cumulative_good_quantity,
                 cumulative_scrap_quantity: report.cumulative_scrap_quantity,
                 scrap_reason: report.scrap_reason,
-                yield_percent: report.yield_percent,
+                yield_percent: cumulativeYieldPercentage,
+                report_yield_percent: yieldPercentage,
+                production_output_posting_id: productionOutputPostingId,
+                finished_good_movement_id: finishedGoodsReceipt.movementId,
+                finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
+              },
+              inventory: {
+                finished_item_id: line.inventory_item_id,
+                accepted_good_quantity: goodQuantity,
+                scrap_quantity_not_stocked: scrapQuantity,
               },
               actor: { user_id: userId },
             }),
           ],
         );
 
-        return this.toPublicResult(report, false);
+        return {
+          ...this.toPublicResult(report, false),
+          report_yield_percent: yieldPercentage,
+          production_output_posting_id: productionOutputPostingId,
+          finished_good_movement_id: finishedGoodsReceipt.movementId,
+        };
       },
     );
 
@@ -378,6 +392,9 @@ export class OrderProductionReportService {
             cumulativeGoodQuantity: result.cumulative_good_quantity,
             cumulativeScrapQuantity: result.cumulative_scrap_quantity,
             yieldPercent: result.yield_percent,
+      reportYieldPercent: result.report_yield_percent,
+      productionOutputPostingId: result.production_output_posting_id,
+      finishedGoodMovementId: result.finished_good_movement_id,
           },
         });
       } catch {
@@ -454,6 +471,9 @@ export class OrderProductionReportService {
     if (existing.request_hash !== requestHash) {
       throw new ConflictException('Idempotency-Key was already used for a different production report');
     }
+    if (!existing.production_output_posting_id || existing.report_yield_percent === null) {
+      throw new ConflictException('This historical production report has no linked inventory/yield posting; reconcile it before treating this retry as successful');
+    }
     return this.toPublicResult(existing, true);
   }
 
@@ -477,6 +497,9 @@ export class OrderProductionReportService {
       correlation_id: row.correlation_id,
       created_at: row.created_at,
       yield_percent: row.yield_percent,
+      report_yield_percent: row.report_yield_percent,
+      production_output_posting_id: row.production_output_posting_id,
+      finished_good_movement_id: row.inventory_movement_id,
       replayed,
     };
   }
@@ -508,6 +531,14 @@ export class OrderProductionReportService {
     const whole = value / 10000n;
     const fraction = String(value % 10000n).padStart(4, '0');
     return `${whole}.${fraction}`;
+  }
+
+  private percentageFromUnits(numeratorUnits: bigint, denominatorUnits: bigint): string {
+    if (denominatorUnits <= 0n || numeratorUnits < 0n || numeratorUnits > denominatorUnits) {
+      throw new BadRequestException('Yield requires a positive total quantity and a good quantity within that total');
+    }
+    const scaled = (numeratorUnits * 1_000_000n + denominatorUnits / 2n) / denominatorUnits;
+    return `${scaled / 10_000n}.${(scaled % 10_000n).toString().padStart(4, '0')}`;
   }
 
   private hash(value: Record<string, string | null>): string {
