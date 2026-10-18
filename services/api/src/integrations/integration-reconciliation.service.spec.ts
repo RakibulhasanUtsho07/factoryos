@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { IntegrationReconciliationService } from './integration-reconciliation.service';
