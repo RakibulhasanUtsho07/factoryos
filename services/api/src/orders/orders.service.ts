@@ -984,6 +984,56 @@ export class OrdersService {
             );
           }
 
+          if (targetStatus === 'COMPLETED') {
+            const unfulfilledProductionLine = await client.query<{
+              order_line_id: string;
+              ordered_quantity: string;
+              accepted_good_quantity: string;
+            }>(
+              `
+              SELECT ol.id::text AS order_line_id,
+                ol.quantity::text AS ordered_quantity,
+                COALESCE((
+                  SELECT SUM(r.good_quantity)
+                  FROM order_production_reports r
+                  WHERE r.order_id = ol.order_id
+                    AND r.order_line_id = ol.id
+                    AND r.tenant_id = ol.tenant_id
+                    AND r.factory_id = ol.factory_id
+                ), 0)::text AS accepted_good_quantity
+              FROM order_lines ol
+              WHERE ol.order_id = $1
+                AND ol.tenant_id = $2
+                AND ol.factory_id = $3
+                AND EXISTS (
+                  SELECT 1 FROM work_orders wo
+                  WHERE wo.source_order_id = ol.order_id
+                    AND wo.source_order_line_id = ol.id
+                    AND wo.tenant_id = ol.tenant_id
+                    AND wo.factory_id = ol.factory_id
+                    AND wo.status = 'COMPLETED'
+                )
+                AND COALESCE((
+                  SELECT SUM(r.good_quantity)
+                  FROM order_production_reports r
+                  WHERE r.order_id = ol.order_id
+                    AND r.order_line_id = ol.id
+                    AND r.tenant_id = ol.tenant_id
+                    AND r.factory_id = ol.factory_id
+                ), 0) < ol.quantity
+              ORDER BY ol.id
+              LIMIT 1
+              `,
+              [order.id, tenantId, order.factory_id],
+            );
+            const unfulfilledLine = unfulfilledProductionLine.rows[0];
+            if (unfulfilledLine) {
+              throw new ConflictException(
+                `Cannot complete sales order: production-linked line ${unfulfilledLine.order_line_id} has ${unfulfilledLine.accepted_good_quantity} accepted good units against ${unfulfilledLine.ordered_quantity} ordered units. Record the remaining good output before completion.`,
+              );
+            }
+          }
+
           await this.inventoryReservationService.assertOrderMaterialsDisposedBeforeCancellation(
             client,
             {
