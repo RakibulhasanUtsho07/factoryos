@@ -192,6 +192,7 @@ jobs:
             migrations/104_workforce_command_idempotency.sql
             migrations/105_workforce_self_service_role.sql
             migrations/106_workforce_consent_timeline_and_output_attribution.sql
+            migrations/107_workforce_shift_revision_and_attendance_corrections.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
