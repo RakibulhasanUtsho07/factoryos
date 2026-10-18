@@ -21,7 +21,7 @@ The controller is mounted at **/inventory/items**. Each endpoint requires a veri
 - **GET /inventory/items/:itemId/reservations?status=RESERVED&limit=50** lists factory-scoped reservations.
 - **POST /inventory/items/:itemId/reservations/:reservationId/transition** releases or consumes a reservation and requires a separate `Idempotency-Key`.
 - **POST /orders/:orderId/material-dispositions** records a partial or full `RETURN_TO_STOCK` or `SCRAPPED` quantity against a consumed order-line reservation; an `Idempotency-Key` is required.
-- **POST /orders/:orderId/production-reports** records good finished output and scrap output for one order line; it requires `orders.write` and an `Idempotency-Key`.
+- **POST /orders/:orderId/production-reports** records good finished output and scrap output for one order line; it requires `orders.write` and an `Idempotency-Key`. This legacy order-level route is for lines without production work-order history; work-order-managed lines must report through the active final routing operation.
 - **POST /inventory/locations** creates a factory-scoped `WAREHOUSE`, `STAGING`, or child `BIN`; bins must belong to an active warehouse/staging location.
 - **GET /inventory/locations?limit=50** lists the factory locations, including the protected `UNASSIGNED` bucket that preserves compatibility for global stock operations.
 - **GET /inventory/items/:itemId/locations?limit=100** returns per-location quantities and the aggregate on-hand/reserved/available totals for the item.
