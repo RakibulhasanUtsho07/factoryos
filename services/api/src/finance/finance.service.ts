@@ -410,6 +410,122 @@ export class FinanceService {
 
 
 
+
+  async processSftpImport(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    ctx: FinanceEventContext,
+  ) {
+    if (!this.sftpTransport) {
+      throw new ServiceUnavailableException('SFTP import is disabled because no verified SFTP transport adapter is registered');
+    }
+    const found = await this.database.query<ConnectorRow & {
+      secret_reference: string | null;
+      configuration: Record<string, unknown>;
+    }>(
+      'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
+      'row_version::int AS row_version,created_by_user_id::text,secret_reference,configuration ' +
+      'FROM finance_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [connectorId, tenantId, factoryId],
+      { tenantId, userId },
+    );
+    const connector = found.rows[0];
+    if (!connector) throw new NotFoundException('SFTP connector not found in the active factory scope');
+    if (connector.status !== 'ACTIVE' || connector.integration_mode !== 'SFTP_IMPORT') {
+      throw new ConflictException('SFTP polling requires an active SFTP_IMPORT connector');
+    }
+    if (!connector.secret_reference) throw new ServiceUnavailableException('SFTP connector has no secret-manager reference');
+    let configuration: FinanceSftpConfiguration;
+    try {
+      configuration = validateFinanceSftpConfiguration('SFTP_IMPORT', connector.configuration ?? {});
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid SFTP import configuration');
+    }
+
+    let download;
+    try {
+      download = await this.sftpTransport.downloadNext({
+        tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
+        secret_reference: connector.secret_reference, configuration,
+      });
+    } catch {
+      throw new ServiceUnavailableException('SFTP transport failed; the source file was not acknowledged');
+    }
+    if (!download) return { status: 'NO_FILE', connector_id: connectorId };
+    if (download.content.length > 2 * 1024 * 1024) {
+      throw new BadRequestException('SFTP file exceeds 2 MiB; refusing to import or acknowledge it');
+    }
+    if (download.verified_host_key_sha256 !== configuration.host_key_sha256) {
+      throw new ServiceUnavailableException('SFTP host-key verification failed; refusing to read or acknowledge the remote file');
+    }
+    assertFinanceSftpRemoteFilePath(configuration, download.remote_path, download.file_name);
+
+    const contentHash = createHash('sha256').update(download.content).digest('hex');
+    const prior = await this.database.query<{
+      id: string; status: string; external_batch_ref: string; source_file_name: string;
+      source_format: string; source_payload_sha256: string; received_count: number;
+      accepted_count: number; mismatch_count: number; completed_at: string;
+    }>(
+      'SELECT id::text,status,external_batch_ref,source_file_name,source_format,source_payload_sha256,' +
+      'received_count,accepted_count,mismatch_count,completed_at::text FROM finance_connector_runs ' +
+      'WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND source_payload_sha256=$4 LIMIT 1',
+      [tenantId, factoryId, connectorId, contentHash],
+      { tenantId, userId },
+    );
+    if (prior.rows[0]) {
+      try {
+        await this.sftpTransport.archiveRemoteFile({
+          tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
+          secret_reference: connector.secret_reference, configuration,
+          remote_path: download.remote_path, disposition: 'PROCESSED',
+        });
+        return { status: 'ALREADY_IMPORTED', duplicate: true, receipt: prior.rows[0] };
+      } catch {
+        return { status: 'ARCHIVE_PENDING', duplicate: true, receipt: prior.rows[0], error_code: 'SFTP_ARCHIVE_PENDING' };
+      }
+    }
+
+    const matchingFormat = configuration.file_format === download.format;
+    const fileDto: FinanceFileImportDto = {
+      external_batch_ref: 'SFTP-' + contentHash,
+      format: matchingFormat ? download.format : ('XML' as 'CSV' | 'JSON'),
+      file_name: download.file_name,
+      content_base64: download.content.toString('base64'),
+    };
+    const idempotencyKey = 'sftp-import:' + connectorId + ':' + contentHash;
+    const report = await this.validateFactsFile(
+      userId, tenantId, factoryId, connectorId, fileDto, idempotencyKey, ctx,
+    );
+    if (!matchingFormat || report.status !== 'VALID') {
+      try {
+        await this.sftpTransport.archiveRemoteFile({
+          tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
+          secret_reference: connector.secret_reference, configuration,
+          remote_path: download.remote_path, disposition: 'QUARANTINED',
+        });
+        return { status: 'QUARANTINED', imported: false, validation_report: report };
+      } catch {
+        return { status: 'QUARANTINE_PENDING', imported: false, validation_report: report, error_code: 'SFTP_ARCHIVE_PENDING' };
+      }
+    }
+
+    const receipt = await this.importFactsFile(
+      userId, tenantId, factoryId, connectorId, fileDto, idempotencyKey, ctx, report.id,
+    );
+    try {
+      await this.sftpTransport.archiveRemoteFile({
+        tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
+        secret_reference: connector.secret_reference, configuration,
+        remote_path: download.remote_path, disposition: 'PROCESSED',
+      });
+      return { status: 'IMPORTED', imported: true, validation_report: report, receipt };
+    } catch {
+      return { status: 'ARCHIVE_PENDING', imported: true, validation_report: report, receipt, error_code: 'SFTP_ARCHIVE_PENDING' };
+    }
+  }
+
   async exportFactsFile(
     userId: string,
     tenantId: string,
