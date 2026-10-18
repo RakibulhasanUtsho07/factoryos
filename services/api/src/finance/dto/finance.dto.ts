@@ -349,3 +349,23 @@ export class FinanceFileImportCommitDto extends FinanceFileImportDto {
   @IsUUID()
   validation_report_id!: string;
 }
+
+
+export class FinanceFileExportDto {
+  @IsString()
+  @IsIn(['CSV', 'JSON'])
+  format!: 'CSV' | 'JSON';
+
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(FINANCE_FACT_TYPES)
+  fact_type?: (typeof FINANCE_FACT_TYPES)[number];
+}
