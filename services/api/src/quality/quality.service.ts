@@ -4,9 +4,12 @@ import { isUUID } from 'class-validator';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
-  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityInspectionPlanDto,
-  CreateQualityInspectionResultDto, CreateQualityNcrActionDto, ListQualityInspectionsQueryDto,
-  ListQualityPlansQueryDto, QualityDispositionDto, QualityInspectionDecisionDto, QualityInspectionPlanTransitionDto,
+  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityDefectLinkDto, CreateQualityInspectionDto,
+  CreateQualityInspectionPlanDto, CreateQualityInspectionResultDto, CreateQualityNcrActionDto,
+  CreateQualityReworkOrderDto, ListQualityInspectionsQueryDto, ListQualityPlansQueryDto,
+  ListQualityReworkOrdersQueryDto, QualityDispositionDto, QualityInspectionDecisionDto,
+  QualityInspectionPlanTransitionDto, QualityNcrActionTransitionDto, QualityNcrActionVerificationDto,
+  QualityReworkTransitionDto,
 } from './quality.dto';
 interface QualityContext {
   userId: string; tenantId: string; factoryId: string; requestId?: string | null; traceId?: string | null;
@@ -294,9 +297,13 @@ export class QualityService {
     let ncr: Record<string,unknown>|null=null;
     if(ncrResult.rows[0]){
       const row=ncrResult.rows[0] as Record<string,unknown>;
-      const actions=await this.database.query("SELECT id::text AS id,action_type,action_text,responsible_user_id::text AS responsible_user_id,due_date::text AS due_date,recorded_by_user_id::text AS recorded_by_user_id,created_at::text AS created_at FROM quality_ncr_actions WHERE ncr_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
+      const actions=await this.database.query("SELECT id::text AS id,action_type,action_text,responsible_user_id::text AS responsible_user_id,due_date::text AS due_date,action_status,row_version::int AS row_version,started_by_user_id::text AS started_by_user_id,started_at::text AS started_at,completed_by_user_id::text AS completed_by_user_id,completed_at::text AS completed_at,completion_notes,completion_evidence,verified_by_user_id::text AS verified_by_user_id,verified_at::text AS verified_at,verification_notes,verification_evidence,recorded_by_user_id::text AS recorded_by_user_id,created_at::text AS created_at FROM quality_ncr_actions WHERE ncr_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
         [row.id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
-      ncr={...row,actions:actions.rows};
+      const actionEvents=await this.database.query("SELECT id::text AS id,action_id::text AS action_id,version::int AS version,from_status,to_status,command,reason,evidence,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_ncr_action_events WHERE ncr_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY action_id,version",
+        [row.id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+      const eventsByAction=new Map<string,Record<string,unknown>[]>();
+      for(const event of actionEvents.rows){const actionKey=String(event.action_id);const group=eventsByAction.get(actionKey)??[];group.push(event);eventsByAction.set(actionKey,group);}
+      ncr={...row,actions:actions.rows.map((action:Record<string,unknown>)=>({...action,events:eventsByAction.get(String(action.id))??[]}))};
     }
     return {...inspection,defects:defects.rows,holds:holds.rows,dispositions:dispositions.rows,results:results.rows,ncr};
   }
@@ -519,12 +526,124 @@ export class QualityService {
       const ins=await client.query("INSERT INTO quality_ncr_actions (tenant_id,factory_id,ncr_id,action_type,action_text,responsible_user_id,due_date,idempotency_key,request_hash,recorded_by_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6::uuid,$7::date,$8,$9,$10,$11::uuid) RETURNING id::text AS id",
         [c.tenantId,c.factoryId,ncrId,dto.action_type,text,responsible,dueDate,key,hash,c.userId,correlation]);
       const actionId=String(ins.rows[0]?.id??'');if(!actionId)throw new Error('QUALITY_NCR_ACTION_INSERT_FAILED');
+      await this.insertNcrActionEvent(client,c,{
+        ncrId,actionId,version:1,from:null,to:'PLANNED',command:'CREATED',
+        reason:'CAPA action planned',evidence:{action_type:dto.action_type},
+        key:'ncr-action-created:'+actionId,hash:this.hash({ncrId,actionId,action_type:dto.action_type}),correlation,
+      });
       if(n.status==='OPEN') await client.query("UPDATE quality_ncrs SET status='IN_PROGRESS',row_version=row_version+1,updated_at=clock_timestamp() WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$4",[ncrId,c.tenantId,c.factoryId,n.row_version]);
-      await this.auditOutbox(client,c,{ncrId,action:'NCR_ACTION_'+dto.action_type,correlation,payload:{action_type:dto.action_type,action_text:text,responsible_user_id:responsible,due_date:dueDate},aggregateType:'QUALITY_NCR',aggregateId:ncrId,outboxEvent:'QUALITY.NCR_CHANGED'});
+      await this.auditOutbox(client,c,{ncrId,action:'NCR_ACTION_PLANNED',correlation,payload:{action_id:actionId,action_type:dto.action_type,action_text:text,responsible_user_id:responsible,due_date:dueDate,action_status:'PLANNED'},aggregateType:'QUALITY_NCR',aggregateId:ncrId,outboxEvent:'QUALITY.NCR_CHANGED'});
       return{id:actionId,replayed:false};
     });
     const r=await this.database.query("SELECT id::text AS id,ncr_id::text AS ncr_id,action_type,action_text,responsible_user_id::text AS responsible_user_id,due_date::text AS due_date,recorded_by_user_id::text AS recorded_by_user_id,created_at::text AS created_at FROM quality_ncr_actions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
       [result.id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});return{...r.rows[0],replayed:result.replayed};
+  }
+
+
+  async transitionNcrAction(c: QualityContext, ncrId: string, actionId: string,
+    dto: QualityNcrActionTransitionDto, rawKey: string | null) {
+    this.validateScope(c); this.uuid(ncrId,'ncrId'); this.uuid(actionId,'actionId');
+    const key=this.key(rawKey), reason=this.text(dto.reason,'reason',2000);
+    const evidence=this.jsonObject(dto.evidence);
+    if(dto.action==='COMPLETE' && Object.keys(evidence).length===0) {
+      throw new BadRequestException('completion evidence must be a non-empty JSON object');
+    }
+    const correlation=this.correlation(c);
+    const hash=this.hash({ncr_id:ncrId,action_id:actionId,action:dto.action,expected_version:dto.expected_version,reason,evidence});
+    const result=await this.database.transaction(c,async client=>{
+      await this.lockKey(client,c,'ncr-action-transition',key);
+      const previous=await client.query("SELECT id::text AS id,action_id::text AS action_id,request_hash FROM quality_ncr_action_events WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+        [c.tenantId,c.factoryId,key]);
+      if(previous.rows[0]){
+        if(String(previous.rows[0].request_hash).trim()!==hash) throw new ConflictException('Idempotency-Key was used for another CAPA transition');
+        return {actionId:String(previous.rows[0].action_id),replayed:true};
+      }
+      const rowResult=await client.query("SELECT a.id::text AS id,a.ncr_id::text AS ncr_id,a.action_type,a.action_status,a.row_version::int AS row_version,a.completed_by_user_id::text AS completed_by_user_id,n.status AS ncr_status FROM quality_ncr_actions a JOIN quality_ncrs n ON n.id=a.ncr_id AND n.tenant_id=a.tenant_id AND n.factory_id=a.factory_id WHERE a.id=$1 AND a.ncr_id=$2 AND a.tenant_id=$3 AND a.factory_id=$4 FOR UPDATE OF a,n",
+        [actionId,ncrId,c.tenantId,c.factoryId]);
+      const a=rowResult.rows[0];
+      if(!a) throw new NotFoundException('CAPA action was not found for this NCR');
+      if(a.ncr_status==='CLOSED') throw new ConflictException('Closed NCRs cannot accept further CAPA transitions');
+      if(Number(a.row_version)!==dto.expected_version) throw new ConflictException('CAPA action version is stale');
+      const from=String(a.action_status);
+      if(dto.action==='START' && !['PLANNED','REJECTED'].includes(from)) throw new ConflictException('Only planned or rejected CAPA actions can start');
+      if(dto.action==='COMPLETE' && from!=='IN_PROGRESS') throw new ConflictException('CAPA action must be in progress before completion');
+      const next=dto.action==='START'?'IN_PROGRESS':'COMPLETED';
+      let updated;
+      if(dto.action==='START'){
+        updated=await client.query("UPDATE quality_ncr_actions SET action_status='IN_PROGRESS',row_version=row_version+1,started_by_user_id=$1,started_at=clock_timestamp(),completed_by_user_id=NULL,completed_at=NULL,completion_notes=NULL,completion_evidence='{}'::jsonb,verified_by_user_id=NULL,verified_at=NULL,verification_notes=NULL,verification_evidence='{}'::jsonb,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND ncr_id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",
+          [c.userId,actionId,ncrId,c.tenantId,c.factoryId,a.row_version]);
+      } else {
+        updated=await client.query("UPDATE quality_ncr_actions SET action_status='COMPLETED',row_version=row_version+1,completed_by_user_id=$1,completed_at=clock_timestamp(),completion_notes=$2,completion_evidence=$3::jsonb,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$4 AND ncr_id=$5 AND tenant_id=$6 AND factory_id=$7 AND row_version=$8 RETURNING row_version::int AS row_version",
+          [c.userId,reason,JSON.stringify(evidence),actionId,ncrId,c.tenantId,c.factoryId,a.row_version]);
+      }
+      const version=Number(updated.rows[0]?.row_version??0);
+      if(!version) throw new ConflictException('CAPA action changed while transitioning');
+      await this.insertNcrActionEvent(client,c,{
+        ncrId,actionId,version,from,to:next,command:dto.action,reason,evidence,
+        key,hash,correlation,
+      });
+      await this.auditOutbox(client,c,{ncrId,action:'NCR_CAPA_'+dto.action,correlation,
+        payload:{action_id:actionId,action_type:a.action_type,from_status:from,to_status:next,reason,version},
+        aggregateType:'QUALITY_NCR',aggregateId:ncrId,outboxEvent:'QUALITY.NCR_CHANGED'});
+      return {actionId,replayed:false};
+    });
+    const r=await this.database.query("SELECT id::text AS id,ncr_id::text AS ncr_id,action_type,action_text,responsible_user_id::text AS responsible_user_id,due_date::text AS due_date,action_status,row_version::int AS row_version,started_by_user_id::text AS started_by_user_id,started_at::text AS started_at,completed_by_user_id::text AS completed_by_user_id,completed_at::text AS completed_at,completion_notes,completion_evidence,verified_by_user_id::text AS verified_by_user_id,verified_at::text AS verified_at,verification_notes,verification_evidence FROM quality_ncr_actions WHERE id=$1 AND ncr_id=$2 AND tenant_id=$3 AND factory_id=$4",
+      [result.actionId,ncrId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    const events=await this.database.query("SELECT version::int AS version,from_status,to_status,command,reason,evidence,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_ncr_action_events WHERE action_id=$1 AND ncr_id=$2 AND tenant_id=$3 AND factory_id=$4 ORDER BY version",
+      [result.actionId,ncrId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    return {...r.rows[0],events:events.rows,replayed:result.replayed};
+  }
+
+  async verifyNcrAction(c: QualityContext, ncrId: string, actionId: string,
+    dto: QualityNcrActionVerificationDto, rawKey: string | null) {
+    this.validateScope(c);this.uuid(ncrId,'ncrId');this.uuid(actionId,'actionId');
+    const key=this.key(rawKey),reason=this.text(dto.reason,'reason',2000),evidence=this.jsonObject(dto.evidence);
+    if(Object.keys(evidence).length===0) throw new BadRequestException('verification evidence must be a non-empty JSON object');
+    const correlation=this.correlation(c), hash=this.hash({ncr_id:ncrId,action_id:actionId,decision:dto.decision,expected_version:dto.expected_version,reason,evidence});
+    const result=await this.database.transaction(c,async client=>{
+      await this.lockKey(client,c,'ncr-action-verification',key);
+      const previous=await client.query("SELECT action_id::text AS action_id,request_hash FROM quality_ncr_action_events WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+        [c.tenantId,c.factoryId,key]);
+      if(previous.rows[0]){
+        if(String(previous.rows[0].request_hash).trim()!==hash) throw new ConflictException('Idempotency-Key was used for another CAPA verification');
+        return {actionId:String(previous.rows[0].action_id),replayed:true};
+      }
+      const found=await client.query("SELECT a.id::text AS id,a.ncr_id::text AS ncr_id,a.action_type,a.action_status,a.row_version::int AS row_version,a.completed_by_user_id::text AS completed_by_user_id,n.status AS ncr_status FROM quality_ncr_actions a JOIN quality_ncrs n ON n.id=a.ncr_id AND n.tenant_id=a.tenant_id AND n.factory_id=a.factory_id WHERE a.id=$1 AND a.ncr_id=$2 AND a.tenant_id=$3 AND a.factory_id=$4 FOR UPDATE OF a,n",
+        [actionId,ncrId,c.tenantId,c.factoryId]);
+      const a=found.rows[0];
+      if(!a) throw new NotFoundException('CAPA action was not found for this NCR');
+      if(a.ncr_status==='CLOSED') throw new ConflictException('Closed NCRs cannot accept further CAPA verification');
+      if(Number(a.row_version)!==dto.expected_version) throw new ConflictException('CAPA action version is stale');
+      if(a.action_status!=='COMPLETED') throw new ConflictException('Only completed CAPA actions can be verified');
+      if(String(a.completed_by_user_id)===c.userId) throw new ConflictException('CAPA verification must be performed by a different actor than the completer');
+      const next=dto.decision==='PASS'?'VERIFIED':'REJECTED';
+      const update=await client.query("UPDATE quality_ncr_actions SET action_status=$1,row_version=row_version+1,verified_by_user_id=$2,verified_at=clock_timestamp(),verification_notes=$3,verification_evidence=$4::jsonb,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$5 AND ncr_id=$6 AND tenant_id=$7 AND factory_id=$8 AND row_version=$9 RETURNING row_version::int AS row_version",
+        [next,c.userId,reason,JSON.stringify(evidence),actionId,ncrId,c.tenantId,c.factoryId,a.row_version]);
+      const version=Number(update.rows[0]?.row_version??0);
+      if(!version) throw new ConflictException('CAPA action changed while verifying');
+      await this.insertNcrActionEvent(client,c,{
+        ncrId,actionId,version,from:'COMPLETED',to:next,command:dto.decision==='PASS'?'VERIFY_PASS':'VERIFY_FAIL',
+        reason,evidence,key,hash,correlation,
+      });
+      await this.auditOutbox(client,c,{ncrId,action:'NCR_CAPA_'+(dto.decision==='PASS'?'VERIFIED':'VERIFICATION_REJECTED'),correlation,
+        payload:{action_id:actionId,action_type:a.action_type,from_status:'COMPLETED',to_status:next,reason,version},
+        aggregateType:'QUALITY_NCR',aggregateId:ncrId,outboxEvent:'QUALITY.NCR_CHANGED'});
+      return {actionId,replayed:false};
+    });
+    const r=await this.database.query("SELECT id::text AS id,ncr_id::text AS ncr_id,action_type,action_text,responsible_user_id::text AS responsible_user_id,due_date::text AS due_date,action_status,row_version::int AS row_version,started_by_user_id::text AS started_by_user_id,started_at::text AS started_at,completed_by_user_id::text AS completed_by_user_id,completed_at::text AS completed_at,completion_notes,completion_evidence,verified_by_user_id::text AS verified_by_user_id,verified_at::text AS verified_at,verification_notes,verification_evidence FROM quality_ncr_actions WHERE id=$1 AND ncr_id=$2 AND tenant_id=$3 AND factory_id=$4",
+      [result.actionId,ncrId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    const events=await this.database.query("SELECT version::int AS version,from_status,to_status,command,reason,evidence,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_ncr_action_events WHERE action_id=$1 AND ncr_id=$2 AND tenant_id=$3 AND factory_id=$4 ORDER BY version",
+      [result.actionId,ncrId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    return {...r.rows[0],events:events.rows,replayed:result.replayed};
+  }
+
+  private async insertNcrActionEvent(client:PoolClient,c:QualityContext,input:{
+    ncrId:string;actionId:string;version:number;from:string|null;to:string;command:string;reason:string;
+    evidence:Record<string,unknown>;key:string;hash:string;correlation:string;
+  }) {
+    await client.query("INSERT INTO quality_ncr_action_events (tenant_id,factory_id,ncr_id,action_id,version,from_status,to_status,command,reason,evidence,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14::uuid)",
+      [c.tenantId,c.factoryId,input.ncrId,input.actionId,input.version,input.from,input.to,input.command,input.reason,
+       JSON.stringify(input.evidence),input.key,input.hash,c.userId,input.correlation]);
   }
 
   async closeNcr(c:QualityContext,ncrId:string,dto:CloseQualityNcrDto){
@@ -540,9 +659,9 @@ export class QualityService {
       const activeHold=await client.query("SELECT 1 FROM quality_holds WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='ACTIVE' LIMIT 1",
         [n.inspection_id,c.tenantId,c.factoryId]);
       if(activeHold.rows[0]) throw new ConflictException('Release or dispose the active quality hold before closing its NCR');
-      const actions=await client.query("SELECT action_type FROM quality_ncr_actions WHERE ncr_id=$1 AND tenant_id=$2 AND factory_id=$3",[ncrId,c.tenantId,c.factoryId]);
-      const types=new Set(actions.rows.map((x:Record<string,unknown>)=>String(x.action_type)));
-      if(!['CONTAINMENT','CORRECTIVE','PREVENTIVE'].every(x=>types.has(x)))throw new ConflictException('NCR closure requires containment, corrective and preventive action evidence');
+      const actions=await client.query("SELECT action_type,action_status FROM quality_ncr_actions WHERE ncr_id=$1 AND tenant_id=$2 AND factory_id=$3",[ncrId,c.tenantId,c.factoryId]);
+      const verifiedTypes=new Set(actions.rows.filter((x:Record<string,unknown>)=>x.action_status==='VERIFIED').map((x:Record<string,unknown>)=>String(x.action_type)));
+      if(!['CONTAINMENT','CORRECTIVE','PREVENTIVE'].every(x=>verifiedTypes.has(x)))throw new ConflictException('NCR closure requires containment, corrective and preventive actions to be independently verified');
       const defects=await client.query("SELECT count(*)::int AS count FROM quality_defects WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status IN ('OPEN','REWORK')",[n.inspection_id,c.tenantId,c.factoryId]);
       if(Number(defects.rows[0]?.count??0)>0)throw new ConflictException('NCR cannot close while defects remain open or in rework');
       const updated=await client.query("UPDATE quality_ncrs SET status='CLOSED',row_version=row_version+1,closed_by_user_id=$1,closed_at=clock_timestamp(),closure_reason=$2,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6",
