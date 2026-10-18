@@ -136,6 +136,7 @@ CREATE TABLE utility_events (
   impact_quantity NUMERIC(24,8),
   cause TEXT,
   resolution TEXT,
+  last_change_reason TEXT,
   row_version BIGINT NOT NULL DEFAULT 1,
   idempotency_key VARCHAR(255) NOT NULL,
   request_hash CHAR(64) NOT NULL,
