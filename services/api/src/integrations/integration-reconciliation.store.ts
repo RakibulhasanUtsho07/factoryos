@@ -162,7 +162,7 @@ export function normalizeOperationalEvent(
 }
 
 function hashKey(parts: Array<string | number>): string {
-  return createHash('sha256').update(parts.map(String).join('|')).digest('hex');
+  return createHash('sha256').update(JSON.stringify(parts.map(String))).digest('hex');
 }
 
 function caseKey(type: OperationalCaseType, parts: Array<string | number>): string {
