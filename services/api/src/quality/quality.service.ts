@@ -371,7 +371,7 @@ export class QualityService {
     await this.auditOutbox(client,c,{defectId:id,dispositionId,action:'DEFECT_'+status,correlation,payload:{from_status:row.status,to_status:status,reason}});
   }
 
-  private async auditOutbox(client:PoolClient,c:QualityContext,i:{inspectionId?:string;defectId?:string;holdId?:string;dispositionId?:string;ncrId?:string;action:string;correlation:string;payload:Record<string,unknown>;aggregateType?:string;aggregateId?:string;outboxEvent?:string}){
+  private async auditOutbox(client:PoolClient,c:QualityContext,i:{inspectionId?:string;defectId?:string;holdId?:string|null;dispositionId?:string|null;ncrId?:string;action:string;correlation:string;payload:Record<string,unknown>;aggregateType?:string;aggregateId?:string;outboxEvent?:string}){
     await client.query("INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,hold_id,disposition_id,ncr_id,action_type,payload,actor_user_id,correlation_id) VALUES ($1,$2,$3::uuid,$4::uuid,$5::uuid,$6::uuid,$7::uuid,$8,$9::jsonb,$10,$11::uuid)",
       [c.tenantId,c.factoryId,i.inspectionId??null,i.defectId??null,i.holdId??null,i.dispositionId??null,i.ncrId??null,i.action,JSON.stringify(i.payload),c.userId,i.correlation]);
     const aggregateType=i.aggregateType??'QUALITY_INSPECTION',aggregateId=i.aggregateId??i.inspectionId;

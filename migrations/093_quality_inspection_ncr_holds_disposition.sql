@@ -520,10 +520,6 @@ CREATE TABLE quality_defect_events (
   CONSTRAINT chk_quality_defect_event_key CHECK (length(btrim(idempotency_key)) > 0),
   CONSTRAINT chk_quality_defect_event_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
-CREATE TRIGGER trg_quality_defect_events_immutable
-BEFORE UPDATE OR DELETE ON quality_defect_events
-FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_inspection_event();
-
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_hold()
 RETURNS trigger
 LANGUAGE plpgsql
