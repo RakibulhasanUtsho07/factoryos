@@ -189,6 +189,22 @@ BEGIN
     RAISE EXCEPTION 'Production output/inventory posting migration or table is missing';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version = '092_order_production_report_work_order_routing_guard'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgrelid = to_regclass('order_production_reports')
+      AND t.tgname = 'trg_order_production_report_work_order_path_guard'
+      AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+  ) OR to_regprocedure('factoryos_guard_unlinked_production_report_route()') IS NULL
+     OR position(
+       'must be recorded against the active final operation'
+       IN pg_get_functiondef('factoryos_guard_unlinked_production_report_route()'::regprocedure)
+     ) = 0 THEN
+    RAISE EXCEPTION 'Work-order-managed output must not bypass the final routing operation';
+  END IF;
+
   SELECT c.relrowsecurity, c.relforcerowsecurity
     INTO v_enabled, v_forced
   FROM pg_class c WHERE c.oid = to_regclass('production_output_postings');
