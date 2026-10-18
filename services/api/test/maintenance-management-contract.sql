@@ -28,7 +28,10 @@ DECLARE
     'trg_maintenance_pm_plans_event_required',
     'trg_maintenance_work_orders_event_required',
     'trg_maintenance_work_order_tasks_event_required',
-    'trg_maintenance_work_order_parts_event_required'
+    'trg_maintenance_work_order_parts_event_required',
+    'trg_maintenance_asset_delete_guard',
+    'trg_maintenance_pm_plan_delete_guard',
+    'trg_maintenance_work_order_delete_guard'
   ];
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='099_maintenance_assets_and_pm_plans')
@@ -67,6 +70,17 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_maintenance_pm_active_revision')
     OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_maintenance_pm_occurrence') THEN
     RAISE EXCEPTION 'Preventive-plan maker-checker or duplicate schedule protection is missing';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM roles r
+    WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER')
+      AND (SELECT count(*) FROM permissions p
+           JOIN role_permissions rp ON rp.permission_id=p.id
+           WHERE rp.role_id=r.id AND p.code LIKE 'maintenance.%') <> 8
+  ) THEN
+    RAISE EXCEPTION 'Seeded administrator/factory-manager roles must receive the full maintenance permission set';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_maintenance_wo_part_item')
