@@ -137,7 +137,7 @@ BEGIN
 
   UPDATE ehs_incidents SET status='CLOSED',closed_by_user_id=v_verifier,closed_at=clock_timestamp(),
     closure_evidence='{"repair_order":"CI-REPAIR-1","final_inspection":"passed","line_released":true}'::jsonb,
-    closure_reason='Corrective action independently verified',row_version=4,
+    row_version=4,
     last_change_reason='Safety finding closed after verified action',updated_by_user_id=v_verifier,updated_at=clock_timestamp()
   WHERE id=v_incident AND tenant_id=v_tenant AND factory_id=v_factory;
 
