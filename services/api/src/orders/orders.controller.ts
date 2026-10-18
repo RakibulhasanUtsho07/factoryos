@@ -21,8 +21,11 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ListOrdersDto } from './dto/list-orders.dto';
 import { TransitionOrderDto } from './dto/transition-order.dto';
+import { CreateOrderMaterialDispositionDto } from './dto/create-order-material-disposition.dto';
+import { CreateOrderProductionReportDto } from './dto/create-order-production-report.dto';
 
 import { OrdersService } from './orders.service';
+import { OrderProductionReportService } from './order-production-report.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -45,6 +48,7 @@ type FactoryOsRequest = Request & {
 export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
+    private readonly productionReportService: OrderProductionReportService,
   ) {}
 
   // ============================================================
@@ -132,6 +136,110 @@ export class OrdersController {
       requestId,
       traceId,
       body.expected_version,
+    );
+  }
+
+  // ============================================================
+  // ORDER MATERIAL DISPOSITION
+  // ============================================================
+
+  @Post(':orderId/material-dispositions')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.write')
+  @RequireFactoryScope()
+  async createMaterialDisposition(
+    @Req() request: FactoryOsRequest,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+    @Body() body: CreateOrderMaterialDispositionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const userId = request.factoryos?.userId ?? null;
+    const tenantId = request.factoryos?.tenantId ?? null;
+    const factoryId = request.factoryos?.factoryId ?? null;
+    const requestId = request.factoryos?.requestId ?? null;
+    const traceId = request.factoryos?.traceId ?? null;
+
+    if (!userId || !tenantId || !factoryId) {
+      throw new UnauthorizedException(
+        'Authenticated user, tenant and factory context are required',
+      );
+    }
+
+    return this.ordersService.recordMaterialDisposition(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      body,
+      idempotencyKey ?? null,
+      requestId,
+      traceId,
+    );
+  }
+
+  // ============================================================
+  // PRODUCTION YIELD / SCRAP REPORTS
+  // ============================================================
+
+  @Post(':orderId/production-reports')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.write')
+  @RequireFactoryScope()
+  async createProductionReport(
+    @Req() request: FactoryOsRequest,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+    @Body() body: CreateOrderProductionReportDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const userId = request.factoryos?.userId ?? null;
+    const tenantId = request.factoryos?.tenantId ?? null;
+    const factoryId = request.factoryos?.factoryId ?? null;
+    const requestId = request.factoryos?.requestId ?? null;
+    const traceId = request.factoryos?.traceId ?? null;
+
+    if (!userId || !tenantId || !factoryId) {
+      throw new UnauthorizedException(
+        'Authenticated user, tenant and factory context are required',
+      );
+    }
+
+    return this.productionReportService.createReport(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      body,
+      idempotencyKey ?? null,
+      requestId,
+      traceId,
+    );
+  }
+
+  @Get(':orderId/production-reports')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('orders.read')
+  @RequireFactoryScope()
+  async listProductionReports(
+    @Req() request: FactoryOsRequest,
+    @Param('orderId', new ParseUUIDPipe()) orderId: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const userId = request.factoryos?.userId ?? null;
+    const tenantId = request.factoryos?.tenantId ?? null;
+    const factoryId = request.factoryos?.factoryId ?? null;
+
+    if (!userId || !tenantId || !factoryId) {
+      throw new UnauthorizedException(
+        'Authenticated user, tenant and factory context are required',
+      );
+    }
+
+    return this.productionReportService.listReports(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      rawLimit === undefined ? undefined : Number(rawLimit),
     );
   }
 

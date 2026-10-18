@@ -10,6 +10,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -32,6 +33,15 @@ export class CreateAiAgentDefinitionDto {
   @IsString()
   @MaxLength(2000)
   description?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(35)
+  language?: string;
+
+  @IsOptional()
+  @IsUUID()
+  owner_user_id?: string;
 
   @IsString()
   @MaxLength(500)

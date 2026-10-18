@@ -115,6 +115,30 @@ VALUES
   (
     'feature_flags.security_critical.write',
     'Create security-critical tenant feature flag versions'
+  ),
+  (
+    'research.read',
+    'Read approved research sources, claims, releases and topic watchlists'
+  ),
+  (
+    'research.write',
+    'Register and maintain research sources, claims, topic watchlists and release drafts'
+  ),
+  (
+    'research.review',
+    'Review research rights, claims, watchlists and knowledge release promotions'
+  ),
+  (
+    'growth.read',
+    'Read growth opportunities, scenarios, experiments and realized outcomes'
+  ),
+  (
+    'growth.write',
+    'Create and manage growth hypotheses, scenarios, experiments and validation unknowns'
+  ),
+  (
+    'growth.review',
+    'Accept or reject growth hypotheses and review validation decisions'
   )
 ON CONFLICT (code) DO NOTHING;
 
@@ -137,7 +161,59 @@ WHERE r.code = 'ORG_ADMIN'
     'entitlements.write',
     'feature_flags.read',
     'feature_flags.write',
-    'feature_flags.security_critical.write'
+    'feature_flags.security_critical.write',
+    'research.read',
+    'research.write',
+    'research.review',
+    'growth.read',
+    'growth.write',
+    'growth.review',
+    'mrp.read',
+    'mrp.write',
+    'production.workorders.read',
+    'production.workorders.write',
+    'production.workorders.release',
+    'production.operations.operate',
+    'production.output.report',
+    'maintenance.assets.read',
+    'maintenance.assets.manage',
+    'maintenance.pm.read',
+    'maintenance.pm.manage',
+    'maintenance.workorders.read',
+    'maintenance.workorders.manage',
+    'maintenance.workorders.execute',
+    'maintenance.parts.manage',
+    'workforce.workers.read',
+    'workforce.workers.manage',
+    'workforce.skills.read',
+    'workforce.skills.manage',
+    'workforce.shifts.read',
+    'workforce.shifts.manage',
+    'workforce.staffing.read',
+    'workforce.staffing.manage',
+    'workforce.attendance.read',
+    'workforce.attendance.capture',
+    'workforce.attendance.correct',
+    'workforce.overtime.read',
+    'workforce.overtime.request',
+    'workforce.overtime.approve',
+    'workforce.productivity.read',
+    'workforce.productivity.capture',
+    'workforce.self.read',
+    'utilities.meters.read',
+    'utilities.meters.manage',
+    'utilities.readings.read',
+    'utilities.readings.capture',
+    'utilities.events.read',
+    'utilities.events.manage',
+    'ehs.permits.read',
+    'ehs.permits.manage',
+    'ehs.permits.approve',
+    'ehs.permits.execute',
+    'ehs.incidents.read',
+    'ehs.incidents.report',
+    'ehs.incidents.manage',
+    'ehs.corrective_actions.verify'
   );
 
 COMMIT;

@@ -33,6 +33,8 @@ const database = {
   transaction: jest.fn<() => Promise<unknown>>(),
 };
 
+let persistedRunParams: unknown[] | null = null;
+
 const iamService = {
   authorize: jest.fn<() => Promise<void>>(),
 };
@@ -118,6 +120,7 @@ describe(
   () => {
     beforeEach(() => {
       jest.clearAllMocks();
+      persistedRunParams = null;
 
       iamService.authorize.mockResolvedValue(
         undefined,
@@ -136,14 +139,16 @@ describe(
       );
 
       database.transaction.mockImplementation(
-        async (callback) =>
-          callback({
-            query: jest
-              .fn<() => Promise<unknown>>()
-              .mockResolvedValue({
-                rows: [simulationRow()],
-              }),
-          } as never),
+        async (callback) => {
+          const transactionQuery = jest.fn<() => Promise<unknown>>();
+          (transactionQuery as any).mockImplementation(
+            async (_sql: string, parameters: unknown[]) => {
+              persistedRunParams = parameters;
+              return { rows: [simulationRow()] };
+            },
+          );
+          return callback({ query: transactionQuery } as never);
+        },
       );
     });
 
@@ -199,6 +204,29 @@ describe(
         expect(
           result.allExpectedOutcomesMatched,
         ).toBe(true);
+        expect(result.cases[0]).toMatchObject({
+          inputFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+          evidenceSource: 'POLICY_SERVICE',
+        });
+
+        const persistedParams = persistedRunParams as unknown[];
+        const storedPlan = JSON.parse(String(persistedParams[4])) as Array<{ inputFingerprint: string }>;
+        const storedObservations = JSON.parse(String(persistedParams[6])) as Array<{
+          inputFingerprint: string; evidenceSource: string;
+        }>;
+        const storedResult = JSON.parse(String(persistedParams[7])) as {
+          cases: Array<{ inputFingerprint: string; evidenceSource: string }>;
+        };
+        const fingerprint = result.cases[0]!.inputFingerprint;
+        expect(storedPlan[0]!.inputFingerprint).toBe(fingerprint);
+        expect(storedObservations[0]).toMatchObject({
+          inputFingerprint: fingerprint,
+          evidenceSource: 'POLICY_SERVICE',
+        });
+        expect(storedResult.cases[0]).toMatchObject({
+          inputFingerprint: fingerprint,
+          evidenceSource: 'POLICY_SERVICE',
+        });
 
         expect(
           database.transaction,
@@ -209,6 +237,68 @@ describe(
         ).toHaveBeenCalled();
 
         // No Tool Gateway is injected or called.
+      },
+    );
+
+
+    it(
+      'does not recommend review readiness when expected outcomes are incomplete',
+      async () => {
+        const service = makeService();
+
+        const result =
+          await service.simulateHistoricalPolicies(
+            tenantId,
+            factoryId,
+            userId,
+            sandboxId,
+            traceId,
+            [
+              {
+                eventKey: 'event-without-baseline',
+                action: 'INVENTORY.ADJUST',
+                resourceType: 'INVENTORY_ITEM',
+                effectiveAt: '2026-01-01T00:00:00.000Z',
+              },
+            ],
+          );
+
+        expect(result.status).toBe('BLOCKED');
+        expect(result.recommendation).toBe('EXPECTATIONS_INCOMPLETE');
+        expect(result.expectationsComplete).toBe(false);
+        expect(result.missingExpectedOutcomeCount).toBe(1);
+        expect(result.allExpectedOutcomesMatched).toBe(false);
+        expect(policyService.evaluatePolicy).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
+      'rejects duplicate event keys before policy evaluation or persistence',
+      async () => {
+        const service = makeService();
+        const duplicated = [
+          {
+            eventKey: 'same-event',
+            action: 'INVENTORY.ADJUST',
+            effectiveAt: '2026-01-01T00:00:00.000Z',
+            expectedOutcome: 'ALLOWED' as const,
+          },
+          {
+            eventKey: 'same-event',
+            action: 'PURCHASE.ORDER.CREATE',
+            effectiveAt: '2026-01-02T00:00:00.000Z',
+            expectedOutcome: 'DENIED' as const,
+          },
+        ];
+
+        await expect(
+          service.simulateHistoricalPolicies(
+            tenantId, factoryId, userId, sandboxId, traceId, duplicated,
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+
+        expect(policyService.evaluatePolicy).not.toHaveBeenCalled();
+        expect(database.transaction).not.toHaveBeenCalled();
       },
     );
 

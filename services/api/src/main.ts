@@ -1,5 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { json, urlencoded } from 'express';
+import type { Request, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
@@ -12,7 +14,20 @@ import {
 } from './config/runtime-config';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  // Bounded headroom for validated 2 MiB finance imports (base64 + JSON envelope).
+  app.use(json({
+    limit: '3mb',
+    verify: (request: Request, _response: Response, body: Buffer) => {
+      // Signature verification must use the original bytes, not re-serialized JSON.
+      // Avoid retaining raw bodies on non-webhook endpoints.
+      if (request.originalUrl?.split('?')[0]?.startsWith('/api/integrations/webhooks/')) {
+        (request as Request & { rawBody?: Buffer }).rawBody = Buffer.from(body);
+      }
+    },
+  }));
+  app.use(urlencoded({ extended: true, limit: '3mb' }));
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3001);

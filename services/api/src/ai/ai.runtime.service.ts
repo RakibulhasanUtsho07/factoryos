@@ -1338,21 +1338,65 @@ export class AiRuntimeService {
           );
         }
 
-        if (
-          approval.resource_type &&
-          approval.resource_type !== resourceType
-        ) {
+        if (approval.resource_type !== resourceType) {
           throw new ConflictException(
             'AI action approval resource type does not match the requested action',
           );
         }
 
-        if (
-          approval.resource_id &&
-          approval.resource_id !== resourceId
-        ) {
+        if (approval.resource_id !== resourceId) {
           throw new ConflictException(
             'AI action approval resource id does not match the requested action',
+          );
+        }
+
+        /*
+         * Approvals requested by the AI runtime capture the decision,
+         * payload hash, and target in metadata. Verify those bindings
+         * before minting an executable action token; matching only the
+         * policy/action/resource fields would otherwise allow a broader
+         * or stale approval to authorize a different payload or target.
+         */
+        const approvalMetadata = approval.metadata;
+
+        if (
+          !approvalMetadata ||
+          typeof approvalMetadata !== 'object' ||
+          Array.isArray(approvalMetadata)
+        ) {
+          throw new ConflictException(
+            'AI action approval is missing its immutable action binding',
+          );
+        }
+
+        if (
+          approvalMetadata.decisionId !== decisionId ||
+          approvalMetadata.actionPayloadHash !== payloadHash
+        ) {
+          throw new ConflictException(
+            'AI action approval is bound to a different decision or payload',
+          );
+        }
+
+        const approvedTarget = approvalMetadata.target;
+
+        if (
+          !approvedTarget ||
+          typeof approvedTarget !== 'object' ||
+          Array.isArray(approvedTarget) ||
+          this.computeHash(approvedTarget) !== this.computeHash(target)
+        ) {
+          throw new ConflictException(
+            'AI action approval target does not match the requested action',
+          );
+        }
+
+        if (
+          approval.risk_class_id !==
+          (evaluation.policy.riskClass?.id ?? null)
+        ) {
+          throw new ConflictException(
+            'AI action approval is bound to a different risk class',
           );
         }
 
@@ -1583,12 +1627,47 @@ export class AiRuntimeService {
   // ============================================================
 
   async executeAction(
-  tenantId: string,
-  factoryId: string,
-  actorUserId: string,
-  input: ExecuteAiActionDto,
-) {
-  this.validateScope(tenantId, factoryId);
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ExecuteAiActionDto,
+  ) {
+    return this.executeAuthorizedAction(
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      'AI_TOOL_GATEWAY',
+    );
+  }
+
+  /**
+   * Internal agent-runtime entry point. Unlike the public controller method,
+   * the executor identity is fixed by this method and cannot be caller-forged.
+   */
+  async executeAgentAction(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ExecuteAiActionDto,
+  ) {
+    return this.executeAuthorizedAction(
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      'AGENT_RUNTIME',
+    );
+  }
+
+  private async executeAuthorizedAction(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    input: ExecuteAiActionDto,
+    executorType: 'AI_TOOL_GATEWAY' | 'AGENT_RUNTIME',
+  ) {
+    this.validateScope(tenantId, factoryId);
   this.validateUuid(actorUserId, 'actorUserId');
 
   await this.iamService.authorize(
@@ -1699,6 +1778,28 @@ export class AiRuntimeService {
       idempotent: true,
       execution: this.mapExecution(executionKeyExisting),
     };
+  }
+
+  if (action.approval_id) {
+    const approvalResult = await this.database.query<{ id: string }>(
+      `
+      SELECT id::text AS id
+      FROM approvals
+      WHERE id = $1
+        AND tenant_id = $2
+        AND status = 'APPROVED'
+        AND (expires_at IS NULL OR expires_at > clock_timestamp())
+      LIMIT 1
+      `,
+      [action.approval_id, tenantId],
+      { tenantId, userId: actorUserId },
+    );
+
+    if (!approvalResult.rows[0]) {
+      throw new ConflictException(
+        'AI action approval is no longer valid; authorize a new action',
+      );
+    }
   }
 
   if (
@@ -1867,7 +1968,7 @@ export class AiRuntimeService {
     actionTokenHash: action.action_token_hash,
     tokenExpiresAt: action.token_expires_at,
     idempotencyKey: action.idempotency_key,
-    executorType: 'AI_TOOL_GATEWAY',
+    executorType,
     actionToken,
   };
 
@@ -1939,6 +2040,51 @@ export class AiRuntimeService {
         throw new ConflictException(
           'AI action token expired before gateway execution began',
         );
+      }
+
+      // This locked read serializes execution against approval revocation.
+      if (action.approval_id) {
+        const currentApproval = await client.query<{ id: string }>(
+          `
+          SELECT id::text AS id
+          FROM approvals
+          WHERE id = $1
+            AND tenant_id = $2
+            AND status = 'APPROVED'
+            AND (expires_at IS NULL OR expires_at > clock_timestamp())
+          FOR SHARE
+          `,
+          [action.approval_id, tenantId],
+        );
+
+        if (!currentApproval.rows[0]) {
+          const invalidatedClaim = await client.query<{ id: string }>(
+            `
+            UPDATE ai_execution_claims
+            SET
+              status = 'FAILED',
+              failure_code = 'APPROVAL_NO_LONGER_VALID',
+              completed_at = clock_timestamp()
+            WHERE id = $1
+              AND tenant_id = $2
+              AND factory_id = $3
+              AND status = 'CLAIMED'
+            RETURNING id::text AS id
+            `,
+            [claim.id, tenantId, factoryId],
+          );
+
+          if (!invalidatedClaim.rows[0]) {
+            throw new ConflictException(
+              'AI execution claim could not be finalized after approval expiry',
+            );
+          }
+
+          return {
+            kind: 'approval-invalid' as const,
+            claimId: claim.id,
+          };
+        }
       }
 
       let gatewayOutcome: Awaited<
@@ -2108,6 +2254,27 @@ export class AiRuntimeService {
 
   if (finalization.kind === 'gateway-error') {
     throw finalization.error;
+  }
+
+  if (finalization.kind === 'approval-invalid') {
+    await this.recordAuditSafely({
+      tenantId,
+      factoryId,
+      actorUserId,
+      eventType: 'AI_ACTION',
+      action: 'EXECUTE_BLOCKED_APPROVAL_INVALID',
+      resourceType: 'AI_EXECUTION_CLAIM',
+      resourceId: finalization.claimId,
+      payload: {
+        actionIntentId: action.id,
+        approvalId: action.approval_id,
+        reason: 'APPROVAL_NO_LONGER_VALID',
+      },
+    });
+
+    throw new ConflictException(
+      'AI action approval expired or was no longer approved before gateway execution',
+    );
   }
 
   const row = finalization.row;
@@ -4045,6 +4212,7 @@ export class AiRuntimeService {
         resource_id: string | null;
         status: string;
         expires_at: string | null;
+        metadata: Record<string, unknown>;
       }>(
         `
         SELECT
@@ -4056,7 +4224,8 @@ export class AiRuntimeService {
           a.resource_type,
           a.resource_id,
           a.status,
-          a.expires_at::text AS expires_at
+          a.expires_at::text AS expires_at,
+          a.metadata
         FROM approvals a
         WHERE a.id = $1
           AND a.tenant_id = $2

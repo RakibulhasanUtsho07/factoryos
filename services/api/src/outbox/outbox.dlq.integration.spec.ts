@@ -317,17 +317,34 @@ describe(
           ],
         );
 
-        // Remove the outbox fixture.
-        await pool.query(
-          `
-          DELETE FROM outbox_events
-
-          WHERE id = $1
-          `,
-          [
-            eventId,
-          ],
+        // Replay receipts are immutable audit evidence and reference the source event.
+        // Retain that event as quarantined after replay so unrelated dispatcher tests
+        // cannot claim this historical fixture as new work. Fixtures with no receipt
+        // can still be deleted normally.
+        const replayReceipt = await pool.query<{ exists: boolean }>(
+          'SELECT EXISTS(SELECT 1 FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND event_id=$2) AS exists',
+          [tenantId, eventId],
         );
+
+        if (replayReceipt.rows[0]?.exists) {
+          await pool.query(
+            `UPDATE outbox_events
+             SET status='QUARANTINED',
+                 next_attempt_at=clock_timestamp(),
+                 locked_at=NULL,
+                 locked_by=NULL,
+                 quarantined_at=COALESCE(quarantined_at,clock_timestamp()),
+                 quarantined_by=COALESCE(quarantined_by,'api-outbox-dlq-test-cleanup'),
+                 quarantine_reason=COALESCE(quarantine_reason,'DLQ_TEST_FIXTURE_RETAINED_FOR_IMMUTABLE_RECEIPT')
+             WHERE id=$1 AND tenant_id=$2`,
+            [eventId, tenantId],
+          );
+        } else {
+          await pool.query(
+            'DELETE FROM outbox_events WHERE id=$1 AND tenant_id=$2',
+            [eventId, tenantId],
+          );
+        }
 
         await pool.end();
       }
@@ -462,6 +479,9 @@ describe(
             eventId:
               eventId,
 
+            idempotencyKey:
+              'dlq-wrong-tenant-' + randomUUID(),
+
             requestId:
               randomUUID(),
 
@@ -543,6 +563,9 @@ describe(
             eventId:
               eventId,
 
+            idempotencyKey:
+              'dlq-wrong-factory-' + randomUUID(),
+
             requestId:
               randomUUID(),
 
@@ -583,6 +606,27 @@ describe(
         ).toBe(
           'QUARANTINED',
         );
+      },
+    );
+
+    it(
+      'should reject a replay request without an idempotency key before opening a transaction',
+      async () => {
+        const database = createIntegrationDatabase(appPool);
+        const service = new OutboxDlqService(
+          database as never,
+          new AuditService(database as never),
+        );
+
+        await expect(service.replay({
+          tenantId,
+          actorUserId,
+          eventId,
+          requestId: null,
+          traceId: null,
+          requestFactoryId: factoryId,
+          idempotencyKey: null,
+        })).rejects.toThrow('Idempotency-Key is required');
       },
     );
 
@@ -659,26 +703,61 @@ describe(
         const replayRequestId =
           randomUUID();
 
-        const result =
+        const replayIdempotencyKey =
+          'dlq-replay-' + randomUUID();
+
+        const replayInput = {
+          tenantId,
+          actorUserId,
+          eventId,
+          idempotencyKey: replayIdempotencyKey,
+          requestId: replayRequestId,
+          traceId: replayTraceId,
+          requestFactoryId: factoryId,
+        };
+        const [result, concurrentResult] = await Promise.all([
+          service.replay(replayInput),
+          service.replay(replayInput),
+        ]);
+        expect([result.replayed_request, concurrentResult.replayed_request].sort()).toEqual([false, true]);
+
+        const repeatedResult =
           await service.replay({
-            tenantId:
-              tenantId,
-
-            actorUserId:
-              actorUserId,
-
-            eventId:
-              eventId,
-
-            requestId:
-              replayRequestId,
-
-            traceId:
-              replayTraceId,
-
-            requestFactoryId:
-              factoryId,
+            tenantId,
+            actorUserId,
+            eventId,
+            idempotencyKey: replayIdempotencyKey,
+            requestId: randomUUID(),
+            traceId: randomUUID(),
+            requestFactoryId: factoryId,
           });
+
+        expect(repeatedResult.replayed_request).toBe(true);
+        expect(repeatedResult.status).toBe('PENDING');
+        expect(repeatedResult.replay_count).toBe(1);
+        expect(repeatedResult.previous_attempts).toBe(10);
+
+        await expect(service.replay({
+          tenantId,
+          actorUserId,
+          eventId: randomUUID(),
+          idempotencyKey: replayIdempotencyKey,
+          requestId: randomUUID(),
+          traceId: randomUUID(),
+          requestFactoryId: factoryId,
+        })).rejects.toThrow('Idempotency-Key was already used for a different DLQ replay request');
+
+        const receiptResult = await pool.query<{ receipt_count: string }>(
+          "SELECT count(*)::text AS receipt_count FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND event_id=$2 AND idempotency_key=$3",
+          [tenantId, eventId, replayIdempotencyKey],
+        );
+        expect(Number(receiptResult.rows[0]?.receipt_count)).toBe(1);
+
+        await expect(pool.query(
+          "DELETE FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND event_id=$2 AND idempotency_key=$3",
+          [tenantId, eventId, replayIdempotencyKey],
+        )).rejects.toThrow('DLQ replay receipts are immutable and cannot be changed or deleted');
+
 
         expect(
           result.event_id,

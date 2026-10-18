@@ -19,6 +19,7 @@ import { AiAgentRuntimeService } from './ai.agent.runtime.service';
 import {
   CreateAiAgentHandoffDto,
 } from './dto/create-ai-agent-handoff.dto';
+import { RejectAiAgentHandoffDto } from './dto/reject-ai-agent-handoff.dto';
 import {
   CreateAiAgentTaskDto,
 } from './dto/create-ai-agent-task.dto';
@@ -169,6 +170,44 @@ export class AiAgentController {
         parentTraceId: body.parent_trace_id ?? context.traceId,
         expectedArtifact: body.expected_artifact ?? null,
       },
+    );
+  }
+
+  @Post('handoffs/:id/accept')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.authorize')
+  @RequireFactoryScope()
+  async acceptHandoff(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) handoffId: string,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.acceptHandoff(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      handoffId,
+    );
+  }
+
+  @Post('handoffs/:id/reject')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.actions.authorize')
+  @RequireFactoryScope()
+  async rejectHandoff(
+    @Req() request: FactoryOsRequest,
+    @Param('id', new ParseUUIDPipe()) handoffId: string,
+    @Body() body?: RejectAiAgentHandoffDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+
+    return this.aiAgentRuntimeService.rejectHandoff(
+      context.tenantId,
+      context.factoryId,
+      context.userId,
+      handoffId,
+      body?.reason,
     );
   }
 

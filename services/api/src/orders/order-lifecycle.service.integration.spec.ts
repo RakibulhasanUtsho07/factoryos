@@ -9,6 +9,7 @@ import {
 } from '../database/integration-database.adapter';
 
 import { OrdersService } from './orders.service';
+import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 
 describe(
   'OrdersService lifecycle',
@@ -23,10 +24,95 @@ describe(
     let database: DatabaseService;
     let auditService: AuditService;
     let ordersService: OrdersService;
+    let inventoryReservationService: InventoryReservationService;
+
+    const reservationOrderIds: string[] = [];
+    const reservationItemIds: string[] = [];
 
     let orderId!: string;
     let tenantId!: string;
     let factoryId!: string;
+
+
+    const createBoundInventoryOrder = async (
+      stockQuantity: number,
+      lineQuantities: number[],
+    ): Promise<{ orderId: string; itemId: string; lineIds: string[] }> => {
+      const itemResult = await pool.query<{ id: string }>(
+        `
+        INSERT INTO inventory_items (
+          tenant_id, factory_id, sku, name, unit, created_by_user_id
+        )
+        VALUES ($1, $2, $3, $4, 'PCS', $5)
+        RETURNING id::text AS id
+        `,
+        [
+          tenantId,
+          factoryId,
+          'ORDER-RES-' + randomUUID(),
+          'Order reservation fixture',
+          TEST_USER_ID,
+        ],
+      );
+      const itemId = itemResult.rows[0]?.id;
+      if (!itemId) throw new Error('Inventory item fixture was not created');
+      reservationItemIds.push(itemId);
+
+      await pool.query(
+        `
+        INSERT INTO inventory_stock_balances (
+          tenant_id, factory_id, item_id, quantity_on_hand
+        )
+        VALUES ($1, $2, $3, $4::numeric)
+        `,
+        [tenantId, factoryId, itemId, stockQuantity.toFixed(4)],
+      );
+
+      const orderResult = await pool.query<{ id: string }>(
+        `
+        INSERT INTO orders (
+          tenant_id, factory_id, order_number, status, order_date,
+          currency, created_by_user_id
+        )
+        VALUES ($1, $2, $3, 'DRAFT', CURRENT_DATE, 'BDT', $4)
+        RETURNING id::text AS id
+        `,
+        [tenantId, factoryId, 'ORDER-RES-' + randomUUID(), TEST_USER_ID],
+      );
+      const orderId = orderResult.rows[0]?.id;
+      if (!orderId) throw new Error('Inventory order fixture was not created');
+      reservationOrderIds.push(orderId);
+
+      const lineIds: string[] = [];
+      for (let index = 0; index < lineQuantities.length; index += 1) {
+        const quantity = lineQuantities[index];
+        if (quantity === undefined) throw new Error('Missing fixture line quantity');
+        const lineResult = await pool.query<{ id: string }>(
+          `
+          INSERT INTO order_lines (
+            tenant_id, factory_id, order_id, line_number,
+            product_code, product_name, inventory_item_id, quantity, unit
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, 'PCS')
+          RETURNING id::text AS id
+          `,
+          [
+            tenantId,
+            factoryId,
+            orderId,
+            index + 1,
+            'SKU-' + (index + 1),
+            'Order reservation line ' + (index + 1),
+            itemId,
+            quantity.toFixed(4),
+          ],
+        );
+        const lineId = lineResult.rows[0]?.id;
+        if (!lineId) throw new Error('Order line fixture was not created');
+        lineIds.push(lineId);
+      }
+      return { orderId, itemId, lineIds };
+    };
 
     beforeAll(async () => {
       const databaseUrl =
@@ -265,11 +351,15 @@ describe(
               undefined,
         } as never;
 
+      inventoryReservationService =
+        new InventoryReservationService(database, auditService);
+
       ordersService =
         new OrdersService(
           database,
           auditService,
           {} as never,
+          inventoryReservationService,
         );
     });
 
@@ -299,6 +389,54 @@ describe(
               orderId,
             ],
           );
+        }
+
+        if (reservationItemIds.length > 0) {
+          await pool.query('ALTER TABLE order_material_dispositions DISABLE TRIGGER USER');
+          await pool.query('ALTER TABLE inventory_reservations DISABLE TRIGGER USER');
+          await pool.query('ALTER TABLE inventory_movements DISABLE TRIGGER USER');
+          try {
+            await pool.query(
+              'DELETE FROM order_material_dispositions WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_reservations WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_movements WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM outbox_events WHERE tenant_id = $1 AND factory_id = $2 AND (aggregate_id = ANY($3::uuid[]) OR aggregate_id = ANY($4::uuid[]))',
+              [tenantId, factoryId, reservationItemIds, reservationOrderIds],
+            );
+            await pool.query(
+              'DELETE FROM order_lines WHERE tenant_id = $1 AND factory_id = $2 AND order_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationOrderIds],
+            );
+            await pool.query(
+              'DELETE FROM orders WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationOrderIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_location_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_stock_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_items WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+          } finally {
+            await pool.query('ALTER TABLE inventory_movements ENABLE TRIGGER USER');
+            await pool.query('ALTER TABLE inventory_reservations ENABLE TRIGGER USER');
+            await pool.query('ALTER TABLE order_material_dispositions ENABLE TRIGGER USER');
+          }
         }
 
         await pool.end();
@@ -633,6 +771,427 @@ describe(
         expect(
           completedEvent?.version,
         ).toBe(4);
+      },
+    );
+
+
+    it(
+      'should reserve bound order lines on confirmation and issue stock when production starts',
+      async () => {
+        const fixture = await createBoundInventoryOrder(10, [3, 2]);
+
+        const confirmed = await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CONFIRMED', null, randomUUID(), 1,
+        );
+        expect(confirmed.status).toBe('CONFIRMED');
+        expect(confirmed.inventory.reservations_created).toBe(2);
+
+        const reservedRows = await pool.query<{ status: string; quantity: string }>(
+          `
+          SELECT status, quantity::text AS quantity
+          FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_type = 'ORDER_LINE'
+            AND reference_id = ANY($3::uuid[])
+          ORDER BY quantity DESC, reference_id
+          `,
+          [tenantId, factoryId, fixture.lineIds],
+        );
+        expect(reservedRows.rows).toHaveLength(2);
+        expect(reservedRows.rows.every((row) => row.status === 'RESERVED')).toBe(true);
+
+        const afterReserve = await pool.query<{ on_hand: string; reserved: string }>(
+          `
+          SELECT quantity_on_hand::text AS on_hand, quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(afterReserve.rows[0]?.on_hand).toBe('10.0000');
+        expect(afterReserve.rows[0]?.reserved).toBe('5.0000');
+
+        const confirmationEvent = await pool.query<{
+          inventory: {
+            reservations_created: number;
+            reservations_released: number;
+            reservations_consumed: number;
+          };
+        }>(
+          `
+          SELECT payload->'inventory' AS inventory
+          FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND aggregate_id = $3 AND event_type = 'ORDER.CONFIRMED'
+          ORDER BY created_at DESC
+          LIMIT 1
+          `,
+          [tenantId, factoryId, fixture.orderId],
+        );
+        expect(confirmationEvent.rows[0]?.inventory).toEqual({
+          reservations_created: 2,
+          reservations_released: 0,
+          reservations_consumed: 0,
+        });
+
+        const inProgress = await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'IN_PROGRESS', null, randomUUID(), 2,
+        );
+        expect(inProgress.inventory.reservations_created).toBe(0);
+        expect(inProgress.inventory.reservations_consumed).toBe(2);
+
+        const inProgressBalance = await pool.query<{ on_hand: string; reserved: string }>(
+          `
+          SELECT quantity_on_hand::text AS on_hand, quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(inProgressBalance.rows[0]?.on_hand).toBe('5.0000');
+        expect(inProgressBalance.rows[0]?.reserved).toBe('0.0000');
+
+        const completed = await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'COMPLETED', null, randomUUID(), 3,
+        );
+        expect(completed.status).toBe('COMPLETED');
+        expect(completed.inventory.reservations_consumed).toBe(0);
+
+        const finalBalance = await pool.query<{ on_hand: string; reserved: string }>(
+          `
+          SELECT quantity_on_hand::text AS on_hand, quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(finalBalance.rows[0]?.on_hand).toBe('5.0000');
+        expect(finalBalance.rows[0]?.reserved).toBe('0.0000');
+
+        const finalReservations = await pool.query<{ status: string; count: number }>(
+          `
+          SELECT status, COUNT(*)::int AS count
+          FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_type = 'ORDER_LINE'
+            AND reference_id = ANY($3::uuid[])
+          GROUP BY status
+          `,
+          [tenantId, factoryId, fixture.lineIds],
+        );
+        expect(finalReservations.rows).toEqual([{ status: 'CONSUMED', count: 2 }]);
+
+        const movementResult = await pool.query<{ count: number }>(
+          `
+          SELECT COUNT(*)::int AS count
+          FROM inventory_movements
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND item_id = $3 AND reference_type = 'RESERVATION'
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(movementResult.rows[0]?.count).toBe(2);
+      },
+    );
+
+    it(
+      'should roll back confirmation completely when bound-line stock is insufficient',
+      async () => {
+        const fixture = await createBoundInventoryOrder(4, [5]);
+
+        await expect(
+          ordersService.transitionOrderStatus(
+            TEST_USER_ID, tenantId, fixture.orderId, 'CONFIRMED', null, randomUUID(), 1,
+          ),
+        ).rejects.toThrow('Insufficient available stock');
+
+        const orderResult = await pool.query<{ status: string; version: string }>(
+          `
+          SELECT status, version::text AS version
+          FROM orders WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+          `,
+          [fixture.orderId, tenantId, factoryId],
+        );
+        expect(orderResult.rows[0]?.status).toBe('DRAFT');
+        expect(orderResult.rows[0]?.version).toBe('1');
+
+        const balance = await pool.query<{ reserved: string }>(
+          `
+          SELECT quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(balance.rows[0]?.reserved).toBe('0.0000');
+
+        const reservations = await pool.query<{ count: number }>(
+          `
+          SELECT COUNT(*)::int AS count
+          FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_id = ANY($3::uuid[])
+          `,
+          [tenantId, factoryId, fixture.lineIds],
+        );
+        expect(reservations.rows[0]?.count).toBe(0);
+
+        const confirmationEvents = await pool.query<{ count: number }>(
+          `
+          SELECT COUNT(*)::int AS count FROM outbox_events
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND aggregate_id = $3 AND event_type = 'ORDER.CONFIRMED'
+          `,
+          [tenantId, factoryId, fixture.orderId],
+        );
+        expect(confirmationEvents.rows[0]?.count).toBe(0);
+      },
+    );
+
+    it(
+      'should release order reservations on cancellation without changing on-hand stock',
+      async () => {
+        const fixture = await createBoundInventoryOrder(8, [3, 2]);
+        await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CONFIRMED', null, randomUUID(), 1,
+        );
+
+        const cancelled = await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CANCELLED', null, randomUUID(), 2,
+        );
+        expect(cancelled.status).toBe('CANCELLED');
+        expect(cancelled.inventory.reservations_released).toBe(2);
+
+        const balance = await pool.query<{ on_hand: string; reserved: string }>(
+          `
+          SELECT quantity_on_hand::text AS on_hand, quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        expect(balance.rows[0]?.on_hand).toBe('8.0000');
+        expect(balance.rows[0]?.reserved).toBe('0.0000');
+
+        const statuses = await pool.query<{ status: string; count: number }>(
+          `
+          SELECT status, COUNT(*)::int AS count
+          FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_type = 'ORDER_LINE'
+            AND reference_id = ANY($3::uuid[])
+          GROUP BY status
+          `,
+          [tenantId, factoryId, fixture.lineIds],
+        );
+        expect(statuses.rows).toEqual([{ status: 'RELEASED', count: 2 }]);
+      },
+    );
+
+
+    it(
+      'should return or scrap issued material idempotently before cancelling an order',
+      async () => {
+        const fixture = await createBoundInventoryOrder(10, [3, 2]);
+
+        await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CONFIRMED', null, randomUUID(), 1,
+        );
+        await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'IN_PROGRESS', null, randomUUID(), 2,
+        );
+
+        const reservationResult = await pool.query<{
+          id: string;
+          reference_id: string;
+          quantity: string;
+        }>(
+          `
+          SELECT id::text AS id, reference_id::text AS reference_id,
+                 quantity::text AS quantity
+          FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_type = 'ORDER_LINE'
+            AND reference_id = ANY($3::uuid[])
+            AND status = 'CONSUMED'
+          ORDER BY quantity DESC, reference_id
+          `,
+          [tenantId, factoryId, fixture.lineIds],
+        );
+        expect(reservationResult.rows).toHaveLength(2);
+        const first = reservationResult.rows[0];
+        const second = reservationResult.rows[1];
+        if (!first || !second) throw new Error('Consumed reservation fixtures are missing');
+
+        const returnRequest = {
+          reservation_id: first.id,
+          disposition_type: 'RETURN_TO_STOCK' as const,
+          quantity: 1,
+          notes: 'Unused material returned after production stopped',
+        };
+        const returnIdempotencyKey = 'return-material-' + randomUUID();
+        const returned = await inventoryReservationService.recordOrderMaterialDisposition(
+          TEST_USER_ID, tenantId, factoryId, fixture.orderId,
+          returnRequest, returnIdempotencyKey, randomUUID(), randomUUID(),
+        );
+        expect(returned.disposition_type).toBe('RETURN_TO_STOCK');
+        expect(returned.movement_id).toBeTruthy();
+        expect(returned.replayed).toBe(false);
+
+        const returnReplay = await inventoryReservationService.recordOrderMaterialDisposition(
+          TEST_USER_ID, tenantId, factoryId, fixture.orderId,
+          returnRequest, returnIdempotencyKey, randomUUID(), randomUUID(),
+        );
+        expect(returnReplay.id).toBe(returned.id);
+        expect(returnReplay.replayed).toBe(true);
+
+        const returnedBalance = await pool.query<{ on_hand: string; reserved: string }>(
+          `
+          SELECT quantity_on_hand::text AS on_hand, quantity_reserved::text AS reserved
+          FROM inventory_stock_balances
+          WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+          `,
+          [tenantId, factoryId, fixture.itemId],
+        );
+        // 10 on-hand - 5 issued + 1 physically returned; replay must not add it twice.
+        expect(returnedBalance.rows[0]?.on_hand).toBe('6.0000');
+        expect(returnedBalance.rows[0]?.reserved).toBe('0.0000');
+
+        const remainder = await inventoryReservationService.recordOrderMaterialDisposition(
+          TEST_USER_ID, tenantId, factoryId, fixture.orderId,
+          {
+            reservation_id: first.id,
+            disposition_type: 'SCRAPPED',
+            quantity: 2,
+            notes: 'Damaged after production started',
+          },
+          'scrap-remainder-' + randomUUID(), randomUUID(), randomUUID(),
+        );
+        expect(remainder.movement_id).toBeNull();
+
+        await inventoryReservationService.recordOrderMaterialDisposition(
+          TEST_USER_ID, tenantId, factoryId, fixture.orderId,
+          {
+            reservation_id: second.id,
+            disposition_type: 'SCRAPPED',
+            quantity: 2,
+          },
+          'scrap-second-' + randomUUID(), randomUUID(), randomUUID(),
+        );
+
+        await expect(
+          inventoryReservationService.recordOrderMaterialDisposition(
+            TEST_USER_ID, tenantId, factoryId, fixture.orderId,
+            returnRequest, 'return-material-' + randomUUID(), randomUUID(), randomUUID(),
+          ),
+        ).rejects.toThrow('exceeds the remaining issued material');
+
+        const cancelled = await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CANCELLED', null, randomUUID(), 3,
+        );
+        expect(cancelled.status).toBe('CANCELLED');
+
+        const dispositions = await pool.query<{ disposition_type: string; quantity: string; count: number }>(
+          `
+          SELECT disposition_type, SUM(quantity)::text AS quantity, COUNT(*)::int AS count
+          FROM order_material_dispositions
+          WHERE tenant_id = $1 AND factory_id = $2 AND order_id = $3
+          GROUP BY disposition_type
+          ORDER BY disposition_type
+          `,
+          [tenantId, factoryId, fixture.orderId],
+        );
+        expect(dispositions.rows).toEqual([
+          { disposition_type: 'RETURN_TO_STOCK', quantity: '1.0000', count: 1 },
+          { disposition_type: 'SCRAPPED', quantity: '4.0000', count: 2 },
+        ]);
+
+        const returnedMovement = await pool.query<{ movement_type: string; quantity: string }>(
+          `
+          SELECT movement_type, quantity::text AS quantity
+          FROM inventory_movements
+          WHERE tenant_id = $1 AND factory_id = $2 AND id = $3
+          `,
+          [tenantId, factoryId, returned.movement_id],
+        );
+        expect(returnedMovement.rows).toEqual([{ movement_type: 'RECEIPT', quantity: '1.0000' }]);
+
+        const cancelledOrder = await pool.query<{ status: string; version: string }>(
+          `
+          SELECT status, version::text AS version
+          FROM orders WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+          `,
+          [fixture.orderId, tenantId, factoryId],
+        );
+        expect(cancelledOrder.rows[0]?.status).toBe('CANCELLED');
+        expect(cancelledOrder.rows[0]?.version).toBe('4');
+      },
+    );
+
+    it(
+      'should block cancellation until every consumed quantity has explicit disposition',
+      async () => {
+        const fixture = await createBoundInventoryOrder(7, [4]);
+
+        await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CONFIRMED', null, randomUUID(), 1,
+        );
+        await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'IN_PROGRESS', null, randomUUID(), 2,
+        );
+
+        await expect(
+          ordersService.transitionOrderStatus(
+            TEST_USER_ID, tenantId, fixture.orderId, 'CANCELLED', null, randomUUID(), 3,
+          ),
+        ).rejects.toThrow('without a return/scrap disposition');
+
+        const state = await pool.query<{ status: string; version: string }>(
+          `
+          SELECT status, version::text AS version
+          FROM orders WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+          `,
+          [fixture.orderId, tenantId, factoryId],
+        );
+        expect(state.rows[0]?.status).toBe('IN_PROGRESS');
+        expect(state.rows[0]?.version).toBe('3');
+
+        await expect(
+          pool.query(
+            `
+            UPDATE orders
+            SET status = 'CANCELLED', version = version + 1
+            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+            `,
+            [fixture.orderId, tenantId, factoryId],
+          ),
+        ).rejects.toThrow('every consumed order material must be fully returned to stock or marked as scrapped');
+
+        const consumed = await pool.query<{ id: string }>(
+          `
+          SELECT id::text AS id FROM inventory_reservations
+          WHERE tenant_id = $1 AND factory_id = $2
+            AND reference_id = ANY($3::uuid[]) AND status = 'CONSUMED'
+          `,
+          [tenantId, factoryId, fixture.lineIds],
+        );
+        const reservation = consumed.rows[0];
+        if (!reservation) throw new Error('Consumed reservation fixture is missing');
+
+        await inventoryReservationService.recordOrderMaterialDisposition(
+          TEST_USER_ID, tenantId, factoryId, fixture.orderId,
+          {
+            reservation_id: reservation.id,
+            disposition_type: 'SCRAPPED',
+            quantity: 4,
+          },
+          'scrap-for-cancel-' + randomUUID(), randomUUID(), randomUUID(),
+        );
+
+        const cancelled = await ordersService.transitionOrderStatus(
+          TEST_USER_ID, tenantId, fixture.orderId, 'CANCELLED', null, randomUUID(), 3,
+        );
+        expect(cancelled.status).toBe('CANCELLED');
       },
     );
 

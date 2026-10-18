@@ -34,9 +34,15 @@ import {
   ListOrdersDto,
 } from './dto/list-orders.dto';
 
+import { CreateOrderMaterialDispositionDto } from './dto/create-order-material-disposition.dto';
+
 import {
   OrderIdempotencyService,
 } from './order-idempotency.service';
+
+import {
+  InventoryReservationService,
+} from '../inventory/inventory.reservation.service';
 
 @Injectable()
 export class OrdersService {
@@ -47,6 +53,9 @@ export class OrdersService {
 
     private readonly orderIdempotencyService:
       OrderIdempotencyService,
+
+    private readonly inventoryReservationService:
+      InventoryReservationService,
   ) {}
 
   async createOrder(
@@ -202,6 +211,18 @@ export class OrdersService {
       throw new BadRequestException(
         'Duplicate line_number is not allowed',
       );
+    }
+
+    for (const line of dto.lines) {
+      if (
+        line.inventory_item_id !== undefined &&
+        line.inventory_item_id !== null &&
+        !isUUID(line.inventory_item_id)
+      ) {
+        throw new BadRequestException(
+          `inventory_item_id on line ${line.line_number} must be a valid UUID`,
+        );
+      }
     }
 
     const currency =
@@ -418,6 +439,7 @@ export class OrdersService {
         line_number: number;
         product_code: string;
         product_name: string;
+        inventory_item_id: string | null;
         quantity: string;
         unit: string;
         unit_price: string | null;
@@ -426,12 +448,66 @@ export class OrdersService {
     for (
       const line of dto.lines
     ) {
+      const inventoryItemId =
+        line.inventory_item_id?.trim() || null;
+
+      if (inventoryItemId) {
+        const inventoryItemResult =
+          await client.query<{
+            id: string;
+            unit: string;
+            status: string;
+          }>(
+            `
+            SELECT
+              id::text AS id,
+              unit,
+              status
+            FROM inventory_items
+            WHERE id = $1
+              AND tenant_id = $2
+              AND factory_id = $3
+            FOR SHARE
+            `,
+            [
+              inventoryItemId,
+              tenantId,
+              orderRow.factory_id,
+            ],
+          );
+
+        const inventoryItem =
+          inventoryItemResult.rows[0];
+
+        if (!inventoryItem) {
+          throw new NotFoundException(
+            `Inventory item on order line ${line.line_number} was not found in this factory`,
+          );
+        }
+
+        if (inventoryItem.status !== 'ACTIVE') {
+          throw new ConflictException(
+            `Inventory item on order line ${line.line_number} is disabled`,
+          );
+        }
+
+        if (
+          inventoryItem.unit.trim().toUpperCase() !==
+          line.unit.trim().toUpperCase()
+        ) {
+          throw new BadRequestException(
+            `Order line ${line.line_number} unit must match its inventory item unit`,
+          );
+        }
+      }
+
       const lineResult =
         await client.query<{
           id: string;
           line_number: number;
           product_code: string;
           product_name: string;
+          inventory_item_id: string | null;
           quantity: string;
           unit: string;
           unit_price: string | null;
@@ -439,10 +515,12 @@ export class OrdersService {
           `
           INSERT INTO order_lines (
             tenant_id,
+            factory_id,
             order_id,
             line_number,
             product_code,
             product_name,
+            inventory_item_id,
             quantity,
             unit,
             unit_price,
@@ -459,8 +537,10 @@ export class OrdersService {
             $6,
             $7,
             $8,
-            $9::date,
-            $10
+            $9,
+            $10,
+            $11::date,
+            $12
           )
 
           RETURNING
@@ -468,16 +548,19 @@ export class OrdersService {
             line_number,
             product_code,
             product_name,
+            inventory_item_id::text AS inventory_item_id,
             quantity::text AS quantity,
             unit,
             unit_price::text AS unit_price
           `,
           [
             tenantId,
+            orderRow.factory_id,
             orderRow.id,
             line.line_number,
             line.product_code.trim(),
             line.product_name.trim(),
+            inventoryItemId,
             line.quantity,
             line.unit.trim(),
             line.unit_price ??
@@ -534,6 +617,9 @@ export class OrdersService {
 
             product_code:
               line.product_code,
+
+            inventory_item_id:
+              line.inventory_item_id,
 
             quantity:
               line.quantity,
@@ -898,6 +984,89 @@ export class OrdersService {
             );
           }
 
+          if (targetStatus === 'COMPLETED') {
+            const unfulfilledProductionLine = await client.query<{
+              order_line_id: string;
+              ordered_quantity: string;
+              accepted_good_quantity: string;
+            }>(
+              `
+              SELECT ol.id::text AS order_line_id,
+                ol.quantity::text AS ordered_quantity,
+                COALESCE((
+                  SELECT SUM(r.good_quantity)
+                  FROM order_production_reports r
+                  WHERE r.order_id = ol.order_id
+                    AND r.order_line_id = ol.id
+                    AND r.tenant_id = ol.tenant_id
+                    AND r.factory_id = ol.factory_id
+                ), 0)::text AS accepted_good_quantity
+              FROM order_lines ol
+              WHERE ol.order_id = $1
+                AND ol.tenant_id = $2
+                AND ol.factory_id = $3
+                AND (
+                  EXISTS (
+                    SELECT 1 FROM work_orders wo
+                    WHERE wo.source_order_id = ol.order_id
+                      AND wo.source_order_line_id = ol.id
+                      AND wo.tenant_id = ol.tenant_id
+                      AND wo.factory_id = ol.factory_id
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM order_production_reports r
+                    WHERE r.order_id = ol.order_id AND r.order_line_id = ol.id
+                      AND r.tenant_id = ol.tenant_id AND r.factory_id = ol.factory_id
+                  )
+                )
+                AND COALESCE((
+                  SELECT SUM(r.good_quantity)
+                  FROM order_production_reports r
+                  WHERE r.order_id = ol.order_id
+                    AND r.order_line_id = ol.id
+                    AND r.tenant_id = ol.tenant_id
+                    AND r.factory_id = ol.factory_id
+                ), 0) < ol.quantity
+              ORDER BY ol.id
+              LIMIT 1
+              `,
+              [order.id, tenantId, order.factory_id],
+            );
+            const unfulfilledLine = unfulfilledProductionLine.rows[0];
+            if (unfulfilledLine) {
+              throw new ConflictException(
+                `Cannot complete sales order: production-linked line ${unfulfilledLine.order_line_id} has ${unfulfilledLine.accepted_good_quantity} accepted good units against ${unfulfilledLine.ordered_quantity} ordered units. Record the remaining good output before completion.`,
+              );
+            }
+          }
+
+          await this.inventoryReservationService.assertOrderMaterialsDisposedBeforeCancellation(
+            client,
+            {
+              tenantId,
+              factoryId: order.factory_id,
+              orderId: order.id,
+              previousStatus: order.status,
+              targetStatus,
+            },
+          );
+
+          const inventoryLifecycle =
+            await this.inventoryReservationService.applyOrderTransition(
+              client,
+              {
+                userId,
+                tenantId,
+                factoryId: order.factory_id,
+                orderId: order.id,
+                orderNumber: order.order_number,
+                previousStatus: order.status,
+                targetStatus,
+                requestId,
+                traceId,
+              },
+            );
+
           const updatedResult =
             await client.query<{
               id: string;
@@ -1016,6 +1185,9 @@ export class OrdersService {
               user_id:
                 userId,
             },
+
+            inventory:
+              inventoryLifecycle,
           };
 
           const correlationId =
@@ -1139,6 +1311,9 @@ export class OrdersService {
               Number(
                 updatedOrder.version,
               ),
+
+            inventory:
+              inventoryLifecycle,
           };
         },
       );
@@ -1189,6 +1364,9 @@ export class OrdersService {
           updatedAt:
             result.updated_at,
 
+          inventory:
+            result.inventory,
+
           result:
             'UPDATED',
         },
@@ -1198,6 +1376,28 @@ export class OrdersService {
     }
 
     return result;
+  }
+
+  async recordMaterialDisposition(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    orderId: string,
+    dto: CreateOrderMaterialDispositionDto,
+    idempotencyKey: string | null,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    return this.inventoryReservationService.recordOrderMaterialDisposition(
+      userId,
+      tenantId,
+      factoryId,
+      orderId,
+      dto,
+      idempotencyKey,
+      requestId,
+      traceId,
+    );
   }
 
   async getOrderById(
@@ -1324,6 +1524,7 @@ export class OrdersService {
         line_number: number;
         product_code: string;
         product_name: string;
+        inventory_item_id: string | null;
         quantity: string;
         unit: string;
         unit_price:
@@ -1347,6 +1548,9 @@ export class OrdersService {
           ol.product_code,
 
           ol.product_name,
+
+          ol.inventory_item_id::text
+            AS inventory_item_id,
 
           ol.quantity::text
             AS quantity,

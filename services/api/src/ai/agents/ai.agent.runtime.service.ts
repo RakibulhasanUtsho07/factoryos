@@ -39,23 +39,16 @@ import {
 } from './ai.agent.catalogue.service';
 
 import {
-  AiToolGatewayService,
-} from '../tools/ai.tool.gateway.service';
-
-import {
   AiToolRegistryService,
 } from '../tools/ai.tool.registry.service';
 
 import type {
   AiAgentState,
-} from '../tools/ai.tool.types';
-
-import type {
-  AiToolActionContext,
   AiToolExecutionOutcome,
 } from '../tools/ai.tool.types';
 
 import type {
+  AiAgentExecutionEvidence,
   AiAgentHandoffRecord,
   AiAgentTask,
   AiAgentTaskStep,
@@ -90,6 +83,7 @@ interface AgentTaskRow extends QueryResultRow {
   failure_code: string | null;
   failure_reason: string | null;
   idempotency_key: string | null;
+  request_hash: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -124,6 +118,7 @@ interface AgentTaskStepRow extends QueryResultRow {
   action_intent_id: string | null;
   approval_id: string | null;
   execution_record_id: string | null;
+  execution_evidence: Record<string, unknown>;
   output: Record<string, unknown>;
   error: Record<string, unknown>;
   started_at: string | null;
@@ -200,7 +195,6 @@ export class AiAgentRuntimeService {
     private readonly iamService: IamService,
     private readonly aiRuntimeService: AiRuntimeService,
     private readonly aiAgentCatalogueService: AiAgentCatalogueService,
-    private readonly toolGateway: AiToolGatewayService,
     private readonly toolRegistry: AiToolRegistryService,
   ) {}
 
@@ -249,6 +243,41 @@ export class AiAgentRuntimeService {
       255,
     );
 
+    const contextVersion = this.optionalString(
+      input.contextVersion,
+      'contextVersion',
+      100,
+    );
+    const planVersion = this.optionalString(
+      input.planVersion,
+      'planVersion',
+      100,
+    );
+    const contextHash = this.optionalString(
+      input.contextHash,
+      'contextHash',
+      128,
+    );
+
+    for (let index = 0; index < input.steps.length; index += 1) {
+      this.validateStepDefinition(input.steps[index]!, index);
+    }
+
+    const requestHash = this.computeTaskRequestHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      deadlineAt,
+      contextVersion,
+      planVersion,
+      contextHash,
+    });
+
     if (idempotencyKey) {
       const existing = await this.getTaskByIdempotencyKey(
         tenantId,
@@ -257,6 +286,12 @@ export class AiAgentRuntimeService {
       );
 
       if (existing) {
+        if (existing.request_hash !== requestHash) {
+          throw new ConflictException(
+            'The idempotency key was already used for a different or unverifiable AI agent task request',
+          );
+        }
+
         return {
           idempotent: true,
           task: this.mapTask(existing),
@@ -264,137 +299,175 @@ export class AiAgentRuntimeService {
       }
     }
 
-    for (let index = 0; index < input.steps.length; index += 1) {
-      this.validateStepDefinition(input.steps[index]!, index);
-    }
+    let result: AgentTaskRow;
 
-    const result = await this.database.transaction(
-      async (client) => {
-        const taskId = randomUUID();
+    try {
+      result = await this.database.transaction(
+        async (client) => {
+          const taskId = randomUUID();
 
-        const inserted = await client.query<AgentTaskRow>(
-          `
-          INSERT INTO agent_tasks (
-            id,
-            tenant_id,
-            factory_id,
-            decision_id,
-            parent_trace_id,
-            actor_user_id,
-            goal,
-            max_steps,
-            max_retries,
-            max_tool_calls,
-            timeout_ms,
-            deadline_at,
-            context_version,
-            plan_version,
-            context_hash,
-            idempotency_key
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12,
-            $13, $14, $15, $16
-          )
-          RETURNING ${this.taskSelectColumns()}
-          `,
-          [
-            taskId,
-            tenantId,
-            factoryId,
-            decisionId,
-            parentTraceId,
-            actorUserId,
-            goal,
-            limits.maxSteps,
-            limits.maxRetries,
-            limits.maxToolCalls,
-            limits.timeoutMs,
-            deadlineAt,
-            this.optionalString(input.contextVersion, 'contextVersion', 100),
-            this.optionalString(input.planVersion, 'planVersion', 100),
-            this.optionalString(input.contextHash, 'contextHash', 128),
-            idempotencyKey,
-          ],
-        );
-
-        const task = inserted.rows[0];
-
-        if (!task) {
-          throw new Error('AI_AGENT_TASK_INSERT_FAILED');
-        }
-
-        for (let index = 0; index < input.steps.length; index += 1) {
-          const step = input.steps[index]!;
-
-          await client.query(
+          const inserted = await client.query<AgentTaskRow>(
             `
-            INSERT INTO agent_task_steps (
+            INSERT INTO agent_tasks (
               id,
               tenant_id,
               factory_id,
-              task_id,
-              step_key,
-              step_index,
-              agent_id,
-              capability,
-              input_schema,
-              output_schema,
-              tool_id,
-              tool_version,
-              action_type,
-              target,
-              payload,
-              resource_type,
-              resource_id,
-              risk_class,
+              decision_id,
+              parent_trace_id,
+              actor_user_id,
+              goal,
+              max_steps,
+              max_retries,
+              max_tool_calls,
               timeout_ms,
-              retry_limit,
-              authority_level,
-              depends_on
+              deadline_at,
+              context_version,
+              plan_version,
+              context_hash,
+              idempotency_key,
+              request_hash
             )
-            VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8,
-              $9::jsonb, $10::jsonb, $11, $12, $13,
-              $14::jsonb, $15::jsonb, $16, $17, $18,
-              $19, $20, $21, $22::jsonb
-            )
+            SELECT
+              $1, $2, $3, $4, $5, $6, $7,
+              $8, $9, $10, $11, $12,
+              $13, $14, $15, $16, $17
+            WHERE $12::timestamptz > NOW()
+            RETURNING ${this.taskSelectColumns()}
             `,
             [
-              randomUUID(),
+              taskId,
               tenantId,
               factoryId,
-              task.id,
-              step.stepKey.trim(),
-              index,
-              step.agentId ?? null,
-              step.capability.trim(),
-              JSON.stringify(step.inputSchema ?? {}),
-              JSON.stringify(step.outputSchema ?? {}),
-              step.toolId.trim(),
-              step.toolVersion.trim(),
-              step.actionType.trim(),
-              JSON.stringify(step.target ?? {}),
-              JSON.stringify(step.payload ?? {}),
-              step.resourceType ?? null,
-              step.resourceId ?? null,
-              step.riskClass ?? null,
-              step.timeoutMs ?? 1000,
-              step.retryLimit ?? 0,
-              step.authorityLevel?.trim() ?? 'TASK_SCOPED',
-              JSON.stringify(step.dependsOn ?? []),
+              decisionId,
+              parentTraceId,
+              actorUserId,
+              goal,
+              limits.maxSteps,
+              limits.maxRetries,
+              limits.maxToolCalls,
+              limits.timeoutMs,
+              deadlineAt,
+              contextVersion,
+              planVersion,
+              contextHash,
+              idempotencyKey,
+              requestHash,
             ],
           );
-        }
 
-        return task;
-      },
-      {
+          const task = inserted.rows[0];
+
+          if (!task) {
+            throw new ConflictException(
+              'AI agent task deadline elapsed before the record could be created',
+            );
+          }
+
+          for (let index = 0; index < input.steps.length; index += 1) {
+            const step = input.steps[index]!;
+
+            await client.query(
+              `
+              INSERT INTO agent_task_steps (
+                id,
+                tenant_id,
+                factory_id,
+                task_id,
+                step_key,
+                step_index,
+                agent_id,
+                capability,
+                input_schema,
+                output_schema,
+                tool_id,
+                tool_version,
+                action_type,
+                target,
+                payload,
+                resource_type,
+                resource_id,
+                risk_class,
+                timeout_ms,
+                retry_limit,
+                authority_level,
+                depends_on
+              )
+              VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9::jsonb, $10::jsonb, $11, $12, $13,
+                $14::jsonb, $15::jsonb, $16, $17, $18,
+                $19, $20, $21, $22::jsonb
+              )
+              `,
+              [
+                randomUUID(),
+                tenantId,
+                factoryId,
+                task.id,
+                step.stepKey.trim(),
+                index,
+                step.agentId ?? null,
+                step.capability.trim(),
+                JSON.stringify(step.inputSchema ?? {}),
+                JSON.stringify(step.outputSchema ?? {}),
+                step.toolId.trim(),
+                step.toolVersion.trim(),
+                step.actionType.trim(),
+                JSON.stringify(step.target ?? {}),
+                JSON.stringify(step.payload ?? {}),
+                step.resourceType ?? null,
+                step.resourceId ?? null,
+                step.riskClass ?? null,
+                step.timeoutMs ?? 1000,
+                step.retryLimit ?? 0,
+                step.authorityLevel?.trim() ?? 'TASK_SCOPED',
+                JSON.stringify(step.dependsOn ?? []),
+              ],
+            );
+          }
+
+          return task;
+        },
+        {
+          tenantId,
+          userId: actorUserId,
+        },
+      );
+
+
+    } catch (error: unknown) {
+      const databaseError =
+        error && typeof error === 'object'
+          ? (error as { code?: unknown; constraint?: unknown })
+          : null;
+
+      if (
+        !idempotencyKey ||
+        databaseError?.code !== '23505' ||
+        databaseError?.constraint !== 'uq_agent_tasks_tenant_idempotency'
+      ) {
+        throw error;
+      }
+
+      // Another API instance may have inserted the same key after the
+      // initial lookup. Replay only after validating its stored fingerprint.
+      const concurrentTask = await this.getTaskByIdempotencyKey(
         tenantId,
-        userId: actorUserId,
-      },
-    );
+        factoryId,
+        idempotencyKey,
+      );
+
+      if (!concurrentTask || concurrentTask.request_hash !== requestHash) {
+        throw new ConflictException(
+          'The idempotency key was concurrently claimed for a different or unverifiable AI agent task request',
+        );
+      }
+
+      return {
+        idempotent: true,
+        task: this.mapTask(concurrentTask),
+      };
+    }
 
     await this.audit(
       tenantId,
@@ -546,6 +619,8 @@ export class AiAgentRuntimeService {
       taskId,
       stepId,
     );
+    // Preserve the original binding across step-state row refreshes.
+    const boundAgentId = step.agent_id;
 
     if (step.status === 'SUCCEEDED') {
       return {
@@ -558,11 +633,11 @@ export class AiAgentRuntimeService {
     this.assertExecutable(task, step);
     await this.assertDependencies(tenantId, factoryId, task, step);
 
-    if (step.agent_id) {
+    if (boundAgentId) {
       await this.aiAgentCatalogueService.assertToolEntitled(
         tenantId,
         factoryId,
-        step.agent_id,
+        boundAgentId,
         step.tool_id,
         step.tool_version,
       );
@@ -585,7 +660,7 @@ export class AiAgentRuntimeService {
     const authorizationIdempotencyKey =
       `agent:${task.id}:${step.id}:auth:${authorizationAttempt}`;
 
-    await this.database.query(
+    const stepClaim = await this.database.query(
       `
       UPDATE agent_task_steps
       SET
@@ -595,13 +670,28 @@ export class AiAgentRuntimeService {
         id = $1
         AND tenant_id = $2
         AND factory_id = $3
+        AND status = $5
+        AND version = $6
       `,
-      [step.id, tenantId, factoryId, authorizationAttempt],
+      [
+        step.id,
+        tenantId,
+        factoryId,
+        authorizationAttempt,
+        step.status,
+        step.version,
+      ],
       {
         tenantId,
         userId: actorUserId,
       },
     );
+
+    if (stepClaim.rowCount !== 1) {
+      throw new ConflictException(
+        'AI agent task step was changed or claimed by another execution request',
+      );
+    }
 
     try {
       const authorization =
@@ -638,6 +728,16 @@ export class AiAgentRuntimeService {
           step.id,
           'AI_AGENT_AUTHORIZATION_DENIED',
           'AI action authorization was denied by policy',
+        );
+      }
+
+      if (authStatus === 'APPROVAL_REQUIRED' || authStatus === 'AUTHORIZED') {
+        this.assertAuthorizationMatchesStep(
+          action,
+          tenantId,
+          factoryId,
+          task.decision_id,
+          step,
         );
       }
 
@@ -723,12 +823,8 @@ export class AiAgentRuntimeService {
         step.id,
       );
 
-      const gatewayAction = this.toGatewayAction(
-        task,
-        step,
-        action,
-        actionToken,
-      );
+      const attemptNumber = step.retry_count + 1;
+      const executionKey = `agent:${task.id}:${step.id}:${attemptNumber}`;
 
       step = await this.updateStep(
         tenantId,
@@ -748,7 +844,6 @@ export class AiAgentRuntimeService {
         },
       );
 
-      const attemptNumber = step.retry_count + 1;
       await this.recordAttempt(
         tenantId,
         factoryId,
@@ -760,51 +855,41 @@ export class AiAgentRuntimeService {
         'STARTED',
       );
 
-      let outcome: AiToolExecutionOutcome;
-
-      try {
-        outcome = await this.withTimeout(
-          this.toolGateway.execute(gatewayAction),
-          step.timeout_ms,
-        );
-      } catch (error) {
-        const failure = {
-          code: 'AI_TOOL_GATEWAY_FAILURE',
-          message: this.errorMessage(error),
-        };
-
-        await this.recordAttempt(
+      if (boundAgentId) {
+        // Operational controls can change while action authorization runs.
+        // Re-check immediately before crossing the side-effect boundary.
+        await this.aiAgentCatalogueService.assertToolEntitled(
           tenantId,
           factoryId,
-          actorUserId,
-          task.id,
-          step.id,
-          attemptNumber,
-          'EXECUTION',
-          'FAILED',
-          failure,
-        );
-
-        return this.applyFailure(
-          tenantId,
-          factoryId,
-          actorUserId,
-          task,
-          step,
-          failure,
+          boundAgentId,
+          step.tool_id,
+          step.tool_version,
         );
       }
 
-      const executionRecordId =
-        await this.persistExecutionRecord(
+      const { outcome, executionRecordId } =
+        await this.executeGovernedTool(
           tenantId,
           factoryId,
           actorUserId,
-          task,
-          step,
-          outcome,
-          `agent:${task.id}:${step.id}:${attemptNumber}`,
+          actionToken,
+          executionKey,
+          step.tool_id,
+          step.tool_version,
+          {
+            decisionId: task.decision_id,
+            actionIntentId: action.id as string,
+            inputsHash: action.payloadHash as string,
+          },
         );
+      const executionEvidence = this.buildExecutionEvidence({
+        task,
+        step,
+        actionIntentId: action.id as string,
+        executionRecordId,
+        executionKey,
+        outcome,
+      });
 
       if (outcome.status === 'SUCCEEDED') {
         await this.recordAttempt(
@@ -828,10 +913,23 @@ export class AiAgentRuntimeService {
           {
             status: 'SUCCEEDED',
             executionRecordId,
+            executionEvidence,
             output: outcome.result,
             error: {},
             finishedAt: new Date().toISOString(),
           },
+        );
+
+        await this.audit(
+          tenantId,
+          factoryId,
+          actorUserId,
+          'AI_AGENT_STEP_EXECUTION',
+          'SUCCEEDED',
+          'AGENT_TASK_STEP',
+          step.id,
+          task.parent_trace_id,
+          { executionEvidence: { ...executionEvidence } },
         );
 
         const completedCount =
@@ -902,6 +1000,7 @@ export class AiAgentRuntimeService {
         step,
         failure,
         executionRecordId,
+        executionEvidence,
       );
     } catch (error) {
       const failure = {
@@ -1197,9 +1296,9 @@ export class AiAgentRuntimeService {
         expected_artifact,
         handoff_hash
       )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11
-      )
+      SELECT
+        $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10::jsonb, $11
+      WHERE $8::timestamptz > NOW()
       RETURNING
         id::text AS id,
         tenant_id::text AS tenant_id,
@@ -1240,7 +1339,9 @@ export class AiAgentRuntimeService {
 
     const row = result.rows[0];
     if (!row) {
-      throw new Error('AI_AGENT_HANDOFF_INSERT_FAILED');
+      throw new ConflictException(
+        'AI agent handoff expiry elapsed before the record could be created',
+      );
     }
 
     await this.audit(
@@ -1297,7 +1398,11 @@ export class AiAgentRuntimeService {
         `
         UPDATE agent_handoffs
         SET status = 'EXPIRED'
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+        WHERE id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND status = 'PENDING'
+          AND expires_at <= NOW()
         `,
         [handoffId, tenantId, factoryId],
         {
@@ -1349,6 +1454,7 @@ export class AiAgentRuntimeService {
         AND tenant_id = $2
         AND factory_id = $3
         AND status = 'PENDING'
+        AND expires_at > NOW()
       RETURNING
         id::text AS id,
         tenant_id::text AS tenant_id,
@@ -1378,7 +1484,7 @@ export class AiAgentRuntimeService {
     const row = result.rows[0];
     if (!row) {
       throw new ConflictException(
-        'AI agent handoff acceptance lost a concurrency race',
+        'AI agent handoff acceptance lost a concurrency race or the handoff expired',
       );
     }
 
@@ -1395,6 +1501,122 @@ export class AiAgentRuntimeService {
         senderAuthorityInherited: false,
         receiverUserId: receivingUserId,
       },
+    );
+
+    return this.mapHandoff(row);
+  }
+
+  async rejectHandoff(
+    tenantId: string,
+    factoryId: string,
+    rejectingUserId: string,
+    handoffId: string,
+    reason = 'AI agent handoff rejected by actor',
+  ): Promise<AiAgentHandoffRecord> {
+    this.validateScope(tenantId, factoryId, rejectingUserId);
+    this.requiredUuid(handoffId, 'handoffId');
+
+    await this.iamService.authorize(
+      rejectingUserId,
+      tenantId,
+      'ai.actions.authorize',
+      factoryId,
+    );
+
+    const handoff = await this.getHandoff(
+      tenantId,
+      factoryId,
+      handoffId,
+    );
+
+    if (!handoff) {
+      throw new NotFoundException(
+        'AI agent handoff was not found for this factory',
+      );
+    }
+
+    if (handoff.status !== 'PENDING') {
+      throw new ConflictException(
+        `AI agent handoff is not pending: ${handoff.status}`,
+      );
+    }
+
+    const expiry = new Date(handoff.expiresAt).getTime();
+    if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+      await this.database.query(
+        `
+        UPDATE agent_handoffs
+        SET status = 'EXPIRED'
+        WHERE id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND status = 'PENDING'
+          AND expires_at <= NOW()
+        `,
+        [handoffId, tenantId, factoryId],
+        {
+          tenantId,
+          userId: rejectingUserId,
+        },
+      );
+
+      throw new ConflictException('AI agent handoff has expired');
+    }
+
+    const rejectionReason = this.requiredString(reason, 'reason', 2000);
+    const result = await this.database.query<AgentHandoffRow>(
+      `
+      UPDATE agent_handoffs
+      SET status = 'REJECTED'
+      WHERE
+        id = $1
+        AND tenant_id = $2
+        AND factory_id = $3
+        AND status = 'PENDING'
+        AND expires_at > NOW()
+      RETURNING
+        id::text AS id,
+        tenant_id::text AS tenant_id,
+        factory_id::text AS factory_id,
+        source_agent_id,
+        target_agent_id,
+        purpose,
+        allowed_data_classes,
+        permitted_tools,
+        expires_at::text AS expires_at,
+        parent_trace_id::text AS parent_trace_id,
+        expected_artifact,
+        handoff_hash,
+        status,
+        accepted_by::text AS accepted_by,
+        accepted_at::text AS accepted_at,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at
+      `,
+      [handoffId, tenantId, factoryId],
+      {
+        tenantId,
+        userId: rejectingUserId,
+      },
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new ConflictException(
+        'AI agent handoff rejection lost a concurrency race or the handoff expired',
+      );
+    }
+
+    await this.audit(
+      tenantId,
+      factoryId,
+      rejectingUserId,
+      'AI_AGENT_HANDOFF',
+      'REJECT',
+      'AGENT_HANDOFF',
+      row.id,
+      row.parent_trace_id,
+      { reason: rejectionReason },
     );
 
     return this.mapHandoff(row);
@@ -1466,6 +1688,21 @@ export class AiAgentRuntimeService {
       );
     }
 
+    // Keep authorization and durable execution on the same stable retry key.
+    // A new key per request could mint a second action intent for one recovery
+    // attempt, obscuring whether an earlier compensation already ran.
+    const attemptNumber = await this.nextAttemptNumber(
+      tenantId,
+      factoryId,
+      actorUserId,
+      task.id,
+      step.id,
+      'COMPENSATION',
+      tool.rollback.toolVersion,
+    );
+    const executionKey =
+      `agent:${task.id}:${step.id}:compensation:${attemptNumber}`;
+
     const authorization =
       await this.aiRuntimeService.authorizeAction(
         tenantId,
@@ -1480,7 +1717,7 @@ export class AiAgentRuntimeService {
           resource_id: step.resource_id,
           payload: compensationPayload,
           idempotency_key:
-            `agent:${task.id}:${step.id}:compensation:${randomUUID()}`,
+            executionKey,
           token_ttl_seconds: 600,
         },
       );
@@ -1491,6 +1728,19 @@ export class AiAgentRuntimeService {
         'Compensation action was not authorized',
       );
     }
+    this.assertAuthorizationMatchesCompensation(
+      action,
+      tenantId,
+      factoryId,
+      task.decision_id,
+      {
+        toolId: tool.rollback.toolId,
+        toolVersion: tool.rollback.toolVersion,
+        actionType: tool.rollback.actionType,
+      },
+      step,
+      compensationPayload,
+    );
 
     const actionToken = authorization.actionToken;
     if (typeof actionToken !== 'string') {
@@ -1499,30 +1749,61 @@ export class AiAgentRuntimeService {
       );
     }
 
-    const compensationStep = {
-      ...step,
-      tool_id: tool.rollback.toolId,
-      tool_version: tool.rollback.toolVersion,
-      action_type: tool.rollback.actionType,
-      payload: compensationPayload,
-    };
+    if (step.agent_id) {
+      // A pause/restriction may arrive during compensation authorization.
+      await this.aiAgentCatalogueService.assertToolEntitled(
+        tenantId,
+        factoryId,
+        step.agent_id,
+        tool.rollback.toolId,
+        tool.rollback.toolVersion,
+      );
+    }
 
-    const outcome = await this.toolGateway.execute(
-      this.toGatewayAction(
-        task,
-        compensationStep,
-        action,
-        actionToken,
-      ),
-    );
-
-    const attemptNumber = await this.nextAttemptNumber(
+    // Persist STARTED before the execution boundary. If the process or network
+    // fails after the tool may have run, the next request must not mint a new
+    // compensation key until the related durable execution claim is reconciled.
+    await this.recordAttempt(
       tenantId,
       factoryId,
+      actorUserId,
       task.id,
       step.id,
+      attemptNumber,
       'COMPENSATION',
+      'STARTED',
+      {},
+      undefined,
+      action.id as string,
     );
+
+    const { outcome, executionRecordId } =
+      await this.executeGovernedTool(
+        tenantId,
+        factoryId,
+        actorUserId,
+        actionToken,
+        executionKey,
+        tool.rollback.toolId,
+        tool.rollback.toolVersion,
+        {
+          decisionId: task.decision_id,
+          actionIntentId: action.id as string,
+          inputsHash: action.payloadHash as string,
+        },
+      );
+    const compensationEvidence = this.buildExecutionEvidence({
+      task,
+      step,
+      actionIntentId: action.id as string,
+      executionRecordId,
+      executionKey,
+      outcome,
+      toolId: tool.rollback.toolId,
+      executionKind: 'COMPENSATION',
+      sourceExecutionRecordId: step.execution_record_id,
+      attemptNumber,
+    });
 
     await this.recordAttempt(
       tenantId,
@@ -1534,6 +1815,8 @@ export class AiAgentRuntimeService {
       'COMPENSATION',
       outcome.status === 'SUCCEEDED' ? 'SUCCEEDED' : 'FAILED',
       outcome.error,
+      executionRecordId,
+      action.id as string,
     );
 
     await this.audit(
@@ -1550,6 +1833,7 @@ export class AiAgentRuntimeService {
         rollbackToolId: tool.rollback.toolId,
         rollbackVersion: tool.rollback.toolVersion,
         rollbackActionType: tool.rollback.actionType,
+        compensationEvidence,
       },
     );
 
@@ -1557,6 +1841,7 @@ export class AiAgentRuntimeService {
       attempted: true,
       status: outcome.status,
       outcome,
+      executionEvidence: compensationEvidence,
     };
   }
 
@@ -1568,15 +1853,19 @@ export class AiAgentRuntimeService {
     step: AgentTaskStepRow,
     error: Record<string, unknown>,
     executionRecordId?: string,
+    executionEvidence?: AiAgentExecutionEvidence,
   ): Promise<AiAgentStepExecutionResult> {
+    const deadlineAt = Date.parse(task.deadline_at);
     const canRetry =
       step.retry_count < step.retry_limit &&
       task.retry_count < task.max_retries &&
-      !task.cancel_requested_at;
+      !task.cancel_requested_at &&
+      Number.isFinite(deadlineAt) &&
+      deadlineAt > Date.now();
 
     if (canRetry) {
       const newRetryCount = step.retry_count + 1;
-      await this.database.query(
+      const retryStepClaim = await this.database.query(
         `
         UPDATE agent_task_steps
         SET
@@ -1584,9 +1873,26 @@ export class AiAgentRuntimeService {
           retry_count = $4,
           execution_record_id = COALESCE($5, execution_record_id),
           error = $6::jsonb,
+          execution_evidence = COALESCE($7::jsonb, execution_evidence),
           finished_at = NOW(),
           version = version + 1
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+        WHERE
+          id = $1
+          AND tenant_id = $2
+          AND factory_id = $3
+          AND status = 'RUNNING'
+          AND EXISTS (
+            SELECT 1
+            FROM agent_tasks parent_task
+            WHERE parent_task.id = agent_task_steps.task_id
+              AND parent_task.tenant_id = $2
+              AND parent_task.factory_id = $3
+              AND parent_task.state IN ('EXECUTING', 'AWAITING_AUTH')
+              AND parent_task.cancel_requested_at IS NULL
+              AND parent_task.deadline_at > NOW()
+              AND parent_task.retry_count < parent_task.max_retries
+          )
+        RETURNING id
         `,
         [
           step.id,
@@ -1595,12 +1901,26 @@ export class AiAgentRuntimeService {
           newRetryCount,
           executionRecordId ?? null,
           JSON.stringify(error),
+          executionEvidence ? JSON.stringify(executionEvidence) : null,
         ],
         {
           tenantId,
           userId: actorUserId,
         },
       );
+
+      if (retryStepClaim.rowCount !== 1) {
+        return this.failTask(
+          tenantId,
+          factoryId,
+          actorUserId,
+          task.id,
+          'AI_AGENT_RETRY_LIMIT_EXCEEDED',
+          this.errorMessageFromRecord(error),
+          step.id,
+          executionEvidence,
+        );
+      }
 
       const taskResult = await this.database.query<AgentTaskRow>(
         `
@@ -1616,6 +1936,8 @@ export class AiAgentRuntimeService {
           AND tenant_id = $2
           AND factory_id = $3
           AND state IN ('EXECUTING', 'AWAITING_AUTH')
+          AND cancel_requested_at IS NULL
+          AND deadline_at > NOW()
           AND retry_count < max_retries
         RETURNING ${this.taskSelectColumns()}
         `,
@@ -1647,6 +1969,7 @@ export class AiAgentRuntimeService {
           {
             retryCount: retryStep.retry_count,
             error,
+            executionEvidence: executionEvidence ?? null,
           },
         );
 
@@ -1667,6 +1990,7 @@ export class AiAgentRuntimeService {
       'AI_AGENT_RETRY_LIMIT_EXCEEDED',
       this.errorMessageFromRecord(error),
       step.id,
+      executionEvidence,
     );
   }
 
@@ -1678,6 +2002,7 @@ export class AiAgentRuntimeService {
     code: string,
     reason: string,
     stepId?: string,
+    executionEvidence?: AiAgentExecutionEvidence,
   ): Promise<AiAgentStepExecutionResult> {
     const task = await this.requireTask(tenantId, factoryId, taskId);
 
@@ -1723,6 +2048,7 @@ export class AiAgentRuntimeService {
         code,
         reason,
         stepId: stepId ?? null,
+        executionEvidence: executionEvidence ?? null,
       },
     );
 
@@ -1738,6 +2064,7 @@ export class AiAgentRuntimeService {
             code,
             message: reason,
           },
+          executionEvidence,
           finishedAt: new Date().toISOString(),
         },
       );
@@ -1816,6 +2143,69 @@ export class AiAgentRuntimeService {
     };
   }
 
+  private async executeGovernedTool(
+    tenantId: string,
+    factoryId: string,
+    actorUserId: string,
+    actionToken: string,
+    executionKey: string,
+    toolId: string,
+    toolVersion: string,
+    expectedBinding: {
+      decisionId: string;
+      actionIntentId: string;
+      inputsHash: string;
+    },
+  ): Promise<{
+    outcome: AiToolExecutionOutcome;
+    executionRecordId: string;
+  }> {
+    // Resolve the immutable tool contract before side effects. The central
+    // runtime remains responsible for claims, execution persistence and audit.
+    const tool = await this.toolRegistry.getTool(
+      tenantId,
+      factoryId,
+      toolId,
+      toolVersion,
+    );
+
+    const result = await this.aiRuntimeService.executeAgentAction(
+      tenantId,
+      factoryId,
+      actorUserId,
+      {
+        action_token: actionToken,
+        execution_key: executionKey,
+        tool_version: toolVersion,
+      },
+    );
+    const execution = result.execution;
+    const executionBindingMatches =
+      typeof execution.id === 'string' &&
+      execution.id.length > 0 &&
+      execution.decisionId === expectedBinding.decisionId &&
+      execution.actionIntentId === expectedBinding.actionIntentId &&
+      execution.executionKey === executionKey &&
+      execution.toolVersion === toolVersion &&
+      execution.inputsHash === expectedBinding.inputsHash &&
+      execution.executorType === 'AGENT_RUNTIME' &&
+      (execution.status === 'SUCCEEDED' || execution.status === 'FAILED');
+
+    if (!executionBindingMatches) {
+      throw new ConflictException(
+        'AI execution record does not match the bound agent action',
+      );
+    }
+
+    return {
+      outcome: {
+        ...result.execution,
+        tool,
+      },
+      executionRecordId: result.execution.id,
+    };
+  }
+
   private async claimToolCall(
     tenantId: string,
     factoryId: string,
@@ -1836,6 +2226,7 @@ export class AiAgentRuntimeService {
         AND factory_id = $3
         AND state = 'EXECUTING'
         AND cancel_requested_at IS NULL
+        AND deadline_at > NOW()
         AND tool_call_count < max_tool_calls
       `,
       [task.id, tenantId, factoryId, stepId],
@@ -1847,68 +2238,9 @@ export class AiAgentRuntimeService {
 
     if (result.rowCount !== 1) {
       throw new ConflictException(
-        'AI agent maximum-tool-call budget exceeded or task was cancelled before Tool Gateway execution',
+        'AI agent maximum-tool-call budget exceeded, task cancelled, or deadline expired before Tool Gateway execution',
       );
     }
-  }
-
-  private async persistExecutionRecord(
-    tenantId: string,
-    factoryId: string,
-    actorUserId: string,
-    task: AgentTaskRow,
-    step: AgentTaskStepRow,
-    outcome: AiToolExecutionOutcome,
-    executionKey: string,
-  ): Promise<string> {
-    const result = await this.database.query<{ id: string }>(
-      `
-      INSERT INTO ai_execution_records (
-        id,
-        tenant_id,
-        factory_id,
-        decision_id,
-        action_intent_id,
-        execution_key,
-        executor_type,
-        tool_version,
-        inputs_hash,
-        result,
-        error,
-        status,
-        finished_at
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, 'AGENT_RUNTIME',
-        $7, $8, $9::jsonb, $10::jsonb, $11, NOW()
-      )
-      RETURNING id::text AS id
-      `,
-      [
-        randomUUID(),
-        tenantId,
-        factoryId,
-        task.decision_id,
-        step.action_intent_id,
-        executionKey,
-        outcome.toolVersion,
-        outcome.inputsHash,
-        JSON.stringify(outcome.result),
-        JSON.stringify(outcome.error),
-        outcome.status,
-      ],
-      {
-        tenantId,
-        userId: actorUserId,
-      },
-    );
-
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error('AI_AGENT_EXECUTION_RECORD_INSERT_FAILED');
-    }
-
-    return row.id;
   }
 
   private async recordAttempt(
@@ -1922,89 +2254,71 @@ export class AiAgentRuntimeService {
     status: 'STARTED' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'CANCELLED',
     error: Record<string, unknown> = {},
     executionRecordId?: string,
+    actionIntentId?: string,
   ): Promise<void> {
-    const existing = await this.database.query<{ id: string }>(
+    // One statement makes the attempt identity safe under concurrent retries.
+    // A late STARTED event must not reopen a terminal attempt, and conflicting
+    // terminal outcomes or execution-record bindings require reconciliation.
+    const result = await this.database.query<{ id: string }>(
       `
-      SELECT id::text AS id
-      FROM agent_action_attempts
-      WHERE
-        tenant_id = $1
-        AND factory_id = $2
-        AND task_id = $3
-        AND step_id = $4
-        AND attempt_number = $5
-        AND attempt_type = $6
-      LIMIT 1
-      `,
-      [
-        tenantId,
-        factoryId,
-        taskId,
-        stepId,
-        attemptNumber,
-        attemptType,
-      ],
-      {
-        tenantId,
-        userId: actorUserId,
-      },
-    );
-
-    if (existing.rows[0]) {
-      await this.database.query(
-        `
-        UPDATE agent_action_attempts
-        SET
-          status = $5,
-          execution_record_id = COALESCE($6, execution_record_id),
-          error = $7::jsonb,
-          finished_at = CASE
-            WHEN $5 IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
-              THEN NOW()
-            ELSE finished_at
-          END
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-        `,
-        [
-          existing.rows[0].id,
-          tenantId,
-          factoryId,
-          attemptNumber,
-          status,
-          executionRecordId ?? null,
-          JSON.stringify(error),
-        ],
-        {
-          tenantId,
-          userId: actorUserId,
-        },
-      );
-      return;
-    }
-
-    await this.database.query(
-      `
-      INSERT INTO agent_action_attempts (
-        id,
-        tenant_id,
-        factory_id,
-        task_id,
-        step_id,
-        attempt_number,
-        attempt_type,
-        execution_record_id,
-        status,
-        error,
-        finished_at
+      INSERT INTO agent_action_attempts AS attempt_row (
+        id, tenant_id, factory_id, task_id, step_id, attempt_number,
+        attempt_type, action_intent_id, execution_record_id, status, error, finished_at
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb,
         CASE
-          WHEN $9 IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+          WHEN $10 IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
             THEN NOW()
           ELSE NULL
         END
       )
+      ON CONFLICT (task_id, step_id, attempt_number, attempt_type)
+      DO UPDATE SET
+        status = CASE
+          WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN attempt_row.status
+          ELSE EXCLUDED.status
+        END,
+        action_intent_id = COALESCE(
+          attempt_row.action_intent_id,
+          EXCLUDED.action_intent_id
+        ),
+        execution_record_id = COALESCE(
+          attempt_row.execution_record_id,
+          EXCLUDED.execution_record_id
+        ),
+        error = CASE
+          WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN attempt_row.error
+          ELSE EXCLUDED.error
+        END,
+        finished_at = CASE
+          WHEN attempt_row.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN attempt_row.finished_at
+          WHEN EXCLUDED.status IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+            THEN NOW()
+          ELSE attempt_row.finished_at
+        END
+      WHERE
+        attempt_row.tenant_id = EXCLUDED.tenant_id
+        AND attempt_row.factory_id = EXCLUDED.factory_id
+        AND (
+          attempt_row.execution_record_id IS NULL
+          OR EXCLUDED.execution_record_id IS NULL
+          OR attempt_row.execution_record_id = EXCLUDED.execution_record_id
+        )
+        AND (
+          attempt_row.action_intent_id IS NULL
+          OR EXCLUDED.action_intent_id IS NULL
+          OR attempt_row.action_intent_id = EXCLUDED.action_intent_id
+        )
+        AND (
+          attempt_row.status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED')
+          OR EXCLUDED.status = 'STARTED'
+          OR EXCLUDED.status = attempt_row.status
+        )
+      RETURNING id::text AS id
       `,
       [
         randomUUID(),
@@ -2014,6 +2328,7 @@ export class AiAgentRuntimeService {
         stepId,
         attemptNumber,
         attemptType,
+        actionIntentId ?? null,
         executionRecordId ?? null,
         status,
         JSON.stringify(error),
@@ -2023,32 +2338,209 @@ export class AiAgentRuntimeService {
         userId: actorUserId,
       },
     );
+
+    if (!result.rows[0]) {
+      throw new ConflictException(
+        'Agent action attempt is bound to a conflicting scope, execution record, or terminal outcome',
+      );
+    }
   }
 
   private async nextAttemptNumber(
     tenantId: string,
     factoryId: string,
+    actorUserId: string,
     taskId: string,
     stepId: string,
     attemptType: 'EXECUTION' | 'COMPENSATION',
+    expectedToolVersion?: string,
   ): Promise<number> {
     const result = await this.database.query<{
-      max_number: number | null;
+      attempt_number: number;
+      status: 'STARTED' | 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
+      action_intent_id: string | null;
     }>(
       `
-      SELECT MAX(attempt_number) AS max_number
+      SELECT
+        attempt_number,
+        status,
+        action_intent_id::text AS action_intent_id
       FROM agent_action_attempts
       WHERE tenant_id = $1
         AND factory_id = $2
         AND task_id = $3
         AND step_id = $4
         AND attempt_type = $5
+      ORDER BY attempt_number DESC, created_at DESC
+      LIMIT 1
       `,
       [tenantId, factoryId, taskId, stepId, attemptType],
-      { tenantId },
+      { tenantId, userId: actorUserId },
     );
 
-    return Number(result.rows[0]?.max_number ?? 0) + 1;
+    const latest = result.rows[0];
+    if (attemptType !== 'COMPENSATION' || !latest) {
+      return Number(latest?.attempt_number ?? 0) + 1;
+    }
+
+    if (latest.status === 'SUCCEEDED') {
+      throw new ConflictException(
+        'A compensation attempt already succeeded; duplicate compensation is blocked',
+      );
+    }
+
+    if (latest.status !== 'STARTED') {
+      return latest.attempt_number + 1;
+    }
+
+    if (!latest.action_intent_id) {
+      throw new ConflictException(
+        'A previous compensation attempt has no action-intent binding; manual investigation is required',
+      );
+    }
+
+    const claimResult = await this.database.query<{
+      claim_status: 'CLAIMED' | 'COMPLETED' | 'FAILED';
+      execution_key: string;
+      tool_version: string;
+      inputs_hash: string;
+      execution_record_id: string | null;
+      execution_record_status: 'SUCCEEDED' | 'FAILED' | null;
+      record_execution_key: string | null;
+      record_tool_version: string | null;
+      record_inputs_hash: string | null;
+      reconciliation_decision: 'CONFIRMED_COMPLETED' | 'CONFIRMED_FAILED' | null;
+    }>(
+      `
+      SELECT
+        c.status AS claim_status,
+        c.execution_key,
+        c.tool_version,
+        c.inputs_hash,
+        e.id::text AS execution_record_id,
+        e.status AS execution_record_status,
+        e.execution_key AS record_execution_key,
+        e.tool_version AS record_tool_version,
+        e.inputs_hash AS record_inputs_hash,
+        r.decision AS reconciliation_decision
+      FROM ai_execution_claims c
+      LEFT JOIN ai_execution_records e
+        ON e.tenant_id = c.tenant_id
+       AND e.factory_id = c.factory_id
+       AND e.action_intent_id = c.action_intent_id
+      LEFT JOIN ai_execution_claim_reconciliations r
+        ON r.tenant_id = c.tenant_id
+       AND r.factory_id = c.factory_id
+       AND r.claim_id = c.id
+      WHERE c.tenant_id = $1
+        AND c.factory_id = $2
+        AND c.action_intent_id = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, latest.action_intent_id],
+      { tenantId, userId: actorUserId },
+    );
+
+    const claim = claimResult.rows[0];
+    const expectedExecutionKey =
+      `agent:${taskId}:${stepId}:compensation:${latest.attempt_number}`;
+    if (
+      !claim ||
+      claim.execution_key !== expectedExecutionKey ||
+      (expectedToolVersion !== undefined && claim.tool_version !== expectedToolVersion)
+    ) {
+      throw new ConflictException(
+        'A previous compensation attempt has an unresolved or mismatched AI execution claim; manual investigation is required',
+      );
+    }
+
+    const hasExecutionRecord = claim.execution_record_id !== null;
+    const executionRecordBindingMatches =
+      !hasExecutionRecord ||
+      (
+        claim.record_execution_key === claim.execution_key &&
+        claim.record_tool_version === claim.tool_version &&
+        claim.record_inputs_hash === claim.inputs_hash
+      );
+    if (!executionRecordBindingMatches) {
+      throw new ConflictException(
+        'The reconciled compensation execution record does not match its durable claim; manual investigation is required',
+      );
+    }
+
+    if (claim.claim_status === 'CLAIMED') {
+      throw new ConflictException(
+        'A previous compensation attempt is unresolved; reconcile its AI execution claim before retrying',
+      );
+    }
+
+    if (claim.claim_status === 'COMPLETED') {
+      const completionIsConfirmed =
+        (hasExecutionRecord && claim.execution_record_status === 'SUCCEEDED') ||
+        (!hasExecutionRecord &&
+          claim.reconciliation_decision === 'CONFIRMED_COMPLETED');
+      if (!completionIsConfirmed) {
+        throw new ConflictException(
+          'The prior compensation claim is marked completed without matching completion evidence; manual investigation is required',
+        );
+      }
+
+      await this.recordAttempt(
+        tenantId,
+        factoryId,
+        actorUserId,
+        taskId,
+        stepId,
+        latest.attempt_number,
+        'COMPENSATION',
+        'SUCCEEDED',
+        {},
+        claim.execution_record_id ?? undefined,
+        latest.action_intent_id,
+      );
+      throw new ConflictException(
+        'The previous compensation attempt is confirmed completed; duplicate compensation is blocked',
+      );
+    }
+
+    // A terminally FAILED claim is not replayed with its old execution key.
+    // Persist that known terminal state, then the caller's explicit new request
+    // may allocate a fresh attempt key.
+    if (
+      hasExecutionRecord &&
+      claim.execution_record_status !== 'FAILED'
+    ) {
+      throw new ConflictException(
+        'The failed compensation claim conflicts with its execution record; manual investigation is required',
+      );
+    }
+    if (
+      !hasExecutionRecord &&
+      claim.reconciliation_decision !== 'CONFIRMED_FAILED'
+    ) {
+      throw new ConflictException(
+        'A failed compensation claim without an execution record requires operator confirmation before retrying',
+      );
+    }
+
+    await this.recordAttempt(
+      tenantId,
+      factoryId,
+      actorUserId,
+      taskId,
+      stepId,
+      latest.attempt_number,
+      'COMPENSATION',
+      'FAILED',
+      {
+        code: 'AI_EXECUTION_CLAIM_FAILED',
+        reconciliationDecision: claim.reconciliation_decision,
+      },
+      claim.execution_record_id ?? undefined,
+      latest.action_intent_id,
+    );
+
+    return latest.attempt_number + 1;
   }
 
   private async updateTaskStateRaw(
@@ -2091,6 +2583,8 @@ export class AiAgentRuntimeService {
         id = $1
         AND tenant_id = $2
         AND factory_id = $3
+        AND state NOT IN ('COMPLETED', 'BLOCKED', 'FAILED', 'CANCELLED')
+        AND cancel_requested_at IS NULL
       RETURNING ${this.taskSelectColumns()}
       `,
       [
@@ -2121,6 +2615,130 @@ export class AiAgentRuntimeService {
     return row;
   }
 
+  private buildExecutionEvidence(input: {
+    task: AgentTaskRow;
+    step: AgentTaskStepRow;
+    actionIntentId: string;
+    executionRecordId: string;
+    executionKey: string;
+    outcome: AiToolExecutionOutcome;
+    toolId?: string;
+    executionKind?: AiAgentExecutionEvidence['executionKind'];
+    sourceExecutionRecordId?: string | null;
+    attemptNumber?: number;
+  }): AiAgentExecutionEvidence {
+    return {
+      schemaVersion: 1,
+      executionKind: input.executionKind ?? 'STEP',
+      taskId: input.task.id,
+      stepId: input.step.id,
+      decisionId: input.task.decision_id,
+      parentTraceId: input.task.parent_trace_id,
+      actionIntentId: input.actionIntentId,
+      executionRecordId: input.executionRecordId,
+      executionKey: input.executionKey,
+      toolId: input.toolId ?? input.step.tool_id,
+      toolVersion: input.outcome.toolVersion,
+      executorType: input.outcome.executorType,
+      inputsHash: input.outcome.inputsHash,
+      outcomeStatus: input.outcome.status,
+      outcomeHash: this.computeHash({
+        status: input.outcome.status,
+        result: input.outcome.result,
+        error: input.outcome.error,
+      }),
+      ...(input.executionKind === 'COMPENSATION'
+        ? {
+            sourceExecutionRecordId: input.sourceExecutionRecordId ?? null,
+            attemptNumber: input.attemptNumber,
+          }
+        : {}),
+    };
+  }
+
+  private assertAuthorizationMatchesCompensation(
+    action: Record<string, unknown>,
+    tenantId: string,
+    factoryId: string,
+    decisionId: string,
+    rollback: { toolId: string; toolVersion: string; actionType: string },
+    step: AgentTaskStepRow,
+    payload: Record<string, unknown>,
+  ): void {
+    const actionPayloadMatches =
+      action.payload !== null &&
+      typeof action.payload === 'object' &&
+      !Array.isArray(action.payload) &&
+      this.computeHash(action.payload) === this.computeHash(payload);
+    const targetMatches =
+      action.target !== null &&
+      typeof action.target === 'object' &&
+      !Array.isArray(action.target) &&
+      this.computeHash(action.target) === this.computeHash(step.target);
+
+    const bindingMatches =
+      typeof action.id === 'string' &&
+      action.id.length > 0 &&
+      action.tenantId === tenantId &&
+      action.factoryId === factoryId &&
+      action.decisionId === decisionId &&
+      action.actionType === rollback.actionType &&
+      action.toolId === rollback.toolId &&
+      action.toolVersion === rollback.toolVersion &&
+      (action.resourceType ?? null) === (step.resource_type ?? null) &&
+      (action.resourceId ?? null) === (step.resource_id ?? null) &&
+      actionPayloadMatches &&
+      targetMatches &&
+      action.payloadHash === this.computeHash(payload);
+
+    if (!bindingMatches) {
+      throw new ConflictException(
+        'Compensation authorization does not match the registered rollback contract',
+      );
+    }
+  }
+
+  private assertAuthorizationMatchesStep(
+    action: Record<string, unknown>,
+    tenantId: string,
+    factoryId: string,
+    decisionId: string,
+    step: AgentTaskStepRow,
+  ): void {
+    const payloadMatches =
+      action.payload !== null &&
+      typeof action.payload === 'object' &&
+      !Array.isArray(action.payload) &&
+      this.computeHash(action.payload) === this.computeHash(step.payload);
+    const targetMatches =
+      action.target !== null &&
+      typeof action.target === 'object' &&
+      !Array.isArray(action.target) &&
+      this.computeHash(action.target) === this.computeHash(step.target);
+
+    const bindingMatches =
+      typeof action.id === 'string' &&
+      action.id.length > 0 &&
+      action.tenantId === tenantId &&
+      action.factoryId === factoryId &&
+      action.decisionId === decisionId &&
+      action.actionType === step.action_type &&
+      action.toolId === step.tool_id &&
+      action.toolVersion === step.tool_version &&
+      (action.resourceType ?? null) === (step.resource_type ?? null) &&
+      (action.resourceId ?? null) === (step.resource_id ?? null) &&
+      payloadMatches &&
+      targetMatches &&
+      action.payloadHash === this.computeHash(step.payload) &&
+      (step.risk_class === null || action.riskClass === step.risk_class);
+
+    if (!bindingMatches) {
+      throw new ConflictException(
+        'AI action authorization does not match the bound agent task step',
+      );
+    }
+  }
+
   private async updateStep(
     tenantId: string,
     factoryId: string,
@@ -2131,6 +2749,7 @@ export class AiAgentRuntimeService {
       actionIntentId?: string | null;
       approvalId?: string | null;
       executionRecordId?: string | null;
+      executionEvidence?: AiAgentExecutionEvidence;
       output?: Record<string, unknown>;
       error?: Record<string, unknown>;
       startedAt?: string | null;
@@ -2149,6 +2768,7 @@ export class AiAgentRuntimeService {
         error = COALESCE($9::jsonb, error),
         started_at = COALESCE($10, started_at),
         finished_at = COALESCE($11, finished_at),
+        execution_evidence = COALESCE($12::jsonb, execution_evidence),
         version = version + 1
       WHERE
         id = $1
@@ -2168,6 +2788,7 @@ export class AiAgentRuntimeService {
         fields.error ? JSON.stringify(fields.error) : null,
         fields.startedAt ?? null,
         fields.finishedAt ?? null,
+        fields.executionEvidence ? JSON.stringify(fields.executionEvidence) : null,
       ],
       {
         tenantId,
@@ -2273,31 +2894,6 @@ export class AiAgentRuntimeService {
       throw new ConflictException(
         'AI agent task deadline has been exceeded',
       );
-    }
-  }
-
-  private async withTimeout<T>(
-    promise: Promise<T>,
-    timeoutMs: number,
-  ): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        reject(
-          new ConflictException(
-            `AI agent step execution exceeded timeout of ${timeoutMs}ms`,
-          ),
-        );
-      }, timeoutMs);
-    });
-
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
     }
   }
 
@@ -2521,59 +3117,75 @@ export class AiAgentRuntimeService {
     }
   }
 
-  private toGatewayAction(
-    task: AgentTaskRow,
-    step: AgentTaskStepRow,
-    action: Record<string, unknown>,
-    actionToken: string,
-  ): AiToolActionContext {
-    return {
-      tenantId: task.tenant_id,
-      factoryId: task.factory_id,
-      actorUserId: task.actor_user_id,
-      actionIntentId: this.requiredString(
-        action.id,
-        'actionIntentId',
-        100,
-      ),
-      decisionId: task.decision_id,
-      toolId: step.tool_id,
-      toolVersion: step.tool_version,
-      actionType: step.action_type,
-      target: this.requireObject(action.target, 'action.target'),
-      resourceType:
-        typeof action.resourceType === 'string'
-          ? action.resourceType
-          : null,
-      resourceId:
-        typeof action.resourceId === 'string'
-          ? action.resourceId
-          : null,
-      payload: this.requireObject(action.payload, 'action.payload'),
-      payloadHash: this.requiredString(
-        action.payloadHash,
-        'payloadHash',
-        128,
-      ),
-      riskClass: action.riskClass as AiToolActionContext['riskClass'],
-      authorizationStatus:
-        action.authorizationStatus as AiToolActionContext['authorizationStatus'],
-      approvalId:
-        typeof action.approvalId === 'string'
-          ? action.approvalId
-          : null,
-      actionTokenHash: this.computeHash(actionToken),
-      tokenExpiresAt:
-        typeof action.tokenExpiresAt === 'string'
-          ? action.tokenExpiresAt
-          : null,
-      idempotencyKey:
-        typeof action.idempotencyKey === 'string'
-          ? action.idempotencyKey
-          : null,
-      executorType: 'AGENT_RUNTIME',
-      actionToken,
+  private computeTaskRequestHash(args: {
+    tenantId: string;
+    factoryId: string;
+    actorUserId: string;
+    input: CreateAiAgentTaskInput;
+    decisionId: string;
+    parentTraceId: string;
+    goal: string;
+    limits: {
+      maxSteps: number;
+      maxRetries: number;
+      maxToolCalls: number;
+      timeoutMs: number;
     };
+    deadlineAt: string;
+    contextVersion: string | null;
+    planVersion: string | null;
+    contextHash: string | null;
+  }): string {
+    const {
+      tenantId,
+      factoryId,
+      actorUserId,
+      input,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      deadlineAt,
+      contextVersion,
+      planVersion,
+      contextHash,
+    } = args;
+
+    return this.computeHash({
+      tenantId,
+      factoryId,
+      actorUserId,
+      decisionId,
+      parentTraceId,
+      goal,
+      limits,
+      // Do not fingerprint the generated deadline when callers omit it:
+      // otherwise an identical retry would hash differently on every attempt.
+      requestedDeadlineAt: input.deadlineAt ? deadlineAt : null,
+      contextVersion,
+      planVersion,
+      contextHash,
+      steps: input.steps.map((step, index) => ({
+        stepKey: step.stepKey.trim(),
+        stepIndex: index,
+        agentId: step.agentId ?? null,
+        capability: step.capability.trim(),
+        inputSchema: step.inputSchema ?? {},
+        outputSchema: step.outputSchema ?? {},
+        toolId: step.toolId.trim(),
+        toolVersion: step.toolVersion.trim(),
+        actionType: step.actionType.trim(),
+        target: step.target ?? {},
+        payload: step.payload ?? {},
+        resourceType: step.resourceType ?? null,
+        resourceId: step.resourceId ?? null,
+        riskClass: step.riskClass ?? null,
+        timeoutMs: step.timeoutMs ?? 1000,
+        retryLimit: step.retryLimit ?? 0,
+        authorityLevel: step.authorityLevel?.trim() ?? 'TASK_SCOPED',
+        dependsOn: step.dependsOn ?? [],
+      })),
+    });
   }
 
   private validateStepDefinition(
@@ -2884,6 +3496,10 @@ export class AiAgentRuntimeService {
       actionIntentId: row.action_intent_id,
       approvalId: row.approval_id,
       executionRecordId: row.execution_record_id,
+      executionEvidence:
+        row.execution_evidence && Object.keys(row.execution_evidence).length > 0
+          ? row.execution_evidence as unknown as AiAgentExecutionEvidence
+          : null,
       output: row.output,
       error: row.error,
       startedAt: row.started_at,
@@ -2942,6 +3558,7 @@ export class AiAgentRuntimeService {
       failure_code,
       failure_reason,
       idempotency_key,
+      request_hash,
       version,
       created_at::text AS created_at,
       updated_at::text AS updated_at
@@ -2978,6 +3595,7 @@ export class AiAgentRuntimeService {
       action_intent_id::text AS action_intent_id,
       approval_id::text AS approval_id,
       execution_record_id::text AS execution_record_id,
+      execution_evidence,
       output,
       error,
       started_at::text AS started_at,
