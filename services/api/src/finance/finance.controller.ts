@@ -6,7 +6,6 @@ import {
   Headers,
   Param,
   ParseUUIDPipe,
-  Patch,
   Post,
   Query,
   Req,

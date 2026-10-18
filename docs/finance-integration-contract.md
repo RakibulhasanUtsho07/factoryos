@@ -11,7 +11,8 @@ All endpoints use the authenticated tenant and factory context, PostgreSQL tenan
 | Method and route | Permission | Purpose |
 |---|---|---|
 | POST /api/finance/connectors | finance.connectors.write | Register a connector in PENDING_APPROVAL |
-| GET /api/finance/connectors | finance.connectors.read | List factory-scoped connector configurations |
+| GET /api/finance/connectors | finance.connectors.read | List factory-scoped connector configurations and last-ingestion freshness/status |
+| GET /api/finance/connectors/:id | finance.connectors.read | Read a single connector's safe configuration and last-run summary |
 | POST /api/finance/connectors/:id/approve | finance.connectors.approve | Activate a connector using independent maker-checker approval |
 | POST /api/finance/connectors/:id/reject | finance.connectors.approve | Reject a pending connector with a reason |
 | POST /api/finance/connectors/:id/pause | finance.connectors.write | Pause an active connector without deleting history |
@@ -63,7 +64,7 @@ GET /api/finance/margin/inputs?from=...&to=... returns groups by currency, custo
 - actual_contribution_margin = actual_revenue - actual_contribution_cost
 - forecast_gross_margin = forecast_revenue - forecast_cost
 - forecast_contribution_margin = forecast_revenue - forecast_contribution_cost
-- Revenue, cost and gross-margin variances are actual minus forecast. A positive cost variance is an unfavorable cost overrun; a positive revenue/margin variance is above forecast.
+- Revenue, gross-cost, contribution-cost, gross-margin and contribution-margin variances are actual minus forecast. A positive cost variance is an unfavorable cost overrun; a positive revenue/margin variance is above forecast.
 
 Contribution-cost input is kept separate from gross cost so factory teams can decide which variable/direct cost classes belong in the contribution definition. It must be sourced/mapped explicitly; FactoryOS will not silently estimate contribution cost from gross cost. If there are no suitable facts for a group, returned sums are zero for the requested window, while missing actual revenue leaves margin-percent undefined (null), not 0%.
 
