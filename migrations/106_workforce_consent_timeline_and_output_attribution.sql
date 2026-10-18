@@ -42,26 +42,29 @@ BEGIN
      OR v_new->>'correlation_id' IS DISTINCT FROM v_old->>'correlation_id' THEN
     RAISE EXCEPTION 'Workforce identity, scope and creation evidence are immutable' USING ERRCODE='23514';
   END IF;
-  IF TG_TABLE_NAME='workforce_workers'
-     AND (NEW.biometric_consent_at IS DISTINCT FROM OLD.biometric_consent_at
-       OR NEW.biometric_consent_withdrawn_at IS DISTINCT FROM OLD.biometric_consent_withdrawn_at) THEN
-    v_consent_event_id:=NULLIF(current_setting('app.workforce_consent_event_id',true),'')::UUID;
-    IF v_consent_event_id IS NULL OR NOT EXISTS (
-      SELECT 1 FROM workforce_biometric_consent_events e
-      WHERE e.id=v_consent_event_id AND e.worker_id=NEW.id AND e.tenant_id=NEW.tenant_id
-        AND e.factory_id=NEW.factory_id AND e.recorded_by_user_id=v_actor
-        AND ((e.consent_granted AND NEW.biometric_consent_at=e.effective_at AND NEW.biometric_consent_withdrawn_at IS NULL)
-          OR (NOT e.consent_granted AND NEW.biometric_consent_withdrawn_at=e.effective_at))
-    ) THEN
-      RAISE EXCEPTION 'Biometric-consent projection can only be updated by its matching immutable consent event' USING ERRCODE='42501';
+  -- Do not reference worker-only fields in a generic trigger expression.
+  -- PostgreSQL may resolve NEW's composite fields before an AND guard short-circuits.
+  IF TG_TABLE_NAME='workforce_workers' THEN
+    IF NEW.biometric_consent_at IS DISTINCT FROM OLD.biometric_consent_at
+       OR NEW.biometric_consent_withdrawn_at IS DISTINCT FROM OLD.biometric_consent_withdrawn_at THEN
+      v_consent_event_id:=NULLIF(current_setting('app.workforce_consent_event_id',true),'')::UUID;
+      IF v_consent_event_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM workforce_biometric_consent_events e
+        WHERE e.id=v_consent_event_id AND e.worker_id=NEW.id AND e.tenant_id=NEW.tenant_id
+          AND e.factory_id=NEW.factory_id AND e.recorded_by_user_id=v_actor
+          AND ((e.consent_granted AND NEW.biometric_consent_at=e.effective_at AND NEW.biometric_consent_withdrawn_at IS NULL)
+            OR (NOT e.consent_granted AND NEW.biometric_consent_withdrawn_at=e.effective_at))
+      ) THEN
+        RAISE EXCEPTION 'Biometric-consent projection can only be updated by its matching immutable consent event' USING ERRCODE='42501';
+      END IF;
     END IF;
-  END IF;
-  IF TG_TABLE_NAME='workforce_workers' AND OLD.status='ACTIVE' AND NEW.status='INACTIVE' AND EXISTS (
-    SELECT 1 FROM workforce_shift_assignments a
-    WHERE a.worker_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
-      AND a.status IN ('PLANNED','CONFIRMED') AND a.planned_end_at>clock_timestamp()
-  ) THEN
-    RAISE EXCEPTION 'A worker with future active shift assignments cannot be inactivated' USING ERRCODE='23514';
+    IF OLD.status='ACTIVE' AND NEW.status='INACTIVE' AND EXISTS (
+      SELECT 1 FROM workforce_shift_assignments a
+      WHERE a.worker_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
+        AND a.status IN ('PLANNED','CONFIRMED') AND a.planned_end_at>clock_timestamp()
+    ) THEN
+      RAISE EXCEPTION 'A worker with future active shift assignments cannot be inactivated' USING ERRCODE='23514';
+    END IF;
   END IF;
   RETURN NEW;
 END;
