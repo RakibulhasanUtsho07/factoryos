@@ -277,7 +277,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_maintenance_work_order_immutability_guard
 BEFORE UPDATE ON maintenance_work_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_work_order_update();
