@@ -108,6 +108,7 @@ export class DecideWorkforceOvertimeDto {
 }
 export class CreateWorkforceProductivityDto {
   @IsUUID() shift_assignment_id!: string;
+  @IsUUID() source_operation_event_id!: string;
   @IsUUID() work_order_id!: string;
   @IsUUID() work_order_operation_id!: string;
   @IsDateString() production_started_at!: string;
