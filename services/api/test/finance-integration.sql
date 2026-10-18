@@ -346,4 +346,17 @@ BEGIN
   END IF;
 END $;
 
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='124_finance_file_import_validation_reports') THEN
+    RAISE EXCEPTION 'finance file import validation-report migration is not registered';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid='public.finance_file_import_validation_reports'::regclass AND relrowsecurity AND relforcerowsecurity) THEN
+    RAISE EXCEPTION 'finance file validation reports must force tenant RLS';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.finance_file_import_validation_reports'::regclass AND tgname='trg_finance_file_validation_report_immutable' AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'finance file validation reports must be immutable';
+  END IF;
+END $;
+
 ROLLBACK;
