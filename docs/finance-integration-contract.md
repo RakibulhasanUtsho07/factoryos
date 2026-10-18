@@ -41,7 +41,7 @@ A connector is scoped to one tenant and factory and has a stable code, source-sy
 
 The allowed domain-to-fact mapping is checked both in the API and in the database trigger. Each standard domain has at most one pending/active reporting source; reports include only active reporting connectors, and response readiness flags list missing required domains. Pausing a source stops its facts from being treated as current reporting input until another source is approved. An AR connector cannot write arbitrary cost facts. A connector run and each fact retain the connector, external record key, source record reference, effective/due timestamps, currency, dimensions, normalized payload snapshot and SHA-256 request/fact hash. An external fact ID can be ingested only once per connector scope; an idempotent retry returns the existing batch rather than duplicating balances or revenue.
 
-MANUAL, REST_API, WEBHOOK and FILE_IMPORT are declared contract modes. The normalized authenticated ingestion endpoint and bounded UTF-8 CSV/JSON file import (up to 2 MiB / 500 facts) share the same idempotency, domain and evidence gates. File-import runs retain filename, format and SHA-256 provenance. Product-specific REST polling agents, signed webhook profiles and credential-fetching adapters still require a provider/secret-manager contract. Those adapters must translate external records to this contract and retain source references; they must not bypass the governed API/DB invariants.
+MANUAL, REST_API, WEBHOOK, FILE_IMPORT, FILE_EXPORT, SFTP_IMPORT and SFTP_EXPORT are declared contract modes. The authenticated finance fact API and bounded UTF-8 CSV/JSON import (up to 2 MiB / 500 facts) share the same idempotency, domain, evidence and receipt gates. Imports should first call the dry-run validation endpoint; only a `VALID` report for the exact connector, batch, filename, format and payload SHA-256 may be committed. Validation reports preserve row/field error codes, counts, checks, correlation IDs and checksum; successful import receipts preserve the source filename, format, SHA-256, accepted/mismatch counts and trace references. File exports produce deterministic CSV/JSON artifacts with an immutable checksum receipt and support exact-request idempotent replay. SFTP connector configuration requires a secret-manager reference and pinned host-key fingerprint. A deployment-specific `FINANCE_SFTP_TRANSPORT` adapter must resolve credentials from the secret manager, pin DNS/egress, verify the remote host key, make uploads idempotent, and safely archive/quarantine source files. The API deliberately fails closed with service unavailable when no verified SFTP transport adapter is registered. ERP-vendor-specific REST polling/mapping still requires an approved provider adapter; no adapter may bypass the governed finance domain, source-of-record or database invariants.
 
 ## Governed financial facts
 
@@ -101,3 +101,35 @@ Migration 114_finance_integration_contract.sql introduces five forced-RLS tables
 | FR-FIN-08 — reconcile operational quantities/rates before finance reporting | Exact qty/rate/UOM matching, immutable evidence, reviewer disposition and reporting_ready gates implemented; per-source mappings/adapters must submit the records |
 | FR-FIN-09 — configurable GL/AP/AR/bank/tax connectors and explicit system-of-record boundaries | Connector registry, permissions/maker-checker, secured read-side ingestion and no-posting boundary implemented; provider-specific transport/polling/webhook/file adapters remain separate |
 | FR-FIN-01 / FR-FIN-02 | Continue to use docs/commercial-quotation-lifecycle.md and docs/should-cost-engine.md; finance facts do not replace quotation revisions or should-cost evidence |
+
+
+## ERP / file exchange API (FR-PROD-12, FR-PROD-13, FR-PROD-15, FR-PROD-27)
+
+All paths below are beneath `/api/finance/connectors`, authenticated with tenant/factory middleware and protected by existing IAM permissions. Write endpoints require `Idempotency-Key`.
+
+| Method and route | Permission | Purpose |
+|---|---|---|
+| POST `/:connectorId/file-import/validate` | `finance.facts.ingest` | Dry-run CSV/JSON validation; writes no financial facts |
+| GET `/:connectorId/file-import/reports` | `finance.facts.read` | List latest validation reports |
+| GET `/:connectorId/file-import/reports/:reportId` | `finance.facts.read` | Read detailed row/field errors and checks |
+| POST `/:connectorId/file-import/commit` | `finance.facts.ingest` | Import only against the matching `VALID` report |
+| GET `/:connectorId/file-imports/receipts` | `finance.facts.read` | List immutable successful import receipts |
+| GET `/:connectorId/file-imports/:runId/receipt` | `finance.facts.read` | Read one file-import receipt |
+| POST `/:connectorId/sftp-import/process` | `finance.facts.ingest` | Poll one file via the registered, host-key-verifying transport adapter |
+| POST `/:connectorId/file-export` | `finance.facts.read` | Export approved active reporting facts to CSV/JSON (max 500 rows / 2 MiB) |
+| GET `/:connectorId/file-exports/receipts` | `finance.facts.read` | List immutable export receipts |
+| GET `/:connectorId/file-exports/:receiptId` | `finance.facts.read` | Retrieve the receipt and, for file exports, the base64 artifact |
+
+### Validation, commit and retry semantics
+
+- CSV and JSON are UTF-8, canonical base64 when submitted to the API, and bounded to 2 MiB and 500 facts. Unknown/duplicate CSV headers, malformed quoting, invalid JSON, path-like filenames, invalid DTO fields, secret-bearing metadata and unsupported fact/domain combinations are rejected.
+- A validation report is append-only and tenant-RLS protected. Errors include row (when known), field, constraint code and safe explanatory message; the report stores at most 200 individual errors and marks the list truncated when more exist. It also includes total/valid/invalid row counts and the checks executed.
+- A `VALID` report is bound to the exact payload hash, file name, format, batch reference, connector, tenant and factory. Commit re-parses the file and compares this evidence inside the transaction before writing facts. A changed file cannot reuse a prior report. Invalid reports remain inspectable but cannot be committed.
+- A successful import creates an immutable run receipt in the same transaction as the financial facts, reconciliation evidence, audit event and outbox event. A repeated identical key returns the same receipt; a different request under the same key conflicts.
+- Export selection includes only facts from the active reporting source for that domain. It does not post to the accounting system or mutate source facts. Exports over 500 rows or 2 MiB must use the existing governed tenant-export job instead. File artifacts use content-derived names and SHA-256 checksums.
+- SFTP remote paths must be direct children of the configured remote directory; basename validation and an optional configured file pattern run before acknowledgement. A successfully imported duplicate payload is recognized by SHA-256. Validation failures are quarantined where the configured adapter supports archive/quarantine, while archive failures return an explicit pending status for safe retry.
+- The connector registry and host-key checks define the security boundary; actual transport credentials are never stored inline. The SFTP transport token is intentionally optional so environments without a reviewed secret-manager/SSH adapter cannot accidentally perform network I/O.
+
+### SRS coverage boundary
+
+FR-PROD-15 is covered for bounded finance ERP file exchange by dry-run validation, stored validation/error reports, import/export receipts, checksums, idempotent commit/replay, audit events and tenant scope. The pre-existing SaaS tenant export/migration job remains the asynchronous path for larger tenant-wide datasets. Live vendor-specific ERP REST polling/mapping and production SFTP network transport remain adapter deployment work; this slice does not claim a specific ERP vendor connection is live.

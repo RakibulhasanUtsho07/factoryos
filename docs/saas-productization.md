@@ -1,6 +1,6 @@
 # SaaS Productization — WP10 Backend Slice
 
-**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-SAAS2-07 (P1), FR-SAAS2-08 (P1), FR-PROD-04 (P0), and FR-PROD-05 (P0).  
+**Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-SAAS2-07 (P1), FR-SAAS2-08 (P1), FR-PROD-04 (P0), FR-PROD-05 (P0), and the tenant-wide portion of FR-PROD-15 (P0).  
 **Migration range:** 045–052.  
 **API bases:** /v2/saas/usage, /v2/saas/subscriptions, /v2/saas/sandboxes, /v2/saas/releases, /v2/saas/deployment-profiles, and /v2/saas/data-transfers.
 
@@ -181,3 +181,8 @@ This adapter intentionally supports exact-schema copies only: source_schema_vers
 
 The value returned as targetBundleReference is an opaque PostgreSQL import receipt reference, not a physical database backup. targetBundleDigest is the deterministic digest of the independently measured target snapshot manifest. Production disaster recovery must separately configure a database backup/snapshot service, shared encrypted object storage and KMS-managed key lifecycle; the import receipt is verification metadata, not a substitute for those facilities.
 
+
+
+## ERP file import/export relationship (FR-PROD-15)
+
+The tenant-wide export/migration pipeline in this document remains the asynchronous choice for full tenant datasets, schema compatibility, encrypted bundles, manifest attestation and target-side migration receipts. For bounded ERP/finance facts, the more specific CSV/JSON/SFTP contract lives in `docs/finance-integration-contract.md`: it adds dry-run validation reports, row-level errors, report-bound commit, finance import receipts, checksum-based file export receipts and idempotent retries. These two paths have different payloads and receipts and must not be conflated. SFTP is only enabled when a verified deployment transport adapter is registered; the application fails closed when it is absent.
