@@ -6,22 +6,83 @@ BEGIN;
 ALTER TABLE workforce_biometric_consent_events
   ADD COLUMN effective_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp();
 
+CREATE OR REPLACE FUNCTION factoryos_guard_workforce_row_version()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  v_new JSONB := to_jsonb(NEW);
+  v_old JSONB := to_jsonb(OLD);
+  v_actor UUID;
+  v_consent_event_id UUID;
+BEGIN
+  IF TG_OP='INSERT' THEN
+    IF COALESCE((v_new->>'row_version')::BIGINT,1)<>1 THEN
+      RAISE EXCEPTION 'New workforce records must start at row_version 1' USING ERRCODE='23514';
+    END IF;
+    v_actor:=COALESCE(NULLIF(v_new->>'created_by_user_id','')::UUID,
+      NULLIF(v_new->>'recorded_by_user_id','')::UUID,NULLIF(v_new->>'actor_user_id','')::UUID);
+    IF v_actor IS DISTINCT FROM factoryos_current_user_id() THEN
+      RAISE EXCEPTION 'Workforce record creator must match authenticated database context' USING ERRCODE='42501';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF (v_new->>'row_version') IS NULL OR (v_new->>'row_version')::BIGINT<>(v_old->>'row_version')::BIGINT+1 THEN
+    RAISE EXCEPTION 'Workforce updates must increment row_version exactly once' USING ERRCODE='23514';
+  END IF;
+  v_actor:=NULLIF(v_new->>'updated_by_user_id','')::UUID;
+  IF v_actor IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'Workforce updater must match authenticated database context' USING ERRCODE='42501';
+  END IF;
+  IF v_new->>'id' IS DISTINCT FROM v_old->>'id'
+     OR v_new->>'tenant_id' IS DISTINCT FROM v_old->>'tenant_id'
+     OR v_new->>'factory_id' IS DISTINCT FROM v_old->>'factory_id'
+     OR v_new->>'created_at' IS DISTINCT FROM v_old->>'created_at'
+     OR v_new->>'created_by_user_id' IS DISTINCT FROM v_old->>'created_by_user_id'
+     OR v_new->>'idempotency_key' IS DISTINCT FROM v_old->>'idempotency_key'
+     OR v_new->>'request_hash' IS DISTINCT FROM v_old->>'request_hash'
+     OR v_new->>'correlation_id' IS DISTINCT FROM v_old->>'correlation_id' THEN
+    RAISE EXCEPTION 'Workforce identity, scope and creation evidence are immutable' USING ERRCODE='23514';
+  END IF;
+  IF TG_TABLE_NAME='workforce_workers'
+     AND (NEW.biometric_consent_at IS DISTINCT FROM OLD.biometric_consent_at
+       OR NEW.biometric_consent_withdrawn_at IS DISTINCT FROM OLD.biometric_consent_withdrawn_at) THEN
+    v_consent_event_id:=NULLIF(current_setting('app.workforce_consent_event_id',true),'')::UUID;
+    IF v_consent_event_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM workforce_biometric_consent_events e
+      WHERE e.id=v_consent_event_id AND e.worker_id=NEW.id AND e.tenant_id=NEW.tenant_id
+        AND e.factory_id=NEW.factory_id AND e.recorded_by_user_id=v_actor
+        AND ((e.consent_granted AND NEW.biometric_consent_at=e.effective_at AND NEW.biometric_consent_withdrawn_at IS NULL)
+          OR (NOT e.consent_granted AND NEW.biometric_consent_withdrawn_at=e.effective_at))
+    ) THEN
+      RAISE EXCEPTION 'Biometric-consent projection can only be updated by its matching immutable consent event' USING ERRCODE='42501';
+    END IF;
+  END IF;
+  IF TG_TABLE_NAME='workforce_workers' AND OLD.status='ACTIVE' AND NEW.status='INACTIVE' AND EXISTS (
+    SELECT 1 FROM workforce_shift_assignments a
+    WHERE a.worker_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
+      AND a.status IN ('PLANNED','CONFIRMED') AND a.planned_end_at>clock_timestamp()
+  ) THEN
+    RAISE EXCEPTION 'A worker with future active shift assignments cannot be inactivated' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION factoryos_guard_workforce_biometric_consent_event()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   v_worker RECORD;
   v_previous_consent BOOLEAN;
+  v_has_previous BOOLEAN;
+  v_projection_active BOOLEAN;
 BEGIN
   IF NEW.recorded_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
     RAISE EXCEPTION 'Biometric consent actor must match authenticated database context' USING ERRCODE='42501';
   END IF;
-  IF NEW.effective_at > clock_timestamp()+INTERVAL '5 minutes'
-     OR NEW.effective_at < clock_timestamp()-INTERVAL '5 minutes' THEN
-    RAISE EXCEPTION 'Biometric consent cannot be future-dated or backdated; correction requires a separately governed request'
-      USING ERRCODE='23514';
+  IF NEW.effective_at>clock_timestamp()+INTERVAL '5 minutes'
+     OR NEW.effective_at<clock_timestamp()-INTERVAL '5 minutes' THEN
+    RAISE EXCEPTION 'Biometric consent cannot be future-dated or backdated; use a separately governed correction request' USING ERRCODE='23514';
   END IF;
-
-  SELECT w.status,w.biometric_consent_at,w.biometric_consent_withdrawn_at,w.updated_by_user_id
+  SELECT w.status,w.biometric_consent_at,w.biometric_consent_withdrawn_at
   INTO v_worker
   FROM workforce_workers w
   WHERE w.id=NEW.worker_id AND w.tenant_id=NEW.tenant_id AND w.factory_id=NEW.factory_id
@@ -29,28 +90,25 @@ BEGIN
   IF NOT FOUND OR v_worker.status<>'ACTIVE' THEN
     RAISE EXCEPTION 'Consent can only be recorded for an active worker in the same factory' USING ERRCODE='23514';
   END IF;
-  IF v_worker.updated_by_user_id IS DISTINCT FROM NEW.recorded_by_user_id THEN
-    RAISE EXCEPTION 'Consent projection and consent recorder must use the same authenticated actor' USING ERRCODE='42501';
-  END IF;
 
   SELECT e.consent_granted INTO v_previous_consent
   FROM workforce_biometric_consent_events e
   WHERE e.worker_id=NEW.worker_id AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
   ORDER BY e.effective_at DESC,e.created_at DESC,e.id DESC
   LIMIT 1;
-  IF FOUND AND v_previous_consent=NEW.consent_granted THEN
-    RAISE EXCEPTION 'Biometric consent must change state before a new consent event can be recorded' USING ERRCODE='23514';
-  END IF;
-
-  IF NEW.consent_granted THEN
-    IF v_worker.biometric_consent_at IS NULL OR v_worker.biometric_consent_withdrawn_at IS NOT NULL THEN
-      RAISE EXCEPTION 'Grant evidence requires the worker consent projection to be active' USING ERRCODE='23514';
+  v_has_previous:=FOUND;
+  v_projection_active:=v_worker.biometric_consent_at IS NOT NULL
+    AND (v_worker.biometric_consent_withdrawn_at IS NULL
+      OR v_worker.biometric_consent_withdrawn_at<v_worker.biometric_consent_at);
+  IF v_has_previous THEN
+    IF v_projection_active IS DISTINCT FROM v_previous_consent THEN
+      RAISE EXCEPTION 'Worker consent projection does not match the latest append-only consent record' USING ERRCODE='23514';
     END IF;
-  ELSE
-    IF v_worker.biometric_consent_at IS NULL OR v_worker.biometric_consent_withdrawn_at IS NULL
-       OR v_worker.biometric_consent_withdrawn_at<v_worker.biometric_consent_at THEN
-      RAISE EXCEPTION 'Withdrawal evidence requires a currently withdrawn consent projection' USING ERRCODE='23514';
+    IF v_previous_consent=NEW.consent_granted THEN
+      RAISE EXCEPTION 'Biometric consent must change state before a new consent event can be recorded' USING ERRCODE='23514';
     END IF;
+  ELSIF v_projection_active THEN
+    RAISE EXCEPTION 'Biometric consent cannot be activated without immutable consent evidence' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END;
@@ -59,6 +117,33 @@ $$;
 CREATE TRIGGER trg_workforce_biometric_consent_actor_guard
 BEFORE INSERT ON workforce_biometric_consent_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_workforce_biometric_consent_event();
+
+CREATE OR REPLACE FUNCTION factoryos_project_workforce_consent_event()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM set_config('app.workforce_consent_event_id',NEW.id::TEXT,true);
+  IF NEW.consent_granted THEN
+    UPDATE workforce_workers
+    SET biometric_consent_at=NEW.effective_at,biometric_consent_withdrawn_at=NULL,
+        row_version=row_version+1,updated_by_user_id=NEW.recorded_by_user_id,
+        last_change_reason=NEW.reason,updated_at=clock_timestamp()
+    WHERE id=NEW.worker_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+  ELSE
+    UPDATE workforce_workers
+    SET biometric_consent_withdrawn_at=NEW.effective_at,
+        row_version=row_version+1,updated_by_user_id=NEW.recorded_by_user_id,
+        last_change_reason=NEW.reason,updated_at=clock_timestamp()
+    WHERE id=NEW.worker_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+  END IF;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Consent worker must exist in the same factory' USING ERRCODE='23503';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_workforce_consent_projection
+AFTER INSERT ON workforce_biometric_consent_events
+FOR EACH ROW EXECUTE FUNCTION factoryos_project_workforce_consent_event();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_workforce_attendance_event()
 RETURNS trigger LANGUAGE plpgsql AS $$
