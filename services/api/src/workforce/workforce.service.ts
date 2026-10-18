@@ -101,8 +101,8 @@ export class WorkforceService {
     const reason = this.requiredText(dto.reason, 'reason', 1000);
     const hash = this.hash({ worker_id:id,status:dto.status,expected_version:dto.expected_version,reason });
     return this.transaction(c, `workforce:worker-transition:${key}`, async (client) => {
-      const replay = await this.findIdempotent(client, 'workforce_workers', c, key, hash);
-      if (replay) return { ...(await this.workerDetail(client,c,replay.id)), replayed:true };
+      const replay = await this.findCommandReceipt(client,c,key,hash);
+      if (replay) return { ...(replay.response_snapshot as Record<string,unknown>), replayed:true };
       const current = await client.query<Row>(
         'SELECT id::text AS id,status,row_version::int AS row_version FROM workforce_workers WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
         [id,c.tenantId,c.factoryId],
@@ -129,7 +129,9 @@ export class WorkforceService {
       // Worker status transitions use an immutable lifecycle event key, recorded separately
       // without overwriting the original worker-create idempotency key.
       await this.insertSupplementalAudit(client,c,'WORKER',id,Number(worker.row_version)+1,'STATUS_'+dto.status,reason,{status:dto.status,request_key:key});
-      return { ...(await this.workerDetail(client,c,id)), replayed:false };
+      const response={ ...(await this.workerDetail(client,c,id)), replayed:false };
+      await this.storeCommandReceipt(client,c,key,hash,'WORKER',id,response);
+      return response;
     });
   }
 
@@ -379,8 +381,8 @@ export class WorkforceService {
     const reason=this.requiredText(dto.reason,'reason',1000);
     const hash=this.hash({assignment_id:id,expected_version:dto.expected_version,action:dto.action,reason});
     return this.transaction(c,`workforce:assignment-transition:${key}`,async(client)=>{
-      const replay=await this.findIdempotent(client,'workforce_shift_assignments',c,key,hash);
-      if(replay) return { ...(await this.assignmentDetail(client,c,replay.id)),replayed:true };
+      const replay=await this.findCommandReceipt(client,c,key,hash);
+      if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
       const current=await client.query<Row>(
         `SELECT id::text AS id,status,row_version::int AS row_version
          FROM workforce_shift_assignments WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,
@@ -399,7 +401,9 @@ export class WorkforceService {
         [id,c.tenantId,c.factoryId,toStatus[dto.action],c.userId,reason],
       );
       await this.insertSupplementalAudit(client,c,'SHIFT_ASSIGNMENT',id,Number(row.row_version)+1,toStatus[dto.action],reason,{request_key:key});
-      return { ...(await this.assignmentDetail(client,c,id)),replayed:false };
+      const response={ ...(await this.assignmentDetail(client,c,id)),replayed:false };
+      await this.storeCommandReceipt(client,c,key,hash,'SHIFT_ASSIGNMENT',id,response);
+      return response;
     });
   }
 
@@ -476,8 +480,8 @@ export class WorkforceService {
     const payload={shift_assignment_id:assignment,requested_minutes:dto.requested_minutes,reason};
     const hash=this.hash(payload);
     return this.transaction(c,`workforce:overtime:${key}`,async(client)=>{
-      const replay=await this.findIdempotent(client,'workforce_overtime_requests',c,key,hash);
-      if(replay) return { ...(await this.overtimeDetail(client,c,replay.id)),replayed:true };
+      const replay=await this.findCommandReceipt(client,c,key,hash);
+      if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
       const assignmentRow=await client.query<Row>(
         `SELECT worker_id::text AS worker_id,status FROM workforce_shift_assignments
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE`,
@@ -529,7 +533,9 @@ export class WorkforceService {
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
         [id,c.tenantId,c.factoryId,next,approvedMinutes,c.userId,reason],
       );
-      return { ...(await this.overtimeDetail(client,c,id)),replayed:false };
+      const response={ ...(await this.overtimeDetail(client,c,id)),replayed:false };
+      await this.storeCommandReceipt(client,c,key,hash,'OVERTIME_REQUEST',id,response);
+      return response;
     });
   }
 
@@ -827,6 +833,26 @@ export class WorkforceService {
       [id,c.tenantId,c.factoryId]);
     if(!r.rows[0]) throw new NotFoundException('Productivity report was not found in this factory');
     return r.rows[0];
+  }
+
+  private async findCommandReceipt(client:PoolClient,c:WorkforceContext,key:string,hash:string) {
+    const result=await client.query<Row>(
+      `SELECT request_hash,response_snapshot FROM workforce_command_receipts
+       WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE`,
+      [c.tenantId,c.factoryId,key],
+    );
+    const row=result.rows[0];
+    if(!row) return null;
+    if(String(row.request_hash).trim()!==hash) throw new ConflictException('Idempotency key was already used with a different workforce command');
+    return {response_snapshot:row.response_snapshot};
+  }
+  private async storeCommandReceipt(client:PoolClient,c:WorkforceContext,key:string,hash:string,entityType:string,entityId:string,response:Record<string,unknown>) {
+    await client.query(
+      `INSERT INTO workforce_command_receipts
+       (tenant_id,factory_id,idempotency_key,request_hash,entity_type,entity_id,response_snapshot,recorded_by_user_id,correlation_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::uuid)`,
+      [c.tenantId,c.factoryId,key,hash,entityType,entityId,JSON.stringify(response),c.userId,this.correlationId(c)],
+    );
   }
 
   private async findIdempotent(client:PoolClient,table:string,c:WorkforceContext,key:string,hash:string) {
