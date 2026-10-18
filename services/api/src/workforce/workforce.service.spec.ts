@@ -48,6 +48,14 @@ describe('WorkforceService input and policy validation',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects an ambiguous half-hour daylight-saving overlap when resolving a shift',()=>{
+    const internal=service as unknown as {
+      localToUtc:(date:string,time:string,zone:string)=>Date;
+    };
+    expect(()=>internal.localToUtc('2026-04-05','01:45:00','Australia/Lord_Howe'))
+      .toThrow(BadRequestException);
+  });
+
   it('rejects an unrecognized time zone before creating a shift template',async()=>{
     await expect(service.createShift(context,{
       shift_code:'DAY',name:'Day shift',starts_at_local:'08:00',ends_at_local:'16:00',
