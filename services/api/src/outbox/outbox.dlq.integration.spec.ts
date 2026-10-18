@@ -317,17 +317,34 @@ describe(
           ],
         );
 
-        // Remove the outbox fixture.
-        await pool.query(
-          `
-          DELETE FROM outbox_events
-
-          WHERE id = $1
-          `,
-          [
-            eventId,
-          ],
+        // Replay receipts are immutable audit evidence and reference the source event.
+        // Retain that event as quarantined after replay so unrelated dispatcher tests
+        // cannot claim this historical fixture as new work. Fixtures with no receipt
+        // can still be deleted normally.
+        const replayReceipt = await pool.query<{ exists: boolean }>(
+          'SELECT EXISTS(SELECT 1 FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND event_id=$2) AS exists',
+          [tenantId, eventId],
         );
+
+        if (replayReceipt.rows[0]?.exists) {
+          await pool.query(
+            \`UPDATE outbox_events
+             SET status='QUARANTINED',
+                 next_attempt_at=clock_timestamp(),
+                 locked_at=NULL,
+                 locked_by=NULL,
+                 quarantined_at=COALESCE(quarantined_at,clock_timestamp()),
+                 quarantined_by=COALESCE(quarantined_by,'api-outbox-dlq-test-cleanup'),
+                 quarantine_reason=COALESCE(quarantine_reason,'DLQ_TEST_FIXTURE_RETAINED_FOR_IMMUTABLE_RECEIPT')
+             WHERE id=$1 AND tenant_id=$2\`,
+            [eventId, tenantId],
+          );
+        } else {
+          await pool.query(
+            'DELETE FROM outbox_events WHERE id=$1 AND tenant_id=$2',
+            [eventId, tenantId],
+          );
+        }
 
         await pool.end();
       }
