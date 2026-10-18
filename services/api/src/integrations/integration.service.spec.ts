@@ -30,6 +30,7 @@ describe('IntegrationService signed webhook ingress', () => {
     status: 'ACTIVE',
     secret_reference: 'env://WEBHOOK_SECRET_MES',
     schema_version: 1,
+    allowed_event_types: ['ORDER.CONFIRMED'],
     payload_schema: payloadSchema,
     created_by_user_id: '822753dc-ef72-44a0-a23d-04748105c92a',
     reviewed_by_user_id: 'b1a13175-599e-46e9-b82a-e92965b1db6f',
@@ -156,6 +157,24 @@ describe('IntegrationService signed webhook ingress', () => {
       signed.eventId,
       'sha256=' + '0'.repeat(64),
     )).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(harness.transactionCount).toBe(0);
+  });
+
+
+  it('rejects signed events that are not registered in the connector allowlist before opening a transaction', async () => {
+    const harness = setup();
+    const unregistered = signedRequest('mes-event-unregistered', {
+      event_type: 'ORDER.CANCELLED',
+      schema_version: 1,
+      payload: { order_number: 'SO-100', quantity: 12 },
+    });
+    await expect(harness.service.receiveWebhook(
+      connectorId,
+      unregistered.request,
+      unregistered.timestamp,
+      unregistered.eventId,
+      unregistered.signature,
+    )).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(harness.transactionCount).toBe(0);
   });
 

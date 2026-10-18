@@ -31,5 +31,17 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='119_integration_connector_registry') THEN
     RAISE EXCEPTION 'integration registry migration is not registered';
   END IF;
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='120_integration_connector_event_allowlist') THEN
+    RAISE EXCEPTION 'integration connector event allowlist migration is not registered';
+  END IF;
+  IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='integration_connectors' AND column_name='allowed_event_types') THEN
+    RAISE EXCEPTION 'integration connector event allowlist column is missing';
+  END IF;
+  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.integration_connectors'::regclass AND conname='chk_integration_connector_allowed_event_types') THEN
+    RAISE EXCEPTION 'integration connector event allowlist constraint is missing';
+  END IF;
+  IF NOT public.factoryos_integration_event_types_valid(ARRAY['ORDER.CREATED','MES.PRODUCTION.COUNTED']::varchar[]) OR public.factoryos_integration_event_types_valid(ARRAY['ORDER.CREATED','ORDER.CREATED']::varchar[]) OR public.factoryos_integration_event_types_valid(ARRAY['lower.case']::varchar[]) THEN
+    RAISE EXCEPTION 'integration connector event allowlist validator is not enforcing strict unique canonical identifiers';
+  END IF;
 END $$;
 SELECT 'signed webhook connector registry schema verification passed' AS result;

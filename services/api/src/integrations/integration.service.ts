@@ -15,11 +15,13 @@ import { isUUID } from 'class-validator';
 import { DatabaseService } from '../database/database.service';
 import {
   assertPayloadSchema,
+  assertAllowedWebhookEventType,
   assertValidWebhookSignature,
   integrationRequestHash,
   IntegrationContractError,
   validateWebhookEnvelope,
   validateWebhookSecretReference,
+  validateAllowedWebhookEventTypes,
 } from './integration-contract';
 import type { WebhookEnvelope } from './integration-contract';
 
@@ -33,6 +35,7 @@ interface ConnectorRow {
   status: string;
   secret_reference: string;
   schema_version: number;
+  allowed_event_types: string[];
   payload_schema: Record<string, unknown>;
   idempotency_key?: string;
   request_hash?: string;
@@ -86,6 +89,7 @@ export class IntegrationService {
       source_system: string;
       secret_reference: string;
       schema_version: number;
+      allowed_event_types: string[];
       payload_schema: Record<string, unknown>;
     },
     idempotencyKeyInput: string | null,
@@ -95,6 +99,12 @@ export class IntegrationService {
     const displayName = input.display_name.trim();
     const sourceSystem = input.source_system.trim();
     const secretReference = this.validateAndResolveSecretReference(input.secret_reference);
+    let allowedEventTypes: string[];
+    try {
+      allowedEventTypes = validateAllowedWebhookEventTypes(input.allowed_event_types);
+    } catch (error) {
+      throw this.contractException(error);
+    }
     try {
       assertPayloadSchema(input.payload_schema);
     } catch (error) {
@@ -108,13 +118,14 @@ export class IntegrationService {
       source_system: sourceSystem,
       secret_reference: secretReference,
       schema_version: input.schema_version,
+      allowed_event_types: allowedEventTypes,
       payload_schema: input.payload_schema,
     });
 
     return this.database.transaction(
       async (client) => {
         const previous = await client.query<ConnectorRow & { request_hash: string }>(
-          'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at,request_hash FROM integration_connectors WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
+          'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at,request_hash FROM integration_connectors WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
           [tenantId, factoryId, idempotencyKey],
         );
         const existing = previous.rows[0];
@@ -126,10 +137,10 @@ export class IntegrationService {
         }
 
         const created = await client.query<ConnectorRow>(
-          'INSERT INTO integration_connectors(tenant_id,factory_id,display_name,source_system,secret_reference,schema_version,payload_schema,idempotency_key,request_hash,created_by_user_id,updated_by_user_id) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$10) RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at',
+          'INSERT INTO integration_connectors(tenant_id,factory_id,display_name,source_system,secret_reference,schema_version,allowed_event_types,payload_schema,idempotency_key,request_hash,created_by_user_id,updated_by_user_id) VALUES($1,$2,$3,$4,$5,$6,$7::varchar[],$8::jsonb,$9,$10,$11,$11) RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at',
           [
             tenantId, factoryId, displayName, sourceSystem, secretReference,
-            input.schema_version, JSON.stringify(input.payload_schema), idempotencyKey, requestHash, userId,
+            input.schema_version, allowedEventTypes, JSON.stringify(input.payload_schema), idempotencyKey, requestHash, userId,
           ],
         );
         const connector = created.rows[0];
@@ -156,7 +167,7 @@ export class IntegrationService {
       throw new BadRequestException('Unsupported connector status filter');
     }
     const result = await this.database.query<ConnectorRow>(
-      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE tenant_id=$1 AND factory_id=$2 AND ($3::text IS NULL OR status=$3) ORDER BY created_at DESC,id DESC LIMIT 200',
+      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE tenant_id=$1 AND factory_id=$2 AND ($3::text IS NULL OR status=$3) ORDER BY created_at DESC,id DESC LIMIT 200',
       [tenantId, factoryId, status ?? null],
       { tenantId, userId },
     );
@@ -205,7 +216,7 @@ export class IntegrationService {
       }
 
       const result = await client.query<ConnectorRow>(
-        'UPDATE integration_connectors SET status=$1,updated_by_user_id=$2,reviewed_by_user_id=$3,reviewed_at=$4,paused_at=$5,decision_reason=$6 WHERE id=$7 AND tenant_id=$8 AND factory_id=$9 RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at',
+        'UPDATE integration_connectors SET status=$1,updated_by_user_id=$2,reviewed_by_user_id=$3,reviewed_at=$4,paused_at=$5,decision_reason=$6 WHERE id=$7 AND tenant_id=$8 AND factory_id=$9 RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at',
         [nextStatus, userId, reviewedBy, reviewedAt, pausedAt, cleanReason, connectorId, tenantId, factoryId],
       );
       const updated = result.rows[0];
@@ -234,7 +245,7 @@ export class IntegrationService {
       if (connector.status !== 'PAUSED') throw new ConflictException('Pause the connector before rotating its signing secret');
       if (connector.secret_reference === secretReference) throw new ConflictException('New secret reference must differ from the current reference');
       const result = await client.query<ConnectorRow>(
-        'UPDATE integration_connectors SET secret_reference=$1,updated_by_user_id=$2,decision_reason=$3 WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND status=$7 RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at',
+        'UPDATE integration_connectors SET secret_reference=$1,updated_by_user_id=$2,decision_reason=$3 WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND status=$7 RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at',
         [secretReference, userId, reason, connectorId, tenantId, factoryId, 'PAUSED'],
       );
       const updated = result.rows[0];
@@ -271,7 +282,7 @@ export class IntegrationService {
     if (!scope) throw new NotFoundException('Integration webhook endpoint not found');
 
     const connectorResult = await this.database.query<ConnectorRow>(
-      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [connectorId, scope.tenant_id, scope.factory_id],
       { tenantId: scope.tenant_id },
     );
@@ -309,6 +320,7 @@ export class IntegrationService {
     let envelope: WebhookEnvelope;
     try {
       envelope = validateWebhookEnvelope(request.body, connector.schema_version, connector.payload_schema);
+      assertAllowedWebhookEventType(envelope.event_type, connector.allowed_event_types);
     } catch (error) {
       throw this.contractException(error);
     }
@@ -367,12 +379,15 @@ export class IntegrationService {
         payload: envelope.payload,
       };
       await client.query(
-        "INSERT INTO outbox_events(id,tenant_id,factory_id,aggregate_type,aggregate_id,event_type,event_version,payload,status,attempts,next_attempt_at,occurred_at,correlation_id,actor,source) VALUES($1,$2,$3,$4,$1,'INTEGRATION.WEBHOOK_RECEIVED',1,$5::jsonb,$6,0,clock_timestamp(),clock_timestamp(),$7,NULL,$8::jsonb)",
+        "INSERT INTO outbox_events(id,tenant_id,factory_id,aggregate_type,aggregate_id,event_type,event_version,payload,status,attempts,next_attempt_at,occurred_at,correlation_id,actor,source) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,0,clock_timestamp(),clock_timestamp(),$10,NULL,$11::jsonb)",
         [
           outboxId,
           scope.tenant_id,
           scope.factory_id,
           'INTEGRATION_CONNECTOR',
+          connectorId,
+          'INTEGRATION.WEBHOOK_RECEIVED',
+          1,
           JSON.stringify(outboxPayload),
           'PENDING',
           envelope.correlation_id ?? null,
@@ -405,7 +420,7 @@ export class IntegrationService {
   private async findConnector(client: PoolClient, tenantId: string, factoryId: string, connectorId: string, forUpdate: boolean): Promise<ConnectorRow> {
     if (!isUUID(connectorId)) throw new BadRequestException('connectorId must be a UUID');
     const result = await client.query<ConnectorRow>(
-      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3' + (forUpdate ? ' FOR UPDATE' : ''),
+      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,display_name,source_system,connector_type,status,secret_reference,schema_version,allowed_event_types,payload_schema,created_by_user_id::text AS created_by_user_id,reviewed_by_user_id::text AS reviewed_by_user_id,reviewed_at,paused_at,decision_reason,created_at,updated_at FROM integration_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3' + (forUpdate ? ' FOR UPDATE' : ''),
       [connectorId, tenantId, factoryId],
     );
     const row = result.rows[0];
@@ -451,7 +466,7 @@ export class IntegrationService {
     if (error.code.startsWith('WEBHOOK_TIMESTAMP_') || error.code === 'WEBHOOK_SIGNATURE_INVALID') {
       return new UnauthorizedException({ code: error.code, message: error.message });
     }
-    if (error.code.startsWith('WEBHOOK_SCHEMA_VERSION') || error.code.startsWith('WEBHOOK_PAYLOAD')) {
+    if (error.code === 'WEBHOOK_EVENT_TYPE_NOT_ALLOWED' || error.code.startsWith('WEBHOOK_SCHEMA_VERSION') || error.code.startsWith('WEBHOOK_PAYLOAD')) {
       return new UnprocessableEntityException({ code: error.code, message: error.message });
     }
     return new BadRequestException({ code: error.code, message: error.message });
@@ -493,6 +508,7 @@ export class IntegrationService {
       status: row.status,
       webhook_path: '/api/integrations/webhooks/' + row.id,
       schema_version: Number(row.schema_version),
+      allowed_event_types: row.allowed_event_types,
       payload_schema: row.payload_schema,
       has_secret_reference: Boolean(row.secret_reference),
       created_by_user_id: row.created_by_user_id,

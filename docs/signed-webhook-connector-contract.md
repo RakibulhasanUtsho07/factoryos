@@ -14,7 +14,7 @@ The architecture requires webhook signature verification and replay protection, 
 - \`GET /api/integrations/connectors\`, \`GET /api/integrations/connectors/:id\`, and \`GET /api/integrations/connectors/:id/history\` expose records only inside the active tenant/factory scope.
 - \`POST /api/integrations/connectors/:id/activate\` and \`/reject\` require \`integrations.connectors.approve\`. The database trigger enforces maker-checker: the creator cannot approve or reject their own registration.
 - \`POST /api/integrations/connectors/:id/pause\` requires \`integrations.connectors.write\`; \`/resume\` and \`/rotate-secret\` require approval permission. Secret rotation is permitted only while paused.
-- Connector identity, source system, schema and schema version are immutable. A breaking schema change is registered as a new connector rather than silently changing an existing contract. Status/credential transitions write append-only connector history.
+- Connector identity, source system, allowed event-type allowlist, schema and schema version are immutable. A breaking schema change is registered as a new connector rather than silently changing an existing contract. Status/credential transitions write append-only connector history.
 
 \`ORG_ADMIN\` receives read/write/approve permissions. \`FACTORY_MANAGER\` receives read/write but not approval. The API never returns a secret value or the private secret reference.
 

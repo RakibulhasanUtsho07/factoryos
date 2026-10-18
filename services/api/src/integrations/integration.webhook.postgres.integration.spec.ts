@@ -67,6 +67,7 @@ describe('Signed webhook integration PostgreSQL boundary', () => {
         source_system: 'CI_INTEGRATION',
         secret_reference: 'env://WEBHOOK_SECRET_INTEGRATION_CI',
         schema_version: 1,
+        allowed_event_types: ['MES.PRODUCTION.COUNTED'],
         payload_schema: payloadSchema,
       },
       'connector-registration-' + runId,
