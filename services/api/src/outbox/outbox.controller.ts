@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Query,
@@ -122,6 +123,7 @@ export class OutboxController {
 
     @Req()
     request: FactoryOsRequest,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     const context =
       request.factoryos;
@@ -149,6 +151,7 @@ export class OutboxController {
       tenantId,
       actorUserId,
       eventId,
+      idempotencyKey: idempotencyKey ?? null,
       requestId:
         context?.requestId ??
         null,
