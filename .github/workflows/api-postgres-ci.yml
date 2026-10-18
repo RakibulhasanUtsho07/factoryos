@@ -271,6 +271,7 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-management-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-lifecycle.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
