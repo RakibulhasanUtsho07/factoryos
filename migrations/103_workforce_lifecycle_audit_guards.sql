@@ -215,8 +215,9 @@ BEGIN
   END IF;
   IF NEW.source_type='BIOMETRIC' AND (
     v_assignment.biometric_consent_at IS NULL
+    OR NEW.occurred_at < v_assignment.biometric_consent_at
     OR (v_assignment.biometric_consent_withdrawn_at IS NOT NULL
-      AND v_assignment.biometric_consent_withdrawn_at >= v_assignment.biometric_consent_at)
+      AND NEW.occurred_at >= v_assignment.biometric_consent_withdrawn_at)
   ) THEN
     RAISE EXCEPTION 'Biometric attendance requires current, explicit worker consent' USING ERRCODE='42501';
   END IF;
