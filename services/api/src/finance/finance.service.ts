@@ -2,8 +2,11 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient, QueryResultRow } from 'pg';
@@ -20,6 +23,7 @@ import {
   validateFinanceEndpoint,
   validateFinanceSecretReference,
   validateFinanceSftpConfiguration,
+  type FinanceSftpConfiguration,
   type FinanceConnectorDomain,
   type FinanceConnectorMode,
   type FinanceFactType,
@@ -37,6 +41,7 @@ import { FinanceFileImportDto, CreateFinanceConnectorDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
 import { FinanceFileValidationError, parseFinanceFileImport, type ParsedFinanceFileImport } from './finance-file-import';
+import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, type FinanceSftpTransport } from './finance-file-transfer.adapters';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -81,6 +86,21 @@ interface FinanceFileValidationReportRow extends QueryResultRow {
   valid_row_count: number;
   invalid_row_count: number;
   validation_report: { errors: FinanceFileValidationIssue[]; truncated: boolean; checks: string[] };
+  created_at: string;
+}
+interface FinanceFileExportReceiptRow extends QueryResultRow {
+  id: string;
+  connector_id: string;
+  idempotency_key: string;
+  request_hash: string;
+  format: 'CSV' | 'JSON';
+  file_name: string;
+  payload_sha256: string;
+  payload_bytes: number;
+  record_count: number;
+  status: 'COMPLETED';
+  remote_reference: string | null;
+  content: Buffer | null;
   created_at: string;
 }
 interface NormalizedFact {
@@ -129,7 +149,10 @@ const SECRET_KEY_PATTERN = /(password|token|secret|credential|api.?key|authoriza
 
 @Injectable()
 export class FinanceService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Optional() @Inject(FINANCE_SFTP_TRANSPORT) private readonly sftpTransport?: FinanceSftpTransport,
+  ) {}
 
   async createConnector(
     userId: string,
@@ -385,6 +408,238 @@ export class FinanceService {
     );
   }
 
+
+
+  async exportFactsFile(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    dto: FinanceFileExportDto,
+    idempotencyKeyInput: string | null,
+    ctx: FinanceEventContext,
+  ) {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const from = dto.from ? new Date(dto.from).toISOString() : null;
+    const to = dto.to ? new Date(dto.to).toISOString() : null;
+    if (from && to && Date.parse(from) > Date.parse(to)) {
+      throw new BadRequestException('from must be earlier than or equal to to');
+    }
+    const requestHash = financeRequestHash({
+      format: dto.format, from, to, fact_type: dto.fact_type ?? null,
+    });
+
+    return this.database.transaction({
+      tenantId,
+      userId,
+      requestId: this.uuidOrNull(ctx.requestId),
+      traceId: this.uuidOrNull(ctx.traceId),
+      advisoryLockKey: 'finance-file-export:' + tenantId + ':' + factoryId + ':' + connectorId + ':' + idempotencyKey,
+    }, async (client) => {
+      const connectorResult = await client.query<ConnectorRow & {
+        secret_reference: string | null;
+        configuration: Record<string, unknown>;
+      }>(
+        'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
+        'row_version::int AS row_version,created_by_user_id::text,secret_reference,configuration ' +
+        'FROM finance_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE',
+        [connectorId, tenantId, factoryId],
+      );
+      const connector = connectorResult.rows[0];
+      if (!connector) throw new NotFoundException('Finance export connector not found in the active factory scope');
+      if (connector.status !== 'ACTIVE') throw new ConflictException('File export requires an active approved connector');
+      if (!['FILE_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode)) {
+        throw new ConflictException('File export requires a FILE_EXPORT or SFTP_EXPORT connector');
+      }
+      if (connector.domain === 'CUSTOM') {
+        throw new ConflictException('CUSTOM connectors cannot export governed financial reporting facts');
+      }
+
+      const prior = await client.query<FinanceFileExportReceiptRow & { request_hash: string }>(
+        'SELECT id::text,connector_id::text,idempotency_key,request_hash,format,file_name,payload_sha256,' +
+        'payload_bytes,record_count,status,remote_reference,content,created_at::text ' +
+        'FROM finance_file_export_receipts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND idempotency_key=$4 FOR UPDATE',
+        [tenantId, factoryId, connectorId, idempotencyKey],
+      );
+      if (prior.rows[0]) {
+        if (prior.rows[0].request_hash !== requestHash) {
+          throw new ConflictException('Idempotency-Key was already used for a different file export request');
+        }
+        const receipt = prior.rows[0];
+        return {
+          ...receipt,
+          replayed: true,
+          ...(connector.integration_mode === 'FILE_EXPORT'
+            ? { content_base64: receipt.content?.toString('base64') ?? '' }
+            : {}),
+        };
+      }
+
+      const rows = await client.query<{
+        external_fact_id: string;
+        source_fact_key: string;
+        fact_type: string;
+        source_record_type: string;
+        source_record_ref: string;
+        effective_at: string;
+        due_at: string | null;
+        currency: string;
+        amount: string;
+        customer_ref: string | null;
+        product_id: string | null;
+        product_ref: string | null;
+        order_id: string | null;
+        order_ref: string | null;
+        cost_center_ref: string | null;
+        shipment_ref: string | null;
+        source_quantity: string | null;
+        source_rate: string | null;
+        source_uom_code: string | null;
+        metadata_snapshot: Record<string, unknown>;
+        expected_source_type: string | null;
+        expected_source_ref: string | null;
+        expected_quantity: string | null;
+        quantity_tolerance: string | null;
+        expected_rate: string | null;
+        rate_tolerance: string | null;
+        uom_code: string | null;
+      }>(
+        'SELECT f.external_fact_id,f.source_fact_key,f.fact_type,f.source_record_type,f.source_record_ref,' +
+        'f.effective_at::text,f.due_at::text,f.currency,f.amount::text,f.customer_ref,f.product_id::text,f.product_ref,' +
+        'f.order_id::text,f.order_ref,f.cost_center_ref,f.shipment_ref,f.source_quantity::text,f.source_rate::text,' +
+        'f.source_uom_code,f.metadata_snapshot,r.expected_source_type,r.expected_source_ref,r.expected_quantity::text,' +
+        'r.quantity_tolerance::text,r.expected_rate::text,r.rate_tolerance::text,r.uom_code ' +
+        'FROM financial_facts f ' +
+        'JOIN finance_connectors src ON src.id=f.connector_id AND src.tenant_id=f.tenant_id AND src.factory_id=f.factory_id ' +
+        'LEFT JOIN finance_fact_reconciliations r ON r.fact_id=f.id AND r.tenant_id=f.tenant_id AND r.factory_id=f.factory_id ' +
+        'WHERE f.tenant_id=$1 AND f.factory_id=$2 AND src.domain=$3 AND src.is_reporting_source AND src.status=$4 ' +
+        'AND ($5::timestamptz IS NULL OR f.effective_at >= $5) AND ($6::timestamptz IS NULL OR f.effective_at <= $6) ' +
+        'AND ($7::text IS NULL OR f.fact_type=$7) ' +
+        'ORDER BY f.effective_at,f.external_fact_id LIMIT 501',
+        [tenantId, factoryId, connector.domain, 'ACTIVE', from, to, dto.fact_type ?? null],
+      );
+      if (rows.rows.length > 500) {
+        throw new BadRequestException('File export exceeds the 500-row synchronous limit; use the governed tenant export job for larger datasets');
+      }
+
+      const facts: Array<Record<string, unknown>> = rows.rows.map((row) => ({
+        external_fact_id: row.external_fact_id,
+        source_fact_key: row.source_fact_key,
+        fact_type: row.fact_type,
+        source_record_type: row.source_record_type,
+        source_record_ref: row.source_record_ref,
+        effective_at: new Date(row.effective_at).toISOString(),
+        ...(row.due_at ? { due_at: new Date(row.due_at).toISOString() } : {}),
+        currency: row.currency,
+        amount: row.amount,
+        ...(row.customer_ref ? { customer_ref: row.customer_ref } : {}),
+        ...(row.product_id ? { product_id: row.product_id } : {}),
+        ...(row.product_ref ? { product_ref: row.product_ref } : {}),
+        ...(row.order_id ? { order_id: row.order_id } : {}),
+        ...(row.order_ref ? { order_ref: row.order_ref } : {}),
+        ...(row.cost_center_ref ? { cost_center_ref: row.cost_center_ref } : {}),
+        ...(row.shipment_ref ? { shipment_ref: row.shipment_ref } : {}),
+        ...(row.source_quantity !== null && row.source_quantity !== undefined ? { source_quantity: row.source_quantity } : {}),
+        ...(row.source_rate !== null && row.source_rate !== undefined ? { source_rate: row.source_rate } : {}),
+        ...(row.source_uom_code ? { source_uom_code: row.source_uom_code } : {}),
+        metadata_snapshot: row.metadata_snapshot ?? {},
+        ...(row.expected_source_type ? { reconciliation: {
+          expected_source_type: row.expected_source_type,
+          expected_source_ref: row.expected_source_ref,
+          expected_quantity: row.expected_quantity,
+          quantity_tolerance: row.quantity_tolerance,
+          expected_rate: row.expected_rate,
+          rate_tolerance: row.rate_tolerance,
+          uom_code: row.uom_code,
+        } } : {}),
+      }));
+      const content = dto.format === 'JSON'
+        ? Buffer.from(JSON.stringify(facts), 'utf8')
+        : Buffer.from(this.financeFactsToCsv(facts), 'utf8');
+      if (content.length < 1 || content.length > 2 * 1024 * 1024) {
+        throw new BadRequestException('Export file must be between 1 byte and 2 MiB; use the governed tenant export job for larger datasets');
+      }
+      const payloadSha256 = createHash('sha256').update(content).digest('hex');
+      const fileName = 'finance-' + connector.domain.toLowerCase() + '-' + payloadSha256.slice(0, 16) +
+        '.' + dto.format.toLowerCase();
+      let remoteReference: string | null = null;
+
+      if (connector.integration_mode === 'SFTP_EXPORT') {
+        if (!this.sftpTransport) {
+          throw new ServiceUnavailableException('SFTP export is disabled because no verified SFTP transport adapter is registered');
+        }
+        if (!connector.secret_reference) throw new ServiceUnavailableException('SFTP connector has no secret-manager reference');
+        let configuration: FinanceSftpConfiguration;
+        try {
+          configuration = validateFinanceSftpConfiguration(connector.integration_mode, connector.configuration ?? {});
+        } catch (error) {
+          throw new BadRequestException(error instanceof Error ? error.message : 'Invalid SFTP export configuration');
+        }
+        const uploaded = await this.sftpTransport.upload({
+          tenant_id: tenantId,
+          factory_id: factoryId,
+          connector_id: connectorId,
+          secret_reference: connector.secret_reference,
+          configuration,
+          remote_file_name: fileName,
+          format: dto.format,
+          content,
+          sha256: payloadSha256,
+        });
+        if (uploaded.verified_host_key_sha256 !== configuration.host_key_sha256 ||
+            uploaded.bytes_written !== content.length) {
+          throw new ServiceUnavailableException('SFTP host-key or upload-size verification failed');
+        }
+        assertFinanceSftpRemoteFilePath(configuration, uploaded.remote_path, fileName);
+        remoteReference = uploaded.remote_path;
+      }
+
+      const receiptId = randomUUID();
+      const inserted = await client.query<FinanceFileExportReceiptRow>(
+        'INSERT INTO finance_file_export_receipts(' +
+        'id,tenant_id,factory_id,connector_id,idempotency_key,request_hash,format,file_name,payload_sha256,payload_bytes,' +
+        'record_count,status,remote_reference,content,actor_user_id,request_id,trace_id' +
+        ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ' +
+        'RETURNING id::text,connector_id::text,idempotency_key,request_hash,format,file_name,payload_sha256,payload_bytes,' +
+        'record_count,status,remote_reference,content,created_at::text',
+        [
+          receiptId, tenantId, factoryId, connectorId, idempotencyKey, requestHash, dto.format, fileName, payloadSha256,
+          content.length, facts.length, 'COMPLETED', remoteReference,
+          connector.integration_mode === 'FILE_EXPORT' ? content : null,
+          userId, this.uuidOrNull(ctx.requestId), this.uuidOrNull(ctx.traceId),
+        ],
+      );
+      await this.audit(client, tenantId, factoryId, userId, 'FINANCE_FILE_EXPORT_COMPLETED', 'EXPORT',
+        'finance_file_export_receipts', receiptId, ctx, {
+          connector_id: connectorId, source_domain: connector.domain, format: dto.format,
+          file_name: fileName, payload_sha256: payloadSha256, payload_bytes: content.length,
+          record_count: facts.length, remote_reference: remoteReference,
+        });
+      await this.outbox(client, tenantId, factoryId, receiptId, 'FINANCE_FILE_EXPORT_COMPLETED', userId, ctx, {
+        connector_id: connectorId, format: dto.format, file_name: fileName, payload_sha256: payloadSha256,
+        record_count: facts.length, remote_delivery: connector.integration_mode === 'SFTP_EXPORT',
+      });
+      return {
+        ...inserted.rows[0],
+        replayed: false,
+        ...(connector.integration_mode === 'FILE_EXPORT' ? { content_base64: content.toString('base64') } : {}),
+      };
+    });
+  }
+
+  private financeFactsToCsv(facts: Array<Record<string, unknown>>): string {
+    const headers = [
+      'external_fact_id','source_fact_key','fact_type','source_record_type','source_record_ref',
+      'effective_at','due_at','currency','amount','customer_ref','product_id','product_ref','order_id','order_ref',
+      'cost_center_ref','shipment_ref','source_quantity','source_rate','source_uom_code','metadata_snapshot','reconciliation',
+    ];
+    const csvValue = (value: unknown): string => {
+      if (value === null || value === undefined) return '';
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    };
+    return headers.join(',') + '\r\n' + facts.map((fact) => headers.map((header) => csvValue(fact[header])).join(',')).join('\r\n') + '\r\n';
+  }
 
   async validateFactsFile(
     userId: string,
