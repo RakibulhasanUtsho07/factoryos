@@ -68,13 +68,13 @@ interface ConnectorRow extends QueryResultRow {
   created_at?: string;
   updated_at?: string;
 }
-interface FinanceFileValidationIssue {
+export interface FinanceFileValidationIssue {
   row: number | null;
   field: string;
   code: string;
   message: string;
 }
-interface FinanceFileValidationReportRow extends QueryResultRow {
+export interface FinanceFileValidationReportRow extends QueryResultRow {
   id: string;
   connector_id: string;
   external_batch_ref: string;
@@ -88,7 +88,7 @@ interface FinanceFileValidationReportRow extends QueryResultRow {
   validation_report: { errors: FinanceFileValidationIssue[]; truncated: boolean; checks: string[] };
   created_at: string;
 }
-interface FinanceFileExportReceiptRow extends QueryResultRow {
+export interface FinanceFileExportReceiptRow extends QueryResultRow {
   id: string;
   connector_id: string;
   idempotency_key: string;
