@@ -15,6 +15,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
+export const WORKFORCE_STATUSES = ['ACTIVE', 'INACTIVE'] as const;
 export const WORKFORCE_EVENT_TYPES = [
   'CLOCK_IN', 'CLOCK_OUT', 'BREAK_START', 'BREAK_END', 'ABSENCE_RECORDED',
 ] as const;
