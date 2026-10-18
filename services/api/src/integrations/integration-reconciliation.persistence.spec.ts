@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import type { PoolClient } from 'pg';
 import {
   normalizeOperationalEvent,
