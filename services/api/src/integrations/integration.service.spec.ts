@@ -70,7 +70,7 @@ describe('IntegrationService signed webhook ingress', () => {
         return callback(client);
       }),
     };
-    const config = { get: jest.fn(() => secret) };
+    const config = { get: jest.fn((key: string) => key === 'WEBHOOK_SECRET_MES' ? secret : undefined) };
     return {
       service: new IntegrationService(database as never, config as never),
       database,
