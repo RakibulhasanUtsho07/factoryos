@@ -266,7 +266,7 @@ export class IntegrationService {
     signatureHeader: string | undefined,
   ) {
     if (!isUUID(connectorId)) throw new BadRequestException('connectorId must be a UUID');
-    const externalEventId = externalEventIdHeader?.trim() ?? '';
+    const externalEventId = externalEventIdHeader ?? '';
     if (!/^[\x21-\x7e]{1,200}$/.test(externalEventId)) {
       throw new BadRequestException('X-FactoryOS-Event-Id must contain 1 to 200 visible ASCII characters');
     }
@@ -375,6 +375,7 @@ export class IntegrationService {
         external_event_id: externalEventId,
         source_event_type: envelope.event_type,
         source_schema_version: envelope.schema_version,
+        request_fingerprint_sha256: payloadHash,
         ...(envelope.correlation_id ? { external_correlation_id: envelope.correlation_id } : {}),
         payload: envelope.payload,
       };

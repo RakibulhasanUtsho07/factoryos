@@ -1,4 +1,4 @@
-import { UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 import {
   createWebhookSignature,
@@ -109,6 +109,14 @@ describe('IntegrationService signed webhook ingress', () => {
     expect(result).toEqual(expect.objectContaining({ accepted: true, duplicate: false }));
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(true);
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(true);
+    const outboxInsert = harness.clientQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO outbox_events'));
+    const outboxValues = outboxInsert?.[1] as unknown[] | undefined;
+    const queuedPayload = JSON.parse(String(outboxValues?.[7])) as Record<string, unknown>;
+    const envelope = signed.request.body as { event_type: string; schema_version: number; payload: Record<string, unknown> };
+    expect(queuedPayload.request_fingerprint_sha256).toBe(integrationRequestHash({
+      event_type: envelope.event_type, schema_version: envelope.schema_version,
+      correlation_id: null, payload: envelope.payload,
+    }));
     expect(harness.transactionCount).toBe(1);
   });
 
@@ -145,6 +153,16 @@ describe('IntegrationService signed webhook ingress', () => {
     });
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
+  });
+
+  it('rejects non-canonical whitespace in provider event IDs instead of normalizing an idempotency key', async () => {
+    const harness = setup();
+    const signed = signedRequest('mes-event-noncanonical');
+    await expect(harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId + ' ', signed.signature,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(harness.transactionCount).toBe(0);
+    expect(harness.database.query).not.toHaveBeenCalled();
   });
 
   it('rejects a modified signature before opening a database transaction', async () => {
