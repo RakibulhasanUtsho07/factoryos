@@ -530,7 +530,7 @@ export class ProductionWorkOrdersService {
         },
       });
     }
-    return { ...workOrder, source_operation_event_id: result.eventId, replayed: result.replayed };
+    return { ...workOrder, replayed: result.replayed };
   }
 
   async listWorkOrders(
