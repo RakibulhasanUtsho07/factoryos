@@ -78,7 +78,7 @@ export class MaintenanceService {
         ) VALUES ($1,$2,$3::uuid,$4,$5,$6,$7,$8,$9,$10,$11,$12::date,$13::date,$14,$15,$16,$17,$17,$18::uuid)
         RETURNING id::text AS id,row_version::int AS row_version,status,asset_code,name`,
         [c.tenantId,c.factoryId,parentId,assetCode,name,assetType,payload.manufacturer,payload.model,payload.serial_number,
-          criticality,payload.location,payload.commissioned_on,payload.warranty_expires_on,payload.notes,key,hash,c.userId,randomUUID()],
+          criticality,payload.location,payload.commissioned_on,payload.warranty_expires_on,payload.notes,key,hash,c.userId,this.correlationId(c)),
       );
       const asset = inserted.rows[0];
       if (!asset) throw new Error('MAINTENANCE_ASSET_INSERT_FAILED');
@@ -234,7 +234,7 @@ export class MaintenanceService {
         RETURNING id::text AS id,row_version::int AS row_version,status,revision`,
         [c.tenantId,c.factoryId,assetId,planCode,Number(revision.rows[0]?.revision??1),name,payload.description,
           intervalValue,intervalUnit,dueOn,payload.estimated_duration_minutes,payload.requires_shutdown,
-          JSON.stringify(checklist),key,hash,c.userId,randomUUID()],
+          JSON.stringify(checklist),key,hash,c.userId,this.correlationId(c)),
       );
       const inserted=plan.rows[0];
       if(!inserted) throw new Error('MAINTENANCE_PM_PLAN_INSERT_FAILED');
@@ -348,7 +348,7 @@ export class MaintenanceService {
           $10,$11,$12,$12,$13::uuid)
         RETURNING id::text AS id,row_version::int AS row_version,status`,
         [workOrderId,c.tenantId,c.factoryId,woNumber,p.asset_id,p.id,p.next_due_on,
-          `PM: ${p.name}`,reason,key,hash,c.userId,randomUUID()],
+          `PM: ${p.name}`,reason,key,hash,c.userId,this.correlationId(c)),
       );
       const inserted=wo.rows[0];if(!inserted) throw new Error('MAINTENANCE_PM_WORK_ORDER_INSERT_FAILED');
       const checklist=this.normalizeChecklist(Array.isArray(p.checklist)?p.checklist:[]);
@@ -418,7 +418,7 @@ export class MaintenanceService {
           $13,$14,$15,$15,$16::uuid)
         RETURNING id::text AS id,row_version::int AS row_version,status`,
         [workOrderId,c.tenantId,c.factoryId,woNumber,assetId,priority,title,description,payload.failure_code,
-          scheduled,due,dto.assigned_to_user_id??null,key,hash,c.userId,randomUUID()],
+          scheduled,due,dto.assigned_to_user_id??null,key,hash,c.userId,this.correlationId(c)),
       );
       if(!wo.rows[0]) throw new Error('MAINTENANCE_BREAKDOWN_WORK_ORDER_INSERT_FAILED');
       await this.insertTasks(client,c,workOrderId,checklist,`${key}:tasks`,'Checklist item');
@@ -568,7 +568,7 @@ export class MaintenanceService {
           request_hash,created_by_user_id,updated_by_user_id,correlation_id
         ) VALUES ($1,$2,$3,$4,$5::numeric,$6,$7,$8,$9,$9,$10::uuid)
         RETURNING id::text AS id,row_version::int AS row_version,issued_quantity::text AS issued_quantity`,
-        [c.tenantId,c.factoryId,workOrderId,itemId,quantity,notes,key,hash,c.userId,randomUUID()],
+        [c.tenantId,c.factoryId,workOrderId,itemId,quantity,notes,key,hash,c.userId,this.correlationId(c)),
       );
       const part=inserted.rows[0];if(!part) throw new Error('MAINTENANCE_PART_REQUIREMENT_INSERT_FAILED');
       await this.insertEvent(client,c,{entityType:'WORK_ORDER_PART',entityId:String(part.id),version:1,action:'REQUIREMENT_ADDED',
@@ -630,7 +630,7 @@ export class MaintenanceService {
           'MAINTENANCE_WORK_ORDER_PART',$8::uuid,$9,$10,$11::uuid)
         RETURNING id::text AS id,quantity_after::text AS quantity_after`,
         [c.tenantId,c.factoryId,part.inventory_item_id,quantity,stock.quantity_after,movementKey,movementHash,
-          partId,reason,c.userId,randomUUID()],
+          partId,reason,c.userId,this.correlationId(c)),
       );
       const movementRow=movement.rows[0];if(!movementRow) throw new Error('MAINTENANCE_SPARE_PART_MOVEMENT_FAILED');
       const updated=await client.query<Row>(
@@ -769,7 +769,7 @@ export class MaintenanceService {
   private async insertTasks(client:PoolClient,c:MaintenanceContext,workOrderId:string,checklist:MaintenanceChecklistEntryDto[],keyPrefix:string,defaultPrefix:string) {
     for(let i=0;i<checklist.length;i++){
       const item=checklist[i]!;
-      const taskKey=`${keyPrefix.slice(0,180)}:${i+1}`;
+      const taskFingerprint=this.hash({keyPrefix,sequence:i+1}).slice(0,48);\n      const taskKey=`maint-task:${taskFingerprint}`;
       const taskHash=this.hash({workOrderId,task:item,sequence:i+1});
       const created=await client.query<Row>(
         `INSERT INTO maintenance_work_order_tasks (
@@ -777,12 +777,12 @@ export class MaintenanceService {
           evidence,idempotency_key,request_hash,created_by_user_id,correlation_id
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING','{}'::jsonb,$8,$9,$10,$11::uuid)
         RETURNING id::text AS id,row_version::int AS row_version`,
-        [c.tenantId,c.factoryId,workOrderId,item.code,item.description,i+1,item.required??true,taskKey,taskHash,c.userId,randomUUID()],
+        [c.tenantId,c.factoryId,workOrderId,item.code,item.description,i+1,item.required??true,taskKey,taskHash,c.userId,this.correlationId(c)),
       );
       const row=created.rows[0];if(!row) throw new Error('MAINTENANCE_TASK_INSERT_FAILED');
       await this.insertEvent(client,c,{entityType:'WORK_ORDER_TASK',entityId:String(row.id),version:1,
         action:'CREATED',toStatus:'PENDING',reason:defaultPrefix,data:{task_code:item.code,description:item.description,required:item.required??true},
-        key:`${taskKey.slice(0,180)}:event`,hash:taskHash,parentWorkOrderId:workOrderId});
+        key:`maint-task-event:${taskFingerprint}`,hash:taskHash,parentWorkOrderId:workOrderId});
     }
   }
 
@@ -797,7 +797,7 @@ export class MaintenanceService {
         reason,event_data,idempotency_key,request_hash,actor_user_id,correlation_id
       ) VALUES ($1,$2,$3,$4,$5::uuid,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15::uuid)`,
       [c.tenantId,c.factoryId,input.entityType,input.entityId,input.parentWorkOrderId??null,input.version,input.action,
-        input.fromStatus??null,input.toStatus??null,input.reason??null,JSON.stringify(input.data??{}),input.key,input.hash,c.userId,randomUUID()],
+        input.fromStatus??null,input.toStatus??null,input.reason??null,JSON.stringify(input.data??{}),input.key,input.hash,c.userId,this.correlationId(c)),
     );
   }
 
@@ -810,6 +810,12 @@ export class MaintenanceService {
     const event=result.rows[0];
     if(event&&event.request_hash!==hash) throw new ConflictException('Idempotency-Key was already used for a different maintenance request');
     return event??null;
+  }
+
+  private correlationId(c: MaintenanceContext) {
+    if (c.traceId && isUUID(c.traceId)) return c.traceId.toLowerCase();
+    if (c.requestId && isUUID(c.requestId)) return c.requestId.toLowerCase();
+    return randomUUID();
   }
 
   private validateContext(c:MaintenanceContext) {
