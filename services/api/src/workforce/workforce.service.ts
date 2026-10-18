@@ -1114,7 +1114,11 @@ export class WorkforceService {
         const actual=Object.fromEntries(formatter.formatToParts(new Date(candidate)).map(p=>[p.type,p.value]));
         if(Number(actual.year)!==year||Number(actual.month)!==month||Number(actual.day)!==day||
           Number(actual.hour)!==hour||Number(actual.minute)!==minute||Number(actual.second)!==(second??0)) break;
-        for(const delta of [-60*60*1000,60*60*1000]) {
+        // Offset transitions are not always one hour (e.g. 30-minute
+        // changes in Australia/Lord_Howe). Search a bounded neighbourhood for
+        // another UTC instant that renders to the same local wall-clock time.
+        for(let delta=-3*60*60*1000;delta<=3*60*60*1000;delta+=15*60*1000) {
+          if(delta===0) continue;
           const alternative=new Date(candidate+delta);
           const alternate=Object.fromEntries(formatter.formatToParts(alternative).map(p=>[p.type,p.value]));
           if(Number(alternate.year)===year&&Number(alternate.month)===month&&Number(alternate.day)===day&&
