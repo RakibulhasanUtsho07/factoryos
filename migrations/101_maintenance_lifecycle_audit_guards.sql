@@ -387,6 +387,52 @@ CREATE TRIGGER trg_maintenance_work_order_asset_active_guard
 BEFORE INSERT ON maintenance_work_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_work_order_asset_active();
 
+CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_event()
+RETURNS trigger LANGUAGE plpgsql AS $
+DECLARE
+  v_version BIGINT;
+  v_parent_work_order_id UUID;
+BEGIN
+  IF NEW.actor_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'Maintenance audit actor must match the authenticated database context' USING ERRCODE='42501';
+  END IF;
+  CASE NEW.entity_type
+    WHEN 'ASSET' THEN
+      SELECT row_version INTO v_version FROM maintenance_assets
+      WHERE id=NEW.entity_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    WHEN 'PM_PLAN' THEN
+      SELECT row_version INTO v_version FROM maintenance_pm_plans
+      WHERE id=NEW.entity_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    WHEN 'WORK_ORDER' THEN
+      SELECT row_version INTO v_version FROM maintenance_work_orders
+      WHERE id=NEW.entity_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    WHEN 'WORK_ORDER_TASK' THEN
+      SELECT row_version,work_order_id INTO v_version,v_parent_work_order_id
+      FROM maintenance_work_order_tasks
+      WHERE id=NEW.entity_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    WHEN 'WORK_ORDER_PART' THEN
+      SELECT row_version,work_order_id INTO v_version,v_parent_work_order_id
+      FROM maintenance_work_order_parts
+      WHERE id=NEW.entity_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    ELSE
+      RAISE EXCEPTION 'Unsupported maintenance event entity type %',NEW.entity_type USING ERRCODE='23514';
+  END CASE;
+  IF v_version IS NULL OR v_version <> NEW.entity_version THEN
+    RAISE EXCEPTION 'Maintenance event must match the current scoped entity version' USING ERRCODE='23514';
+  END IF;
+  IF NEW.entity_type IN ('WORK_ORDER_TASK','WORK_ORDER_PART') THEN
+    IF NEW.parent_work_order_id IS DISTINCT FROM v_parent_work_order_id THEN
+      RAISE EXCEPTION 'Maintenance child-event parent does not match the source work order' USING ERRCODE='23514';
+    END IF;
+  ELSIF NEW.parent_work_order_id IS NOT NULL THEN
+    RAISE EXCEPTION 'Only checklist and spare-part events may reference a parent work order' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE OR REPLACE TRIGGER trg_maintenance_event_guard
+BEFORE INSERT ON maintenance_events
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_event();
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('101_maintenance_lifecycle_audit_guards', NULL)
 ON CONFLICT(version) DO NOTHING;
