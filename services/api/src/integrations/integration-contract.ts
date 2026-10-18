@@ -108,8 +108,8 @@ function validateSchemaNode(value: unknown, path: string, depth: number): assert
       throw new IntegrationContractError('WEBHOOK_SCHEMA_ITEMS_REQUIRED', path + '.items is required for arrays');
     }
     const maxItems = value.maxItems;
-    if (maxItems !== undefined && (!Number.isInteger(maxItems) || Number(maxItems) < 0 || Number(maxItems) > 1000)) {
-      throw new IntegrationContractError('WEBHOOK_SCHEMA_INVALID_LIMIT', path + '.maxItems must be an integer from 0 to 1000');
+    if (maxItems === undefined || !Number.isInteger(maxItems) || Number(maxItems) < 0 || Number(maxItems) > 1000) {
+      throw new IntegrationContractError('WEBHOOK_SCHEMA_INVALID_LIMIT', path + '.maxItems is required and must be an integer from 0 to 1000');
     }
     validateSchemaNode(value.items, path + '.items', depth + 1);
   } else if (type === 'string') {

@@ -54,7 +54,7 @@ The only supported envelope keys are:
 
 \`event_type\` must use a canonical uppercase identifier. \`schema_version\` must exactly match the connector's registered immutable version; \`correlation_id\`, when supplied, must be a UUID. Tenant, factory, actor and connector scope are derived by FactoryOS and cannot be spoofed in the envelope.
 
-The payload schema is a bounded JSON Schema subset for object, array, string, number, integer, boolean and null types. It supports required fields, strict object properties, enums, array item schemas/count limits, string length limits and numeric bounds. Unknown schema keywords and open-ended \`additionalProperties\` are rejected. Schemas are limited to 32 KiB, depth 8, 100 object properties and 1,000 array items per declared maximum. Payloads that contain unknown fields, omit required fields, use the wrong type, or report an incompatible schema version are rejected as 4xx responses; invalid data is not endlessly retried.
+The payload schema is a bounded JSON Schema subset for object, array, string, number, integer, boolean and null types. It supports required fields, strict object properties, enums, array item schemas (every array requires an explicit `maxItems` from 0 to 1,000), string length limits and numeric bounds. Unknown schema keywords and open-ended \`additionalProperties\` are rejected. Schemas are limited to 32 KiB, depth 8, 100 object properties and 1,000 array items per declared maximum. Payloads that contain unknown fields, omit required fields, use the wrong type, or report an incompatible schema version are rejected as 4xx responses; invalid data is not endlessly retried.
 
 ## Transactional intake, duplicate delivery and safe retry
 

@@ -36,6 +36,11 @@ describe('Integration webhook contract', () => {
   });
 
   it('rejects unsupported schema keywords and open-ended object schemas', () => {
+    expect(() => assertPayloadSchema({
+      type: 'object',
+      properties: { values: { type: 'array', items: { type: 'string' } } },
+    })).toThrow('maxItems is required');
+
     expect(() => assertPayloadSchema({ type: 'object', properties: {}, patternProperties: {} }))
       .toThrow('unsupported schema keyword');
     expect(() => assertPayloadSchema({ type: 'object', properties: {}, additionalProperties: true }))
@@ -70,7 +75,7 @@ describe('Integration webhook contract', () => {
       .toThrow('unsafe property');
     let deeplyNestedSchema: Record<string, unknown> = { type: 'string' };
     for (let depth = 0; depth < 9; depth += 1) {
-      deeplyNestedSchema = { type: 'array', items: deeplyNestedSchema };
+      deeplyNestedSchema = { type: 'array', maxItems: 1, items: deeplyNestedSchema };
     }
     expect(() => assertPayloadSchema(deeplyNestedSchema)).toThrow('maximum schema depth');
   });
