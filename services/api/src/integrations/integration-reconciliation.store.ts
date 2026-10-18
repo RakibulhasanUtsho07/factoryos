@@ -48,7 +48,7 @@ export function classifyOperationalDomain(eventType: string): OperationalDomain 
   if (/^(?:PRODUCTION|OPERATION|MES\.PRODUCTION|MES\.OPERATION)\./.test(eventType)) {
     return 'PRODUCTION';
   }
-  if (/^(?:QUALITY|INSPECTION|NCR|QC)\./.test(eventType)) return 'QUALITY';
+  if (/^(?:QUALITY|INSPECTION|NCR|QC|MES\.QUALITY|MES\.INSPECTION|QMS\.QUALITY|QMS\.INSPECTION)\./.test(eventType)) return 'QUALITY';
   return null;
 }
 
