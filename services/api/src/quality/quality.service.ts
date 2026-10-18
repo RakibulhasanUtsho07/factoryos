@@ -33,6 +33,7 @@ export class QualityService {
     const targetId = dto.target_id.toLowerCase();
     const planCode = dto.plan_code?.trim().toUpperCase() || null;
     if (planCode && !/^[A-Z0-9][A-Z0-9._-]{0,99}$/.test(planCode)) throw new BadRequestException('plan_code must be a valid code');
+    if (['INCOMING','IN_PROCESS','FINAL'].includes(dto.inspection_type) && !planCode) throw new BadRequestException('plan_code is required for incoming, in-process and final inspections');
     const quantity = dto.sample_quantity === undefined ? null : this.quantity(dto.sample_quantity, 'sample_quantity');
     const notes = dto.notes?.trim() || null;
     const hash = this.hash({ type: dto.inspection_type, target_type: dto.target_type, target_id: targetId, plan_code: planCode, sample_quantity: quantity, notes });
@@ -390,8 +391,13 @@ export class QualityService {
       if(!version) throw new ConflictException('Quality inspection changed during decision');
       await this.inspectionEvent(client,c,{id,version,from:String(q.status),to:next,action:dto.action,reason,hash,correlation,key:'quality-event:'+key});
       if(dto.action==='FAIL'||dto.action==='HOLD'){
+        let heldWorkOrderId = q.target_type==='WORK_ORDER' ? String(q.target_id) : null;
+        if(q.target_type==='PRODUCTION_REPORT'){
+          const sourceReport=await client.query("SELECT work_order_id::text AS work_order_id FROM order_production_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[q.target_id,c.tenantId,c.factoryId]);
+          heldWorkOrderId=sourceReport.rows[0]?.work_order_id?String(sourceReport.rows[0].work_order_id):null;
+        }
         const hold=await client.query("INSERT INTO quality_holds (tenant_id,factory_id,inspection_id,inventory_item_id,traceability_unit_id,work_order_id,reason,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6::uuid,$7,$8,$9::uuid) RETURNING id::text AS id",
-          [c.tenantId,c.factoryId,id,q.inventory_item_id,q.traceability_unit_id,q.target_type==='WORK_ORDER'?q.target_id:null,reason,c.userId,correlation]);
+          [c.tenantId,c.factoryId,id,q.inventory_item_id,q.traceability_unit_id,heldWorkOrderId,reason,c.userId,correlation]);
         const holdId=String(hold.rows[0]?.id??'');
         if(!holdId) throw new Error('QUALITY_HOLD_INSERT_FAILED');
         if(dto.action==='FAIL'){

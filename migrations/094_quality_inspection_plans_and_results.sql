@@ -348,6 +348,10 @@ BEGIN
   END IF;
 
   IF NEW.plan_code IS NULL OR length(btrim(NEW.plan_code)) = 0 THEN
+    IF NEW.inspection_type IN ('INCOMING','IN_PROCESS','FINAL') THEN
+      RAISE EXCEPTION 'incoming, in-process and final inspections require an active versioned inspection plan'
+        USING ERRCODE = '23514';
+    END IF;
     NEW.plan_id := NULL;
     NEW.plan_revision := NULL;
     NEW.criteria_snapshot := '[]'::jsonb;
