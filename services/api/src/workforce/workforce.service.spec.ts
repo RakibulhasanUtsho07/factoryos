@@ -124,6 +124,26 @@ describe('WorkforceService input and policy validation',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('aggregates productivity over the full date range instead of only the limited item page',async()=>{
+    database.query
+      .mockResolvedValueOnce({rows:[{
+        id:'page-report',good_quantity:'1',scrap_quantity:'0',earned_minutes:'2',actual_minutes:'1',
+      }]} as never)
+      .mockResolvedValueOnce({rows:[{
+        report_count:3,good_quantity:'9',scrap_quantity:'1',earned_minutes:'18',actual_minutes:'10',
+      }]} as never);
+    const result=await service.listProductivity(context,{
+      from_date:'2026-10-01',to_date:'2026-10-31',limit:1,
+    });
+    expect(result.items).toHaveLength(1);
+    expect(result.returned_count).toBe(1);
+    expect(result.totals).toEqual({
+      report_count:3,good_quantity:9,scrap_quantity:1,earned_minutes:18,actual_minutes:10,
+    });
+    expect(result.weighted_efficiency_percent).toBe(180);
+    expect(database.query).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a worker update with a blank reason or stale shape before database access',async()=>{
     await expect(service.transitionWorker(context,WORKER,{
       expected_version:1,status:'INACTIVE',reason:'   ',
