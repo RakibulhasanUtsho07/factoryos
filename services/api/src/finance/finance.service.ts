@@ -40,7 +40,7 @@ import { FinanceFileExportDto, FinanceFileImportDto, CreateFinanceConnectorDto,
   ReviewFinanceReconciliationDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
-import { FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv, type ParsedFinanceFileImport } from './finance-file-import';
+import { deriveFinanceValidationCounts, FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv, type ParsedFinanceFileImport } from './finance-file-import';
 import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpDownload, type FinanceSftpTransport } from './finance-file-transfer.adapters';
 
 interface FinanceEventContext {
@@ -800,8 +800,13 @@ export class FinanceService {
   ) {
     const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
     const submittedContent = typeof dto.content_base64 === 'string' ? dto.content_base64.trim() : '';
-    const submittedDigest = /^[A-Za-z0-9+/]+={0,2}$/.test(submittedContent) && submittedContent.length % 4 === 0
-      ? createHash('sha256').update(Buffer.from(submittedContent, 'base64')).digest('hex')
+    const decodedContent = Buffer.from(submittedContent, 'base64');
+    const canonicalBase64 = submittedContent.length > 0 && submittedContent.length % 4 === 0
+      && /^[A-Za-z0-9+/]+={0,2}$/.test(submittedContent)
+      && decodedContent.length <= 2 * 1024 * 1024
+      && decodedContent.toString('base64') === submittedContent;
+    const submittedDigest = canonicalBase64
+      ? createHash('sha256').update(decodedContent).digest('hex')
       : createHash('sha256').update(submittedContent, 'utf8').digest('hex');
     const requestHash = financeRequestHash({
       external_batch_ref: dto.external_batch_ref,
@@ -934,15 +939,11 @@ export class FinanceService {
         }
       }
 
-      const rowCount = facts.length;
-      const invalidRowNumbers = new Set(issues.filter((issue) => issue.row !== null).map((issue) => issue.row as number));
-      const hasFileLevelError = issues.some((issue) => issue.row === null);
-      const validRowCount = hasFileLevelError ? 0 : Math.max(0, rowCount - invalidRowNumbers.size);
-      const invalidRowCount = hasFileLevelError ? Math.max(1, rowCount) : invalidRowNumbers.size;
+      const { rowCount, validRowCount, invalidRowCount } = deriveFinanceValidationCounts(facts.length, issues);
       const status = issues.length === 0 && parsed ? 'VALID' : 'INVALID';
       const report = {
-        errors: issues.slice(0, 200),
-        truncated: issues.length > 200,
+        errors: issues.slice(0, 100),
+        truncated: issues.length > 100,
         checks: ['encoding_and_size', 'file_structure', 'schema', 'row_normalization', 'connector_domain', 'duplicate_prevention', 'operational_reconciliation'],
       };
       const reportId = randomUUID();

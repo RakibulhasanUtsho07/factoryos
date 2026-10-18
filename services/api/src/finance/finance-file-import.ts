@@ -45,6 +45,18 @@ function flattenValidationErrors(nodes: ValidationError[], prefix = ''): Finance
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_ROWS = 500;
+
+export function deriveFinanceValidationCounts(factsCount: number, issues: FinanceFileValidationIssue[]): { rowCount: number; validRowCount: number; invalidRowCount: number } {
+  const reportedRows = issues.filter((issue) => issue.row !== null).map((issue) => issue.row as number);
+  const rowCount = Math.min(MAX_ROWS, Math.max(factsCount, ...reportedRows, 0));
+  const invalidRows = new Set(reportedRows.filter((row) => row >= 1 && row <= rowCount));
+  const hasFileLevelError = issues.some((issue) => issue.row === null);
+  return {
+    rowCount,
+    validRowCount: hasFileLevelError ? 0 : Math.max(0, rowCount - invalidRows.size),
+    invalidRowCount: hasFileLevelError ? Math.max(1, rowCount) : invalidRows.size,
+  };
+}
 const REQUIRED_HEADERS = [
   'external_fact_id', 'source_fact_key', 'fact_type', 'source_record_type',
   'source_record_ref', 'effective_at', 'currency', 'amount',
