@@ -50,6 +50,16 @@ INSERT INTO should_cost_profiles(
   '921382b8-e83f-43ab-a576-e3db6a06b70c','921382b8-e83f-43ab-a576-e3db6a06b70c'
 );
 
+INSERT INTO should_cost_profiles(
+  id,tenant_id,factory_id,product_id,profile_code,version,currency,output_unit,status,is_current,row_version,
+  idempotency_key,request_hash,created_by_user_id,updated_by_user_id
+) VALUES (
+  'd7f8f399-17a4-4a2e-b0c0-6c2192ca7002',
+  'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+  NULL,'CI-SHOULD-COST-BAD',1,'BDT','PCS','DRAFT',false,1,'ci-should-cost-profile-bad',repeat('b',64),
+  '921382b8-e83f-43ab-a576-e3db6a06b70c','921382b8-e83f-43ab-a576-e3db6a06b70c'
+);
+
 INSERT INTO should_cost_profile_components(
   tenant_id,factory_id,profile_id,category,calculation_method,is_required,base_categories,guidance,created_by_user_id
 ) VALUES
@@ -68,7 +78,7 @@ BEGIN
       tenant_id,factory_id,profile_id,category,calculation_method,is_required,base_categories,guidance,created_by_user_id
     ) VALUES (
       'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
-      'd7f8f399-17a4-4a2e-b0c0-6c2192ca7001','MATERIAL','PERCENT_OF_BASE',true,
+      'd7f8f399-17a4-4a2e-b0c0-6c2192ca7002','MATERIAL','PERCENT_OF_BASE',true,
       ARRAY['SCRAP']::varchar(20[]),'invalid forward dependency','921382b8-e83f-43ab-a576-e3db6a06b70c'
     );
     RAISE EXCEPTION 'Unsupported/cyclic profile formula was accepted';
