@@ -53,7 +53,6 @@ export class IntegrationReconciliationService {
            SELECT e.domain,
                   COUNT(*)::int AS accepted_events,
                   COUNT(*) FILTER (WHERE e.delivery_class='LATE')::int AS late_events,
-                  COUNT(*) FILTER (WHERE e.occurred_at IS NULL)::int AS missing_event_time,
                   COUNT(*) FILTER (WHERE e.watermark_through_sequence IS NOT NULL)::int AS watermark_events,
                   COUNT(DISTINCT e.source_system)::int AS source_systems
            FROM integration_reconciliation_events e
@@ -92,7 +91,9 @@ export class IntegrationReconciliationService {
            SELECT c.domain,
              COUNT(*) FILTER (WHERE c.status='OPEN')::int AS open_cases,
              COUNT(*) FILTER (WHERE c.status='OPEN' AND c.severity='ERROR')::int AS open_errors,
-             COUNT(*) FILTER (WHERE c.status='OPEN' AND c.case_type='MISSING_SEQUENCE_RANGE')::int AS missing_sequence_ranges
+             COUNT(*) FILTER (WHERE c.status='OPEN' AND c.case_type='MISSING_SEQUENCE_RANGE')::int AS missing_sequence_ranges,
+             COUNT(*) FILTER (WHERE c.status='OPEN' AND c.case_type='MISSING_EVENT_TIME')::int AS missing_event_time,
+             COUNT(*) FILTER (WHERE c.status='OPEN' AND c.case_type='INVALID_EVENT_TIME')::int AS invalid_event_time
            FROM integration_reconciliation_cases c
            WHERE c.tenant_id=$1 AND c.factory_id=$2
              AND ($3::text IS NULL OR c.domain=$3)
@@ -103,7 +104,8 @@ export class IntegrationReconciliationService {
          SELECT d.domain,
            COALESCE(e.accepted_events,0)::int AS accepted_events,
            COALESCE(e.late_events,0)::int AS late_events,
-           COALESCE(e.missing_event_time,0)::int AS missing_event_time,
+           COALESCE(c.missing_event_time,0)::int AS missing_event_time,
+           COALESCE(c.invalid_event_time,0)::int AS invalid_event_time,
            COALESCE(e.watermark_events,0)::int AS watermark_events,
            COALESCE(e.source_systems,0)::int AS source_systems,
            COALESCE(a.duplicate_replays,0)::int AS duplicate_replays,
