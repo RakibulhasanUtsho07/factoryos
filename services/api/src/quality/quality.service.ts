@@ -390,21 +390,34 @@ export class QualityService {
       const version=Number(upd.rows[0]?.row_version??0);
       if(!version) throw new ConflictException('Quality inspection changed during decision');
       await this.inspectionEvent(client,c,{id,version,from:String(q.status),to:next,action:dto.action,reason,hash,correlation,key:'quality-event:'+key});
+      if(dto.action==='PASS'){
+        const released=await client.query("UPDATE quality_holds SET status='RELEASED',released_by_user_id=$1,released_at=clock_timestamp(),release_reason=$2,updated_at=clock_timestamp() WHERE inspection_id=$3 AND tenant_id=$4 AND factory_id=$5 AND status='ACTIVE' RETURNING id::text AS id",
+          [c.userId,'Released after successful inspection acceptance',id,c.tenantId,c.factoryId]);
+        for(const hold of released.rows){
+          await this.auditOutbox(client,c,{inspectionId:id,holdId:String(hold.id),action:'QUALITY_HOLD_RELEASED_ON_PASS',correlation,
+            payload:{status:'RELEASED',reason:'Released after successful inspection acceptance',inspection_status:'PASSED'}});
+        }
+      }
       if(dto.action==='FAIL'||dto.action==='HOLD'){
         let heldWorkOrderId = q.target_type==='WORK_ORDER' ? String(q.target_id) : null;
         if(q.target_type==='PRODUCTION_REPORT'){
           const sourceReport=await client.query("SELECT work_order_id::text AS work_order_id FROM order_production_reports WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[q.target_id,c.tenantId,c.factoryId]);
           heldWorkOrderId=sourceReport.rows[0]?.work_order_id?String(sourceReport.rows[0].work_order_id):null;
         }
-        const hold=await client.query("INSERT INTO quality_holds (tenant_id,factory_id,inspection_id,inventory_item_id,traceability_unit_id,work_order_id,reason,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6::uuid,$7,$8,$9::uuid) RETURNING id::text AS id",
-          [c.tenantId,c.factoryId,id,q.inventory_item_id,q.traceability_unit_id,heldWorkOrderId,reason,c.userId,correlation]);
-        const holdId=String(hold.rows[0]?.id??'');
-        if(!holdId) throw new Error('QUALITY_HOLD_INSERT_FAILED');
+        const existingHold=await client.query("SELECT id::text AS id FROM quality_holds WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='ACTIVE' FOR UPDATE",
+          [id,c.tenantId,c.factoryId]);
+        let holdId=existingHold.rows[0]?.id?String(existingHold.rows[0].id):null;
+        if(!holdId){
+          const hold=await client.query("INSERT INTO quality_holds (tenant_id,factory_id,inspection_id,inventory_item_id,traceability_unit_id,work_order_id,reason,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6::uuid,$7,$8,$9::uuid) RETURNING id::text AS id",
+            [c.tenantId,c.factoryId,id,q.inventory_item_id,q.traceability_unit_id,heldWorkOrderId,reason,c.userId,correlation]);
+          holdId=hold.rows[0]?.id?String(hold.rows[0].id):null;
+          if(!holdId) throw new Error('QUALITY_HOLD_INSERT_FAILED');
+        }
         if(dto.action==='FAIL'){
           const defects=await client.query("SELECT CASE WHEN bool_or(severity='CRITICAL') THEN 'CRITICAL' WHEN bool_or(severity='MAJOR') THEN 'MAJOR' ELSE 'MINOR' END AS severity FROM quality_defects WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='OPEN'",[id,c.tenantId,c.factoryId]);
           await this.createNcr(client,c,id,String(defects.rows[0]?.severity??'MAJOR'),'Inspection failed: '+reason,correlation);
         } else await this.createNcr(client,c,id,'MAJOR','Quality hold: '+reason,correlation);
-        await this.auditOutbox(client,c,{inspectionId:id,holdId,action:'QUALITY_HOLD_CREATED',correlation,payload:{status:'ACTIVE',target_type:q.target_type,target_id:q.target_id,reason}});
+        await this.auditOutbox(client,c,{inspectionId:id,holdId,action:existingHold.rows[0]?'QUALITY_HOLD_REAFFIRMED':'QUALITY_HOLD_CREATED',correlation,payload:{status:'ACTIVE',target_type:q.target_type,target_id:q.target_id,reason}});
       }
       await this.auditOutbox(client,c,{inspectionId:id,action:'INSPECTION_'+dto.action,correlation,payload:{from_status:q.status,to_status:next,reason,row_version:version}});
       return {id,replayed:false};
@@ -645,6 +658,15 @@ export class QualityService {
   }
 
   private async createNcr(client:PoolClient,c:QualityContext,inspectionId:string,severity:string,summary:string,correlation:string){
+    const existing=await client.query("SELECT id::text AS id,status,ncr_number FROM quality_ncrs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
+      [inspectionId,c.tenantId,c.factoryId]);
+    if(existing.rows[0]){
+      const existingId=String(existing.rows[0].id);
+      await this.auditOutbox(client,c,{inspectionId,ncrId:existingId,action:'NCR_REASSESSMENT_RECORDED',correlation,
+        aggregateType:'QUALITY_NCR',aggregateId:existingId,outboxEvent:'QUALITY.NCR_CHANGED',
+        payload:{ncr_number:existing.rows[0].ncr_number,status:existing.rows[0].status,severity,summary}});
+      return existingId;
+    }
     const ncrNumber='NCR-'+randomUUID().replace(/-/g,'').slice(0,12).toUpperCase();
     const q=await client.query("INSERT INTO quality_ncrs (tenant_id,factory_id,inspection_id,ncr_number,severity,title,summary,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::uuid) RETURNING id::text AS id",
       [c.tenantId,c.factoryId,inspectionId,ncrNumber,severity,'Quality non-conformance',summary,c.userId,correlation]);
