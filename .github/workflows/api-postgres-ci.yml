@@ -203,6 +203,7 @@ jobs:
             migrations/115_finance_file_import_metadata.sql
             migrations/116_finance_file_import_metadata_integrity.sql
             migrations/117_outbox_dlq_replay_idempotency.sql
+            migrations/118_outbox_dlq_replay_receipt_guards.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

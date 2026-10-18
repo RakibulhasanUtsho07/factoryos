@@ -18,5 +18,11 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='117_outbox_dlq_replay_idempotency') THEN
     RAISE EXCEPTION 'DLQ replay idempotency migration is not registered';
   END IF;
-END $$;
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='118_outbox_dlq_replay_receipt_guards') THEN
+    RAISE EXCEPTION 'DLQ replay receipt guard migration is not registered';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.outbox_dlq_replay_requests'::regclass AND tgname='trg_outbox_dlq_replay_receipt_immutable' AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'DLQ replay receipt immutability trigger is missing';
+  END IF;
+END $;
 SELECT 'outbox DLQ replay idempotency schema verification passed' AS result;
