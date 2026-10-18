@@ -7,7 +7,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
-AS $
+AS $$
 DECLARE
   v_role_id UUID;
 BEGIN
