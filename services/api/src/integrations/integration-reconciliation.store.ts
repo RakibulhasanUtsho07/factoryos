@@ -105,12 +105,16 @@ export function normalizeOperationalEvent(
     'stream_key', 'stream_id', 'worker_id', 'shift_assignment_id',
     'work_order_id', 'operation_id', 'inspection_id', 'quality_inspection_id',
   ]);
-  const sourceSequence = sequenceField ? sequenceValue(payload[sequenceField], 1) : null;
-  const watermarkThroughSequence = watermarkField ? sequenceValue(payload[watermarkField], 0) : null;
+  let sourceSequence = sequenceField ? sequenceValue(payload[sequenceField], 1) : null;
+  let watermarkThroughSequence = watermarkField ? sequenceValue(payload[watermarkField], 0) : null;
   let sequenceIssue: string | null = null;
   if (sequenceField && sourceSequence === null) sequenceIssue = 'SOURCE_SEQUENCE_MUST_BE_A_SAFE_POSITIVE_INTEGER';
   else if (watermarkField && watermarkThroughSequence === null) sequenceIssue = 'WATERMARK_MUST_BE_A_SAFE_NON_NEGATIVE_INTEGER';
-  else if ((sequenceField || watermarkField) && !streamKey) sequenceIssue = 'SEQUENCE_REQUIRES_A_STREAM_KEY';
+  else if ((sequenceField || watermarkField) && !streamKey) {
+    sequenceIssue = 'SEQUENCE_REQUIRES_A_STREAM_KEY';
+    sourceSequence = null;
+    watermarkThroughSequence = null;
+  }
 
   const comparisonFields = [
     'worker_id', 'shift_assignment_id', 'work_order_id', 'operation_id',
