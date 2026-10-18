@@ -85,6 +85,19 @@ BEGIN
     END LOOP;
   END IF;
 
+  IF (NEW.approved_by_user_id IS DISTINCT FROM OLD.approved_by_user_id
+      OR NEW.approved_at IS DISTINCT FROM OLD.approved_at
+      OR NEW.decision_reason IS DISTINCT FROM OLD.decision_reason) THEN
+    IF NEW.status NOT IN ('APPROVED','REJECTED')
+       OR NEW.approved_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+       OR NEW.approved_by_user_id=NEW.requested_by_user_id
+       OR NEW.approved_at IS NULL
+       OR length(btrim(COALESCE(NEW.decision_reason,'')))=0 THEN
+      RAISE EXCEPTION 'Permit decision fields require an independent authenticated approver and a reason'
+        USING ERRCODE='42501';
+    END IF;
+  END IF;
+
   IF NEW.status IS DISTINCT FROM OLD.status THEN
     IF NOT (
       (OLD.status='DRAFT' AND NEW.status IN ('PENDING_APPROVAL','CANCELLED')) OR
