@@ -69,7 +69,7 @@ export class EhsService {
     this.assertContext(c);const limit=this.limit(q.limit),values:unknown[]=[c.tenantId,c.factoryId];
     const filters=['tenant_id=$1','factory_id=$2'];
     if(q.status){if(!['DRAFT','PENDING_APPROVAL','APPROVED','REJECTED','ACTIVE','CLOSED','CANCELLED','EXPIRED'].includes(q.status))throw new BadRequestException('Invalid permit status');values.push(q.status);filters.push(`status=$${values.length}`);}
-    if(q.severity){values.push(q.severity);filters.push(`risk_level=$${values.length}`);}
+    if(q.risk_level){values.push(q.risk_level);filters.push(`risk_level=${values.length}`);}
     values.push(limit);
     const result=await this.database.query<Row>(
       `SELECT id::text,work_order_id::text,permit_number,permit_type,risk_level,title,work_scope,location,status,
