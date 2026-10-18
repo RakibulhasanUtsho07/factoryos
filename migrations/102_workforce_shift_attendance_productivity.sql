@@ -345,7 +345,6 @@ CREATE TABLE workforce_productivity_reports (
   factory_id UUID NOT NULL,
   shift_assignment_id UUID NOT NULL,
   worker_id UUID NOT NULL,
-  production_report_id UUID NOT NULL,
   work_order_id UUID NOT NULL,
   work_order_operation_id UUID NOT NULL,
   operation_code VARCHAR(120) NOT NULL,
@@ -372,11 +371,8 @@ CREATE TABLE workforce_productivity_reports (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_workforce_productivity_scope UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT uq_workforce_productivity_idempotency UNIQUE (tenant_id, factory_id, idempotency_key),
-  CONSTRAINT uq_workforce_productivity_report_worker UNIQUE (production_report_id, worker_id),
   CONSTRAINT fk_workforce_productivity_assignment FOREIGN KEY (shift_assignment_id, worker_id, tenant_id, factory_id)
     REFERENCES workforce_shift_assignments(id, worker_id, tenant_id, factory_id) ON DELETE RESTRICT,
-  CONSTRAINT fk_workforce_productivity_source_report FOREIGN KEY (production_report_id, tenant_id, factory_id)
-    REFERENCES order_production_reports(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_workforce_productivity_operation FOREIGN KEY (work_order_operation_id, work_order_id, tenant_id, factory_id)
     REFERENCES work_order_operations(id, work_order_id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_workforce_productivity_creator FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
