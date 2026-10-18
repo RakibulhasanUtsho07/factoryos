@@ -108,9 +108,11 @@ export function toScaled(value: string | number, scale: number, field = 'value')
 
 export function fromScaled(value: bigint, scale: number): string {
   const factor = 10n ** BigInt(scale);
-  const whole = value / factor;
-  const fraction = (value % factor).toString().padStart(scale, '0');
-  return whole.toString() + (scale ? '.' + fraction : '');
+  const negative = value < 0n;
+  const absolute = negative ? -value : value;
+  const whole = absolute / factor;
+  const fraction = (absolute % factor).toString().padStart(scale, '0');
+  return (negative ? '-' : '') + whole.toString() + (scale ? '.' + fraction : '');
 }
 
 function convertToCostCurrency(amountScaled: bigint, fxRate: string | number): bigint {
@@ -311,7 +313,7 @@ export function calculateShouldCost(input: {
   }
 
   const totalCost = SHOULD_COST_CATEGORIES.reduce((sum, category) => sum + totals[category], 0n);
-  const costPerUnit = roundDivide(totalCost * 100_000_000n, targetQuantity);
+  const costPerUnit = roundDivide(totalCost * 10_000_000_000n, targetQuantity);
   return {
     currency,
     target_quantity: fromScaled(targetQuantity, QUANTITY_SCALE),

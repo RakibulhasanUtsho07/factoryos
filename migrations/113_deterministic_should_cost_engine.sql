@@ -148,6 +148,9 @@ CREATE UNIQUE INDEX uq_should_cost_profile_current_scope
   ON should_cost_profiles (tenant_id, factory_id, lower(profile_code), COALESCE(product_id, '00000000-0000-0000-0000-000000000000'::uuid))
   WHERE is_current = true;
 
+CREATE UNIQUE INDEX uq_should_cost_profile_version_null_safe
+  ON should_cost_profiles (tenant_id, factory_id, lower(profile_code), COALESCE(product_id, '00000000-0000-0000-0000-000000000000'::uuid), version);
+
 CREATE INDEX idx_should_cost_profiles_scope_status
   ON should_cost_profiles (tenant_id, factory_id, status, profile_code, version DESC);
 
@@ -564,6 +567,70 @@ $$;
 CREATE TRIGGER trg_should_cost_component_evidence_guard
 BEFORE INSERT OR UPDATE OR DELETE ON should_cost_component_evidence
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_should_cost_component_evidence();
+
+CREATE OR REPLACE FUNCTION factoryos_assert_should_cost_assessment_evidence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_category_count integer;
+BEGIN
+  SELECT count(DISTINCT e.category) INTO v_category_count
+  FROM should_cost_component_evidence e
+  WHERE e.assessment_id=NEW.id AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id;
+  IF v_category_count <> 7 THEN
+    RAISE EXCEPTION 'A READY should-cost assessment must contain evidence for all seven cost categories'
+      USING ERRCODE='23514';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM should_cost_profile_components c
+    LEFT JOIN should_cost_component_evidence e
+      ON e.assessment_id=NEW.id AND e.tenant_id=NEW.tenant_id AND e.factory_id=NEW.factory_id
+      AND e.category=c.category
+    WHERE c.profile_id=NEW.profile_id AND c.tenant_id=NEW.tenant_id AND c.factory_id=NEW.factory_id
+      AND (e.id IS NULL OR (c.is_required AND e.applicable=false))
+  ) THEN
+    RAISE EXCEPTION 'Required should-cost evidence is missing or marked not applicable'
+      USING ERRCODE='23514';
+  END IF;
+  RETURN NULL;
+END;
+$;
+CREATE CONSTRAINT TRIGGER trg_should_cost_assessment_evidence_complete
+AFTER INSERT ON should_cost_assessments
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_should_cost_assessment_evidence();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_should_cost_evidence_profile_match()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_method text;
+  v_required boolean;
+  v_base_categories varchar(20)[];
+BEGIN
+  SELECT c.calculation_method,c.is_required,c.base_categories
+    INTO v_method,v_required,v_base_categories
+  FROM should_cost_assessments a
+  JOIN should_cost_profile_components c
+    ON c.profile_id=a.profile_id AND c.tenant_id=a.tenant_id AND c.factory_id=a.factory_id
+  WHERE a.id=NEW.assessment_id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
+    AND c.category=NEW.category;
+  IF v_method IS NULL OR NEW.calculation_method<>v_method OR NEW.base_categories<>v_base_categories THEN
+    RAISE EXCEPTION 'Cost evidence method/base must match the approved profile formula'
+      USING ERRCODE='23514';
+  END IF;
+  IF v_required AND NEW.applicable=false THEN
+    RAISE EXCEPTION 'A required should-cost category cannot be marked NOT_APPLICABLE'
+      USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER trg_should_cost_evidence_profile_match
+BEFORE INSERT ON should_cost_component_evidence
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_should_cost_evidence_profile_match();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_should_cost_history()
 RETURNS trigger

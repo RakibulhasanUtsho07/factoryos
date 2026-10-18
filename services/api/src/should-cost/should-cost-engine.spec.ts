@@ -35,10 +35,10 @@ describe('deterministic should-cost engine', () => {
       FREIGHT: '100.0000',
       DUTY: '55.0000',
       OVERHEAD: '140.0000',
-      SCRAP: '120.0000',
+      SCRAP: '126.3158',
     });
-    expect(result.total_cost).toBe('2815.0000');
-    expect(result.cost_per_unit).toBe('28.15000000');
+    expect(result.total_cost).toBe('2821.3158');
+    expect(result.cost_per_unit).toBe('28.21315800');
     expect(result.formula_version).toBe('factoryos.should-cost.v1');
   });
 
@@ -90,6 +90,10 @@ describe('deterministic should-cost engine', () => {
     });
     expect(calculateGrossMargin('0', '10')?.gross_margin_percent).toBeNull();
     expect(calculateGrossMargin(null, '10')).toBeNull();
+  });
+
+  it('formats signed margin percentages with exact decimal scale', () => {
+    expect(calculateGrossMargin('100', '123.4567')?.gross_margin_percent).toBe('-23.456700');
   });
 
   it('rejects invalid ISO currency codes', () => {

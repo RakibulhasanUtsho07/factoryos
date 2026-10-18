@@ -135,16 +135,19 @@ export class ShouldCostEvidenceDto {
   @MaxLength(3)
   source_currency?: string;
 
+  @ValidateIf((value: ShouldCostEvidenceDto) => value.applicable)
   @IsIn(SHOULD_COST_SOURCE_TYPES)
-  source_type!: (typeof SHOULD_COST_SOURCE_TYPES)[number];
+  source_type!: (typeof SHOULD_COST_SOURCE_TYPES)[number] | 'NOT_APPLICABLE';
 
+  @ValidateIf((value: ShouldCostEvidenceDto) => value.applicable)
   @IsString()
   @IsNotEmpty()
   @MaxLength(500)
-  source_reference!: string;
+  source_reference?: string;
 
+  @ValidateIf((value: ShouldCostEvidenceDto) => value.applicable)
   @IsDateString()
-  source_as_of!: string;
+  source_as_of?: string;
 
   @IsOptional()
   @IsIn(SHOULD_COST_QUANTITY_SOURCE_TYPES)
