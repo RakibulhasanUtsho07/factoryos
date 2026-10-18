@@ -40,6 +40,18 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.integration_webhook_rate_limits'::regclass AND conname='chk_integration_webhook_rate_window_count') THEN
     RAISE EXCEPTION 'integration webhook rate-limit counter guard is missing';
   END IF;
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='122_integration_receipt_outbox_binding') THEN
+    RAISE EXCEPTION 'integration receipt/outbox binding migration is not registered';
+  END IF;
+  IF NOT EXISTS(
+    SELECT 1 FROM pg_proc
+    WHERE oid='public.factoryos_guard_integration_webhook_receipt()'::regprocedure
+      AND position('request_fingerprint_sha256' in pg_get_functiondef(oid))>0
+      AND position('external_event_id' in pg_get_functiondef(oid))>0
+      AND position('aggregate_id' in pg_get_functiondef(oid))>0
+  ) THEN
+    RAISE EXCEPTION 'webhook receipt guard must bind the provider event ID and request fingerprint to its outbox event';
+  END IF;
   IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='integration_connectors' AND column_name='allowed_event_types') THEN
     RAISE EXCEPTION 'integration connector event allowlist column is missing';
   END IF;

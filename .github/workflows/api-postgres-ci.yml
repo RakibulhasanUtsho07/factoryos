@@ -207,6 +207,7 @@ jobs:
             migrations/119_integration_connector_registry.sql
             migrations/120_integration_connector_event_allowlist.sql
             migrations/121_integration_webhook_rate_limits.sql
+            migrations/122_integration_receipt_outbox_binding.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
