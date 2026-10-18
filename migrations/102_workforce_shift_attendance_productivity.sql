@@ -14,6 +14,7 @@ INSERT INTO permissions (code, description) VALUES
   ('workforce.attendance.read', 'Read factory attendance and overtime records'),
   ('workforce.attendance.capture', 'Capture manual, QR, API or consented biometric attendance events'),
   ('workforce.attendance.correct', 'Record auditable attendance correction evidence'),
+  ('workforce.overtime.read', 'Read approved-scope overtime requests and decisions'),
   ('workforce.overtime.request', 'Request overtime against verified attendance intervals'),
   ('workforce.overtime.approve', 'Approve or reject overtime with maker-checker enforcement'),
   ('workforce.productivity.read', 'Read operator productivity and efficiency measures'),
