@@ -18,7 +18,11 @@ DECLARE
     'quality_audit_events',
     'quality_inspection_plans',
     'quality_inspection_plan_criteria',
-    'quality_inspection_results'
+    'quality_inspection_results',
+    'quality_ncr_action_events',
+    'quality_defect_links',
+    'quality_rework_orders',
+    'quality_rework_events'
   ];
 BEGIN
   IF NOT EXISTS (
@@ -39,6 +43,12 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version = '095_quality_ncr_resolution_gate'
   ) THEN
     RAISE EXCEPTION 'NCR resolution gate migration marker is missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '096_quality_capa_action_lifecycle')
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '097_quality_defect_order_traceability')
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '098_quality_rework_execution_and_verification') THEN
+    RAISE EXCEPTION 'CAPA lifecycle, defect genealogy or rework migration marker is missing';
   END IF;
 
   FOREACH t IN ARRAY required_tables LOOP
@@ -66,6 +76,13 @@ BEGIN
     RAISE EXCEPTION 'Quality permission set is incomplete';
   END IF;
 
+  IF (
+    SELECT count(*) FROM permissions
+    WHERE code IN ('quality.capa.verify','quality.rework.manage','quality.defects.trace')
+  ) <> 3 THEN
+    RAISE EXCEPTION 'CAPA verification, rework or defect-traceability permissions are missing';
+  END IF;
+
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspections'::regclass
       AND tgname='trg_quality_inspection_target_guard' AND NOT tgisinternal AND tgenabled <> 'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspection_events'::regclass
@@ -83,7 +100,19 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='order_production_reports'::regclass
       AND tgname='trg_quality_guard_work_order_report' AND NOT tgisinternal AND tgenabled <> 'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_ncrs'::regclass
-      AND tgname='trg_quality_ncr_close_guard' AND NOT tgisinternal AND tgenabled <> 'D') THEN
+      AND tgname='trg_quality_ncr_close_guard' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_ncr_actions'::regclass
+      AND tgname='trg_quality_ncr_action_lifecycle' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_defect_links'::regclass
+      AND tgname='trg_quality_defect_link_guard' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_defect_links'::regclass
+      AND tgname='trg_quality_defect_links_immutable' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_rework_orders'::regclass
+      AND tgname='trg_quality_rework_order_lifecycle' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_rework_events'::regclass
+      AND tgname='trg_quality_rework_event_guard' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_defect_links'::regclass
+      AND tgname='trg_quality_rework_output_link_guard' AND NOT tgisinternal AND tgenabled <> 'D') THEN
     RAISE EXCEPTION 'Quality target, event, defect, hold, stock, production or CAPA lifecycle trigger is missing';
   END IF;
 
@@ -117,7 +146,12 @@ BEGIN
     RAISE EXCEPTION 'Inspection-criterion evaluator returned an incorrect acceptance result';
   END IF;
 
-  IF to_regprocedure('factoryos_quality_sync_traceability_hold()') IS NULL
+  IF to_regprocedure('factoryos_guard_quality_ncr_action_lifecycle()') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_defect_link()') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_rework_order()') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_rework_event()') IS NULL
+    OR position('action_status = ''VERIFIED''' IN pg_get_functiondef('factoryos_quality_guard_ncr_close()'::regprocedure)) = 0
+    OR to_regprocedure('factoryos_quality_sync_traceability_hold()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_inventory_issue()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_inventory_reservation()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_hold()') IS NULL
