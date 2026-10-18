@@ -16,7 +16,7 @@ ERP records must be mapped to the canonical finance fact vocabulary before they 
 4. Submit the same file to `POST /api/finance/connectors/:connectorId/file-import/commit` with `validation_report_id` and an idempotency key. The transaction rechecks exact SHA-256/file name/format/batch/connector scope before inserting the fact run, facts, reconciliation rows, audit and outbox records.
 5. Read `GET /api/finance/connectors/:connectorId/file-imports/receipts` or the receipt detail endpoint. Receipts record checksum, format, filename, source batch, counts, status and request/trace linkage. Replaying an identical request returns the original receipt; altered content conflicts.
 
-The legacy `POST /file-import` path also requires `validation_report_id`; it cannot bypass dry-run approval. Invalid reports remain available for investigation. Error listings are bounded at 200 and mark truncation.
+The legacy `POST /file-import` path also requires `validation_report_id`; it cannot bypass dry-run approval. Invalid reports remain available for investigation. Error listings are bounded at 200 and mark truncation; invalid report detail returns a downloadable escaped UTF-8 CSV error file with a SHA-256 checksum.
 
 ## Export workflow
 
