@@ -273,8 +273,42 @@ CREATE TRIGGER trg_workforce_attendance_correction_audit
 AFTER INSERT ON workforce_attendance_corrections
 FOR EACH ROW EXECUTE FUNCTION factoryos_audit_workforce_attendance_correction();
 
+CREATE OR REPLACE FUNCTION factoryos_workforce_capture_metadata_is_safe(p_metadata JSONB)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+IMMUTABLE
+AS $
+DECLARE
+  item RECORD;
+  allowed_keys CONSTANT TEXT[] := ARRAY[
+    'device_id','reader_id','terminal_id','site_code','source_sequence','sync_batch_id',
+    'capture_method','reader_timestamp','firmware_version','signal_quality','device_event_type',
+    'client_version','device_timezone','offline_synced','latency_ms','batch_id',
+    'protocol_version','reader_status','status_code','error_code','integration_id'
+  ];
+BEGIN
+  IF p_metadata IS NULL OR jsonb_typeof(p_metadata)<>'object'
+     OR jsonb_object_length(p_metadata)>20 THEN
+    RETURN FALSE;
+  END IF;
+  FOR item IN SELECT key,value FROM jsonb_each(p_metadata) LOOP
+    IF NOT (item.key=ANY(allowed_keys))
+       OR jsonb_typeof(item.value) NOT IN ('string','number','boolean','null') THEN
+      RETURN FALSE;
+    END IF;
+    IF jsonb_typeof(item.value)='string' AND (
+      length(item.value #>> '{}')>255
+      OR (item.value #>> '{}') ~ '[[:cntrl:]]'
+    ) THEN
+      RETURN FALSE;
+    END IF;
+  END LOOP;
+  RETURN TRUE;
+END;
+$;
+
 CREATE OR REPLACE FUNCTION factoryos_guard_workforce_attendance_event()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql AS $
 DECLARE
   v_assignment RECORD;
   v_stream RECORD;
@@ -318,8 +352,8 @@ BEGIN
       RAISE EXCEPTION 'Biometric attendance is not allowed unless explicit consent was active at event time' USING ERRCODE='42501';
     END IF;
   END IF;
-  IF jsonb_typeof(NEW.capture_metadata)<>'object' THEN
-    RAISE EXCEPTION 'Attendance capture metadata must be a JSON object' USING ERRCODE='23514';
+  IF NOT factoryos_workforce_capture_metadata_is_safe(NEW.capture_metadata) THEN
+    RAISE EXCEPTION 'Attendance metadata supports only bounded non-sensitive scalar device diagnostics' USING ERRCODE='23514';
   END IF;
   IF EXISTS (SELECT 1 FROM workforce_attendance_events_effective e
     WHERE e.shift_assignment_id=NEW.shift_assignment_id AND e.tenant_id=NEW.tenant_id
