@@ -124,7 +124,6 @@ CREATE TABLE workforce_worker_skills (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_workforce_worker_skill_scope UNIQUE (id, tenant_id, factory_id),
-  CONSTRAINT uq_workforce_worker_skill_pair UNIQUE (tenant_id, factory_id, worker_id, skill_id),
   CONSTRAINT uq_workforce_worker_skill_idempotency UNIQUE (tenant_id, factory_id, idempotency_key),
   CONSTRAINT fk_workforce_worker_skill_worker FOREIGN KEY (worker_id, tenant_id, factory_id)
     REFERENCES workforce_workers(id, tenant_id, factory_id) ON DELETE RESTRICT,
@@ -140,6 +139,9 @@ CREATE TABLE workforce_worker_skills (
   CONSTRAINT chk_workforce_worker_skill_version CHECK (row_version > 0),
   CONSTRAINT chk_workforce_worker_skill_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
+CREATE UNIQUE INDEX uq_workforce_worker_skill_active
+  ON workforce_worker_skills (tenant_id, factory_id, worker_id, skill_id)
+  WHERE status = 'ACTIVE';
 CREATE INDEX idx_workforce_worker_skills_validity
   ON workforce_worker_skills (tenant_id, factory_id, worker_id, status, certificate_expires_on);
 
@@ -284,10 +286,6 @@ CREATE UNIQUE INDEX uq_workforce_attendance_clock_out
   ON workforce_attendance_events (shift_assignment_id) WHERE event_type = 'CLOCK_OUT';
 CREATE UNIQUE INDEX uq_workforce_attendance_absence
   ON workforce_attendance_events (shift_assignment_id) WHERE event_type = 'ABSENCE_RECORDED';
-CREATE UNIQUE INDEX uq_workforce_attendance_break_start
-  ON workforce_attendance_events (shift_assignment_id) WHERE event_type = 'BREAK_START';
-CREATE UNIQUE INDEX uq_workforce_attendance_break_end
-  ON workforce_attendance_events (shift_assignment_id) WHERE event_type = 'BREAK_END';
 CREATE INDEX idx_workforce_attendance_assignment_time
   ON workforce_attendance_events (tenant_id, factory_id, shift_assignment_id, occurred_at, id);
 
@@ -346,6 +344,8 @@ CREATE TABLE workforce_productivity_reports (
   work_order_id UUID NOT NULL,
   work_order_operation_id UUID NOT NULL,
   operation_code VARCHAR(120) NOT NULL,
+  production_started_at TIMESTAMPTZ NOT NULL,
+  production_ended_at TIMESTAMPTZ NOT NULL,
   good_quantity NUMERIC(18,4) NOT NULL,
   scrap_quantity NUMERIC(18,4) NOT NULL DEFAULT 0,
   standard_minutes_per_unit NUMERIC(12,4) NOT NULL,
@@ -373,6 +373,10 @@ CREATE TABLE workforce_productivity_reports (
     REFERENCES work_order_operations(id, work_order_id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_workforce_productivity_creator FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_workforce_productivity_code CHECK (length(btrim(operation_code)) BETWEEN 1 AND 120),
+  CONSTRAINT chk_workforce_productivity_interval CHECK (
+    production_ended_at > production_started_at
+    AND production_ended_at <= production_started_at + INTERVAL '24 hours'
+  ),
   CONSTRAINT chk_workforce_productivity_quantities CHECK (good_quantity >= 0 AND scrap_quantity >= 0 AND good_quantity + scrap_quantity > 0),
   CONSTRAINT chk_workforce_productivity_standard_time CHECK (standard_minutes_per_unit > 0),
   CONSTRAINT chk_workforce_productivity_actual_time CHECK (actual_minutes > 0 AND actual_minutes <= 1440),
