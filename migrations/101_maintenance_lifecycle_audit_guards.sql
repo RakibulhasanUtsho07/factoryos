@@ -2,7 +2,7 @@ BEGIN;
 
 -- Parent assignment and deletion guards preserve the asset tree and records.
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_asset_hierarchy()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   v_parent UUID;
   v_parent_status VARCHAR(16);
@@ -38,15 +38,15 @@ BEGIN
   END LOOP;
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE OR REPLACE FUNCTION factoryos_prevent_maintenance_entity_delete()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'Maintenance registry, plan and work-order records are retained for audit; use lifecycle transitions'
     USING ERRCODE='55000';
 END;
-$;
+$$;
 CREATE TRIGGER trg_maintenance_asset_delete_guard
 BEFORE DELETE ON maintenance_assets
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
@@ -221,7 +221,7 @@ BEFORE UPDATE OR DELETE ON maintenance_work_order_parts
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_part_update();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_work_order_update()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.row_version <> OLD.row_version + 1 OR NEW.status IS NOT DISTINCT FROM OLD.status THEN
     RAISE EXCEPTION 'Maintenance work-order writes must be a single audited status transition with a version increment' USING ERRCODE='23514';
@@ -242,6 +242,38 @@ BEGIN
     OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
     OR NEW.request_hash IS DISTINCT FROM OLD.request_hash THEN
     RAISE EXCEPTION 'Maintenance work-order source contract is immutable after creation' USING ERRCODE='23514';
+  END IF;
+  IF NEW.status='IN_PROGRESS' THEN
+    IF NEW.started_by_user_id IS NULL OR NEW.started_at IS NULL THEN
+      RAISE EXCEPTION 'Starting or resuming work requires original start actor and timestamp' USING ERRCODE='23514';
+    END IF;
+    IF OLD.started_by_user_id IS NOT NULL AND NEW.started_by_user_id IS DISTINCT FROM OLD.started_by_user_id THEN
+      RAISE EXCEPTION 'The original work-order starter is immutable' USING ERRCODE='23514';
+    END IF;
+    IF OLD.started_at IS NOT NULL AND NEW.started_at IS DISTINCT FROM OLD.started_at THEN
+      RAISE EXCEPTION 'The original work-order start timestamp is immutable' USING ERRCODE='23514';
+    END IF;
+  ELSIF NEW.started_by_user_id IS DISTINCT FROM OLD.started_by_user_id
+    OR NEW.started_at IS DISTINCT FROM OLD.started_at THEN
+    RAISE EXCEPTION 'Start evidence can only be set by the first start transition' USING ERRCODE='23514';
+  END IF;
+  IF NEW.status='COMPLETED' THEN
+    IF NEW.completed_by_user_id IS NULL OR NEW.completed_at IS NULL THEN
+      RAISE EXCEPTION 'Completed work orders require completion actor and timestamp' USING ERRCODE='23514';
+    END IF;
+  ELSIF NEW.completed_by_user_id IS DISTINCT FROM OLD.completed_by_user_id
+    OR NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+    RAISE EXCEPTION 'Completion evidence can only be set when completing a work order' USING ERRCODE='23514';
+  END IF;
+  IF NEW.status='CANCELLED' THEN
+    IF NEW.cancelled_by_user_id IS NULL OR NEW.cancelled_at IS NULL
+      OR NEW.cancellation_reason IS NULL OR length(btrim(NEW.cancellation_reason))=0 THEN
+      RAISE EXCEPTION 'Cancelled work orders require actor, timestamp and reason' USING ERRCODE='23514';
+    END IF;
+  ELSIF NEW.cancelled_by_user_id IS DISTINCT FROM OLD.cancelled_by_user_id
+    OR NEW.cancelled_at IS DISTINCT FROM OLD.cancelled_at
+    OR NEW.cancellation_reason IS DISTINCT FROM OLD.cancellation_reason THEN
+    RAISE EXCEPTION 'Cancellation evidence can only be set when cancelling a work order' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
 END;
@@ -299,7 +331,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_require_maintenance_entity_event();
 
 -- Only service-created initial states are allowed; all later changes use lifecycle transitions.
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_initial_state()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.row_version <> 1 THEN
     RAISE EXCEPTION 'New maintenance records must start at row_version 1' USING ERRCODE='23514';
@@ -329,7 +361,7 @@ BEGIN
   END CASE;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_maintenance_asset_initial_state_guard
 BEFORE INSERT ON maintenance_assets FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
 CREATE TRIGGER trg_maintenance_pm_plan_initial_state_guard
@@ -342,7 +374,7 @@ CREATE TRIGGER trg_maintenance_part_initial_state_guard
 BEFORE INSERT ON maintenance_work_order_parts FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_work_order_asset_active()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM maintenance_assets a
     WHERE a.id=NEW.asset_id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id AND a.status='ACTIVE') THEN
@@ -350,7 +382,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_maintenance_work_order_asset_active_guard
 BEFORE INSERT ON maintenance_work_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_work_order_asset_active();
