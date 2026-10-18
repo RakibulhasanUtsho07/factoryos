@@ -41,6 +41,16 @@ describe('MaintenanceService request validation',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects warranty dates before an asset commissioning date',async()=>{
+    const dto:CreateMaintenanceAssetDto={
+      asset_code:'PRESS-01',name:'Hydraulic press',asset_type:'PRESS',
+      commissioned_on:'2026-10-10',warranty_expires_on:'2026-10-09',
+    };
+    await expect(service.createAsset(context,dto,'asset-invalid-warranty'))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects duplicate checklist codes in a preventive plan',async()=>{
     const dto:CreateMaintenancePmPlanDto={
       asset_id:ASSET,plan_code:'WEEKLY-LINE-01',name:'Weekly line inspection',
