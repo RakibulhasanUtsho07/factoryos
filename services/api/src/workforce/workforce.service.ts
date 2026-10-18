@@ -1280,6 +1280,12 @@ export class WorkforceService {
     if(Math.abs(value-rounded)>1e-8) throw new BadRequestException(`${field} supports at most four decimal places`);
     return rounded;
   }
+  private boundedInteger(value:number,field:string,min:number,max:number) {
+    if(!Number.isInteger(value)||value<min||value>max) {
+      throw new BadRequestException(field+' must be an integer between '+min+' and '+max);
+    }
+    return value;
+  }
   private limit(value:number|undefined) {
     if(value===undefined) return 50;
     if(!Number.isInteger(value)||value<1||value>200) throw new BadRequestException('limit must be an integer between 1 and 200');
