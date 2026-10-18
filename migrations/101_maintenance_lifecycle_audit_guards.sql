@@ -79,6 +79,11 @@ BEGIN
         AND wo.status NOT IN ('COMPLETED','CANCELLED')) THEN
       RAISE EXCEPTION 'An asset with open maintenance work orders cannot be inactivated or retired' USING ERRCODE='23514';
     END IF;
+    IF EXISTS (SELECT 1 FROM maintenance_pm_plans p
+      WHERE p.asset_id=OLD.id AND p.tenant_id=OLD.tenant_id AND p.factory_id=OLD.factory_id
+        AND p.status='ACTIVE') THEN
+      RAISE EXCEPTION 'Pause or retire active preventive-maintenance plans before inactivating an asset' USING ERRCODE='23514';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -235,6 +240,64 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_require_maintenance_entity_event();
 CREATE CONSTRAINT TRIGGER trg_maintenance_work_order_parts_event_required
 AFTER INSERT OR UPDATE ON maintenance_work_order_parts DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION factoryos_require_maintenance_entity_event();
+
+-- Only service-created initial states are allowed; all later changes use lifecycle transitions.
+CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_initial_state()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+  IF NEW.row_version <> 1 THEN
+    RAISE EXCEPTION 'New maintenance records must start at row_version 1' USING ERRCODE='23514';
+  END IF;
+  CASE TG_TABLE_NAME
+    WHEN 'maintenance_assets' THEN
+      IF NEW.status <> 'ACTIVE' THEN
+        RAISE EXCEPTION 'Newly registered assets must start ACTIVE' USING ERRCODE='23514';
+      END IF;
+    WHEN 'maintenance_pm_plans' THEN
+      IF NEW.status <> 'DRAFT' OR NEW.approved_by_user_id IS NOT NULL OR NEW.approved_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Preventive-maintenance plans must be created as unapproved drafts' USING ERRCODE='23514';
+      END IF;
+    WHEN 'maintenance_work_orders' THEN
+      IF NEW.status <> 'PLANNED' OR NEW.started_at IS NOT NULL OR NEW.completed_at IS NOT NULL
+        OR NEW.cancelled_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Maintenance work orders must be created in PLANNED state' USING ERRCODE='23514';
+      END IF;
+    WHEN 'maintenance_work_order_tasks' THEN
+      IF NEW.status <> 'PENDING' OR NEW.completed_by_user_id IS NOT NULL OR NEW.completed_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Maintenance checklist tasks must be created as pending' USING ERRCODE='23514';
+      END IF;
+    WHEN 'maintenance_work_order_parts' THEN
+      IF NEW.issued_quantity <> 0 THEN
+        RAISE EXCEPTION 'A spare-part requirement cannot start with issued stock' USING ERRCODE='23514';
+      END IF;
+  END CASE;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER trg_maintenance_asset_initial_state_guard
+BEFORE INSERT ON maintenance_assets FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
+CREATE TRIGGER trg_maintenance_pm_plan_initial_state_guard
+BEFORE INSERT ON maintenance_pm_plans FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
+CREATE TRIGGER trg_maintenance_work_order_initial_state_guard
+BEFORE INSERT ON maintenance_work_orders FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
+CREATE TRIGGER trg_maintenance_task_initial_state_guard
+BEFORE INSERT ON maintenance_work_order_tasks FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
+CREATE TRIGGER trg_maintenance_part_initial_state_guard
+BEFORE INSERT ON maintenance_work_order_parts FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_initial_state();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_work_order_asset_active()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM maintenance_assets a
+    WHERE a.id=NEW.asset_id AND a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id AND a.status='ACTIVE') THEN
+    RAISE EXCEPTION 'Maintenance work orders require an active asset in the same factory' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER trg_maintenance_work_order_asset_active_guard
+BEFORE INSERT ON maintenance_work_orders
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_work_order_asset_active();
 
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('101_maintenance_lifecycle_audit_guards', NULL)
