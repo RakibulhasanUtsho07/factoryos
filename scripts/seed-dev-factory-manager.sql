@@ -70,7 +70,7 @@ FROM roles r
 CROSS JOIN permissions p
 WHERE r.tenant_id = 'faaab63d-c447-46ce-950d-deebdd7f5f30'
   AND r.code = 'FACTORY_MANAGER'
-  AND p.code IN ('iam.access.read', 'mrp.read', 'mrp.write', 'production.workorders.read', 'production.workorders.write', 'production.workorders.release', 'production.operations.operate', 'production.output.report')
+  AND p.code IN ('iam.access.read', 'mrp.read', 'mrp.write', 'production.workorders.read', 'production.workorders.write', 'production.workorders.release', 'production.operations.operate', 'production.output.report', 'maintenance.assets.read', 'maintenance.assets.manage', 'maintenance.pm.read', 'maintenance.pm.manage', 'maintenance.workorders.read', 'maintenance.workorders.manage', 'maintenance.workorders.execute', 'maintenance.parts.manage')
   AND NOT EXISTS (
     SELECT 1
     FROM role_permissions rp
