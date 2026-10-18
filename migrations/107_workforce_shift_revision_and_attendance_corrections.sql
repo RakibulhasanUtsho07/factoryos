@@ -277,7 +277,7 @@ CREATE OR REPLACE FUNCTION factoryos_workforce_capture_metadata_is_safe(p_metada
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 IMMUTABLE
-AS $
+AS $$
 DECLARE
   item RECORD;
   allowed_keys CONSTANT TEXT[] := ARRAY[
@@ -305,7 +305,7 @@ BEGIN
   END LOOP;
   RETURN TRUE;
 END;
-$;
+$$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_workforce_attendance_event()
 RETURNS trigger LANGUAGE plpgsql AS $
