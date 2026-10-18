@@ -111,6 +111,8 @@ BEGIN
       AND tgname='trg_quality_rework_order_lifecycle' AND NOT tgisinternal AND tgenabled <> 'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_rework_events'::regclass
       AND tgname='trg_quality_rework_event_guard' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_ncr_action_events'::regclass
+      AND tgname='trg_quality_ncr_action_event_guard' AND NOT tgisinternal AND tgenabled <> 'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_defect_links'::regclass
       AND tgname='trg_quality_rework_output_link_guard' AND NOT tgisinternal AND tgenabled <> 'D') THEN
     RAISE EXCEPTION 'Quality target, event, defect, hold, stock, production or CAPA lifecycle trigger is missing';

@@ -251,7 +251,7 @@ BEGIN
     ELSE v_related := FALSE;
   END CASE;
 
-  IF NEW.link_source = 'INSPECTION_TARGET' AND NOT v_related THEN
+  IF NEW.link_source <> 'REWORK_OUTPUT' AND NOT v_related THEN
     RAISE EXCEPTION 'inspection-target defect links must match the inspected lot, order or production aggregate'
       USING ERRCODE = '23514';
   END IF;

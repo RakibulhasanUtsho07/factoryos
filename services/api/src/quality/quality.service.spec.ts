@@ -3,8 +3,10 @@ import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { QualityService } from './quality.service';
 import type {
-  CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityInspectionPlanDto,
-  CreateQualityInspectionResultDto, QualityDispositionDto, QualityInspectionDecisionDto,
+  CreateQualityDefectDto, CreateQualityDefectLinkDto, CreateQualityInspectionDto,
+  CreateQualityInspectionPlanDto, CreateQualityInspectionResultDto, CreateQualityReworkOrderDto,
+  QualityDispositionDto, QualityInspectionDecisionDto, QualityNcrActionVerificationDto,
+  QualityReworkTransitionDto,
 } from './quality.dto';
 
 const USER='921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -103,6 +105,30 @@ describe('QualityService request validation',()=>{
   it('requires an idempotency key before recording a criterion result',async()=>{
     const dto:CreateQualityInspectionResultDto={criterion_code:'SIZE',observed_value:'10.5'};
     await expect(service.recordInspectionResult(context,INSPECTION,dto,null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires idempotency for manual defect-to-lot/order links',async()=>{
+    const dto:CreateQualityDefectLinkDto={link_type:'TRACEABILITY_UNIT',target_id:TARGET};
+    await expect(service.createDefectLink(context,INSPECTION,dto,null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires idempotency for rework task creation',async()=>{
+    const dto:CreateQualityReworkOrderDto={input_quantity:1,reason:'Restore the affected component to specification'};
+    await expect(service.createReworkOrder(context,INSPECTION,dto,null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires idempotency and a reason for rework transitions',async()=>{
+    const dto:QualityReworkTransitionDto={expected_version:1,action:'APPROVE',reason:'Approved rework plan'};
+    await expect(service.transitionReworkOrder(context,INSPECTION,dto,null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires an idempotency key for independent CAPA verification',async()=>{
+    const dto:QualityNcrActionVerificationDto={expected_version:2,decision:'PASS',reason:'Evidence verified by quality lead',evidence:{checklist:'reviewed'}};
+    await expect(service.verifyNcrAction(context,INSPECTION,TARGET,dto,null)).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
 });
