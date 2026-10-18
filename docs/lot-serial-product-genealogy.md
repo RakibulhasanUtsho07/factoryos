@@ -32,7 +32,7 @@ Forward/reverse queries cap depth at 12 and nodes at 500. Relationship `evidence
 
 ## Scope boundary
 
-The repository currently has no first-class shipment/dispatch, customer or quality-management aggregates. Shipment identities and evidence can carry external references, but native customer fulfilment, quality-record/certificate modules, physical QR/barcode image generation, RFID, mobile offline synchronization and lot-aware stock/reservation decrements are separate work. Recording genealogy does not post stock; inventory balances remain owned by the existing inventory ledger and order reservation transactions.
+The repository now has first-class quality inspection, defect, hold/disposition and NCR/CAPA records linked to traceability, inventory and production. It does not yet have a first-class shipment/dispatch or customer fulfilment aggregate. Shipment identities and evidence can carry external references, but native customer fulfilment, quality-record/certificate modules, physical QR/barcode image generation, RFID, mobile offline synchronization and lot-aware stock/reservation decrements are separate work. Recording genealogy does not post stock; inventory balances remain owned by the existing inventory ledger and order reservation transactions.
 
 ## Verification
 

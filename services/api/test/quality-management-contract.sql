@@ -76,7 +76,7 @@ BEGIN
     OR to_regprocedure('factoryos_quality_guard_inventory_reservation()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_hold()') IS NULL
     OR to_regprocedure('factoryos_quality_guard_work_order_report()') IS NULL
-    OR position('containment, corrective and preventive action evidence'
+    OR position('NCR requires containment, corrective and preventive actions'
       IN pg_get_functiondef('factoryos_quality_guard_ncr_close()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'Quality-to-traceability, inventory, work-order or CAPA enforcement is incomplete';
   END IF;
