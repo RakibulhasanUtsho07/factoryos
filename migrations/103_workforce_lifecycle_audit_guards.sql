@@ -360,11 +360,14 @@ DECLARE
   v_clock_in TIMESTAMPTZ;
   v_clock_out TIMESTAMPTZ;
   v_duration_minutes NUMERIC;
+  v_target_quantity NUMERIC(18,4);
+  v_prior_quantity NUMERIC(18,4);
 BEGIN
   IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
     RAISE EXCEPTION 'Productivity recorder must match authenticated database context' USING ERRCODE='42501';
   END IF;
-  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.shift_assignment_id::text || ':workforce-productivity',0));
+  -- Serialize all operator reports for one frozen operation, even across different shifts.
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.work_order_operation_id::text || ':workforce-productivity',0));
 
   SELECT a.id,a.worker_id,a.work_order_id,a.work_order_operation_id,a.status,a.shift_date
   INTO v_assignment
@@ -388,6 +391,23 @@ BEGIN
      OR NEW.standard_minutes_per_unit <> v_operation.run_minutes_per_unit
      OR NEW.operation_code <> v_operation.operation_code THEN
     RAISE EXCEPTION 'Productivity standard time and operation code must match the frozen routing snapshot' USING ERRCODE='23514';
+  END IF;
+  SELECT wo.target_quantity INTO v_target_quantity
+  FROM work_orders wo
+  WHERE wo.id=NEW.work_order_id AND wo.tenant_id=NEW.tenant_id AND wo.factory_id=NEW.factory_id
+  FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Productivity work order was not found in this factory' USING ERRCODE='23503';
+  END IF;
+  SELECT COALESCE(SUM(p.good_quantity+p.scrap_quantity),0)::NUMERIC(18,4)
+  INTO v_prior_quantity
+  FROM workforce_productivity_reports p
+  WHERE p.work_order_id=NEW.work_order_id
+    AND p.work_order_operation_id=NEW.work_order_operation_id
+    AND p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id;
+  IF v_prior_quantity + NEW.good_quantity + NEW.scrap_quantity > v_target_quantity THEN
+    RAISE EXCEPTION 'Cumulative operator good and scrap quantity exceeds the work-order target for this operation'
+      USING ERRCODE='23514';
   END IF;
   IF v_assignment.work_order_id IS NOT NULL AND v_assignment.work_order_id<>NEW.work_order_id THEN
     RAISE EXCEPTION 'Productivity work order must match the worker assignment' USING ERRCODE='23514';
