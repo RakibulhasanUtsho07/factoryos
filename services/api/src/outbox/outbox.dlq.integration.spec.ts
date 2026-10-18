@@ -462,6 +462,9 @@ describe(
             eventId:
               eventId,
 
+            idempotencyKey:
+              'dlq-wrong-tenant-' + randomUUID(),
+
             requestId:
               randomUUID(),
 
@@ -542,6 +545,9 @@ describe(
 
             eventId:
               eventId,
+
+            idempotencyKey:
+              'dlq-wrong-factory-' + randomUUID(),
 
             requestId:
               randomUUID(),
@@ -659,6 +665,9 @@ describe(
         const replayRequestId =
           randomUUID();
 
+        const replayIdempotencyKey =
+          'dlq-replay-' + randomUUID();
+
         const result =
           await service.replay({
             tenantId:
@@ -670,6 +679,9 @@ describe(
             eventId:
               eventId,
 
+            idempotencyKey:
+              replayIdempotencyKey,
+
             requestId:
               replayRequestId,
 
@@ -679,6 +691,38 @@ describe(
             requestFactoryId:
               factoryId,
           });
+
+        const repeatedResult =
+          await service.replay({
+            tenantId,
+            actorUserId,
+            eventId,
+            idempotencyKey: replayIdempotencyKey,
+            requestId: randomUUID(),
+            traceId: randomUUID(),
+            requestFactoryId: factoryId,
+          });
+
+        expect(repeatedResult.replayed_request).toBe(true);
+        expect(repeatedResult.status).toBe('PENDING');
+        expect(repeatedResult.replay_count).toBe(1);
+        expect(repeatedResult.previous_attempts).toBe(10);
+
+        await expect(service.replay({
+          tenantId,
+          actorUserId,
+          eventId: randomUUID(),
+          idempotencyKey: replayIdempotencyKey,
+          requestId: randomUUID(),
+          traceId: randomUUID(),
+          requestFactoryId: factoryId,
+        })).rejects.toThrow('Idempotency-Key was already used for a different DLQ replay request');
+
+        const receiptResult = await pool.query<{ receipt_count: string }>(
+          "SELECT count(*)::text AS receipt_count FROM outbox_dlq_replay_requests WHERE tenant_id=$1 AND event_id=$2 AND idempotency_key=$3",
+          [tenantId, eventId, replayIdempotencyKey],
+        );
+        expect(Number(receiptResult.rows[0]?.receipt_count)).toBe(1);
 
         expect(
           result.event_id,
