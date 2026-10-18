@@ -264,6 +264,20 @@ export function parseFinanceFileImport(dto: FinanceFileImportDto): ParsedFinance
   };
 }
 
+
+export function serializeFinanceValidationErrorCsv(issues: FinanceFileValidationIssue[]): Buffer {
+  const csvCell = (value: string | number | null): string => {
+    if (value === null) return '';
+    const text = String(value);
+    return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  };
+  const rows = [
+    ['row', 'field', 'code', 'message'],
+    ...issues.map((issue) => [issue.row, issue.field, issue.code, issue.message]),
+  ];
+  return Buffer.from(rows.map((row) => row.map((value) => csvCell(value)).join(',')).join('\r\n') + '\r\n', 'utf8');
+}
+
 export function serializeFinanceFactsCsv(facts: Array<Record<string, unknown>>): string {
   const headers = [
     'external_fact_id','source_fact_key','fact_type','source_record_type','source_record_ref',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { FinanceFileImportDto } from './dto/finance.dto';
-import { parseFinanceFileImport, serializeFinanceFactsCsv } from './finance-file-import';
+import { parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv } from './finance-file-import';
 
 function fileDto(format: 'CSV' | 'JSON', text: string): FinanceFileImportDto {
   return {
@@ -127,5 +127,19 @@ describe('finance file export serialization', () => {
     expect(parsed.batch.facts[0].amount).toBe('1234.5000');
     expect(parsed.batch.facts[0].customer_ref).toBe('Customer, "Preferred" Ltd');
     expect(parsed.batch.facts[0].metadata_snapshot).toEqual({ region: 'BD', verified: true });
+  });
+});
+
+
+describe('finance validation error file', () => {
+  it('exports row-level validation errors as an escaped UTF-8 CSV', () => {
+    const file = serializeFinanceValidationErrorCsv([{
+      row: 2,
+      field: 'customer_ref',
+      code: 'ISSTRING',
+      message: 'Value contains, "quotes"',
+    }]).toString('utf8');
+    expect(file).toContain('row,field,code,message');
+    expect(file).toContain('2,customer_ref,ISSTRING,"Value contains, ""quotes"""');
   });
 });

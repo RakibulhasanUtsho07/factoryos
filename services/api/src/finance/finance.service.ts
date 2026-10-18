@@ -30,7 +30,7 @@ import {
   type FinanceReconciliationSourceType,
 } from './finance-contract';
 import { assertFinanceOperationalSourceMatches, resolveFinanceOperationalSource } from './finance-operational-source';
-import { FinanceFileImportDto, CreateFinanceConnectorDto,
+import { FinanceFileExportDto, FinanceFileImportDto, CreateFinanceConnectorDto,
   FinanceFactInputDto,
   FinanceMarginInputsQueryDto,
   FinanceWorkingCapitalQueryDto,
@@ -40,7 +40,7 @@ import { FinanceFileImportDto, CreateFinanceConnectorDto,
   ReviewFinanceReconciliationDto,
   TransitionFinanceConnectorDto,
 } from './dto/finance.dto';
-import { FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, type ParsedFinanceFileImport } from './finance-file-import';
+import { FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv, type ParsedFinanceFileImport } from './finance-file-import';
 import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpDownload, type FinanceSftpTransport } from './finance-file-transfer.adapters';
 
 interface FinanceEventContext {
@@ -996,7 +996,19 @@ export class FinanceService {
         [tenantId, factoryId, connectorId, reportId],
       );
       if (!result.rows[0]) throw new NotFoundException('Finance file validation report was not found');
-      return result.rows[0];
+      const report = result.rows[0];
+      const errors = report.validation_report?.errors ?? [];
+      if (report.status !== 'INVALID' || errors.length === 0) return report;
+      const errorFile = serializeFinanceValidationErrorCsv(errors);
+      return {
+        ...report,
+        error_file: {
+          file_name: 'validation-errors-' + reportId + '.csv',
+          format: 'CSV',
+          payload_sha256: createHash('sha256').update(errorFile).digest('hex'),
+          content_base64: errorFile.toString('base64'),
+        },
+      };
     });
   }
 
@@ -1004,8 +1016,8 @@ export class FinanceService {
     return this.database.transaction({ tenantId, userId }, async (client) => {
       await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
       const result = await client.query(
-        'SELECT id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,status,' +
-        'received_count,accepted_count,mismatch_count,completed_at::text,created_at::text,request_id::text,trace_id::text ' +
+        'SELECT id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,validation_report_id::text,' +
+        'status,received_count,accepted_count,mismatch_count,completed_at::text,created_at::text,request_id::text,trace_id::text ' +
         'FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND source_file_name IS NOT NULL ' +
         'ORDER BY completed_at DESC LIMIT 100',
         [tenantId, factoryId, connectorId],
@@ -1018,8 +1030,8 @@ export class FinanceService {
     return this.database.transaction({ tenantId, userId }, async (client) => {
       await this.assertFinanceConnectorExists(client, tenantId, factoryId, connectorId);
       const result = await client.query(
-        'SELECT id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,status,' +
-        'received_count,accepted_count,mismatch_count,completed_at::text,created_at::text,actor_user_id::text,request_id::text,trace_id::text ' +
+        'SELECT id::text,external_batch_ref,source_file_name,source_format,source_payload_sha256,validation_report_id::text,' +
+        'status,received_count,accepted_count,mismatch_count,completed_at::text,created_at::text,actor_user_id::text,request_id::text,trace_id::text ' +
         'FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND id=$4 AND source_file_name IS NOT NULL',
         [tenantId, factoryId, connectorId, runId],
       );
