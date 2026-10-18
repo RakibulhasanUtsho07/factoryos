@@ -37,6 +37,12 @@ describe('finance integration contract', () => {
     expect(() => assertFactCompatibleWithDomain('AP', 'ACTUAL_REVENUE')).toThrow(
       'FINANCE_FACT_TYPE_NOT_ALLOWED_FOR_CONNECTOR_DOMAIN',
     );
+    expect(() => assertFactCompatibleWithDomain('GL', 'ACTUAL_REVENUE')).toThrow(
+      'FINANCE_FACT_TYPE_NOT_ALLOWED_FOR_CONNECTOR_DOMAIN',
+    );
+    expect(() => assertFactCompatibleWithDomain('TAX_EINVOICE', 'ACTUAL_REVENUE')).toThrow(
+      'FINANCE_FACT_TYPE_NOT_ALLOWED_FOR_CONNECTOR_DOMAIN',
+    );
     expect(() => assertFactCompatibleWithDomain('CUSTOM', 'ACTUAL_REVENUE')).not.toThrow();
   });
 

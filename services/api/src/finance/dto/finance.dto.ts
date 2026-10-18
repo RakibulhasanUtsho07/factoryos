@@ -51,7 +51,7 @@ export class CreateFinanceConnectorDto {
 
   @IsOptional()
   @IsBoolean()
-  is_system_of_record?: boolean;
+  is_reporting_source?: boolean;
 
   @IsOptional()
   @IsString()

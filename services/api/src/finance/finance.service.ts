@@ -46,7 +46,7 @@ interface ConnectorRow extends QueryResultRow {
   source_system: string;
   domain: FinanceConnectorDomain;
   integration_mode: FinanceConnectorMode;
-  is_system_of_record?: boolean;
+  is_reporting_source?: boolean;
   status: 'PENDING_APPROVAL' | 'ACTIVE' | 'PAUSED' | 'REJECTED';
   row_version: number | string;
   created_by_user_id: string;
@@ -124,7 +124,7 @@ export class FinanceService {
     if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(connectorCode)) {
       throw new BadRequestException('connector_code must be a stable uppercase identifier');
     }
-    const isSystemOfRecord = dto.is_system_of_record ?? true;
+    const isSystemOfRecord = dto.is_reporting_source ?? true;
     const endpointUrl = this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
     const secretReference = this.secretReference(dto.secret_reference ?? null);
     const configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
@@ -142,7 +142,7 @@ export class FinanceService {
       source_system: sourceSystem,
       domain: dto.domain,
       integration_mode: dto.integration_mode,
-      is_system_of_record: isSystemOfRecord,
+      is_reporting_source: isSystemOfRecord,
       endpoint_url: endpointUrl,
       secret_reference: secretReference,
       configuration,
@@ -159,7 +159,7 @@ export class FinanceService {
         await this.assertActiveFactory(client, tenantId, factoryId);
         const prior = await client.query<ConnectorRow & { request_hash: string }>(
           'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
-          'endpoint_url,configuration,is_system_of_record,(secret_reference IS NOT NULL) AS has_secret_reference,request_hash ' +
+          'endpoint_url,configuration,is_reporting_source,(secret_reference IS NOT NULL) AS has_secret_reference,request_hash ' +
           'FROM finance_connectors WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
           [tenantId, factoryId, idempotencyKey],
         );
@@ -174,10 +174,10 @@ export class FinanceService {
         const inserted = await client.query<ConnectorRow>(
           'INSERT INTO finance_connectors(' +
           'id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,' +
-          'endpoint_url,secret_reference,configuration,is_system_of_record,status,row_version,idempotency_key,request_hash,created_by_user_id' +
+          'endpoint_url,secret_reference,configuration,is_reporting_source,status,row_version,idempotency_key,request_hash,created_by_user_id' +
           ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,\'PENDING_APPROVAL\',1,$13,$14,$15) ' +
           'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
-          'endpoint_url,configuration,is_system_of_record,(secret_reference IS NOT NULL) AS has_secret_reference',
+          'endpoint_url,configuration,is_reporting_source,(secret_reference IS NOT NULL) AS has_secret_reference',
           [
             id, tenantId, factoryId, connectorCode, displayName, sourceSystem,
             dto.domain, dto.integration_mode, endpointUrl, secretReference, JSON.stringify(configuration),
@@ -535,7 +535,8 @@ export class FinanceService {
       const rows = await client.query(
         'WITH actual_events AS (' +
         ' SELECT f.* FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_system_of_record) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
         ' AND f.fact_type IN (\'ACTUAL_REVENUE\',\'ACTUAL_COST\',\'ACTUAL_CONTRIBUTION_COST\') ' +
         ' AND f.effective_at >= $3 AND f.effective_at <= $4 ' +
         ' AND ($5::uuid IS NULL OR f.order_id=$5) AND ($6::uuid IS NULL OR f.product_id=$6) ' +
@@ -543,7 +544,8 @@ export class FinanceService {
         '), latest_forecasts AS (' +
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_system_of_record) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
         ' AND f.fact_type IN (\'FORECAST_REVENUE\',\'FORECAST_COST\',\'FORECAST_CONTRIBUTION_COST\') ' +
         ' AND f.effective_at >= $3 AND f.effective_at <= $4 AND ($5::uuid IS NULL OR f.order_id=$5) ' +
         ' AND ($6::uuid IS NULL OR f.product_id=$6) AND ($7::text IS NULL OR f.customer_ref=$7) ' +
@@ -608,7 +610,8 @@ export class FinanceService {
         'WITH latest_positions AS (' +
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 AND f.effective_at <= $3 ' +
-        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_system_of_record) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
         ' AND f.fact_type IN (\'AR_OPEN\',\'AP_OPEN\',\'BANK_BALANCE\',\'INVENTORY_VALUE\',\'OPEN_PO_COMMITMENT\',' +
         '\'LC_EXPOSURE\',\'SHIPMENT_MILESTONE\',\'TAX_LIABILITY\',\'GL_BALANCE\') ' +
         ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
@@ -644,6 +647,7 @@ export class FinanceService {
         'WITH latest_positions AS (' +
         ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.id,f.tenant_id,f.factory_id ' +
         ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 AND f.effective_at <= $3 ' +
+        ' AND EXISTS (SELECT 1 FROM finance_connectors fc WHERE fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id AND fc.is_reporting_source) ' +
         ' AND f.fact_type IN (\'AR_OPEN\',\'AP_OPEN\',\'BANK_BALANCE\',\'INVENTORY_VALUE\',\'OPEN_PO_COMMITMENT\',' +
         '\'LC_EXPOSURE\',\'SHIPMENT_MILESTONE\',\'TAX_LIABILITY\',\'GL_BALANCE\') ' +
         ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
@@ -902,7 +906,7 @@ export class FinanceService {
       endpoint_url: row.endpoint_url ?? null,
       configuration: row.configuration ?? {},
       has_secret_reference: row.has_secret_reference === true || row.has_secret_reference === 't',
-      is_system_of_record: row.is_system_of_record === true || row.is_system_of_record === 't',
+      is_reporting_source: row.is_reporting_source === true || row.is_reporting_source === 't',
       replayed,
       system_of_record_boundary: 'EXTERNAL_SOURCE_REMAINS_AUTHORITATIVE',
       write_policy: 'READ_ONLY_INGESTION_NO_GL_JOURNAL_PAYMENT_OR_TAX_POSTING',

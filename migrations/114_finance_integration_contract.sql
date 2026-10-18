@@ -70,7 +70,7 @@ CREATE TABLE finance_connectors (
  source_system varchar(120) NOT NULL,
  domain varchar(30) NOT NULL,
  integration_mode varchar(24) NOT NULL,
- is_system_of_record boolean NOT NULL DEFAULT true,
+ is_reporting_source boolean NOT NULL DEFAULT true,
  endpoint_url text,
  secret_reference text,
  configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -98,6 +98,7 @@ CREATE TABLE finance_connectors (
  CONSTRAINT chk_finance_connector_name CHECK(length(btrim(display_name)) BETWEEN 2 AND 160),
  CONSTRAINT chk_finance_connector_source CHECK(length(btrim(source_system)) BETWEEN 2 AND 120),
  CONSTRAINT chk_finance_connector_domain CHECK(domain IN ('GL','AP','AR','BANK_RECONCILIATION','TAX_EINVOICE','CUSTOM')),
+ CONSTRAINT chk_custom_connector_not_reporting CHECK(domain<>'CUSTOM' OR NOT is_reporting_source),
  CONSTRAINT chk_finance_connector_mode CHECK(integration_mode IN ('MANUAL','REST_API','WEBHOOK','FILE_IMPORT')),
  CONSTRAINT chk_finance_connector_status CHECK(status IN ('PENDING_APPROVAL','ACTIVE','PAUSED','REJECTED')),
  CONSTRAINT chk_finance_connector_row_version CHECK(row_version > 0),
@@ -117,7 +118,7 @@ CREATE INDEX idx_finance_connectors_scope_status
  ON finance_connectors(tenant_id,factory_id,status,domain,created_at DESC);
 CREATE UNIQUE INDEX uq_finance_domain_reporting_source
  ON finance_connectors(tenant_id,factory_id,domain)
- WHERE is_system_of_record AND domain<>'CUSTOM' AND status IN ('PENDING_APPROVAL','ACTIVE');
+ WHERE is_reporting_source AND domain<>'CUSTOM' AND status IN ('PENDING_APPROVAL','ACTIVE');
 
 CREATE TABLE finance_connector_runs (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -307,7 +308,7 @@ CREATE INDEX idx_finance_connector_history_scope_time
  ON finance_connector_history(tenant_id,factory_id,connector_id,created_at DESC);
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_connector()
-RETURNS trigger LANGUAGE plpgsql AS $$$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_OP='DELETE' THEN
    RAISE EXCEPTION 'Finance connector configuration is immutable; pause it instead'
@@ -323,11 +324,11 @@ BEGIN
    RETURN NEW;
  END IF;
  IF ROW(NEW.tenant_id,NEW.factory_id,NEW.connector_code,NEW.display_name,NEW.source_system,
-        NEW.domain,NEW.integration_mode,NEW.is_system_of_record,NEW.endpoint_url,NEW.secret_reference,NEW.configuration,
+        NEW.domain,NEW.integration_mode,NEW.is_reporting_source,NEW.endpoint_url,NEW.secret_reference,NEW.configuration,
         NEW.idempotency_key,NEW.request_hash,NEW.created_by_user_id,NEW.created_at)
     IS DISTINCT FROM
     ROW(OLD.tenant_id,OLD.factory_id,OLD.connector_code,OLD.display_name,OLD.source_system,
-        OLD.domain,OLD.integration_mode,OLD.is_system_of_record,OLD.endpoint_url,OLD.secret_reference,OLD.configuration,
+        OLD.domain,OLD.integration_mode,OLD.is_reporting_source,OLD.endpoint_url,OLD.secret_reference,OLD.configuration,
         OLD.idempotency_key,OLD.request_hash,OLD.created_by_user_id,OLD.created_at) THEN
    RAISE EXCEPTION 'Finance connector configuration is immutable; create a new connector code'
      USING ERRCODE='55000';
@@ -365,7 +366,7 @@ CREATE TRIGGER trg_finance_connectors_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_connector();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_connector_run()
-RETURNS trigger LANGUAGE plpgsql AS $$$
+RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE s text;
 BEGIN
  IF TG_OP<>'INSERT' THEN
@@ -385,7 +386,7 @@ CREATE TRIGGER trg_finance_connector_runs_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_connector_run();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_financial_fact()
-RETURNS trigger LANGUAGE plpgsql AS $$$
+RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE connector_status text;
 DECLARE connector_domain text;
 BEGIN
@@ -402,12 +403,12 @@ BEGIN
  END IF;
  IF connector_domain<>'CUSTOM' AND NOT (
    (connector_domain='GL' AND NEW.fact_type IN (
-     'GL_BALANCE','INVENTORY_VALUE','ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST',
-     'FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST'))
-   OR (connector_domain='AP' AND NEW.fact_type IN ('AP_OPEN','OPEN_PO_COMMITMENT','LC_EXPOSURE','TAX_LIABILITY'))
+     'GL_BALANCE','INVENTORY_VALUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST',
+     'FORECAST_COST','FORECAST_CONTRIBUTION_COST'))
+   OR (connector_domain='AP' AND NEW.fact_type IN ('AP_OPEN','OPEN_PO_COMMITMENT','LC_EXPOSURE'))
    OR (connector_domain='AR' AND NEW.fact_type IN ('AR_OPEN','SHIPMENT_MILESTONE','ACTUAL_REVENUE','FORECAST_REVENUE'))
    OR (connector_domain='BANK_RECONCILIATION' AND NEW.fact_type='BANK_BALANCE')
-   OR (connector_domain='TAX_EINVOICE' AND NEW.fact_type IN ('TAX_LIABILITY','ACTUAL_REVENUE'))
+   OR (connector_domain='TAX_EINVOICE' AND NEW.fact_type='TAX_LIABILITY')
  ) THEN
    RAISE EXCEPTION 'Financial fact type % is not permitted for connector domain %',NEW.fact_type,connector_domain
      USING ERRCODE='23514';
@@ -419,7 +420,7 @@ CREATE TRIGGER trg_financial_facts_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_financial_fact();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_finance_fact_reconciliation()
-RETURNS trigger LANGUAGE plpgsql AS $$$
+RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE fact_actor uuid;
 DECLARE fact_quantity numeric(24,8);
 DECLARE fact_rate numeric(24,8);
@@ -492,7 +493,7 @@ CREATE TRIGGER trg_finance_fact_reconciliations_guard
  FOR EACH ROW EXECUTE FUNCTION factoryos_guard_finance_fact_reconciliation();
 
 CREATE OR REPLACE FUNCTION factoryos_require_finance_fact_reconciliation()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF NEW.source_quantity IS NOT NULL AND NOT EXISTS (
    SELECT 1 FROM finance_fact_reconciliations r
@@ -502,7 +503,7 @@ BEGIN
      USING ERRCODE='23514';
  END IF;
  RETURN NULL;
-END $;
+END $$;
 CREATE CONSTRAINT TRIGGER trg_financial_facts_reconciliation_required
  AFTER INSERT ON financial_facts
  DEFERRABLE INITIALLY DEFERRED

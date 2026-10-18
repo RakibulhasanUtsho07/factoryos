@@ -4,7 +4,7 @@ BEGIN;
 SELECT set_config('app.tenant_id','faaab63d-c447-46ce-950d-deebdd7f5f30',true);
 SELECT set_config('app.user_id','921382b8-e83f-43ab-a576-e3db6a06b70c',true);
 
-DO $$$
+DO $$
 DECLARE
   table_name text;
   rls_enabled boolean;
@@ -73,7 +73,7 @@ INSERT INTO finance_connectors(
  'ci-finance-connector-1',repeat('a',64),'921382b8-e83f-43ab-a576-e3db6a06b70c'
 );
 
-DO $$$
+DO $$
 BEGIN
   BEGIN
     INSERT INTO finance_connectors(
@@ -157,7 +157,7 @@ INSERT INTO finance_fact_reconciliations(
  10,9.5,0.1,100,100,0,'PCS','MISMATCH'
 );
 
-DO $$$
+DO $$
 BEGIN
   BEGIN
     UPDATE financial_facts SET amount=2000
@@ -240,7 +240,7 @@ SET review_status='RESOLVED',review_reason='Matched to reviewed supplier invoice
 WHERE fact_id='da100000-0000-4000-8000-000000000003'
   AND review_status='OPEN' AND match_status='MISMATCH';
 
-DO $$$
+DO $$
 BEGIN
   IF NOT EXISTS(
     SELECT 1 FROM finance_fact_reconciliations
