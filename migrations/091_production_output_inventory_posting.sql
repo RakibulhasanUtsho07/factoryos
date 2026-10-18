@@ -77,6 +77,7 @@ DECLARE
   v_work_order RECORD;
   v_movement RECORD;
   v_totals RECORD;
+  v_balance_quantity NUMERIC(18,4);
   v_report_yield NUMERIC(7,4);
   v_cumulative_yield NUMERIC(7,4);
 BEGIN
@@ -160,7 +161,7 @@ BEGIN
     END IF;
   ELSE
     SELECT m.id, m.item_id, m.movement_type, m.quantity, m.quantity_delta,
-           m.location_id, m.reference_type, m.reference_id
+           m.quantity_after, m.location_id, m.reference_type, m.reference_id
     INTO v_movement
     FROM inventory_movements m
     WHERE m.id = NEW.inventory_movement_id
@@ -180,6 +181,17 @@ BEGIN
        OR v_movement.reference_type <> 'PRODUCTION_OUTPUT'
        OR v_movement.reference_id <> NEW.production_report_id THEN
       RAISE EXCEPTION 'finished-good inventory movement must receipt exactly the accepted output from this report'
+        USING ERRCODE = '23514';
+    END IF;
+
+    SELECT b.quantity_on_hand INTO v_balance_quantity
+    FROM inventory_stock_balances b
+    WHERE b.item_id = NEW.finished_item_id
+      AND b.tenant_id = NEW.tenant_id
+      AND b.factory_id = NEW.factory_id
+    FOR SHARE;
+    IF NOT FOUND OR v_movement.quantity_after IS DISTINCT FROM v_balance_quantity THEN
+      RAISE EXCEPTION 'finished-good receipt quantity_after must match the aggregate inventory balance'
         USING ERRCODE = '23514';
     END IF;
   END IF;
