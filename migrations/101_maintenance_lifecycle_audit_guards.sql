@@ -61,7 +61,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_maintenance_entity_delete();
 -- A changed maintenance record must advance exactly one version. The service
 -- records the matching immutable event in the same transaction.
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_asset_update()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text || ':' || NEW.factory_id::text || ':maintenance-asset-tree',0));
   IF NEW.row_version <> OLD.row_version + 1 THEN
@@ -452,7 +452,7 @@ CREATE OR REPLACE TRIGGER trg_maintenance_event_guard
 BEFORE INSERT ON maintenance_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_event();
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_assignee_scope()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.assigned_to_user_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM tenant_memberships tm
@@ -465,13 +465,13 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_maintenance_work_order_assignee_scope_guard
 BEFORE INSERT OR UPDATE OF assigned_to_user_id ON maintenance_work_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_assignee_scope();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_pm_approver_scope()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.approved_by_user_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM tenant_memberships tm
@@ -484,7 +484,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER trg_maintenance_pm_approver_scope_guard
 BEFORE INSERT OR UPDATE OF approved_by_user_id, status ON maintenance_pm_plans
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_pm_approver_scope();
