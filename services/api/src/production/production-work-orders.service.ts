@@ -1157,7 +1157,17 @@ export class ProductionWorkOrdersService {
     }, async (client) => {
       const eventKey = this.scopedEventKey(workOrderId, 'OPERATION_EVENT', key);
       const replay = await this.findEventReplay(client, tenantId, factoryId, eventKey, requestHash);
-      if (replay) return { workOrderId, replayed: true as const };
+      if (replay) {
+        const priorEvent = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM work_order_events
+           WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3`,
+          [tenantId, factoryId, eventKey],
+        );
+        if (!priorEvent.rows[0]) {
+          throw new ConflictException('The idempotent shop-floor event exists without retrievable source evidence');
+        }
+        return { workOrderId, eventId: priorEvent.rows[0].id, replayed: true as const };
+      }
 
       const parentResult = await client.query<WorkOrderRow>(`
         SELECT ${WORK_ORDER_COLUMNS}
@@ -1641,7 +1651,11 @@ export class ProductionWorkOrdersService {
         });
       }
     }
-    return { ...workOrder, replayed: result.replayed };
+    return {
+      ...workOrder,
+      source_operation_event_id: result.eventId,
+      replayed: result.replayed,
+    };
   }
 
   async reportOutput(
