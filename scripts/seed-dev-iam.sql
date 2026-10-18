@@ -174,7 +174,15 @@ WHERE r.code = 'ORG_ADMIN'
     'production.workorders.write',
     'production.workorders.release',
     'production.operations.operate',
-    'production.output.report'
+    'production.output.report',
+    'maintenance.assets.read',
+    'maintenance.assets.manage',
+    'maintenance.pm.read',
+    'maintenance.pm.manage',
+    'maintenance.workorders.read',
+    'maintenance.workorders.manage',
+    'maintenance.workorders.execute',
+    'maintenance.parts.manage'
   );
 
 COMMIT;
