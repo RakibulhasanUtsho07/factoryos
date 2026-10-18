@@ -33,3 +33,8 @@ The PostgreSQL CI migration list includes migrations 001–117 and fails closed 
 ## Transport boundary
 
 The current \`OutboxPublisher\` is the local transport boundary and emits a validated event log; it is not yet a Kafka, RabbitMQ, NATS or cloud event-bus adapter. The queue, inbox, retry, lease and DLQ controls are implemented and testable. Production transport delivery guarantees must be revalidated with the selected broker adapter, including broker acknowledgements, publisher confirms and consumer acknowledgement behavior.
+
+
+## Signed webhook connectors
+
+Signed webhook ingress, tenant/factory-scoped connector registration, HMAC replay protection, strict schema/version validation and transactionally idempotent acceptance are specified in [signed-webhook-connector-contract.md](signed-webhook-connector-contract.md). Registry/receipt migration integrity is verified by PostgreSQL CI; accepted events continue through the outbox retry and DLQ path described above.
