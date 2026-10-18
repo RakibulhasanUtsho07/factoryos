@@ -57,11 +57,30 @@ BEGIN
   END IF;
   IF EXISTS (
     SELECT 1 FROM roles r
-    WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER')
+    WHERE r.code='ORG_ADMIN'
       AND (SELECT count(*) FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
            WHERE rp.role_id=r.id AND p.code LIKE 'workforce.%') <> 17
+  ) OR EXISTS (
+    SELECT 1 FROM roles r
+    WHERE r.code='FACTORY_MANAGER'
+      AND (SELECT count(*) FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+           WHERE rp.role_id=r.id AND p.code LIKE 'workforce.%') <> 16
   ) THEN
-    RAISE EXCEPTION 'Seeded admin/factory-manager roles must receive the full Workforce permission set';
+    RAISE EXCEPTION 'Admin roles receive all Workforce permissions; factory managers receive management permissions only';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM roles r
+    WHERE r.code='WORKER_SELF_SERVICE'
+      AND (SELECT count(*) FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id
+           WHERE rp.role_id=r.id AND p.code LIKE 'workforce.%') <> 1
+  ) OR NOT EXISTS (
+    SELECT 1 FROM roles r
+    JOIN role_permissions rp ON rp.role_id=r.id
+    JOIN permissions p ON p.id=rp.permission_id AND p.code='workforce.self.read'
+    WHERE r.code='WORKER_SELF_SERVICE'
+  ) THEN
+    RAISE EXCEPTION 'Worker self-service must be a separate least-privilege role with only workforce.self.read';
   END IF;
 
   IF (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled<>'D'
