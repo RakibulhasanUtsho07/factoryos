@@ -644,6 +644,116 @@ export class QualityService {
     return{eventId};
   }
 
+
+  async transitionReworkOrder(c:QualityContext,reworkOrderId:string,dto:QualityReworkTransitionDto,rawKey:string|null){
+    this.validateScope(c);this.uuid(reworkOrderId,'reworkOrderId');
+    const key=this.key(rawKey),reason=this.text(dto.reason,'reason',2000),evidence=this.jsonObject(dto.evidence),correlation=this.correlation(c);
+    const normalNonNegative=(value:number|undefined,field:string)=>{
+      if(value===undefined||!Number.isFinite(value)||value<0||Math.abs(value*10000-Math.round(value*10000))>0.000001)
+        throw new BadRequestException(field+' is required and must be non-negative with at most four decimal places');
+      return value.toFixed(4);
+    };
+    const recovered=dto.action==='COMPLETE'?normalNonNegative(dto.recovered_quantity,'recovered_quantity'):null;
+    const scrap=dto.action==='COMPLETE'?normalNonNegative(dto.scrap_quantity,'scrap_quantity'):null;
+    const outputId=dto.output_traceability_unit_id?this.uuidValue(dto.output_traceability_unit_id,'output_traceability_unit_id'):null;
+    const followupId=dto.follow_up_inspection_id?this.uuidValue(dto.follow_up_inspection_id,'follow_up_inspection_id'):null;
+    if(dto.action==='COMPLETE'){
+      if(Math.abs(Number(recovered)+Number(scrap))<0.00001)throw new BadRequestException('rework completion quantity must be positive');
+      if(Math.abs(Number(recovered)+Number(scrap)-Number(recovered)-Number(scrap))>0.000001)throw new BadRequestException('invalid rework quantity split');
+      if(Number(recovered)>0&&(!outputId||!followupId))throw new BadRequestException('recovered output requires a traceability unit and follow-up inspection');
+      if(Number(recovered)===0&&Number(scrap)===0)throw new BadRequestException('rework must recover or scrap a positive quantity');
+      if(Number(recovered)===0&&outputId)throw new BadRequestException('a fully scrapped rework cannot have an output unit');
+      if(Number(recovered)===0&&followupId)throw new BadRequestException('a fully scrapped rework cannot have a recovered-output inspection');
+    }
+    const hash=this.hash({rework_order_id:reworkOrderId,action:dto.action,expected_version:dto.expected_version,reason,evidence,recovered,scrap,outputId,followupId});
+    const result=await this.database.transaction(c,async client=>{
+      await this.lockKey(client,c,'rework-transition',key);
+      const prior=await client.query("SELECT id::text AS id,rework_order_id::text AS rework_order_id,request_hash FROM quality_rework_events WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+        [c.tenantId,c.factoryId,key]);
+      if(prior.rows[0]){
+        if(String(prior.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for a different rework transition');
+        return{id:String(prior.rows[0].rework_order_id),replayed:true};
+      }
+      const found=await client.query("SELECT r.id::text AS id,r.defect_id::text AS defect_id,r.inspection_id::text AS inspection_id,r.ncr_id::text AS ncr_id,r.status,r.row_version::int AS row_version,r.input_quantity::text AS input_quantity,r.source_inventory_item_id::text AS source_inventory_item_id,r.source_traceability_unit_id::text AS source_traceability_unit_id,r.completed_by_user_id::text AS completed_by_user_id,r.follow_up_inspection_id::text AS follow_up_inspection_id,r.recovered_quantity::text AS recovered_quantity,d.status AS defect_status,d.row_version::int AS defect_row_version FROM quality_rework_orders r JOIN quality_defects d ON d.id=r.defect_id AND d.tenant_id=r.tenant_id AND d.factory_id=r.factory_id WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 FOR UPDATE OF r,d",
+        [reworkOrderId,c.tenantId,c.factoryId]);
+      const r=found.rows[0];if(!r)throw new NotFoundException('Quality rework order was not found in this factory');
+      if(Number(r.row_version)!==dto.expected_version)throw new ConflictException('Rework order version is stale');
+      const from=String(r.status);let to=from,updated;
+      if(dto.action==='APPROVE'){
+        if(from!=='DRAFT')throw new ConflictException('Only a draft rework task can be approved');
+        to='APPROVED';
+        updated=await client.query("UPDATE quality_rework_orders SET status='APPROVED',row_version=row_version+1,approved_by_user_id=$1,approved_at=clock_timestamp(),updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5 RETURNING row_version::int AS row_version",
+          [c.userId,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+      }else if(dto.action==='START'){
+        if(from!=='APPROVED')throw new ConflictException('Only an approved rework task can start');
+        to='IN_PROGRESS';
+        updated=await client.query("UPDATE quality_rework_orders SET status='IN_PROGRESS',row_version=row_version+1,started_by_user_id=$1,started_at=clock_timestamp(),updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5 RETURNING row_version::int AS row_version",
+          [c.userId,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+        if(r.defect_status==='OPEN')await this.updateDefect(client,c,String(r.defect_id),Number(r.defect_row_version),'REWORK',reason,correlation);
+      }else if(dto.action==='RESTART'){
+        if(from!=='REWORK_REQUIRED')throw new ConflictException('Only a rework-required task can restart');
+        to='IN_PROGRESS';
+        updated=await client.query("UPDATE quality_rework_orders SET status='IN_PROGRESS',row_version=row_version+1,started_by_user_id=$1,started_at=clock_timestamp(),completed_by_user_id=NULL,completed_at=NULL,completion_reason=NULL,recovered_quantity=0,scrap_quantity=0,output_traceability_unit_id=NULL,follow_up_inspection_id=NULL,verified_by_user_id=NULL,verified_at=NULL,verification_reason=NULL,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5 RETURNING row_version::int AS row_version",
+          [c.userId,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+      }else if(dto.action==='COMPLETE'){
+        if(from!=='IN_PROGRESS')throw new ConflictException('Only an in-progress rework task can complete');
+        if(Math.abs(Number(recovered)+Number(scrap)-Number(r.input_quantity))>0.000001)throw new ConflictException('Recovered plus scrap quantity must equal the rework input quantity');
+        if(Number(recovered)>0){
+          const out=await client.query("SELECT id::text AS id,inventory_item_id::text AS inventory_item_id,quantity::text AS quantity,status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE",
+            [outputId,c.tenantId,c.factoryId]);
+          if(!out.rows[0]||out.rows[0].status!=='ACTIVE'||Math.abs(Number(out.rows[0].quantity)-Number(recovered))>0.000001)throw new ConflictException('Output lot/serial must be active and exactly match recovered quantity');
+          if(r.source_inventory_item_id&&String(out.rows[0].inventory_item_id)!==String(r.source_inventory_item_id))throw new ConflictException('Recovered output must use the same inventory item as the source');
+          const f=await client.query("SELECT target_type,target_id::text AS target_id,inspection_type,status FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE",
+            [followupId,c.tenantId,c.factoryId]);
+          if(!f.rows[0]||f.rows[0].target_type!=='TRACEABILITY_UNIT'||String(f.rows[0].target_id)!==String(outputId)||!['IN_PROCESS','FINAL','INVENTORY'].includes(String(f.rows[0].inspection_type))||['CANCELLED','DISPOSITIONED'].includes(String(f.rows[0].status)))
+            throw new ConflictException('Follow-up inspection must target the exact recovered lot/serial');
+        }
+        to='COMPLETED';
+        updated=await client.query("UPDATE quality_rework_orders SET status='COMPLETED',row_version=row_version+1,recovered_quantity=$1::numeric,scrap_quantity=$2::numeric,output_traceability_unit_id=$3::uuid,follow_up_inspection_id=$4::uuid,completion_reason=$5,completed_by_user_id=$6,completed_at=clock_timestamp(),updated_by_user_id=$6,updated_at=clock_timestamp() WHERE id=$7 AND tenant_id=$8 AND factory_id=$9 AND row_version=$10 RETURNING row_version::int AS row_version",
+          [recovered,scrap,outputId,followupId,reason,c.userId,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+      }else if(dto.action==='VERIFY'){
+        if(from!=='COMPLETED')throw new ConflictException('Only a completed rework task can be verified');
+        if(String(r.completed_by_user_id)===c.userId)throw new ConflictException('Rework must be verified by a different actor than the completer');
+        if(Number(r.recovered_quantity)>0){
+          const f=await client.query("SELECT status FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+            [r.follow_up_inspection_id,c.tenantId,c.factoryId]);
+          if(!f.rows[0]||!['PASSED','FAILED','ON_HOLD'].includes(String(f.rows[0].status)))throw new ConflictException('Follow-up inspection must pass or fail/be held before rework verification');
+          to=f.rows[0].status==='PASSED'?'VERIFIED':'REWORK_REQUIRED';
+        }else to='VERIFIED';
+        updated=await client.query("UPDATE quality_rework_orders SET status=$1,row_version=row_version+1,verified_by_user_id=$2,verified_at=clock_timestamp(),verification_reason=$3,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7 RETURNING row_version::int AS row_version",
+          [to,c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+      }else if(dto.action==='CANCEL'){
+        if(!['APPROVED','IN_PROGRESS'].includes(from))throw new ConflictException('Only approved or in-progress rework can be cancelled');
+        to='CANCELLED';
+        updated=await client.query("UPDATE quality_rework_orders SET status='CANCELLED',row_version=row_version+1,cancelled_by_user_id=$1,cancelled_at=clock_timestamp(),cancellation_reason=$2,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",
+          [c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+      }else throw new BadRequestException('Unsupported rework action');
+      const version=Number(updated.rows[0]?.row_version??0);if(!version)throw new ConflictException('Rework task changed while transitioning');
+      const event=await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action,reason,
+        evidence,payload:{input_quantity:r.input_quantity,recovered_quantity:recovered,scrap_quantity:scrap,output_traceability_unit_id:outputId,follow_up_inspection_id:followupId},
+        key,hash,correlation});
+      if(dto.action==='COMPLETE'&&Number(recovered)>0){
+        await this.insertDefectLink(client,c,{defectId:String(r.defect_id),linkType:'REWORK_OUTPUT',targetId:String(outputId),source:'REWORK_OUTPUT',
+          quantity:recovered,notes:'Recovered output from verified-quality rework task',evidence:{rework_order_id:reworkOrderId,follow_up_inspection_id:followupId},
+          key:'rework-output:'+reworkOrderId+':'+String(version),correlation,reworkOrderId});
+      }
+      if(dto.action==='VERIFY'&&to==='VERIFIED'){
+        const other=await client.query("SELECT count(*)::int AS count FROM quality_rework_orders WHERE defect_id=$1 AND tenant_id=$2 AND factory_id=$3 AND id<>$4 AND status NOT IN ('VERIFIED','CANCELLED')",
+          [r.defect_id,c.tenantId,c.factoryId,reworkOrderId]);
+        const defectNow=await client.query("SELECT status,row_version::int AS row_version FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
+          [r.defect_id,c.tenantId,c.factoryId]);
+        if(Number(other.rows[0]?.count??0)===0&&defectNow.rows[0]?.status==='REWORK'){
+          await this.updateDefect(client,c,String(r.defect_id),Number(defectNow.rows[0].row_version),'RESOLVED',reason,correlation);
+        }
+      }
+      await this.auditOutbox(client,c,{inspectionId:String(r.inspection_id),defectId:String(r.defect_id),ncrId:r.ncr_id?String(r.ncr_id):undefined,
+        action:'QUALITY_REWORK_'+dto.action,correlation,payload:{rework_order_id:reworkOrderId,rework_event_id:event.eventId,from_status:from,to_status:to,reason,version},
+        aggregateType:'QUALITY_REWORK',aggregateId:reworkOrderId,outboxEvent:'QUALITY.REWORK_CHANGED'});
+      return{id:reworkOrderId,replayed:false};
+    });
+    return{...(await this.getReworkOrder(c,result.id)),replayed:result.replayed};
+  }
+
   async listHolds(c:QualityContext,rawStatus?:string,rawLimit?:number){
     this.validateScope(c);const status=rawStatus?.trim().toUpperCase()||null;
     if(status&&!['ACTIVE','RELEASED','DISPOSED'].includes(status)) throw new BadRequestException('status must be ACTIVE, RELEASED or DISPOSED');
