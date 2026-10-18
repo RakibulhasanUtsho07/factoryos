@@ -65,3 +65,16 @@ export class ListIntegrationConnectorsDto {
   @IsIn(['PENDING_REVIEW', 'ACTIVE', 'PAUSED', 'REJECTED'])
   status?: string;
 }
+
+export class IntegrationReconciliationCaseDecisionDto {
+  @IsIn(['RESOLVE', 'WAIVE'])
+  action!: 'RESOLVE' | 'WAIVE';
+
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+
+  @IsString()
+  @Length(10, 500)
+  reason!: string;
+}
