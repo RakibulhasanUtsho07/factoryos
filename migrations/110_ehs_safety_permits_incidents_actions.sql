@@ -41,6 +41,7 @@ CREATE TABLE ehs_safety_permits (
   valid_from TIMESTAMPTZ NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
   requested_by_user_id UUID NOT NULL,
+  updated_by_user_id UUID NOT NULL,
   approved_by_user_id UUID,
   approved_at TIMESTAMPTZ,
   decision_reason TEXT,
@@ -65,6 +66,7 @@ CREATE TABLE ehs_safety_permits (
   CONSTRAINT fk_ehs_permit_work_order FOREIGN KEY (work_order_id,tenant_id,factory_id)
     REFERENCES work_orders(id,tenant_id,factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_permit_requester FOREIGN KEY (requested_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_ehs_permit_updater FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_permit_approver FOREIGN KEY (approved_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_permit_isolation_actor FOREIGN KEY (isolation_verified_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_permit_activator FOREIGN KEY (activated_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
