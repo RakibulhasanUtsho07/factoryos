@@ -1315,7 +1315,7 @@ export class WorkforceService {
       if(entry!==null && typeof entry!=='string' && typeof entry!=='number' && typeof entry!=='boolean') {
         throw new BadRequestException('capture_metadata diagnostic values must be scalar');
       }
-      if(typeof entry==='string' && (entry.length>255 || /[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]/.test(entry))) {
+      if(typeof entry==='string' && (entry.length>255 || Array.from(entry).some((character)=>character.charCodeAt(0)<32 || character.charCodeAt(0)===127))) {
         throw new BadRequestException('capture_metadata strings must be at most 255 safe characters');
       }
       if(typeof entry==='number' && !Number.isFinite(entry)) {
