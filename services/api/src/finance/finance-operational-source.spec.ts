@@ -14,7 +14,7 @@ describe('finance operational source resolver', () => {
       mock.client, 'tenant-1', 'factory-1', 'PURCHASE_ORDER_LINE', 'PO-100:2',
     );
     expect(result).toEqual({ quantity: '20', rate: '12.5', uomCode: 'PCS', currency: 'BDT' });
-    expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("po.status=\\\\'APPROVED\\\\'"), [
+    expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("po.status=\\'APPROVED\\'"), [
       'tenant-1', 'factory-1', 'PO-100:2',
     ]);
   });
@@ -24,7 +24,7 @@ describe('finance operational source resolver', () => {
     await expect(resolveFinanceOperationalSource(
       mock.client, 'tenant-1', 'factory-1', 'GOODS_RECEIPT_LINE', 'gr-line-1',
     )).resolves.toMatchObject({ quantity: '9.5', rate: '3.25', uomCode: 'KG', currency: 'USD' });
-    expect(mock.query.mock.calls[0][0]).toContain("gr.status=\\\\'POSTED\\\\'");
+    expect(mock.query.mock.calls[0][0]).toContain("gr.status=\\'POSTED\\'");
   });
 
   it('resolves confirmed order lines and utility meter rate snapshots', async () => {
@@ -32,7 +32,7 @@ describe('finance operational source resolver', () => {
     await expect(resolveFinanceOperationalSource(
       order.client, 'tenant-1', 'factory-1', 'ORDER_LINE', 'ORD-100:1',
     )).resolves.toMatchObject({ quantity: '12', rate: '0' });
-    expect(order.query.mock.calls[0][0]).toContain("o.status IN (\\\\'CONFIRMED\\\\',\\\\'IN_PROGRESS\\\\',\\\\'COMPLETED\\\\')");
+    expect(order.query.mock.calls[0][0]).toContain("o.status IN (\\'CONFIRMED\\',\\'IN_PROGRESS\\',\\'COMPLETED\\')");
 
     const utility = fakeClient([{ quantity: '40.12500000', rate: '0.08000000', uom_code: 'KWH', currency: 'BDT' }]);
     await expect(resolveFinanceOperationalSource(
