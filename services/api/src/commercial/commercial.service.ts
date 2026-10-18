@@ -331,7 +331,7 @@ export class CommercialService {
       switch (action) {
         case 'SUBMIT':
           if (quote.status !== 'DRAFT') throw new ConflictException('Only a draft quotation can be submitted');
-          if (current.valid_until && current.valid_until < new Date().toISOString().slice(0,10)) {
+          if (await this.dateExpired(client, current.valid_until)) {
             throw new ConflictException('Quotation validity date has expired');
           }
           if (current.pricing_rule_snapshot.incoterms_required === true && !current.incoterms) {
@@ -353,10 +353,11 @@ export class CommercialService {
           nextStatus = 'REJECTED'; historyAction = 'REJECTED'; break;
         case 'SEND':
           if (quote.status !== 'APPROVED') throw new ConflictException('Only approved quotations can be sent');
+          if (await this.dateExpired(client,current.valid_until)) throw new ConflictException('Quotation validity date has expired');
           nextStatus = 'SENT'; historyAction = 'SENT'; break;
         case 'ACCEPT':
           if (quote.status !== 'SENT') throw new ConflictException('Only sent quotations can be accepted');
-          if (current.valid_until && current.valid_until < new Date().toISOString().slice(0,10)) {
+          if (await this.dateExpired(client, current.valid_until)) {
             throw new ConflictException('Quotation validity date has expired');
           }
           nextStatus = 'ACCEPTED'; historyAction = 'ACCEPTED'; break;
@@ -402,7 +403,7 @@ export class CommercialService {
         this.checkVersion(quote,expectedVersion);
         if (quote.status !== 'ACCEPTED') throw new ConflictException('Only accepted quotations can be converted');
         const current = await this.currentTerms(client,tenantId,factoryId,quoteId);
-        if (current.valid_until && current.valid_until < new Date().toISOString().slice(0,10)) {
+        if (await this.dateExpired(client, current.valid_until)) {
           throw new ConflictException('Quotation validity date has expired');
         }
         const created = await client.query(
@@ -472,6 +473,7 @@ export class CommercialService {
       [tenantId,factoryId,customerRef,requestedRule],
     );
     const rule = result.rows[0];
+    if (await this.dateExpired(client,validUntil)) throw new BadRequestException('valid_until must not be in the past');
     if (requestedRule && !rule) throw new BadRequestException('Requested pricing rule is not active for this customer and factory');
     const ruleCode = rule?.rule_code ?? 'DEFAULT_BDT';
     const baseCurrency = this.currency(rule?.base_currency ?? 'BDT','base_currency');
@@ -510,8 +512,17 @@ export class CommercialService {
     };
   }
 
+  private async dateExpired(client: PoolClient, value: string | null) {
+    if (!value) return false;
+    const result = await client.query<{expired:boolean}>('SELECT $1::date < CURRENT_DATE AS expired', [value]);
+    return result.rows[0]?.expired ?? false;
+  }
+
   private async fxRate(client: PoolClient, tenantId: string, factoryId: string, currency: string, baseCurrency: string) {
-    if (currency === baseCurrency) return {rate:'1.0000000000',asOf:new Date().toISOString().slice(0,10),source:'IDENTITY'};
+    if (currency === baseCurrency) {
+      const today = await client.query<{as_of:string}>('SELECT CURRENT_DATE::text AS as_of');
+      return {rate:'1.0000000000',asOf:today.rows[0]?.as_of ?? '1970-01-01',source:'IDENTITY'};
+    }
     const result = await client.query(
       `SELECT rate_to_base::text AS rate,effective_on::text AS as_of,source FROM commercial_exchange_rates
        WHERE tenant_id=$1 AND factory_id=$2 AND base_currency=$3 AND quote_currency=$4 AND effective_on<=CURRENT_DATE

@@ -2,6 +2,7 @@ import {
   calculateCommercialLines,
   canTransitionQuotation,
   normalizeCurrency,
+  convertAmountToBase,
 } from './quotation-lifecycle';
 
 describe('commercial quotation lifecycle and decimal pricing', () => {
@@ -34,6 +35,10 @@ describe('commercial quotation lifecycle and decimal pricing', () => {
     expect(result.lines[0]?.line_tax).toBe('8.9063');
     expect(result.lines[0]?.line_total).toBe('127.6563');
     expect(result.totals.total_scaled).toBe(1276563n);
+  });
+
+  it('snapshots a foreign-currency quote into its base currency using the sourced FX rate', () => {
+    expect(convertAmountToBase(1250000n, '120.0000000000')).toBe('15000.0000');
   });
 
   it('rejects discounts above the active rule cap', () => {

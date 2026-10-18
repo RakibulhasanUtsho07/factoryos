@@ -30,13 +30,11 @@ BEGIN
     IF policy_count <> 1 THEN RAISE EXCEPTION 'Tenant isolation policy missing for %',table_name; END IF;
   END LOOP;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM permissions WHERE code IN (
+  IF (SELECT count(*) FROM permissions WHERE code IN (
       'quotations.read','quotations.write','quotations.approve','quotations.send',
       'quotations.accept','quotations.convert','quotation_rules.read','quotation_rules.write',
       'exchange_rates.read','exchange_rates.write'
-    ) GROUP BY 1 HAVING count(*) = 10
-  ) THEN
+    )) <> 10 THEN
     RAISE EXCEPTION 'Commercial permissions are incomplete';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='112_commercial_quotation_lifecycle') THEN
