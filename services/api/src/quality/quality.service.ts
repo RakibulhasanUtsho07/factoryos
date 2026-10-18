@@ -683,7 +683,7 @@ export class QualityService {
         update=await client.query("UPDATE quality_rework_orders SET status='CANCELLED',row_version=row_version+1,cancelled_by_user_id=$1,cancelled_at=clock_timestamp(),cancellation_reason=$2,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",[c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
       }else throw new BadRequestException('Unsupported rework transition');
       const version=Number(update.rows[0]?.row_version??0);if(!version)throw new ConflictException('Rework task changed during transition');
-      const event=await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action,reason,evidence,
+      await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action,reason,evidence,
         payload:{input_quantity:r.input_quantity,recovered_quantity:recovered,scrap_quantity:scrap,output_traceability_unit_id:outputId,follow_up_inspection_id:followupId},
         key,hash,correlation});
       if(dto.action==='COMPLETE'&&Number(recovered)>0){
@@ -709,7 +709,7 @@ export class QualityService {
       [c.tenantId,c.factoryId,input.reworkOrderId,input.version,input.from,input.to,input.command,input.reason,JSON.stringify(input.evidence),JSON.stringify(input.payload??{}),input.key,input.hash,c.userId,input.correlation]);
     const eventId=String(q.rows[0]?.id??'');if(!eventId)throw new Error('QUALITY_REWORK_EVENT_INSERT_FAILED');
     await this.auditOutbox(client,c,{inspectionId:undefined,defectId:input.defectId,action:'QUALITY_REWORK_EVENT',correlation:input.correlation,
-      payload:{rework_event_id:eventId,rework_order_id:input.reworkOrderId,version:input.version,from_status:input.from,to_status:input.to,command:input.command,reason,...(input.payload??{})},
+      payload:{rework_event_id:eventId,rework_order_id:input.reworkOrderId,version:input.version,from_status:input.from,to_status:input.to,command:input.command,reason:input.reason,...(input.payload??{})},
       aggregateType:'QUALITY_REWORK',aggregateId:input.reworkOrderId,outboxEvent:'QUALITY.REWORK_CHANGED'});
     return{eventId};
   }
