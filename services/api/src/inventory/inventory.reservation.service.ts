@@ -1470,6 +1470,144 @@ export class InventoryReservationService {
   }
 
   /**
+   * Posts accepted finished goods to the inventory ledger inside the caller's
+   * production transaction. Scrap remains production evidence and is never
+   * received into sellable inventory.
+   */
+  async postWorkOrderFinishedGoodsReceipt(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrderId: string;
+      workOrderNumber: string;
+      finishedItemId: string;
+      productionReportId: string;
+      goodQuantity: string;
+      scrapQuantity: string;
+      yieldPercentage: string;
+      cumulativeYieldPercentage: string;
+      correlationId: string;
+    },
+  ): Promise<{ movementId: string | null; quantityAfter: string | null }> {
+    const match = /^(\\d+)(?:\\.(\\d{1,4}))?$/.exec(String(input.goodQuantity).trim());
+    if (!match) {
+      throw new ConflictException('Finished-good output quantity must use non-negative four-decimal precision');
+    }
+    const whole = BigInt(match[1]!);
+    const fraction = BigInt((match[2] ?? '').padEnd(4, '0'));
+    const quantityUnits = whole * 10_000n + fraction;
+    if (quantityUnits === 0n) return { movementId: null, quantityAfter: null };
+    const quantity = `${whole}.${fraction.toString().padStart(4, '0')}`;
+
+    const itemResult = await client.query<{ id: string; unit: string; status: string }>(
+      `
+      SELECT id::text AS id, unit, status
+      FROM inventory_items
+      WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+      FOR UPDATE
+      `,
+      [input.finishedItemId, input.tenantId, input.factoryId],
+    );
+    const item = itemResult.rows[0];
+    if (!item) {
+      throw new ConflictException('The work order finished-good item is no longer available in this factory');
+    }
+    if (item.status !== 'ACTIVE') {
+      throw new ConflictException('Finished-good inventory item must remain active to receive production output');
+    }
+
+    // Force the aggregate receipt into the factory's default/UNASSIGNED bucket;
+    // a previous operation in this transaction must never leak a bin selection.
+    await client.query(`SELECT set_config('app.inventory_location_id', '', TRUE)`);
+    const balanceResult = await client.query<{ quantity_on_hand: string }>(
+      `
+      UPDATE inventory_stock_balances
+      SET quantity_on_hand = quantity_on_hand + $1::numeric,
+          version = version + 1,
+          updated_at = clock_timestamp()
+      WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+        AND quantity_on_hand + $1::numeric >= quantity_reserved
+      RETURNING quantity_on_hand::text AS quantity_on_hand
+      `,
+      [quantity, input.tenantId, input.factoryId, input.finishedItemId],
+    );
+    const balance = balanceResult.rows[0];
+    if (!balance) {
+      throw new ConflictException('Finished-good inventory balance is missing or inconsistent; output was not posted');
+    }
+
+    const movementKey = `production-output-receipt-${input.productionReportId}`;
+    const movementHash = this.hash({
+      kind: 'PRODUCTION_OUTPUT_RECEIPT',
+      tenantId: input.tenantId,
+      factoryId: input.factoryId,
+      workOrderId: input.workOrderId,
+      productionReportId: input.productionReportId,
+      finishedItemId: input.finishedItemId,
+      goodQuantity: quantity,
+    });
+    const movementResult = await client.query<MovementRow>(
+      `
+      INSERT INTO inventory_movements (
+        tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+        quantity_delta, quantity_after, input_quantity, input_unit_code,
+        conversion_rule_id, conversion_factor_numerator, conversion_factor_denominator,
+        conversion_rounding_mode, idempotency_key, request_hash, reference_type,
+        reference_id, notes, created_by_user_id, correlation_id
+      )
+      VALUES (
+        $1, $2, $3, NULL, 'RECEIPT', $4::numeric, $4::numeric, $5::numeric,
+        $4::numeric, $6, NULL, NULL, NULL, NULL, $7, $8,
+        'PRODUCTION_OUTPUT', $9::uuid, $10, $11, $12::uuid
+      )
+      RETURNING id::text AS id, quantity_after::text AS quantity_after
+      `,
+      [
+        input.tenantId, input.factoryId, input.finishedItemId, quantity,
+        balance.quantity_on_hand, item.unit, movementKey, movementHash,
+        input.productionReportId,
+        `Finished-good receipt for work order ${input.workOrderNumber}`,
+        input.userId, input.correlationId,
+      ],
+    );
+    const movement = movementResult.rows[0];
+    if (!movement) throw new Error('PRODUCTION_FINISHED_GOOD_RECEIPT_INSERT_FAILED');
+
+    await this.insertOutboxEvent(client, {
+      tenantId: input.tenantId,
+      factoryId: input.factoryId,
+      aggregateId: input.finishedItemId,
+      eventType: 'INVENTORY.STOCK_RECEIVED',
+      correlationId: input.correlationId,
+      userId: input.userId,
+      payload: {
+        purpose: 'PRODUCTION_OUTPUT',
+        work_order_id: input.workOrderId,
+        work_order_number: input.workOrderNumber,
+        production_report_id: input.productionReportId,
+        good_quantity: quantity,
+        scrap_quantity: input.scrapQuantity,
+        yield_percentage: input.yieldPercentage,
+        cumulative_yield_percentage: input.cumulativeYieldPercentage,
+        movement: {
+          id: movement.id,
+          item_id: input.finishedItemId,
+          location_id: null,
+          movement_type: 'RECEIPT',
+          quantity,
+          quantity_delta: quantity,
+          quantity_after: movement.quantity_after,
+          reference_type: 'PRODUCTION_OUTPUT',
+          reference_id: input.productionReportId,
+        },
+      },
+    });
+    return { movementId: movement.id, quantityAfter: movement.quantity_after };
+  }
+
+  /**
    * Releases or consumes every raw-material reservation attached to the work order.
    * Must run in the same transaction as the caller's terminal state transition.
    */
