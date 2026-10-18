@@ -302,8 +302,11 @@ BEGIN
     AND (NEW.lower_limit IS NULL OR NEW.upper_limit IS NULL) THEN
     RAISE EXCEPTION 'BETWEEN quality criterion requires lower_limit and upper_limit' USING ERRCODE = '23514';
   END IF;
-  IF NEW.value_type IN ('TEXT','BOOLEAN') AND NEW.comparison_operator NOT IN ('EQ','NE','IN','CONTAINS') THEN
-    RAISE EXCEPTION 'unsupported text/boolean quality criterion operator' USING ERRCODE = '23514';
+  IF NEW.value_type = 'TEXT' AND NEW.comparison_operator NOT IN ('EQ','NE','IN','CONTAINS') THEN
+    RAISE EXCEPTION 'unsupported text quality criterion operator' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.value_type = 'BOOLEAN' AND NEW.comparison_operator NOT IN ('EQ','NE') THEN
+    RAISE EXCEPTION 'boolean quality criteria support only EQ and NE' USING ERRCODE = '23514';
   END IF;
   IF NEW.value_type IN ('TEXT','BOOLEAN') AND NEW.comparison_operator IN ('EQ','NE','CONTAINS')
     AND COALESCE(NEW.target_value, '') = '' THEN

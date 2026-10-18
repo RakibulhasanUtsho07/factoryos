@@ -179,6 +179,7 @@ jobs:
             migrations/091_production_output_inventory_posting.sql
             migrations/092_order_production_report_work_order_routing_guard.sql
             migrations/093_quality_inspection_ncr_holds_disposition.sql
+            migrations/094_quality_inspection_plans_and_results.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

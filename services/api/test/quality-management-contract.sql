@@ -15,7 +15,10 @@ DECLARE
     'quality_dispositions',
     'quality_ncrs',
     'quality_ncr_actions',
-    'quality_audit_events'
+    'quality_audit_events',
+    'quality_inspection_plans',
+    'quality_inspection_plan_criteria',
+    'quality_inspection_results'
   ];
 BEGIN
   IF NOT EXISTS (
@@ -23,6 +26,13 @@ BEGIN
     WHERE version = '093_quality_inspection_ncr_holds_disposition'
   ) THEN
     RAISE EXCEPTION 'Quality management migration marker is missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version = '094_quality_inspection_plans_and_results'
+  ) THEN
+    RAISE EXCEPTION 'Versioned inspection-plan and measurement migration marker is missing';
   END IF;
 
   FOREACH t IN ARRAY required_tables LOOP
@@ -69,6 +79,21 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_ncrs'::regclass
       AND tgname='trg_quality_ncr_close_guard' AND NOT tgisinternal AND tgenabled <> 'D') THEN
     RAISE EXCEPTION 'Quality target, event, defect, hold, stock, production or CAPA lifecycle trigger is missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspection_plans'::regclass
+      AND tgname='trg_quality_inspection_plan_lifecycle' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspection_plan_criteria'::regclass
+      AND tgname='trg_quality_plan_criterion_guard' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspections'::regclass
+      AND tgname='trg_quality_bind_inspection_plan' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspection_results'::regclass
+      AND tgname='trg_quality_inspection_result_guard' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_inspections'::regclass
+      AND tgname='trg_quality_result_completeness' AND NOT tgisinternal AND tgenabled <> 'D')
+    OR to_regprocedure('factoryos_evaluate_quality_criterion(jsonb,text)') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_inspection_result()') IS NULL THEN
+    RAISE EXCEPTION 'Versioned inspection-plan, criterion and result guards are missing';
   END IF;
 
   IF to_regprocedure('factoryos_quality_sync_traceability_hold()') IS NULL
