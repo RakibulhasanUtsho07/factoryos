@@ -769,7 +769,8 @@ export class MaintenanceService {
   private async insertTasks(client:PoolClient,c:MaintenanceContext,workOrderId:string,checklist:MaintenanceChecklistEntryDto[],keyPrefix:string,defaultPrefix:string) {
     for(let i=0;i<checklist.length;i++){
       const item=checklist[i]!;
-      const taskFingerprint=this.hash({keyPrefix,sequence:i+1}).slice(0,48);\n      const taskKey=`maint-task:${taskFingerprint}`;
+      const taskFingerprint=this.hash({keyPrefix,sequence:i+1}).slice(0,48);
+      const taskKey=`maint-task:${taskFingerprint}`;
       const taskHash=this.hash({workOrderId,task:item,sequence:i+1});
       const created=await client.query<Row>(
         `INSERT INTO maintenance_work_order_tasks (
