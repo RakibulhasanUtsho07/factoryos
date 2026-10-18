@@ -126,10 +126,18 @@ export class FinanceService {
     const endpointUrl = this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
     const secretReference = this.secretReference(dto.secret_reference ?? null);
     const configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
+    const displayName = dto.display_name.trim();
+    const sourceSystem = dto.source_system.trim();
+    if (displayName.length < 2 || displayName.length > 160) {
+      throw new BadRequestException('display_name must contain 2 to 160 non-space characters');
+    }
+    if (sourceSystem.length < 2 || sourceSystem.length > 120) {
+      throw new BadRequestException('source_system must contain 2 to 120 non-space characters');
+    }
     const requestHash = financeRequestHash({
       connector_code: connectorCode,
-      display_name: dto.display_name.trim(),
-      source_system: dto.source_system.trim(),
+      display_name: displayName,
+      source_system: sourceSystem,
       domain: dto.domain,
       integration_mode: dto.integration_mode,
       endpoint_url: endpointUrl,
@@ -168,7 +176,7 @@ export class FinanceService {
           'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
           'endpoint_url,configuration,(secret_reference IS NOT NULL) AS has_secret_reference',
           [
-            id, tenantId, factoryId, connectorCode, dto.display_name.trim(), dto.source_system.trim(),
+            id, tenantId, factoryId, connectorCode, displayName, sourceSystem,
             dto.domain, dto.integration_mode, endpointUrl, secretReference, JSON.stringify(configuration),
             idempotencyKey, requestHash, userId,
           ],
@@ -328,6 +336,8 @@ export class FinanceService {
     ctx: FinanceEventContext,
   ) {
     const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const batchReference = dto.external_batch_ref.trim();
+    if (!batchReference) throw new BadRequestException('external_batch_ref must not be blank');
     if (!Array.isArray(dto.facts) || dto.facts.length < 1 || dto.facts.length > 500) {
       throw new BadRequestException('A finance batch must contain 1 to 500 facts');
     }
@@ -337,7 +347,7 @@ export class FinanceService {
       throw new BadRequestException('A finance batch cannot repeat external_fact_id values');
     }
     const batchHash = financeRequestHash({
-      external_batch_ref: dto.external_batch_ref.trim(),
+      external_batch_ref: batchReference,
       source_occurred_at: dto.source_occurred_at ?? null,
       facts: normalizedFacts,
     });
@@ -388,7 +398,7 @@ export class FinanceService {
           throw new ConflictException('Financial facts may only be ingested through an approved active connector');
         }
 
-        const batchRef = dto.external_batch_ref.trim();
+        const batchRef = batchReference;
         const priorBatch = await client.query<{ id: string }>(
           'SELECT id::text FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_batch_ref=$4 FOR UPDATE',
           [tenantId, factoryId, connectorId, batchRef],
@@ -549,6 +559,9 @@ export class FinanceService {
         ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0))::text AS revenue_variance,' +
         ' ((COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0))-' +
         ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0)))::text AS gross_margin_variance,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_CONTRIBUTION_COST\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_CONTRIBUTION_COST\'),0))::text AS contribution_cost_variance,' +
+        ' ((COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_CONTRIBUTION_COST\'),0))-' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_CONTRIBUTION_COST\'),0)))::text AS contribution_margin_variance,' +
         ' CASE WHEN COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)=0 THEN NULL ' +
         ' ELSE ROUND((COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0))/' +
         ' NULLIF(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)*100,4)::text END AS actual_gross_margin_percent ' +

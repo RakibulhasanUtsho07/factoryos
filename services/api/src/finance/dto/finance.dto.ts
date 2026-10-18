@@ -32,10 +32,12 @@ export class CreateFinanceConnectorDto {
 
   @IsString()
   @Length(2, 160)
+  @Matches(/\S/)
   display_name!: string;
 
   @IsString()
   @Length(2, 120)
+  @Matches(/\S/)
   source_system!: string;
 
   @IsString()
@@ -107,10 +109,12 @@ export class FinanceFactReconciliationInputDto {
 export class FinanceFactInputDto {
   @IsString()
   @Length(1, 200)
+  @Matches(/\S/)
   external_fact_id!: string;
 
   @IsString()
   @Length(1, 200)
+  @Matches(/\S/)
   source_fact_key!: string;
 
   @IsString()
@@ -123,6 +127,7 @@ export class FinanceFactInputDto {
 
   @IsString()
   @Length(1, 240)
+  @Matches(/\S/)
   source_record_ref!: string;
 
   @IsDateString()
@@ -201,6 +206,7 @@ export class FinanceFactInputDto {
 export class IngestFinanceFactsDto {
   @IsString()
   @Length(1, 200)
+  @Matches(/\S/)
   external_batch_ref!: string;
 
   @IsOptional()

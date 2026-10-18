@@ -100,6 +100,7 @@ CREATE TABLE finance_connectors (
  CONSTRAINT chk_finance_connector_mode CHECK(integration_mode IN ('MANUAL','REST_API','WEBHOOK','FILE_IMPORT')),
  CONSTRAINT chk_finance_connector_status CHECK(status IN ('PENDING_APPROVAL','ACTIVE','PAUSED','REJECTED')),
  CONSTRAINT chk_finance_connector_row_version CHECK(row_version > 0),
+ CONSTRAINT chk_finance_connector_idempotency CHECK(length(btrim(idempotency_key))>0),
  CONSTRAINT chk_finance_connector_request_hash CHECK(request_hash ~ '^[0-9a-f]{64}$'),
  CONSTRAINT chk_finance_connector_endpoint CHECK(endpoint_url IS NULL OR (endpoint_url ~ '^https://' AND endpoint_url !~* '[?&](password|token|secret|credential|api[_-]?key|authorization|private[_-]?key|client[_-]?secret)=')),
  CONSTRAINT chk_finance_connector_secret_ref CHECK(secret_reference IS NULL OR secret_reference ~ '^(vault|secret)://[A-Za-z0-9._/-]+$'),
@@ -135,6 +136,7 @@ CREATE TABLE finance_connector_runs (
  CONSTRAINT uq_finance_run_scope UNIQUE(id,tenant_id,factory_id,connector_id),
  CONSTRAINT uq_finance_run_idempotency UNIQUE(tenant_id,factory_id,connector_id,idempotency_key),
  CONSTRAINT uq_finance_run_batch UNIQUE(tenant_id,factory_id,connector_id,external_batch_ref),
+ CONSTRAINT chk_finance_run_references CHECK(length(btrim(external_batch_ref))>0 AND length(btrim(idempotency_key))>0),
  CONSTRAINT fk_finance_run_connector FOREIGN KEY(connector_id,tenant_id,factory_id)
    REFERENCES finance_connectors(id,tenant_id,factory_id) ON DELETE RESTRICT,
  CONSTRAINT fk_finance_run_actor FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE RESTRICT,
@@ -262,6 +264,7 @@ CREATE TABLE finance_fact_reconciliations (
    source_quantity>=0 AND expected_quantity>=0 AND source_rate>=0 AND expected_rate>=0
    AND quantity_tolerance>=0 AND rate_tolerance>=0
  ),
+ CONSTRAINT chk_finance_reconciliation_references CHECK(length(btrim(expected_source_type))>0 AND length(btrim(expected_source_ref))>0),
  CONSTRAINT chk_finance_reconciliation_status CHECK(match_status IN ('MATCHED','MISMATCH')),
  CONSTRAINT chk_finance_reconciliation_review CHECK(
    (review_status='OPEN' AND reviewed_by_user_id IS NULL AND reviewed_at IS NULL AND review_reason IS NULL)
@@ -290,6 +293,7 @@ CREATE TABLE finance_connector_history (
  CONSTRAINT fk_finance_connector_history_actor FOREIGN KEY(actor_user_id)
    REFERENCES users(id) ON DELETE RESTRICT,
  CONSTRAINT chk_finance_connector_history_action CHECK(action IN ('CREATED','APPROVED','REJECTED','PAUSED')),
+ CONSTRAINT chk_finance_connector_history_reason CHECK(length(btrim(reason))>=8),
  CONSTRAINT chk_finance_connector_history_details CHECK(jsonb_typeof(details)='object')
 );
 CREATE INDEX idx_finance_connector_history_scope_time
@@ -324,6 +328,10 @@ BEGIN
  IF NEW.row_version<>OLD.row_version+1 THEN
    RAISE EXCEPTION 'Finance connector row version must advance exactly once'
      USING ERRCODE='40001';
+ END IF;
+ IF length(btrim(COALESCE(NEW.decision_reason,'')))<8 THEN
+   RAISE EXCEPTION 'Finance connector decisions require an explanatory reason'
+     USING ERRCODE='23514';
  END IF;
  IF OLD.status='PENDING_APPROVAL' AND NEW.status IN ('ACTIVE','REJECTED') THEN
    IF NEW.reviewed_by_user_id IS DISTINCT FROM factoryos_current_user_id()
