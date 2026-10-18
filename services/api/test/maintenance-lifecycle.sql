@@ -14,12 +14,16 @@ DECLARE
   v_plan UUID := gen_random_uuid();
   v_work_order UUID := gen_random_uuid();
   v_task UUID := gen_random_uuid();
+  v_nonmember UUID := gen_random_uuid();
   v_hash CHAR(64) := encode(digest('maintenance lifecycle behavioural contract','sha256'),'hex');
   v_corr UUID;
 BEGIN
   IF v_actor IS NULL THEN
     RAISE EXCEPTION 'maintenance CI actor context was not established';
   END IF;
+
+  INSERT INTO users (id,display_name,status)
+  VALUES (v_nonmember,'Maintenance CI non-member','ACTIVE');
 
   -- Register two assets and attach auditable creation events.
   v_corr := gen_random_uuid();
@@ -88,10 +92,32 @@ BEGIN
     '{}'::jsonb,'ci-maint-pm-event',v_hash,v_actor,v_corr
   );
   BEGIN
+    UPDATE maintenance_pm_plans SET status='ACTIVE',approved_by_user_id=v_nonmember,approved_at=clock_timestamp(),
+      row_version=2,updated_by_user_id=v_actor,updated_at=clock_timestamp()
+    WHERE id=v_plan AND tenant_id=v_tenant AND factory_id=v_factory;
+    RAISE EXCEPTION 'expected PM approver scope guard to reject a non-member' USING ERRCODE='P0001';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+  BEGIN
     UPDATE maintenance_pm_plans SET status='ACTIVE',approved_by_user_id=v_actor,approved_at=clock_timestamp(),
       row_version=2,updated_by_user_id=v_actor,updated_at=clock_timestamp()
     WHERE id=v_plan AND tenant_id=v_tenant AND factory_id=v_factory;
     RAISE EXCEPTION 'expected PM maker-checker to reject self-approval' USING ERRCODE='P0001';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO maintenance_work_orders (
+      tenant_id,factory_id,work_order_number,work_order_type,asset_id,priority,status,title,description,
+      assigned_to_user_id,row_version,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
+    ) VALUES (
+      v_tenant,v_factory,'CI-MAINT-WO-OUT-OF-TENANT','BREAKDOWN',v_child,'HIGH','PLANNED',
+      'Invalid assignee test','This insert must be rejected',v_nonmember,1,'ci-maint-wo-nonmember',v_hash,
+      v_actor,v_actor,gen_random_uuid()
+    );
+    RAISE EXCEPTION 'expected the work-order assignee guard to reject a non-member' USING ERRCODE='P0001';
   EXCEPTION WHEN check_violation THEN
     NULL;
   END;
