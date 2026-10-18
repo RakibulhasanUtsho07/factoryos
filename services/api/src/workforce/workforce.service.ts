@@ -75,7 +75,7 @@ export class WorkforceService {
            FROM roles r
            JOIN role_permissions rp ON rp.role_id=r.id
            JOIN permissions p ON p.id=rp.permission_id AND p.code='workforce.self.read'
-           WHERE r.tenant_id=$1 AND r.code='WORKER'
+           WHERE r.tenant_id=$1 AND r.code='WORKER_SELF_SERVICE'
            LIMIT 1`,
           [c.tenantId],
         );
