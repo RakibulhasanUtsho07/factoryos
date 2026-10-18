@@ -1058,193 +1058,20 @@ export class QualityService {
     }
     const cols=['tenant_id','factory_id','defect_id','link_type',...Object.keys(fields),'affected_quantity','link_source','notes','evidence','idempotency_key','request_hash','created_by_user_id','correlation_id'];
     const vals:unknown[]=[c.tenantId,c.factoryId,input.defectId,input.linkType,...Object.values(fields),input.quantity,input.source,input.notes,JSON.stringify(input.evidence),input.key,hash,c.userId,input.correlation];
-    const placeholders=cols.map((name,index)=>name==='evidence'?'
-    let q;
-    if(type==='INVENTORY_ITEM'){
-      q=await client.query("SELECT id::text AS id FROM inventory_items WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Inventory item was not found in this factory');
-      return{inventory_item_id:String(q.rows[0].id),traceability_unit_id:null,work_order_id:null};
-    }
-    if(type==='TRACEABILITY_UNIT'){
-      q=await client.query("SELECT id::text AS id,inventory_item_id::text AS inventory_item_id FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Traceability unit was not found in this factory');
-      return{inventory_item_id:q.rows[0].inventory_item_id?String(q.rows[0].inventory_item_id):null,traceability_unit_id:String(q.rows[0].id),work_order_id:null};
-    }
-    if(type==='GOODS_RECEIPT_LINE'){
-      q=await client.query("SELECT l.id::text AS id,l.inventory_item_id::text AS inventory_item_id FROM goods_receipt_lines l JOIN goods_receipts g ON g.id=l.goods_receipt_id AND g.tenant_id=l.tenant_id AND g.factory_id=l.factory_id WHERE l.id=$1 AND l.tenant_id=$2 AND l.factory_id=$3 AND g.status='POSTED'",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Posted GRN line was not found in this factory');
-      return{inventory_item_id:q.rows[0].inventory_item_id?String(q.rows[0].inventory_item_id):null,traceability_unit_id:null,work_order_id:null};
-    }
-    if(type==='PRODUCTION_REPORT'){
-      q=await client.query("SELECT r.id::text AS id,COALESCE(wo.finished_item_id,ol.inventory_item_id)::text AS inventory_item_id FROM order_production_reports r JOIN order_lines ol ON ol.id=r.order_line_id AND ol.order_id=r.order_id AND ol.tenant_id=r.tenant_id AND ol.factory_id=r.factory_id LEFT JOIN work_orders wo ON wo.id=r.work_order_id AND wo.tenant_id=r.tenant_id AND wo.factory_id=r.factory_id WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Production report was not found in this factory');
-      return{inventory_item_id:q.rows[0].inventory_item_id?String(q.rows[0].inventory_item_id):null,traceability_unit_id:null,work_order_id:null};
-    }
-    if(type==='WORK_ORDER'){
-      q=await client.query("SELECT id::text AS id FROM work_orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Work order was not found in this factory');
-      return{inventory_item_id:null,traceability_unit_id:null,work_order_id:String(q.rows[0].id)};
-    }
-    throw new BadRequestException('Unsupported quality target type');
-  }
-
-  private async createNcr(client:PoolClient,c:QualityContext,inspectionId:string,severity:string,summary:string,correlation:string){
-    const existing=await client.query("SELECT id::text AS id,status,ncr_number FROM quality_ncrs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
-      [inspectionId,c.tenantId,c.factoryId]);
-    if(existing.rows[0]){
-      const existingId=String(existing.rows[0].id);
-      await this.auditOutbox(client,c,{inspectionId,ncrId:existingId,action:'NCR_REASSESSMENT_RECORDED',correlation,
-        aggregateType:'QUALITY_NCR',aggregateId:existingId,outboxEvent:'QUALITY.NCR_CHANGED',
-        payload:{ncr_number:existing.rows[0].ncr_number,status:existing.rows[0].status,severity,summary}});
-      return existingId;
-    }
-    const ncrNumber='NCR-'+randomUUID().replace(/-/g,'').slice(0,12).toUpperCase();
-    const q=await client.query("INSERT INTO quality_ncrs (tenant_id,factory_id,inspection_id,ncr_number,severity,title,summary,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::uuid) RETURNING id::text AS id",
-      [c.tenantId,c.factoryId,inspectionId,ncrNumber,severity,'Quality non-conformance',summary,c.userId,correlation]);
-    const id=String(q.rows[0]?.id??'');if(!id)throw new Error('QUALITY_NCR_INSERT_FAILED');
-    await this.auditOutbox(client,c,{inspectionId,ncrId:id,action:'NCR_CREATED',correlation,payload:{ncr_number:ncrNumber,severity,summary},aggregateType:'QUALITY_NCR',aggregateId:id,outboxEvent:'QUALITY.NCR_CHANGED'});
-  }
-
-  private async inspectionEvent(client:PoolClient,c:QualityContext,i:{id:string;version:number;from:string|null;to:string;action:string;reason:string|null;hash:string;correlation:string;key:string}){
-    await client.query("INSERT INTO quality_inspection_events (tenant_id,factory_id,inspection_id,version,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid)",
-      [c.tenantId,c.factoryId,i.id,i.version,i.from,i.to,i.action,i.reason,i.key,i.hash,c.userId,i.correlation]);
-  }
-
-  private async updateDefect(client:PoolClient,c:QualityContext,id:string,expected:number,status:string,reason:string,correlation:string,dispositionId?:string){
-    const found=await client.query("SELECT status,row_version::int AS row_version FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",[id,c.tenantId,c.factoryId]);
-    const row=found.rows[0];if(!row)throw new NotFoundException('Quality defect was not found');
-    if(Number(row.row_version)!==expected)throw new ConflictException('Quality defect version is stale');
-    if(row.status!=='OPEN' && !(row.status==='REWORK' && status==='RESOLVED'))throw new ConflictException('Only open defects or rework defects being resolved can be updated');
-    const upd=await client.query("UPDATE quality_defects SET status=$1,row_version=row_version+1,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",
-      [status,c.userId,id,c.tenantId,c.factoryId,expected]);
-    const version=Number(upd.rows[0]?.row_version??0);if(!version)throw new ConflictException('Quality defect changed during disposition');
-    const hash=this.hash({defect_id:id,from_status:row.status,to_status:status,reason,disposition_id:dispositionId??null});
-    await client.query("INSERT INTO quality_defect_events (tenant_id,factory_id,defect_id,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid)",
-      [c.tenantId,c.factoryId,id,row.status,status,status==='RESOLVED'?'RESOLVED':'DISPOSITIONED',reason,'quality-defect-transition:'+id+':'+version,hash,c.userId,correlation]);
-    await this.auditOutbox(client,c,{defectId:id,dispositionId,action:'DEFECT_'+status,correlation,payload:{from_status:row.status,to_status:status,reason}});
-  }
-
-  private async auditOutbox(client:PoolClient,c:QualityContext,i:{inspectionId?:string;defectId?:string;holdId?:string|null;dispositionId?:string|null;ncrId?:string;action:string;correlation:string;payload:Record<string,unknown>;aggregateType?:string;aggregateId?:string;outboxEvent?:string}){
-    await client.query("INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,hold_id,disposition_id,ncr_id,action_type,payload,actor_user_id,correlation_id) VALUES ($1,$2,$3::uuid,$4::uuid,$5::uuid,$6::uuid,$7::uuid,$8,$9::jsonb,$10,$11::uuid)",
-      [c.tenantId,c.factoryId,i.inspectionId??null,i.defectId??null,i.holdId??null,i.dispositionId??null,i.ncrId??null,i.action,JSON.stringify(i.payload),c.userId,i.correlation]);
-    const aggregateType=i.aggregateType??'QUALITY_INSPECTION',aggregateId=i.aggregateId??i.inspectionId;
-    if(!aggregateId)throw new Error('QUALITY_OUTBOX_AGGREGATE_REQUIRED');
-    await client.query("INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",
-      [c.tenantId,c.factoryId,aggregateType,aggregateId,i.outboxEvent??'QUALITY.INSPECTION_CHANGED',JSON.stringify({...i.payload,action:i.action,correlation_id:i.correlation})]);
-  }
-
-  private async lockKey(client:PoolClient,c:QualityContext,namespace:string,key:string){
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",['quality:'+c.tenantId+':'+c.factoryId+':'+namespace+':'+key]);
-  }
-  private key(raw:string|null){const k=raw?.trim()??'';if(!k||k.length>200)throw new BadRequestException('Idempotency-Key is required and must be at most 200 characters');return k;}
-  private text(value:string|undefined,field:string,max:number){const v=value?.trim()??'';if(!v||v.length>max)throw new BadRequestException(field+' is required and must contain at most '+max+' characters');return v;}
-  private quantity(value:number,field:string){if(!Number.isFinite(value)||value<=0||Math.abs(value*10000-Math.round(value*10000))>0.000001)throw new BadRequestException(field+' must be positive with at most four decimal places');return value.toFixed(4);}
-  private units(value:string|number){const n=Number(value);if(!Number.isFinite(n)||n<0)throw new BadRequestException('Inventory quantity is invalid');return BigInt(Math.round(n*10000));}
-  private jsonObject(value?:Record<string,unknown>){if(value==null)return{};if(typeof value!=='object'||Array.isArray(value))throw new BadRequestException('evidence must be a JSON object');return value;}
-  private uuid(value:string,field:string){if(!isUUID(value))throw new BadRequestException(field+' must be a UUID');}
-  private uuidValue(value:string,field:string){this.uuid(value,field);return value.toLowerCase();}
-  private validateScope(c:QualityContext){this.uuid(c.userId,'userId');this.uuid(c.tenantId,'tenantId');this.uuid(c.factoryId,'factoryId');}
-  private hash(value:unknown){return createHash('sha256').update(JSON.stringify(value)).digest('hex');}
-  private correlation(c:QualityContext){if(c.traceId&&isUUID(c.traceId))return c.traceId;if(c.requestId&&isUUID(c.requestId))return c.requestId;return randomUUID();}
-}
-+(index+1)+'::jsonb':'
-    let q;
-    if(type==='INVENTORY_ITEM'){
-      q=await client.query("SELECT id::text AS id FROM inventory_items WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Inventory item was not found in this factory');
-      return{inventory_item_id:String(q.rows[0].id),traceability_unit_id:null,work_order_id:null};
-    }
-    if(type==='TRACEABILITY_UNIT'){
-      q=await client.query("SELECT id::text AS id,inventory_item_id::text AS inventory_item_id FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Traceability unit was not found in this factory');
-      return{inventory_item_id:q.rows[0].inventory_item_id?String(q.rows[0].inventory_item_id):null,traceability_unit_id:String(q.rows[0].id),work_order_id:null};
-    }
-    if(type==='GOODS_RECEIPT_LINE'){
-      q=await client.query("SELECT l.id::text AS id,l.inventory_item_id::text AS inventory_item_id FROM goods_receipt_lines l JOIN goods_receipts g ON g.id=l.goods_receipt_id AND g.tenant_id=l.tenant_id AND g.factory_id=l.factory_id WHERE l.id=$1 AND l.tenant_id=$2 AND l.factory_id=$3 AND g.status='POSTED'",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Posted GRN line was not found in this factory');
-      return{inventory_item_id:q.rows[0].inventory_item_id?String(q.rows[0].inventory_item_id):null,traceability_unit_id:null,work_order_id:null};
-    }
-    if(type==='PRODUCTION_REPORT'){
-      q=await client.query("SELECT r.id::text AS id,COALESCE(wo.finished_item_id,ol.inventory_item_id)::text AS inventory_item_id FROM order_production_reports r JOIN order_lines ol ON ol.id=r.order_line_id AND ol.order_id=r.order_id AND ol.tenant_id=r.tenant_id AND ol.factory_id=r.factory_id LEFT JOIN work_orders wo ON wo.id=r.work_order_id AND wo.tenant_id=r.tenant_id AND wo.factory_id=r.factory_id WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Production report was not found in this factory');
-      return{inventory_item_id:q.rows[0].inventory_item_id?String(q.rows[0].inventory_item_id):null,traceability_unit_id:null,work_order_id:null};
-    }
-    if(type==='WORK_ORDER'){
-      q=await client.query("SELECT id::text AS id FROM work_orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[id,c.tenantId,c.factoryId]);
-      if(!q.rows[0])throw new NotFoundException('Work order was not found in this factory');
-      return{inventory_item_id:null,traceability_unit_id:null,work_order_id:String(q.rows[0].id)};
-    }
-    throw new BadRequestException('Unsupported quality target type');
-  }
-
-  private async createNcr(client:PoolClient,c:QualityContext,inspectionId:string,severity:string,summary:string,correlation:string){
-    const existing=await client.query("SELECT id::text AS id,status,ncr_number FROM quality_ncrs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
-      [inspectionId,c.tenantId,c.factoryId]);
-    if(existing.rows[0]){
-      const existingId=String(existing.rows[0].id);
-      await this.auditOutbox(client,c,{inspectionId,ncrId:existingId,action:'NCR_REASSESSMENT_RECORDED',correlation,
-        aggregateType:'QUALITY_NCR',aggregateId:existingId,outboxEvent:'QUALITY.NCR_CHANGED',
-        payload:{ncr_number:existing.rows[0].ncr_number,status:existing.rows[0].status,severity,summary}});
-      return existingId;
-    }
-    const ncrNumber='NCR-'+randomUUID().replace(/-/g,'').slice(0,12).toUpperCase();
-    const q=await client.query("INSERT INTO quality_ncrs (tenant_id,factory_id,inspection_id,ncr_number,severity,title,summary,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::uuid) RETURNING id::text AS id",
-      [c.tenantId,c.factoryId,inspectionId,ncrNumber,severity,'Quality non-conformance',summary,c.userId,correlation]);
-    const id=String(q.rows[0]?.id??'');if(!id)throw new Error('QUALITY_NCR_INSERT_FAILED');
-    await this.auditOutbox(client,c,{inspectionId,ncrId:id,action:'NCR_CREATED',correlation,payload:{ncr_number:ncrNumber,severity,summary},aggregateType:'QUALITY_NCR',aggregateId:id,outboxEvent:'QUALITY.NCR_CHANGED'});
-  }
-
-  private async inspectionEvent(client:PoolClient,c:QualityContext,i:{id:string;version:number;from:string|null;to:string;action:string;reason:string|null;hash:string;correlation:string;key:string}){
-    await client.query("INSERT INTO quality_inspection_events (tenant_id,factory_id,inspection_id,version,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid)",
-      [c.tenantId,c.factoryId,i.id,i.version,i.from,i.to,i.action,i.reason,i.key,i.hash,c.userId,i.correlation]);
-  }
-
-  private async updateDefect(client:PoolClient,c:QualityContext,id:string,expected:number,status:string,reason:string,correlation:string,dispositionId?:string){
-    const found=await client.query("SELECT status,row_version::int AS row_version FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",[id,c.tenantId,c.factoryId]);
-    const row=found.rows[0];if(!row)throw new NotFoundException('Quality defect was not found');
-    if(Number(row.row_version)!==expected)throw new ConflictException('Quality defect version is stale');
-    if(row.status!=='OPEN' && !(row.status==='REWORK' && status==='RESOLVED'))throw new ConflictException('Only open defects or rework defects being resolved can be updated');
-    const upd=await client.query("UPDATE quality_defects SET status=$1,row_version=row_version+1,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",
-      [status,c.userId,id,c.tenantId,c.factoryId,expected]);
-    const version=Number(upd.rows[0]?.row_version??0);if(!version)throw new ConflictException('Quality defect changed during disposition');
-    const hash=this.hash({defect_id:id,from_status:row.status,to_status:status,reason,disposition_id:dispositionId??null});
-    await client.query("INSERT INTO quality_defect_events (tenant_id,factory_id,defect_id,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid)",
-      [c.tenantId,c.factoryId,id,row.status,status,status==='RESOLVED'?'RESOLVED':'DISPOSITIONED',reason,'quality-defect-transition:'+id+':'+version,hash,c.userId,correlation]);
-    await this.auditOutbox(client,c,{defectId:id,dispositionId,action:'DEFECT_'+status,correlation,payload:{from_status:row.status,to_status:status,reason}});
-  }
-
-  private async auditOutbox(client:PoolClient,c:QualityContext,i:{inspectionId?:string;defectId?:string;holdId?:string|null;dispositionId?:string|null;ncrId?:string;action:string;correlation:string;payload:Record<string,unknown>;aggregateType?:string;aggregateId?:string;outboxEvent?:string}){
-    await client.query("INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,hold_id,disposition_id,ncr_id,action_type,payload,actor_user_id,correlation_id) VALUES ($1,$2,$3::uuid,$4::uuid,$5::uuid,$6::uuid,$7::uuid,$8,$9::jsonb,$10,$11::uuid)",
-      [c.tenantId,c.factoryId,i.inspectionId??null,i.defectId??null,i.holdId??null,i.dispositionId??null,i.ncrId??null,i.action,JSON.stringify(i.payload),c.userId,i.correlation]);
-    const aggregateType=i.aggregateType??'QUALITY_INSPECTION',aggregateId=i.aggregateId??i.inspectionId;
-    if(!aggregateId)throw new Error('QUALITY_OUTBOX_AGGREGATE_REQUIRED');
-    await client.query("INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",
-      [c.tenantId,c.factoryId,aggregateType,aggregateId,i.outboxEvent??'QUALITY.INSPECTION_CHANGED',JSON.stringify({...i.payload,action:i.action,correlation_id:i.correlation})]);
-  }
-
-  private async lockKey(client:PoolClient,c:QualityContext,namespace:string,key:string){
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",['quality:'+c.tenantId+':'+c.factoryId+':'+namespace+':'+key]);
-  }
-  private key(raw:string|null){const k=raw?.trim()??'';if(!k||k.length>200)throw new BadRequestException('Idempotency-Key is required and must be at most 200 characters');return k;}
-  private text(value:string|undefined,field:string,max:number){const v=value?.trim()??'';if(!v||v.length>max)throw new BadRequestException(field+' is required and must contain at most '+max+' characters');return v;}
-  private quantity(value:number,field:string){if(!Number.isFinite(value)||value<=0||Math.abs(value*10000-Math.round(value*10000))>0.000001)throw new BadRequestException(field+' must be positive with at most four decimal places');return value.toFixed(4);}
-  private units(value:string|number){const n=Number(value);if(!Number.isFinite(n)||n<0)throw new BadRequestException('Inventory quantity is invalid');return BigInt(Math.round(n*10000));}
-  private jsonObject(value?:Record<string,unknown>){if(value==null)return{};if(typeof value!=='object'||Array.isArray(value))throw new BadRequestException('evidence must be a JSON object');return value;}
-  private uuid(value:string,field:string){if(!isUUID(value))throw new BadRequestException(field+' must be a UUID');}
-  private uuidValue(value:string,field:string){this.uuid(value,field);return value.toLowerCase();}
-  private validateScope(c:QualityContext){this.uuid(c.userId,'userId');this.uuid(c.tenantId,'tenantId');this.uuid(c.factoryId,'factoryId');}
-  private hash(value:unknown){return createHash('sha256').update(JSON.stringify(value)).digest('hex');}
-  private correlation(c:QualityContext){if(c.traceId&&isUUID(c.traceId))return c.traceId;if(c.requestId&&isUUID(c.requestId))return c.requestId;return randomUUID();}
-}
-+(index+1)).join(',');
+    const placeholders=cols.map((name,index)=>name==='evidence'?'$'+(index+1)+'::jsonb':'$'+(index+1)).join(',');
     const ins=await client.query("INSERT INTO quality_defect_links ("+cols.join(',')+") VALUES ("+placeholders+") RETURNING id::text AS id",vals);
-    const id=String(ins.rows[0]?.id??'');if(!id)throw new Error('QUALITY_DEFECT_LINK_INSERT_FAILED');
-    const inspection=await client.query("SELECT inspection_id::text AS inspection_id FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",[input.defectId,c.tenantId,c.factoryId]);
-    await this.auditOutbox(client,c,{inspectionId:inspection.rows[0]?.inspection_id?String(inspection.rows[0].inspection_id):undefined,defectId:input.defectId,
-      action:'DEFECT_TRACEABILITY_LINKED',correlation:input.correlation,
-      payload:{link_id:id,link_type:input.linkType,target_id:input.targetId,link_source:input.source,affected_quantity:input.quantity,notes:input.notes},
-      aggregateType:'QUALITY_DEFECT',aggregateId:input.defectId,outboxEvent:'QUALITY.DEFECT_TRACEABILITY_LINKED'});
-    return{id,replayed:false};
+    const linkId=String(ins.rows[0]?.id??'');
+    if(!linkId)throw new Error('QUALITY_DEFECT_LINK_INSERT_FAILED');
+    const defect=await client.query("SELECT inspection_id::text AS inspection_id FROM quality_defects WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      [input.defectId,c.tenantId,c.factoryId]);
+    await this.auditOutbox(client,c,{
+      inspectionId:defect.rows[0]?.inspection_id?String(defect.rows[0].inspection_id):undefined,
+      defectId:input.defectId,action:'DEFECT_TRACEABILITY_LINKED',correlation:input.correlation,
+      payload:{link_id:linkId,link_type:input.linkType,target_id:input.targetId,link_source:input.source,
+        affected_quantity:input.quantity,notes:input.notes},
+      aggregateType:'QUALITY_DEFECT',aggregateId:input.defectId,outboxEvent:'QUALITY.DEFECT_TRACEABILITY_LINKED',
+    });
+    return{id:linkId,replayed:false};
   }
 
   private async resolveTarget(client:PoolClient,c:QualityContext,type:string,id:string):Promise<TargetBinding>{

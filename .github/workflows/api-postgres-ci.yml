@@ -181,9 +181,9 @@ jobs:
             migrations/093_quality_inspection_ncr_holds_disposition.sql
             migrations/094_quality_inspection_plans_and_results.sql
             migrations/095_quality_ncr_resolution_gate.sql
-            migrations/098_quality_rework_execution_and_verification.sql
-            migrations/097_quality_defect_order_traceability.sql
             migrations/096_quality_capa_action_lifecycle.sql
+            migrations/097_quality_defect_order_traceability.sql
+            migrations/098_quality_rework_execution_and_verification.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
