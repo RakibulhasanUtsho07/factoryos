@@ -164,6 +164,13 @@ BEGIN
     IF length(btrim(COALESCE(NEW.last_change_reason,'')))=0 THEN
       RAISE EXCEPTION 'Staffing transitions require an auditable reason' USING ERRCODE='23514';
     END IF;
+    IF NEW.status='COMPLETED' AND NOT EXISTS (
+      SELECT 1 FROM workforce_attendance_events e
+      WHERE e.shift_assignment_id=OLD.id AND e.tenant_id=OLD.tenant_id AND e.factory_id=OLD.factory_id
+        AND e.event_type='CLOCK_OUT'
+    ) THEN
+      RAISE EXCEPTION 'A shift cannot be completed before a clock-out event is captured' USING ERRCODE='23514';
+    END IF;
     IF NEW.status='CANCELLED' AND EXISTS (
       SELECT 1 FROM workforce_attendance_events e
       WHERE e.shift_assignment_id=OLD.id AND e.tenant_id=OLD.tenant_id AND e.factory_id=OLD.factory_id
@@ -203,8 +210,8 @@ BEGIN
     AND a.tenant_id=NEW.tenant_id
     AND a.factory_id=NEW.factory_id
   FOR UPDATE OF a,w;
-  IF NOT FOUND OR v_assignment.status='CANCELLED' THEN
-    RAISE EXCEPTION 'Attendance requires an existing non-cancelled worker assignment' USING ERRCODE='23514';
+  IF NOT FOUND OR v_assignment.status NOT IN ('CONFIRMED','COMPLETED') THEN
+    RAISE EXCEPTION 'Attendance requires a confirmed or completed worker assignment' USING ERRCODE='23514';
   END IF;
   IF v_assignment.worker_status <> 'ACTIVE' THEN
     RAISE EXCEPTION 'Attendance cannot be captured for an inactive worker' USING ERRCODE='23514';
