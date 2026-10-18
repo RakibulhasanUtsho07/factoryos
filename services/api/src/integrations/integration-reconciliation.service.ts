@@ -24,6 +24,8 @@ const CASE_TYPES: OperationalCaseType[] = [
   'SEQUENCE_COLLISION',
   'CROSS_SOURCE_CONFLICT',
   'CONFLICTING_DUPLICATE',
+  'DUPLICATE_BUSINESS_EVENT',
+  'BUSINESS_EVENT_CONFLICT',
 ];
 
 @Injectable()
@@ -72,6 +74,20 @@ export class IntegrationReconciliationService {
              AND ($5::timestamptz IS NULL OR a.received_at <= $5::timestamptz)
            GROUP BY a.domain
          ),
+         matched_sources AS (
+           SELECT matched.domain,COUNT(*)::int AS cross_source_matches
+           FROM (
+             SELECT e.domain,e.reconciliation_key,e.event_type
+             FROM integration_reconciliation_events e
+             WHERE e.tenant_id=$1 AND e.factory_id=$2 AND e.reconciliation_key IS NOT NULL
+               AND ($3::text IS NULL OR e.domain=$3)
+               AND ($4::timestamptz IS NULL OR e.received_at >= $4::timestamptz)
+               AND ($5::timestamptz IS NULL OR e.received_at <= $5::timestamptz)
+             GROUP BY e.domain,e.reconciliation_key,e.event_type
+             HAVING COUNT(DISTINCT e.source_system)>1 AND COUNT(DISTINCT e.comparison_sha256)=1
+           ) matched
+           GROUP BY matched.domain
+         ),
          cases AS (
            SELECT c.domain,
              COUNT(*) FILTER (WHERE c.status='OPEN')::int AS open_cases,
@@ -92,12 +108,14 @@ export class IntegrationReconciliationService {
            COALESCE(e.source_systems,0)::int AS source_systems,
            COALESCE(a.duplicate_replays,0)::int AS duplicate_replays,
            COALESCE(a.conflicting_duplicates,0)::int AS conflicting_duplicates,
+           COALESCE(ms.cross_source_matches,0)::int AS cross_source_matches,
            COALESCE(c.open_cases,0)::int AS open_cases,
            COALESCE(c.open_errors,0)::int AS open_errors,
            COALESCE(c.missing_sequence_ranges,0)::int AS missing_sequence_ranges
          FROM domains d
          LEFT JOIN events e ON e.domain=d.domain
          LEFT JOIN attempts a ON a.domain=d.domain
+         LEFT JOIN matched_sources ms ON ms.domain=d.domain
          LEFT JOIN cases c ON c.domain=d.domain
          WHERE ($3::text IS NULL OR d.domain=$3)
          ORDER BY d.domain`,
