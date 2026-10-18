@@ -41,6 +41,9 @@ export const FINANCE_CONNECTOR_MODES = [
   'REST_API',
   'WEBHOOK',
   'FILE_IMPORT',
+  'FILE_EXPORT',
+  'SFTP_IMPORT',
+  'SFTP_EXPORT',
 ] as const;
 
 export type FinanceConnectorMode = (typeof FINANCE_CONNECTOR_MODES)[number];
@@ -192,6 +195,81 @@ export function validateFinanceSecretReference(value: string | null | undefined)
     throw new Error('FINANCE_SECRET_MUST_BE_A_VAULT_REFERENCE');
   }
   return reference;
+}
+
+
+export interface FinanceSftpConfiguration {
+  host: string;
+  port: number;
+  username: string;
+  remote_directory: string;
+  file_format: 'CSV' | 'JSON';
+  host_key_sha256: string;
+  file_pattern?: string;
+}
+
+/**
+ * Validate an SFTP configuration without performing network I/O. Runtime
+ * adapters must also apply an egress allowlist, pin DNS resolution, verify the
+ * host-key fingerprint and resolve credentials only through the secret manager.
+ */
+export function validateFinanceSftpConfiguration(
+  mode: FinanceConnectorMode,
+  value: Record<string, unknown>,
+): FinanceSftpConfiguration {
+  if (mode !== 'SFTP_IMPORT' && mode !== 'SFTP_EXPORT') {
+    throw new Error('FINANCE_SFTP_CONFIGURATION_MODE_INVALID');
+  }
+  const allowed = new Set([
+    'host', 'port', 'username', 'remote_directory', 'file_format',
+    'host_key_sha256', 'file_pattern',
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error('FINANCE_SFTP_CONFIGURATION_UNSUPPORTED_FIELD');
+  }
+  const host = typeof value.host === 'string' ? value.host.trim().toLowerCase() : '';
+  if (!host || host.length > 253 || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host) ||
+      host.includes('..') || host === 'localhost' || host.endsWith('.localhost')) {
+    throw new Error('FINANCE_SFTP_HOST_INVALID');
+  }
+  const port = value.port === undefined ? 22 : value.port;
+  if (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535) {
+    throw new Error('FINANCE_SFTP_PORT_INVALID');
+  }
+  const username = typeof value.username === 'string' ? value.username.trim() : '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(username)) {
+    throw new Error('FINANCE_SFTP_USERNAME_INVALID');
+  }
+  const remoteDirectory = typeof value.remote_directory === 'string' ? value.remote_directory.trim() : '';
+  if (!remoteDirectory.startsWith('/') || remoteDirectory.length > 512 ||
+      remoteDirectory.includes(String.fromCharCode(92)) ||
+      remoteDirectory.split('/').some((segment) => segment === '..' || segment === '.') ||
+      /[\u0000-\u001f\u007f]/.test(remoteDirectory)) {
+    throw new Error('FINANCE_SFTP_REMOTE_DIRECTORY_INVALID');
+  }
+  if (value.file_format !== 'CSV' && value.file_format !== 'JSON') {
+    throw new Error('FINANCE_SFTP_FILE_FORMAT_INVALID');
+  }
+  const fingerprint = typeof value.host_key_sha256 === 'string' ? value.host_key_sha256.trim() : '';
+  if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint) && !/^[a-f0-9]{64}$/.test(fingerprint)) {
+    throw new Error('FINANCE_SFTP_HOST_KEY_PIN_REQUIRED');
+  }
+  let filePattern: string | undefined;
+  if (value.file_pattern !== undefined) {
+    if (typeof value.file_pattern !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._*-]{0,119}$/.test(value.file_pattern)) {
+      throw new Error('FINANCE_SFTP_FILE_PATTERN_INVALID');
+    }
+    filePattern = value.file_pattern;
+  }
+  return {
+    host,
+    port: Number(port),
+    username,
+    remote_directory: remoteDirectory,
+    file_format: value.file_format,
+    host_key_sha256: fingerprint,
+    ...(filePattern ? { file_pattern: filePattern } : {}),
+  };
 }
 
 export function validateFinanceEndpoint(

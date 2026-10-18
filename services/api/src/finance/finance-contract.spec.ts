@@ -8,6 +8,7 @@ import {
   reconciliationMatches,
   validateFinanceEndpoint,
   validateFinanceSecretReference,
+  validateFinanceSftpConfiguration,
 } from './finance-contract';
 
 describe('finance integration contract', () => {
@@ -81,5 +82,32 @@ describe('finance integration contract', () => {
     expect(() => validateFinanceEndpoint('REST_API', 'https://finance.example.com/api?api_key=inline-secret')).toThrow(
       'FINANCE_CONNECTOR_ENDPOINT_MUST_NOT_CONTAIN_CREDENTIAL_QUERY_PARAMETERS',
     );
+  });
+});
+
+
+describe('finance SFTP transfer configuration', () => {
+  const config = {
+    host: 'erp-files.example.com',
+    port: 22,
+    username: 'factoryos_reader',
+    remote_directory: '/exports/finance',
+    file_format: 'CSV',
+    host_key_sha256: 'SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    file_pattern: 'finance-*.csv',
+  };
+
+  it('requires pinned-host SFTP configuration with no inline credential or path fields', () => {
+    expect(validateFinanceSftpConfiguration('SFTP_IMPORT', config)).toEqual(config);
+    expect(() => validateFinanceSftpConfiguration('SFTP_IMPORT', { ...config, host_key_sha256: '' }))
+      .toThrow('FINANCE_SFTP_HOST_KEY_PIN_REQUIRED');
+    expect(() => validateFinanceSftpConfiguration('SFTP_EXPORT', { ...config, remote_directory: '/../secrets' }))
+      .toThrow('FINANCE_SFTP_REMOTE_DIRECTORY_INVALID');
+    expect(() => validateFinanceSftpConfiguration('SFTP_IMPORT', { ...config, host: 'localhost' }))
+      .toThrow('FINANCE_SFTP_HOST_INVALID');
+    expect(() => validateFinanceSftpConfiguration('SFTP_IMPORT', { ...config, password: 'not-allowed' }))
+      .toThrow('FINANCE_SFTP_CONFIGURATION_UNSUPPORTED_FIELD');
+    expect(() => validateFinanceSftpConfiguration('SFTP_IMPORT', { ...config, file_pattern: '../*.csv' }))
+      .toThrow('FINANCE_SFTP_FILE_PATTERN_INVALID');
   });
 });
