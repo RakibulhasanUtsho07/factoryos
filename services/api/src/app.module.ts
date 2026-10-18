@@ -34,6 +34,7 @@ import { CommercialModule } from './commercial/commercial.module';
 import { ShouldCostModule } from './should-cost/should-cost.module';
 import { FinanceModule } from './finance/finance.module';
 import { WorkforceModule } from './workforce/workforce.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
@@ -126,6 +127,7 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     // ----------------------------------------------------------
 
     OutboxModule,
+    IntegrationsModule,
   ],
 
   controllers: [
