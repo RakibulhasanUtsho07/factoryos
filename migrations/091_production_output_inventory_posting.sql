@@ -244,6 +244,67 @@ CREATE TRIGGER trg_production_output_postings_immutable
 BEFORE UPDATE OR DELETE ON production_output_postings
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_production_output_posting_mutation();
 
+-- Production-linked demand is fulfilled by accepted good units, never by scrap.
+-- Keep ordinary stock-fulfilled orders valid when no production work order was completed.
+CREATE OR REPLACE FUNCTION factoryos_require_production_output_before_order_completion()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_unfulfilled_line RECORD;
+BEGIN
+  IF NEW.status IS DISTINCT FROM OLD.status AND NEW.status = 'COMPLETED' THEN
+    SELECT ol.id::text AS order_line_id,
+      ol.quantity::text AS ordered_quantity,
+      COALESCE((
+        SELECT SUM(r.good_quantity)
+        FROM order_production_reports r
+        WHERE r.order_id = ol.order_id
+          AND r.order_line_id = ol.id
+          AND r.tenant_id = ol.tenant_id
+          AND r.factory_id = ol.factory_id
+      ), 0)::text AS accepted_good_quantity
+    INTO v_unfulfilled_line
+    FROM order_lines ol
+    WHERE ol.order_id = NEW.id
+      AND ol.tenant_id = NEW.tenant_id
+      AND ol.factory_id = NEW.factory_id
+      AND EXISTS (
+        SELECT 1 FROM work_orders wo
+        WHERE wo.source_order_id = ol.order_id
+          AND wo.source_order_line_id = ol.id
+          AND wo.tenant_id = ol.tenant_id
+          AND wo.factory_id = ol.factory_id
+          AND wo.status = 'COMPLETED'
+      )
+      AND COALESCE((
+        SELECT SUM(r.good_quantity)
+        FROM order_production_reports r
+        WHERE r.order_id = ol.order_id
+          AND r.order_line_id = ol.id
+          AND r.tenant_id = ol.tenant_id
+          AND r.factory_id = ol.factory_id
+      ), 0) < ol.quantity
+    ORDER BY ol.id
+    LIMIT 1;
+
+    IF FOUND THEN
+      RAISE EXCEPTION
+        'sales order cannot complete: production-linked line % has accepted good output % against ordered quantity %',
+        v_unfulfilled_line.order_line_id,
+        v_unfulfilled_line.accepted_good_quantity,
+        v_unfulfilled_line.ordered_quantity
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER trg_order_production_output_fulfillment_guard
+BEFORE UPDATE OF status ON orders
+FOR EACH ROW EXECUTE FUNCTION factoryos_require_production_output_before_order_completion();
+
 ALTER TABLE production_output_postings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE production_output_postings FORCE ROW LEVEL SECURITY;
 CREATE POLICY production_output_postings_tenant_isolation ON production_output_postings
