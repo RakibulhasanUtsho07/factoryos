@@ -4,11 +4,12 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationService } from './integration.service';
+import { IntegrationReconciliationService } from './integration-reconciliation.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [IntegrationsController],
-  providers: [IntegrationService],
+  providers: [IntegrationService, IntegrationReconciliationService],
   exports: [IntegrationService],
 })
 export class IntegrationsModule {}
