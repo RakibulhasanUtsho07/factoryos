@@ -7,8 +7,8 @@ CREATE TABLE production_output_postings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
-  work_order_id UUID NOT NULL,
-  work_order_operation_id UUID NOT NULL,
+  work_order_id UUID,
+  work_order_operation_id UUID,
   production_report_id UUID NOT NULL,
   finished_item_id UUID NOT NULL,
   inventory_movement_id UUID,
@@ -42,6 +42,9 @@ CREATE TABLE production_output_postings (
     REFERENCES inventory_movements(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_production_output_posting_actor
     FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_production_output_posting_work_order_pair
+    CHECK ((work_order_id IS NULL AND work_order_operation_id IS NULL)
+      OR (work_order_id IS NOT NULL AND work_order_operation_id IS NOT NULL)),
   CONSTRAINT chk_production_output_posting_quantity
     CHECK (good_quantity >= 0 AND scrap_quantity >= 0 AND good_quantity + scrap_quantity > 0),
   CONSTRAINT chk_production_output_posting_yield
@@ -77,6 +80,7 @@ DECLARE
   v_balance_quantity NUMERIC(18,4);
   v_report_yield NUMERIC(7,4);
   v_cumulative_yield NUMERIC(7,4);
+  v_line_finished_item_id UUID;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'production output postings are append-only'
@@ -96,30 +100,48 @@ BEGIN
     RAISE EXCEPTION 'production output report was not found in this tenant/factory'
       USING ERRCODE = '23503';
   END IF;
-  IF v_report.work_order_id IS NULL
-     OR v_report.work_order_id <> NEW.work_order_id
-     OR v_report.work_order_operation_id <> NEW.work_order_operation_id
+  IF v_report.work_order_id IS DISTINCT FROM NEW.work_order_id
+     OR v_report.work_order_operation_id IS DISTINCT FROM NEW.work_order_operation_id
      OR v_report.good_quantity <> NEW.good_quantity
      OR v_report.scrap_quantity <> NEW.scrap_quantity THEN
     RAISE EXCEPTION 'production output posting must exactly match its scoped canonical report'
       USING ERRCODE = '23514';
   END IF;
 
-  SELECT wo.id, wo.finished_item_id
-  INTO v_work_order
-  FROM work_orders wo
-  WHERE wo.id = NEW.work_order_id
-    AND wo.tenant_id = NEW.tenant_id
-    AND wo.factory_id = NEW.factory_id
-  FOR SHARE;
+  IF NEW.work_order_id IS NOT NULL THEN
+    SELECT wo.id, wo.finished_item_id
+    INTO v_work_order
+    FROM work_orders wo
+    WHERE wo.id = NEW.work_order_id
+      AND wo.tenant_id = NEW.tenant_id
+      AND wo.factory_id = NEW.factory_id
+    FOR SHARE;
 
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'production work order was not found in this tenant/factory'
-      USING ERRCODE = '23503';
-  END IF;
-  IF v_work_order.finished_item_id <> NEW.finished_item_id THEN
-    RAISE EXCEPTION 'production output must post the work order finished-good item'
-      USING ERRCODE = '23514';
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'production work order was not found in this tenant/factory'
+        USING ERRCODE = '23503';
+    END IF;
+    IF v_work_order.finished_item_id <> NEW.finished_item_id THEN
+      RAISE EXCEPTION 'production output must post the work order finished-good item'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSE
+    SELECT ol.inventory_item_id INTO v_line_finished_item_id
+    FROM order_lines ol
+    WHERE ol.id = v_report.order_line_id
+      AND ol.order_id = v_report.order_id
+      AND ol.tenant_id = NEW.tenant_id
+      AND ol.factory_id = NEW.factory_id
+    FOR SHARE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'order production output line was not found in this tenant/factory'
+        USING ERRCODE = '23503';
+    END IF;
+    IF v_line_finished_item_id IS NULL OR v_line_finished_item_id <> NEW.finished_item_id THEN
+      RAISE EXCEPTION 'order production output must post the inventory item bound to the order line'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
 
   IF NEW.good_quantity + NEW.scrap_quantity <= 0 THEN
@@ -208,10 +230,6 @@ AS $$
 DECLARE
   v_posting RECORD;
 BEGIN
-  IF NEW.work_order_id IS NULL THEN
-    RETURN NULL;
-  END IF;
-
   SELECT p.work_order_id, p.work_order_operation_id, p.good_quantity, p.scrap_quantity
   INTO v_posting
   FROM production_output_postings p
