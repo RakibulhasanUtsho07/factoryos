@@ -69,6 +69,8 @@ describe('finance integration contract', () => {
   });
 
   it('requires TLS endpoints without embedded credentials for live connectors', () => {
+    expect(validateFinanceEndpoint('ERP_IMPORT', 'https://erp.example.com/api')).toBe('https://erp.example.com/api');
+    expect(() => validateFinanceEndpoint('ERP_EXPORT', null)).toThrow('FINANCE_CONNECTOR_ENDPOINT_REQUIRED');
     expect(validateFinanceEndpoint('REST_API', 'https://finance.example.com/api')).toBe(
       'https://finance.example.com/api',
     );

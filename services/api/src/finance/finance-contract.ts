@@ -42,6 +42,8 @@ export const FINANCE_CONNECTOR_MODES = [
   'WEBHOOK',
   'FILE_IMPORT',
   'FILE_EXPORT',
+  'ERP_IMPORT',
+  'ERP_EXPORT',
   'SFTP_IMPORT',
   'SFTP_EXPORT',
 ] as const;
@@ -280,7 +282,7 @@ export function validateFinanceEndpoint(
   value: string | null | undefined,
 ): string | null {
   if (!value || value.trim() === '') {
-    if (mode === 'REST_API' || mode === 'WEBHOOK') {
+    if (mode === 'REST_API' || mode === 'WEBHOOK' || mode === 'ERP_IMPORT' || mode === 'ERP_EXPORT') {
       throw new Error('FINANCE_CONNECTOR_ENDPOINT_REQUIRED');
     }
     return null;
