@@ -1005,12 +1005,19 @@ export class OrdersService {
               WHERE ol.order_id = $1
                 AND ol.tenant_id = $2
                 AND ol.factory_id = $3
-                AND EXISTS (
-                  SELECT 1 FROM work_orders wo
-                  WHERE wo.source_order_id = ol.order_id
-                    AND wo.source_order_line_id = ol.id
-                    AND wo.tenant_id = ol.tenant_id
-                    AND wo.factory_id = ol.factory_id
+                AND (
+                  EXISTS (
+                    SELECT 1 FROM work_orders wo
+                    WHERE wo.source_order_id = ol.order_id
+                      AND wo.source_order_line_id = ol.id
+                      AND wo.tenant_id = ol.tenant_id
+                      AND wo.factory_id = ol.factory_id
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM order_production_reports r
+                    WHERE r.order_id = ol.order_id AND r.order_line_id = ol.id
+                      AND r.tenant_id = ol.tenant_id AND r.factory_id = ol.factory_id
+                  )
                 )
                 AND COALESCE((
                   SELECT SUM(r.good_quantity)
