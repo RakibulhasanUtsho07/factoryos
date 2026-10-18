@@ -14,7 +14,7 @@ export interface FinanceFileValidationIssue {
 }
 
 export class FinanceFileValidationError extends BadRequestException {
-  constructor(public readonly validationIssues: FinanceFileValidationIssue[]) {
+  constructor(public readonly validationIssues: FinanceFileValidationIssue[], public readonly rowCount = 0) {
     super('Finance import contract validation failed: ' +
       validationIssues.map((issue) =>
         (issue.row === null ? 'file' : 'row ' + issue.row) + '.' + issue.field,
@@ -265,7 +265,7 @@ export function parseFinanceFileImport(dto: FinanceFileImportDto): ParsedFinance
     forbidUnknownValues: true,
   });
   if (issues.length) {
-    throw new FinanceFileValidationError(flattenValidationErrors(issues));
+    throw new FinanceFileValidationError(flattenValidationErrors(issues), batch.facts?.length ?? 0);
   }
 
   return {

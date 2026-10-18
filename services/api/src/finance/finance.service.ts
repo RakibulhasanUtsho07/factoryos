@@ -825,10 +825,12 @@ export class FinanceService {
     const safeFormat = dto.format === 'CSV' || dto.format === 'JSON' ? dto.format : null;
     const issues: FinanceFileValidationIssue[] = [];
     let parsed: ParsedFinanceFileImport | null = null;
+    let parserRowCount = 0;
     try {
       parsed = parseFinanceFileImport(dto);
     } catch (error) {
       if (error instanceof FinanceFileValidationError) {
+        parserRowCount = error.rowCount;
         issues.push(...error.validationIssues);
       } else {
         const message = error instanceof Error ? error.message : 'File validation failed';
@@ -939,7 +941,7 @@ export class FinanceService {
         }
       }
 
-      const { rowCount, validRowCount, invalidRowCount } = deriveFinanceValidationCounts(facts.length, issues);
+      const { rowCount, validRowCount, invalidRowCount } = deriveFinanceValidationCounts(Math.max(facts.length, parserRowCount), issues);
       const status = issues.length === 0 && parsed ? 'VALID' : 'INVALID';
       const report = {
         errors: issues.slice(0, 100),

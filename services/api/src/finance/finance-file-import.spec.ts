@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { FinanceFileImportDto } from './dto/finance.dto';
-import { parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv } from './finance-file-import';
+import { deriveFinanceValidationCounts, FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv } from './finance-file-import';
 
 function fileDto(format: 'CSV' | 'JSON', text: string): FinanceFileImportDto {
   return {
@@ -141,5 +141,44 @@ describe('finance validation error file', () => {
     }]).toString('utf8');
     expect(file).toContain('row,field,code,message');
     expect(file).toContain('2,customer_ref,ISSTRING,"Value contains, ""quotes"""');
+  });
+});
+
+
+describe('finance validation report counting', () => {
+  it('preserves source row counts when DTO validation identifies only some invalid rows', () => {
+    const invalidIssues = [
+      { row: 2, field: 'amount', code: 'IS_STRING', message: 'must be a string' },
+      { row: 4, field: 'amount', code: 'IS_STRING', message: 'must be a string' },
+    ];
+    expect(deriveFinanceValidationCounts(6, invalidIssues)).toEqual({
+      rowCount: 6,
+      validRowCount: 4,
+      invalidRowCount: 2,
+    });
+  });
+
+  it('marks file-level errors invalid when no data row can be identified', () => {
+    expect(deriveFinanceValidationCounts(0, [
+      { row: null, field: 'file', code: 'FILE_CONTRACT_INVALID', message: 'Invalid JSON' },
+    ])).toEqual({ rowCount: 0, validRowCount: 0, invalidRowCount: 1 });
+  });
+
+  it('retains the fact-array size when DTO validation rejects a row', () => {
+    let caught: FinanceFileValidationError | null = null;
+    try {
+      parseFinanceFileImport(fileDto('JSON', JSON.stringify([
+        fact,
+        { ...fact, amount: 'not-a-decimal' },
+        fact,
+      ])));
+    } catch (error) {
+      if (error instanceof FinanceFileValidationError) caught = error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught?.rowCount).toBe(3);
+    expect(caught?.validationIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ row: 2, field: 'amount' }),
+    ]));
   });
 });
