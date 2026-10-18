@@ -388,7 +388,7 @@ BEFORE INSERT ON maintenance_work_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_work_order_asset_active();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_event()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   v_version BIGINT;
   v_parent_work_order_id UUID;
@@ -429,7 +429,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE OR REPLACE TRIGGER trg_maintenance_event_guard
 BEFORE INSERT ON maintenance_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_event();
