@@ -33,6 +33,16 @@ All endpoints are mounted under `/api`. They require authenticated actor, verifi
 
 Supported targets are `INVENTORY_ITEM`, `TRACEABILITY_UNIT`, `GOODS_RECEIPT_LINE`, `PRODUCTION_REPORT` and `WORK_ORDER`. Inspection types are `INCOMING`, `IN_PROCESS`, `FINAL`, `INVENTORY` and `SUPPLIER`. Item, GRN, production report and work-order references must exist inside the authenticated factory. A GRN inspection requires a posted receipt. The selected `plan_code` is retained with the inspection; reusable versioned plan authoring and measured results per inspection criterion are a separate follow-up, not inferred from this field.
 
+## Versioned inspection plans and measured results
+
+Use `POST /api/quality/plans` with `quality.plans.manage` to create a draft plan. Each plan has a factory-scoped case-insensitive code, an auto-incremented revision and 1–100 acceptance criteria. Every criterion declares its data type, comparator, target/range or allowed values, units, required/critical flags and sequence. Supported rules are `EQ`, `NE`, `GT`, `GTE`, `LT`, `LTE`, `BETWEEN`, `IN` and (text only) `CONTAINS`. Numeric range rules use six-decimal precision for rule values; inventory/sample quantities remain limited to four decimals.
+
+`GET /api/quality/plans?inspection_type=INCOMING&status=ACTIVE` lists plans. `GET /api/quality/plans/:planId` returns a plan and its criteria. `POST /api/quality/plans/:planId/transition` with `{"action":"ACTIVATE","expected_version":1}` activates a draft plan; `{"action":"RETIRE","expected_version":2,"reason":"Superseded by revision 2"}` retires an active revision. An active revision cannot be silently edited, and only one revision per plan code and inspection type may be active. Retire the previous revision before activating a replacement. Amendments are new plan revisions, so historical inspections retain the criteria they actually used.
+
+When an inspection supplies `plan_code`, the database resolves an ACTIVE plan matching that inspection type and snapshots its complete criteria and revision onto the inspection. An absent or mismatched plan code is rejected. `sample_quantity` may override the plan's default sample size; otherwise the plan default is copied.
+
+During OPEN/IN_PROGRESS, record a measurement using `POST /api/quality/inspections/:inspectionId/results`, for example `{"criterion_code":"SIZE","observed_value":"10.5","notes":"Measured with calibrated gauge"}`. The API evaluates the observed value against the pinned acceptance rule; the client cannot choose PASS/FAIL. Results and evidence are append-only and sequenced by criterion attempt, so a rework follow-up may record a fresh attempt without overwriting the original measurement. Required criteria need a latest PASS result before the inspection can pass; this condition is enforced both in the service and by PostgreSQL. A direct SQL writer cannot submit a result that disagrees with the criterion's rule or bypass the completion gate.
+
 ## Lifecycle
 
 ```text
@@ -67,4 +77,4 @@ Regression coverage:
 - `services/api/src/quality/quality.service.spec.ts` — pre-transaction request validation.
 - `services/api/test/quality-management-contract.sql` — migration, tenant RLS and cross-module enforcement contract.
 
-**Current boundary:** inspection records, defect evidence, hold/release/disposition and NCR/CAPA are supported. Reusable versioned inspection-plan authoring and per-criterion measured results are not yet implemented by this slice; `plan_code` currently references a plan selected by the factory rather than a managed criteria set.
+**Current boundary:** the workflow supports reusable versioned inspection plans, per-criterion acceptance rules/measurement records, defect evidence, hold/release/disposition and NCR/CAPA. Physical QR/barcode rendering, RFID capture, offline mobile sync and lot-aware partial stock consumption remain separate integration capabilities.

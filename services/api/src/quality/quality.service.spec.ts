@@ -3,7 +3,8 @@ import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { QualityService } from './quality.service';
 import type {
-  CreateQualityDefectDto, CreateQualityInspectionDto, QualityDispositionDto, QualityInspectionDecisionDto,
+  CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityInspectionPlanDto,
+  CreateQualityInspectionResultDto, QualityDispositionDto, QualityInspectionDecisionDto,
 } from './quality.dto';
 
 const USER='921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -71,6 +72,37 @@ describe('QualityService request validation',()=>{
     await expect(service.recordDefect({...context,userId:'bad'},INSPECTION,{
       defect_code:'DEFECT',severity:'MINOR',description:'Invalid request',
     },'defect-key')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires an idempotency key before creating a reusable inspection plan',async()=>{
+    const dto={plan_code:'FINAL-1',name:'Final inspection',inspection_type:'FINAL',criteria:[
+      {criterion_code:'SIZE',name:'Size',value_type:'NUMERIC',comparison_operator:'BETWEEN',lower_limit:10,upper_limit:12},
+    ]} as CreateQualityInspectionPlanDto;
+    await expect(service.createInspectionPlan(context,dto,null)).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects criteria whose acceptance operator is incompatible with the value type',async()=>{
+    const dto={plan_code:'FINAL-2',name:'Final inspection',inspection_type:'FINAL',criteria:[
+      {criterion_code:'STATE',name:'State',value_type:'BOOLEAN',comparison_operator:'GT',target_value:'true'},
+    ]} as CreateQualityInspectionPlanDto;
+    await expect(service.createInspectionPlan(context,dto,'plan-invalid-operator')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate criterion codes in a plan revision',async()=>{
+    const dto={plan_code:'FINAL-3',name:'Final inspection',inspection_type:'FINAL',criteria:[
+      {criterion_code:'SIZE',name:'Size upper',value_type:'NUMERIC',comparison_operator:'LTE',target_value:'12'},
+      {criterion_code:'size',name:'Size lower',value_type:'NUMERIC',comparison_operator:'GTE',target_value:'10'},
+    ]} as CreateQualityInspectionPlanDto;
+    await expect(service.createInspectionPlan(context,dto,'plan-duplicate-code')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires an idempotency key before recording a criterion result',async()=>{
+    const dto:CreateQualityInspectionResultDto={criterion_code:'SIZE',observed_value:'10.5'};
+    await expect(service.recordInspectionResult(context,INSPECTION,dto,null)).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
 });
