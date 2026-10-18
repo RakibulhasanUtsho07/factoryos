@@ -214,6 +214,7 @@ jobs:
             migrations/126_finance_file_export_receipts.sql
             migrations/127_finance_file_export_permission.sql
             migrations/128_finance_erp_transfer_modes.sql
+            migrations/129_finance_erp_export_receipt_guard.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
