@@ -68,6 +68,15 @@ BEGIN
   IF NEW.asset_code IS DISTINCT FROM OLD.asset_code THEN
     RAISE EXCEPTION 'Asset codes are immutable; register a replacement asset instead' USING ERRCODE='23514';
   END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+    OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
+    OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
+    OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+    OR NEW.request_hash IS DISTINCT FROM OLD.request_hash THEN
+    RAISE EXCEPTION 'Asset identity, scope and creation evidence are immutable' USING ERRCODE='23514';
+  END IF;
   IF NEW.status <> 'ACTIVE' AND OLD.status='ACTIVE' THEN
     IF EXISTS (SELECT 1 FROM maintenance_assets child
       WHERE child.parent_asset_id=OLD.id AND child.tenant_id=OLD.tenant_id AND child.factory_id=OLD.factory_id
@@ -97,6 +106,21 @@ RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.row_version <> OLD.row_version + 1 THEN
     RAISE EXCEPTION 'Preventive-maintenance plan updates must increment row_version exactly once' USING ERRCODE='23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+    OR NEW.factory_id IS DISTINCT FROM OLD.factory_id OR NEW.asset_id IS DISTINCT FROM OLD.asset_id
+    OR NEW.plan_code IS DISTINCT FROM OLD.plan_code OR NEW.revision IS DISTINCT FROM OLD.revision
+    OR NEW.name IS DISTINCT FROM OLD.name OR NEW.description IS DISTINCT FROM OLD.description
+    OR NEW.interval_value IS DISTINCT FROM OLD.interval_value OR NEW.interval_unit IS DISTINCT FROM OLD.interval_unit
+    OR NEW.estimated_duration_minutes IS DISTINCT FROM OLD.estimated_duration_minutes
+    OR NEW.requires_shutdown IS DISTINCT FROM OLD.requires_shutdown
+    OR NEW.checklist IS DISTINCT FROM OLD.checklist
+    OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
+    OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+    OR NEW.request_hash IS DISTINCT FROM OLD.request_hash THEN
+    RAISE EXCEPTION 'Preventive-maintenance plan revisions are immutable; draft a new revision to change plan content' USING ERRCODE='23514';
   END IF;
   IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
     (OLD.status='DRAFT' AND NEW.status IN ('ACTIVE','RETIRED')) OR
@@ -178,7 +202,9 @@ BEGIN
     WHERE m.tenant_id=NEW.tenant_id AND m.factory_id=NEW.factory_id
       AND m.item_id=NEW.inventory_item_id AND m.movement_type='ISSUE'
       AND m.reference_type='MAINTENANCE_WORK_ORDER_PART' AND m.reference_id=NEW.id
-      AND m.quantity=v_delta AND m.quantity_delta=-v_delta
+      AND m.quantity_delta=-m.quantity
+    GROUP BY m.reference_id
+    HAVING SUM(m.quantity)=NEW.issued_quantity
   ) THEN
     RAISE EXCEPTION 'Issued spare-part quantity must match a committed inventory ISSUE movement' USING ERRCODE='23514';
   END IF;
@@ -193,6 +219,36 @@ $$;
 CREATE TRIGGER trg_maintenance_part_update_guard
 BEFORE UPDATE OR DELETE ON maintenance_work_order_parts
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_part_update();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_maintenance_work_order_update()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+  IF NEW.row_version <> OLD.row_version + 1 OR NEW.status IS NOT DISTINCT FROM OLD.status THEN
+    RAISE EXCEPTION 'Maintenance work-order writes must be a single audited status transition with a version increment' USING ERRCODE='23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+    OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
+    OR NEW.work_order_number IS DISTINCT FROM OLD.work_order_number
+    OR NEW.work_order_type IS DISTINCT FROM OLD.work_order_type
+    OR NEW.asset_id IS DISTINCT FROM OLD.asset_id OR NEW.pm_plan_id IS DISTINCT FROM OLD.pm_plan_id
+    OR NEW.plan_due_on IS DISTINCT FROM OLD.plan_due_on OR NEW.priority IS DISTINCT FROM OLD.priority
+    OR NEW.title IS DISTINCT FROM OLD.title OR NEW.description IS DISTINCT FROM OLD.description
+    OR NEW.failure_code IS DISTINCT FROM OLD.failure_code
+    OR NEW.scheduled_start_at IS DISTINCT FROM OLD.scheduled_start_at OR NEW.due_at IS DISTINCT FROM OLD.due_at
+    OR NEW.assigned_to_user_id IS DISTINCT FROM OLD.assigned_to_user_id
+    OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
+    OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+    OR NEW.request_hash IS DISTINCT FROM OLD.request_hash THEN
+    RAISE EXCEPTION 'Maintenance work-order source contract is immutable after creation' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER trg_maintenance_work_order_immutability_guard
+BEFORE UPDATE ON maintenance_work_orders
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_maintenance_work_order_update();
 
 CREATE OR REPLACE FUNCTION factoryos_require_maintenance_entity_event()
 RETURNS trigger LANGUAGE plpgsql AS $$
