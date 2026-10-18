@@ -1092,7 +1092,7 @@ export class QualityService {
     const columnsByType:Record<string,string>={
       INVENTORY_ITEM:'inventory_item_id',TRACEABILITY_UNIT:'traceability_unit_id',ORDER:'order_id',
       ORDER_LINE:'order_line_id',WORK_ORDER:'work_order_id',WORK_ORDER_OPERATION:'work_order_operation_id',
-      PRODUCTION_REPORT:'production_report_id',GOODS_RECEIPT_LINE:'goods_receipt_line_id',
+      PRODUCTION_REPORT:'production_report_id',GOODS_RECEIPT_LINE:'goods_receipt_line_id',REWORK_OUTPUT:'traceability_unit_id',
     };
     const targetColumn=columnsByType[input.linkType];
     if(!targetColumn)throw new BadRequestException('Unsupported defect traceability link type');
@@ -1111,6 +1111,10 @@ export class QualityService {
       const q=await client.query("SELECT goods_receipt_id::text AS goods_receipt_id FROM goods_receipt_lines WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
         [input.targetId,c.tenantId,c.factoryId]);
       if(!q.rows[0])throw new NotFoundException('Goods-receipt line was not found in this factory');fields.goods_receipt_id=String(q.rows[0].goods_receipt_id);
+    }
+    if(input.linkType==='REWORK_OUTPUT'){
+      if(!input.reworkOrderId)throw new BadRequestException('rework_order_id is required for a rework output link');
+      fields.rework_order_id=input.reworkOrderId;
     }
     const cols=['tenant_id','factory_id','defect_id','link_type',...Object.keys(fields),'affected_quantity','link_source','notes','evidence','idempotency_key','request_hash','created_by_user_id','correlation_id'];
     const vals:unknown[]=[c.tenantId,c.factoryId,input.defectId,input.linkType,...Object.values(fields),input.quantity,input.source,input.notes,JSON.stringify(input.evidence),input.key,hash,c.userId,input.correlation];
