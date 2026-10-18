@@ -200,6 +200,7 @@ jobs:
             migrations/112_commercial_quotation_lifecycle.sql
             migrations/113_deterministic_should_cost_engine.sql
             migrations/114_finance_integration_contract.sql
+            migrations/115_finance_file_import_metadata.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

@@ -45,6 +45,9 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='114_finance_integration_contract') THEN
     RAISE EXCEPTION 'Finance integration migration is not registered';
   END IF;
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='115_finance_file_import_metadata') THEN
+    RAISE EXCEPTION 'Finance file import migration is not registered';
+  END IF;
   SELECT id INTO reviewer_id FROM users WHERE email='manager@factoryos.local';
   IF reviewer_id IS NULL THEN RAISE EXCEPTION 'Independent finance review test user is missing'; END IF;
 END $$;
@@ -127,13 +130,31 @@ WHERE id='da100000-0000-4000-8000-000000000001';
 SELECT set_config('app.user_id','921382b8-e83f-43ab-a576-e3db6a06b70c',true);
 INSERT INTO finance_connector_runs(
  id,tenant_id,factory_id,connector_id,external_batch_ref,idempotency_key,request_hash,status,
- received_count,accepted_count,mismatch_count,source_occurred_at,actor_user_id
+ received_count,accepted_count,mismatch_count,source_occurred_at,actor_user_id,source_file_name,source_format,source_payload_sha256
 ) VALUES(
  'da100000-0000-4000-8000-000000000002',
  'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
  'da100000-0000-4000-8000-000000000001','CI-AR-BATCH-1','ci-finance-run-1',repeat('b',64),
- 'COMPLETED_WITH_MISMATCHES',1,1,1,clock_timestamp(),'921382b8-e83f-43ab-a576-e3db6a06b70c'
+ 'COMPLETED_WITH_MISMATCHES',1,1,1,clock_timestamp(),'921382b8-e83f-43ab-a576-e3db6a06b70c',
+  'finance-import.csv','CSV',repeat('d',64)
 );
+
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO finance_connector_runs(
+      id,tenant_id,factory_id,connector_id,external_batch_ref,idempotency_key,request_hash,status,
+      received_count,accepted_count,mismatch_count,actor_user_id,source_format
+    ) VALUES(
+      'da100000-0000-4000-8000-000000000004',
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000001','CI-AR-BATCH-BAD-FILE-META','ci-finance-run-bad-meta',repeat('e',64),
+      'COMPLETED',1,1,0,'921382b8-e83f-43ab-a576-e3db6a06b70c','CSV'
+    );
+    RAISE EXCEPTION 'Finance connector run accepted partial file-import metadata';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
 
 INSERT INTO financial_facts(
  id,tenant_id,factory_id,connector_id,connector_run_id,external_fact_id,source_fact_key,
