@@ -535,6 +535,65 @@ export class WorkforceService {
     });
   }
 
+
+  async correctAttendance(c: WorkforceContext, eventId: string, dto: CreateWorkforceAttendanceCorrectionDto, rawKey: string | null) {
+    this.validateContext(c);
+    const originalEventId=this.uuid(eventId,'event_id');
+    const key=this.idempotencyKey(rawKey);
+    const correctedAt=this.timestamp(dto.corrected_occurred_at,'corrected_occurred_at');
+    const reason=this.requiredText(dto.reason,'reason',2000);
+    const hash=this.hash({original_event_id:originalEventId,corrected_event_type:dto.corrected_event_type,corrected_occurred_at:correctedAt,reason});
+    return this.transaction(c,'workforce:command:'+key,async(client)=>{
+      const replay=await this.findCommandReceipt(client,c,key,hash);
+      if(replay) return { ...(replay.response_snapshot as Record<string,unknown>),replayed:true };
+      const source=await client.query<Row>(
+        `SELECT e.id::text AS id,e.worker_id::text AS worker_id,e.shift_assignment_id::text AS shift_assignment_id,
+          a.status AS assignment_status
+         FROM workforce_attendance_events e
+         JOIN workforce_shift_assignments a
+          ON a.id=e.shift_assignment_id AND a.tenant_id=e.tenant_id AND a.factory_id=e.factory_id
+         WHERE e.id=$1 AND e.tenant_id=$2 AND e.factory_id=$3
+         FOR UPDATE OF e,a`,
+        [originalEventId,c.tenantId,c.factoryId],
+      );
+      const original=source.rows[0];
+      if(!original) throw new NotFoundException('Original attendance event was not found in this factory');
+      if(!['CONFIRMED','COMPLETED'].includes(String(original.assignment_status))) {
+        throw new ConflictException('Attendance corrections require a confirmed or completed shift assignment');
+      }
+      const lockKey=c.tenantId+':'+c.factoryId+':'+String(original.shift_assignment_id)+':attendance-corrections';
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[lockKey]);
+      const latest=await client.query<Row>(
+        `SELECT id::text AS id,correction_version::int AS correction_version
+         FROM workforce_attendance_corrections
+         WHERE original_event_id=$1 AND tenant_id=$2 AND factory_id=$3
+         ORDER BY correction_version DESC LIMIT 1 FOR UPDATE`,
+        [originalEventId,c.tenantId,c.factoryId],
+      );
+      const prior=latest.rows[0];
+      const inserted=await client.query<Row>(
+        `INSERT INTO workforce_attendance_corrections
+         (tenant_id,factory_id,original_event_id,correction_version,supersedes_correction_id,
+          worker_id,shift_assignment_id,corrected_event_type,corrected_occurred_at,reason,
+          idempotency_key,request_hash,corrected_by_user_id,correlation_id)
+         VALUES ($1,$2,$3,$4,$5::uuid,$6,$7,$8,$9::timestamptz,$10,$11,$12,$13,$14::uuid)
+         RETURNING id::text AS id,correction_version::int AS correction_version,
+           original_event_id::text AS original_event_id,worker_id::text AS worker_id,
+           shift_assignment_id::text AS shift_assignment_id,corrected_event_type,
+           corrected_occurred_at::text AS corrected_occurred_at,reason,
+           supersedes_correction_id::text AS supersedes_correction_id,created_at::text AS created_at`,
+        [c.tenantId,c.factoryId,originalEventId,prior?Number(prior.correction_version)+1:1,
+          prior?String(prior.id):null,String(original.worker_id),String(original.shift_assignment_id),
+          dto.corrected_event_type,correctedAt,reason,key,hash,c.userId,this.correlationId(c)],
+      );
+      const correction=inserted.rows[0];
+      if(!correction) throw new Error('WORKFORCE_ATTENDANCE_CORRECTION_INSERT_FAILED');
+      const response={...correction,replayed:false};
+      await this.storeCommandReceipt(client,c,key,hash,'ATTENDANCE_CORRECTION',String(correction.id),response);
+      return response;
+    });
+  }
+
   async listAttendance(c: WorkforceContext, query: WorkforceDateQueryDto, rawLimit?: number) {
     this.validateContext(c);
     const day=this.dateOnly(query.shift_date,'shift_date');
@@ -545,7 +604,7 @@ export class WorkforceService {
                 e.shift_assignment_id::text AS shift_assignment_id,e.worker_id::text AS worker_id,
                 w.employee_code,w.display_name,a.shift_date::text AS shift_date,a.status AS assignment_status,
                 e.capture_metadata,e.created_at::text AS captured_at
-         FROM workforce_attendance_events e
+         FROM workforce_attendance_events_effective e
          JOIN workforce_workers w ON w.id=e.worker_id AND w.tenant_id=e.tenant_id AND w.factory_id=e.factory_id
          JOIN workforce_shift_assignments a ON a.id=e.shift_assignment_id AND a.tenant_id=e.tenant_id AND a.factory_id=e.factory_id
          WHERE e.tenant_id=$1 AND e.factory_id=$2 AND a.shift_date=$3::date
@@ -559,7 +618,7 @@ export class WorkforceService {
           a.status AS assignment_status,a.planned_start_at::text AS planned_start_at,
           a.planned_end_at::text AS planned_end_at,ci.occurred_at::text AS clock_in_at,
           co.occurred_at::text AS clock_out_at,
-          EXISTS(SELECT 1 FROM workforce_attendance_events absent
+          EXISTS(SELECT 1 FROM workforce_attendance_events_effective absent
             WHERE absent.shift_assignment_id=a.id AND absent.tenant_id=a.tenant_id AND absent.factory_id=a.factory_id
               AND absent.event_type='ABSENCE_RECORDED') AS absence_recorded,
           ROUND(COALESCE(br.break_minutes,0),2)::text AS recorded_break_minutes,
@@ -579,16 +638,16 @@ export class WorkforceService {
          FROM workforce_shift_assignments a
          JOIN workforce_workers w ON w.id=a.worker_id AND w.tenant_id=a.tenant_id AND w.factory_id=a.factory_id
          JOIN workforce_shift_templates s ON s.id=a.shift_template_id AND s.tenant_id=a.tenant_id AND s.factory_id=a.factory_id
-         LEFT JOIN workforce_attendance_events ci ON ci.shift_assignment_id=a.id AND ci.tenant_id=a.tenant_id
+         LEFT JOIN workforce_attendance_events_effective ci ON ci.shift_assignment_id=a.id AND ci.tenant_id=a.tenant_id
             AND ci.factory_id=a.factory_id AND ci.event_type='CLOCK_IN'
-         LEFT JOIN workforce_attendance_events co ON co.shift_assignment_id=a.id AND co.tenant_id=a.tenant_id
+         LEFT JOIN workforce_attendance_events_effective co ON co.shift_assignment_id=a.id AND co.tenant_id=a.tenant_id
             AND co.factory_id=a.factory_id AND co.event_type='CLOCK_OUT'
          LEFT JOIN LATERAL (
            SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (be.occurred_at-bs.occurred_at))/60),0) AS break_minutes
-           FROM workforce_attendance_events bs
+           FROM workforce_attendance_events_effective bs
            JOIN LATERAL (
              SELECT candidate.occurred_at
-             FROM workforce_attendance_events candidate
+             FROM workforce_attendance_events_effective candidate
              WHERE candidate.shift_assignment_id=a.id AND candidate.tenant_id=a.tenant_id
                AND candidate.factory_id=a.factory_id AND candidate.event_type='BREAK_END'
                AND candidate.occurred_at>bs.occurred_at
@@ -614,21 +673,21 @@ export class WorkforceService {
             ELSE 0 END),0)::int AS finalized_worked_minutes
          FROM workforce_shift_assignments a
          JOIN workforce_shift_templates s ON s.id=a.shift_template_id AND s.tenant_id=a.tenant_id AND s.factory_id=a.factory_id
-         LEFT JOIN workforce_attendance_events ci ON ci.shift_assignment_id=a.id AND ci.tenant_id=a.tenant_id
+         LEFT JOIN workforce_attendance_events_effective ci ON ci.shift_assignment_id=a.id AND ci.tenant_id=a.tenant_id
            AND ci.factory_id=a.factory_id AND ci.event_type='CLOCK_IN'
-         LEFT JOIN workforce_attendance_events co ON co.shift_assignment_id=a.id AND co.tenant_id=a.tenant_id
+         LEFT JOIN workforce_attendance_events_effective co ON co.shift_assignment_id=a.id AND co.tenant_id=a.tenant_id
            AND co.factory_id=a.factory_id AND co.event_type='CLOCK_OUT'
          LEFT JOIN LATERAL (
-           SELECT EXISTS(SELECT 1 FROM workforce_attendance_events absent_event
+           SELECT EXISTS(SELECT 1 FROM workforce_attendance_events_effective absent_event
              WHERE absent_event.shift_assignment_id=a.id AND absent_event.tenant_id=a.tenant_id
                AND absent_event.factory_id=a.factory_id AND absent_event.event_type='ABSENCE_RECORDED') AS has_absence
          ) absent ON TRUE
          LEFT JOIN LATERAL (
            SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (be.occurred_at-bs.occurred_at))/60),0) AS break_minutes
-           FROM workforce_attendance_events bs
+           FROM workforce_attendance_events_effective bs
            JOIN LATERAL (
              SELECT candidate.occurred_at
-             FROM workforce_attendance_events candidate
+             FROM workforce_attendance_events_effective candidate
              WHERE candidate.shift_assignment_id=a.id AND candidate.tenant_id=a.tenant_id
                AND candidate.factory_id=a.factory_id AND candidate.event_type='BREAK_END'
                AND candidate.occurred_at>bs.occurred_at
@@ -878,8 +937,8 @@ export class WorkforceService {
       `SELECT a.id::text AS assignment_id,a.worker_id::text AS worker_id,a.shift_template_id::text AS shift_template_id,
        a.required_skill_code,a.planned_start_at::text AS planned_start_at,a.planned_end_at::text AS planned_end_at,
        a.status AS assignment_status,w.employee_code,w.display_name,s.name AS shift_name,s.late_grace_minutes,
-       EXISTS(SELECT 1 FROM workforce_attendance_events e WHERE e.shift_assignment_id=a.id AND e.event_type='CLOCK_IN') AS clocked_in,
-       EXISTS(SELECT 1 FROM workforce_attendance_events e WHERE e.shift_assignment_id=a.id AND e.event_type='ABSENCE_RECORDED') AS absence_recorded
+       EXISTS(SELECT 1 FROM workforce_attendance_events_effective e WHERE e.shift_assignment_id=a.id AND e.event_type='CLOCK_IN') AS clocked_in,
+       EXISTS(SELECT 1 FROM workforce_attendance_events_effective e WHERE e.shift_assignment_id=a.id AND e.event_type='ABSENCE_RECORDED') AS absence_recorded
        FROM workforce_shift_assignments a JOIN workforce_workers w
         ON w.id=a.worker_id AND w.tenant_id=a.tenant_id AND w.factory_id=a.factory_id
        JOIN workforce_shift_templates s ON s.id=a.shift_template_id AND s.tenant_id=a.tenant_id AND s.factory_id=a.factory_id
@@ -942,7 +1001,7 @@ export class WorkforceService {
       if(!worker) return {worker:null,attendance:[],overtime:[]};
       const attendance=await client.query<Row>(
         `SELECT e.id::text AS id,e.event_type,e.source_type,e.occurred_at::text AS occurred_at,a.shift_date::text AS shift_date
-         FROM workforce_attendance_events e JOIN workforce_shift_assignments a
+         FROM workforce_attendance_events_effective e JOIN workforce_shift_assignments a
           ON a.id=e.shift_assignment_id AND a.tenant_id=e.tenant_id AND a.factory_id=e.factory_id
          WHERE e.worker_id=$1 AND e.tenant_id=$2 AND e.factory_id=$3 AND a.shift_date BETWEEN $4::date AND $5::date
          ORDER BY e.occurred_at`,
@@ -1017,7 +1076,7 @@ export class WorkforceService {
       `SELECT e.id::text AS id,e.event_type,e.source_type,e.source_event_id,e.occurred_at::text AS occurred_at,
        e.shift_assignment_id::text AS shift_assignment_id,e.worker_id::text AS worker_id,w.employee_code,w.display_name,
        e.capture_metadata,e.created_at::text AS captured_at
-       FROM workforce_attendance_events e JOIN workforce_workers w
+       FROM workforce_attendance_events_effective e JOIN workforce_workers w
         ON w.id=e.worker_id AND w.tenant_id=e.tenant_id AND w.factory_id=e.factory_id
        WHERE e.id=$1 AND e.tenant_id=$2 AND e.factory_id=$3`,
       [id,c.tenantId,c.factoryId]);
