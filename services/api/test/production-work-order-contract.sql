@@ -217,7 +217,8 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_constraint c
     WHERE c.conrelid = to_regclass('inventory_movements')
-      AND c.conname = 'uq_inventory_movement_identity_scope'
+      AND c.contype = 'u'
+      AND pg_get_constraintdef(c.oid) LIKE '%UNIQUE (id, tenant_id, factory_id)%'
   ) THEN
     RAISE EXCEPTION 'Production posting yield columns or tenant/factory scoped report/movement links are missing';
   END IF;
