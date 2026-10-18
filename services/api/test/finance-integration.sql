@@ -146,6 +146,36 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN NULL;
   END;
   BEGIN
+    INSERT INTO financial_facts(
+      tenant_id,factory_id,connector_id,connector_run_id,external_fact_id,source_fact_key,
+      fact_type,source_record_type,source_record_ref,effective_at,currency,amount,
+      metadata_snapshot,fact_hash,ingested_by_user_id
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000001','da100000-0000-4000-8000-000000000002',
+      'CI-AR-BAD-DOMAIN','CI-COST-100','ACTUAL_COST','GENERAL_LEDGER_LINE','COST-100',
+      clock_timestamp(),'BDT',50,'{}'::jsonb,repeat('e',64),
+      '921382b8-e83f-43ab-a576-e3db6a06b70c'
+    );
+    RAISE EXCEPTION 'AR connector accepted a cost fact outside its domain';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO financial_facts(
+      tenant_id,factory_id,connector_id,connector_run_id,external_fact_id,source_fact_key,
+      fact_type,source_record_type,source_record_ref,effective_at,currency,amount,
+      metadata_snapshot,fact_hash,ingested_by_user_id
+    ) VALUES(
+      'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+      'da100000-0000-4000-8000-000000000001','da100000-0000-4000-8000-000000000002',
+      'CI-AR-SECRET-META','CI-AR-SECRET-META','AR_OPEN','AR_INVOICE','AR-SECRET-META',
+      clock_timestamp(),'BDT',100,'{"authorization":"do-not-persist"}'::jsonb,repeat('f',64),
+      '921382b8-e83f-43ab-a576-e3db6a06b70c'
+    );
+    RAISE EXCEPTION 'Secret-like keys were accepted in financial fact metadata';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
     INSERT INTO finance_fact_reconciliations(
       tenant_id,factory_id,fact_id,expected_source_type,expected_source_ref,
       source_quantity,expected_quantity,quantity_tolerance,source_rate,expected_rate,rate_tolerance,
@@ -183,5 +213,24 @@ BEGIN
       AND review_status='RESOLVED' AND match_status='MISMATCH'
   ) THEN RAISE EXCEPTION 'Reviewed finance mismatch evidence was not retained'; END IF;
 END $$;
+
+-- Verify row filtering with a non-superuser application role, not only RLS catalog flags.
+SET LOCAL ROLE factoryos_app;
+SELECT set_config('app.tenant_id','00000000-0000-4000-8000-000000000099',true);
+DO $
+DECLARE
+  table_name text;
+  visible_rows bigint;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'finance_connectors','finance_connector_runs','financial_facts',
+    'finance_fact_reconciliations','finance_connector_history'
+  ] LOOP
+    EXECUTE format('SELECT count(*) FROM %I',table_name) INTO visible_rows;
+    IF visible_rows<>0 THEN
+      RAISE EXCEPTION 'Cross-tenant finance rows are visible through %',table_name;
+    END IF;
+  END LOOP;
+END $;
 
 ROLLBACK;
