@@ -26,6 +26,7 @@ import { ProductionWorkOrdersModule } from './production/production-work-orders.
 import { ResearchModule } from './research/research.module';
 import { GrowthModule } from './growth/growth.module';
 import { OutboxModule } from './outbox/outbox.module';
+import { QualityModule } from './quality/quality.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
@@ -82,6 +83,8 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
     MrpLiteModule,
 
     ProductionWorkOrdersModule,
+
+    QualityModule,
 
     ResearchModule,
 
