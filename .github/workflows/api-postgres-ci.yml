@@ -197,6 +197,7 @@ jobs:
             migrations/109_utility_lifecycle_cost_and_audit_guards.sql
             migrations/110_ehs_safety_permits_incidents_actions.sql
             migrations/111_ehs_lifecycle_safety_guards.sql
+            migrations/112_commercial_quotation_lifecycle.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -288,6 +289,7 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-management-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/commercial-quotation.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
