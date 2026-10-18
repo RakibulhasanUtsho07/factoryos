@@ -8,6 +8,8 @@ describe('operational event reconciliation contract', () => {
     expect(classifyOperationalDomain('WORKFORCE.ATTENDANCE.CLOCK_IN')).toBe('ATTENDANCE');
     expect(classifyOperationalDomain('MES.PRODUCTION.COUNTED')).toBe('PRODUCTION');
     expect(classifyOperationalDomain('QUALITY.INSPECTION.PASSED')).toBe('QUALITY');
+    expect(classifyOperationalDomain('MES.QUALITY.INSPECTION_FAILED')).toBe('QUALITY');
+    expect(classifyOperationalDomain('QMS.INSPECTION.RESULT')).toBe('QUALITY');
     expect(classifyOperationalDomain('ORDER.CREATED')).toBeNull();
     expect(classifyOperationalDomain('WORKFORCE.SKILL.CERTIFIED')).toBeNull();
   });
