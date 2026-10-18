@@ -1474,14 +1474,17 @@ export class InventoryReservationService {
    * production transaction. Scrap remains production evidence and is never
    * received into sellable inventory.
    */
-  async postWorkOrderFinishedGoodsReceipt(
+  async postFinishedGoodsOutputReceipt(
     client: PoolClient,
     input: {
       userId: string;
       tenantId: string;
       factoryId: string;
-      workOrderId: string;
-      workOrderNumber: string;
+      workOrderId: string | null;
+      workOrderNumber: string | null;
+      orderId: string;
+      orderNumber: string;
+      orderLineId: string;
       finishedItemId: string;
       productionReportId: string;
       goodQuantity: string;
@@ -1568,7 +1571,9 @@ export class InventoryReservationService {
         input.tenantId, input.factoryId, input.finishedItemId, quantity,
         balance.quantity_on_hand, item.unit, movementKey, movementHash,
         input.productionReportId,
-        `Finished-good receipt for work order ${input.workOrderNumber}`,
+        input.workOrderId
+          ? `Finished-good receipt for work order ${input.workOrderNumber}`
+          : `Finished-good receipt for order ${input.orderNumber}, line ${input.orderLineId}`,
         input.userId, input.correlationId,
       ],
     );
@@ -1586,6 +1591,9 @@ export class InventoryReservationService {
         purpose: 'PRODUCTION_OUTPUT',
         work_order_id: input.workOrderId,
         work_order_number: input.workOrderNumber,
+        order_id: input.orderId,
+        order_number: input.orderNumber,
+        order_line_id: input.orderLineId,
         production_report_id: input.productionReportId,
         good_quantity: quantity,
         scrap_quantity: input.scrapQuantity,
