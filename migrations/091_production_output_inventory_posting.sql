@@ -261,7 +261,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_production_output_posting_mutati
 CREATE OR REPLACE FUNCTION factoryos_require_production_output_before_order_completion()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_unfulfilled_line RECORD;
 BEGIN
@@ -311,7 +311,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TRIGGER trg_order_production_output_fulfillment_guard
 BEFORE UPDATE OF status ON orders
