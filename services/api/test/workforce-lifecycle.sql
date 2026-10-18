@@ -91,6 +91,21 @@ BEGIN
   WHERE id=v_assignment AND tenant_id=v_tenant AND factory_id=v_factory;
 
   -- Consent is evaluated at the event's occurrence time, not its later sync time.
+  -- Database-level privacy guard rejects raw biometric payloads even if a client bypasses API validation.
+  BEGIN
+    INSERT INTO workforce_attendance_events (
+      tenant_id,factory_id,shift_assignment_id,worker_id,event_type,source_type,source_event_id,
+      occurred_at,idempotency_key,request_hash,capture_metadata,recorded_by_user_id,correlation_id
+    ) VALUES (
+      v_tenant,v_factory,v_assignment,v_worker,'CLOCK_IN','BIOMETRIC','ci-wfc-sensitive-metadata',
+      v_start+INTERVAL '5 minutes','ci-wfc-sensitive-metadata',v_hash,
+      '{"fingerprint_template":"must-not-be-persisted"}'::jsonb,v_actor,gen_random_uuid()
+    );
+    RAISE EXCEPTION 'expected the workforce metadata privacy guard to reject a biometric template' USING ERRCODE='P0001';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
   INSERT INTO workforce_attendance_events (
     tenant_id,factory_id,shift_assignment_id,worker_id,event_type,source_type,source_event_id,
     occurred_at,idempotency_key,request_hash,capture_metadata,recorded_by_user_id,correlation_id
