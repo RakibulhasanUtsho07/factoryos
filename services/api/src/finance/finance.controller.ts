@@ -1,7 +1,7 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
+  BadRequestException,
   Get,
   Headers,
   Param,
@@ -87,6 +87,15 @@ export class FinanceConnectorsController {
   async list(@Req() request: FinanceRequest, @Query() query: ListFinanceConnectorsDto) {
     const ctx = context(request);
     return this.service.listConnectors(ctx.userId, ctx.tenantId, ctx.factoryId, query);
+  }
+
+  @Get(':connectorId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finance.connectors.read')
+  @RequireFactoryScope()
+  async get(@Req() request: FinanceRequest, @Param('connectorId', new ParseUUIDPipe()) id: string) {
+    const ctx = context(request);
+    return this.service.getConnector(ctx.userId, ctx.tenantId, ctx.factoryId, id);
   }
 
   @Post(':connectorId/approve')
@@ -184,7 +193,7 @@ export class FinanceReportingController {
   ) {
     const ctx = context(request);
     if (status && !['OPEN', 'RESOLVED', 'WAIVED'].includes(status)) {
-      throw new ForbiddenException('Unsupported finance reconciliation status filter');
+      throw new BadRequestException('Unsupported finance reconciliation status filter');
     }
     return this.service.listReconciliations(
       ctx.userId,

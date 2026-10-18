@@ -209,5 +209,10 @@ export function validateFinanceEndpoint(
   if (url.protocol !== 'https:' || url.username || url.password) {
     throw new Error('FINANCE_CONNECTOR_ENDPOINT_MUST_BE_HTTPS_WITHOUT_EMBEDDED_CREDENTIALS');
   }
+  for (const [key] of url.searchParams) {
+    if (/(password|token|secret|credential|api.?key|authorization|private.?key|client.?secret)/i.test(key)) {
+      throw new Error('FINANCE_CONNECTOR_ENDPOINT_MUST_NOT_CONTAIN_CREDENTIAL_QUERY_PARAMETERS');
+    }
+  }
   return url.toString();
 }

@@ -72,5 +72,8 @@ describe('finance integration contract', () => {
     expect(() => validateFinanceEndpoint('REST_API', 'https://user:password@finance.example.com')).toThrow(
       'FINANCE_CONNECTOR_ENDPOINT_MUST_BE_HTTPS_WITHOUT_EMBEDDED_CREDENTIALS',
     );
+    expect(() => validateFinanceEndpoint('REST_API', 'https://finance.example.com/api?api_key=inline-secret')).toThrow(
+      'FINANCE_CONNECTOR_ENDPOINT_MUST_NOT_CONTAIN_CREDENTIAL_QUERY_PARAMETERS',
+    );
   });
 });

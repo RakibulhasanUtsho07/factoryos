@@ -49,6 +49,15 @@ interface ConnectorRow extends QueryResultRow {
   status: 'PENDING_APPROVAL' | 'ACTIVE' | 'PAUSED' | 'REJECTED';
   row_version: number | string;
   created_by_user_id: string;
+  endpoint_url?: string | null;
+  configuration?: Record<string, unknown>;
+  has_secret_reference?: boolean | string;
+  reviewed_by_user_id?: string | null;
+  reviewed_at?: string | null;
+  paused_at?: string | null;
+  decision_reason?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 interface NormalizedFact {
   external_fact_id: string;
@@ -138,7 +147,8 @@ export class FinanceService {
       async (client) => {
         await this.assertActiveFactory(client, tenantId, factoryId);
         const prior = await client.query<ConnectorRow & { request_hash: string }>(
-          'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,request_hash ' +
+          'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
+          'endpoint_url,configuration,(secret_reference IS NOT NULL) AS has_secret_reference,request_hash ' +
           'FROM finance_connectors WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
           [tenantId, factoryId, idempotencyKey],
         );
@@ -155,7 +165,8 @@ export class FinanceService {
           'id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,' +
           'endpoint_url,secret_reference,configuration,status,row_version,idempotency_key,request_hash,created_by_user_id' +
           ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,\'PENDING_APPROVAL\',1,$12,$13,$14) ' +
-          'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text',
+          'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
+          'endpoint_url,configuration,(secret_reference IS NOT NULL) AS has_secret_reference',
           [
             id, tenantId, factoryId, connectorCode, dto.display_name.trim(), dto.source_system.trim(),
             dto.domain, dto.integration_mode, endpointUrl, secretReference, JSON.stringify(configuration),
@@ -173,6 +184,44 @@ export class FinanceService {
     );
   }
 
+
+  async getConnector(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+  ) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      const result = await client.query<ConnectorRow>(
+        'SELECT c.id::text,c.connector_code,c.display_name,c.source_system,c.domain,c.integration_mode,c.status,' +
+        'c.row_version::int AS row_version,c.created_by_user_id::text,c.reviewed_by_user_id::text,' +
+        'c.reviewed_at::text,c.paused_at::text,c.decision_reason,c.created_at::text,c.updated_at::text,' +
+        'c.endpoint_url,c.configuration,(c.secret_reference IS NOT NULL) AS has_secret_reference,' +
+        '(SELECT r.completed_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_at,' +
+        '(SELECT r.source_occurred_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_source_occurred_at,' +
+        '(SELECT r.status FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_status,' +
+        '(SELECT r.mismatch_count FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_mismatch_count ' +
+        'FROM finance_connectors c WHERE c.id=$1 AND c.tenant_id=$2 AND c.factory_id=$3',
+        [connectorId, tenantId, factoryId],
+      );
+      const row = result.rows[0];
+      if (!row) throw new NotFoundException('Finance connector not found in the active factory scope');
+      return {
+        ...this.connectorResponse(row, false),
+        reviewed_by_user_id: row.reviewed_by_user_id ?? null,
+        reviewed_at: row.reviewed_at ?? null,
+        paused_at: row.paused_at ?? null,
+        decision_reason: row.decision_reason ?? null,
+        created_at: row.created_at ?? null,
+        updated_at: row.updated_at ?? null,
+        last_run_at: (row as ConnectorRow & { last_run_at?: string | null }).last_run_at ?? null,
+        last_source_occurred_at: (row as ConnectorRow & { last_source_occurred_at?: string | null }).last_source_occurred_at ?? null,
+        last_run_status: (row as ConnectorRow & { last_run_status?: string | null }).last_run_status ?? null,
+        last_run_mismatch_count: (row as ConnectorRow & { last_run_mismatch_count?: number | null }).last_run_mismatch_count ?? null,
+      };
+    });
+  }
+
   async listConnectors(
     userId: string,
     tenantId: string,
@@ -181,12 +230,17 @@ export class FinanceService {
   ) {
     return this.database.transaction({ tenantId, userId }, async (client) => {
       const result = await client.query(
-        'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
-        'row_version::int AS row_version,created_by_user_id::text,reviewed_by_user_id::text,' +
-        'reviewed_at::text,paused_at::text,decision_reason,created_at::text,updated_at::text ' +
-        'FROM finance_connectors WHERE tenant_id=$1 AND factory_id=$2 ' +
-        'AND ($3::text IS NULL OR domain=$3) AND ($4::text IS NULL OR status=$4) ' +
-        'ORDER BY created_at DESC LIMIT 100',
+        'SELECT c.id::text,c.connector_code,c.display_name,c.source_system,c.domain,c.integration_mode,c.status,' +
+        'c.row_version::int AS row_version,c.created_by_user_id::text,c.reviewed_by_user_id::text,' +
+        'c.reviewed_at::text,c.paused_at::text,c.decision_reason,c.created_at::text,c.updated_at::text,' +
+        'c.endpoint_url,c.configuration,(c.secret_reference IS NOT NULL) AS has_secret_reference,' +
+        '(SELECT r.completed_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_at,' +
+        '(SELECT r.source_occurred_at::text FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_source_occurred_at,' +
+        '(SELECT r.status FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_status,' +
+        '(SELECT r.mismatch_count FROM finance_connector_runs r WHERE r.tenant_id=c.tenant_id AND r.factory_id=c.factory_id AND r.connector_id=c.id ORDER BY r.completed_at DESC LIMIT 1) AS last_run_mismatch_count ' +
+        'FROM finance_connectors c WHERE c.tenant_id=$1 AND c.factory_id=$2 ' +
+        'AND ($3::text IS NULL OR c.domain=$3) AND ($4::text IS NULL OR c.status=$4) ' +
+        'ORDER BY c.created_at DESC LIMIT 100',
         [tenantId, factoryId, query.domain ?? null, query.status ?? null],
       );
       return result.rows;
@@ -247,7 +301,8 @@ export class FinanceService {
           'reviewed_by_user_id=$2,reviewed_at=clock_timestamp(),paused_at=CASE WHEN $1=\'PAUSED\' THEN clock_timestamp() ELSE paused_at END,' +
           'decision_reason=$3,updated_at=clock_timestamp() ' +
           'WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7 ' +
-          'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text',
+          'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,' +
+          'endpoint_url,configuration,(secret_reference IS NOT NULL) AS has_secret_reference',
           [nextStatus, userId, reason, connectorId, tenantId, factoryId, dto.expected_version],
         );
         if (!updated.rows[0]) throw new ConflictException('Finance connector transition lost an optimistic-concurrency race');
@@ -821,6 +876,9 @@ export class FinanceService {
       status: row.status,
       row_version: Number(row.row_version),
       created_by_user_id: row.created_by_user_id,
+      endpoint_url: row.endpoint_url ?? null,
+      configuration: row.configuration ?? {},
+      has_secret_reference: row.has_secret_reference === true || row.has_secret_reference === 't',
       replayed,
       system_of_record_boundary: 'EXTERNAL_SOURCE_REMAINS_AUTHORITATIVE',
       write_policy: 'READ_ONLY_INGESTION_NO_GL_JOURNAL_PAYMENT_OR_TAX_POSTING',

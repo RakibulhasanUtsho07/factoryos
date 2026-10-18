@@ -101,7 +101,7 @@ CREATE TABLE finance_connectors (
  CONSTRAINT chk_finance_connector_status CHECK(status IN ('PENDING_APPROVAL','ACTIVE','PAUSED','REJECTED')),
  CONSTRAINT chk_finance_connector_row_version CHECK(row_version > 0),
  CONSTRAINT chk_finance_connector_request_hash CHECK(request_hash ~ '^[0-9a-f]{64}$'),
- CONSTRAINT chk_finance_connector_endpoint CHECK(endpoint_url IS NULL OR endpoint_url ~ '^https://'),
+ CONSTRAINT chk_finance_connector_endpoint CHECK(endpoint_url IS NULL OR (endpoint_url ~ '^https://' AND endpoint_url !~* '[?&](password|token|secret|credential|api[_-]?key|authorization|private[_-]?key|client[_-]?secret)=')),
  CONSTRAINT chk_finance_connector_secret_ref CHECK(secret_reference IS NULL OR secret_reference ~ '^(vault|secret)://[A-Za-z0-9._/-]+$'),
  CONSTRAINT chk_finance_connector_mode_endpoint CHECK(integration_mode NOT IN ('REST_API','WEBHOOK') OR endpoint_url IS NOT NULL),
  CONSTRAINT chk_finance_connector_config_object CHECK(jsonb_typeof(configuration)='object' AND NOT factoryos_finance_json_has_sensitive_key(configuration)),
