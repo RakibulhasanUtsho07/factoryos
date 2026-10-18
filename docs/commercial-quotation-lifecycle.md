@@ -1,6 +1,6 @@
 # Commercial quotation, pricing and order conversion
 
-This slice implements the versioned quotation-to-order record required by FactoryOS AI SRS v2.1 **FR-FIN-01 (P0)** and supports the customer-commercial history described by **FR-SUP-04**. Acceptance scenario AS-61 also calls for should-cost and margin views; those require the separate FR-FIN-02 cost-component/evidence model and are not represented as completed by this quotation slice.
+This slice implements the versioned quotation-to-order record required by FactoryOS AI SRS v2.1 **FR-FIN-01 (P0)** and supports the customer-commercial history described by **FR-SUP-04**. Acceptance scenario AS-61 also requires evidence-backed should-cost. The engine and quotation approval gate are implemented in docs/should-cost-engine.md; this document remains focused on the quotation lifecycle and commercial terms.
 
 ## Lifecycle
 
@@ -51,7 +51,7 @@ The resulting manufacturing order starts in DRAFT; order confirmation, inventory
 
 - Unit contract: services/api/src/commercial/quotation-lifecycle.spec.ts covers allowed status transitions, decimal price/tax calculation, discount cap and currency normalization.
 - PostgreSQL contract: services/api/test/commercial-quotation.sql checks forced tenant RLS, policy/permission/migration registration, append-only rate/rule/line evidence, invalid direct transitions and self-approval protection.
-- CI: the API PostgreSQL workflow applies migrations/112_commercial_quotation_lifecycle.sql and runs the commercial SQL contract before the API build and complete Jest suite.
+- CI: the API PostgreSQL workflow applies migrations/112_commercial_quotation_lifecycle.sql and runs the commercial SQL contract before the API build and complete Jest suite. See docs/should-cost-engine.md for the linked FR-FIN-02 costing gate.
 
 ## SRS traceability and boundary
 
@@ -59,4 +59,4 @@ The resulting manufacturing order starts in DRAFT; order confirmation, inventory
 |---|---|
 | FR-FIN-01 — versioned quotation-to-order commercial records, price, currency, tax, incoterms/payment terms, customer rules and approval history | Implemented with version snapshots, pricing rules, effective-dated FX, lifecycle/approval trail and accepted-quote conversion |
 | FR-SUP-04 — quote/order/approval commercial history | Quotation history and order-linked conversion record implemented; RFQ, customer complaint/RMA and external customer communications remain separate slices |
-| AS-61 / FR-FIN-02 — should-cost evidence and margin views, block approval when required cost components are missing | Not claimed complete here; a governed cost-component evidence model and approval gate must be built separately rather than inventing unsupported cost values |
+| AS-61 / FR-FIN-02 — deterministic should-cost evidence and approval gating | Implemented in docs/should-cost-engine.md; full FR-FIN-03 profitability and actual-cost/variance reporting remain separate work |
