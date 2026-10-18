@@ -212,6 +212,10 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_constraint c
     WHERE c.conrelid = to_regclass('production_output_postings')
+      AND c.conname = 'chk_production_output_posting_work_order_pair'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    WHERE c.conrelid = to_regclass('production_output_postings')
       AND c.conname = 'fk_production_output_posting_report'
       AND pg_get_constraintdef(c.oid) LIKE '%production_report_id, tenant_id, factory_id%'
   ) OR NOT EXISTS (
