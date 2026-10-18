@@ -18,6 +18,8 @@ DECLARE
   v_assignment UUID := gen_random_uuid();
   v_nonconsenting_assignment UUID := gen_random_uuid();
   v_overtime UUID := gen_random_uuid();
+  v_corrected_event UUID;
+  v_correction UUID;
   v_date DATE := CURRENT_DATE+1;
   v_start TIMESTAMPTZ;
   v_end TIMESTAMPTZ;
@@ -118,6 +120,52 @@ BEGIN
     v_tenant,v_factory,v_assignment,v_worker,'CLOCK_OUT','MANUAL',
     v_end+INTERVAL '45 minutes','ci-wfc-clock-out-001',v_hash,'{"supervisor_checked":true}'::jsonb,v_actor,gen_random_uuid()
   );
+
+  -- Attendance correction is a versioned overlay; the original reader event remains unchanged.
+  SELECT id INTO v_corrected_event
+  FROM workforce_attendance_events
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND idempotency_key='ci-wfc-break-end-001';
+  IF v_corrected_event IS NULL THEN
+    RAISE EXCEPTION 'Workforce correction fixture could not find the original break-end event';
+  END IF;
+  INSERT INTO workforce_attendance_corrections (
+    tenant_id,factory_id,original_event_id,correction_version,supersedes_correction_id,
+    worker_id,shift_assignment_id,corrected_event_type,corrected_occurred_at,reason,
+    idempotency_key,request_hash,corrected_by_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_corrected_event,1,NULL,v_worker,v_assignment,'BREAK_END',
+    v_start+INTERVAL '4 hours 35 minutes','CI correction version one',
+    'ci-wfc-break-end-correction-001',v_hash,v_actor,gen_random_uuid()
+  ) RETURNING id INTO v_correction;
+  INSERT INTO workforce_attendance_corrections (
+    tenant_id,factory_id,original_event_id,correction_version,supersedes_correction_id,
+    worker_id,shift_assignment_id,corrected_event_type,corrected_occurred_at,reason,
+    idempotency_key,request_hash,corrected_by_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_corrected_event,2,v_correction,v_worker,v_assignment,'BREAK_END',
+    v_start+INTERVAL '4 hours 40 minutes','CI correction supersedes version one',
+    'ci-wfc-break-end-correction-002',v_hash,v_actor,gen_random_uuid()
+  );
+  IF NOT EXISTS (
+    SELECT 1 FROM workforce_attendance_events_effective e
+    WHERE e.id=v_corrected_event AND e.event_type='BREAK_END'
+      AND e.occurred_at=v_start+INTERVAL '4 hours 40 minutes'
+      AND e.correction_version=2
+  ) THEN
+    RAISE EXCEPTION 'Effective attendance view must return the latest correction version';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM workforce_attendance_events e
+    WHERE e.id=v_corrected_event AND e.occurred_at=v_start+INTERVAL '4 hours 30 minutes'
+  ) THEN
+    RAISE EXCEPTION 'An attendance correction must not mutate the original source event';
+  END IF;
+  BEGIN
+    UPDATE workforce_attendance_corrections SET reason='tampered' WHERE id=v_correction;
+    RAISE EXCEPTION 'expected immutable attendance correction evidence to reject updates' USING ERRCODE='P0001';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    NULL;
+  END;
 
   -- A late-arriving earlier event is accepted only if the timestamp-ordered stream remains valid.
   BEGIN
