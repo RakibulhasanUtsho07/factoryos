@@ -42,6 +42,7 @@ import { FinanceFileExportDto, FinanceFileImportDto, CreateFinanceConnectorDto,
 } from './dto/finance.dto';
 import { deriveFinanceValidationCounts, FinanceFileValidationError, parseFinanceFileImport, serializeFinanceFactsCsv, serializeFinanceValidationErrorCsv, type ParsedFinanceFileImport } from './finance-file-import';
 import { FINANCE_SFTP_TRANSPORT, assertFinanceSftpRemoteFilePath, matchesFinanceSftpFilePattern, type FinanceSftpDownload, type FinanceSftpTransport } from './finance-file-transfer.adapters';
+import { FINANCE_ERP_TRANSFER, type FinanceErpTransferAdapter } from './finance-erp-transfer.adapters';
 
 interface FinanceEventContext {
   requestId: string | null;
@@ -152,6 +153,7 @@ export class FinanceService {
   constructor(
     private readonly database: DatabaseService,
     @Optional() @Inject(FINANCE_SFTP_TRANSPORT) private readonly sftpTransport?: FinanceSftpTransport,
+    @Optional() @Inject(FINANCE_ERP_TRANSFER) private readonly erpTransfer?: FinanceErpTransferAdapter,
   ) {}
 
   async createConnector(
@@ -170,7 +172,7 @@ export class FinanceService {
     if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(connectorCode)) {
       throw new BadRequestException('connector_code must be a stable uppercase identifier');
     }
-    const outboundMode = dto.integration_mode === 'FILE_EXPORT' || dto.integration_mode === 'SFTP_EXPORT';
+    const outboundMode = ['FILE_EXPORT', 'ERP_EXPORT', 'SFTP_EXPORT'].includes(dto.integration_mode);
     const isReportingSource = dto.is_reporting_source ?? (dto.domain !== 'CUSTOM' && !outboundMode);
     if (outboundMode && isReportingSource) throw new BadRequestException('Outbound export connectors cannot be reporting sources');
     if (dto.domain === 'CUSTOM' && isReportingSource) {
@@ -181,6 +183,9 @@ export class FinanceService {
     const endpointUrl = sftpMode ? null : this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
     const secretReference = this.secretReference(dto.secret_reference ?? null);
     let configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
+    if ((dto.integration_mode === 'ERP_IMPORT' || dto.integration_mode === 'ERP_EXPORT') && !secretReference) {
+      throw new BadRequestException('ERP transfer connectors require a secret-manager reference for authentication');
+    }
     if (sftpMode) {
       if (!secretReference) throw new BadRequestException('SFTP connectors require a secret-manager reference for the authentication key');
       try { configuration = validateFinanceSftpConfiguration(dto.integration_mode, configuration) as unknown as Record<string, unknown>; }
@@ -529,6 +534,131 @@ export class FinanceService {
     }
   }
 
+
+  async processErpImport(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    ctx: FinanceEventContext,
+  ) {
+    if (!this.erpTransfer) {
+      throw new ServiceUnavailableException('ERP import is disabled because no reviewed ERP transfer adapter is registered');
+    }
+    const found = await this.database.query<ConnectorRow & {
+      secret_reference: string | null;
+      configuration: Record<string, unknown>;
+      endpoint_url: string | null;
+    }>(
+      'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
+      'row_version::int AS row_version,created_by_user_id::text,secret_reference,configuration,endpoint_url ' +
+      'FROM finance_connectors WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [connectorId, tenantId, factoryId],
+      { tenantId, userId },
+    );
+    const connector = found.rows[0];
+    if (!connector) throw new NotFoundException('ERP connector not found in the active factory scope');
+    if (connector.status !== 'ACTIVE' || connector.integration_mode !== 'ERP_IMPORT') {
+      throw new ConflictException('ERP import requires an active ERP_IMPORT connector');
+    }
+    if (!connector.endpoint_url || !connector.secret_reference) {
+      throw new ServiceUnavailableException('ERP connector endpoint or secret-manager reference is missing');
+    }
+
+    let download;
+    try {
+      download = await this.erpTransfer.downloadNext({
+        tenant_id: tenantId,
+        factory_id: factoryId,
+        connector_id: connectorId,
+        endpoint_url: connector.endpoint_url,
+        secret_reference: connector.secret_reference,
+        configuration: connector.configuration ?? {},
+      });
+    } catch {
+      throw new ServiceUnavailableException('ERP adapter could not retrieve the next batch; no source acknowledgement was sent');
+    }
+    if (!download) return { status: 'NO_BATCH', connector_id: connectorId };
+    if (!Buffer.isBuffer(download.content) || download.content.length < 1 || download.content.length > 2 * 1024 * 1024) {
+      throw new BadRequestException('ERP import payload must be a non-empty file up to 2 MiB');
+    }
+    const sourceBatchRef = typeof download.source_batch_ref === 'string' ? download.source_batch_ref.trim() : '';
+    const providerReference = typeof download.provider_reference === 'string' ? download.provider_reference.trim() : '';
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(sourceBatchRef) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(providerReference)) {
+      throw new BadRequestException('ERP adapter returned an invalid opaque batch or provider reference');
+    }
+    if (download.format !== 'CSV' && download.format !== 'JSON') {
+      throw new BadRequestException('ERP adapter returned an unsupported file format');
+    }
+    const contentHash = createHash('sha256').update(download.content).digest('hex');
+    const acknowledge = async (disposition: 'PROCESSED' | 'QUARANTINED') => {
+      await this.erpTransfer!.acknowledge({
+        tenant_id: tenantId,
+        factory_id: factoryId,
+        connector_id: connectorId,
+        endpoint_url: connector.endpoint_url as string,
+        secret_reference: connector.secret_reference as string,
+        configuration: connector.configuration ?? {},
+        source_batch_ref: sourceBatchRef,
+        provider_reference: providerReference,
+        payload_sha256: contentHash,
+        disposition,
+      });
+    };
+
+    const prior = await this.database.query<{
+      id: string; status: string; external_batch_ref: string; source_file_name: string;
+      source_format: string; source_payload_sha256: string; received_count: number;
+      accepted_count: number; mismatch_count: number; completed_at: string;
+    }>(
+      'SELECT id::text,status,external_batch_ref,source_file_name,source_format,source_payload_sha256,' +
+      'received_count,accepted_count,mismatch_count,completed_at::text FROM finance_connector_runs ' +
+      'WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND source_payload_sha256=$4 LIMIT 1',
+      [tenantId, factoryId, connectorId, contentHash],
+      { tenantId, userId },
+    );
+    if (prior.rows[0]) {
+      try {
+        await acknowledge('PROCESSED');
+        return { status: 'ALREADY_IMPORTED', duplicate: true, receipt: prior.rows[0] };
+      } catch {
+        return { status: 'ACKNOWLEDGEMENT_PENDING', duplicate: true, receipt: prior.rows[0], error_code: 'ERP_ACK_PENDING' };
+      }
+    }
+
+    const fileDto: FinanceFileImportDto = {
+      external_batch_ref: sourceBatchRef,
+      format: download.format,
+      file_name: download.file_name,
+      content_base64: download.content.toString('base64'),
+      ...(download.source_occurred_at ? { source_occurred_at: download.source_occurred_at } : {}),
+    };
+    const idempotencyKey = 'erp-import:' + connectorId + ':' +
+      createHash('sha256').update(sourceBatchRef).digest('hex').slice(0, 24) + ':' + contentHash;
+    const report = await this.validateFactsFile(
+      userId, tenantId, factoryId, connectorId, fileDto, idempotencyKey, ctx,
+    );
+    if (report.status !== 'VALID') {
+      try {
+        await acknowledge('QUARANTINED');
+        return { status: 'QUARANTINED', imported: false, validation_report: report };
+      } catch {
+        return { status: 'QUARANTINE_PENDING', imported: false, validation_report: report, error_code: 'ERP_ACK_PENDING' };
+      }
+    }
+
+    const receipt = await this.importFactsFile(
+      userId, tenantId, factoryId, connectorId, fileDto, idempotencyKey, ctx, report.id,
+    );
+    try {
+      await acknowledge('PROCESSED');
+      return { status: 'IMPORTED', imported: true, validation_report: report, receipt };
+    } catch {
+      return { status: 'ACKNOWLEDGEMENT_PENDING', imported: true, validation_report: report, receipt, error_code: 'ERP_ACK_PENDING' };
+    }
+  }
+
   async exportFactsFile(
     userId: string,
     tenantId: string,
@@ -567,8 +697,8 @@ export class FinanceService {
       const connector = connectorResult.rows[0];
       if (!connector) throw new NotFoundException('Finance export connector not found in the active factory scope');
       if (connector.status !== 'ACTIVE') throw new ConflictException('File export requires an active approved connector');
-      if (!['FILE_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode)) {
-        throw new ConflictException('File export requires a FILE_EXPORT or SFTP_EXPORT connector');
+      if (!['FILE_EXPORT', 'ERP_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode)) {
+        throw new ConflictException('File export requires a FILE_EXPORT, ERP_EXPORT or SFTP_EXPORT connector');
       }
       if (connector.domain === 'CUSTOM') {
         throw new ConflictException('CUSTOM connectors cannot export governed financial reporting facts');
@@ -712,6 +842,32 @@ export class FinanceService {
         }
         assertFinanceSftpRemoteFilePath(configuration, uploaded.remote_path, fileName);
         remoteReference = uploaded.remote_path;
+
+      } else if (connector.integration_mode === 'ERP_EXPORT') {
+        if (!this.erpTransfer) {
+          throw new ServiceUnavailableException('ERP export is disabled because no reviewed ERP transfer adapter is registered');
+        }
+        if (!connector.endpoint_url || !connector.secret_reference) {
+          throw new ServiceUnavailableException('ERP connector endpoint or secret-manager reference is missing');
+        }
+        const uploaded = await this.erpTransfer.upload({
+          tenant_id: tenantId,
+          factory_id: factoryId,
+          connector_id: connectorId,
+          endpoint_url: connector.endpoint_url,
+          secret_reference: connector.secret_reference,
+          configuration: connector.configuration ?? {},
+          file_name: fileName,
+          format: dto.format,
+          content,
+          payload_sha256: payloadSha256,
+        });
+        if (uploaded.payload_sha256 !== payloadSha256 || uploaded.bytes_written !== content.length ||
+            !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(uploaded.provider_reference)) {
+          throw new ServiceUnavailableException('ERP upload verification failed; an immutable export receipt was not issued');
+        }
+        remoteReference = 'erp:' + uploaded.provider_reference;
+      }
       }
 
       const receiptId = randomUUID();
@@ -868,7 +1024,7 @@ export class FinanceService {
       if (connector.status !== 'ACTIVE') {
         throw new ConflictException('File validation requires an approved active finance connector');
       }
-      if (!['FILE_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
+      if (!['FILE_IMPORT', 'ERP_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
         throw new ConflictException('File validation requires a FILE_IMPORT or SFTP_IMPORT connector');
       }
 
@@ -1128,10 +1284,10 @@ export class FinanceService {
         const connector = connectorResult.rows[0];
         if (!connector) throw new NotFoundException('Finance connector not found in the active factory scope');
 
-        if (sourceFileImport && !['FILE_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
-          throw new ConflictException('File import is only permitted for FILE_IMPORT or SFTP_IMPORT connectors');
+        if (sourceFileImport && !['FILE_IMPORT', 'ERP_IMPORT', 'SFTP_IMPORT'].includes(connector.integration_mode)) {
+          throw new ConflictException('File import is only permitted for FILE_IMPORT, ERP_IMPORT or SFTP_IMPORT connectors');
         }
-        if (!sourceFileImport && ['FILE_IMPORT', 'SFTP_IMPORT', 'FILE_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode)) {
+        if (!sourceFileImport && ['FILE_IMPORT', 'ERP_IMPORT', 'ERP_EXPORT', 'SFTP_IMPORT', 'FILE_EXPORT', 'SFTP_EXPORT'].includes(connector.integration_mode)) {
           throw new ConflictException('File connectors must use the governed file-exchange endpoints');
         }
         if (validationReportId && !sourceFileImport) {
