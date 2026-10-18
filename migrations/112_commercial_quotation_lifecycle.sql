@@ -76,7 +76,6 @@ CREATE TABLE commercial_pricing_rules (
   CONSTRAINT chk_commercial_pricing_rules_allowed_currencies CHECK (
     cardinality(allowed_currencies) > 0
     AND array_position(allowed_currencies, NULL) IS NULL
-    AND NOT EXISTS (SELECT 1 FROM unnest(allowed_currencies) c WHERE c !~ '^[A-Z]{3}$')
   ),
   CONSTRAINT chk_commercial_pricing_rules_tax CHECK (default_tax_percent BETWEEN 0 AND 100),
   CONSTRAINT chk_commercial_pricing_rules_discount CHECK (max_discount_percent BETWEEN 0 AND 100),
