@@ -1,0 +1,871 @@
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import type { PoolClient, QueryResultRow } from 'pg';
+import { DatabaseService } from '../database/database.service';
+import {
+  assertFactCompatibleWithDomain,
+  financeRequestHash,
+  isFinanceConnectorDomain,
+  isFinanceConnectorMode,
+  isFinanceFactType,
+  normalizeFinanceCurrency,
+  normalizeFinanceDecimal,
+  reconciliationMatches,
+  validateFinanceEndpoint,
+  validateFinanceSecretReference,
+  type FinanceConnectorDomain,
+  type FinanceConnectorMode,
+  type FinanceFactType,
+} from './finance-contract';
+import {
+  CreateFinanceConnectorDto,
+  FinanceFactInputDto,
+  FinanceMarginInputsQueryDto,
+  FinanceWorkingCapitalQueryDto,
+  IngestFinanceFactsDto,
+  ListFinanceConnectorsDto,
+  ListFinanceFactsDto,
+  ReviewFinanceReconciliationDto,
+  TransitionFinanceConnectorDto,
+} from './dto/finance.dto';
+
+interface FinanceEventContext {
+  requestId: string | null;
+  traceId: string | null;
+}
+interface ConnectorRow extends QueryResultRow {
+  id: string;
+  connector_code: string;
+  display_name: string;
+  source_system: string;
+  domain: FinanceConnectorDomain;
+  integration_mode: FinanceConnectorMode;
+  status: 'PENDING_APPROVAL' | 'ACTIVE' | 'PAUSED' | 'REJECTED';
+  row_version: number | string;
+  created_by_user_id: string;
+}
+interface NormalizedFact {
+  external_fact_id: string;
+  source_fact_key: string;
+  fact_type: FinanceFactType;
+  source_record_type: string;
+  source_record_ref: string;
+  effective_at: string;
+  due_at: string | null;
+  currency: string;
+  amount: string;
+  customer_ref: string | null;
+  product_id: string | null;
+  product_ref: string | null;
+  order_id: string | null;
+  order_ref: string | null;
+  cost_center_ref: string | null;
+  shipment_ref: string | null;
+  source_quantity: string | null;
+  source_rate: string | null;
+  source_uom_code: string | null;
+  metadata_snapshot: Record<string, unknown>;
+  reconciliation: null | {
+    expected_source_type: string;
+    expected_source_ref: string;
+    expected_quantity: string;
+    quantity_tolerance: string;
+    expected_rate: string;
+    rate_tolerance: string;
+    uom_code: string;
+    match_status: 'MATCHED' | 'MISMATCH';
+  };
+}
+const REVERSIBLE_FACT_TYPES = new Set<FinanceFactType>([
+  'GL_BALANCE',
+  'BANK_BALANCE',
+  'ACTUAL_REVENUE',
+  'ACTUAL_COST',
+  'ACTUAL_CONTRIBUTION_COST',
+  'FORECAST_REVENUE',
+  'FORECAST_COST',
+  'FORECAST_CONTRIBUTION_COST',
+]);
+const SECRET_KEY_PATTERN = /(password|token|secret|credential|api.?key|authorization|private.?key|client.?secret)/i;
+
+@Injectable()
+export class FinanceService {
+  constructor(private readonly database: DatabaseService) {}
+
+  async createConnector(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    dto: CreateFinanceConnectorDto,
+    idempotencyKeyInput: string | null,
+    ctx: FinanceEventContext,
+  ) {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    if (!isFinanceConnectorDomain(dto.domain) || !isFinanceConnectorMode(dto.integration_mode)) {
+      throw new BadRequestException('Unsupported finance connector domain or integration mode');
+    }
+    const connectorCode = dto.connector_code.trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._-]{1,63}$/.test(connectorCode)) {
+      throw new BadRequestException('connector_code must be a stable uppercase identifier');
+    }
+    const endpointUrl = this.endpoint(dto.integration_mode, dto.endpoint_url ?? null);
+    const secretReference = this.secretReference(dto.secret_reference ?? null);
+    const configuration = this.safeObject(dto.configuration ?? {}, 'configuration');
+    const requestHash = financeRequestHash({
+      connector_code: connectorCode,
+      display_name: dto.display_name.trim(),
+      source_system: dto.source_system.trim(),
+      domain: dto.domain,
+      integration_mode: dto.integration_mode,
+      endpoint_url: endpointUrl,
+      secret_reference: secretReference,
+      configuration,
+    });
+
+    return this.database.transaction(
+      {
+        tenantId, userId,
+        requestId: this.uuidOrNull(ctx.requestId),
+        traceId: this.uuidOrNull(ctx.traceId),
+        advisoryLockKey: 'finance-connector-create:' + tenantId + ':' + factoryId + ':' + idempotencyKey,
+      },
+      async (client) => {
+        await this.assertActiveFactory(client, tenantId, factoryId);
+        const prior = await client.query<ConnectorRow & { request_hash: string }>(
+          'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text,request_hash ' +
+          'FROM finance_connectors WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
+          [tenantId, factoryId, idempotencyKey],
+        );
+        if (prior.rows[0]) {
+          if (prior.rows[0].request_hash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used for a different finance connector request');
+          }
+          return this.connectorResponse(prior.rows[0], true);
+        }
+
+        const id = randomUUID();
+        const inserted = await client.query<ConnectorRow>(
+          'INSERT INTO finance_connectors(' +
+          'id,tenant_id,factory_id,connector_code,display_name,source_system,domain,integration_mode,' +
+          'endpoint_url,secret_reference,configuration,status,row_version,idempotency_key,request_hash,created_by_user_id' +
+          ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,\'PENDING_APPROVAL\',1,$12,$13,$14) ' +
+          'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text',
+          [
+            id, tenantId, factoryId, connectorCode, dto.display_name.trim(), dto.source_system.trim(),
+            dto.domain, dto.integration_mode, endpointUrl, secretReference, JSON.stringify(configuration),
+            idempotencyKey, requestHash, userId,
+          ],
+        );
+        await this.connectorHistory(client, tenantId, factoryId, id, 'CREATED', userId,
+          'Created pending independent approval', ctx, { domain: dto.domain, mode: dto.integration_mode });
+        await this.audit(client, tenantId, factoryId, userId, 'FINANCE_CONNECTOR_CREATED', 'CREATE',
+          'finance_connectors', id, ctx, { connector_code: connectorCode, domain: dto.domain, status: 'PENDING_APPROVAL' });
+        await this.outbox(client, tenantId, factoryId, id, 'FINANCE_CONNECTOR_CREATED', userId, ctx,
+          { connector_code: connectorCode, domain: dto.domain, status: 'PENDING_APPROVAL' });
+        return this.connectorResponse(inserted.rows[0], false);
+      },
+    );
+  }
+
+  async listConnectors(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    query: ListFinanceConnectorsDto,
+  ) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      const result = await client.query(
+        'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
+        'row_version::int AS row_version,created_by_user_id::text,reviewed_by_user_id::text,' +
+        'reviewed_at::text,paused_at::text,decision_reason,created_at::text,updated_at::text ' +
+        'FROM finance_connectors WHERE tenant_id=$1 AND factory_id=$2 ' +
+        'AND ($3::text IS NULL OR domain=$3) AND ($4::text IS NULL OR status=$4) ' +
+        'ORDER BY created_at DESC LIMIT 100',
+        [tenantId, factoryId, query.domain ?? null, query.status ?? null],
+      );
+      return result.rows;
+    });
+  }
+
+  async transitionConnector(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    action: 'APPROVE' | 'REJECT' | 'PAUSE',
+    dto: TransitionFinanceConnectorDto,
+    ctx: FinanceEventContext,
+  ) {
+    const reason = dto.reason.trim();
+    if (reason.length < 8) throw new BadRequestException('A decision reason of at least 8 characters is required');
+    return this.database.transaction(
+      {
+        tenantId, userId,
+        requestId: this.uuidOrNull(ctx.requestId),
+        traceId: this.uuidOrNull(ctx.traceId),
+        advisoryLockKey: 'finance-connector-transition:' + tenantId + ':' + connectorId,
+      },
+      async (client) => {
+        const found = await client.query<ConnectorRow>(
+          'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
+          'row_version::int AS row_version,created_by_user_id::text FROM finance_connectors ' +
+          'WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
+          [connectorId, tenantId, factoryId],
+        );
+        const connector = found.rows[0];
+        if (!connector) throw new NotFoundException('Finance connector not found in the active factory scope');
+        if (Number(connector.row_version) !== dto.expected_version) {
+          throw new ConflictException('Finance connector row version changed; reload before retrying');
+        }
+
+        let nextStatus: ConnectorRow['status'];
+        let historyAction: 'APPROVED' | 'REJECTED' | 'PAUSED';
+        if (action === 'APPROVE') {
+          if (connector.status !== 'PENDING_APPROVAL') throw new ConflictException('Only a pending finance connector can be approved');
+          if (connector.created_by_user_id === userId) throw new ForbiddenException('The connector creator cannot approve their own connector');
+          nextStatus = 'ACTIVE';
+          historyAction = 'APPROVED';
+        } else if (action === 'REJECT') {
+          if (connector.status !== 'PENDING_APPROVAL') throw new ConflictException('Only a pending finance connector can be rejected');
+          if (connector.created_by_user_id === userId) throw new ForbiddenException('The connector creator cannot reject their own connector');
+          nextStatus = 'REJECTED';
+          historyAction = 'REJECTED';
+        } else {
+          if (connector.status !== 'ACTIVE') throw new ConflictException('Only an active finance connector can be paused');
+          nextStatus = 'PAUSED';
+          historyAction = 'PAUSED';
+        }
+
+        const updated = await client.query<ConnectorRow>(
+          'UPDATE finance_connectors SET status=$1,row_version=row_version+1,' +
+          'reviewed_by_user_id=$2,reviewed_at=clock_timestamp(),paused_at=CASE WHEN $1=\'PAUSED\' THEN clock_timestamp() ELSE paused_at END,' +
+          'decision_reason=$3,updated_at=clock_timestamp() ' +
+          'WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7 ' +
+          'RETURNING id::text,connector_code,display_name,source_system,domain,integration_mode,status,row_version,created_by_user_id::text',
+          [nextStatus, userId, reason, connectorId, tenantId, factoryId, dto.expected_version],
+        );
+        if (!updated.rows[0]) throw new ConflictException('Finance connector transition lost an optimistic-concurrency race');
+
+        await this.connectorHistory(client, tenantId, factoryId, connectorId, historyAction, userId, reason, ctx,
+          { previous_status: connector.status, next_status: nextStatus, row_version: Number(updated.rows[0].row_version) });
+        await this.audit(client, tenantId, factoryId, userId, 'FINANCE_CONNECTOR_' + historyAction, action,
+          'finance_connectors', connectorId, ctx, { previous_status: connector.status, next_status: nextStatus, reason });
+        await this.outbox(client, tenantId, factoryId, connectorId, 'FINANCE_CONNECTOR_' + historyAction, userId, ctx,
+          { previous_status: connector.status, next_status: nextStatus, reason });
+        return this.connectorResponse(updated.rows[0], false);
+      },
+    );
+  }
+
+  async ingestFacts(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    dto: IngestFinanceFactsDto,
+    idempotencyKeyInput: string | null,
+    ctx: FinanceEventContext,
+  ) {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    if (!Array.isArray(dto.facts) || dto.facts.length < 1 || dto.facts.length > 500) {
+      throw new BadRequestException('A finance batch must contain 1 to 500 facts');
+    }
+    const normalizedFacts = dto.facts.map((fact) => this.normalizeFact(fact));
+    const externalIds = normalizedFacts.map((fact) => fact.external_fact_id);
+    if (new Set(externalIds).size !== externalIds.length) {
+      throw new BadRequestException('A finance batch cannot repeat external_fact_id values');
+    }
+    const batchHash = financeRequestHash({
+      external_batch_ref: dto.external_batch_ref.trim(),
+      source_occurred_at: dto.source_occurred_at ?? null,
+      facts: normalizedFacts,
+    });
+
+    return this.database.transaction(
+      {
+        tenantId, userId,
+        requestId: this.uuidOrNull(ctx.requestId),
+        traceId: this.uuidOrNull(ctx.traceId),
+        advisoryLockKey: 'finance-fact-ingest:' + tenantId + ':' + factoryId + ':' + connectorId + ':' + idempotencyKey,
+      },
+      async (client) => {
+        const connectorResult = await client.query<ConnectorRow>(
+          'SELECT id::text,connector_code,display_name,source_system,domain,integration_mode,status,' +
+          'row_version::int AS row_version,created_by_user_id::text FROM finance_connectors ' +
+          'WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE',
+          [connectorId, tenantId, factoryId],
+        );
+        const connector = connectorResult.rows[0];
+        if (!connector) throw new NotFoundException('Finance connector not found in the active factory scope');
+
+        for (const fact of normalizedFacts) {
+          try {
+            assertFactCompatibleWithDomain(connector.domain, fact.fact_type);
+          } catch {
+            throw new BadRequestException(
+              'Fact type ' + fact.fact_type + ' is not permitted for connector domain ' + connector.domain,
+            );
+          }
+        }
+
+        const prior = await client.query<{
+          id: string; request_hash: string; status: string;
+          received_count: number; accepted_count: number; mismatch_count: number;
+          completed_at: string;
+        }>(
+          'SELECT id::text,request_hash,status,received_count,accepted_count,mismatch_count,completed_at::text ' +
+          'FROM finance_connector_runs WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND idempotency_key=$4 FOR UPDATE',
+          [tenantId, factoryId, connectorId, idempotencyKey],
+        );
+        if (prior.rows[0]) {
+          if (prior.rows[0].request_hash !== batchHash) {
+            throw new ConflictException('Idempotency-Key was already used for a different finance fact batch');
+          }
+          return { ...prior.rows[0], replayed: true, reporting_ready: Number(prior.rows[0].mismatch_count) === 0 };
+        }
+        if (connector.status !== 'ACTIVE') {
+          throw new ConflictException('Financial facts may only be ingested through an approved active connector');
+        }
+
+        const mismatches = normalizedFacts.filter((fact) =>
+          fact.reconciliation?.match_status === 'MISMATCH',
+        ).length;
+        const runId = randomUUID();
+        const batchRef = dto.external_batch_ref.trim();
+        const runResult = await client.query<{
+          id: string; status: string; received_count: number; accepted_count: number; mismatch_count: number;
+          completed_at: string;
+        }>(
+          'INSERT INTO finance_connector_runs(' +
+          'id,tenant_id,factory_id,connector_id,external_batch_ref,idempotency_key,request_hash,status,' +
+          'received_count,accepted_count,mismatch_count,source_occurred_at,actor_user_id,request_id,trace_id' +
+          ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,$13,$14) ' +
+          'RETURNING id::text,status,received_count,accepted_count,mismatch_count,completed_at::text',
+          [
+            runId, tenantId, factoryId, connectorId, batchRef, idempotencyKey, batchHash,
+            mismatches > 0 ? 'COMPLETED_WITH_MISMATCHES' : 'COMPLETED',
+            normalizedFacts.length, mismatches, dto.source_occurred_at ?? null, userId,
+            this.uuidOrNull(ctx.requestId), this.uuidOrNull(ctx.traceId),
+          ],
+        );
+
+        for (const fact of normalizedFacts) {
+          const factId = randomUUID();
+          await client.query(
+            'INSERT INTO financial_facts(' +
+            'id,tenant_id,factory_id,connector_id,connector_run_id,external_fact_id,source_fact_key,' +
+            'fact_type,source_record_type,source_record_ref,effective_at,due_at,currency,amount,customer_ref,' +
+            'product_id,product_ref,order_id,order_ref,cost_center_ref,shipment_ref,source_quantity,source_rate,' +
+            'source_uom_code,metadata_snapshot,fact_hash,ingested_by_user_id' +
+            ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26,$27)',
+            [
+              factId, tenantId, factoryId, connectorId, runId, fact.external_fact_id, fact.source_fact_key,
+              fact.fact_type, fact.source_record_type, fact.source_record_ref, fact.effective_at, fact.due_at,
+              fact.currency, fact.amount, fact.customer_ref, fact.product_id, fact.product_ref, fact.order_id,
+              fact.order_ref, fact.cost_center_ref, fact.shipment_ref, fact.source_quantity, fact.source_rate,
+              fact.source_uom_code, JSON.stringify(fact.metadata_snapshot), financeRequestHash(fact), userId,
+            ],
+          );
+
+          if (fact.reconciliation) {
+            const rec = fact.reconciliation;
+            await client.query(
+              'INSERT INTO finance_fact_reconciliations(' +
+              'tenant_id,factory_id,fact_id,expected_source_type,expected_source_ref,source_quantity,' +
+              'expected_quantity,quantity_tolerance,source_rate,expected_rate,rate_tolerance,uom_code,match_status' +
+              ') VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+              [
+                tenantId, factoryId, factId, rec.expected_source_type, rec.expected_source_ref,
+                fact.source_quantity, rec.expected_quantity, rec.quantity_tolerance, fact.source_rate,
+                rec.expected_rate, rec.rate_tolerance, rec.uom_code, rec.match_status,
+              ],
+            );
+          }
+        }
+
+        await this.audit(client, tenantId, factoryId, userId, 'FINANCIAL_FACT_BATCH_INGESTED', 'INGEST',
+          'finance_connector_runs', runId, ctx, {
+            connector_id: connectorId, connector_code: connector.connector_code,
+            external_batch_ref: batchRef, accepted_count: normalizedFacts.length, mismatch_count: mismatches,
+          });
+        await this.outbox(client, tenantId, factoryId, runId, 'FINANCIAL_FACT_BATCH_INGESTED', userId, ctx,
+          {
+            connector_id: connectorId, connector_code: connector.connector_code,
+            external_batch_ref: batchRef, accepted_count: normalizedFacts.length, mismatch_count: mismatches,
+          });
+        return { ...runResult.rows[0], connector_id: connectorId, replayed: false, reporting_ready: mismatches === 0 };
+      },
+    );
+  }
+
+  async listFacts(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    query: ListFinanceFactsDto,
+  ) {
+    if (query.from && query.to && Date.parse(query.from) > Date.parse(query.to)) {
+      throw new BadRequestException('from must be earlier than or equal to to');
+    }
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      const result = await client.query(
+        'SELECT f.id::text,f.connector_id::text,f.connector_run_id::text,f.external_fact_id,f.source_fact_key,' +
+        'f.fact_type,f.source_record_type,f.source_record_ref,f.effective_at::text,f.due_at::text,f.currency,' +
+        'f.amount::text,f.customer_ref,f.product_id::text,f.product_ref,f.order_id::text,f.order_ref,' +
+        'f.cost_center_ref,f.shipment_ref,f.source_quantity::text,f.source_rate::text,f.source_uom_code,' +
+        'f.fact_hash,f.ingested_by_user_id::text,f.created_at::text,' +
+        'r.match_status,r.review_status,r.quantity_delta::text,r.rate_delta::text ' +
+        'FROM financial_facts f LEFT JOIN finance_fact_reconciliations r ' +
+        'ON r.fact_id=f.id AND r.tenant_id=f.tenant_id AND r.factory_id=f.factory_id ' +
+        'WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
+        'AND ($3::text IS NULL OR f.fact_type=$3) AND ($4::uuid IS NULL OR f.order_id=$4) ' +
+        'AND ($5::uuid IS NULL OR f.product_id=$5) AND ($6::text IS NULL OR f.customer_ref=$6) ' +
+        'AND ($7::timestamptz IS NULL OR f.effective_at >= $7) AND ($8::timestamptz IS NULL OR f.effective_at <= $8) ' +
+        'ORDER BY f.effective_at DESC,f.created_at DESC LIMIT $9',
+        [
+          tenantId, factoryId, query.fact_type ?? null, query.order_id ?? null, query.product_id ?? null,
+          query.customer_ref?.trim() || null, query.from ?? null, query.to ?? null, query.limit ?? 50,
+        ],
+      );
+      return result.rows;
+    });
+  }
+
+  async marginInputs(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    query: FinanceMarginInputsQueryDto,
+  ) {
+    const to = query.to ? new Date(query.to).toISOString() : new Date().toISOString();
+    const from = query.from ? new Date(query.from).toISOString() : new Date(Date.parse(to) - 90 * 86400000).toISOString();
+    if (Date.parse(from) > Date.parse(to)) throw new BadRequestException('from must be earlier than or equal to to');
+
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      const rows = await client.query(
+        'WITH actual_events AS (' +
+        ' SELECT f.* FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
+        ' AND f.fact_type IN (\'ACTUAL_REVENUE\',\'ACTUAL_COST\',\'ACTUAL_CONTRIBUTION_COST\') ' +
+        ' AND f.effective_at >= $3 AND f.effective_at <= $4 ' +
+        ' AND ($5::uuid IS NULL OR f.order_id=$5) AND ($6::uuid IS NULL OR f.product_id=$6) ' +
+        ' AND ($7::text IS NULL OR f.customer_ref=$7)' +
+        '), latest_forecasts AS (' +
+        ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
+        ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 ' +
+        ' AND f.fact_type IN (\'FORECAST_REVENUE\',\'FORECAST_COST\',\'FORECAST_CONTRIBUTION_COST\') ' +
+        ' AND f.effective_at <= $4 AND ($5::uuid IS NULL OR f.order_id=$5) ' +
+        ' AND ($6::uuid IS NULL OR f.product_id=$6) AND ($7::text IS NULL OR f.customer_ref=$7) ' +
+        ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
+        '), selected AS (SELECT * FROM actual_events UNION ALL SELECT * FROM latest_forecasts)' +
+        ' SELECT currency,customer_ref,product_id::text,product_ref,order_id::text,order_ref,cost_center_ref,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)::text AS actual_revenue,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0)::text AS actual_cost,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_CONTRIBUTION_COST\'),0)::text AS actual_contribution_cost,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)::text AS forecast_revenue,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0)::text AS forecast_cost,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_CONTRIBUTION_COST\'),0)::text AS forecast_contribution_cost,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0))::text AS actual_gross_margin,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_CONTRIBUTION_COST\'),0))::text AS actual_contribution_margin,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0))::text AS forecast_gross_margin,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_CONTRIBUTION_COST\'),0))::text AS forecast_contribution_margin,' +
+        ' (COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'FORECAST_COST\'),0))::text AS cost_variance,' +
+        ' CASE WHEN COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)=0 THEN NULL ' +
+        ' ELSE ROUND((COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)-COALESCE(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_COST\'),0))/' +
+        ' NULLIF(SUM(amount) FILTER(WHERE fact_type=\'ACTUAL_REVENUE\'),0)*100,4)::text END AS actual_gross_margin_percent ' +
+        ' FROM selected GROUP BY currency,customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref ' +
+        ' ORDER BY currency,customer_ref,order_ref,product_ref',
+        [tenantId, factoryId, from, to, query.order_id ?? null, query.product_id ?? null, query.customer_ref?.trim() || null],
+      );
+      const count = await client.query<{ unresolved_count: string }>(
+        'SELECT count(*)::text AS unresolved_count FROM finance_fact_reconciliations r ' +
+        'JOIN financial_facts f ON f.id=r.fact_id AND f.tenant_id=r.tenant_id AND f.factory_id=r.factory_id ' +
+        'WHERE r.tenant_id=$1 AND r.factory_id=$2 AND r.match_status=\'MISMATCH\' AND r.review_status=\'OPEN\' ' +
+        'AND f.effective_at >= $3 AND f.effective_at <= $4 ' +
+        'AND ($5::uuid IS NULL OR f.order_id=$5) AND ($6::uuid IS NULL OR f.product_id=$6) ' +
+        'AND ($7::text IS NULL OR f.customer_ref=$7)',
+        [tenantId, factoryId, from, to, query.order_id ?? null, query.product_id ?? null, query.customer_ref?.trim() || null],
+      );
+      const unresolved = Number(count.rows[0]?.unresolved_count ?? 0);
+      return {
+        window: { from, to },
+        reporting_ready: unresolved === 0,
+        unresolved_reconciliation_count: unresolved,
+        currency_policy: 'Results are grouped by currency; unlike currencies are never summed together.',
+        rows: rows.rows,
+      };
+    });
+  }
+
+  async workingCapitalInputs(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    query: FinanceWorkingCapitalQueryDto,
+  ) {
+    const asOf = query.as_of ? new Date(query.as_of).toISOString() : new Date().toISOString();
+    const horizon = query.horizon_days ?? 30;
+    const horizonEnd = new Date(Date.parse(asOf) + horizon * 86400000).toISOString();
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      const result = await client.query(
+        'WITH latest_positions AS (' +
+        ' SELECT DISTINCT ON (f.connector_id,f.fact_type,f.source_fact_key,f.currency) f.* ' +
+        ' FROM financial_facts f WHERE f.tenant_id=$1 AND f.factory_id=$2 AND f.effective_at <= $3 ' +
+        ' AND f.fact_type IN (\'AR_OPEN\',\'AP_OPEN\',\'BANK_BALANCE\',\'INVENTORY_VALUE\',\'OPEN_PO_COMMITMENT\',' +
+        '\'LC_EXPOSURE\',\'SHIPMENT_MILESTONE\',\'TAX_LIABILITY\',\'GL_BALANCE\') ' +
+        ' ORDER BY f.connector_id,f.fact_type,f.source_fact_key,f.currency,f.effective_at DESC,f.created_at DESC' +
+        '), grouped AS (' +
+        ' SELECT currency,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'AR_OPEN\'),0) AS receivables,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'AP_OPEN\'),0) AS payables,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'BANK_BALANCE\'),0) AS bank_balance,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'INVENTORY_VALUE\'),0) AS inventory_value,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'OPEN_PO_COMMITMENT\'),0) AS open_po_commitments,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'LC_EXPOSURE\'),0) AS lc_exposure,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'SHIPMENT_MILESTONE\'),0) AS shipment_milestones,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'TAX_LIABILITY\'),0) AS tax_liability,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'AR_OPEN\' AND due_at <= $4),0) AS scheduled_receivables,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'SHIPMENT_MILESTONE\' AND due_at >= $3 AND due_at <= $4),0) AS scheduled_shipments,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'AP_OPEN\' AND due_at <= $4),0) AS scheduled_payables,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'OPEN_PO_COMMITMENT\' AND due_at <= $4),0) AS scheduled_commitments,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'LC_EXPOSURE\' AND due_at <= $4),0) AS scheduled_lc,' +
+        ' COALESCE(SUM(amount) FILTER(WHERE fact_type=\'TAX_LIABILITY\' AND due_at <= $4),0) AS scheduled_tax ' +
+        ' FROM latest_positions GROUP BY currency)' +
+        ' SELECT currency,receivables::text AS receivables,payables::text AS payables,' +
+        ' bank_balance::text AS bank_balance,inventory_value::text AS inventory_value,' +
+        ' open_po_commitments::text AS open_po_commitments,lc_exposure::text AS lc_exposure,' +
+        ' shipment_milestones::text AS shipment_milestones,tax_liability::text AS tax_liability,' +
+        ' (receivables+inventory_value-payables)::text AS net_working_capital,' +
+        ' (scheduled_receivables+scheduled_shipments)::text AS forecast_inflows,' +
+        ' (scheduled_payables+scheduled_commitments+scheduled_lc+scheduled_tax)::text AS forecast_outflows,' +
+        ' (bank_balance+scheduled_receivables+scheduled_shipments-scheduled_payables-scheduled_commitments-scheduled_lc-scheduled_tax)::text AS projected_cash_at_horizon ' +
+        ' FROM grouped ORDER BY currency',
+        [tenantId, factoryId, asOf, horizonEnd],
+      );
+      const unresolved = await client.query<{ unresolved_count: string }>(
+        'SELECT count(*)::text AS unresolved_count FROM finance_fact_reconciliations ' +
+        'WHERE tenant_id=$1 AND factory_id=$2 AND match_status=\'MISMATCH\' AND review_status=\'OPEN\'',
+        [tenantId, factoryId],
+      );
+      const mismatchCount = Number(unresolved.rows[0]?.unresolved_count ?? 0);
+      return {
+        as_of: asOf,
+        horizon_days: horizon,
+        horizon_end: horizonEnd,
+        reporting_ready: mismatchCount === 0,
+        unresolved_reconciliation_count: mismatchCount,
+        currency_policy: 'Each currency is reported separately; no implicit FX conversion is applied.',
+        rows: result.rows,
+      };
+    });
+  }
+
+  async listReconciliations(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    status?: 'OPEN' | 'RESOLVED' | 'WAIVED',
+  ) {
+    return this.database.transaction({ tenantId, userId }, async (client) => {
+      const result = await client.query(
+        'SELECT r.id::text,r.fact_id::text,f.external_fact_id,f.source_fact_key,f.fact_type,' +
+        'r.expected_source_type,r.expected_source_ref,r.source_quantity::text,r.expected_quantity::text,' +
+        'r.quantity_tolerance::text,r.quantity_delta::text,r.source_rate::text,r.expected_rate::text,' +
+        'r.rate_tolerance::text,r.rate_delta::text,r.uom_code,r.match_status,r.review_status,' +
+        'r.review_reason,r.reviewed_by_user_id::text,r.reviewed_at::text,r.created_at::text ' +
+        'FROM finance_fact_reconciliations r JOIN financial_facts f ' +
+        'ON f.id=r.fact_id AND f.tenant_id=r.tenant_id AND f.factory_id=r.factory_id ' +
+        'WHERE r.tenant_id=$1 AND r.factory_id=$2 AND ($3::text IS NULL OR r.review_status=$3) ' +
+        'ORDER BY CASE WHEN r.review_status=\'OPEN\' THEN 0 ELSE 1 END,r.created_at DESC LIMIT 100',
+        [tenantId, factoryId, status ?? null],
+      );
+      return result.rows;
+    });
+  }
+
+  async reviewReconciliation(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    reconciliationId: string,
+    dto: ReviewFinanceReconciliationDto,
+    ctx: FinanceEventContext,
+  ) {
+    const reason = dto.reason.trim();
+    if (reason.length < 8) throw new BadRequestException('A reconciliation explanation of at least 8 characters is required');
+    return this.database.transaction(
+      {
+        tenantId, userId,
+        requestId: this.uuidOrNull(ctx.requestId),
+        traceId: this.uuidOrNull(ctx.traceId),
+        advisoryLockKey: 'finance-reconciliation-review:' + tenantId + ':' + reconciliationId,
+      },
+      async (client) => {
+        const found = await client.query<{
+          id: string; fact_id: string; ingested_by_user_id: string; match_status: string; review_status: string;
+        }>(
+          'SELECT r.id::text,r.fact_id::text,f.ingested_by_user_id::text,r.match_status,r.review_status ' +
+          'FROM finance_fact_reconciliations r JOIN financial_facts f ' +
+          'ON f.id=r.fact_id AND f.tenant_id=r.tenant_id AND f.factory_id=r.factory_id ' +
+          'WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 FOR UPDATE OF r',
+          [reconciliationId, tenantId, factoryId],
+        );
+        const row = found.rows[0];
+        if (!row) throw new NotFoundException('Finance reconciliation finding not found in the active factory scope');
+        if (row.match_status !== 'MISMATCH' || row.review_status !== 'OPEN') {
+          throw new ConflictException('Only an open quantity/rate mismatch can be reviewed');
+        }
+        if (row.ingested_by_user_id === userId) {
+          throw new ForbiddenException('The fact ingester cannot review their own reconciliation mismatch');
+        }
+        const next = dto.action === 'WAIVE' ? 'WAIVED' : 'RESOLVED';
+        const updated = await client.query(
+          'UPDATE finance_fact_reconciliations SET review_status=$1,review_reason=$2,' +
+          'reviewed_by_user_id=$3,reviewed_at=clock_timestamp() ' +
+          'WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND review_status=\'OPEN\' RETURNING id::text,review_status,review_reason,reviewed_by_user_id::text,reviewed_at::text',
+          [next, reason, userId, reconciliationId, tenantId, factoryId],
+        );
+        if (!updated.rows[0]) throw new ConflictException('Reconciliation review was concurrently completed');
+        await this.audit(client, tenantId, factoryId, userId, 'FINANCE_RECONCILIATION_REVIEWED', dto.action,
+          'finance_fact_reconciliations', reconciliationId, ctx, { match_status: row.match_status, review_status: next, reason });
+        await this.outbox(client, tenantId, factoryId, reconciliationId, 'FINANCE_RECONCILIATION_REVIEWED', userId, ctx,
+          { match_status: row.match_status, review_status: next, reason });
+        return updated.rows[0];
+      },
+    );
+  }
+
+  private normalizeFact(input: FinanceFactInputDto): NormalizedFact {
+    if (!isFinanceFactType(input.fact_type)) throw new BadRequestException('Unsupported financial fact type');
+    const factType = input.fact_type;
+    const allowNegative = REVERSIBLE_FACT_TYPES.has(factType);
+    let amount: string;
+    let currency: string;
+    try {
+      amount = normalizeFinanceDecimal(input.amount, { allowNegative });
+      currency = normalizeFinanceCurrency(input.currency);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid financial amount or currency');
+    }
+    const sourceQuantity = input.source_quantity === undefined
+      ? null
+      : this.decimal(input.source_quantity, false, 'source_quantity');
+    const sourceRate = input.source_rate === undefined
+      ? null
+      : this.decimal(input.source_rate, false, 'source_rate');
+    const sourceUomCode = input.source_uom_code?.trim().toUpperCase() ?? null;
+    if ((sourceQuantity === null) !== (sourceRate === null) || (sourceQuantity === null) !== (sourceUomCode === null)) {
+      throw new BadRequestException('source_quantity, source_rate and source_uom_code must be supplied together');
+    }
+
+    let reconciliation: NormalizedFact['reconciliation'] = null;
+    if (input.reconciliation) {
+      if (sourceQuantity === null || sourceRate === null || sourceUomCode === null) {
+        throw new BadRequestException('Reconciliation requires source quantity, source rate and source UOM evidence');
+      }
+      const expectedQuantity = this.decimal(input.reconciliation.expected_quantity, false, 'expected_quantity');
+      const expectedRate = this.decimal(input.reconciliation.expected_rate, false, 'expected_rate');
+      const quantityTolerance = this.decimal(input.reconciliation.quantity_tolerance ?? '0', false, 'quantity_tolerance');
+      const rateTolerance = this.decimal(input.reconciliation.rate_tolerance ?? '0', false, 'rate_tolerance');
+      reconciliation = {
+        expected_source_type: input.reconciliation.expected_source_type.trim(),
+        expected_source_ref: input.reconciliation.expected_source_ref.trim(),
+        expected_quantity: expectedQuantity,
+        quantity_tolerance: quantityTolerance,
+        expected_rate: expectedRate,
+        rate_tolerance: rateTolerance,
+        uom_code: input.reconciliation.uom_code.trim().toUpperCase(),
+        match_status: reconciliationMatches(sourceQuantity, expectedQuantity, quantityTolerance, sourceRate, expectedRate, rateTolerance)
+          ? 'MATCHED'
+          : 'MISMATCH',
+      };
+    }
+
+    const metadata = this.safeObject(input.metadata_snapshot ?? {}, 'metadata_snapshot');
+    if (JSON.stringify(metadata).length > 32768) throw new BadRequestException('metadata_snapshot exceeds the 32 KiB contract limit');
+    const effectiveAt = new Date(input.effective_at);
+    if (Number.isNaN(effectiveAt.getTime())) throw new BadRequestException('effective_at is not a valid date-time');
+
+    return {
+      external_fact_id: input.external_fact_id.trim(),
+      source_fact_key: input.source_fact_key.trim(),
+      fact_type: factType,
+      source_record_type: input.source_record_type.trim(),
+      source_record_ref: input.source_record_ref.trim(),
+      effective_at: effectiveAt.toISOString(),
+      due_at: input.due_at ? new Date(input.due_at).toISOString() : null,
+      currency,
+      amount,
+      customer_ref: input.customer_ref?.trim() || null,
+      product_id: input.product_id?.toLowerCase() ?? null,
+      product_ref: input.product_ref?.trim() || null,
+      order_id: input.order_id?.toLowerCase() ?? null,
+      order_ref: input.order_ref?.trim() || null,
+      cost_center_ref: input.cost_center_ref?.trim() || null,
+      shipment_ref: input.shipment_ref?.trim() || null,
+      source_quantity: sourceQuantity,
+      source_rate: sourceRate,
+      source_uom_code: sourceUomCode,
+      metadata_snapshot: metadata,
+      reconciliation,
+    };
+  }
+
+  private safeObject(value: Record<string, unknown>, label: string): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestException(label + ' must be a JSON object');
+    }
+    const visit = (item: unknown, depth: number): void => {
+      if (depth > 8) throw new BadRequestException(label + ' exceeds the maximum nesting depth');
+      if (Array.isArray(item)) {
+        if (item.length > 500) throw new BadRequestException(label + ' contains too many array entries');
+        for (const nested of item) visit(nested, depth + 1);
+      } else if (item && typeof item === 'object') {
+        for (const [key, nested] of Object.entries(item as Record<string, unknown>)) {
+          if (SECRET_KEY_PATTERN.test(key)) {
+            throw new BadRequestException(label + ' must not contain credentials or secrets');
+          }
+          visit(nested, depth + 1);
+        }
+      } else if (typeof item === 'string' && item.length > 8000) {
+        throw new BadRequestException(label + ' contains a string longer than 8 KiB');
+      }
+    };
+    visit(value, 0);
+    return value;
+  }
+
+  private decimal(value: string, allowNegative: boolean, field: string): string {
+    try {
+      return normalizeFinanceDecimal(value, { allowNegative });
+    } catch (error) {
+      throw new BadRequestException(field + ': ' + (error instanceof Error ? error.message : 'invalid decimal'));
+    }
+  }
+
+  private endpoint(mode: FinanceConnectorMode, value: string | null): string | null {
+    try {
+      return validateFinanceEndpoint(mode, value);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid finance endpoint');
+    }
+  }
+
+  private secretReference(value: string | null): string | null {
+    try {
+      return validateFinanceSecretReference(value);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid secret reference');
+    }
+  }
+
+  private requireIdempotencyKey(input: string | null): string {
+    const key = input?.trim() ?? '';
+    if (key.length < 1 || key.length > 200) {
+      throw new BadRequestException('Idempotency-Key header is required and must contain 1 to 200 characters');
+    }
+    return key;
+  }
+
+  private async assertActiveFactory(client: PoolClient, tenantId: string, factoryId: string): Promise<void> {
+    const result = await client.query(
+      'SELECT 1 FROM factories WHERE id=$1 AND tenant_id=$2 AND status=\'ACTIVE\'',
+      [factoryId, tenantId],
+    );
+    if (!result.rows[0]) throw new ForbiddenException('Finance operations require an active factory in the authenticated tenant');
+  }
+
+  private connectorResponse(row: ConnectorRow, replayed: boolean) {
+    return {
+      id: row.id,
+      connector_code: row.connector_code,
+      display_name: row.display_name,
+      source_system: row.source_system,
+      domain: row.domain,
+      integration_mode: row.integration_mode,
+      status: row.status,
+      row_version: Number(row.row_version),
+      created_by_user_id: row.created_by_user_id,
+      replayed,
+      system_of_record_boundary: 'EXTERNAL_SOURCE_REMAINS_AUTHORITATIVE',
+      write_policy: 'READ_ONLY_INGESTION_NO_GL_JOURNAL_PAYMENT_OR_TAX_POSTING',
+    };
+  }
+
+  private async connectorHistory(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    connectorId: string,
+    action: 'CREATED' | 'APPROVED' | 'REJECTED' | 'PAUSED',
+    userId: string,
+    reason: string,
+    ctx: FinanceEventContext,
+    details: Record<string, unknown>,
+  ) {
+    await client.query(
+      'INSERT INTO finance_connector_history(tenant_id,factory_id,connector_id,action,actor_user_id,reason,request_id,trace_id,details) ' +
+      'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)',
+      [tenantId, factoryId, connectorId, action, userId, reason, this.uuidOrNull(ctx.requestId),
+        this.uuidOrNull(ctx.traceId), JSON.stringify(details)],
+    );
+  }
+
+  private async audit(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    userId: string,
+    eventType: string,
+    action: string,
+    resourceType: string,
+    resourceId: string,
+    ctx: FinanceEventContext,
+    payload: Record<string, unknown>,
+  ) {
+    await client.query(
+      'INSERT INTO audit_events(tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,' +
+      'correlation_id,request_id,data_class,payload) ' +
+      'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,\'CONFIDENTIAL\',$10::jsonb)',
+      [tenantId, factoryId, userId, eventType, action, resourceType, resourceId,
+        this.uuidOrNull(ctx.traceId), this.uuidOrNull(ctx.requestId), JSON.stringify(payload)],
+    );
+  }
+
+  private async outbox(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    aggregateId: string,
+    eventType: string,
+    userId: string,
+    ctx: FinanceEventContext,
+    payload: Record<string, unknown>,
+  ) {
+    await client.query(
+      'INSERT INTO outbox_events(tenant_id,factory_id,aggregate_type,aggregate_id,event_type,event_version,' +
+      'occurred_at,correlation_id,causation_id,actor,source,payload) ' +
+      'VALUES($1,$2,\'FINANCE\', $3,$4,1,clock_timestamp(),$5,$6,$7::jsonb,$8::jsonb,$9::jsonb)',
+      [
+        tenantId, factoryId, aggregateId, eventType,
+        this.uuidOrNull(ctx.traceId) ?? this.uuidOrNull(ctx.requestId) ?? randomUUID(),
+        this.uuidOrNull(ctx.requestId),
+        JSON.stringify({ type: 'user', id: userId }),
+        JSON.stringify({ system: 'FactoryOS', connector: 'finance-integration-service', version: process.env.APP_VERSION ?? '0.0.1' }),
+        JSON.stringify(payload),
+      ],
+    );
+  }
+
+  private uuidOrNull(value: string | null | undefined): string | null {
+    if (!value || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+      return null;
+    }
+    return value;
+  }
+}
