@@ -94,7 +94,8 @@ CREATE TABLE integration_reconciliation_cases (
   CONSTRAINT chk_integration_reconciliation_case_domain CHECK(domain IN ('ATTENDANCE','PRODUCTION','QUALITY')),
   CONSTRAINT chk_integration_reconciliation_case_type CHECK(case_type IN (
     'MISSING_EVENT_TIME','INVALID_EVENT_TIME','INVALID_SEQUENCE','MISSING_SEQUENCE_RANGE',
-    'SEQUENCE_COLLISION','CROSS_SOURCE_CONFLICT','CONFLICTING_DUPLICATE'
+    'SEQUENCE_COLLISION','CROSS_SOURCE_CONFLICT','CONFLICTING_DUPLICATE',
+    'DUPLICATE_BUSINESS_EVENT','BUSINESS_EVENT_CONFLICT'
   )),
   CONSTRAINT chk_integration_reconciliation_case_status CHECK(status IN ('OPEN','RESOLVED','WAIVED')),
   CONSTRAINT chk_integration_reconciliation_case_severity CHECK(severity IN ('INFO','WARNING','ERROR')),
