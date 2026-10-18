@@ -61,7 +61,7 @@ describe('UtilitiesService request validation',()=>{
 
   it('requires resolution evidence for utility-event completion',async()=>{
     const dto={action:'RESOLVE',expected_version:2,reason:'Restored'} as TransitionUtilityEventDto;
-    await expect(service.transitionEvent(context,METER,dto).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.transitionEvent(context,METER,dto)).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
 });
