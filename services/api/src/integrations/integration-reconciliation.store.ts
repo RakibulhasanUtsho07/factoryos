@@ -10,7 +10,9 @@ export type OperationalCaseType =
   | 'MISSING_SEQUENCE_RANGE'
   | 'SEQUENCE_COLLISION'
   | 'CROSS_SOURCE_CONFLICT'
-  | 'CONFLICTING_DUPLICATE';
+  | 'CONFLICTING_DUPLICATE'
+  | 'DUPLICATE_BUSINESS_EVENT'
+  | 'BUSINESS_EVENT_CONFLICT';
 
 export interface OperationalWebhookInput {
   tenantId: string;
@@ -417,6 +419,45 @@ export async function recordOperationalWebhookEvent(
   }
 
   if (normalized.reconciliationKey) {
+    const sameConnector = await client.query<{
+      id: string;
+      external_event_id: string;
+      comparison_sha256: string;
+    }>(
+      `SELECT id::text AS id,external_event_id,comparison_sha256
+       FROM integration_reconciliation_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND domain=$4
+         AND reconciliation_key=$5 AND event_type=$6 AND external_event_id<>$7
+       ORDER BY received_at DESC LIMIT 25`,
+      [
+        input.tenantId, input.factoryId, input.connectorId, normalized.domain,
+        normalized.reconciliationKey, input.eventType, input.externalEventId,
+      ],
+    );
+    for (const prior of sameConnector.rows) {
+      const ids = [prior.id, eventId].sort();
+      const sameComparison = prior.comparison_sha256 === normalized.comparisonSha256;
+      await openCase(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        connectorId: input.connectorId,
+        eventId,
+        domain: normalized.domain,
+        type: sameComparison ? 'DUPLICATE_BUSINESS_EVENT' : 'BUSINESS_EVENT_CONFLICT',
+        key: caseKey(sameComparison ? 'DUPLICATE_BUSINESS_EVENT' : 'BUSINESS_EVENT_CONFLICT', [
+          input.connectorId, normalized.domain, normalized.reconciliationKey, input.eventType, ...ids,
+        ]),
+        severity: sameComparison ? 'WARNING' : 'ERROR',
+        streamKey: normalized.streamKey,
+        details: {
+          business_key_sha256: hashKey([normalized.domain, normalized.reconciliationKey]),
+          source_event_ids: [prior.external_event_id, input.externalEventId].sort(),
+          duplicate_event_ids: ids,
+          comparison_match: sameComparison,
+        },
+      });
+    }
+
     const other = await client.query<{
       id: string;
       connector_id: string;
