@@ -10,6 +10,7 @@ const WORKER='27c7247c-1c4f-44eb-8b62-8d1ae4f3ee3a';
 const ASSIGNMENT='6e0a7b09-9fcb-4d54-a5f1-49a13d41f6bc';
 const ORDER='18bd617e-985f-4ce7-a96b-c2b51c6c2c9a';
 const OPERATION='3fdefb33-0eb3-4fbd-9cb9-7b4bbfd90b80';
+const SOURCE_EVENT='8a727b48-7c63-4b2f-bf13-5b0afc39c049';
 const context={userId:USER,tenantId:TENANT,factoryId:FACTORY,requestId:null,traceId:null};
 
 describe('WorkforceService input and policy validation',()=>{
@@ -64,9 +65,18 @@ describe('WorkforceService input and policy validation',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects a missing canonical source operation event before database access',async()=>{
+    await expect(service.captureProductivity(context,{
+      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,source_operation_event_id:'',
+      production_started_at:'2026-10-18T10:00:00Z',production_ended_at:'2026-10-18T10:30:00Z',
+      good_quantity:1,scrap_quantity:0,standard_minutes_per_unit:2,actual_minutes:10,
+    },'productivity-source-missing')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires ordered production timestamps before calculating productivity',async()=>{
     await expect(service.captureProductivity(context,{
-      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,
+      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,source_operation_event_id:SOURCE_EVENT,
       production_started_at:'2026-10-18T10:00:00Z',production_ended_at:'2026-10-18T09:59:59Z',
       good_quantity:1,scrap_quantity:0,standard_minutes_per_unit:2,actual_minutes:1,
     },'productivity-reversed-interval')).rejects.toBeInstanceOf(BadRequestException);
@@ -75,7 +85,7 @@ describe('WorkforceService input and policy validation',()=>{
 
   it('rejects productivity quantities with more precision than the inventory/production ledger',async()=>{
     await expect(service.captureProductivity(context,{
-      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,
+      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,source_operation_event_id:SOURCE_EVENT,
       production_started_at:'2026-10-18T09:00:00Z',production_ended_at:'2026-10-18T10:00:00Z',
       good_quantity:1.12345,scrap_quantity:0,standard_minutes_per_unit:2,actual_minutes:30,
     },'productivity-precision')).rejects.toBeInstanceOf(BadRequestException);
@@ -84,7 +94,7 @@ describe('WorkforceService input and policy validation',()=>{
 
   it('requires a scrap reason before opening a productivity transaction',async()=>{
     await expect(service.captureProductivity(context,{
-      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,
+      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,source_operation_event_id:SOURCE_EVENT,
       production_started_at:'2026-10-18T09:00:00Z',production_ended_at:'2026-10-18T10:00:00Z',
       good_quantity:9,scrap_quantity:1,standard_minutes_per_unit:2,actual_minutes:30,
     },'productivity-scrap-reason')).rejects.toBeInstanceOf(BadRequestException);
@@ -93,7 +103,7 @@ describe('WorkforceService input and policy validation',()=>{
 
   it('rejects actual labor longer than the captured production interval',async()=>{
     await expect(service.captureProductivity(context,{
-      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,
+      shift_assignment_id:ASSIGNMENT,work_order_id:ORDER,work_order_operation_id:OPERATION,source_operation_event_id:SOURCE_EVENT,
       production_started_at:'2026-10-18T09:00:00Z',production_ended_at:'2026-10-18T09:15:00Z',
       good_quantity:10,scrap_quantity:0,standard_minutes_per_unit:2,actual_minutes:16,
     },'productivity-actual-window')).rejects.toBeInstanceOf(BadRequestException);
@@ -115,6 +125,14 @@ describe('WorkforceService input and policy validation',()=>{
       from_date:'2026-10-20',to_date:'2026-10-19',
     })).rejects.toBeInstanceOf(BadRequestException);
     expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('rejects an attendance timestamp with no explicit UTC offset',async()=>{
+    await expect(service.captureAttendance(context,{
+      shift_assignment_id:ASSIGNMENT,event_type:'CLOCK_IN',source_type:'MANUAL',
+      occurred_at:'2026-10-18T10:00:00',
+    },'attendance-missing-offset')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid attendance timestamp before ingesting evidence',async()=>{
