@@ -241,11 +241,11 @@ BEGIN
     RAISE EXCEPTION 'every work-order output report requires a matching yield/scrap and inventory posting before commit'
       USING ERRCODE = '23514';
   END IF;
-  IF v_posting.work_order_id <> NEW.work_order_id
-     OR v_posting.work_order_operation_id <> NEW.work_order_operation_id
+  IF v_posting.work_order_id IS DISTINCT FROM NEW.work_order_id
+     OR v_posting.work_order_operation_id IS DISTINCT FROM NEW.work_order_operation_id
      OR v_posting.good_quantity <> NEW.good_quantity
      OR v_posting.scrap_quantity <> NEW.scrap_quantity THEN
-    RAISE EXCEPTION 'every work-order output report requires a matching yield/scrap and inventory posting before commit'
+    RAISE EXCEPTION 'every production output report requires a matching yield/scrap and inventory posting before commit'
       USING ERRCODE = '23514';
   END IF;
   RETURN NULL;
@@ -345,7 +345,7 @@ CREATE POLICY production_output_postings_tenant_isolation ON production_output_p
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
 COMMENT ON TABLE production_output_postings IS
-  'Append-only bridge between canonical work-order output reports, per-report and cumulative yield/scrap, and accepted finished-good inventory receipts. Scrap is evidence only and never increases sellable stock.';
+  'Append-only bridge between work-order or order-line production reports, per-report and cumulative yield/scrap, and accepted finished-good inventory receipts. Scrap is evidence only and never increases sellable stock.';
 COMMENT ON COLUMN production_output_postings.yield_percentage IS
   'Per-report first-pass yield: good_quantity / (good_quantity + scrap_quantity) * 100.';
 COMMENT ON COLUMN production_output_postings.cumulative_yield_percentage IS
