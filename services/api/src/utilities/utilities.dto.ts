@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayMaxSize, IsArray, IsDateString, IsIn, IsInt, IsNumber,
-  IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested,
+  IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min,
 } from 'class-validator';
 
 export const UTILITY_TYPES = ['ELECTRICITY','GAS','STEAM','WATER','COMPRESSED_AIR','FUEL','OTHER'] as const;
