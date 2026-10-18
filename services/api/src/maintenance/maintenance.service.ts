@@ -519,6 +519,7 @@ export class MaintenanceService {
     const key=this.idempotencyKey(rawKey);
     const reason=this.requiredText(dto.reason,'reason',2000);
     const evidence=dto.evidence??{};
+    if (Object.keys(evidence).length === 0) throw new BadRequestException('Checklist completion requires non-empty structured evidence');
     const hash=this.hash({workOrderId:workOrderId.toLowerCase(),taskId:taskId.toLowerCase(),
       expected_version:dto.expected_version,reason,evidence});
     return this.database.transaction({tenantId:c.tenantId,userId:c.userId},async(client)=>{
