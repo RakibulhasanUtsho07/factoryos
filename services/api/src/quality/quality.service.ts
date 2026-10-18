@@ -4,8 +4,9 @@ import { isUUID } from 'class-validator';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
-  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityNcrActionDto,
-  ListQualityInspectionsQueryDto, QualityDispositionDto, QualityInspectionDecisionDto,
+  CloseQualityNcrDto, CreateQualityDefectDto, CreateQualityInspectionDto, CreateQualityInspectionPlanDto,
+  CreateQualityInspectionResultDto, CreateQualityNcrActionDto, ListQualityInspectionsQueryDto,
+  ListQualityPlansQueryDto, QualityDispositionDto, QualityInspectionDecisionDto, QualityInspectionPlanTransitionDto,
 } from './quality.dto';
 interface QualityContext {
   userId: string; tenantId: string; factoryId: string; requestId?: string | null; traceId?: string | null;
@@ -14,7 +15,7 @@ interface QualityContext {
 const INSPECTION_COLUMNS =
   "id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id, " +
   "inspection_type, target_type, target_id::text AS target_id, inventory_item_id::text AS inventory_item_id, " +
-  "traceability_unit_id::text AS traceability_unit_id, plan_code, status, sample_quantity::text AS sample_quantity, " +
+  "traceability_unit_id::text AS traceability_unit_id, plan_code, plan_id::text AS plan_id, plan_revision, criteria_snapshot, status, sample_quantity::text AS sample_quantity, " +
   "notes, row_version::int AS row_version, idempotency_key, request_hash, " +
   "created_by_user_id::text AS created_by_user_id, updated_by_user_id::text AS updated_by_user_id, " +
   "correlation_id::text AS correlation_id, created_at::text AS created_at, updated_at::text AS updated_at";
@@ -58,6 +59,194 @@ export class QualityService {
     return { ...(await this.getInspection(c,result.id)), replayed:result.replayed };
   }
 
+
+  async createInspectionPlan(c: QualityContext, dto: CreateQualityInspectionPlanDto, rawKey: string | null) {
+    this.validateScope(c);
+    const key = this.key(rawKey);
+    const planCode = this.text(dto.plan_code, 'plan_code', 100).toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._-]{0,99}$/.test(planCode)) throw new BadRequestException('plan_code must be a valid code');
+    const name = this.text(dto.name, 'name', 255);
+    if (!Array.isArray(dto.criteria) || dto.criteria.length < 1 || dto.criteria.length > 100) {
+      throw new BadRequestException('an inspection plan requires between 1 and 100 criteria');
+    }
+    const criteria = dto.criteria.map((criterion, index) => this.normalizePlanCriterion(criterion, index));
+    const criterionCodes = criteria.map(item => item.criterion_code);
+    const sequences = criteria.map(item => item.sequence_number);
+    if (new Set(criterionCodes).size !== criterionCodes.length) throw new BadRequestException('criterion_code values must be unique in a plan');
+    if (new Set(sequences).size !== sequences.length) throw new BadRequestException('criterion sequence_number values must be unique in a plan');
+    const sampleQuantity = dto.default_sample_quantity === undefined ? null : this.quantity(dto.default_sample_quantity, 'default_sample_quantity');
+    const notes = dto.notes?.trim() || null;
+    const hash = this.hash({
+      plan_code: planCode, name, inspection_type: dto.inspection_type,
+      default_sample_quantity: sampleQuantity, notes, criteria,
+    });
+    const correlation = this.correlation(c);
+    const result = await this.database.transaction(c, async client => {
+      await this.lockKey(client, c, 'plan-idempotency', key);
+      const existing = await client.query(
+        "SELECT id::text AS id, request_hash FROM quality_inspection_plans WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+        [c.tenantId, c.factoryId, key]);
+      if (existing.rows[0]) {
+        if (String(existing.rows[0].request_hash).trim() !== hash) {
+          throw new ConflictException('Idempotency-Key was already used for a different inspection plan');
+        }
+        return { id: String(existing.rows[0].id), replayed: true };
+      }
+      await this.lockKey(client, c, 'plan-code', planCode + ':' + dto.inspection_type);
+      const revisionResult = await client.query(
+        "SELECT COALESCE(MAX(revision),0)::int+1 AS revision FROM quality_inspection_plans WHERE tenant_id=$1 AND factory_id=$2 AND lower(plan_code)=lower($3)",
+        [c.tenantId, c.factoryId, planCode]);
+      const revision = Number(revisionResult.rows[0]?.revision ?? 1);
+      const inserted = await client.query(
+        "INSERT INTO quality_inspection_plans (tenant_id,factory_id,plan_code,revision,name,inspection_type,default_sample_quantity,notes,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id) " +
+        "VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,$10,$11,$11,$12::uuid) RETURNING id::text AS id",
+        [c.tenantId,c.factoryId,planCode,revision,name,dto.inspection_type,sampleQuantity,notes,key,hash,c.userId,correlation]);
+      const planId = String(inserted.rows[0]?.id ?? '');
+      if (!planId) throw new Error('QUALITY_INSPECTION_PLAN_INSERT_FAILED');
+      for (const criterion of criteria) {
+        await client.query(
+          "INSERT INTO quality_inspection_plan_criteria (tenant_id,factory_id,plan_id,criterion_code,name,description,value_type,comparison_operator,target_value,lower_limit,upper_limit,allowed_values,unit,is_required,is_critical,sequence_number,created_by_user_id) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::numeric,$11::numeric,$12::jsonb,$13,$14,$15,$16,$17)",
+          [c.tenantId,c.factoryId,planId,criterion.criterion_code,criterion.name,criterion.description,
+           criterion.value_type,criterion.comparison_operator,criterion.target_value,criterion.lower_limit,
+           criterion.upper_limit,JSON.stringify(criterion.allowed_values),criterion.unit,criterion.is_required,
+           criterion.is_critical,criterion.sequence_number,c.userId]);
+      }
+      await this.auditOutbox(client,c,{
+        action:'INSPECTION_PLAN_CREATED',correlation,
+        aggregateType:'QUALITY_PLAN',aggregateId:planId,outboxEvent:'QUALITY.PLAN_CHANGED',
+        payload:{plan_id:planId,plan_code:planCode,revision,inspection_type:dto.inspection_type,status:'DRAFT',criteria_count:criteria.length},
+      });
+      return { id:planId, replayed:false };
+    });
+    return { ...(await this.getInspectionPlan(c,result.id)), replayed:result.replayed };
+  }
+
+  async listInspectionPlans(c: QualityContext, query: ListQualityPlansQueryDto) {
+    this.validateScope(c);
+    const limit = query.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new BadRequestException('limit must be between 1 and 100');
+    const result = await this.database.query(
+      "SELECT p.id::text AS id,p.plan_code,p.revision,p.name,p.inspection_type,p.status," +
+      "p.default_sample_quantity::text AS default_sample_quantity,p.notes,p.row_version::int AS row_version," +
+      "p.activated_by_user_id::text AS activated_by_user_id,p.activated_at::text AS activated_at,p.retired_at::text AS retired_at," +
+      "p.created_by_user_id::text AS created_by_user_id,p.created_at::text AS created_at," +
+      "COALESCE((SELECT jsonb_agg(jsonb_build_object('criterion_code',c.criterion_code,'name',c.name,'description',c.description," +
+      "'value_type',c.value_type,'comparison_operator',c.comparison_operator,'target_value',c.target_value," +
+      "'lower_limit',c.lower_limit,'upper_limit',c.upper_limit,'allowed_values',c.allowed_values,'unit',c.unit," +
+      "'is_required',c.is_required,'is_critical',c.is_critical,'sequence_number',c.sequence_number) ORDER BY c.sequence_number,c.criterion_code) " +
+      "FROM quality_inspection_plan_criteria c WHERE c.plan_id=p.id AND c.tenant_id=p.tenant_id AND c.factory_id=p.factory_id),'[]'::jsonb) AS criteria " +
+      "FROM quality_inspection_plans p WHERE p.tenant_id=$1 AND p.factory_id=$2 " +
+      "AND ($3::text IS NULL OR p.inspection_type=$3) AND ($4::text IS NULL OR p.status=$4) " +
+      "ORDER BY lower(p.plan_code),p.revision DESC LIMIT $5",
+      [c.tenantId,c.factoryId,query.inspection_type??null,query.status??null,limit],
+      {tenantId:c.tenantId,userId:c.userId});
+    return result.rows;
+  }
+
+  async getInspectionPlan(c: QualityContext, planId: string) {
+    this.validateScope(c);
+    this.uuid(planId,'planId');
+    const result = await this.database.query(
+      "SELECT p.id::text AS id,p.plan_code,p.revision,p.name,p.inspection_type,p.status," +
+      "p.default_sample_quantity::text AS default_sample_quantity,p.notes,p.row_version::int AS row_version," +
+      "p.activated_by_user_id::text AS activated_by_user_id,p.activated_at::text AS activated_at,p.retired_at::text AS retired_at," +
+      "p.created_by_user_id::text AS created_by_user_id,p.updated_by_user_id::text AS updated_by_user_id," +
+      "p.created_at::text AS created_at,p.updated_at::text AS updated_at," +
+      "COALESCE((SELECT jsonb_agg(jsonb_build_object('criterion_code',c.criterion_code,'name',c.name,'description',c.description," +
+      "'value_type',c.value_type,'comparison_operator',c.comparison_operator,'target_value',c.target_value," +
+      "'lower_limit',c.lower_limit,'upper_limit',c.upper_limit,'allowed_values',c.allowed_values,'unit',c.unit," +
+      "'is_required',c.is_required,'is_critical',c.is_critical,'sequence_number',c.sequence_number) ORDER BY c.sequence_number,c.criterion_code) " +
+      "FROM quality_inspection_plan_criteria c WHERE c.plan_id=p.id AND c.tenant_id=p.tenant_id AND c.factory_id=p.factory_id),'[]'::jsonb) AS criteria " +
+      "FROM quality_inspection_plans p WHERE p.id=$1 AND p.tenant_id=$2 AND p.factory_id=$3",
+      [planId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    if (!result.rows[0]) throw new NotFoundException('Quality inspection plan was not found in this factory');
+    return result.rows[0];
+  }
+
+  async transitionInspectionPlan(c: QualityContext, planId: string, dto: QualityInspectionPlanTransitionDto) {
+    this.validateScope(c); this.uuid(planId,'planId');
+    const reason = dto.reason?.trim() || null;
+    if (dto.action === 'RETIRE' && !reason) throw new BadRequestException('reason is required to retire an inspection plan');
+    const correlation = this.correlation(c);
+    await this.database.transaction(c, async client => {
+      const found = await client.query(
+        "SELECT id::text AS id,status,row_version::int AS row_version,plan_code,revision,inspection_type FROM quality_inspection_plans WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
+        [planId,c.tenantId,c.factoryId]);
+      const plan = found.rows[0];
+      if (!plan) throw new NotFoundException('Quality inspection plan was not found in this factory');
+      if (Number(plan.row_version) !== dto.expected_version) throw new ConflictException('Inspection-plan version is stale');
+      const status = String(plan.status);
+      if (dto.action === 'ACTIVATE') {
+        if (status !== 'DRAFT') throw new ConflictException('Only a draft inspection plan can be activated');
+        const count = await client.query(
+          "SELECT count(*)::int AS count FROM quality_inspection_plan_criteria WHERE plan_id=$1 AND tenant_id=$2 AND factory_id=$3",
+          [planId,c.tenantId,c.factoryId]);
+        if (Number(count.rows[0]?.count ?? 0) < 1) throw new ConflictException('An inspection plan needs at least one criterion before activation');
+      } else if (status !== 'ACTIVE') {
+        throw new ConflictException('Only an active inspection plan can be retired');
+      }
+      const update = dto.action === 'ACTIVATE'
+        ? await client.query(
+          "UPDATE quality_inspection_plans SET status='ACTIVE',row_version=row_version+1,updated_by_user_id=$1,activated_by_user_id=$1,activated_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5",
+          [c.userId,planId,c.tenantId,c.factoryId,plan.row_version])
+        : await client.query(
+          "UPDATE quality_inspection_plans SET status='RETIRED',row_version=row_version+1,updated_by_user_id=$1,retired_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5",
+          [c.userId,planId,c.tenantId,c.factoryId,plan.row_version]);
+      if (update.rowCount !== 1) throw new ConflictException('Inspection plan changed during transition');
+      await this.auditOutbox(client,c,{
+        action:'INSPECTION_PLAN_'+dto.action,correlation,aggregateType:'QUALITY_PLAN',aggregateId:planId,
+        outboxEvent:'QUALITY.PLAN_CHANGED',
+        payload:{plan_id:planId,plan_code:plan.plan_code,revision:plan.revision,inspection_type:plan.inspection_type,
+          from_status:status,to_status:dto.action==='ACTIVATE'?'ACTIVE':'RETIRED',reason,expected_version:dto.expected_version},
+      });
+    });
+    return this.getInspectionPlan(c,planId);
+  }
+
+  async recordInspectionResult(c: QualityContext, inspectionId: string, dto: CreateQualityInspectionResultDto, rawKey: string | null) {
+    this.validateScope(c); this.uuid(inspectionId,'inspectionId');
+    const key=this.key(rawKey), code=this.text(dto.criterion_code,'criterion_code',100).toUpperCase();
+    if(!/^[A-Z0-9][A-Z0-9._-]{0,99}$/.test(code)) throw new BadRequestException('criterion_code must be a valid code');
+    const observed=this.text(dto.observed_value,'observed_value',1000);
+    const notes=dto.notes?.trim()||null, evidence=this.jsonObject(dto.evidence), correlation=this.correlation(c);
+    const hash=this.hash({inspection_id:inspectionId,criterion_code:code,observed_value:observed,notes,evidence});
+    const result=await this.database.transaction(c,async client=>{
+      await this.lockKey(client,c,'inspection-result',key);
+      const existing=await client.query("SELECT id::text AS id,request_hash FROM quality_inspection_results WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+        [c.tenantId,c.factoryId,key]);
+      if(existing.rows[0]){
+        if(String(existing.rows[0].request_hash).trim()!==hash) throw new ConflictException('Idempotency-Key was already used for a different inspection result');
+        return {id:String(existing.rows[0].id),replayed:true};
+      }
+      const found=await client.query("SELECT "+INSPECTION_COLUMNS+" FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE",
+        [inspectionId,c.tenantId,c.factoryId]);
+      const inspection=found.rows[0] as Record<string,unknown>|undefined;
+      if(!inspection) throw new NotFoundException('Quality inspection was not found in this factory');
+      if(!['OPEN','IN_PROGRESS'].includes(String(inspection.status))) throw new ConflictException('Inspection results can only be recorded while the inspection is open or in progress');
+      if(!inspection.plan_id) throw new ConflictException('Select an active versioned inspection plan before recording criterion results');
+      const snapshot=this.jsonArray(inspection.criteria_snapshot);
+      const criterion=snapshot.find(item=>String(item.criterion_code).toUpperCase()===code);
+      if(!criterion) throw new BadRequestException('criterion_code is not included in this inspection plan snapshot');
+      const outcome=this.evaluateCriterion(criterion,observed);
+      const attemptResult=await client.query("SELECT COALESCE(MAX(attempt),0)::int+1 AS attempt FROM quality_inspection_results WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND criterion_code=$4",
+        [inspectionId,c.tenantId,c.factoryId,code]);
+      const attempt=Number(attemptResult.rows[0]?.attempt??1);
+      const inserted=await client.query("INSERT INTO quality_inspection_results (tenant_id,factory_id,inspection_id,plan_id,plan_revision,criterion_code,criterion_snapshot,attempt,observed_value,outcome,notes,evidence,idempotency_key,request_hash,actor_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::uuid) RETURNING id::text AS id",
+        [c.tenantId,c.factoryId,inspectionId,inspection.plan_id,inspection.plan_revision,code,JSON.stringify(criterion),attempt,observed,outcome,notes,JSON.stringify(evidence),key,hash,c.userId,correlation]);
+      const id=String(inserted.rows[0]?.id??'');if(!id)throw new Error('QUALITY_INSPECTION_RESULT_INSERT_FAILED');
+      await this.auditOutbox(client,c,{
+        inspectionId,action:'INSPECTION_RESULT_RECORDED',correlation,
+        aggregateType:'QUALITY_INSPECTION',aggregateId:inspectionId,outboxEvent:'QUALITY.INSPECTION_RESULT_RECORDED',
+        payload:{result_id:id,criterion_code:code,attempt,observed_value:observed,outcome,notes},
+      });
+      return {id,replayed:false};
+    });
+    const resultRow=await this.database.query("SELECT id::text AS id,inspection_id::text AS inspection_id,plan_id::text AS plan_id,plan_revision,criterion_code,criterion_snapshot,attempt,observed_value,outcome,notes,evidence,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_inspection_results WHERE id=$1 AND tenant_id=$2 AND factory_id=$3",
+      [result.id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    return {...resultRow.rows[0],replayed:result.replayed};
+  }
+
   async listInspections(c: QualityContext, query: ListQualityInspectionsQueryDto) {
     this.validateScope(c);
     const limit=query.limit ?? 50;
@@ -78,7 +267,7 @@ export class QualityService {
       [id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
     const inspection=r.rows[0];
     if(!inspection) throw new NotFoundException('Quality inspection was not found in this factory');
-    const [defects,holds,dispositions,ncrResult]=await Promise.all([
+    const [defects,holds,dispositions,ncrResult,results]=await Promise.all([
       this.database.query("SELECT id::text AS id,defect_code,severity,affected_quantity::text AS affected_quantity,description,evidence,status,row_version::int AS row_version,reported_by_user_id::text AS reported_by_user_id,created_at::text AS created_at,updated_at::text AS updated_at FROM quality_defects WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
         [id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query("SELECT id::text AS id,inventory_item_id::text AS inventory_item_id,traceability_unit_id::text AS traceability_unit_id,work_order_id::text AS work_order_id,status,reason,released_by_user_id::text AS released_by_user_id,released_at::text AS released_at,release_reason,created_at::text AS created_at FROM quality_holds WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
@@ -86,6 +275,8 @@ export class QualityService {
       this.database.query("SELECT id::text AS id,hold_id::text AS hold_id,action,status,quantity::text AS quantity,reason,inventory_item_id::text AS inventory_item_id,inventory_movement_id::text AS inventory_movement_id,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at,completed_at::text AS completed_at FROM quality_dispositions WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id",
         [id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query("SELECT id::text AS id,ncr_number,status,severity,title,summary,row_version::int AS row_version,created_at::text AS created_at,closed_at::text AS closed_at,closure_reason FROM quality_ncrs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 LIMIT 1",
+        [id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query("SELECT id::text AS id,plan_id::text AS plan_id,plan_revision,criterion_code,criterion_snapshot,attempt,observed_value,outcome,notes,evidence,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_inspection_results WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY criterion_code,attempt DESC,created_at DESC",
         [id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
     ]);
     let ncr: Record<string,unknown>|null=null;
@@ -95,7 +286,7 @@ export class QualityService {
         [row.id,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
       ncr={...row,actions:actions.rows};
     }
-    return {...inspection,defects:defects.rows,holds:holds.rows,dispositions:dispositions.rows,ncr};
+    return {...inspection,defects:defects.rows,holds:holds.rows,dispositions:dispositions.rows,results:results.rows,ncr};
   }
 
   async recordDefect(c: QualityContext, inspectionId: string, dto: CreateQualityDefectDto, rawKey: string|null) {
@@ -158,6 +349,18 @@ export class QualityService {
         if(next!=='IN_PROGRESS') throw new ConflictException('Only an in-progress inspection can pass');
         const open=await client.query("SELECT count(*)::int AS count FROM quality_defects WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='OPEN'",[id,c.tenantId,c.factoryId]);
         if(Number(open.rows[0]?.count??0)>0) throw new ConflictException('Resolve or disposition every open defect before passing an inspection');
+        if(q.plan_id){
+          const criteria=this.jsonArray(q.criteria_snapshot);
+          const required=criteria.filter(criterion=>criterion.is_required!==false);
+          const latest=await client.query("SELECT DISTINCT ON (criterion_code) criterion_code,outcome FROM quality_inspection_results WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY criterion_code,attempt DESC,created_at DESC",
+            [id,c.tenantId,c.factoryId]);
+          const outcomes=new Map(latest.rows.map((row:Record<string,unknown>)=>[String(row.criterion_code),String(row.outcome)]));
+          for(const criterion of required){
+            const code=String(criterion.criterion_code);
+            if(!outcomes.has(code)) throw new ConflictException('Record a result for every required inspection criterion before PASS: '+code);
+            if(outcomes.get(code)!=='PASS') throw new ConflictException('Required inspection criterion has not passed: '+code);
+          }
+        }
         const rework=await client.query("SELECT id::text AS id,row_version::int AS row_version FROM quality_defects WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='REWORK' FOR UPDATE",[id,c.tenantId,c.factoryId]);
         for(const d of rework.rows) await this.updateDefect(client,c,String(d.id),Number(d.row_version),'RESOLVED','Resolved by successful follow-up inspection',correlation);
         next='PASSED';
@@ -312,6 +515,91 @@ export class QualityService {
       await this.auditOutbox(client,c,{inspectionId:String(n.inspection_id),ncrId,action:'NCR_CLOSED',correlation,payload:{reason,version:Number(n.row_version)+1},aggregateType:'QUALITY_NCR',aggregateId:ncrId,outboxEvent:'QUALITY.NCR_CHANGED'});
       return{replayed:false};
     });return{id:ncrId,status:'CLOSED',...result};
+  }
+
+
+  private normalizePlanCriterion(input: CreateQualityInspectionPlanDto['criteria'][number], index: number) {
+    const code = this.text(input.criterion_code,'criterion_code',100).toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9._-]{0,99}$/.test(code)) throw new BadRequestException('criterion_code must be a valid code');
+    const name = this.text(input.name,'criterion name',255);
+    const description = input.description?.trim() || null;
+    const valueType = input.value_type;
+    const operator = input.comparison_operator;
+    const targetValue = input.target_value?.trim() || null;
+    const lower = input.lower_limit === undefined ? null : Number(input.lower_limit);
+    const upper = input.upper_limit === undefined ? null : Number(input.upper_limit);
+    const allowed = input.allowed_values ?? [];
+    const unit = input.unit?.trim() || null;
+    const required = input.is_required ?? true;
+    const critical = input.is_critical ?? false;
+    const sequence = input.sequence_number ?? index + 1;
+    if (!Number.isInteger(sequence) || sequence < 1) throw new BadRequestException('sequence_number must be a positive integer');
+    if (allowed.some(value => typeof value !== 'string' || !value.trim()) || allowed.length > 100) throw new BadRequestException('allowed_values must be a list of non-empty strings');
+    if (['GT','GTE','LT','LTE','BETWEEN'].includes(operator) && valueType !== 'NUMERIC') throw new BadRequestException('range comparison operators require a NUMERIC criterion');
+    if (operator === 'CONTAINS' && valueType !== 'TEXT') throw new BadRequestException('CONTAINS is only supported for TEXT criteria');
+    if (valueType === 'BOOLEAN' && !['EQ','NE'].includes(operator)) throw new BadRequestException('BOOLEAN criteria support only EQ or NE');
+    if (valueType === 'ENUM' && !['EQ','NE','IN'].includes(operator)) throw new BadRequestException('ENUM criteria support EQ, NE or IN');
+    if (operator === 'BETWEEN' && (lower === null || upper === null || lower > upper)) throw new BadRequestException('BETWEEN requires lower_limit <= upper_limit');
+    if (operator === 'IN' && allowed.length < 1) throw new BadRequestException('IN requires a non-empty allowed_values list');
+    if (operator !== 'BETWEEN' && operator !== 'IN' && !targetValue) throw new BadRequestException('target_value is required for this comparison operator');
+    if (valueType === 'BOOLEAN' && !['true','false'].includes((targetValue ?? '').toLowerCase())) throw new BadRequestException('BOOLEAN target_value must be true or false');
+    if (valueType === 'NUMERIC' && targetValue !== null && !Number.isFinite(Number(targetValue))) throw new BadRequestException('NUMERIC target_value must be numeric');
+    if (valueType === 'NUMERIC' && allowed.some(value => !Number.isFinite(Number(value)))) throw new BadRequestException('NUMERIC allowed_values must contain numbers');
+    return {
+      criterion_code:code,name,description,value_type:valueType,comparison_operator:operator,target_value:targetValue,
+      lower_limit:lower,upper_limit:upper,allowed_values:allowed,unit,is_required:required,is_critical:critical,
+      sequence_number:sequence,
+    };
+  }
+
+  private evaluateCriterion(criterion: Record<string,unknown>, observed: string): 'PASS' | 'FAIL' {
+    const type=String(criterion.value_type), operator=String(criterion.comparison_operator);
+    const target=criterion.target_value === null || criterion.target_value === undefined ? null : String(criterion.target_value);
+    const allowed=Array.isArray(criterion.allowed_values)?criterion.allowed_values.map(String):[];
+    if(type==='NUMERIC'){
+      const value=Number(observed);
+      if(!Number.isFinite(value)) throw new BadRequestException('observed_value must be numeric for this inspection criterion');
+      const targetNumber=target===null?null:Number(target);
+      const lower=criterion.lower_limit===null||criterion.lower_limit===undefined?null:Number(criterion.lower_limit);
+      const upper=criterion.upper_limit===null||criterion.upper_limit===undefined?null:Number(criterion.upper_limit);
+      let pass=false;
+      switch(operator){
+        case 'EQ': pass=targetNumber!==null&&value===targetNumber;break;
+        case 'NE': pass=targetNumber!==null&&value!==targetNumber;break;
+        case 'GT': pass=targetNumber!==null&&value>targetNumber;break;
+        case 'GTE': pass=targetNumber!==null&&value>=targetNumber;break;
+        case 'LT': pass=targetNumber!==null&&value<targetNumber;break;
+        case 'LTE': pass=targetNumber!==null&&value<=targetNumber;break;
+        case 'BETWEEN': pass=lower!==null&&upper!==null&&value>=lower&&value<=upper;break;
+        case 'IN': pass=allowed.includes(observed);break;
+        default: throw new BadRequestException('Unsupported numeric quality criterion operator');
+      }
+      return pass?'PASS':'FAIL';
+    }
+    if(type==='BOOLEAN'){
+      const value=observed.toLowerCase();
+      if(!['true','false'].includes(value)||!target||!['true','false'].includes(target.toLowerCase())) throw new BadRequestException('observed_value must be true or false for this criterion');
+      const equal=value===target.toLowerCase();
+      return (operator==='EQ'?equal:!equal)?'PASS':'FAIL';
+    }
+    let pass=false;
+    switch(operator){
+      case 'EQ': pass=target!==null&&observed===target;break;
+      case 'NE': pass=target!==null&&observed!==target;break;
+      case 'IN': pass=allowed.includes(observed);break;
+      case 'CONTAINS': pass=type==='TEXT'&&target!==null&&observed.includes(target);break;
+      default: throw new BadRequestException('Unsupported text/enum quality criterion operator');
+    }
+    return pass?'PASS':'FAIL';
+  }
+
+  private jsonArray(value: unknown): Record<string,unknown>[] {
+    if(Array.isArray(value)) return value as Record<string,unknown>[];
+    if(typeof value==='string') {
+      try { const parsed: unknown=JSON.parse(value); return Array.isArray(parsed)?parsed as Record<string,unknown>[]:[]; }
+      catch { return []; }
+    }
+    return [];
   }
 
   private async resolveTarget(client:PoolClient,c:QualityContext,type:string,id:string):Promise<TargetBinding>{
