@@ -177,6 +177,7 @@ jobs:
             migrations/089_mrp_lite_material_planning.sql
             migrations/090_production_work_order_operation_lifecycle.sql
             migrations/091_production_output_inventory_posting.sql
+            migrations/092_order_production_report_work_order_routing_guard.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
