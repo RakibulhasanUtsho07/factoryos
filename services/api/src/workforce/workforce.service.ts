@@ -1292,10 +1292,40 @@ export class WorkforceService {
     return value;
   }
   private jsonObject(value:Record<string,unknown>) {
-    if(value===null||Array.isArray(value)||typeof value!=='object') throw new BadRequestException('capture_metadata must be a JSON object');
-    const encoded=JSON.stringify(value);
-    if(encoded.length>16000) throw new BadRequestException('capture_metadata exceeds the 16 KB limit');
-    return JSON.parse(encoded) as Record<string,unknown>;
+    if(value===null||Array.isArray(value)||typeof value!=='object') {
+      throw new BadRequestException('capture_metadata must be a JSON object');
+    }
+
+    // Only low-risk device diagnostics are accepted. Biometric templates,
+    // images, fingerprints, arbitrary nested blobs and worker PII belong
+    // nowhere in an attendance-event metadata field.
+    const allowedKeys=new Set([
+      'device_id','reader_id','terminal_id','site_code','source_sequence','sync_batch_id',
+      'capture_method','reader_timestamp','firmware_version','signal_quality','device_event_type',
+      'client_version','device_timezone','offline_synced','latency_ms','batch_id',
+      'protocol_version','reader_status','status_code','error_code','integration_id',
+    ]);
+    const entries=Object.entries(value);
+    if(entries.length>20) throw new BadRequestException('capture_metadata supports at most 20 diagnostic fields');
+    const sanitized:Record<string,string|number|boolean|null>={};
+    for(const [key,entry] of entries) {
+      if(!allowedKeys.has(key)) {
+        throw new BadRequestException('capture_metadata contains an unsupported or sensitive field: '+key);
+      }
+      if(entry!==null && typeof entry!=='string' && typeof entry!=='number' && typeof entry!=='boolean') {
+        throw new BadRequestException('capture_metadata diagnostic values must be scalar');
+      }
+      if(typeof entry==='string' && (entry.length>255 || /[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]/.test(entry))) {
+        throw new BadRequestException('capture_metadata strings must be at most 255 safe characters');
+      }
+      if(typeof entry==='number' && !Number.isFinite(entry)) {
+        throw new BadRequestException('capture_metadata numbers must be finite');
+      }
+      sanitized[key]=entry as string|number|boolean|null;
+    }
+    const encoded=JSON.stringify(sanitized);
+    if(encoded.length>8000) throw new BadRequestException('capture_metadata exceeds the 8 KB limit');
+    return sanitized;
   }
   private correlationId(c:WorkforceContext) {
     return c.traceId&&isUUID(c.traceId)?c.traceId:randomUUID();
