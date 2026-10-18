@@ -10,7 +10,7 @@ DECLARE
     'workforce_workers','workforce_skills','workforce_worker_skills','workforce_shift_templates',
     'workforce_shift_assignments','workforce_attendance_events','workforce_overtime_requests',
     'workforce_productivity_reports','workforce_biometric_consent_events','workforce_audit_events',
-    'workforce_command_receipts'
+    'workforce_command_receipts','workforce_attendance_corrections'
   ];
   required_triggers TEXT[] := ARRAY[
     'trg_workforce_worker_version_guard','trg_workforce_skill_version_guard',
@@ -19,6 +19,8 @@ DECLARE
     'trg_workforce_attendance_event_guard','trg_workforce_overtime_guard','trg_workforce_productivity_guard',
     'trg_workforce_workers_audit','trg_workforce_skills_audit','trg_workforce_worker_skills_audit',
     'trg_workforce_shifts_audit','trg_workforce_assignments_audit','trg_workforce_attendance_audit',
+    'trg_workforce_shift_template_lifecycle_guard','trg_workforce_attendance_correction_guard',
+    'trg_workforce_attendance_correction_immutable','trg_workforce_attendance_correction_audit',
     'trg_workforce_overtime_audit','trg_workforce_productivity_audit','trg_workforce_biometric_consent_audit','trg_workforce_biometric_consent_actor_guard','trg_workforce_consent_projection',
     'trg_workforce_attendance_evidence_immutable','trg_workforce_productivity_evidence_immutable',
     'trg_workforce_biometric_consent_immutable','trg_workforce_audit_evidence_immutable',
@@ -34,7 +36,8 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='103_workforce_lifecycle_audit_guards')
     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='104_workforce_command_idempotency')
     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='105_workforce_self_service_role')
-    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='106_workforce_consent_timeline_and_output_attribution') THEN
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='106_workforce_consent_timeline_and_output_attribution')
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='107_workforce_shift_revision_and_attendance_corrections') THEN
     RAISE EXCEPTION 'All Workforce schema and lifecycle migrations must be applied';
   END IF;
 
@@ -78,6 +81,15 @@ BEGIN
         AND a.attname IN ('earned_minutes','efficiency_percent') AND a.attgenerated='s') <> 2 THEN
     RAISE EXCEPTION 'Productivity earned minutes and efficiency must be database-generated values';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='idx_workforce_correction_assignment')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_workforce_correction_original')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_workforce_correction_parent')
+     OR NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='workforce_attendance_events_effective' AND relkind='v')
+     OR (SELECT count(*) FROM pg_attribute a
+         WHERE a.attrelid='workforce_shift_templates'::regclass AND a.attname='last_change_reason') <> 1 THEN
+    RAISE EXCEPTION 'Versioned attendance correction, effective timeline view and shift revision schema are required';
+  END IF;
+
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_workforce_productivity_source_event')
      OR (SELECT count(*) FROM pg_attribute a
          WHERE a.attrelid='workforce_biometric_consent_events'::regclass
