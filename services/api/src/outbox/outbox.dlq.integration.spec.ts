@@ -668,29 +668,20 @@ describe(
         const replayIdempotencyKey =
           'dlq-replay-' + randomUUID();
 
-        const result =
-          await service.replay({
-            tenantId:
-              tenantId,
-
-            actorUserId:
-              actorUserId,
-
-            eventId:
-              eventId,
-
-            idempotencyKey:
-              replayIdempotencyKey,
-
-            requestId:
-              replayRequestId,
-
-            traceId:
-              replayTraceId,
-
-            requestFactoryId:
-              factoryId,
-          });
+        const replayInput = {
+          tenantId,
+          actorUserId,
+          eventId,
+          idempotencyKey: replayIdempotencyKey,
+          requestId: replayRequestId,
+          traceId: replayTraceId,
+          requestFactoryId: factoryId,
+        };
+        const [result, concurrentResult] = await Promise.all([
+          service.replay(replayInput),
+          service.replay(replayInput),
+        ]);
+        expect([result.replayed_request, concurrentResult.replayed_request].sort()).toEqual([false, true]);
 
         const repeatedResult =
           await service.replay({
