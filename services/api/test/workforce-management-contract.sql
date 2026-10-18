@@ -19,7 +19,7 @@ DECLARE
     'trg_workforce_attendance_event_guard','trg_workforce_overtime_guard','trg_workforce_productivity_guard',
     'trg_workforce_workers_audit','trg_workforce_skills_audit','trg_workforce_worker_skills_audit',
     'trg_workforce_shifts_audit','trg_workforce_assignments_audit','trg_workforce_attendance_audit',
-    'trg_workforce_overtime_audit','trg_workforce_productivity_audit','trg_workforce_biometric_consent_audit',
+    'trg_workforce_overtime_audit','trg_workforce_productivity_audit','trg_workforce_biometric_consent_audit','trg_workforce_biometric_consent_actor_guard',
     'trg_workforce_attendance_evidence_immutable','trg_workforce_productivity_evidence_immutable',
     'trg_workforce_biometric_consent_immutable','trg_workforce_audit_evidence_immutable',
     'trg_workforce_command_receipt_immutable','trg_tenants_seed_workforce_worker_role',
@@ -33,7 +33,8 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='102_workforce_shift_attendance_productivity')
     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='103_workforce_lifecycle_audit_guards')
     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='104_workforce_command_idempotency')
-    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='105_workforce_self_service_role') THEN
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='105_workforce_self_service_role')
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='106_workforce_consent_timeline_and_output_attribution') THEN
     RAISE EXCEPTION 'All Workforce schema and lifecycle migrations must be applied';
   END IF;
 
@@ -67,7 +68,8 @@ BEGIN
 
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_workforce_attendance_source_event')
     OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_workforce_worker_skill_active')
-    OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_workforce_command_receipt_key') THEN
+    OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_workforce_command_receipt_key')
+    OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_workforce_productivity_source_event_worker') THEN
     RAISE EXCEPTION 'Workforce source-event, active-skill or command idempotency uniqueness is missing';
   END IF;
 
@@ -76,6 +78,16 @@ BEGIN
         AND a.attname IN ('earned_minutes','efficiency_percent') AND a.attgenerated='s') <> 2 THEN
     RAISE EXCEPTION 'Productivity earned minutes and efficiency must be database-generated values';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_workforce_productivity_source_event')
+     OR (SELECT count(*) FROM pg_attribute a
+         WHERE a.attrelid='workforce_biometric_consent_events'::regclass
+           AND a.attname='effective_at' AND a.attnotnull) <> 1
+     OR (SELECT count(*) FROM pg_attribute a
+         WHERE a.attrelid='workforce_productivity_reports'::regclass
+           AND a.attname='source_operation_event_id') <> 1 THEN
+    RAISE EXCEPTION 'Workforce consent effective-time and canonical productivity event links are required';
+  END IF;
+
   IF EXISTS (
     SELECT 1 FROM tenants t
     WHERE NOT EXISTS (
