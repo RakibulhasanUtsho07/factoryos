@@ -1,6 +1,6 @@
 import {
-  IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, IsUUID,
-  Max, MaxLength, Min,
+  ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsObject,
+  IsOptional, IsString, IsUUID, ValidateNested, Max, MaxLength, Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -135,6 +135,148 @@ export class ListQualityInspectionsQueryDto {
   @IsOptional()
   @IsIn([...QUALITY_TARGET_TYPES])
   target_type?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
+export class QualityInspectionPlanCriterionDto {
+  @IsString()
+  @MaxLength(100)
+  criterion_code!: string;
+
+  @IsString()
+  @MaxLength(255)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  description?: string;
+
+  @IsIn(['NUMERIC', 'TEXT', 'BOOLEAN', 'ENUM'])
+  value_type!: 'NUMERIC' | 'TEXT' | 'BOOLEAN' | 'ENUM';
+
+  @IsIn(['EQ', 'NE', 'GT', 'GTE', 'LT', 'LTE', 'BETWEEN', 'IN', 'CONTAINS'])
+  comparison_operator!: 'EQ' | 'NE' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'BETWEEN' | 'IN' | 'CONTAINS';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  target_value?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 6 })
+  lower_limit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 6 })
+  upper_limit?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  allowed_values?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  unit?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  is_required?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  is_critical?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  sequence_number?: number;
+}
+
+export class CreateQualityInspectionPlanDto {
+  @IsString()
+  @MaxLength(100)
+  plan_code!: string;
+
+  @IsString()
+  @MaxLength(255)
+  name!: string;
+
+  @IsIn([...QUALITY_INSPECTION_TYPES])
+  inspection_type!: (typeof QUALITY_INSPECTION_TYPES)[number];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0.0001)
+  default_sample_quantity?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => QualityInspectionPlanCriterionDto)
+  criteria!: QualityInspectionPlanCriterionDto[];
+}
+
+export class QualityInspectionPlanTransitionDto {
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+
+  @IsIn(['ACTIVATE', 'RETIRE'])
+  action!: 'ACTIVATE' | 'RETIRE';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
+export class CreateQualityInspectionResultDto {
+  @IsString()
+  @MaxLength(100)
+  criterion_code!: string;
+
+  @IsString()
+  @MaxLength(1000)
+  observed_value!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+
+  @IsOptional()
+  @IsObject()
+  evidence?: Record<string, unknown>;
+}
+
+export class ListQualityPlansQueryDto {
+  @IsOptional()
+  @IsIn([...QUALITY_INSPECTION_TYPES])
+  inspection_type?: string;
+
+  @IsOptional()
+  @IsIn(['DRAFT', 'ACTIVE', 'RETIRED'])
+  status?: string;
 
   @IsOptional()
   @Type(() => Number)
