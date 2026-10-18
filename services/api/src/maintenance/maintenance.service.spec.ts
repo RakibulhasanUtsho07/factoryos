@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { MaintenanceService } from './maintenance.service';
 import type {
+  CompleteMaintenanceTaskDto,
   CreateMaintenanceAssetDto,
   CreateMaintenanceBreakdownWorkOrderDto,
   CreateMaintenancePmPlanDto,
@@ -72,6 +73,13 @@ describe('MaintenanceService request validation',()=>{
       ],
     };
     await expect(service.createBreakdownWorkOrder(context,dto,'breakdown-checklist'))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires structured evidence before completing a checklist task',async()=>{
+    const dto:CompleteMaintenanceTaskDto={expected_version:1,reason:'Isolation was checked'};
+    await expect(service.completeTask(context,WORK_ORDER,PART,dto,'task-complete-no-evidence'))
       .rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
