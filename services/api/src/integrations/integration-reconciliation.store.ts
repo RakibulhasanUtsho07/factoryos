@@ -76,7 +76,7 @@ function parseOccurredAt(payload: Record<string, unknown>): {
   if (!present) return { value: null, issue: 'MISSING_EVENT_TIME' };
   const raw = payload[present];
   if (typeof raw !== 'string' || raw.length < 20 || raw.length > 80 ||
-      !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,9})?)?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(raw)) {
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(raw)) {
     return { value: null, issue: 'INVALID_EVENT_TIME' };
   }
   const milliseconds = Date.parse(raw);
