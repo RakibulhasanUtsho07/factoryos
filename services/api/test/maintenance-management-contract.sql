@@ -40,8 +40,7 @@ DECLARE
     'trg_maintenance_work_order_asset_active_guard',
     'trg_maintenance_work_order_immutability_guard',
     'trg_maintenance_work_order_assignee_scope_guard',
-    'trg_maintenance_pm_approver_scope_guard',
-    'trg_maintenance_work_order_assignee_scope_guard'
+    'trg_maintenance_pm_approver_scope_guard'
   ];
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='099_maintenance_assets_and_pm_plans')
