@@ -170,6 +170,216 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
     });
   });
 
+  it('increments the source revision and blocks queued jobs when source metadata changes', async () => {
+    await withFixture(async (client, f) => {
+      const job = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_ingestion_jobs (
+          tenant_id, namespace, source_id, mode, status, stage, progress_percent,
+          attempt_count, max_attempts, idempotency_key, request_hash,
+          source_revision, rights_version, rights_fingerprint, rights_snapshot,
+          source_snapshot, resume_checkpoint, created_by
+        )
+        VALUES ($1, 'TENANT', $2, 'METADATA_ONLY', 'QUEUED', 'QUEUED', 0,
+          0, 3, $3, $4, 1, 1, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $6)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.sourceId, 'revision-' + randomUUID(), 'a'.repeat(64), 'b'.repeat(64), f.userId],
+      );
+
+      await client.query(
+        'UPDATE research_sources SET title = title || $1 WHERE id = $2 AND tenant_id = $3',
+        [' revised', f.sourceId, f.tenantId],
+      );
+
+      const source = await client.query<{ source_revision: number; rights_version: number }>(
+        'SELECT source_revision, rights_version FROM research_sources WHERE id = $1 AND tenant_id = $2',
+        [f.sourceId, f.tenantId],
+      );
+      expect(Number(source.rows[0].source_revision)).toBe(2);
+      expect(Number(source.rows[0].rights_version)).toBe(1);
+
+      const jobState = await client.query<{ status: string; version: number; last_error_code: string }>(
+        'SELECT status, version, last_error_code FROM research_ingestion_jobs WHERE id = $1 AND tenant_id = $2',
+        [job.rows[0].id, f.tenantId],
+      );
+      expect(jobState.rows[0]).toMatchObject({
+        status: 'BLOCKED_SOURCE_CHANGED',
+        version: 2,
+        last_error_code: 'SOURCE_REVISION_CHANGED',
+      });
+
+      const history = await client.query<{ action: string; source_revision: number }>(
+        'SELECT action, source_revision FROM research_source_rights_history WHERE source_id = $1 AND tenant_id = $2',
+        [f.sourceId, f.tenantId],
+      );
+      expect(history.rows).toContainEqual({ action: 'SOURCE_CHANGED', source_revision: 2 });
+
+      const event = await client.query<{ from_status: string; to_status: string }>(
+        `SELECT from_status,to_status FROM research_ingestion_events
+         WHERE tenant_id=$1 AND job_id=$2 AND event_type='JOB_BLOCKED_SOURCE_CHANGE'`,
+        [f.tenantId, job.rows[0].id],
+      );
+      expect(event.rows).toEqual([{ from_status: 'QUEUED', to_status: 'BLOCKED_SOURCE_CHANGED' }]);
+    });
+  });
+
+  it('increments the rights version and revokes a running worker lease atomically', async () => {
+    await withFixture(async (client, f) => {
+      const job = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_ingestion_jobs (
+          tenant_id, namespace, source_id, mode, status, stage, progress_percent,
+          attempt_count, max_attempts, version, idempotency_key, request_hash,
+          source_revision, rights_version, rights_fingerprint, rights_snapshot,
+          source_snapshot, resume_checkpoint, lease_owner, lease_expires_at, created_by
+        )
+        VALUES ($1, 'TENANT', $2, 'METADATA_ONLY', 'RUNNING', 'FETCH_METADATA', 20,
+          1, 3, 2, $3, $4, 1, 1, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+          $6, clock_timestamp() + INTERVAL '5 minutes', $6)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.sourceId, 'rights-' + randomUUID(), 'c'.repeat(64), 'd'.repeat(64), f.userId],
+      );
+
+      await client.query(
+        `UPDATE research_sources
+         SET access_status='REVOKED',reviewed_by=$1,reviewed_at=clock_timestamp(),
+             review_reason='Rights withdrawn by source owner'
+         WHERE id=$2 AND tenant_id=$3`,
+        [f.userId, f.sourceId, f.tenantId],
+      );
+
+      const source = await client.query<{ source_revision: number; rights_version: number; access_status: string }>(
+        'SELECT source_revision,rights_version,access_status FROM research_sources WHERE id=$1 AND tenant_id=$2',
+        [f.sourceId, f.tenantId],
+      );
+      expect(source.rows[0]).toMatchObject({ source_revision: 1, rights_version: 2, access_status: 'REVOKED' });
+
+      const jobState = await client.query<{ status: string; lease_owner: string | null; lease_expires_at: string | null; last_error_code: string }>(
+        'SELECT status,lease_owner::text AS lease_owner,lease_expires_at::text AS lease_expires_at,last_error_code FROM research_ingestion_jobs WHERE id=$1 AND tenant_id=$2',
+        [job.rows[0].id, f.tenantId],
+      );
+      expect(jobState.rows[0]).toMatchObject({
+        status: 'BLOCKED_RIGHTS',
+        lease_owner: null,
+        lease_expires_at: null,
+        last_error_code: 'SOURCE_RIGHTS_CHANGED',
+      });
+
+      const event = await client.query<{ from_status: string; to_status: string }>(
+        `SELECT from_status,to_status FROM research_ingestion_events
+         WHERE tenant_id=$1 AND job_id=$2 AND event_type='JOB_BLOCKED_SOURCE_CHANGE'`,
+        [f.tenantId, job.rows[0].id],
+      );
+      expect(event.rows).toEqual([{ from_status: 'RUNNING', to_status: 'BLOCKED_RIGHTS' }]);
+
+      const history = await client.query<{ action: string; rights_version: number }>(
+        'SELECT action,rights_version FROM research_source_rights_history WHERE source_id=$1 AND tenant_id=$2 ORDER BY created_at DESC',
+        [f.sourceId, f.tenantId],
+      );
+      expect(history.rows[0]).toMatchObject({ action: 'ACCESS_REVOKED', rights_version: 2 });
+    });
+  });
+
+  it('requires an immutable item review before an extracted claim can become approved', async () => {
+    await withFixture(async (client, f) => {
+      const job = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_ingestion_jobs (
+          tenant_id,namespace,source_id,mode,status,stage,progress_percent,
+          attempt_count,max_attempts,version,idempotency_key,request_hash,
+          source_revision,rights_version,rights_fingerprint,rights_snapshot,
+          source_snapshot,resume_checkpoint,created_by,completed_at
+        )
+        VALUES ($1,'TENANT',$2,'METADATA_ONLY','SUCCEEDED','COMPLETE',100,
+          1,3,4,$3,$4,1,1,$5,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6,clock_timestamp())
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.sourceId, 'extract-' + randomUUID(), 'e'.repeat(64), 'f'.repeat(64), f.userId],
+      );
+      const run = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_extraction_runs (
+          tenant_id,job_id,source_id,extractor_name,extractor_version,schema_version,
+          input_sha256,output_sha256,source_revision,rights_version,rights_fingerprint,
+          source_snapshot,rights_snapshot,safety_result,safety_findings,claim_count,
+          untrusted_input,full_text_persisted,created_by
+        )
+        VALUES ($1,$2,$3,'test-extractor','1.0','claim/1',$4,$5,1,1,$6,
+          '{}'::jsonb,'{}'::jsonb,'PASS','[]'::jsonb,1,TRUE,FALSE,$7)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, job.rows[0].id, f.sourceId, '1'.repeat(64), '2'.repeat(64), '3'.repeat(64), f.userId],
+      );
+      const item = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_extraction_items (
+          tenant_id,extraction_run_id,item_key,source_locator,claim_text_sha256,
+          safety_flags,review_status
+        )
+        VALUES ($1,$2,'test-claim','{"page":7,"section":"Results"}'::jsonb,$3,'[]'::jsonb,'PROPOSED')
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, run.rows[0].id, '4'.repeat(64)],
+      );
+      const claim = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_claims (
+          tenant_id,namespace,source_id,extraction_item_id,claim_text,evidence_grade,
+          evidence_strength,topic_tags,provenance_ref,status,created_by
+        )
+        VALUES ($1,'TENANT',$2,$3,'Candidate extracted research claim','B','MODERATE',
+          '["quality"]'::jsonb,'{"locator":{"page":7},"extraction":{"runId":"fixture"}}'::jsonb,
+          'PROPOSED',$4)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.sourceId, item.rows[0].id, f.userId],
+      );
+
+      await client.query('SAVEPOINT reject_unreviewed_extraction');
+      await expect(client.query(
+        `UPDATE research_claims
+         SET status='APPROVED',reviewed_by=$1,reviewed_at=clock_timestamp(),review_reason='Attempt without item review'
+         WHERE id=$2 AND tenant_id=$3`,
+        [f.userId, claim.rows[0].id, f.tenantId],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_unreviewed_extraction');
+
+      await client.query(
+        `
+        INSERT INTO research_extraction_item_reviews (
+          tenant_id,extraction_item_id,source_revision,rights_version,output_sha256,
+          decision,reason,safety_flags,reviewed_by
+        )
+        VALUES ($1,$2,1,1,$3,'APPROVE',
+          'Reviewer checked source location and extraction safety.','[]'::jsonb,$4)
+        `,
+        [f.tenantId, item.rows[0].id, '2'.repeat(64), f.userId],
+      );
+      await client.query(
+        `UPDATE research_claims
+         SET status='APPROVED',reviewed_by=$1,reviewed_at=clock_timestamp(),
+             review_reason='Extraction item explicitly approved'
+         WHERE id=$2 AND tenant_id=$3`,
+        [f.userId, claim.rows[0].id, f.tenantId],
+      );
+      const final = await client.query<{ status: string }>(
+        'SELECT status FROM research_claims WHERE id=$1 AND tenant_id=$2',
+        [claim.rows[0].id, f.tenantId],
+      );
+      expect(final.rows[0].status).toBe('APPROVED');
+
+      await client.query('SAVEPOINT reject_review_rewrite');
+      await expect(client.query(
+        `UPDATE research_extraction_item_reviews SET reason='rewritten review decision'
+         WHERE extraction_item_id=$1 AND tenant_id=$2`,
+        [item.rows[0].id, f.tenantId],
+      )).rejects.toMatchObject({ code: 'P0001' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_review_rewrite');
+    });
+  });
+
   it('prevents approving claims against a source whose rights are not approved', async () => {
     await withFixture(async (client, f) => {
       await client.query('SAVEPOINT rejected_claim_approval');
