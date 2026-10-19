@@ -207,7 +207,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER growth_scenario_set_member_guard
 BEFORE INSERT ON growth_scenario_set_members
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_scenario_set_member();
@@ -215,7 +215,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_scenario_set_member();
 CREATE OR REPLACE FUNCTION factoryos_guard_growth_scenario_set_completeness()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   expected_count INTEGER;
   expected_sensitivity_count INTEGER;
