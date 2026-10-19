@@ -508,10 +508,13 @@ export class CbbGovernanceService {
     userId: string,
     term: string,
     sourceSystem?: string,
+    languageCode?: string,
   ) {
     this.validateReadScope(tenantId, factoryId);
     this.uuid(userId, 'userId');
     const needle = this.requiredText(term, 'term', 300).normalize('NFKC');
+    const normalizedSourceSystem = sourceSystem?.trim() || null;
+    const normalizedLanguage = languageCode?.trim().normalize('NFKC') || null;
     const blueprint = await this.database.query<DbRow>(
       `SELECT id::text AS blueprint_id,current_version_id::text AS version_id FROM business_blueprints
        WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' LIMIT 1`,
@@ -529,8 +532,9 @@ export class CbbGovernanceService {
        FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3
          AND (lower(term)=lower($4) OR lower(canonical_term)=lower($4))
          AND ($5::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($5))
+         AND ($6::text IS NULL OR language_code IS NULL OR lower(language_code)=lower($6))
        ORDER BY CASE state WHEN 'VERIFIED' THEN 0 WHEN 'INFERRED' THEN 1 ELSE 2 END,lower(term) LIMIT 20`,
-      [tenantId, factoryId, versionId, needle, sourceSystem?.trim() || null], { tenantId },
+      [tenantId, factoryId, versionId, needle, normalizedSourceSystem, normalizedLanguage], { tenantId },
     );
     const visibleDirect = await this.filterItemsByAcl(
       tenantId, factoryId, userId, 'TERM', direct.rows as Array<Record<string, unknown>>,
@@ -555,8 +559,9 @@ export class CbbGovernanceService {
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND lower(a.alias)=lower($3)
          AND a.state IN ('VERIFIED','INFERRED')
          AND ($5::text IS NULL OR a.source_system IS NULL OR lower(a.source_system)=lower($5))
+         AND ($6::text IS NULL OR a.language_code IS NULL OR lower(a.language_code)=lower($6))
        ORDER BY CASE a.state WHEN 'VERIFIED' THEN 0 ELSE 1 END,a.version DESC LIMIT 20`,
-      [tenantId, factoryId, needle, versionId, sourceSystem?.trim() || null], { tenantId },
+      [tenantId, factoryId, needle, versionId, normalizedSourceSystem, normalizedLanguage], { tenantId },
     );
     const visibleCanonicalTerms = await this.filterItemsByAcl(
       tenantId, factoryId, userId, 'TERM',
@@ -564,14 +569,18 @@ export class CbbGovernanceService {
     );
     const visibleCanonicalIds = new Set(visibleCanonicalTerms.map((row) => String(row.id)));
     const visibleAliases = aliases.rows.filter((row) => visibleCanonicalIds.has(String(row.canonical_term_id)));
+    const stripCanonicalTermId = (row: DbRow) => {
+      const value = { ...row };
+      delete value.canonical_term_id;
+      return value;
+    };
     if (visibleAliases.length) {
       const canonicals = new Set(visibleAliases.map((row) => String(row.canonical_term).normalize('NFKC').toLocaleLowerCase()));
+      const safeAliases = visibleAliases.map(stripCanonicalTermId);
       if (canonicals.size === 1) {
-        const { canonical_term_id: _canonicalTermId, ...match } = visibleAliases[0] as DbRow & { canonical_term_id: string };
-        return { input: needle, match, matchedBy: 'ALIAS', candidates: visibleAliases.map(({ canonical_term_id: _id, ...row }) => row) };
+        return { input: needle, match: safeAliases[0], matchedBy: 'ALIAS', candidates: safeAliases };
       }
-      return { input: needle, match: null, matchedBy: null, ambiguous: true,
-        candidates: visibleAliases.map(({ canonical_term_id: _id, ...row }) => row) };
+      return { input: needle, match: null, matchedBy: null, ambiguous: true, candidates: safeAliases };
     }
 
     const suggestions = await this.database.query<DbRow>(
@@ -582,8 +591,10 @@ export class CbbGovernanceService {
          AND t.state IN ('VERIFIED','INFERRED')
        WHERE a.tenant_id=$1 AND a.factory_id=$2
          AND lower(a.alias) LIKE '%' || lower($3) || '%' AND a.state='PROPOSED'
+         AND ($5::text IS NULL OR a.language_code IS NULL OR lower(a.language_code)=lower($5))
+         AND ($6::text IS NULL OR a.source_system IS NULL OR lower(a.source_system)=lower($6))
        ORDER BY lower(a.alias) LIMIT 10`,
-      [tenantId, factoryId, needle, versionId], { tenantId },
+      [tenantId, factoryId, needle, versionId, normalizedLanguage, normalizedSourceSystem], { tenantId },
     );
     const visibleSuggestionTerms = await this.filterItemsByAcl(
       tenantId, factoryId, userId, 'TERM',
@@ -592,7 +603,7 @@ export class CbbGovernanceService {
     const visibleSuggestionIds = new Set(visibleSuggestionTerms.map((row) => String(row.id)));
     const safeSuggestions = suggestions.rows
       .filter((row) => visibleSuggestionIds.has(String(row.canonical_term_id)))
-      .map(({ canonical_term_id: _id, ...row }) => row);
+      .map(stripCanonicalTermId);
     return { input: needle, match: null, matchedBy: null, candidates: safeSuggestions };
   }
 
