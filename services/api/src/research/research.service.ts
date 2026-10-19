@@ -745,18 +745,18 @@ export class ResearchService {
     );
     if (!claim.rows[0]) throw new NotFoundException('Tenant research claim not found');
     const result = await this.database.query(
-      `SELECT id::text AS id, claim_id::text AS claim_id, source_id::text AS source_id,
-          source_revision, rights_version, claim_fingerprint, rubric_version,
-          evidence_score, suggested_grade, grade_factors, citation_status, citation_findings,
-          citation_verification_level, safety_status, safety_flags,
-          assessed_by::text AS assessed_by, created_at::text AS created_at,
+      `SELECT a.id::text AS id, a.claim_id::text AS claim_id, a.source_id::text AS source_id,
+          a.source_revision, a.rights_version, a.claim_fingerprint, a.rubric_version,
+          a.evidence_score, a.suggested_grade, a.grade_factors, a.citation_status, a.citation_findings,
+          a.citation_verification_level, a.safety_status, a.safety_flags,
+          a.assessed_by::text AS assessed_by, a.created_at::text AS created_at,
           sr.decision AS safety_review_decision, sr.reason AS safety_review_reason,
           sr.reviewed_by::text AS safety_reviewed_by, sr.created_at::text AS safety_reviewed_at
        FROM research_evidence_assessments a
        LEFT JOIN research_evidence_safety_reviews sr
          ON sr.assessment_id=a.id AND sr.tenant_id=a.tenant_id
        WHERE a.tenant_id=$1 AND a.claim_id=$2
-       ORDER BY created_at DESC, id DESC
+       ORDER BY a.created_at DESC, a.id DESC
        LIMIT $3`,
       [tenantId, claimId, safeLimit],
       { tenantId, userId },
