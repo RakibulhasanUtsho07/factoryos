@@ -82,8 +82,10 @@ BEGIN
   definition := pg_get_functiondef('public.factoryos_guard_growth_scenario_set_version()'::regprocedure);
   IF position('FOR UPDATE' IN definition) = 0
      OR position('MAX(s.set_version)' IN definition) = 0
-     OR position('factoryos_current_user_id()' IN definition) = 0 THEN
-    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_MONOTONIC_VERSION_GUARD_INCOMPLETE';
+     OR position('factoryos_current_user_id()' IN definition) = 0
+     OR position('growth_opportunity_evidence' IN definition) = 0
+     OR position('baseline_source_ref' IN definition) = 0 THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_MONOTONIC_OR_SOURCE_GUARD_INCOMPLETE';
   END IF;
 
   definition := pg_get_functiondef('public.factoryos_guard_growth_scenario_set_completeness()'::regprocedure);
