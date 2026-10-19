@@ -937,7 +937,18 @@ export class CbbService {
            'INFERRED'
          )
 
-        WHERE
+        
+         AND NOT EXISTS (
+           SELECT 1 FROM business_conflicts step_conflict
+           WHERE step_conflict.tenant_id = ps.tenant_id
+             AND step_conflict.factory_id = ps.factory_id
+             AND step_conflict.blueprint_id = $4
+             AND step_conflict.subject_type = 'PROCESS_STEP'
+             AND step_conflict.subject_id = ps.id
+             AND step_conflict.status = 'OPEN'
+         )
+
+WHERE
           p.tenant_id = $1
           AND p.factory_id = $2
           AND p.blueprint_version_id = $3
@@ -947,7 +958,18 @@ export class CbbService {
             'INFERRED'
           )
 
-        GROUP BY
+        
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts process_conflict
+            WHERE process_conflict.tenant_id = p.tenant_id
+              AND process_conflict.factory_id = p.factory_id
+              AND process_conflict.blueprint_id = $4
+              AND process_conflict.subject_type = 'PROCESS'
+              AND process_conflict.subject_id = p.id
+              AND process_conflict.status = 'OPEN'
+          )
+
+GROUP BY
           p.id,
           p.name,
           p.description,
@@ -975,6 +997,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -1124,13 +1147,25 @@ export class CbbService {
             'INFERRED'
           )
 
-        LIMIT 1
+        
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts process_conflict
+            WHERE process_conflict.tenant_id = p.tenant_id
+              AND process_conflict.factory_id = p.factory_id
+              AND process_conflict.blueprint_id = $5
+              AND process_conflict.subject_type = 'PROCESS'
+              AND process_conflict.subject_id = p.id
+              AND process_conflict.status = 'OPEN'
+          )
+
+LIMIT 1
         `,
         [
           processId,
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -1187,7 +1222,18 @@ export class CbbService {
             'INFERRED'
           )
 
-        ORDER BY
+        
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts step_conflict
+            WHERE step_conflict.tenant_id = ps.tenant_id
+              AND step_conflict.factory_id = ps.factory_id
+              AND step_conflict.blueprint_id = $5
+              AND step_conflict.subject_type = 'PROCESS_STEP'
+              AND step_conflict.subject_id = ps.id
+              AND step_conflict.status = 'OPEN'
+          )
+
+ORDER BY
           ps.sequence_no ASC
         `,
         [
@@ -1195,6 +1241,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
