@@ -142,6 +142,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
   it('forces RLS on every research and growth data surface', async () => {
     const names = [
       'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations', 'research_topic_watchlists',
+      'research_evidence_assessments', 'research_evidence_safety_reviews',
       'research_relevance_mappings', 'growth_opportunities', 'growth_opportunity_evidence', 'growth_validation_unknowns',
       'growth_scenarios', 'growth_experiments', 'growth_experiment_results', 'growth_opportunity_outcomes',
     ];
@@ -214,6 +215,40 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         ['tampered', replacement.rows[0].id],
       )).rejects.toMatchObject({ code: '55000' });
       await client.query('ROLLBACK TO SAVEPOINT protect_watchlist_definition');
+    });
+  });
+
+  it('keeps evidence assessments and safety reviews append-only and tenant-isolated', async () => {
+    await withFixture(async (client, f) => {
+      const assessment = await client.query<{ id: string; evidence_score: number; suggested_grade: string }>(
+        `SELECT id::text AS id, evidence_score, suggested_grade
+         FROM research_evidence_assessments
+         WHERE tenant_id=$1 AND claim_id=$2 ORDER BY created_at DESC LIMIT 1`,
+        [f.tenantId, f.claimId],
+      );
+      expect(assessment.rows).toHaveLength(1);
+      expect(assessment.rows[0].evidence_score).toBe(45);
+      expect(assessment.rows[0].suggested_grade).toBe('D');
+
+      await client.query('SAVEPOINT protect_evidence_assessment');
+      await expect(client.query(
+        'UPDATE research_evidence_assessments SET evidence_score=99 WHERE id=$1',
+        [assessment.rows[0].id],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_evidence_assessment');
+
+      await client.query('SAVEPOINT protect_evidence_assessment_delete');
+      await expect(client.query(
+        'DELETE FROM research_evidence_assessments WHERE id=$1',
+        [assessment.rows[0].id],
+      )).rejects.toMatchObject({ code: '55000' });
+      await client.query('ROLLBACK TO SAVEPOINT protect_evidence_assessment_delete');
+
+      const rls = await client.query<{ relrowsecurity: boolean; relforcerowsecurity: boolean }>(
+        `SELECT relrowsecurity, relforcerowsecurity
+         FROM pg_class WHERE oid='public.research_evidence_assessments'::regclass`,
+      );
+      expect(rls.rows[0]).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
     });
   });
 
