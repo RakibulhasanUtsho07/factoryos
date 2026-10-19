@@ -420,6 +420,8 @@ export class CbbGovernanceService {
     if (alias.toLocaleLowerCase() === canonical.toLocaleLowerCase()) {
       throw new BadRequestException('Alias must differ from its canonical term');
     }
+    const languageCode = dto.language_code?.trim().normalize('NFKC').toLocaleLowerCase() || null;
+    const sourceSystem = dto.source_system?.trim().normalize('NFKC') || null;
     const metadata = dto.metadata ?? {};
     if (Buffer.byteLength(JSON.stringify(metadata), 'utf8') > 8192) {
       throw new BadRequestException('Terminology metadata cannot exceed 8 KiB');
@@ -434,34 +436,56 @@ export class CbbGovernanceService {
       );
       if (!canonicalFound.rows[0]) throw new NotFoundException('Canonical term must exist in the current CBB dictionary');
       await this.assertTargetWriteAccessInClient(client, scope, 'TERM', String(canonicalFound.rows[0].id), ['canonical_term']);
+
       const conflictingCanonical = await client.query<DbRow>(
         `SELECT canonical_term FROM business_terms WHERE tenant_id=$1 AND factory_id=$2
-           AND blueprint_version_id=$3 AND lower(term)=lower($4) AND lower(canonical_term)<>lower($5) LIMIT 1`,
-        [scope.tenantId, scope.factoryId, blueprint.current_version_id, alias, canonical],
+           AND blueprint_version_id=$3 AND lower(term)=lower($4) AND lower(canonical_term)<>lower($5)
+           AND ($6::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($6))
+           AND ($7::text IS NULL OR language_code IS NULL OR lower(language_code)=lower($7)) LIMIT 1`,
+        [scope.tenantId, scope.factoryId, blueprint.current_version_id, alias, canonical, sourceSystem, languageCode],
       );
       if (conflictingCanonical.rows[0]) {
-        throw new ConflictException({ code: 'CBB_TERMINOLOGY_CANONICAL_CONFLICT', existingCanonicalTerm: conflictingCanonical.rows[0].canonical_term });
+        throw new ConflictException({
+          code: 'CBB_TERMINOLOGY_CANONICAL_CONFLICT',
+          existingCanonicalTerm: conflictingCanonical.rows[0].canonical_term,
+        });
       }
+
+      // A source/language-qualified alias is a separate dictionary entry. Serialize
+      // the exact uniqueness key so concurrent imports cannot create duplicate mappings.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+        [`cbb-terminology:${scope.tenantId}:${scope.factoryId}:${alias.toLocaleLowerCase()}:${languageCode ?? '*'}:${sourceSystem?.toLocaleLowerCase() ?? '*'}`],
+      );
       const foundAlias = await client.query<DbRow>(
         `SELECT id::text AS id,canonical_term FROM business_terminology_aliases
-         WHERE tenant_id=$1 AND factory_id=$2 AND lower(alias)=lower($3) FOR UPDATE`,
-        [scope.tenantId, scope.factoryId, alias],
+         WHERE tenant_id=$1 AND factory_id=$2 AND lower(alias)=lower($3)
+           AND COALESCE(lower(language_code),'')=COALESCE(lower($4),'')
+           AND COALESCE(lower(source_system),'')=COALESCE(lower($5)) FOR UPDATE`,
+        [scope.tenantId, scope.factoryId, alias, languageCode, sourceSystem],
       );
-      if (foundAlias.rows[0]) throw new ConflictException({ code: 'CBB_TERMINOLOGY_ALIAS_EXISTS', existingCanonicalTerm: foundAlias.rows[0].canonical_term });
+      if (foundAlias.rows[0]) {
+        throw new ConflictException({
+          code: 'CBB_TERMINOLOGY_ALIAS_EXISTS',
+          existingCanonicalTerm: foundAlias.rows[0].canonical_term,
+          message: 'An alias already exists for this source/language context',
+        });
+      }
       const inserted = await client.query<DbRow>(
         `INSERT INTO business_terminology_aliases
            (tenant_id,factory_id,alias,canonical_term,language_code,source_system,state,metadata,created_by,updated_by)
          VALUES ($1,$2,$3,$4,$5,$6,'PROPOSED',$7::jsonb,$8,$8)
          RETURNING id::text AS id,alias,canonical_term,language_code,source_system,state,metadata,version,created_at::text AS created_at`,
         [scope.tenantId, scope.factoryId, alias, String(canonicalFound.rows[0].canonical_term),
-          dto.language_code?.trim() || null, dto.source_system?.trim() || null, JSON.stringify(metadata), scope.userId],
+          languageCode, sourceSystem, JSON.stringify(metadata), scope.userId],
       );
       const row = inserted.rows[0];
       if (!row) throw new Error('CBB_TERMINOLOGY_ALIAS_INSERT_FAILED');
       await this.auditService.recordWithClient(client, {
         tenantId: scope.tenantId, factoryId: scope.factoryId, actorUserId: scope.userId,
         eventType: 'CBB_TERMINOLOGY', action: 'CREATE_ALIAS', resourceType: 'CBB_TERMINOLOGY_ALIAS',
-        resourceId: String(row.id), payload: { alias, canonicalTerm: row.canonical_term, sourceSystem: row.source_system },
+        resourceId: String(row.id),
+        payload: { alias, canonicalTerm: row.canonical_term, sourceSystem, languageCode },
       });
       return row;
     });
