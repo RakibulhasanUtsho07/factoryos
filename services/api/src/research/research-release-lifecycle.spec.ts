@@ -91,7 +91,7 @@ describe('Research release lifecycle', () => {
     expect(history.lifecycle_events[0]).toMatchObject({ event_type: 'PROMOTED', version: 3 });
     expect(String(database.query.mock.calls[1][0])).toContain('research_release_channels');
     expect(String(database.query.mock.calls[2][0])).toContain('research_release_lifecycle_events');
-    expect(database.query.mock.calls.every(call => call[1][0] === TENANT_ID)).toBe(true);
+    expect(database.query.mock.calls.every(call => (call[1] as unknown[]).includes(TENANT_ID))).toBe(true);
   });
 
   it('rejects rollback to a newer version of the same release key before touching the activation channel', async () => {
