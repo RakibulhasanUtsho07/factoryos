@@ -66,7 +66,7 @@ CREATE TABLE ot_devices (
   CONSTRAINT chk_ot_device_protocol CHECK (protocol IN ('OPC_UA', 'MQTT', 'MODBUS_TCP')),
   CONSTRAINT chk_ot_device_connection_reference CHECK (connection_reference ~ '^config://[A-Z0-9][A-Z0-9_./-]{0,119}$'),
   CONSTRAINT chk_ot_device_secret_reference CHECK (secret_reference ~ '^env://OT_SECRET_[A-Z][A-Z0-9_]{0,79}$'),
-  CONSTRAINT chk_ot_device_metadata CHECK (jsonb_typeof(metadata) = 'object' AND jsonb_object_length(metadata) <= 100),
+  CONSTRAINT chk_ot_device_metadata CHECK (jsonb_typeof(metadata) = 'object' AND octet_length(metadata::text) <= 4096),
   CONSTRAINT chk_ot_device_status CHECK (status IN ('PENDING_REVIEW', 'ACTIVE', 'PAUSED', 'REVOKED')),
   CONSTRAINT chk_ot_device_idempotency CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 200 AND idempotency_key !~ '[[:cntrl:]]'),
   CONSTRAINT chk_ot_device_request_hash CHECK (request_hash ~ '^[0-9a-f]{64}$'),
@@ -107,7 +107,7 @@ CREATE TABLE ot_device_history (
   )),
   CONSTRAINT chk_ot_device_history_reason CHECK (reason IS NULL OR length(btrim(reason)) BETWEEN 3 AND 500),
   CONSTRAINT chk_ot_device_history_version CHECK (row_version >= 1),
-  CONSTRAINT chk_ot_device_history_metadata CHECK (jsonb_typeof(metadata) = 'object' AND jsonb_object_length(metadata) <= 100)
+  CONSTRAINT chk_ot_device_history_metadata CHECK (jsonb_typeof(metadata) = 'object' AND octet_length(metadata::text) <= 4096)
 );
 CREATE INDEX idx_ot_device_history_timeline
   ON ot_device_history (tenant_id, factory_id, device_id, occurred_at DESC, id);

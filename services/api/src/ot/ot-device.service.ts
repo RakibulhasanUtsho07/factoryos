@@ -49,6 +49,13 @@ const DEVICE_SELECT = `
   row_version, created_at, updated_at, reviewed_at, paused_at, revoked_at
 `;
 
+function hasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+}
+
 const DEVICE_STATUSES: readonly DeviceStatus[] = [
   'PENDING_REVIEW', 'ACTIVE', 'PAUSED', 'REVOKED',
 ];

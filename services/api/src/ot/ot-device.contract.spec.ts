@@ -28,8 +28,11 @@ describe('OT telemetry contract', () => {
   });
 
   it('rejects excessive nesting and non-finite numeric values', () => {
-    expect(() => normalizeOtObject({ value: { deeper: { x: { y: { z: { a: { b: { c: 1 } } } } } } }))
-      .toThrow(/nesting depth/);
+    let tooDeep: unknown = { leaf: 1 };
+    for (let depth = 0; depth < 9; depth += 1) {
+      tooDeep = { nested: tooDeep };
+    }
+    expect(() => normalizeOtObject(tooDeep)).toThrow(/nesting depth/);
     expect(() => normalizeOtObject({ temperature: Number.POSITIVE_INFINITY })).toThrow(/finite number/);
   });
 
