@@ -90,27 +90,11 @@ CREATE TABLE IF NOT EXISTS business_terminology_alias_history (
   snapshot JSONB NOT NULL,
   actor_user_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT fk_cbb_terminology_history_alias_scope
-    FOREIGN KEY (alias_id, tenant_id, factory_id)
-    REFERENCES business_terminology_aliases (id, tenant_id, factory_id) ON DELETE CASCADE,
   CONSTRAINT chk_cbb_terminology_history_action
     CHECK (action IN ('CREATED','UPDATED','RETIRED','RECONFIRMED')),
   CONSTRAINT chk_cbb_terminology_history_snapshot
     CHECK (jsonb_typeof(snapshot) = 'object')
 );
-
--- Required as the composite history FK must bind an alias to its exact scope.
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid='business_terminology_aliases'::regclass
-      AND conname='uq_cbb_terminology_alias_id_scope'
-  ) THEN
-    ALTER TABLE business_terminology_aliases
-      ADD CONSTRAINT uq_cbb_terminology_alias_id_scope UNIQUE (id, tenant_id, factory_id);
-  END IF;
-END $$;
 
 CREATE INDEX IF NOT EXISTS idx_cbb_terminology_history_scope
   ON business_terminology_alias_history (tenant_id, factory_id, alias_id, alias_version DESC);
@@ -223,9 +207,10 @@ BEGIN
   INSERT INTO business_acl_history (tenant_id, factory_id, acl_id, action, snapshot, actor_user_id)
   VALUES ((row_data->>'tenant_id')::uuid, (row_data->>'factory_id')::uuid,
           (row_data->>'id')::uuid, action_name, row_data, actor);
-  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
 END;
-$$;
+$;
 DROP TRIGGER IF EXISTS business_acl_record_history ON business_acl;
 CREATE TRIGGER business_acl_record_history
 AFTER INSERT OR UPDATE OR DELETE ON business_acl
@@ -244,10 +229,13 @@ BEGIN
     row_data := to_jsonb(OLD);
     action_name := 'RETIRED';
     actor := NULLIF(current_setting('app.user_id', true), '')::uuid;
+  ELSIF TG_OP = 'INSERT' THEN
+    row_data := to_jsonb(NEW);
+    action_name := 'CREATED';
+    actor := COALESCE(NEW.updated_by, NEW.created_by, NULLIF(current_setting('app.user_id', true), '')::uuid);
   ELSE
     row_data := to_jsonb(NEW);
     action_name := CASE
-      WHEN TG_OP = 'INSERT' THEN 'CREATED'
       WHEN NEW.state = 'STALE' AND OLD.state IS DISTINCT FROM 'STALE' THEN 'RETIRED'
       WHEN NEW.state = 'VERIFIED' AND OLD.state IS DISTINCT FROM 'VERIFIED' THEN 'RECONFIRMED'
       ELSE 'UPDATED'
@@ -261,9 +249,11 @@ BEGIN
     (row_data->>'id')::uuid, (row_data->>'version')::integer,
     action_name, row_data, actor
   );
-  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
 END;
 $$;
+
 DROP TRIGGER IF EXISTS business_terminology_alias_history_record ON business_terminology_aliases;
 CREATE TRIGGER business_terminology_alias_history_record
 AFTER INSERT OR UPDATE OR DELETE ON business_terminology_aliases
