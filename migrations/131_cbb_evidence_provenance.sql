@@ -12,7 +12,7 @@ ALTER TABLE business_evidence
   ADD COLUMN IF NOT EXISTS supersedes_evidence_id UUID,
   ADD COLUMN IF NOT EXISTS revision_no INTEGER NOT NULL DEFAULT 1;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_evidence'::regclass AND conname='chk_business_evidence_revision_positive') THEN
     ALTER TABLE business_evidence ADD CONSTRAINT chk_business_evidence_revision_positive CHECK (revision_no >= 1);
@@ -23,7 +23,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_evidence'::regclass AND conname='chk_business_evidence_source_uri') THEN
     ALTER TABLE business_evidence ADD CONSTRAINT chk_business_evidence_source_uri CHECK (source_uri IS NULL OR source_uri ~* '^https?://');
   END IF;
-END $;
+END $$;
 
 DO $$
 BEGIN
@@ -370,12 +370,12 @@ ALTER TABLE business_conflicts
   ADD COLUMN IF NOT EXISTS resolution_reason TEXT,
   ADD COLUMN IF NOT EXISTS resolution_evidence_id UUID;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_conflicts'::regclass AND conname='chk_business_conflicts_version_positive') THEN
     ALTER TABLE business_conflicts ADD CONSTRAINT chk_business_conflicts_version_positive CHECK (version >= 1);
   END IF;
-END $;
+END $$;
 
 DO $$
 BEGIN
