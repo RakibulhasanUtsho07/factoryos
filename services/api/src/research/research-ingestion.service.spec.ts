@@ -416,6 +416,81 @@ describe('ResearchIngestionService', () => {
 
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO research_extraction_item_reviews'))).toBe(false);
   });
+
+  it('returns tenant-scoped extraction lineage without exposing source or rights snapshots', async () => {
+    database.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT id FROM research_ingestion_jobs')) return { rows: [{ id: JOB_ID }] };
+      if (sql.includes('FROM research_extraction_runs r')) {
+        return { rows: [{
+          id: RUN_ID, job_id: JOB_ID, source_id: SOURCE_ID,
+          extractor_name: 'factoryos-claim-extractor', extractor_version: '2.1.0',
+          schema_version: 'research-claim/1', input_sha256: 'a'.repeat(64),
+          output_sha256: 'b'.repeat(64), source_revision: 1, rights_version: 1,
+          safety_result: 'REVIEW_REQUIRED', claim_count: 1,
+        }] };
+      }
+      if (sql.includes('FROM research_extraction_items i')) {
+        return { rows: [{
+          id: ITEM_ID, extraction_run_id: RUN_ID, item_key: 'claim-001',
+          source_locator: { page: 7 }, claim_text_sha256: 'c'.repeat(64),
+          review_status: 'REVIEW_REQUIRED', review_decision: null,
+        }] };
+      }
+      throw new Error('Unexpected SQL in extraction provenance read test: ' + sql);
+    });
+
+    const result = await service.listExtractionProvenance(USER_ID, TENANT_ID, JOB_ID);
+
+    expect(result).toMatchObject({
+      jobId: JOB_ID,
+      extractionRuns: [{ id: RUN_ID, input_sha256: 'a'.repeat(64), output_sha256: 'b'.repeat(64) }],
+      items: [{ id: ITEM_ID, item_key: 'claim-001', source_locator: { page: 7 } }],
+    });
+    expect(result.extractionRuns[0]).not.toHaveProperty('source_snapshot');
+    expect(result.extractionRuns[0]).not.toHaveProperty('rights_snapshot');
+    expect(result.items[0]).not.toHaveProperty('stored_excerpt');
+    expect(database.query).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns only digest/reason metadata from the source excerpt-purge audit', async () => {
+    database.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_sources') && sql.includes('namespace=$3')) {
+        return { rows: [{ id: SOURCE_ID }] };
+      }
+      if (sql.includes('FROM research_source_content_purges')) {
+        return { rows: [{
+          id: 'b3cc8a8c-4c0f-4f62-a1ea-8d2b83700001',
+          source_id: SOURCE_ID, claim_id: CLAIM_ID, source_revision: 1,
+          rights_version: 2, excerpt_sha256: 'd'.repeat(64),
+          purge_reason: 'SOURCE_ACCESS_REVOKED', actor_user_id: USER_ID,
+        }] };
+      }
+      throw new Error('Unexpected SQL in excerpt purge read test: ' + sql);
+    });
+
+    const rows = await service.listSourceContentPurges(USER_ID, TENANT_ID, SOURCE_ID, 25);
+
+    expect(rows).toEqual([expect.objectContaining({
+      source_id: SOURCE_ID, claim_id: CLAIM_ID, excerpt_sha256: 'd'.repeat(64),
+      purge_reason: 'SOURCE_ACCESS_REVOKED', rights_version: 2,
+    })]);
+    expect(rows[0]).not.toHaveProperty('stored_excerpt');
+    expect(database.query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM research_source_content_purges'),
+      [TENANT_ID, SOURCE_ID, 25],
+      { tenantId: TENANT_ID, userId: USER_ID },
+    );
+  });
+
+  it('does not query extraction items for an unknown tenant/job pair', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+
+    await expect(service.listExtractionProvenance(USER_ID, TENANT_ID, JOB_ID))
+      .rejects.toThrow('Research ingestion job not found');
+
+    expect(database.query).toHaveBeenCalledTimes(1);
+  });
+
 });
 
 function argumentsAsArray(value: unknown): unknown[] {
