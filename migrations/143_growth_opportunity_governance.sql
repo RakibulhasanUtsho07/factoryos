@@ -212,7 +212,7 @@ FROM growth_opportunities o
 CROSS JOIN LATERAL jsonb_array_elements_text(o.assumptions) AS a(statement);
 
 CREATE OR REPLACE FUNCTION factoryos_guard_growth_assumptions_payload()
-RETURNS TRIGGER LANGUAGE plpgsql AS $
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   invalid_count INTEGER;
 BEGIN
@@ -235,13 +235,13 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER growth_opportunity_assumptions_payload_guard
 BEFORE INSERT OR UPDATE OF assumptions ON growth_opportunities
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_assumptions_payload();
 
 CREATE OR REPLACE FUNCTION factoryos_seed_growth_opportunity_assumptions()
-RETURNS TRIGGER LANGUAGE plpgsql AS $
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   INSERT INTO growth_opportunity_assumptions (
     tenant_id, factory_id, opportunity_id, statement, rationale, risk_if_false,
@@ -315,7 +315,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER growth_opportunity_assumptions_immutable
 BEFORE UPDATE OR DELETE ON growth_opportunity_assumptions
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_assumption_records();
@@ -373,7 +373,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 CREATE TRIGGER growth_opportunity_evidence_gaps_immutable
 BEFORE UPDATE OR DELETE ON growth_opportunity_evidence_gaps
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_evidence_gap_record();
