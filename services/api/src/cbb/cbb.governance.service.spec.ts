@@ -316,7 +316,7 @@ describe('CbbGovernanceService', () => {
       }] },
       { rows: [] }, // target ACL advisory lock
       { rows: [] }, // caller has no matching role
-      { rows: [{ target_id: entityId, role_id: roleId, field_name: null, access_level: 'READ' }] },
+      { rows: [{ target_id: entityId, role_id: roleId, field_name: 'canonical_term', access_level: 'READ' }] },
     );
 
     await expect(service.decideTerminologyAlias(
