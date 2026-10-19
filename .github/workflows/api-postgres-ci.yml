@@ -223,6 +223,7 @@ jobs:
             migrations/135_research_extraction_review_gate.sql
             migrations/136_research_content_rights_purge.sql
             migrations/137_research_full_text_access_normalization.sql
+            migrations/138_research_evidence_assessment.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
