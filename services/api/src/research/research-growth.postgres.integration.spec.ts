@@ -640,7 +640,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           tenant_id, namespace, release_id, evaluation_version, status,
           content_fingerprint, results, evaluated_by
         )
-        VALUES ($1, 'TENANT', $2, 'research-release-contract.v1', 'PASSED', $3,
+        VALUES ($1, 'TENANT', $2, 'research-release-contract.v2', 'PASSED', $3,
           '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true}'::jsonb,
           $4)
         RETURNING id::text AS id
@@ -745,7 +745,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           content_fingerprint, results, evaluated_by
         )
         VALUES (
-          $1, 'TENANT', $2, 'research-release-contract.v1', 'PASSED', $3,
+          $1, 'TENANT', $2, 'research-release-contract.v2', 'PASSED', $3,
           '{"consistencyPassed":true,"citationCoveragePassed":true,"rightsPassed":true,"safetyPassed":true}'::jsonb,
           $4
         )
