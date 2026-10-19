@@ -174,6 +174,42 @@ describe('CbbEvidenceService', () => {
     }));
   });
 
+  it('does not reopen a closed conflict when the same contradiction link is replayed', async () => {
+    const link: TestRow = {
+      id: otherEvidenceId,
+      evidence_id: otherEvidenceId,
+      blueprint_id: blueprintId,
+      blueprint_version_id: versionId,
+      target_type: 'ENTITY',
+      target_id: entityId,
+      link_type: 'CONTRADICTS',
+      created_by: userId,
+      created_at: '2026-10-19T05:00:00Z',
+    };
+    queue(
+      { rows: [{ id: otherEvidenceId }] },
+      { rows: [{ id: blueprintId, current_version_id: versionId }] },
+      { rows: [] }, // transaction-scoped advisory lock
+      { rows: [{ id: entityId }] },
+      { rows: [] }, // idempotent link insert found an existing link
+      { rows: [link] }, // load the existing provenance link
+      { rows: [{ evidence_id: otherEvidenceId }] },
+      { rows: [] }, // the conflict has already been resolved or dismissed
+    );
+
+    const result = await service.createEvidenceLink(
+      { tenantId, factoryId, userId },
+      otherEvidenceId,
+      { target_type: 'ENTITY', target_id: entityId, link_type: 'CONTRADICTS' } as LinkCbbEvidenceDto,
+    );
+
+    expect(result.replayed).toBe(true);
+    expect(result.conflictId).toBeNull();
+    expect(query).toHaveBeenCalledTimes(8);
+    expect(query.mock.calls[7]?.[0]).toContain("status='OPEN'");
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+
   it('appends new supporting evidence to an existing open conflict with actor attribution', async () => {
     const priorEvidenceId = 'e0000000-0000-4000-8000-000000000003';
     const link: TestRow = {

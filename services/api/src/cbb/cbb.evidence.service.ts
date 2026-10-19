@@ -293,7 +293,9 @@ export class CbbEvidenceService {
               [JSON.stringify(after), scope.userId, conflictId, scope.tenantId, scope.factoryId, Number(current.version)],
             );
           }
-        } else {
+        } else if (inserted.rows.length > 0) {
+          // Create a conflict only when a new contradiction link is committed.
+          // A replay must not reopen a previously resolved/dismissed conflict.
           const created = await client.query<Row>(
             `INSERT INTO business_conflicts (
               tenant_id, factory_id, blueprint_id, subject_type, subject_id, status,
