@@ -237,6 +237,7 @@ jobs:
             migrations/147_ai_decision_envelope_lifecycle_replay.sql
             migrations/148_ot_device_registry_spool.sql
             migrations/149_saas_data_retention_erasure_governance.sql
+            migrations/150_saas_export_preservation_attestation.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
