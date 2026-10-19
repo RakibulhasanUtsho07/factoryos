@@ -319,7 +319,8 @@ BEGIN
       'namespace', NEW.namespace, 'sourceType', NEW.source_type, 'title', NEW.title,
       'authors', NEW.authors, 'publicationDate', NEW.publication_date,
       'doi', NEW.doi, 'venue', NEW.venue, 'abstract', NEW.abstract,
-      'sourceUrl', NEW.source_url, 'sourceMetadata', NEW.source_metadata
+      'sourceUrl', NEW.source_url, 'sourceMetadata', NEW.source_metadata,
+      'ingestedAt', NEW.ingested_at
     ),
     COALESCE(NEW.reviewed_by, NEW.created_by)
   );
