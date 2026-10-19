@@ -146,7 +146,7 @@ describe('ResearchIngestionService', () => {
     expect(result).not.toHaveProperty('source_snapshot');
     expect(result).not.toHaveProperty('rights_snapshot');
     const insertCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO research_ingestion_jobs'));
-    expect(JSON.parse(String(argumentsAsArray(insertCall?.[1])[9]))).toMatchObject({
+    expect(JSON.parse(String(argumentsAsArray(insertCall?.[1])[10]))).toMatchObject({
       sourceId: SOURCE_ID, ingestedAt: '2026-10-18T12:30:00.000Z', sourceRevision: 1,
     });
     expect(client.query).toHaveBeenCalledWith(
