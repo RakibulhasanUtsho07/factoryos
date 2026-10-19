@@ -51,7 +51,7 @@ describe('GrowthService scenario sets', () => {
           return { rows: [{ status: 'ACCEPTED', constraints_snapshot: {} }] };
         }
         if (sql.includes('SELECT reference_ref, citation_url FROM growth_opportunity_evidence')) {
-          return { rows: [] };
+          return { rows: [{ reference_ref: 'tenant-report:finance-2026-09', citation_url: null }] };
         }
         if (sql.includes('SELECT COALESCE(MAX(set_version), 0) + 1')) {
           return { rows: [{ next_version: 1 }] };
