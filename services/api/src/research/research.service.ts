@@ -676,9 +676,6 @@ export class ResearchService {
           sourceRevision: Number(claim.source_revision),
           rightsVersion: Number(claim.rights_version),
         };
-        const claimFingerprint = createHash('sha256')
-          .update(this.canonicalJson(evidenceSnapshot))
-          .digest('hex');
         const inserted = await client.query<Record<string, unknown>>(
           `
           INSERT INTO research_evidence_assessments (
@@ -699,7 +696,7 @@ export class ResearchService {
           `,
           [
             tenantId, claimId, String(claim.source_id), Number(claim.source_revision),
-            Number(claim.rights_version), claimFingerprint, rubric.rubricVersion,
+            Number(claim.rights_version), '0'.repeat(64), rubric.rubricVersion,
             rubric.score, rubric.suggestedGrade, JSON.stringify(rubric.factors),
             citation.status, JSON.stringify(citation.findings), citation.verificationLevel,
             safetyFlags.length ? 'REVIEW_REQUIRED' : 'CLEAR', JSON.stringify(safetyFlags),
@@ -1733,15 +1730,6 @@ export class ResearchService {
     }
   }
 
-  private canonicalJson(value: unknown): string {
-    if (Array.isArray(value)) return '[' + value.map(item => this.canonicalJson(item)).join(',') + ']';
-    if (value && typeof value === 'object') {
-      const record = value as Record<string, unknown>;
-      return '{' + Object.keys(record).sort().map(key =>
-        JSON.stringify(key) + ':' + this.canonicalJson(record[key])).join(',') + '}';
-    }
-    return JSON.stringify(value) ?? 'null';
-  }
 
   private validateUuid(value: string, field: string) {
     if (!isUUID(value)) throw new BadRequestException(field + ' must be a valid UUID');
