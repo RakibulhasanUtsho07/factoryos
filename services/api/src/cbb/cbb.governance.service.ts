@@ -1069,6 +1069,40 @@ export class CbbGovernanceService {
     return rows.rows;
   }
 
+  async filterEvidenceResult(tenantId: string, factoryId: string, userId: string, result: unknown) {
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) {
+      if (result && typeof result === 'object') {
+        const value = result as Record<string, unknown>;
+        if (Array.isArray(value.items)) return { ...value, items: [], total: 0 };
+      }
+      return result;
+    }
+    if (!result || typeof result !== 'object') return result;
+    const value = result as Record<string, unknown>;
+    if (!Array.isArray(value.items)) return result;
+    const items = value.items as Array<Record<string, unknown>>;
+    const links = items.flatMap((item) => Array.isArray(item.links)
+      ? (item.links as Array<Record<string, unknown>>).map((link) => ({
+          ...link,
+          target_type: String(link.target_type),
+          target_id: String(link.target_id),
+        }))
+      : []);
+    const visibleLinks = await this.filterTargetRowsByAcl(tenantId, factoryId, userId, links as DbRow[]);
+    const visibleKeys = new Set(visibleLinks.map((link) =>
+      String(link.target_type) + ':' + String(link.target_id) + ':' + String(link.evidence_id ?? '')));
+    const filteredItems = items.map((item) => {
+      const sourceLinks = Array.isArray(item.links) ? item.links as Array<Record<string, unknown>> : [];
+      return {
+        ...item,
+        links: sourceLinks.filter((link) => visibleKeys.has(
+          String(link.target_type) + ':' + String(link.target_id) + ':' + String(link.evidence_id ?? ''),
+        )),
+      };
+    });
+    return { ...value, items: filteredItems };
+  }
+
   async filterChangeProposalResult(tenantId: string, factoryId: string, userId: string, result: unknown) {
     if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) {
       if (result && typeof result === 'object') {
