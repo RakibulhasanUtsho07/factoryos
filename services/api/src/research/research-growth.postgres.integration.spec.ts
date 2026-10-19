@@ -74,17 +74,6 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           [tenantId, sourceId, userId],
         );
         const fixtureClaimId = claim.rows[0].id;
-        const fixtureClaim = await client.query(
-          `SELECT c.*, s.title AS source_title, s.authors AS source_authors,
-              s.publication_date::text AS publication_date, s.doi, s.source_url,
-              s.source_revision, s.rights_version
-           FROM research_claims c
-           JOIN research_sources s ON s.id=c.source_id AND s.tenant_id=c.tenant_id
-           WHERE c.id=$1 AND c.tenant_id=$2`,
-          [fixtureClaimId, tenantId],
-        );
-        const fixtureEvidence = fixtureClaim.rows[0];
-        const digestEmpty = `encode(sha256(convert_to('', 'UTF8')), 'hex')`;
         await client.query(
           `INSERT INTO research_evidence_assessments (
              tenant_id, claim_id, source_id, source_revision, rights_version,
