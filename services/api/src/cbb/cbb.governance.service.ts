@@ -493,16 +493,34 @@ export class CbbGovernanceService {
     if (reason.length < 10) throw new BadRequestException('reason must contain at least 10 characters');
     return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
       const selected = await client.query<DbRow>(
-        `SELECT id::text AS id,state,version,alias,canonical_term FROM business_terminology_aliases
-         WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,
+        `SELECT a.id::text AS id,a.state,a.version,a.alias,a.canonical_term,t.id::text AS canonical_term_id
+         FROM business_terminology_aliases a
+         JOIN business_blueprints b ON b.tenant_id=a.tenant_id AND b.factory_id=a.factory_id AND b.status='ACTIVE'
+         JOIN LATERAL (
+           SELECT term.id FROM business_terms term
+           WHERE term.tenant_id=a.tenant_id AND term.factory_id=a.factory_id
+             AND term.blueprint_version_id=b.current_version_id
+             AND lower(term.canonical_term)=lower(a.canonical_term)
+             AND term.state IN ('VERIFIED','INFERRED')
+           ORDER BY CASE term.state WHEN 'VERIFIED' THEN 0 ELSE 1 END,term.id
+           LIMIT 1
+         ) t ON TRUE
+         WHERE a.id=$1 AND a.tenant_id=$2 AND a.factory_id=$3
+         FOR UPDATE OF a`,
         [aliasId, scope.tenantId, scope.factoryId],
       );
       const alias = selected.rows[0];
-      if (!alias) throw new NotFoundException('Terminology alias was not found in this factory');
+      if (!alias) throw new NotFoundException('Terminology alias or its current canonical term was not found in this factory');
       if (Number(alias.version) !== dto.expected_version) {
         throw new ConflictException({ code: 'CBB_TERMINOLOGY_VERSION_MISMATCH', currentVersion: Number(alias.version) });
       }
+      await this.assertTargetWriteAccessInClient(
+        client, scope, 'TERM', String(alias.canonical_term_id), ['canonical_term'],
+      );
       if (alias.state === 'STALE') throw new ConflictException('A stale alias cannot be reactivated; create a new alias revision');
+      if (dto.action === 'VERIFY' && alias.state !== 'PROPOSED') {
+        throw new ConflictException('Only proposed terminology aliases can be verified');
+      }
       const nextState = dto.action === 'VERIFY' ? 'VERIFIED' : 'STALE';
       const updated = await client.query<DbRow>(
         `UPDATE business_terminology_aliases SET state=$1,updated_by=$2,updated_at=NOW(),version=version+1
