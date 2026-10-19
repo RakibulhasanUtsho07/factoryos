@@ -264,7 +264,7 @@ export function scanResearchPromptInjection(value: string): string[] {
   const secretPattern = /\b(reveal|print|expose|dump|show|leak|return|extract)\b.{0,80}\b(system prompt|hidden instructions?|credentials?|secrets?|api keys?|passwords?|access tokens?)\b/i;
   const exfilPattern = /\b(exfiltrat\w*|steal|send|upload|forward|export|transmit)\b.{0,100}\b(credentials?|secrets?|private data|customer data|api keys?|database records?)\b/i;
   const toolPattern = /\b(call|invoke|run|execute|use)\b.{0,50}\b(tool|function|browser|shell|terminal|python|sql|command)\b.{0,100}\b(exfiltrat\w*|fetch|delete|modify|send|upload|export|read|dump|secret|credential|private data)\b/i;
-  const jailbreakPattern = /\b(developer mode|dan mode|jailbreak|without (any )?restrictions|bypass (the )?safety|disable (the )?safety|unrestricted mode)\b/i;
+  const jailbreakPattern = /\\b(enable|activate|enter|switch to|turn on|use)\\b.{0,40}\\b(developer mode|dan mode|unrestricted mode)\\b|\\b(jailbreak|without (any )?restrictions|bypass (the )?safety|disable (the )?safety)\\b/i;
 
   if (
     controlPattern.test(spaced)
@@ -284,7 +284,7 @@ export function scanResearchPromptInjection(value: string): string[] {
   ) findings.add('TOOL_OR_COMMAND_ABUSE_INSTRUCTION');
   if (
     jailbreakPattern.test(spaced)
-    || /(?:developermode|danmode|jailbreak|unrestrictedmode|withoutrestrictions|bypasssafety)/.test(compact)
+    || /(?:(?:enable|activate|enter|switchto|turnon|use)(?:the)?(?:developermode|danmode|unrestrictedmode)|jailbreak|withoutrestrictions|bypass(?:the)?safety)/.test(compact)
   ) findings.add('SAFETY_BYPASS_INSTRUCTION');
   if (
     /<<\s*sys\s*>>|\[\s*inst\s*\]|<\s*\/?\s*(system|developer|assistant)\s*>/i.test(value)
