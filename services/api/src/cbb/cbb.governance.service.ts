@@ -456,7 +456,7 @@ export class CbbGovernanceService {
         `SELECT id::text AS id,canonical_term FROM business_terminology_aliases
          WHERE tenant_id=$1 AND factory_id=$2 AND lower(alias)=lower($3)
            AND COALESCE(lower(language_code),'')=COALESCE(lower($4),'')
-           AND COALESCE(lower(source_system),'')=COALESCE(lower($5)) FOR UPDATE`,
+           AND COALESCE(lower(source_system),'')=COALESCE(lower($5),'') FOR UPDATE`,
         [scope.tenantId, scope.factoryId, alias, languageCode, sourceSystem],
       );
       if (foundAlias.rows[0]) {
