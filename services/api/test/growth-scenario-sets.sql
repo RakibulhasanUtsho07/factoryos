@@ -43,6 +43,18 @@ BEGIN
     RAISE EXCEPTION 'GROWTH_SCENARIO_SET_VERSION_UNIQUENESS_MISSING';
   END IF;
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_growth_scenario_set_expected_count'
+      AND conrelid = 'public.growth_scenario_sets'::regclass
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_EXPECTED_COUNT_BOUNDS_MISSING';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+     WHERE schemaname = 'public' AND indexname = 'uq_growth_scenario_set_standard_type'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_STANDARD_CASE_UNIQUENESS_MISSING';
+  END IF;
+  IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'fk_growth_scenario_set_member_scenario'
       AND conrelid = 'public.growth_scenario_set_members'::regclass
   ) OR NOT EXISTS (
@@ -55,6 +67,7 @@ BEGIN
   FOREACH required_trigger IN ARRAY ARRAY[
     'growth_scenario_set_version_guard',
     'growth_scenario_set_member_guard',
+    'growth_scenario_set_completeness_guard',
     'growth_scenario_sets_immutable',
     'growth_scenario_set_members_immutable'
   ] LOOP
@@ -71,6 +84,13 @@ BEGIN
      OR position('MAX(s.set_version)' IN definition) = 0
      OR position('factoryos_current_user_id()' IN definition) = 0 THEN
     RAISE EXCEPTION 'GROWTH_SCENARIO_SET_MONOTONIC_VERSION_GUARD_INCOMPLETE';
+  END IF;
+
+  definition := pg_get_functiondef('public.factoryos_guard_growth_scenario_set_completeness()'::regprocedure);
+  IF position('expected_scenario_count' IN definition) = 0
+     OR position('actual_standard_count <> 4' IN definition) = 0
+     OR position('actual_custom_count <> expected_sensitivity_count' IN definition) = 0 THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_COMPLETENESS_GUARD_INCOMPLETE';
   END IF;
 
   definition := pg_get_functiondef('public.factoryos_guard_growth_scenario_set_member()'::regprocedure);
