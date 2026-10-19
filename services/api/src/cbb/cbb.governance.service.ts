@@ -493,10 +493,11 @@ export class CbbGovernanceService {
     if (reason.length < 10) throw new BadRequestException('reason must contain at least 10 characters');
     return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
       const selected = await client.query<DbRow>(
-        `SELECT a.id::text AS id,a.state,a.version,a.alias,a.canonical_term,t.id::text AS canonical_term_id
+        `SELECT a.id::text AS id,a.state,a.version,a.alias,a.canonical_term,
+            t.id::text AS canonical_term_id,b.id::text AS blueprint_id
          FROM business_terminology_aliases a
          JOIN business_blueprints b ON b.tenant_id=a.tenant_id AND b.factory_id=a.factory_id AND b.status='ACTIVE'
-         JOIN LATERAL (
+         LEFT JOIN LATERAL (
            SELECT term.id FROM business_terms term
            WHERE term.tenant_id=a.tenant_id AND term.factory_id=a.factory_id
              AND term.blueprint_version_id=b.current_version_id
@@ -514,9 +515,17 @@ export class CbbGovernanceService {
       if (Number(alias.version) !== dto.expected_version) {
         throw new ConflictException({ code: 'CBB_TERMINOLOGY_VERSION_MISMATCH', currentVersion: Number(alias.version) });
       }
-      await this.assertTargetWriteAccessInClient(
-        client, scope, 'TERM', String(alias.canonical_term_id), ['canonical_term'],
-      );
+      if (dto.action === 'VERIFY' && !alias.canonical_term_id) {
+        throw new NotFoundException('A terminology alias cannot be verified unless its canonical term exists in the current dictionary');
+      }
+      if (alias.canonical_term_id) {
+        await this.assertTargetWriteAccessInClient(
+          client, scope, 'TERM', String(alias.canonical_term_id), ['canonical_term'],
+        );
+      } else {
+        // A broken/stale mapping can still be retired, but only by a blueprint editor.
+        await this.assertTargetWriteAccessInClient(client, scope, 'BLUEPRINT', String(alias.blueprint_id));
+      }
       if (alias.state === 'STALE') throw new ConflictException('A stale alias cannot be reactivated; create a new alias revision');
       if (dto.action === 'VERIFY' && alias.state !== 'PROPOSED') {
         throw new ConflictException('Only proposed terminology aliases can be verified');
