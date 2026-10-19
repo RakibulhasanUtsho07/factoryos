@@ -747,15 +747,55 @@ export class CbbGovernanceService {
            FROM walk w
            JOIN business_relations r ON r.from_entity_id=w.id AND r.tenant_id=$1 AND r.factory_id=$2
              AND r.blueprint_version_id=$3 AND r.state IN ('VERIFIED','INFERRED')
+             AND (
+               NOT EXISTS (
+                 SELECT 1 FROM business_acl relation_acl
+                 WHERE relation_acl.tenant_id=$1 AND relation_acl.factory_id=$2
+                   AND relation_acl.target_type='RELATION' AND relation_acl.target_id=r.id
+                   AND relation_acl.field_name IS NULL
+               )
+               OR EXISTS (
+                 SELECT 1
+                 FROM business_acl relation_acl
+                 JOIN tenant_memberships membership ON membership.tenant_id=relation_acl.tenant_id
+                   AND membership.user_id=$7 AND membership.status='ACTIVE'
+                 JOIN user_roles assigned_role ON assigned_role.membership_id=membership.id
+                   AND assigned_role.role_id=relation_acl.role_id
+                   AND (assigned_role.factory_id IS NULL OR assigned_role.factory_id=$2)
+                 WHERE relation_acl.tenant_id=$1 AND relation_acl.factory_id=$2
+                   AND relation_acl.target_type='RELATION' AND relation_acl.target_id=r.id
+                   AND relation_acl.field_name IS NULL
+               )
+             )
            JOIN business_entities target ON target.id=r.to_entity_id AND target.tenant_id=$1 AND target.factory_id=$2
              AND target.blueprint_version_id=$3 AND target.state IN ('VERIFIED','INFERRED')
+             AND (
+               NOT EXISTS (
+                 SELECT 1 FROM business_acl entity_acl
+                 WHERE entity_acl.tenant_id=$1 AND entity_acl.factory_id=$2
+                   AND entity_acl.target_type='ENTITY' AND entity_acl.target_id=target.id
+                   AND entity_acl.field_name IS NULL
+               )
+               OR EXISTS (
+                 SELECT 1
+                 FROM business_acl entity_acl
+                 JOIN tenant_memberships membership ON membership.tenant_id=entity_acl.tenant_id
+                   AND membership.user_id=$7 AND membership.status='ACTIVE'
+                 JOIN user_roles assigned_role ON assigned_role.membership_id=membership.id
+                   AND assigned_role.role_id=entity_acl.role_id
+                   AND (assigned_role.factory_id IS NULL OR assigned_role.factory_id=$2)
+                 WHERE entity_acl.tenant_id=$1 AND entity_acl.factory_id=$2
+                   AND entity_acl.target_type='ENTITY' AND entity_acl.target_id=target.id
+                   AND entity_acl.field_name IS NULL
+               )
+             )
            WHERE w.depth < $4 AND NOT target.id=ANY(w.path)
              AND NOT EXISTS (SELECT 1 FROM business_conflicts c WHERE c.tenant_id=$1 AND c.factory_id=$2
                AND c.blueprint_id=$6 AND c.subject_type='ENTITY' AND c.subject_id=target.id AND c.status='OPEN')
          )
          SELECT DISTINCT id::text AS id,entity_type,name,state,confidence,MIN(depth) AS depth FROM walk GROUP BY id,entity_type,name,state,confidence
          ORDER BY depth,name LIMIT 250`,
-        [tenantId, factoryId, versionId, depth, sourceId, blueprintId], { tenantId },
+        [tenantId, factoryId, versionId, depth, sourceId, blueprintId, userId], { tenantId },
       );
       graph = await this.filterItemsByAcl(tenantId, factoryId, userId, 'ENTITY',
         trace.rows.map((row) => ({ ...row, id: String(row.id), depth: Number(row.depth) })) as Array<Record<string, unknown>>);
