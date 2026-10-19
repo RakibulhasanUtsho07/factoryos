@@ -61,6 +61,7 @@ BEGIN
 
   FOREACH required_trigger IN ARRAY ARRAY[
     'growth_opportunity_assumptions_seed',
+    'growth_opportunity_assumptions_payload_guard',
     'growth_opportunity_assumptions_immutable',
     'growth_opportunity_assumption_decisions_append_only',
     'growth_opportunity_constraints_immutable',
