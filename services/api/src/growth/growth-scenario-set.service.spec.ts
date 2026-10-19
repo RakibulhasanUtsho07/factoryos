@@ -61,11 +61,12 @@ describe('GrowthService scenario sets', () => {
             id: SCENARIO_SET_ID,
             set_name: values?.[3],
             set_version: values?.[4],
-            model_version: values?.[5],
-            data_vintage: values?.[6],
-            baseline_source_ref: values?.[7],
-            inputs: JSON.parse(String(values?.[8])),
-            input_hash: values?.[9],
+            expected_scenario_count: values?.[5],
+            model_version: values?.[6],
+            data_vintage: values?.[7],
+            baseline_source_ref: values?.[8],
+            inputs: JSON.parse(String(values?.[9])),
+            input_hash: values?.[10],
             created_by: USER_ID,
             created_at: '2026-10-19T00:00:00.000Z',
           }] };
@@ -105,6 +106,7 @@ describe('GrowthService scenario sets', () => {
     );
 
     expect(result.set_version).toBe(1);
+    expect(result.expected_scenario_count).toBe(7);
     expect(result.model_version).toBe('factoryos.growth.financial-sensitivity.v1');
     expect(result.input_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.scenario_count).toBe(7);
