@@ -173,4 +173,105 @@ describe('CbbGovernanceService', () => {
     await expect(service.getImpactTrace(tenantId, factoryId, userId, 'ENTITY', entityId, 3))
       .rejects.toThrow('not visible to this role');
   });
+
+  it('filters conflicts whose subject is hidden by the active role ACL', async () => {
+    queue(
+      { rows: [{ id: blueprintId }] }, // active blueprint
+      { rows: [] }, // caller roles for blueprint
+      { rows: [] }, // no blueprint-level restriction
+      { rows: [] }, // caller roles for subject
+      { rows: [{ target_id: entityId, role_id: roleId, field_name: null, access_level: 'READ' }] },
+    );
+
+    const result = await service.filterConflictResult(tenantId, factoryId, userId, {
+      items: [{ id: aclId, subjectType: 'ENTITY', subjectId: entityId, status: 'OPEN' }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    }) as { items: unknown[]; total: number };
+
+    expect(result.items).toEqual([]);
+    expect(result.total).toBe(0);
+  });
+
+  it('resolves terminology with source-system and language constraints while enforcing term ACL', async () => {
+    const termId = 'e0000000-0000-4000-8000-000000000003';
+    queue(
+      { rows: [{ blueprint_id: blueprintId, version_id: versionId }] },
+      { rows: [] }, // caller roles for blueprint
+      { rows: [] }, // no blueprint ACL
+      { rows: [{
+        id: termId, term: 'Purchase Order', canonical_term: 'Purchase Order',
+        language_code: 'en', source_system: 'ERP', state: 'VERIFIED', confidence: 0.98,
+      }] },
+      { rows: [] }, // caller roles for term
+      { rows: [] }, // no term ACL
+    );
+
+    const result = await service.resolveTerminology(
+      tenantId, factoryId, userId, 'Purchase Order', 'ERP', 'en',
+    );
+
+    expect(result.matchedBy).toBe('CBB_TERM');
+    expect(result.match).toEqual(expect.objectContaining({ id: termId, state: 'VERIFIED' }));
+    expect(query.mock.calls[3]?.[0]).toContain('AND ($5::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($5))');
+    expect(query.mock.calls[3]?.[0]).toContain('AND ($6::text IS NULL OR language_code IS NULL OR lower(language_code)=lower($6))');
+    expect(query.mock.calls[3]?.[1]).toEqual([tenantId, factoryId, versionId, 'Purchase Order', 'ERP', 'en']);
+  });
+
+  it('creates a new immutable snapshot and records rollback receipt plus audit in one transaction', async () => {
+    const rollbackEventId = 'f0000000-0000-4000-8000-000000000002';
+    const newVersionId = 'c0000000-0000-4000-8000-000000000003';
+    queue(
+      { rows: [{ id: blueprintId, current_version_id: versionId }] }, // locked active blueprint
+      { rows: [{ id: priorVersionId, version: 1, graph_hash: 'snapshot-hash', evidence_count: 0, readiness_score: null }] },
+      { rows: [] }, // target ACL advisory lock
+      { rows: [] }, // active caller roles
+      { rows: [] }, // no blueprint ACL
+      { rows: [{ next_version: 3 }] },
+      { rows: [{ id: newVersionId, version: 3 }] },
+      { rows: [] }, // entities
+      { rows: [] }, // relations
+      { rows: [] }, // processes
+      { rows: [] }, // process steps
+      { rows: [] }, // rules
+      { rows: [] }, // terms
+      { rows: [] }, // exceptions
+      { rows: [{ id: blueprintId }] }, // advance current-version pointer
+      { rows: [] }, // evidence links
+      { rows: [] }, // impact links
+      { rows: [] }, // retained ACL grants
+      { rows: [] }, // open conflicts
+      { rows: [{ id: rollbackEventId, created_at: '2026-10-19T08:00:00.000Z' }] },
+    );
+
+    const result = await service.rollbackToVersion(
+      { tenantId, factoryId, userId },
+      {
+        source_version_id: priorVersionId,
+        expected_current_version_id: versionId,
+        reason: 'Restore the reviewed and approved historical business model',
+        correlation_id: 'f0000000-0000-4000-8000-000000000003',
+      },
+    );
+
+    expect(result.rollbackEventId).toBe(rollbackEventId);
+    expect(result.fromVersionId).toBe(versionId);
+    expect(result.restoredFromVersionId).toBe(priorVersionId);
+    expect(result.version).toEqual({ id: newVersionId, number: 3 });
+    expect(query.mock.calls[14]?.[0]).toContain('UPDATE business_blueprints SET current_version_id=$1');
+    expect(query.mock.calls[19]?.[0]).toContain('INSERT INTO business_cbb_rollback_events');
+    expect(recordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      eventType: 'BUSINESS_MODEL_ROLLBACK',
+      action: 'ROLLBACK_TO_VERSION',
+      resourceId: newVersionId,
+      correlationId: 'f0000000-0000-4000-8000-000000000003',
+      payload: expect.objectContaining({
+        rollbackEventId,
+        fromVersionId: versionId,
+        restoredFromVersionId: priorVersionId,
+        toVersionId: newVersionId,
+      }),
+    }));
+  });
 });
