@@ -29,7 +29,10 @@ describe('CbbGovernanceService', () => {
   let service: CbbGovernanceService;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    query.mockReset();
+    transaction.mockReset();
+    transaction.mockImplementation(async (_context: unknown, callback: (client: PoolClient) => Promise<unknown>) => callback(client));
+    recordWithClient.mockReset();
     recordWithClient.mockResolvedValue('audit-event-id');
     service = new CbbGovernanceService(database as never, auditService as never);
   });
