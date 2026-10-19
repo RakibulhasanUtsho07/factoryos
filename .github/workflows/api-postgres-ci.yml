@@ -220,6 +220,7 @@ jobs:
             migrations/132_cbb_governance.sql
             migrations/133_cbb_terminology_context.sql
             migrations/134_research_ingestion_provenance.sql
+            migrations/135_research_extraction_review_gate.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
