@@ -738,6 +738,74 @@ export class ResearchIngestionService {
     return rows.rows;
   }
 
+  async listExtractionProvenance(userId: string, tenantId: string, jobId: string) {
+    this.validateScope(userId, tenantId);
+    this.uuid(jobId, 'jobId');
+    const visible = await this.database.query<DbRow>(
+      'SELECT id FROM research_ingestion_jobs WHERE id=$1 AND tenant_id=$2',
+      [jobId, tenantId], { tenantId, userId },
+    );
+    if (!visible.rows[0]) throw new NotFoundException('Research ingestion job not found');
+
+    const runs = await this.database.query<DbRow>(
+      `SELECT r.id::text AS id,r.job_id::text AS job_id,r.source_id::text AS source_id,
+          r.extractor_name,r.extractor_version,r.schema_version,r.model_provider,r.model_id,
+          r.model_version,r.prompt_sha256,r.config_sha256,r.input_sha256,r.output_sha256,
+          r.source_revision,r.rights_version,r.rights_fingerprint,r.safety_result,
+          r.safety_findings,r.claim_count,r.untrusted_input,r.full_text_persisted,
+          r.created_by::text AS created_by,r.created_at::text AS created_at
+       FROM research_extraction_runs r
+       WHERE r.tenant_id=$1 AND r.job_id=$2
+       ORDER BY r.created_at DESC,r.id DESC LIMIT 50`,
+      [tenantId, jobId], { tenantId, userId },
+    );
+    const items = await this.database.query<DbRow>(
+      `SELECT i.id::text AS id,i.extraction_run_id::text AS extraction_run_id,i.item_key,
+          i.source_locator,i.claim_text_sha256,i.excerpt_sha256,i.safety_flags,i.review_status,
+          c.id::text AS claim_id,rv.id::text AS review_id,rv.decision AS review_decision,
+          rv.reason AS review_reason,rv.safety_flags AS reviewed_safety_flags,
+          rv.output_sha256 AS reviewed_output_sha256,rv.reviewed_by::text AS reviewed_by,
+          rv.created_at::text AS reviewed_at,i.created_at::text AS created_at
+       FROM research_extraction_items i
+       JOIN research_extraction_runs r
+         ON r.id=i.extraction_run_id AND r.tenant_id=i.tenant_id
+       LEFT JOIN research_claims c
+         ON c.extraction_item_id=i.id AND c.tenant_id=i.tenant_id
+       LEFT JOIN research_extraction_item_reviews rv
+         ON rv.extraction_item_id=i.id AND rv.tenant_id=i.tenant_id
+       WHERE i.tenant_id=$1 AND r.job_id=$2
+       ORDER BY i.created_at,i.item_key LIMIT 500`,
+      [tenantId, jobId], { tenantId, userId },
+    );
+    return { jobId, extractionRuns: runs.rows, items: items.rows };
+  }
+
+  async listSourceContentPurges(
+    userId: string,
+    tenantId: string,
+    sourceId: string,
+    limit = 100,
+  ) {
+    this.validateScope(userId, tenantId);
+    this.uuid(sourceId, 'sourceId');
+    const safeLimit = this.limit(limit);
+    const source = await this.database.query<DbRow>(
+      'SELECT id FROM research_sources WHERE id=$1 AND tenant_id=$2 AND namespace=$3',
+      [sourceId, tenantId, 'TENANT'], { tenantId, userId },
+    );
+    if (!source.rows[0]) throw new NotFoundException('Tenant research source not found');
+    const result = await this.database.query<DbRow>(
+      `SELECT id::text AS id,source_id::text AS source_id,claim_id::text AS claim_id,
+          source_revision,rights_version,excerpt_sha256,purge_reason,
+          actor_user_id::text AS actor_user_id,created_at::text AS created_at
+       FROM research_source_content_purges
+       WHERE tenant_id=$1 AND source_id=$2
+       ORDER BY created_at DESC,id DESC LIMIT $3`,
+      [tenantId, sourceId, safeLimit], { tenantId, userId },
+    );
+    return result.rows;
+  }
+
   private async lockJobAndSource(client: PoolClient, tenantId: string, jobId: string): Promise<LockedJob> {
     const lookup = await client.query<DbRow>(
       'SELECT source_id::text AS source_id FROM research_ingestion_jobs WHERE id=$1 AND tenant_id=$2',
