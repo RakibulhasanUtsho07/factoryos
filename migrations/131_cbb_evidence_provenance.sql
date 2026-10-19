@@ -366,6 +366,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_cbb_reject_evidence_link_mutation();
 ALTER TABLE business_conflicts
   ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1,
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS updated_by UUID,
   ADD COLUMN IF NOT EXISTS resolution_reason TEXT,
   ADD COLUMN IF NOT EXISTS resolution_evidence_id UUID;
 
@@ -564,7 +565,7 @@ BEGIN
   ELSIF OLD.status = 'OPEN' AND NEW.status = 'OPEN' THEN
     action_name := 'EVIDENCE_ADDED';
     old_status := OLD.status;
-    actor_id := NEW.created_by;
+    actor_id := COALESCE(NEW.updated_by, NEW.created_by);
     reason_text := 'Additional conflicting evidence attached';
   ELSIF NEW.status = 'RESOLVED' THEN
     action_name := 'RESOLVED';

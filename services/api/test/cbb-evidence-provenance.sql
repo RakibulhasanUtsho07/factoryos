@@ -24,6 +24,7 @@ BEGIN
     'business_evidence_links.blueprint_id',
     'business_evidence_links.blueprint_version_id',
     'business_conflicts.version',
+    'business_conflicts.updated_by',
     'business_conflicts.updated_at',
     'business_conflicts.resolution_reason',
     'business_conflicts.resolution_evidence_id',

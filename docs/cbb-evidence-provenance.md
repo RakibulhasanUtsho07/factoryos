@@ -1,66 +1,188 @@
-# CBB evidence provenance, source links and conflict handling
+import { jest } from '@jest/globals';
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import type { PoolClient } from 'pg';
+import { CbbEvidenceService } from './cbb.evidence.service';
+import type { CreateCbbEvidenceDto, LinkCbbEvidenceDto } from './dto/cbb-evidence.dto';
 
-**Phase:** D — CBB, Research & Growth Intelligence  
-**Round:** 25 — CBB evidence provenance, source links, version history and conflict handling  
-**Requirement intent:** FactoryOS AI SRS v2.1 CBB provenance/confidence/conflict requirements (FR-CBB-04 through FR-CBB-07).
+type TestRow = Record<string, unknown>;
+type TestResult = { rows: TestRow[] };
+type Query = (sql: string, values?: unknown[]) => Promise<TestResult>;
 
-## Evidence is a source record, not a claim of truth
+const query = jest.fn<Query>();
+const auditRecord = jest.fn<(input: unknown) => Promise<string>>();
+const client = { query } as unknown as PoolClient;
+const transaction = jest.fn(async (_context: unknown, callback: (c: PoolClient) => Promise<unknown>) => callback(client));
+const database = { query, transaction };
+const auditService = { record: auditRecord };
 
-CBB evidence stores provenance metadata, not a copied body of an external document. Each new API-created source record must carry an explicit-timezone source timestamp and a SHA-256 content fingerprint. Optional source identity includes a stable source key, source system, upstream record ID, upstream version and HTTP(S) source URL. The recorded state (`VERIFIED`, `INFERRED`, `PROPOSED`, `CONFLICTING`, `STALE`) remains confidence/evidence status; it does not replace permission checks or prove the source itself is true.
+describe('CbbEvidenceService', () => {
+  const tenantId = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
+  const factoryId = '6fa03a36-6e3e-45ff-8f48-9ce3e2af0001';
+  const userId = '5e8d2d2b-4a11-4ac7-8db9-cda1eafaf001';
+  const blueprintId = 'b0000000-0000-4000-8000-000000000001';
+  const versionId = 'c0000000-0000-4000-8000-000000000001';
+  const evidenceId = 'e0000000-0000-4000-8000-000000000001';
+  const otherEvidenceId = 'e0000000-0000-4000-8000-000000000002';
+  const entityId = 'f0000000-0000-4000-8000-000000000001';
+  const conflictId = 'a0000000-0000-4000-8000-000000000001';
+  const digestA = 'a'.repeat(64);
+  const digestB = 'b'.repeat(64);
+  let service: CbbEvidenceService;
 
-Raw source content is not persisted by this CBB evidence API. A hash records the submitted fingerprint; it does not independently verify bytes at a remote URL. Source fetchers, OCR and publisher/ERP/MES ingestion workers are separate integrations.
+  const evidenceRow = (overrides: TestRow = {}): TestRow => ({
+    id: evidenceId, tenant_id: tenantId, factory_id: factoryId, source_type: 'ERP',
+    source_ref: 'purchase-order:PO-100', source_timestamp: '2026-10-19T05:00:00.000Z',
+    evidence_grade: 'AUTHORITATIVE', confidence: 0.99, state: 'PROPOSED',
+    content_hash: digestA, visibility: 'INTERNAL', metadata: {}, created_by: userId,
+    created_at: '2026-10-19T05:01:00.000Z', source_key: 'erp:po-100', source_system: 'ERP',
+    source_record_id: 'PO-100', source_version: '1', source_uri: null,
+    supersedes_evidence_id: null, revision_no: 1, ...overrides,
+  });
 
-## API
+  const createDto = (overrides: Partial<CreateCbbEvidenceDto> = {}): CreateCbbEvidenceDto => ({
+    source_type: 'ERP',
+    source_ref: 'purchase-order:PO-100',
+    source_key: 'erp:po-100',
+    source_system: 'ERP',
+    source_record_id: 'PO-100',
+    source_version: '1',
+    source_timestamp: '2026-10-19T05:00:00Z',
+    content_hash: digestA,
+    evidence_grade: 'AUTHORITATIVE',
+    confidence: 0.99,
+    state: 'PROPOSED',
+    visibility: 'INTERNAL',
+    metadata: { fixture: true },
+    ...overrides,
+  });
 
-These routes are under `/api/v1/business-model` and require authenticated tenant and factory scope.
+  beforeEach(() => {
+    jest.clearAllMocks();
+    service = new CbbEvidenceService(database as never, auditService as never);
+  });
 
-| Route | Permission | Purpose |
-| --- | --- | --- |
-| `POST /evidence` | `ai.business.review` | Record source metadata and digest; identical content is an idempotent replay |
-| `GET /evidence` | `ai.business.read` | Search internal evidence by source, state, source key or linked graph target |
-| `GET /evidence/restricted` | `ai.business.review` | Search restricted evidence; it is not exposed on the general read endpoint |
-| `GET /evidence/:evidenceId/history` | `ai.business.read` | Inspect a source key's immutable evidence revisions |
-| `POST /evidence/:evidenceId/links` | `ai.business.review` | Link evidence to a specific current-version blueprint target |
-| `GET /versions` | `ai.business.read` | List immutable blueprint version snapshots and identify the current version |
-| `GET /versions/:versionId/map` | `ai.business.read` | Retrieve a tenant/factory-scoped historical graph version |
-| `GET /conflicts` | `ai.business.read` | List open or terminal evidence conflicts |
-| `GET /conflicts/:conflictId/history` | `ai.business.read` | Inspect the append-only conflict decision/evidence timeline |
-| `POST /conflicts/:conflictId/decision` | `ai.business.review` | Resolve or dismiss an open conflict with a version-checked decision |
+  function queue(...results: TestResult[]) {
+    for (const result of results) query.mockResolvedValueOnce(result as never);
+  }
 
-Evidence list filtering accepts `source_type`, `state`, `source_key`, `target_type`, `target_id`, `limit` and `offset`. A graph-target filter uses both `target_type` and `target_id`; the API constrains list/page sizes.
+  it('records a source fingerprint and auditable revision metadata atomically', async () => {
+    queue(
+      { rows: [{ id: blueprintId }] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [evidenceRow()] },
+    );
+    const result = await service.createEvidence({ tenantId, factoryId, userId }, createDto());
 
-### Source revisions and replay rules
+    expect(result.id).toBe(evidenceId);
+    expect(result.revision).toBe(1);
+    expect(result.contentHash).toBe(digestA);
+    expect(result.sourceUri).toBeNull();
+    expect(result.replayed).toBe(false);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(auditRecord).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'BUSINESS_MODEL_EVIDENCE',
+      action: 'RECORD_SOURCE_EVIDENCE',
+      resourceId: evidenceId,
+      payload: expect.objectContaining({ contentHash: digestA, revisionNo: 1 }),
+    }));
+  });
 
-- The first revision of a stable `source_key` is revision 1.
-- Re-submitting the same digest with unchanged/omitted source-version metadata returns the existing evidence record and does not create a duplicate revision or audit event. A conflicting upstream version is rejected instead of silently discarding the changed version metadata.
-- A changed digest for an existing source conflicts unless the request supplies `supersedes_evidence_id` pointing to the exact latest revision in the same tenant/factory/source key.
-- Revision sequence, predecessor scope, source timestamp and 64-character SHA-256 digest are guarded by PostgreSQL, not only by DTO validation.
-- Evidence records and evidence links are immutable. Corrections create a new revision rather than editing historical provenance.
+  it('filters evidence by the requested graph target and defaults to internal visibility', async () => {
+    queue(
+      { rows: [{ total: 0 }] },
+      { rows: [] },
+    );
+    const result = await service.listEvidence(tenantId, factoryId, {
+      targetType: 'ENTITY',
+      targetId: entityId,
+      limit: 20,
+      offset: 0,
+    });
 
-The server serializes concurrent source-key revisions and the database rejects replay races, source-key/factory crossover, invalid revision numbering and attempts to supersede an older predecessor.
+    expect(result.items).toEqual([]);
+    expect(query.mock.calls[0]?.[1]).toEqual([
+      tenantId, factoryId, null, null, null, 'INTERNAL', 'ENTITY', entityId,
+    ]);
+    expect(query.mock.calls[1]?.[1]).toEqual([
+      tenantId, factoryId, null, null, null, 'INTERNAL', 'ENTITY', entityId, 20, 0,
+    ]);
+  });
 
-### Version-bound source links
+  it('treats an identical source revision as an idempotent replay', async () => {
+    queue(
+      { rows: [{ id: blueprintId }] },
+      { rows: [] },
+      { rows: [{ id: evidenceId, source_version: '1', content_hash: digestA, revision_no: 1 }] },
+      { rows: [evidenceRow()] },
+    );
+    const result = await service.createEvidence({ tenantId, factoryId, userId }, createDto());
 
-Evidence links use one of `SUPPORTS`, `CONTRADICTS`, `SUPERSEDES` or `RELATED_TO`, and name a supported CBB target type: `BLUEPRINT`, `ENTITY`, `RELATION`, `PROCESS`, `PROCESS_STEP`, `RULE`, `TERM` or `EXCEPTION`.
+    expect(result.replayed).toBe(true);
+    expect(result.id).toBe(evidenceId);
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
 
-A link is checked against a real target in the same tenant/factory and is bound to that target's exact blueprint and version. The business map now exposes internal source provenance for visible entity and relation nodes. For all graph target types, callers can query `GET /evidence?target_type=PROCESS&target_id=<uuid>` (or another supported type); restricted source metadata is retrieved only from the review-only route. Existing links are backfilled with target blueprint/version scope where the target can be resolved safely.
+  it('rejects a changed source without the latest predecessor to prevent lost updates', async () => {
+    queue(
+      { rows: [{ id: blueprintId }] },
+      { rows: [] },
+      { rows: [{ id: evidenceId, source_version: '1', content_hash: digestA, revision_no: 1 }] },
+    );
+    await expect(service.createEvidence(
+      { tenantId, factoryId, userId },
+      createDto({ content_hash: digestB, source_version: '2' }),
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
 
-### Conflicts are explicit, versioned review work
+  it('requires explicit timezone metadata for source timestamps', async () => {
+    await expect(service.createEvidence(
+      { tenantId, factoryId, userId },
+      createDto({ source_timestamp: '2026-10-19T05:00:00' }),
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction).not.toHaveBeenCalled();
+  });
 
-Creating a `CONTRADICTS` link opens a `business_conflicts` record or appends a newly observed evidence ID to the existing open conflict. It never overwrites the existing source or silently alters the verified graph. Database guards check evidence IDs and the conflicted graph subject within the same tenant/factory/blueprint.
+  it('creates a review conflict when contradictory evidence is linked to a graph target', async () => {
+    const link: TestRow = {
+      id: otherEvidenceId, evidence_id: otherEvidenceId, blueprint_id: blueprintId,
+      blueprint_version_id: versionId, target_type: 'ENTITY', target_id: entityId,
+      link_type: 'CONTRADICTS', created_by: userId, created_at: '2026-10-19T05:00:00Z',
+    };
+    queue(
+      { rows: [{ id: otherEvidenceId }] },
+      { rows: [{ id: blueprintId, current_version_id: versionId }] },
+      { rows: [{ id: entityId }] },
+      { rows: [link] },
+      { rows: [{ evidence_id: evidenceId }, { evidence_id: otherEvidenceId }] },
+      { rows: [] },
+      { rows: [{ id: conflictId }] },
+    );
+    const result = await service.createEvidenceLink(
+      { tenantId, factoryId, userId },
+      otherEvidenceId,
+      { target_type: 'ENTITY', target_id: entityId, link_type: 'CONTRADICTS' } as LinkCbbEvidenceDto,
+    );
 
-The decision request uses `action: RESOLVE|DISMISS`, `expected_version`, a reason and a durable resolution reference. Resolving additionally requires `resolution_evidence_id` that is already attached to the conflict. The selected resolution record must be scoped to the same factory. Only an open conflict may be decided; a stale version returns a conflict response so the reviewer must refresh history instead of losing another review's changes.
+    expect(result.conflictId).toBe(conflictId);
+    expect(result.replayed).toBe(false);
+    expect(auditRecord).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'LINK_SOURCE_EVIDENCE',
+      payload: expect.objectContaining({ linkType: 'CONTRADICTS', conflictId }),
+    }));
+  });
 
-Conflict history is written by a database trigger, tenant RLS is forced, direct history inserts/updates/deletes are blocked, and decision actions are audited. A still-open conflict suppresses its affected entity (and edges attached to a conflicted entity/relationship) from the normal business map. Resolving/dismissing the conflict does not mutate the versioned graph or mark evidence VERIFIED automatically; a business-model change must still follow the existing review/promotion path.
-
-## Data safety
-
-- The existing CBB tables keep forced tenant row-level security. The new conflict-history table also uses forced RLS with a tenant predicate.
-- Composite foreign keys prevent evidence, links, target blueprint versions and resolution evidence from crossing tenant/factory boundaries.
-- Source evidence and provenance links reject update/delete; conflict identity is immutable and conflict decisions require optimistic version checks.
-- List/query limits are bounded; review actions require `ai.business.review`, while general reads expose only `INTERNAL` evidence.
-- Audit records store source identifiers, hashes, revision numbers and decision metadata—not raw source content.
-
-## Acceptance boundaries and remaining integrations
-
-This slice provides the database and authenticated API contract for provenance and manual conflict review. It does **not** run external crawlers, download or OCR source documents, verify the live bytes behind a URI, infer the truth of a claim from its hash, or automatically convert conflict resolution into model changes. Providers must submit their stable source key/version/time and digest from an authorized integration path; human reviewers or upstream source connectors remain responsible for source trust and rights decisions.
+  it('does not let stale conflict decisions overwrite a newer review version', async () => {
+    queue({ rows: [{ id: conflictId, status: 'OPEN', version: 2, evidence_refs: [evidenceId] }] });
+    await expect(service.decideConflict(
+      { tenantId, factoryId, userId },
+      conflictId,
+      {
+        action: 'RESOLVE', expected_version: 1, reason: 'Reviewed source discrepancy',
+        resolution_reference: 'Approved decision record', resolution_evidence_id: evidenceId,
+      },
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+});

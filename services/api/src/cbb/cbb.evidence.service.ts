@@ -283,9 +283,9 @@ export class CbbEvidenceService {
           const after = [...new Set([...before, ...refs])];
           if (after.length !== before.length) {
             await client.query(
-              `UPDATE business_conflicts SET evidence_refs=$1::jsonb, version=version+1, updated_at=NOW()
-               WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND status='OPEN' AND version=$5`,
-              [JSON.stringify(after), conflictId, scope.tenantId, scope.factoryId, Number(current.version)],
+              `UPDATE business_conflicts SET evidence_refs=$1::jsonb, updated_by=$2, version=version+1, updated_at=NOW()
+               WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND status='OPEN' AND version=$6`,
+              [JSON.stringify(after), scope.userId, conflictId, scope.tenantId, scope.factoryId, Number(current.version)],
             );
           }
         } else {
@@ -354,7 +354,7 @@ export class CbbEvidenceService {
       `SELECT c.id::text AS id, c.blueprint_id::text AS blueprint_id, c.subject_type,
          c.subject_id::text AS subject_id, c.status, c.description, c.evidence_refs,
          c.resolution_ref, c.resolution_reason, c.resolution_evidence_id::text AS resolution_evidence_id,
-         c.created_by::text AS created_by, c.resolved_by::text AS resolved_by,
+         c.created_by::text AS created_by, c.updated_by::text AS updated_by, c.resolved_by::text AS resolved_by,
          c.created_at::text AS created_at, c.updated_at::text AS updated_at,
          c.resolved_at::text AS resolved_at, c.version
        FROM business_conflicts c
@@ -369,7 +369,7 @@ export class CbbEvidenceService {
         id: row.id, blueprintId: row.blueprint_id, subjectType: row.subject_type, subjectId: row.subject_id,
         status: row.status, description: row.description, evidenceIds: this.jsonArray(row.evidence_refs),
         resolutionReference: row.resolution_ref, resolutionReason: row.resolution_reason,
-        resolutionEvidenceId: row.resolution_evidence_id, createdBy: row.created_by, resolvedBy: row.resolved_by,
+        resolutionEvidenceId: row.resolution_evidence_id, createdBy: row.created_by, updatedBy: row.updated_by, resolvedBy: row.resolved_by,
         createdAt: row.created_at, updatedAt: row.updated_at, resolvedAt: row.resolved_at, version: Number(row.version),
       })),
       total: Number(count.rows[0]?.total ?? 0), limit, offset,
@@ -443,7 +443,7 @@ export class CbbEvidenceService {
       }
       const nextStatus = dto.action === 'RESOLVE' ? 'RESOLVED' : 'DISMISSED';
       const updated = await client.query<Row>(
-        `UPDATE business_conflicts SET status=$1, resolved_by=$2, resolved_at=NOW(),
+        `UPDATE business_conflicts SET status=$1, updated_by=$2, resolved_by=$2, resolved_at=NOW(),
            resolution_reason=$3, resolution_evidence_id=$4, resolution_ref=$5,
            version=version+1, updated_at=NOW()
          WHERE id=$6 AND tenant_id=$7 AND factory_id=$8 AND status='OPEN' AND version=$9
