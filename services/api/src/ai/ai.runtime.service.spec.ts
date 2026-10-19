@@ -1,4 +1,8 @@
 import {
+  createHash,
+} from 'node:crypto';
+
+import {
   jest,
 } from '@jest/globals';
 
@@ -111,6 +115,41 @@ const aiToolGateway = {
   execute: jest.fn(),
 };
 
+function canonicalizeForHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeForHash);
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record).sort().map((key) => [
+        key,
+        canonicalizeForHash(record[key]),
+      ]),
+    );
+  }
+  return value;
+}
+
+function decisionRequestHash(input: {
+  tenantId: string;
+  factoryId: string;
+  actorId: string;
+  objective: string;
+  reasoningMode: string;
+  contextVersion: string | null;
+  riskClass: string | null;
+  outputState: string;
+  metadata: Record<string, unknown>;
+}): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalizeForHash({
+      envelopeVersion: '1.0.0',
+      ...input,
+    })), 'utf8')
+    .digest('hex');
+}
+
 describe(
   'AiRuntimeService',
   () => {
@@ -188,6 +227,64 @@ describe(
         expect(
           auditRecordMock,
         ).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
+      'returns an idempotent decision only when the canonical envelope fingerprint matches',
+      async () => {
+        const input = {
+          objective: 'Explain order delay',
+          reasoning_mode: 'HYPOTHESIS',
+          context_version: 'cbb-2',
+          output_state: 'ANSWER',
+        };
+        const requestHash = decisionRequestHash({
+          tenantId,
+          factoryId,
+          actorId: userId,
+          objective: input.objective,
+          reasoningMode: input.reasoning_mode,
+          contextVersion: input.context_version,
+          riskClass: null,
+          outputState: input.output_state,
+          metadata: {},
+        });
+
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{
+            id: decisionId,
+            tenant_id: tenantId,
+            factory_id: factoryId,
+            request_id: requestId,
+            trace_id: traceId,
+            actor_id: userId,
+            objective: input.objective,
+            reasoning_mode: input.reasoning_mode,
+            context_version: input.context_version,
+            risk_class: null,
+            output_state: input.output_state,
+            metadata: {},
+            envelope_version: '1.0.0',
+            request_hash: requestHash,
+            created_at: '2026-10-07T00:00:00.000Z',
+            updated_at: '2026-10-07T00:00:00.000Z',
+          }],
+        });
+
+        const result = await service.createDecision(
+          tenantId,
+          factoryId,
+          userId,
+          requestId,
+          traceId,
+          input,
+        );
+
+        expect(result.idempotent).toBe(true);
+        expect(result.decision.envelopeVersion).toBe('1.0.0');
+        expect(result.decision.decisionHash).toBe(requestHash);
+        expect(databaseQueryMock).toHaveBeenCalledTimes(1);
       },
     );
 

@@ -16,6 +16,7 @@ DECLARE
   v_current_state TEXT;
   v_current_version INTEGER;
   v_illegal_transition_rejected BOOLEAN := FALSE;
+  v_bad_hash_rejected BOOLEAN := FALSE;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '147_ai_decision_envelope_lifecycle_replay') THEN
     RAISE EXCEPTION 'AI decision lifecycle migration marker is missing';
@@ -58,6 +59,21 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM ai_decision_lifecycle_states
                  WHERE decision_id=v_decision AND current_state='CREATED' AND version=1) THEN
     RAISE EXCEPTION 'Decision insert did not create version-one CREATED lifecycle state';
+  END IF;
+
+  BEGIN
+    INSERT INTO ai_decision_envelopes (
+      tenant_id, factory_id, request_id, trace_id, actor_id, objective,
+      reasoning_mode, output_state, metadata, envelope_version, request_hash
+    ) VALUES (
+      v_tenant, v_factory, gen_random_uuid(), gen_random_uuid(), v_actor,
+      'Reject invalid fingerprint', 'FACT', 'ANSWER', '{}'::jsonb, '1.0.0', 'not-a-sha256'
+    );
+  EXCEPTION WHEN check_violation THEN
+    v_bad_hash_rejected := TRUE;
+  END;
+  IF NOT v_bad_hash_rejected THEN
+    RAISE EXCEPTION 'Malformed canonical request fingerprints must be rejected';
   END IF;
 
   INSERT INTO ai_context_packages (
