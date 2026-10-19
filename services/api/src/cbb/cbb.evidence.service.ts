@@ -102,18 +102,17 @@ export class CbbEvidenceService {
           sourceSystem, sourceRecordId, sourceVersion, sourceUri, supersedesId, revisionNo],
       );
       if (!inserted.rows[0]) throw new Error('CBB_EVIDENCE_INSERT_FAILED');
-      return { row: inserted.rows[0], replayed: false };
-    });
-
-    if (!result.replayed) {
-      await this.auditService.record({
+      const row = inserted.rows[0];
+      await this.auditService.recordWithClient(client, {
         tenantId: scope.tenantId, factoryId: scope.factoryId, actorUserId: scope.userId,
         eventType: 'BUSINESS_MODEL_EVIDENCE', action: 'RECORD_SOURCE_EVIDENCE',
-        resourceType: 'BUSINESS_EVIDENCE', resourceId: String(result.row.id),
-        payload: { sourceType, sourceKey, contentHash, revisionNo: Number(result.row.revision_no),
+        resourceType: 'BUSINESS_EVIDENCE', resourceId: String(row.id),
+        payload: { sourceType, sourceKey, contentHash, revisionNo: Number(row.revision_no),
           supersedesEvidenceId: supersedesId, state },
       });
-    }
+      return { row, replayed: false };
+    });
+
     return { ...this.mapEvidence(result.row), replayed: result.replayed };
   }
 
@@ -344,16 +343,17 @@ export class CbbEvidenceService {
           }
         }
       }
-      return { link, replayed, conflictId, newlyCreated: inserted.rows.length > 0 };
+      const newlyCreated = inserted.rows.length > 0;
+      if (newlyCreated) {
+        await this.auditService.recordWithClient(client, {
+          tenantId: scope.tenantId, factoryId: scope.factoryId, actorUserId: scope.userId,
+          eventType: 'BUSINESS_MODEL_EVIDENCE', action: 'LINK_SOURCE_EVIDENCE',
+          resourceType: 'BUSINESS_EVIDENCE_LINK', resourceId: String(link.id),
+          payload: { evidenceId, targetType, targetId: dto.target_id, linkType, conflictId },
+        });
+      }
+      return { link, replayed, conflictId, newlyCreated };
     });
-    if (result.newlyCreated) {
-      await this.auditService.record({
-        tenantId: scope.tenantId, factoryId: scope.factoryId, actorUserId: scope.userId,
-        eventType: 'BUSINESS_MODEL_EVIDENCE', action: 'LINK_SOURCE_EVIDENCE',
-        resourceType: 'BUSINESS_EVIDENCE_LINK', resourceId: String(result.link.id),
-        payload: { evidenceId, targetType, targetId: dto.target_id, linkType, conflictId: result.conflictId },
-      });
-    }
     return { ...result.link, replayed: result.replayed, conflictId: result.conflictId };
   }
 
@@ -494,14 +494,15 @@ export class CbbEvidenceService {
         [nextStatus, scope.userId, reason, chosen, reference, conflictId, scope.tenantId, scope.factoryId, dto.expected_version],
       );
       if (!updated.rows[0]) throw new ConflictException('Conflict changed before the decision could be committed');
-      return updated.rows[0];
-    });
-    await this.auditService.record({
-      tenantId: scope.tenantId, factoryId: scope.factoryId, actorUserId: scope.userId,
-      eventType: 'BUSINESS_MODEL_CONFLICT', action: dto.action, resourceType: 'BUSINESS_CONFLICT',
-      resourceId: conflictId,
-      payload: { status: decision.status, version: Number(decision.version), reason,
-        resolutionReference: reference, resolutionEvidenceId: chosen },
+      const decision = updated.rows[0];
+      await this.auditService.recordWithClient(client, {
+        tenantId: scope.tenantId, factoryId: scope.factoryId, actorUserId: scope.userId,
+        eventType: 'BUSINESS_MODEL_CONFLICT', action: dto.action, resourceType: 'BUSINESS_CONFLICT',
+        resourceId: conflictId,
+        payload: { status: decision.status, version: Number(decision.version), reason,
+          resolutionReference: reference, resolutionEvidenceId: chosen },
+      });
+      return decision;
     });
     return { id: decision.id, status: decision.status, version: Number(decision.version), resolvedAt: decision.resolved_at };
   }
