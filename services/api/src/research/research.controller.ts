@@ -22,6 +22,7 @@ import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
 import {
   CompleteResearchExtractionDto,
   CreateResearchIngestionJobDto,
+  DecideResearchExtractionItemDto,
   FailResearchIngestionJobDto,
   PauseResearchIngestionJobDto,
   ResearchIngestionCheckpointDto,
@@ -212,6 +213,19 @@ export class ResearchController {
   ): Promise<unknown> {
     const c = this.context(req);
     return this.ingestion.completeExtraction(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/extraction-items/:itemId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideResearchExtractionItem(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: DecideResearchExtractionItemDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.decideExtractionItem(c.userId, c.tenantId, jobId, itemId, body, c.requestId, c.traceId);
   }
 
   @Get('ingestion-jobs/:jobId/events')
