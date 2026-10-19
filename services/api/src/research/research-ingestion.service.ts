@@ -34,6 +34,7 @@ type SourceRow = {
   abstract: string | null;
   source_url: string | null;
   source_metadata: Record<string, unknown>;
+  ingested_at: string;
   source_revision: number;
   rights_version: number;
   license_status: string;
@@ -826,7 +827,7 @@ export class ResearchIngestionService {
     const result = await client.query<SourceRow>(
       `SELECT id::text AS id,tenant_id::text AS tenant_id,namespace,source_type,title,authors,
           publication_date::text AS publication_date,doi,venue,abstract,source_url,source_metadata,
-          source_revision,rights_version,license_status,access_status,rights_basis,license_reference,
+          ingested_at::text AS ingested_at,source_revision,rights_version,license_status,access_status,rights_basis,license_reference,
           full_text_storage_allowed,reviewed_by::text AS reviewed_by,reviewed_at::text AS reviewed_at,review_reason
        FROM research_sources
        WHERE id=$1 AND tenant_id=$2 AND namespace='TENANT'
@@ -892,6 +893,7 @@ export class ResearchIngestionService {
       abstract: source.abstract,
       sourceUrl: source.source_url,
       sourceMetadata: source.source_metadata ?? {},
+      ingestedAt: source.ingested_at,
     };
   }
 
