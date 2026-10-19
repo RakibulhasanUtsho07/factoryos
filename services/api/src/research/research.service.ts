@@ -980,7 +980,7 @@ export class ResearchService {
     );
     await this.auditSafely({
       tenantId, userId: actorUserId, factoryId: null, action: 'CLAIM_' + claim.status,
-      resourceId: claimId, requestId, traceId, payload: { reason: dto.reason, evidenceGrade: next === 'APPROVED' ? dto.evidence_grade : null },
+      resourceId: claimId, requestId, traceId, payload: { reason: dto.reason, evidenceGrade: claim.status === 'APPROVED' ? dto.evidence_grade : null },
     });
     return claim;
   }
@@ -1680,6 +1680,16 @@ export class ResearchService {
     } catch {
       // The transaction already persisted the domain event; don't erase a business result on audit transport failure.
     }
+  }
+
+  private canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return '[' + value.map(item => this.canonicalJson(item)).join(',') + ']';
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      return '{' + Object.keys(record).sort().map(key =>
+        JSON.stringify(key) + ':' + this.canonicalJson(record[key])).join(',') + '}';
+    }
+    return JSON.stringify(value) ?? 'null';
   }
 
   private validateUuid(value: string, field: string) {
