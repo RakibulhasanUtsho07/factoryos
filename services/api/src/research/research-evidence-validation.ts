@@ -261,7 +261,7 @@ export function scanResearchPromptInjection(value: string): string[] {
   const findings = new Set<string>();
 
   const controlPattern = /\b(ignore|disregard|override|forget|bypass|disable|skip)\b.{0,80}\b(all|any|the|previous|prior|system|developer|safety|security)\b.{0,80}\b(instructions?|rules?|polic(y|ies)|guardrails?|prompt|restrictions?)\b/i;
-  const secretPattern = /\b(reveal|print|expose|dump|show|leak|return|extract)\b.{0,80}\b(system prompt|hidden instructions?|credentials?|secrets?|api keys?|passwords?|access tokens?)\b/i;
+  const secretPattern = /\b(reveal|print|expose|dump|show|leak|return|extract)\b.{0,80}\b(system prompt|hidden prompt|hidden instructions?|credentials?|secrets?|api keys?|passwords?|access tokens?)\b/i;
   const exfilPattern = /\b(exfiltrat\w*|steal|send|upload|forward|export|transmit)\b.{0,100}\b(credentials?|secrets?|private data|customer data|api keys?|database records?)\b/i;
   const toolPattern = /\b(call|invoke|run|execute|use)\b.{0,50}\b(tool|function|browser|shell|terminal|python|sql|command)\b.{0,100}\b(exfiltrat\w*|fetch|delete|modify|send|upload|export|read|dump|secret|credential|private data)\b/i;
   const jailbreakPattern = /\b(enable|activate|enter|switch to|turn on|use)\b.{0,40}\b(developer mode|dan mode|unrestricted mode)\b|\b(jailbreak|without (any )?restrictions|bypass (the )?safety|disable (the )?safety)\b/i;
@@ -272,7 +272,7 @@ export function scanResearchPromptInjection(value: string): string[] {
   ) findings.add('PROMPT_CONTROL_INSTRUCTION');
   if (
     secretPattern.test(spaced)
-    || /(reveal|print|expose|dump|show|leak|return|extract)(the|hidden|system|all|your|my){0,3}(systemprompt|hiddeninstructions?|credentials?|secrets?|apikeys?|passwords?|accesstokens?)/.test(compact)
+    || /(reveal|print|expose|dump|show|leak|return|extract)(the|hidden|system|all|your|my){0,3}(systemprompt|hiddenprompt|hiddeninstructions?|credentials?|secrets?|apikeys?|passwords?|accesstokens?)/.test(compact)
   ) findings.add('SECRET_EXTRACTION_INSTRUCTION');
   if (
     exfilPattern.test(spaced)
