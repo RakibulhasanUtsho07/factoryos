@@ -111,7 +111,7 @@ END;
 $$;
 
 CREATE TRIGGER research_extracted_claim_review_guard
-BEFORE INSERT OR UPDATE OF status, extraction_item_id ON research_claims
+BEFORE INSERT OR UPDATE ON research_claims
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_extracted_claim_review();
 
 ALTER TABLE research_extraction_item_reviews ENABLE ROW LEVEL SECURITY;
