@@ -20,8 +20,15 @@ import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto'
 import { DecideResearchWatchlistDto } from './dto/decide-research-watchlist.dto';
 import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
+import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
+import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto';
+import {
+  scanResearchPromptInjection,
+  scoreResearchEvidence,
+  validateResearchCitation,
+} from './research-evidence-validation';
 
 interface ResearchSourceRow extends QueryResultRow {
   id: string;
@@ -50,6 +57,7 @@ interface ResearchClaimRow extends QueryResultRow {
   tenant_id: string | null;
   namespace: 'GLOBAL' | 'TENANT';
   source_id: string;
+  extraction_item_id?: string | null;
   claim_text: string;
   methodology: string | null;
   dataset_description: string | null;
@@ -563,6 +571,293 @@ export class ResearchService {
     return result.rows;
   }
 
+  async assessClaimEvidence(
+    userId: string,
+    tenantId: string,
+    claimId: string,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(claimId, 'claimId');
+
+    const assessment = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const result = await client.query<Record<string, unknown>>(
+          `
+          SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.source_id::text AS source_id,
+            c.claim_text, c.methodology, c.dataset_description, c.limitations,
+            c.practical_implication, c.evidence_grade, c.evidence_strength, c.topic_tags,
+            c.provenance_ref, c.stored_excerpt, c.status,
+            s.title AS source_title, s.authors AS source_authors,
+            s.publication_date::text AS publication_date, s.doi, s.source_url,
+            s.access_status, s.license_status, s.rights_basis,
+            s.source_revision, s.rights_version,
+            (
+              SELECT count(DISTINCT other.source_id)::int
+              FROM research_claim_links l
+              JOIN research_claims other
+                ON other.id = CASE WHEN l.claim_a_id = c.id THEN l.claim_b_id ELSE l.claim_a_id END
+               AND other.tenant_id = c.tenant_id
+              JOIN research_sources other_source
+                ON other_source.id = other.source_id AND other_source.tenant_id = other.tenant_id
+              WHERE l.tenant_id = c.tenant_id
+                AND (l.claim_a_id = c.id OR l.claim_b_id = c.id)
+                AND l.relation_type = 'SUPPORTS'
+                AND other.status = 'APPROVED'
+                AND other.source_id <> c.source_id
+                AND other_source.access_status = 'APPROVED'
+                AND other_source.license_status IN ('OPEN_ACCESS','LICENSED','USER_PROVIDED_AUTHORIZED')
+                AND NULLIF(BTRIM(other_source.rights_basis), '') IS NOT NULL
+            ) AS independent_source_count
+          FROM research_claims c
+          JOIN research_sources s ON s.id = c.source_id AND s.tenant_id = c.tenant_id
+          WHERE c.id = $1 AND c.tenant_id = $2 AND c.namespace = 'TENANT'
+          FOR UPDATE OF c, s
+          `,
+          [claimId, tenantId],
+        );
+        const claim = result.rows[0];
+        if (!claim) throw new NotFoundException('Tenant research claim not found');
+        if (!['PROPOSED', 'APPROVED'].includes(String(claim.status))) {
+          throw new ConflictException('Only proposed or approved claims can be assessed');
+        }
+        if (claim.access_status !== 'APPROVED'
+          || !['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(String(claim.license_status))
+          || !String(claim.rights_basis ?? '').trim()) {
+          throw new ForbiddenException('Evidence assessment requires a currently approved source with documented reuse rights');
+        }
+
+        const citation = validateResearchCitation(claim.provenance_ref, {
+          doi: String(claim.doi ?? '') || null,
+          source_url: String(claim.source_url ?? '') || null,
+        });
+        const injectionInput = [
+          claim.claim_text, claim.stored_excerpt, claim.methodology,
+          claim.dataset_description, claim.limitations, claim.practical_implication,
+          claim.source_title,
+        ].filter((item): item is string => typeof item === 'string' && item.length > 0).join('\n');
+        const safetyFlags = scanResearchPromptInjection(injectionInput);
+        const rubric = scoreResearchEvidence({
+          citationStatus: citation.status,
+          title: String(claim.source_title ?? '') || null,
+          doi: String(claim.doi ?? '') || null,
+          sourceUrl: String(claim.source_url ?? '') || null,
+          authors: claim.source_authors,
+          publicationDate: String(claim.publication_date ?? '') || null,
+          methodology: String(claim.methodology ?? '') || null,
+          datasetDescription: String(claim.dataset_description ?? '') || null,
+          limitations: String(claim.limitations ?? '') || null,
+          practicalImplication: String(claim.practical_implication ?? '') || null,
+          independentSourceCount: Number(claim.independent_source_count ?? 0),
+        });
+
+        const textDigest = (value: unknown) =>
+          createHash('sha256').update(typeof value === 'string' ? value : '', 'utf8').digest('hex');
+        const evidenceSnapshot = {
+          claimId: String(claim.id),
+          sourceId: String(claim.source_id),
+          claimTextSha256: textDigest(claim.claim_text),
+          methodologySha256: textDigest(claim.methodology),
+          datasetDescriptionSha256: textDigest(claim.dataset_description),
+          limitationsSha256: textDigest(claim.limitations),
+          practicalImplicationSha256: textDigest(claim.practical_implication),
+          storedExcerptSha256: textDigest(claim.stored_excerpt),
+          provenanceRef: claim.provenance_ref,
+          topicTags: claim.topic_tags,
+          evidenceGrade: claim.evidence_grade,
+          evidenceStrength: claim.evidence_strength,
+          sourceTitle: claim.source_title,
+          sourceDoi: claim.doi,
+          sourceUrl: claim.source_url,
+          sourceAuthors: claim.source_authors,
+          publicationDate: claim.publication_date,
+          sourceRevision: Number(claim.source_revision),
+          rightsVersion: Number(claim.rights_version),
+        };
+        const inserted = await client.query<Record<string, unknown>>(
+          `
+          INSERT INTO research_evidence_assessments (
+            tenant_id, claim_id, source_id, source_revision, rights_version,
+            claim_fingerprint, rubric_version, evidence_score, suggested_grade, grade_factors,
+            citation_status, citation_findings, citation_verification_level,
+            safety_status, safety_flags, evidence_snapshot, assessed_by
+          )
+          VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+            $11,$12::jsonb,$13,$14,$15::jsonb,$16::jsonb,$17
+          )
+          RETURNING id::text AS id, claim_id::text AS claim_id, source_id::text AS source_id,
+            source_revision, rights_version, claim_fingerprint, rubric_version,
+            evidence_score, suggested_grade, grade_factors, citation_status,
+            citation_findings, citation_verification_level, safety_status, safety_flags,
+            assessed_by::text AS assessed_by, created_at::text AS created_at
+          `,
+          [
+            tenantId, claimId, String(claim.source_id), Number(claim.source_revision),
+            Number(claim.rights_version), '0'.repeat(64), rubric.rubricVersion,
+            rubric.score, rubric.suggestedGrade, JSON.stringify(rubric.factors),
+            citation.status, JSON.stringify(citation.findings), citation.verificationLevel,
+            safetyFlags.length ? 'REVIEW_REQUIRED' : 'CLEAR', JSON.stringify(safetyFlags),
+            JSON.stringify(evidenceSnapshot), userId,
+          ],
+        );
+        const saved = inserted.rows[0];
+        if (!saved) throw new Error('RESEARCH_EVIDENCE_ASSESSMENT_INSERT_FAILED');
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_CLAIM',
+          aggregateId: claimId, eventType: 'RESEARCH.CLAIM_EVIDENCE_ASSESSED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            assessment_id: saved.id, claim_id: claimId,
+            suggested_grade: rubric.suggestedGrade, evidence_score: rubric.score,
+            citation_status: citation.status, safety_status: safetyFlags.length ? 'REVIEW_REQUIRED' : 'CLEAR',
+          },
+        });
+        return saved;
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'CLAIM_EVIDENCE_ASSESS',
+      resourceId: claimId, requestId, traceId,
+      payload: {
+        assessmentId: assessment.id, suggestedGrade: assessment.suggested_grade,
+        evidenceScore: assessment.evidence_score, citationStatus: assessment.citation_status,
+        safetyStatus: assessment.safety_status,
+      },
+    });
+    return assessment;
+  }
+
+  async listClaimEvidenceAssessments(userId: string, tenantId: string, claimId: string, limit = 50) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(claimId, 'claimId');
+    const safeLimit = this.limit(limit);
+    const claim = await this.database.query(
+      `SELECT id FROM research_claims WHERE id=$1 AND tenant_id=$2 AND namespace='TENANT'`,
+      [claimId, tenantId],
+      { tenantId, userId },
+    );
+    if (!claim.rows[0]) throw new NotFoundException('Tenant research claim not found');
+    const result = await this.database.query(
+      `SELECT a.id::text AS id, a.claim_id::text AS claim_id, a.source_id::text AS source_id,
+          a.source_revision, a.rights_version, a.claim_fingerprint, a.rubric_version,
+          a.evidence_score, a.suggested_grade, a.grade_factors, a.citation_status, a.citation_findings,
+          a.citation_verification_level, a.safety_status, a.safety_flags,
+          a.assessed_by::text AS assessed_by, a.created_at::text AS created_at,
+          sr.decision AS safety_review_decision, sr.reason AS safety_review_reason,
+          sr.reviewed_by::text AS safety_reviewed_by, sr.created_at::text AS safety_reviewed_at
+       FROM research_evidence_assessments a
+       LEFT JOIN research_evidence_safety_reviews sr
+         ON sr.assessment_id=a.id AND sr.tenant_id=a.tenant_id
+       WHERE a.tenant_id=$1 AND a.claim_id=$2
+       ORDER BY a.created_at DESC, a.id DESC
+       LIMIT $3`,
+      [tenantId, claimId, safeLimit],
+      { tenantId, userId },
+    );
+    return result.rows;
+  }
+
+  async decideEvidenceSafety(
+    userId: string,
+    tenantId: string,
+    claimId: string,
+    assessmentId: string,
+    dto: DecideResearchEvidenceSafetyDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(claimId, 'claimId');
+    this.validateUuid(assessmentId, 'assessmentId');
+    const reason = dto.reason.trim();
+    if (reason.length < 10 || reason.length > 2000) {
+      throw new BadRequestException('Safety review reason must contain 10-2000 characters');
+    }
+    if (!['CLEAR', 'REJECT'].includes(dto.decision)) {
+      throw new BadRequestException('Unsupported evidence safety decision');
+    }
+
+    const review = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT a.id::text AS assessment_id, a.claim_id::text AS claim_id,
+              a.source_id::text AS source_id, a.source_revision, a.rights_version,
+              a.safety_status, a.citation_status,
+              s.source_revision AS current_source_revision, s.rights_version AS current_rights_version,
+              s.access_status, s.license_status, s.rights_basis
+           FROM research_evidence_assessments a
+           JOIN research_claims c ON c.id=a.claim_id AND c.tenant_id=a.tenant_id
+           JOIN research_sources s ON s.id=a.source_id AND s.tenant_id=a.tenant_id
+           WHERE a.id=$1 AND a.claim_id=$2 AND a.tenant_id=$3
+           FOR UPDATE OF a, c, s`,
+          [assessmentId, claimId, tenantId],
+        );
+        const assessment = result.rows[0];
+        if (!assessment) throw new NotFoundException('Evidence assessment not found for this tenant claim');
+        if (assessment.safety_status !== 'REVIEW_REQUIRED') {
+          throw new ConflictException('Only assessments with safety findings require an explicit safety review');
+        }
+        if (Number(assessment.source_revision) !== Number(assessment.current_source_revision)
+          || Number(assessment.rights_version) !== Number(assessment.current_rights_version)) {
+          throw new ConflictException('Source or rights changed after this assessment; create a fresh assessment before reviewing it');
+        }
+        if (assessment.access_status !== 'APPROVED'
+          || !['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(String(assessment.license_status))
+          || !String(assessment.rights_basis ?? '').trim()) {
+          throw new ForbiddenException('Safety review requires currently approved source reuse rights');
+        }
+        const existing = await client.query(
+          'SELECT id FROM research_evidence_safety_reviews WHERE assessment_id=$1 AND tenant_id=$2',
+          [assessmentId, tenantId],
+        );
+        if (existing.rows[0]) {
+          throw new ConflictException('This assessment already has an immutable safety-review decision');
+        }
+        const inserted = await client.query<Record<string, unknown>>(
+          `INSERT INTO research_evidence_safety_reviews (
+             tenant_id, assessment_id, claim_id, source_id, source_revision, rights_version,
+             decision, reason, reviewed_by
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           RETURNING id::text AS id, assessment_id::text AS assessment_id,
+             claim_id::text AS claim_id, source_id::text AS source_id,
+             source_revision, rights_version, decision, reason,
+             reviewed_by::text AS reviewed_by, created_at::text AS created_at`,
+          [
+            tenantId, assessmentId, claimId, String(assessment.source_id),
+            Number(assessment.source_revision), Number(assessment.rights_version),
+            dto.decision, reason, userId,
+          ],
+        );
+        const saved = inserted.rows[0];
+        if (!saved) throw new Error('RESEARCH_EVIDENCE_SAFETY_REVIEW_INSERT_FAILED');
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_CLAIM',
+          aggregateId: claimId, eventType: 'RESEARCH.CLAIM_EVIDENCE_SAFETY_REVIEWED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            claim_id: claimId, assessment_id: assessmentId,
+            safety_review_id: saved.id, decision: dto.decision, reason,
+          },
+        });
+        return saved;
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'CLAIM_EVIDENCE_SAFETY_REVIEW',
+      resourceId: claimId, requestId, traceId,
+      payload: { assessmentId, safetyReviewId: review.id, decision: dto.decision, reason },
+    });
+    return review;
+  }
+
   async decideClaim(
     actorUserId: string,
     tenantId: string,
@@ -580,7 +875,8 @@ export class ResearchService {
           SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.namespace,
             c.source_id::text AS source_id, c.claim_text, c.methodology, c.dataset_description,
             c.limitations, c.practical_implication, c.evidence_grade, c.evidence_strength,
-            c.topic_tags, c.provenance_ref, c.status
+            c.topic_tags, c.provenance_ref, c.status,
+            c.extraction_item_id::text AS extraction_item_id
           FROM research_claims c
           WHERE c.id = $1 AND c.tenant_id = $2
           FOR UPDATE
@@ -599,13 +895,11 @@ export class ResearchService {
           throw new ConflictException('Invalid research claim review transition');
         }
         if (next === 'APPROVED') {
-          if (row.evidence_grade === 'UNASSESSED') {
-            throw new BadRequestException('An evidence grade must be assigned before a claim is approved');
-          }
           const sourceResult = await client.query<{
             access_status: string; license_status: string; full_text_storage_allowed: boolean;
+            source_revision: number; rights_version: number;
           }>(
-            'SELECT access_status, license_status, full_text_storage_allowed FROM research_sources WHERE id = $1 AND tenant_id = $2',
+            'SELECT access_status, license_status, full_text_storage_allowed, source_revision, rights_version FROM research_sources WHERE id = $1 AND tenant_id = $2',
             [row.source_id, tenantId],
           );
           const source = sourceResult.rows[0];
@@ -616,18 +910,60 @@ export class ResearchService {
           if (!row.provenance_ref || !Object.keys(row.provenance_ref).length) {
             throw new BadRequestException('A claim must have source provenance before approval');
           }
+          if (row.extraction_item_id) {
+            const extractionReview = await client.query<{ decision: string }>(
+              `SELECT decision FROM research_extraction_item_reviews
+               WHERE extraction_item_id=$1 AND tenant_id=$2`,
+              [row.extraction_item_id, tenantId],
+            );
+            if (extractionReview.rows[0]?.decision !== 'APPROVE') {
+              throw new ForbiddenException(
+                'Extracted claims require an explicit extraction-item review before claim approval',
+              );
+            }
+          }
+          if (!dto.evidence_grade || !['A', 'B', 'C', 'D'].includes(dto.evidence_grade)) {
+            throw new BadRequestException('The approving reviewer must assign a final evidence grade A-D');
+          }
+          const evidenceAssessment = await client.query<{
+            citation_status: string; safety_status: string; safety_review_cleared: boolean;
+          }>(
+            `SELECT a.citation_status, a.safety_status,
+                EXISTS (
+                  SELECT 1 FROM research_evidence_safety_reviews sr
+                   WHERE sr.assessment_id=a.id AND sr.tenant_id=a.tenant_id
+                     AND sr.source_revision=a.source_revision AND sr.rights_version=a.rights_version
+                     AND sr.decision='CLEAR'
+                ) AS safety_review_cleared
+             FROM research_evidence_assessments a
+             WHERE a.claim_id=$1 AND a.tenant_id=$2 AND a.source_revision=$3 AND a.rights_version=$4
+             ORDER BY a.created_at DESC, a.id DESC LIMIT 1`,
+            [claimId, tenantId, source.source_revision, source.rights_version],
+          );
+          if (!evidenceAssessment.rows[0]) {
+            throw new ForbiddenException('Run a current evidence and citation assessment before approving this claim');
+          }
+          if (evidenceAssessment.rows[0].citation_status !== 'CONSISTENT') {
+            throw new ConflictException('Citation metadata must be consistent before approving this claim');
+          }
+          if (evidenceAssessment.rows[0].safety_status !== 'CLEAR'
+            && evidenceAssessment.rows[0].safety_review_cleared !== true) {
+            throw new ForbiddenException('Prompt-injection or data-exfiltration findings require an explicit CLEAR safety-review decision before claim approval');
+          }
         }
         const updated = await client.query<ResearchClaimRow>(
           `
           UPDATE research_claims SET status = $1, reviewed_by = $2,
-            reviewed_at = clock_timestamp(), review_reason = $3, updated_at = clock_timestamp()
+            reviewed_at = clock_timestamp(), review_reason = $3,
+            evidence_grade = CASE WHEN $6::text IS NULL THEN evidence_grade ELSE $6::text END,
+            updated_at = clock_timestamp()
           WHERE id = $4 AND tenant_id = $5
           RETURNING id::text AS id, tenant_id::text AS tenant_id, namespace,
             source_id::text AS source_id, claim_text, methodology, dataset_description,
             limitations, practical_implication, evidence_grade, evidence_strength,
             topic_tags, provenance_ref, status
           `,
-          [next, actorUserId, dto.reason.trim(), claimId, tenantId],
+          [next, actorUserId, dto.reason.trim(), claimId, tenantId, next === 'APPROVED' ? dto.evidence_grade : null],
         );
         const result = updated.rows[0];
         if (!result) throw new Error('RESEARCH_CLAIM_REVIEW_UPDATE_FAILED');
@@ -635,14 +971,14 @@ export class ResearchService {
           tenantId, factoryId: null, userId: actorUserId, aggregateType: 'RESEARCH_CLAIM',
           aggregateId: claimId, eventType: 'RESEARCH.CLAIM_' + next,
           correlationId: this.correlationId(requestId, traceId),
-          payload: { claim_id: claimId, status: next, reason: dto.reason.trim() },
+          payload: { claim_id: claimId, status: next, reason: dto.reason.trim(), evidence_grade: next === 'APPROVED' ? dto.evidence_grade : null },
         });
         return result;
       },
     );
     await this.auditSafely({
       tenantId, userId: actorUserId, factoryId: null, action: 'CLAIM_' + claim.status,
-      resourceId: claimId, requestId, traceId, payload: { reason: dto.reason },
+      resourceId: claimId, requestId, traceId, payload: { reason: dto.reason, evidenceGrade: claim.status === 'APPROVED' ? dto.evidence_grade : null },
     });
     return claim;
   }
@@ -709,14 +1045,32 @@ export class ResearchService {
     traceId: string | null,
   ) {
     this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    const releaseKey = dto.release_key.trim();
     const claimIds = [...new Set(dto.claim_ids.map(id => id.toLowerCase()))];
-    if (claimIds.length === 0 || claimIds.length !== dto.claim_ids.length) {
-      throw new BadRequestException('A release requires one or more unique claim IDs');
+    if (!releaseKey || claimIds.length === 0 || claimIds.length !== dto.claim_ids.length) {
+      throw new BadRequestException('A release requires a key and one or more unique claim IDs');
     }
     const report = await this.validateReleaseClaims(tenantId, claimIds);
     const created = await this.database.transaction(
       { tenantId, userId },
       async client => {
+        // Serialize version allocation per tenant/release key. The database trigger
+        // independently checks strict version progression for direct SQL writers.
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [tenantId + ':' + releaseKey],
+        );
+        const versionResult = await client.query<{ next_version: number }>(
+          'SELECT (COALESCE(MAX(version), 0) + 1)::integer AS next_version FROM research_knowledge_releases WHERE tenant_id = $1 AND release_key = $2',
+          [tenantId, releaseKey],
+        );
+        const nextVersion = Number(versionResult.rows[0]?.next_version ?? 1);
+        if (dto.version !== nextVersion) {
+          throw new ConflictException(
+            'Release version must be the next revision for this key; expected version ' + nextVersion,
+          );
+        }
         const result = await client.query(
           `
           INSERT INTO research_knowledge_releases (
@@ -728,7 +1082,7 @@ export class ResearchService {
             release_key, version, title, claim_ids, source_list, evidence_grade,
             status, validation_report, created_at::text AS created_at
           `,
-          [tenantId, dto.release_key.trim(), dto.version, dto.title.trim(),
+          [tenantId, releaseKey, dto.version, dto.title.trim(),
             JSON.stringify(claimIds), JSON.stringify(report.sources), dto.evidence_grade,
             userId, JSON.stringify(report.validation)],
         );
@@ -746,7 +1100,7 @@ export class ResearchService {
     await this.auditSafely({
       tenantId, userId, factoryId: null, action: 'RELEASE_DRAFT',
       resourceId: created.id, requestId, traceId,
-      payload: { releaseKey: dto.release_key, version: dto.version, claimCount: claimIds.length },
+      payload: { releaseKey, version: dto.version, claimCount: claimIds.length },
     });
     return created;
   }
@@ -800,7 +1154,7 @@ export class ResearchService {
         safetyPassed,
         safetyReviewed: false,
         automaticContractChecks: true,
-        evaluationVersion: 'research-release-contract.v1',
+        evaluationVersion: 'research-release-contract.v2',
       };
       sources = report.sources;
       contentFingerprint = report.contentFingerprint;
@@ -813,7 +1167,7 @@ export class ResearchService {
         safetyPassed: false,
         safetyReviewed: false,
         automaticContractChecks: true,
-        evaluationVersion: 'research-release-contract.v1',
+        evaluationVersion: 'research-release-contract.v2',
         claimCount: Array.isArray(release.claim_ids) ? release.claim_ids.length : 0,
         failureReason,
       };
@@ -821,7 +1175,7 @@ export class ResearchService {
         .update(JSON.stringify({
           releaseId,
           claimIds: release.claim_ids,
-          evaluationVersion: 'research-release-contract.v1',
+          evaluationVersion: 'research-release-contract.v2',
           failureReason,
         }))
         .digest('hex');
@@ -853,7 +1207,7 @@ export class ResearchService {
             tenant_id, namespace, release_id, evaluation_version, status,
             content_fingerprint, results, evaluated_by
           )
-          VALUES ($1, 'TENANT', $2, 'research-release-contract.v1', $3, $4, $5::jsonb, $6)
+          VALUES ($1, 'TENANT', $2, 'research-release-contract.v2', $3, $4, $5::jsonb, $6)
           RETURNING id::text AS id, status, evaluation_version, content_fingerprint,
             results, evaluated_at::text AS evaluated_at
           `,
@@ -903,14 +1257,30 @@ export class ResearchService {
     this.validateUuid(tenantId, 'tenantId');
     return (await this.database.query(
       `
-      SELECT id::text AS id, tenant_id::text AS tenant_id, namespace, release_key, version,
-        title, claim_ids, source_list, evidence_grade, status, validation_report,
-        regression_evidence_ref, evaluation_id::text AS evaluation_id, reviewed_by::text AS reviewed_by, reviewed_at::text AS reviewed_at,
-        effective_at::text AS effective_at, created_at::text AS created_at
+      SELECT research_knowledge_releases.id::text AS id,
+        research_knowledge_releases.tenant_id::text AS tenant_id,
+        research_knowledge_releases.namespace, research_knowledge_releases.release_key,
+        research_knowledge_releases.version, research_knowledge_releases.title,
+        research_knowledge_releases.claim_ids, research_knowledge_releases.source_list,
+        research_knowledge_releases.evidence_grade, research_knowledge_releases.status,
+        research_knowledge_releases.validation_report, research_knowledge_releases.regression_evidence_ref,
+        research_knowledge_releases.evaluation_id::text AS evaluation_id,
+        research_knowledge_releases.reviewed_by::text AS reviewed_by,
+        research_knowledge_releases.reviewed_at::text AS reviewed_at,
+        research_knowledge_releases.effective_at::text AS effective_at,
+        research_knowledge_releases.created_at::text AS created_at,
+        channels.active_release_id::text AS active_release_id,
+        channels.active_version, channels.revision AS channel_revision,
+        COALESCE(channels.active_release_id = research_knowledge_releases.id, FALSE) AS is_active
       FROM research_knowledge_releases
-      WHERE (tenant_id = $1 OR (tenant_id IS NULL AND status = 'PROMOTED'))
+      LEFT JOIN research_release_channels channels
+        ON channels.tenant_id = research_knowledge_releases.tenant_id
+       AND channels.release_key = research_knowledge_releases.release_key
+       AND research_knowledge_releases.tenant_id IS NOT NULL
+      WHERE (research_knowledge_releases.tenant_id = $1
+          OR (research_knowledge_releases.tenant_id IS NULL AND research_knowledge_releases.status = 'PROMOTED'))
         AND (
-          status <> 'PROMOTED'
+          research_knowledge_releases.status <> 'PROMOTED'
           OR NOT EXISTS (
             SELECT 1
             FROM jsonb_array_elements_text(research_knowledge_releases.claim_ids) AS release_claim(claim_id)
@@ -927,12 +1297,83 @@ export class ResearchService {
             )
           )
         )
-      ORDER BY CASE WHEN tenant_id IS NULL THEN 0 ELSE 1 END, version DESC, created_at DESC
+      ORDER BY CASE WHEN research_knowledge_releases.tenant_id IS NULL THEN 0 ELSE 1 END,
+        research_knowledge_releases.release_key, research_knowledge_releases.version DESC,
+        research_knowledge_releases.created_at DESC
       LIMIT $2
       `,
       [tenantId, this.limit(limit)],
       { tenantId },
     )).rows;
+  }
+
+  async listReleaseHistory(tenantId: string, releaseId: string) {
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(releaseId, 'releaseId');
+    const releaseResult = await this.database.query<{ release_key: string }>(
+      `SELECT release_key FROM research_knowledge_releases
+       WHERE id = $1 AND tenant_id = $2 AND namespace = 'TENANT'`,
+      [releaseId, tenantId],
+      { tenantId },
+    );
+    const releaseKey = releaseResult.rows[0]?.release_key;
+    if (!releaseKey) throw new NotFoundException('Tenant research release not found');
+
+    const versionsResult = await this.database.query(
+      `
+      SELECT r.id::text AS id, r.release_key, r.version, r.title, r.status,
+        r.claim_ids, r.source_list, r.evidence_grade, r.validation_report,
+        r.evaluation_id::text AS evaluation_id, r.regression_evidence_ref,
+        r.reviewed_by::text AS reviewed_by, r.reviewed_at::text AS reviewed_at,
+        r.effective_at::text AS effective_at, r.created_at::text AS created_at,
+        ch.active_release_id::text AS active_release_id, ch.active_version,
+        ch.revision AS channel_revision,
+        COALESCE(ch.active_release_id = r.id, FALSE) AS is_active,
+        NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(r.claim_ids) AS release_claim(claim_id)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM research_claims c
+            JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+            WHERE c.id::text = release_claim.claim_id
+              AND c.status = 'APPROVED'
+              AND (c.tenant_id = $1 OR c.tenant_id IS NULL)
+              AND s.access_status = 'APPROVED'
+              AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+              AND NULLIF(BTRIM(s.rights_basis), '') IS NOT NULL
+          )
+        ) AS currently_eligible
+      FROM research_knowledge_releases r
+      LEFT JOIN research_release_channels ch
+        ON ch.tenant_id = r.tenant_id AND ch.release_key = r.release_key
+      WHERE r.tenant_id = $1 AND r.namespace = 'TENANT' AND r.release_key = $2
+      ORDER BY r.version DESC, r.created_at DESC
+      `,
+      [tenantId, releaseKey],
+      { tenantId },
+    );
+    const eventsResult = await this.database.query(
+      `
+      SELECT id::text AS id, release_id::text AS release_id, release_key, version,
+        event_type, related_release_id::text AS related_release_id, related_version,
+        reason, actor_user_id::text AS actor_user_id, request_id, trace_id,
+        created_at::text AS created_at
+      FROM research_release_lifecycle_events
+      WHERE tenant_id = $1 AND release_key = $2
+      ORDER BY created_at ASC, id ASC
+      `,
+      [tenantId, releaseKey],
+      { tenantId },
+    );
+    const active = (versionsResult.rows as Array<Record<string, unknown>>)[0];
+    return {
+      release_key: releaseKey,
+      active_release_id: active?.active_release_id ?? null,
+      active_version: active?.active_version ?? null,
+      channel_revision: active?.channel_revision ?? null,
+      versions: versionsResult.rows,
+      lifecycle_events: eventsResult.rows,
+    };
   }
 
   async promoteRelease(
@@ -943,6 +1384,8 @@ export class ResearchService {
     requestId: string | null,
     traceId: string | null,
   ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
     this.validateUuid(releaseId, 'releaseId');
     if (new Date(dto.effective_at).getTime() > Date.now() + 365 * 24 * 60 * 60 * 1000) {
       throw new BadRequestException('effective_at cannot be more than one year in the future');
@@ -957,6 +1400,7 @@ export class ResearchService {
     );
     const row = current.rows[0];
     if (!row) throw new NotFoundException('Tenant research release not found');
+    if (row.namespace !== 'TENANT') throw new ForbiddenException('Only tenant-owned research releases may be promoted from this API');
     if (row.status !== 'DRAFT') throw new ConflictException('Only draft research releases may be promoted');
     const claimIds = Array.isArray(row.claim_ids) ? row.claim_ids : [];
     const report = await this.validateReleaseClaims(tenantId, claimIds);
@@ -964,15 +1408,14 @@ export class ResearchService {
       || !report.validation.rightsPassed || !report.validation.safetyPassed) {
       throw new ConflictException('Research release has failed consistency, citation, rights or content-safety checks');
     }
-    if (!dto.evaluation_id || !isUUID(dto.evaluation_id)
-      || row.evaluation_id !== dto.evaluation_id) {
+    if (!dto.evaluation_id || !isUUID(dto.evaluation_id) || row.evaluation_id !== dto.evaluation_id) {
       throw new ConflictException('A passing automated evaluation attached to the current draft is required before promotion');
     }
     const evaluationResult = await this.database.query<{
-      id: string; status: string; content_fingerprint: string; results: Record<string, unknown>;
+      id: string; evaluation_version: string; status: string; content_fingerprint: string; results: Record<string, unknown>;
     }>(
       `
-      SELECT id::text AS id, status, content_fingerprint, results
+      SELECT id::text AS id, evaluation_version, status, content_fingerprint, results
       FROM research_release_evaluations
       WHERE id = $1 AND release_id = $2 AND tenant_id = $3 AND namespace = $4
       `,
@@ -981,12 +1424,13 @@ export class ResearchService {
     );
     const evaluation = evaluationResult.rows[0];
     if (!evaluation || evaluation.status !== 'PASSED'
+      || evaluation.evaluation_version !== 'research-release-contract.v2'
       || evaluation.content_fingerprint !== report.contentFingerprint) {
-      throw new ConflictException('The attached research evaluation is absent, failed, or stale; evaluate the draft again');
+      throw new ConflictException('The attached research evaluation is absent, failed, stale, or uses an outdated contract version; evaluate the draft again');
     }
     const reviewSummary = dto.safety_review_summary.trim();
     const regressionRef = dto.regression_evidence_ref.trim();
-    if (!reviewSummary || !regressionRef) {
+    if (reviewSummary.length < 10 || !regressionRef) {
       throw new BadRequestException('Safety review and regression evidence references are required');
     }
     const promoted = await this.database.transaction(
@@ -1016,21 +1460,268 @@ export class ResearchService {
         );
         const result = updated.rows[0];
         if (!result) throw new ConflictException('Research release changed during promotion');
+
+        const initializedChannel = await client.query<{
+          active_release_id: string; active_version: number; revision: number;
+        }>(
+          `
+          INSERT INTO research_release_channels (
+            tenant_id, release_key, active_release_id, active_version, revision, updated_by
+          )
+          VALUES ($1, $2, $3, $4, 1, $5)
+          ON CONFLICT (tenant_id, release_key) DO NOTHING
+          RETURNING active_release_id::text AS active_release_id, active_version, revision
+          `,
+          [tenantId, row.release_key, releaseId, row.version, userId],
+        );
+
+        let previous: { active_release_id: string; active_version: number; revision: number } | null = null;
+        let channelRevision = 1;
+        if (!initializedChannel.rows[0]) {
+          const channelResult = await client.query<{
+            active_release_id: string; active_version: number; revision: number;
+          }>(
+            `
+            SELECT active_release_id::text AS active_release_id, active_version, revision
+            FROM research_release_channels
+            WHERE tenant_id = $1 AND release_key = $2
+            FOR UPDATE
+            `,
+            [tenantId, row.release_key],
+          );
+          previous = channelResult.rows[0] ?? null;
+          if (!previous) throw new ConflictException('Release activation channel disappeared during promotion');
+          if (previous.active_release_id === releaseId) {
+            throw new ConflictException('This release version is already active');
+          }
+          if (previous.active_version >= row.version) {
+            throw new ConflictException('Promotion must advance the active version; use rollback to return to an older version');
+          }
+          const switched = await client.query<{ revision: number }>(
+            `
+            UPDATE research_release_channels
+            SET active_release_id = $1, active_version = $2,
+                revision = revision + 1, updated_by = $3
+            WHERE tenant_id = $4 AND release_key = $5 AND active_release_id = $6
+            RETURNING revision
+            `,
+            [releaseId, row.version, userId, tenantId, row.release_key, previous.active_release_id],
+          );
+          if (!switched.rows[0]) throw new ConflictException('Release activation changed concurrently; reload version history');
+          channelRevision = Number(switched.rows[0].revision);
+        } else {
+          channelRevision = Number(initializedChannel.rows[0].revision);
+        }
+
+        const promotionReason = ('Promotion approved: ' + reviewSummary).slice(0, 2000);
+        if (previous) {
+          await client.query(
+            `
+            INSERT INTO research_release_lifecycle_events (
+              tenant_id, release_id, release_key, version, event_type,
+              related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+            )
+            VALUES ($1, $2, $3, $4, 'SUPERSEDED', $5, $6, $7, $8, $9, $10)
+            `,
+            [tenantId, previous.active_release_id, row.release_key, previous.active_version,
+              releaseId, row.version,
+              ('Superseded by version ' + row.version + ': ' + reviewSummary).slice(0, 2000),
+              userId, requestId, traceId],
+          );
+        }
+        await client.query(
+          `
+          INSERT INTO research_release_lifecycle_events (
+            tenant_id, release_id, release_key, version, event_type,
+            related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+          )
+          VALUES ($1, $2, $3, $4, 'PROMOTED', $5, $6, $7, $8, $9, $10)
+          `,
+          [tenantId, releaseId, row.release_key, row.version,
+            previous?.active_release_id ?? null, previous?.active_version ?? null,
+            promotionReason, userId, requestId, traceId],
+        );
+
         await this.insertOutbox(client, {
           tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_RELEASE',
           aggregateId: releaseId, eventType: 'RESEARCH.RELEASE_PROMOTED',
           correlationId: this.correlationId(requestId, traceId),
-          payload: { release_id: releaseId, release_key: row.release_key, version: row.version, status: 'PROMOTED' },
+          payload: {
+            release_id: releaseId, release_key: row.release_key, version: row.version,
+            status: 'PROMOTED', supersedes_release_id: previous?.active_release_id ?? null,
+            active_version: row.version, channel_revision: channelRevision,
+          },
         });
-        return result;
+        return {
+          ...result,
+          supersedes_release_id: previous?.active_release_id ?? null,
+          active_release_id: releaseId,
+          active_version: row.version,
+          channel_revision: channelRevision,
+        };
       },
     );
     await this.auditSafely({
       tenantId, userId, factoryId: null, action: 'RELEASE_PROMOTE',
       resourceId: releaseId, requestId, traceId,
-      payload: { releaseKey: row.release_key, version: row.version, safetyReviewSummary: reviewSummary, regressionEvidenceRef: regressionRef },
+      payload: {
+        releaseKey: row.release_key, version: row.version,
+        supersedesReleaseId: promoted.supersedes_release_id,
+        safetyReviewSummary: reviewSummary, regressionEvidenceRef: regressionRef,
+      },
     });
     return promoted;
+  }
+
+  async rollbackRelease(
+    userId: string,
+    tenantId: string,
+    releaseId: string,
+    dto: RollbackResearchReleaseDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(releaseId, 'releaseId');
+    this.validateUuid(dto.target_release_id, 'target_release_id');
+    const reason = dto.reason.trim();
+    if (reason.length < 10) throw new BadRequestException('Rollback reason must contain at least 10 characters');
+    if (releaseId === dto.target_release_id) throw new BadRequestException('A release cannot roll back to itself');
+
+    const currentResult = await this.database.query<{
+      id: string; release_key: string; version: number; status: string;
+    }>(
+      `SELECT id::text AS id, release_key, version, status
+       FROM research_knowledge_releases
+       WHERE id = $1 AND tenant_id = $2 AND namespace = 'TENANT'`,
+      [releaseId, tenantId],
+      { tenantId, userId },
+    );
+    const current = currentResult.rows[0];
+    if (!current) throw new NotFoundException('Tenant research release not found');
+
+    const targetResult = await this.database.query<{
+      id: string; release_key: string; version: number; status: string;
+      claim_ids: string[]; evaluation_id: string | null;
+    }>(
+      `SELECT id::text AS id, release_key, version, status, claim_ids,
+          evaluation_id::text AS evaluation_id
+       FROM research_knowledge_releases
+       WHERE id = $1 AND tenant_id = $2 AND namespace = 'TENANT'`,
+      [dto.target_release_id, tenantId],
+      { tenantId, userId },
+    );
+    const target = targetResult.rows[0];
+    if (!target) throw new NotFoundException('Rollback target is not a tenant release');
+    if (target.release_key !== current.release_key || target.version >= current.version) {
+      throw new ConflictException('Rollback target must be an older version of the same release key');
+    }
+    if (target.status !== 'PROMOTED' || !target.evaluation_id) {
+      throw new ConflictException('Rollback target must be a previously promoted, evaluated version');
+    }
+
+    const report = await this.validateReleaseClaims(tenantId, target.claim_ids);
+    if (!report.validation.consistencyPassed || !report.validation.citationCoveragePassed
+      || !report.validation.rightsPassed || !report.validation.safetyPassed) {
+      throw new ConflictException('Rollback target is no longer eligible: current evidence, citation, rights and safety checks must pass');
+    }
+    const evaluationResult = await this.database.query<{
+      id: string; evaluation_version: string; status: string; content_fingerprint: string;
+    }>(
+      `SELECT id::text AS id, evaluation_version, status, content_fingerprint
+       FROM research_release_evaluations
+       WHERE id = $1 AND release_id = $2 AND tenant_id = $3 AND namespace = 'TENANT'`,
+      [target.evaluation_id, target.id, tenantId],
+      { tenantId, userId },
+    );
+    const evaluation = evaluationResult.rows[0];
+    if (!evaluation || evaluation.status !== 'PASSED'
+      || evaluation.evaluation_version !== 'research-release-contract.v2'
+      || evaluation.content_fingerprint !== report.contentFingerprint) {
+      throw new ConflictException('Rollback target evaluation is stale or uses an outdated contract version; create and approve a fresh release instead');
+    }
+
+    const rollback = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const channelResult = await client.query<{
+          active_release_id: string; active_version: number; revision: number;
+        }>(
+          `SELECT active_release_id::text AS active_release_id, active_version, revision
+           FROM research_release_channels
+           WHERE tenant_id = $1 AND release_key = $2
+           FOR UPDATE`,
+          [tenantId, current.release_key],
+        );
+        const channel = channelResult.rows[0];
+        if (!channel || channel.active_release_id !== releaseId || channel.active_version !== current.version) {
+          throw new ConflictException('Release is no longer the active version; reload history before attempting rollback');
+        }
+
+        const targetCurrent = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM research_knowledge_releases
+           WHERE id = $1 AND tenant_id = $2 AND release_key = $3
+             AND version = $4 AND status = 'PROMOTED'
+           FOR SHARE`,
+          [target.id, tenantId, current.release_key, target.version],
+        );
+        if (!targetCurrent.rows[0]) {
+          throw new ConflictException('Rollback target changed while the request was being processed');
+        }
+        const updated = await client.query<{ revision: number }>(
+          `UPDATE research_release_channels
+           SET active_release_id = $1, active_version = $2,
+               revision = revision + 1, updated_by = $3
+           WHERE tenant_id = $4 AND release_key = $5 AND active_release_id = $6
+           RETURNING revision`,
+          [target.id, target.version, userId, tenantId, current.release_key, releaseId],
+        );
+        if (!updated.rows[0]) throw new ConflictException('Release activation changed concurrently; reload history');
+
+        await client.query(
+          `INSERT INTO research_release_lifecycle_events (
+             tenant_id, release_id, release_key, version, event_type,
+             related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+           )
+           VALUES ($1, $2, $3, $4, 'ROLLBACK_FROM', $5, $6, $7, $8, $9, $10)`,
+          [tenantId, releaseId, current.release_key, current.version, target.id, target.version,
+            reason, userId, requestId, traceId],
+        );
+        await client.query(
+          `INSERT INTO research_release_lifecycle_events (
+             tenant_id, release_id, release_key, version, event_type,
+             related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+           )
+           VALUES ($1, $2, $3, $4, 'ROLLBACK_TO', $5, $6, $7, $8, $9, $10)`,
+          [tenantId, target.id, current.release_key, target.version, releaseId, current.version,
+            reason, userId, requestId, traceId],
+        );
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_RELEASE',
+          aggregateId: target.id, eventType: 'RESEARCH.RELEASE_ROLLED_BACK',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            release_key: current.release_key,
+            from_release_id: releaseId, from_version: current.version,
+            to_release_id: target.id, to_version: target.version,
+            reason, channel_revision: updated.rows[0].revision,
+          },
+        });
+        return {
+          release_key: current.release_key,
+          from_release_id: releaseId, from_version: current.version,
+          active_release_id: target.id, active_version: target.version,
+          reason, channel_revision: Number(updated.rows[0].revision),
+        };
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'RELEASE_ROLLBACK',
+      resourceId: releaseId, requestId, traceId,
+      payload: { ...rollback, reason },
+    });
+    return rollback;
   }
 
   async createRelevance(
@@ -1185,6 +1876,13 @@ export class ResearchService {
       rights_basis: string | null;
       source_id: string;
       stored_excerpt: string | null;
+      source_revision: number;
+      rights_version: number;
+      current_evidence_assessment_id: string | null;
+      current_evidence_citation_status: string | null;
+      current_evidence_safety_status: string | null;
+      current_evidence_safety_flags: string[] | null;
+      safety_review_decision: string | null;
     }>(
       `
       SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.namespace,
@@ -1192,9 +1890,25 @@ export class ResearchService {
         c.limitations, c.practical_implication, c.evidence_grade, c.evidence_strength,
         c.topic_tags, c.provenance_ref, c.status, c.stored_excerpt,
         s.title AS source_title, s.source_url, s.doi,
-        s.license_status, s.access_status, s.rights_basis
+        s.license_status, s.access_status, s.rights_basis,
+        s.source_revision, s.rights_version,
+        latest_assessment.id::text AS current_evidence_assessment_id,
+        latest_assessment.citation_status AS current_evidence_citation_status,
+        latest_assessment.safety_status AS current_evidence_safety_status,
+        latest_assessment.safety_flags AS current_evidence_safety_flags,
+        sr.decision AS safety_review_decision
       FROM research_claims c
       JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+      LEFT JOIN LATERAL (
+        SELECT a.id, a.citation_status, a.safety_status, a.safety_flags
+        FROM research_evidence_assessments a
+        WHERE a.claim_id = c.id AND a.tenant_id = c.tenant_id AND a.source_id = s.id
+          AND a.source_revision = s.source_revision AND a.rights_version = s.rights_version
+        ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+      ) latest_assessment ON TRUE
+      LEFT JOIN research_evidence_safety_reviews sr
+        ON sr.assessment_id = latest_assessment.id AND sr.tenant_id = c.tenant_id
+       AND sr.claim_id = c.id AND sr.source_id = s.id AND sr.decision = 'CLEAR'
       WHERE c.id = ANY($1::uuid[])
         AND c.status = 'APPROVED'
         AND s.access_status = 'APPROVED'
@@ -1213,31 +1927,51 @@ export class ResearchService {
     let citationCoveragePassed = true;
     let rightsPassed = true;
     const sources = new Map<string, Record<string, unknown>>();
-    const unsafePatterns = [
-      /\bignore\s+(all|any|previous)\s+(system\s+)?instructions?\b/i,
-      /\b(disregard|override)\s+(all\s+|the\s+)?(system|developer|previous)\s+(prompt|instructions?)\b/i,
-      /\b(reveal|print|expose|exfiltrate)\s+(the\s+)?(system prompt|hidden instructions|secrets?)\b/i,
-      /\byou are now (chatgpt|an assistant|the system)\b/i,
-      /\bbegin\s+(system|developer)\s+prompt\b/i,
-    ];
     const safetyFlags: string[] = [];
+    const safetyFindings: Array<{ claimId: string; flags: string[]; reviewDecision: 'CLEAR' | null }> = [];
+    const citationFindings: Array<{ claimId: string; status: string; findings: string[] }> = [];
     for (const claim of result.rows) {
+      if (!claim.current_evidence_assessment_id) {
+        throw new ConflictException('Every claim requires a current source- and rights-version-bound evidence assessment before release evaluation');
+      }
       const normalized = claim.claim_text.toLowerCase().replace(/\s+/g, ' ').trim();
       if (seen.has(normalized)) consistencyPassed = false;
       seen.add(normalized);
-      const locator = claim.provenance_ref;
-      if (!locator || !Object.keys(locator).some(key => {
-        const value = locator[key];
-        return value !== null && value !== undefined && String(value).trim() !== '';
-      }) || (!claim.doi && !claim.source_url)) {
-        citationCoveragePassed = false;
-      }
+      const citation = validateResearchCitation(claim.provenance_ref, {
+        doi: claim.doi,
+        source_url: claim.source_url,
+      });
+      const citationConsistent = citation.status === 'CONSISTENT'
+        && claim.current_evidence_citation_status === 'CONSISTENT';
+      citationFindings.push({
+        claimId: claim.id,
+        status: citationConsistent ? 'CONSISTENT' : citation.status !== 'CONSISTENT' ? citation.status : 'REVIEW_REQUIRED',
+        findings: citation.status !== 'CONSISTENT' ? citation.findings
+          : claim.current_evidence_citation_status !== 'CONSISTENT' ? ['CURRENT_ASSESSMENT_CITATION_NOT_CONSISTENT'] : [],
+      });
+      if (!citationConsistent) citationCoveragePassed = false;
       if (!['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(claim.license_status)
         || !claim.rights_basis?.trim()) {
         rightsPassed = false;
       }
-      const untrustedText = claim.claim_text + '\n' + (claim.stored_excerpt ?? '');
-      if (unsafePatterns.some(pattern => pattern.test(untrustedText))) safetyFlags.push(claim.id);
+      const untrustedText = [
+        claim.claim_text, claim.stored_excerpt, claim.methodology, claim.dataset_description,
+        claim.limitations, claim.practical_implication,
+      ].filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
+      const persistedFlags = Array.isArray(claim.current_evidence_safety_flags)
+        ? claim.current_evidence_safety_flags.filter((flag): flag is string => typeof flag === 'string') : [];
+      const flags = [...new Set([...persistedFlags, ...scanResearchPromptInjection(untrustedText)])];
+      if (claim.current_evidence_safety_status === 'REVIEW_REQUIRED' && flags.length === 0) {
+        flags.push('SAFETY_REVIEW_REQUIRED');
+      }
+      if (flags.length) {
+        const reviewDecision = claim.safety_review_decision === 'CLEAR' ? 'CLEAR' : null;
+        safetyFindings.push({ claimId: claim.id, flags, reviewDecision });
+        if (reviewDecision !== 'CLEAR') safetyFlags.push(claim.id);
+      }
+      if (!['CLEAR', 'REVIEW_REQUIRED'].includes(String(claim.current_evidence_safety_status))) {
+        safetyFlags.push(claim.id);
+      }
       sources.set(claim.source_id, {
         sourceId: claim.source_id,
         title: claim.source_title,
@@ -1264,6 +1998,13 @@ export class ResearchService {
       licenseStatus: claim.license_status,
       accessStatus: claim.access_status,
       rightsBasis: claim.rights_basis,
+      sourceRevision: Number(claim.source_revision),
+      rightsVersion: Number(claim.rights_version),
+      evidenceAssessmentId: claim.current_evidence_assessment_id,
+      evidenceCitationStatus: claim.current_evidence_citation_status,
+      evidenceSafetyStatus: claim.current_evidence_safety_status,
+      evidenceSafetyFlags: claim.current_evidence_safety_flags ?? [],
+      safetyReviewDecision: claim.safety_review_decision ?? null,
     }));
     const contentFingerprint = createHash('sha256')
       .update(JSON.stringify(claimsFingerprint))
@@ -1278,10 +2019,13 @@ export class ResearchService {
         rightsPassed,
         safetyPassed: safetyFlags.length === 0,
         safetyFlags,
+        safetyFindings,
+        citationFindings,
+        citationVerificationLevel: 'METADATA_ONLY',
         safetyReviewRequired: safetyFlags.length > 0,
         safetyReviewed: false,
         automaticContractChecks: true,
-        evaluationVersion: 'research-release-contract.v1',
+        evaluationVersion: 'research-release-contract.v2',
         regressionRequired: true,
         claimCount: result.rows.length,
       },
@@ -1341,6 +2085,7 @@ export class ResearchService {
       // The transaction already persisted the domain event; don't erase a business result on audit transport failure.
     }
   }
+
 
   private validateUuid(value: string, field: string) {
     if (!isUUID(value)) throw new BadRequestException(field + ' must be a valid UUID');

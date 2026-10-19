@@ -93,6 +93,26 @@ const cbbChangeService = {
   createFeedback,
 };
 
+const filterBusinessMap = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, map: unknown) => map);
+const filterProcessResult = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, result: unknown) => result);
+const assertTargetWriteAccess = jest.fn(async () => ({ allowed: true }));
+const assertProposalWriteAccess = jest.fn(async () => ({ allowed: true }));
+const assertConflictWriteAccess = jest.fn(async () => ({ allowed: true }));
+const assertConflictReadAccess = jest.fn(async () => ({ allowed: true }));
+const assertTargetReadAccess = jest.fn(async () => ({ allowed: true }));
+const canReadActiveBlueprint = jest.fn(async () => true);
+const filterChangeProposalResult = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, result: unknown) => result);
+const filterConflictResult = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, result: unknown) => result);
+const filterEvidenceResult = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, result: unknown) => result);
+const listStaleness = jest.fn(async () => []);
+const listRollbackEvents = jest.fn(async () => []);
+const cbbGovernanceService = {
+  filterBusinessMap, filterProcessResult,
+  assertTargetWriteAccess, assertTargetReadAccess, assertProposalWriteAccess, assertConflictWriteAccess,
+  assertConflictReadAccess, canReadActiveBlueprint, filterChangeProposalResult, filterConflictResult,
+  filterEvidenceResult, listStaleness, listRollbackEvents,
+};
+
 describe(
   'CbbController',
   () => {
@@ -147,6 +167,8 @@ describe(
           new CbbController(
             cbbService as never,
             cbbChangeService as never,
+            {} as never,
+            cbbGovernanceService as never,
           );
       },
     );

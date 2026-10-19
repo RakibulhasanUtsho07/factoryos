@@ -541,6 +541,93 @@ describe(
     );
 
     it(
+      'rejects an authorization idempotency replay when its target changes',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              target: {
+                decision_id: decisionId,
+                plan_id: 'original-plan',
+              },
+              idempotency_key: 'reuse-target-key',
+            },
+          ],
+        });
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              idempotency_key: 'reuse-target-key',
+            },
+          ),
+        ).rejects.toThrow(
+          'idempotency_key is already bound to a different AI action request',
+        );
+
+        expect(aiToolRegistry.getTool).not.toHaveBeenCalled();
+        expect(evaluatePolicyMock).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
+      'rejects an authorization idempotency replay from a different actor',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              idempotency_key: 'reuse-actor-key',
+              created_by: userId,
+            },
+          ],
+        });
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            '5e8d2d2b-4a11-4ac7-8db9-cda1eafaf002',
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              idempotency_key: 'reuse-actor-key',
+            },
+          ),
+        ).rejects.toThrow(
+          'idempotency_key is already bound to a different AI action request',
+        );
+
+        expect(aiToolRegistry.getTool).not.toHaveBeenCalled();
+        expect(evaluatePolicyMock).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
       'creates an approval request when policy requires human approval',
       async () => {
         /*
@@ -720,6 +807,66 @@ describe(
       },
     );
 
+    it.each([
+      {
+        label: 'action',
+        overrides: { action: 'PLAN.DELETE' },
+        message: 'AI action approval action does not match the requested action',
+      },
+      {
+        label: 'resource id',
+        overrides: { resource_id: 'plan-2' },
+        message: 'AI action approval resource id does not match the requested action',
+      },
+      {
+        label: 'policy',
+        overrides: { policy_id: '6f1adddd-dddd-4ddd-8ddd-ddddddddddde' },
+        message: 'AI action approval is bound to a different policy',
+      },
+      {
+        label: 'risk class',
+        overrides: { risk_class_id: '6f1adddd-dddd-4ddd-8ddd-ddddddddddde' },
+        message: 'AI action approval is bound to a different risk class',
+      },
+      {
+        label: 'expiry',
+        overrides: { expires_at: '2020-01-01T00:00:00.000Z' },
+        message: 'AI action approval has expired',
+      },
+    ])(
+      'rejects approved actions with a mismatched $label binding',
+      async ({ overrides, message }) => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [buildBoundApprovalRow(overrides)],
+        });
+        evaluatePolicyMock.mockResolvedValue(approvalRequiredEvaluation());
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              approval_id: approvalId,
+            },
+          ),
+        ).rejects.toThrow(message);
+
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+        expect(aiToolRegistry.getTool).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it(
       'rejects an approved action when the payload differs from the approval metadata',
       async () => {
@@ -837,6 +984,52 @@ describe(
       },
     );
 
+    it.each([
+      {
+        scope: 'tenant',
+        overrides: { tenant_id: '11111111-1111-4111-8111-111111111111' },
+      },
+      {
+        scope: 'factory',
+        overrides: { factory_id: '22222222-2222-4222-8222-222222222222' },
+      },
+    ])(
+      'does not execute an action token returned outside the requested $scope scope',
+      async ({ overrides }) => {
+        const scopedToken = 'scoped-action-token';
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              ...overrides,
+              tool_version: 'wave2-test',
+              action_token_hash: actionTokenHash(scopedToken),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+              payload_hash: 'd'.repeat(64),
+            },
+          ],
+        });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: scopedToken,
+              execution_key: 'scoped-execution',
+              tool_version: 'wave2-test',
+            },
+          ),
+        ).rejects.toThrow(
+          'AI action token was not found for this factory',
+        );
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it(
       'rejects an execution request whose tool version differs from the authorization binding',
       async () => {
@@ -883,6 +1076,198 @@ describe(
 
         expect(aiToolGateway.execute).not.toHaveBeenCalled();
         expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
+      'returns an existing execution for an exact replay without calling the gateway again',
+      async () => {
+        const replayToken = 'stable-replay-token';
+        const replayKey = 'stable-replay-execution';
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              tool_version: 'wave2-test',
+              payload_hash: 'd'.repeat(64),
+              action_token_hash: actionTokenHash(replayToken),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+            },
+          ],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: executionId,
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              decision_id: decisionId,
+              action_intent_id: actionId,
+              execution_key: replayKey,
+              executor_type: 'AI_TOOL_GATEWAY',
+              tool_version: 'wave2-test',
+              inputs_hash: 'd'.repeat(64),
+              result: { committed: false },
+              error: {},
+              status: 'SUCCEEDED',
+              started_at: '2026-10-07T00:00:00.000Z',
+              finished_at: '2026-10-07T00:00:01.000Z',
+            },
+          ],
+        });
+
+        const result = await service.executeAction(
+          tenantId,
+          factoryId,
+          userId,
+          {
+            action_token: replayToken,
+            execution_key: replayKey,
+            tool_version: 'wave2-test',
+          },
+        );
+
+        expect(result.idempotent).toBe(true);
+        expect(result.execution.id).toBe(executionId);
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
+      'does not invoke the gateway when a reserved execution claim loses its locked-row race',
+      async () => {
+        const raceToken = 'execution-race-token';
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              tool_version: 'wave2-test',
+              payload_hash: 'd'.repeat(64),
+              action_token_hash: actionTokenHash(raceToken),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+              approval_id: null,
+            },
+          ],
+        });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'execution-claim-race' }],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'execution-claim-race',
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              action_intent_id: actionId,
+              execution_key: 'execution-race-key',
+              tool_version: 'wave2-test',
+              inputs_hash: 'd'.repeat(64),
+              status: 'COMPLETED',
+              failure_code: null,
+              claimed_at: '2026-10-09T00:00:00.000Z',
+              completed_at: '2026-10-09T00:00:01.000Z',
+            },
+          ],
+        });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: raceToken,
+              execution_key: 'execution-race-key',
+              tool_version: 'wave2-test',
+            },
+          ),
+        ).rejects.toThrow(
+          'AI execution claim is no longer available for execution',
+        );
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(5);
+        expect(String(databaseQueryMock.mock.calls[4]?.[0])).toContain('FOR UPDATE');
+        expect(
+          databaseQueryMock.mock.calls.some(([sql]) =>
+            String(sql).includes('INSERT INTO ai_execution_records'),
+          ),
+        ).toBe(false);
+      },
+    );
+
+    it(
+      'blocks execution if an approval is revoked after claim reservation',
+      async () => {
+        const approvalToken = 'approval-revoked-before-execution';
+        const executionKey = 'approval-race-execution';
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              tool_version: 'wave2-test',
+              payload_hash: 'd'.repeat(64),
+              action_token_hash: actionTokenHash(approvalToken),
+              token_expires_at: '2999-01-01T00:00:00.000Z',
+              approval_id: approvalId,
+            },
+          ],
+        });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        // The initial preflight sees a valid approval.
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: approvalId }],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'approval-race-claim' }],
+        });
+        // The claim lock succeeds, but the approval is revoked before the
+        // final, serialized approval check at the execution boundary.
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'approval-race-claim',
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              action_intent_id: actionId,
+              execution_key: executionKey,
+              tool_version: 'wave2-test',
+              inputs_hash: 'd'.repeat(64),
+              status: 'CLAIMED',
+              failure_code: null,
+              claimed_at: '2026-10-09T00:00:00.000Z',
+              completed_at: null,
+            },
+          ],
+        });
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{ id: 'approval-race-claim' }],
+        });
+
+        await expect(
+          service.executeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              action_token: approvalToken,
+              execution_key: executionKey,
+              tool_version: 'wave2-test',
+            },
+          ),
+        ).rejects.toThrow(
+          'AI action approval expired or was no longer approved before gateway execution',
+        );
+
+        expect(aiToolGateway.execute).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(8);
+        expect(String(databaseQueryMock.mock.calls[6]?.[0])).toContain('FOR SHARE');
+        expect(String(databaseQueryMock.mock.calls[7]?.[0])).toContain('APPROVAL_NO_LONGER_VALID');
       },
     );
 
@@ -1600,6 +1985,9 @@ describe(
          *   6. outcome query
          *   7. learning query
          *   8. release query
+         *   9. lifecycle state
+         *  10. ordered lifecycle events
+         *  11. normalized context evidence references
          *
          * Only the first result contains the decision. The remaining
          * lifecycle collections are intentionally empty for this replay case.
@@ -1635,6 +2023,10 @@ describe(
         databaseQueryMock.mockResolvedValueOnce({
           rows: [],
         });
+
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] }); // lifecycle state
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] }); // lifecycle events
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] }); // evidence refs
 
         const result =
           await service.replayDecision(

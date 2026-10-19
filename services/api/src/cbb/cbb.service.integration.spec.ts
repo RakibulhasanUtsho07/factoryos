@@ -849,6 +849,8 @@ describe(
             'business_rules',
             'business_terms',
             'business_exceptions',
+            'business_evidence',
+            'business_evidence_links',
           ];
 
           try {
@@ -1129,7 +1131,7 @@ describe(
     // NORMAL BUSINESS MAP RETRIEVAL
     // ==========================================================
 it(
-  'returns VERIFIED and INFERRED graph items only',
+  'excludes conflicted nodes from the VERIFIED and INFERRED business map',
   async () => {
     const result =
       await service.getBusinessMap(
@@ -1147,7 +1149,7 @@ it(
     expect(
       nodes,
     ).toHaveLength(
-      3,
+      2,
     );
 
     /*
@@ -1160,13 +1162,9 @@ it(
      *   then entity_type,
      *   then name.
      *
-     * Therefore the API is allowed to return:
-     *
-     *   Production
-     *   ERP
-     *   Planner
-     *
-     * instead of a fixed alphabetical order.
+     * The "Production" entity has an open evidence conflict and
+     * must not be returned until an authorized reviewer resolves it.
+     * The remaining VERIFIED ERP and INFERRED Planner nodes remain visible.
      */
     expect(
       nodes.map(
@@ -1176,10 +1174,16 @@ it(
     ).toEqual(
       expect.arrayContaining([
         'ERP',
-        'Production',
         'Planner',
       ]),
     );
+
+    expect(
+      nodes.some(
+        (node) =>
+          node.name === 'Production',
+      ),
+    ).toBe(false);
 
     /*
      * PROPOSED items must never appear in normal retrieval.
@@ -1221,12 +1225,13 @@ it(
     );
 
     /*
-     * Only the visible verified relation should be returned.
+     * The only verified relation touches the conflicted Production node,
+     * so it must also be withheld until the evidence conflict is reviewed.
      */
     expect(
       result?.edges,
     ).toHaveLength(
-      1,
+      0,
     );
 
     /*
@@ -1311,6 +1316,72 @@ it(
     // ==========================================================
     // FACTORY SCOPE
     // ==========================================================
+
+    it(
+      'excludes a process step while its evidence conflict remains open',
+      async () => {
+        const processResult = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_processes WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3 AND name = \'Order Fulfillment\' AND state=\'VERIFIED\' LIMIT 1',
+          [tenantAId, factoryAId, versionAId],
+        );
+        const processId = processResult.rows[0]?.id;
+        expect(processId).toBeDefined();
+        const stepResult = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_process_steps WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3 AND process_id=$4 AND state=\'VERIFIED\' ORDER BY sequence_no LIMIT 1',
+          [tenantAId, factoryAId, versionAId, processId],
+        );
+        const stepId = stepResult.rows[0]?.id;
+        expect(stepId).toBeDefined();
+        const evidence = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_evidence WHERE tenant_id=$1 AND factory_id=$2 ORDER BY created_at LIMIT 1',
+          [tenantAId, factoryAId],
+        );
+        expect(evidence.rows[0]?.id).toBeDefined();
+
+        await adminPool.query(
+          'INSERT INTO business_conflicts (tenant_id, factory_id, blueprint_id, subject_type, subject_id, status, description, evidence_refs, created_by) VALUES ($1,$2,$3,\'PROCESS_STEP\',$4,\'OPEN\',$5,$6::jsonb,$7)',
+          [
+            tenantAId, factoryAId, blueprintAId, stepId,
+            'Open process-step evidence conflict',
+            JSON.stringify([evidence.rows[0]?.id]), null,
+          ],
+        );
+
+        const result = await service.getProcess(tenantAId, factoryAId, processId as string);
+        expect(result?.process.id).toBe(processId);
+        expect(result?.steps).toHaveLength(0);
+      },
+    );
+
+    it(
+      'hides a process from list and detail retrieval while its evidence conflict is open',
+      async () => {
+        const processResult = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_processes WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3 AND name = \'Order Fulfillment\' AND state=\'VERIFIED\' LIMIT 1',
+          [tenantAId, factoryAId, versionAId],
+        );
+        const processId = processResult.rows[0]?.id;
+        expect(processId).toBeDefined();
+        const evidence = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_evidence WHERE tenant_id=$1 AND factory_id=$2 ORDER BY created_at LIMIT 1',
+          [tenantAId, factoryAId],
+        );
+        expect(evidence.rows[0]?.id).toBeDefined();
+
+        await adminPool.query(
+          'INSERT INTO business_conflicts (tenant_id, factory_id, blueprint_id, subject_type, subject_id, status, description, evidence_refs, created_by) VALUES ($1,$2,$3,\'PROCESS\',$4,\'OPEN\',$5,$6::jsonb,$7)',
+          [
+            tenantAId, factoryAId, blueprintAId, processId,
+            'Open process evidence conflict',
+            JSON.stringify([evidence.rows[0]?.id]), null,
+          ],
+        );
+
+        const list = await service.listProcesses(tenantAId, factoryAId);
+        expect(list?.items.some((item) => item.id === processId)).toBe(false);
+        await expect(service.getProcess(tenantAId, factoryAId, processId as string)).resolves.toBeNull();
+      },
+    );
 
     it(
       'does not return Tenant A data through Factory B scope',

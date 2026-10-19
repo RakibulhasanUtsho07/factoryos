@@ -1,4 +1,6 @@
-import { ArrayMinSize, IsArray, IsDateString, IsIn, IsNumber, IsObject, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsDateString, IsIn, IsNumber, IsObject, IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { GrowthOutcomeKpiDto } from './growth-kpi-measurement.dto';
 
 export class RecordGrowthOpportunityOutcomeDto {
   @IsOptional()
@@ -27,6 +29,13 @@ export class RecordGrowthOpportunityOutcomeDto {
   @Min(0)
   @Max(1)
   confidence?: number;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => GrowthOutcomeKpiDto)
+  kpi_measurements!: GrowthOutcomeKpiDto[];
 
   @IsDateString()
   observed_at!: string;

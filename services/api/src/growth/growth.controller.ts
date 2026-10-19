@@ -13,9 +13,16 @@ import { CreateGrowthValidationUnknownDto } from './dto/create-growth-validation
 import { DecideGrowthValidationUnknownDto } from './dto/decide-growth-validation-unknown.dto';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
+import { CreateGrowthScenarioSetDto } from './dto/create-growth-scenario-set.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
+import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
+import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
+import { CreateGrowthConstraintDto } from './dto/create-growth-constraint.dto';
+import { CreateGrowthEvidenceGapDto } from './dto/create-growth-evidence-gap.dto';
+import { DecideGrowthEvidenceGapDto } from './dto/decide-growth-evidence-gap.dto';
+import { AssignGrowthDecisionOwnerDto } from './dto/assign-growth-decision-owner.dto';
 import { GrowthService } from './growth.service';
 
 interface FactoryOsRequestContext {
@@ -141,6 +148,46 @@ export class GrowthController {
     return this.growth.decideOpportunity(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
   }
 
+  @Post('opportunities/:opportunityId/scenario-sets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  createScenarioSet(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: CreateGrowthScenarioSetDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.createScenarioSet(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Get('opportunities/:opportunityId/scenario-sets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  listScenarioSets(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.listScenarioSets(c.tenantId, c.factoryId, opportunityId);
+  }
+
+  @Get('opportunities/:opportunityId/scenario-sets/:scenarioSetId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  getScenarioSet(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Param('scenarioSetId', new ParseUUIDPipe()) scenarioSetId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.getScenarioSet(c.tenantId, c.factoryId, opportunityId, scenarioSetId);
+  }
+
   @Post('opportunities/:opportunityId/scenarios')
   @UseGuards(PermissionGuard)
   @RequirePermission('growth.write')
@@ -190,6 +237,105 @@ export class GrowthController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.recordExperimentResult(c.userId, c.tenantId, c.factoryId, experimentId, body, c.requestId, c.traceId);
+  }
+
+
+  @Get('opportunities/:opportunityId/governance')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  getOpportunityGovernance(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.getOpportunityGovernance(c.tenantId, c.factoryId, opportunityId);
+  }
+
+  @Post('opportunities/:opportunityId/assumptions')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  addOpportunityAssumption(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: CreateGrowthAssumptionDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.addOpportunityAssumption(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
+  }
+
+  @Post('opportunities/:opportunityId/assumptions/:assumptionId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.review')
+  @RequireFactoryScope()
+  decideOpportunityAssumption(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Param('assumptionId', new ParseUUIDPipe()) assumptionId: string,
+    @Body() body: DecideGrowthAssumptionDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.decideOpportunityAssumption(
+      c.userId, c.tenantId, c.factoryId, opportunityId, assumptionId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Post('opportunities/:opportunityId/constraints')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  addOpportunityConstraint(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: CreateGrowthConstraintDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.addOpportunityConstraint(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
+  }
+
+  @Post('opportunities/:opportunityId/evidence-gaps')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  addOpportunityEvidenceGap(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: CreateGrowthEvidenceGapDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.addOpportunityEvidenceGap(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
+  }
+
+  @Post('opportunities/:opportunityId/evidence-gaps/:gapId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.review')
+  @RequireFactoryScope()
+  decideOpportunityEvidenceGap(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Param('gapId', new ParseUUIDPipe()) gapId: string,
+    @Body() body: DecideGrowthEvidenceGapDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.decideOpportunityEvidenceGap(
+      c.userId, c.tenantId, c.factoryId, opportunityId, gapId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Post('opportunities/:opportunityId/decision-owners')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.review')
+  @RequireFactoryScope()
+  assignOpportunityDecisionOwner(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: AssignGrowthDecisionOwnerDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.assignOpportunityDecisionOwner(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
   }
 
   @Post('opportunities/:opportunityId/outcomes')

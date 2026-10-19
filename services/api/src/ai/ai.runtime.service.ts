@@ -100,6 +100,8 @@ interface DecisionRow extends QueryResultRow {
   risk_class: string | null;
   output_state: string;
   metadata: Record<string, unknown>;
+  envelope_version: string;
+  request_hash: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -351,6 +353,18 @@ export class AiRuntimeService {
 
     const metadata =
       input.metadata ?? {};
+    const requestHash = this.computeDecisionRequestHash({
+      tenantId,
+      factoryId,
+      traceId,
+      actorId: actorUserId,
+      objective,
+      reasoningMode,
+      contextVersion,
+      riskClass,
+      outputState,
+      metadata,
+    });
 
     const result =
       await this.database.transaction(
@@ -375,6 +389,11 @@ export class AiRuntimeService {
             existingResult.rows[0];
 
           if (existing) {
+            this.assertCanonicalDecisionReplay(
+              existing,
+              actorUserId,
+              requestHash,
+            );
             return {
               row: existing,
               idempotent: true,
@@ -397,7 +416,9 @@ export class AiRuntimeService {
                   context_version,
                   risk_class,
                   output_state,
-                  metadata
+                  metadata,
+                  envelope_version,
+                  request_hash
                 )
 
                 VALUES (
@@ -412,7 +433,9 @@ export class AiRuntimeService {
                   $9,
                   $10,
                   $11,
-                  $12
+                  $12,
+                  $13,
+                  $14
                 )
 
                 RETURNING
@@ -428,6 +451,8 @@ export class AiRuntimeService {
                   risk_class,
                   output_state,
                   metadata,
+                  envelope_version,
+                  request_hash,
                   created_at::text AS created_at,
                   updated_at::text AS updated_at
                 `,
@@ -444,6 +469,8 @@ export class AiRuntimeService {
                   riskClass,
                   outputState,
                   metadata,
+                  '1.0.0',
+                  requestHash,
                 ],
               );
 
@@ -484,6 +511,11 @@ export class AiRuntimeService {
                 retryResult.rows[0];
 
               if (row) {
+                this.assertCanonicalDecisionReplay(
+                  row,
+                  actorUserId,
+                  requestHash,
+                );
                 return {
                   row,
                   idempotent: true,
@@ -1232,10 +1264,14 @@ export class AiRuntimeService {
 
       if (existing) {
         if (
+          existing.tenant_id !== tenantId ||
+          existing.factory_id !== factoryId ||
+          existing.created_by !== actorUserId ||
           existing.decision_id !== decisionId ||
           existing.action_type !== actionType ||
           existing.tool_id !== actionType ||
           existing.tool_version !== toolVersion ||
+          this.computeHash(existing.target) !== this.computeHash(target) ||
           existing.resource_type !== resourceType ||
           existing.resource_id !== resourceId ||
           existing.payload_hash !== payloadHash
@@ -1704,6 +1740,18 @@ export class AiRuntimeService {
   );
 
   if (!action) {
+    throw new NotFoundException(
+      'AI action token was not found for this factory',
+    );
+  }
+
+  // The SQL lookup is already tenant/factory scoped. Retain an explicit
+  // boundary assertion as defense in depth if a repository adapter or mock
+  // ever returns a row outside that predicate.
+  if (
+    action.tenant_id !== tenantId ||
+    action.factory_id !== factoryId
+  ) {
     throw new NotFoundException(
       'AI action token was not found for this factory',
     );
@@ -3669,12 +3717,211 @@ export class AiRuntimeService {
         { tenantId },
       );
 
+    const lifecycleStateResult = await this.database.query<{
+      current_state: string;
+      version: number;
+      updated_at: string;
+    }>(
+      `
+      SELECT current_state, version, updated_at::text AS updated_at
+      FROM ai_decision_lifecycle_states
+      WHERE tenant_id = $1 AND factory_id = $2 AND decision_id = $3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, decision.id],
+      { tenantId },
+    );
+
+    const lifecycleEventResult = await this.database.query<{
+      id: string; sequence_no: number; from_state: string | null; to_state: string;
+      transition_reason: string; context_package_id: string | null;
+      verification_run_id: string | null; action_intent_id: string | null;
+      execution_record_id: string | null; outcome_id: string | null;
+      evidence_refs: unknown[]; metadata: Record<string, unknown>;
+      actor_id: string; occurred_at: string;
+    }>(
+      `
+      SELECT id::text AS id, sequence_no, from_state, to_state, transition_reason,
+             context_package_id::text AS context_package_id,
+             verification_run_id::text AS verification_run_id,
+             action_intent_id::text AS action_intent_id,
+             execution_record_id::text AS execution_record_id,
+             outcome_id::text AS outcome_id, evidence_refs, metadata,
+             actor_id::text AS actor_id, occurred_at::text AS occurred_at
+      FROM ai_decision_lifecycle_events
+      WHERE tenant_id = $1 AND factory_id = $2 AND decision_id = $3
+      ORDER BY sequence_no ASC
+      `,
+      [tenantId, factoryId, decision.id],
+      { tenantId },
+    );
+
+    const contextEvidenceResult = await this.database.query<{
+      context_package_id: string; evidence_id: string; source_type: string;
+      source_ref: string; content_hash: string | null; source_timestamp: string | null;
+      source_snapshot: Record<string, unknown>;
+    }>(
+      `
+      SELECT context_package_id::text AS context_package_id,
+             evidence_id::text AS evidence_id, source_type, source_ref,
+             content_hash, source_timestamp::text AS source_timestamp, source_snapshot
+      FROM ai_context_evidence_refs
+      WHERE tenant_id = $1 AND factory_id = $2 AND decision_id = $3
+      ORDER BY context_package_id, source_ref, evidence_id
+      `,
+      [tenantId, factoryId, decision.id],
+      { tenantId },
+    );
+
+    const contexts = contextResult.rows.map((row) => {
+      const refs = contextEvidenceResult.rows
+        .filter((reference) => reference.context_package_id === row.id)
+        .map((reference) => ({
+          evidenceId: reference.evidence_id,
+          sourceType: reference.source_type,
+          sourceRef: reference.source_ref,
+          contentHash: reference.content_hash,
+          sourceTimestamp: reference.source_timestamp,
+          snapshot: reference.source_snapshot,
+        }));
+      const evidenceSources = row.sources.filter(
+        (source) => this.isObject(source) && source.type === 'BUSINESS_EVIDENCE',
+      );
+      // Retain malformed/missing IDs as an expected entry so replay cannot
+      // accidentally call a source snapshot complete by filtering it away.
+      const expectedEvidenceIds = evidenceSources
+        .map((source) => this.isObject(source) && typeof source.id === 'string' ? source.id.toLowerCase() : '')
+        .sort();
+      const actualEvidenceIds = refs.map((reference) => reference.evidenceId.toLowerCase()).sort();
+      const evidenceReferenceIdsMatch =
+        expectedEvidenceIds.length === actualEvidenceIds.length &&
+        expectedEvidenceIds.every((id, index) => id.length > 0 && id === actualEvidenceIds[index]);
+      const expectedReferenceCount = evidenceSources.length;
+      const hashMatches = this.computeHash({
+        decisionId: row.decision_id,
+        contextVersion: row.context_version,
+        sources: row.sources,
+        permissions: row.permissions,
+        freshness: row.freshness,
+        evidenceStates: row.evidence_states,
+      }) === row.package_hash;
+      return {
+        ...this.mapContext(row),
+        evidenceReferences: refs,
+        integrity: {
+          packageHashMatches: hashMatches,
+          sourceReferenceCount: expectedReferenceCount,
+          persistedEvidenceReferenceCount: refs.length,
+          evidenceReferenceIdsMatch,
+          evidenceReferencesComplete:
+            expectedReferenceCount === refs.length && evidenceReferenceIdsMatch,
+        },
+      };
+    });
+
+    const lifecycleState = lifecycleStateResult.rows[0] ?? null;
+    const lifecycleEvents = lifecycleEventResult.rows;
+    const latestLifecycleEvent = lifecycleEvents[lifecycleEvents.length - 1] ?? null;
+    const lifecycleSequenceComplete = lifecycleEvents.every((event, index) =>
+      event.sequence_no === index + 1 &&
+      (index === 0
+        ? event.from_state === null && event.to_state === 'CREATED'
+        : event.from_state === lifecycleEvents[index - 1]?.to_state),
+    );
+    const lifecycleComplete = Boolean(
+      lifecycleState &&
+      lifecycleEvents.length === lifecycleState.version &&
+      lifecycleSequenceComplete &&
+      latestLifecycleEvent?.to_state === lifecycleState.current_state,
+    );
+    const canonicalHashMatches = Boolean(
+      decision.request_hash &&
+      decision.request_hash === this.computeDecisionRequestHash({
+        tenantId: decision.tenant_id,
+        factoryId: decision.factory_id,
+        traceId: decision.trace_id,
+        actorId: decision.actor_id,
+        objective: decision.objective,
+        reasoningMode: decision.reasoning_mode,
+        contextVersion: decision.context_version,
+        riskClass: decision.risk_class,
+        outputState: decision.output_state,
+        metadata: decision.metadata,
+      }),
+    );
+    const evidenceRefsComplete = contexts.every(
+      (context) => context.integrity.evidenceReferencesComplete,
+    );
+    const contextHashesComplete = contexts.every(
+      (context) => context.integrity.packageHashMatches,
+    );
+    const blockers: string[] = [];
+    if (!decision.request_hash) blockers.push('CANONICAL_REQUEST_HASH_MISSING');
+    else if (!canonicalHashMatches) blockers.push('CANONICAL_REQUEST_HASH_MISMATCH');
+    if (!lifecycleComplete) blockers.push('LIFECYCLE_LEDGER_INCOMPLETE');
+    if (contexts.length === 0) blockers.push('CONTEXT_PACKAGE_MISSING');
+    if (!contextHashesComplete) blockers.push('CONTEXT_PACKAGE_HASH_MISMATCH');
+    if (!evidenceRefsComplete) blockers.push('CONTEXT_EVIDENCE_REFERENCES_INCOMPLETE');
+    const completeness = {
+      status: blockers.length === 0 ? 'COMPLETE' : 'PARTIAL',
+      complete: blockers.length === 0,
+      blockers,
+      components: {
+        canonicalEnvelope: {
+          status: canonicalHashMatches ? 'VERIFIED' : decision.request_hash ? 'MISMATCH' : 'LEGACY_FINGERPRINT_MISSING',
+          envelopeVersion: decision.envelope_version,
+          hash: decision.request_hash,
+        },
+        lifecycle: {
+          status: lifecycleComplete ? 'COMPLETE' : 'INCOMPLETE',
+          currentState: lifecycleState?.current_state ?? null,
+          version: lifecycleState?.version ?? null,
+          eventCount: lifecycleEvents.length,
+        },
+        contexts: {
+          status: contexts.length === 0 ? 'NOT_RESOLVED' : contextHashesComplete ? 'HASHES_VERIFIED' : 'HASH_MISMATCH',
+          count: contexts.length,
+        },
+        evidenceReferences: {
+          status: contexts.length === 0 ? 'NOT_APPLICABLE' : evidenceRefsComplete ? 'COMPLETE' : 'INCOMPLETE',
+          expected: contexts.reduce((sum, context) => sum + context.integrity.sourceReferenceCount, 0),
+          persisted: contexts.reduce((sum, context) => sum + context.integrity.persistedEvidenceReferenceCount, 0),
+        },
+        verifications: { status: verificationResult.rows.length ? 'PRESENT' : 'NOT_RECORDED', count: verificationResult.rows.length },
+        actions: { status: actionResult.rows.length ? 'PRESENT' : 'NOT_RECORDED', count: actionResult.rows.length },
+        executions: { status: executionResult.rows.length ? 'PRESENT' : 'NOT_RECORDED', count: executionResult.rows.length },
+        outcomes: { status: outcomeResult.rows.length ? 'PRESENT' : 'NOT_RECORDED', count: outcomeResult.rows.length },
+        learningSignals: { status: learningResult.rows.length ? 'PRESENT' : 'NOT_RECORDED', count: learningResult.rows.length },
+        releases: { status: releaseResult.rows.length ? 'PRESENT' : 'NOT_RECORDED', count: releaseResult.rows.length },
+      },
+    };
+
     const replay = {
       traceId,
       decision: this.mapDecision(decision),
-      contexts: contextResult.rows.map(
-        (row) => this.mapContext(row),
-      ),
+      lifecycle: {
+        currentState: lifecycleState?.current_state ?? null,
+        version: lifecycleState?.version ?? null,
+        updatedAt: lifecycleState?.updated_at ?? null,
+        events: lifecycleEvents.map((event) => ({
+          id: event.id,
+          sequence: event.sequence_no,
+          fromState: event.from_state,
+          toState: event.to_state,
+          reason: event.transition_reason,
+          contextPackageId: event.context_package_id,
+          verificationRunId: event.verification_run_id,
+          actionIntentId: event.action_intent_id,
+          executionRecordId: event.execution_record_id,
+          outcomeId: event.outcome_id,
+          evidenceReferences: event.evidence_refs,
+          metadata: event.metadata,
+          actorId: event.actor_id,
+          occurredAt: event.occurred_at,
+        })),
+      },
+      completeness,
+      contexts,
       verifications:
         verificationResult.rows.map(
           (row) => ({
@@ -3743,6 +3990,49 @@ export class AiRuntimeService {
       replayHash,
       replay,
     };
+  }
+
+  private computeDecisionRequestHash(input: {
+    tenantId: string;
+    factoryId: string;
+    traceId: string;
+    actorId: string;
+    objective: string;
+    reasoningMode: string;
+    contextVersion: string | null;
+    riskClass: string | null;
+    outputState: string;
+    metadata: Record<string, unknown>;
+  }): string {
+    return this.computeHash({
+      envelopeVersion: '1.0.0',
+      tenantId: input.tenantId,
+      factoryId: input.factoryId,
+      traceId: input.traceId,
+      actorId: input.actorId,
+      objective: input.objective,
+      reasoningMode: input.reasoningMode,
+      contextVersion: input.contextVersion,
+      riskClass: input.riskClass,
+      outputState: input.outputState,
+      metadata: input.metadata,
+    });
+  }
+
+  private assertCanonicalDecisionReplay(
+    existing: DecisionRow,
+    actorUserId: string,
+    requestHash: string,
+  ): void {
+    if (
+      existing.actor_id !== actorUserId ||
+      !existing.request_hash ||
+      existing.request_hash !== requestHash
+    ) {
+      throw new ConflictException(
+        'trace_id is already bound to a different or unverifiable canonical AI decision envelope',
+      );
+    }
   }
 
   // ============================================================
@@ -3882,6 +4172,8 @@ export class AiRuntimeService {
         d.risk_class,
         d.output_state,
         d.metadata,
+        d.envelope_version,
+        d.request_hash,
         d.created_at::text AS created_at,
         d.updated_at::text AS updated_at
 
@@ -3922,6 +4214,10 @@ export class AiRuntimeService {
         row.risk_class,
       outputState:
         row.output_state,
+      envelopeVersion:
+        row.envelope_version,
+      decisionHash:
+        row.request_hash,
       metadata:
         row.metadata,
       createdAt:

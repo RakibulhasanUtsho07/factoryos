@@ -7,6 +7,7 @@ import { ResearchService } from './research.service';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
 import { CreateResearchClaimDto } from './dto/create-research-claim.dto';
 import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto';
+import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -164,6 +165,33 @@ describe('ResearchService', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('refuses a knowledge release when an approved claim has no assessment for the current source version', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: CLAIM_ID, tenant_id: TENANT_ID, namespace: 'TENANT', source_id: SOURCE_ID,
+        claim_text: 'A previously approved research statement.', methodology: 'Controlled study',
+        dataset_description: 'Production measurements', limitations: 'Single facility',
+        practical_implication: 'Validate before rollout', evidence_grade: 'B', evidence_strength: 'MODERATE',
+        topic_tags: ['quality'], provenance_ref: { page: 4, section: 'Results' }, status: 'APPROVED',
+        stored_excerpt: null, source_title: 'Manufacturing quality study',
+        source_url: 'https://publisher.example/paper', doi: '10.1234/quality-study',
+        license_status: 'OPEN_ACCESS', access_status: 'APPROVED',
+        rights_basis: 'Verified open-access licence', source_revision: 2, rights_version: 3,
+        current_evidence_assessment_id: null, current_evidence_citation_status: null,
+        current_evidence_safety_status: null, current_evidence_safety_flags: null,
+        safety_review_decision: null,
+      }],
+    });
+
+    await expect(service.createRelease(
+      USER_ID, TENANT_ID,
+      { release_key: 'stale-evidence', version: 1, title: 'Stale evidence', claim_ids: [CLAIM_ID], evidence_grade: 'B' },
+      null, null,
+    )).rejects.toThrow('Every claim requires a current source- and rights-version-bound evidence assessment');
+    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires a source locator to be present before a release can be validated', async () => {
     database.query.mockResolvedValueOnce({
       rows: [{
@@ -175,6 +203,13 @@ describe('ResearchService', () => {
         source_url: 'https://example.org/paper', doi: null,
         license_status: 'OPEN_ACCESS', access_status: 'APPROVED',
         rights_basis: 'Open-access reuse terms verified',
+        source_revision: 1,
+        rights_version: 1,
+        current_evidence_assessment_id: 'bb2d1014-b7bc-4e7e-ad61-8746e8e00003',
+        current_evidence_citation_status: 'CONSISTENT',
+        current_evidence_safety_status: 'CLEAR',
+        current_evidence_safety_flags: [],
+        safety_review_decision: null,
       }],
     });
 
@@ -226,6 +261,13 @@ describe('ResearchService', () => {
           license_status: 'OPEN_ACCESS',
           access_status: 'APPROVED',
           rights_basis: 'CC BY licence verified',
+          source_revision: 1,
+          rights_version: 1,
+          current_evidence_assessment_id: 'bb2d1014-b7bc-4e7e-ad61-8746e8e00001',
+          current_evidence_citation_status: 'CONSISTENT',
+          current_evidence_safety_status: 'CLEAR',
+          current_evidence_safety_flags: [],
+          safety_review_decision: null,
         }],
       });
 
@@ -235,7 +277,7 @@ describe('ResearchService', () => {
         rows: [{
           id: evaluationId,
           status: 'PASSED',
-          evaluation_version: 'research-release-contract.v1',
+          evaluation_version: 'research-release-contract.v2',
           content_fingerprint: 'a'.repeat(64),
           results: {
             consistencyPassed: true,
@@ -306,6 +348,13 @@ describe('ResearchService', () => {
           license_status: 'OPEN_ACCESS',
           access_status: 'APPROVED',
           rights_basis: 'Open access licence verified',
+          source_revision: 1,
+          rights_version: 1,
+          current_evidence_assessment_id: 'bb2d1014-b7bc-4e7e-ad61-8746e8e00002',
+          current_evidence_citation_status: 'CONSISTENT',
+          current_evidence_safety_status: 'REVIEW_REQUIRED',
+          current_evidence_safety_flags: ['PROMPT_CONTROL_INSTRUCTION', 'SECRET_EXTRACTION_INSTRUCTION'],
+          safety_review_decision: null,
         }],
       });
 
@@ -315,7 +364,7 @@ describe('ResearchService', () => {
         rows: [{
           id: evaluationId,
           status: 'REVIEW_REQUIRED',
-          evaluation_version: 'research-release-contract.v1',
+          evaluation_version: 'research-release-contract.v2',
           content_fingerprint: 'b'.repeat(64),
           results: { consistencyPassed: true, citationCoveragePassed: true, rightsPassed: true, safetyPassed: false },
           evaluated_at: '2026-10-11T00:00:00.000Z',
@@ -334,6 +383,54 @@ describe('ResearchService', () => {
 
     expect(evaluation.status).toBe('REVIEW_REQUIRED');
     expect((evaluation.results as Record<string, unknown>).safetyPassed).toBe(false);
+  });
+
+
+  it('requires explicit extraction-item review before trusting an extracted claim', async () => {
+    client.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: CLAIM_ID,
+          tenant_id: TENANT_ID,
+          namespace: 'TENANT',
+          source_id: SOURCE_ID,
+          extraction_item_id: 'aa2f63c4-dd22-4f10-bf4d-67f091700001',
+          claim_text: 'A candidate extracted from an untrusted source.',
+          methodology: null,
+          dataset_description: null,
+          limitations: null,
+          practical_implication: null,
+          evidence_grade: 'B',
+          evidence_strength: 'LIMITED',
+          topic_tags: ['security'],
+          provenance_ref: { locator: { page: 7 }, extraction: { runId: 'e2c4c7ea-e4ce-40a5-a930-05bcce700001' } },
+          status: 'PROPOSED',
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          access_status: 'APPROVED',
+          license_status: 'OPEN_ACCESS',
+          full_text_storage_allowed: false,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(service.decideClaim(
+      USER_ID,
+      TENANT_ID,
+      CLAIM_ID,
+      {
+        decision: 'APPROVE',
+        reason: 'Reviewed this claim for source quality and applicability.',
+      } as DecideResearchClaimDto,
+      null,
+      null,
+    )).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(String(client.query.mock.calls[2]?.[0])).toContain('research_extraction_item_reviews');
+    expect(audit.record).not.toHaveBeenCalled();
   });
 
 });

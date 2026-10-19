@@ -216,6 +216,23 @@ jobs:
             migrations/128_finance_erp_transfer_modes.sql
             migrations/129_finance_erp_export_receipt_guard.sql
             migrations/130_integration_operational_reconciliation.sql
+            migrations/131_cbb_evidence_provenance.sql
+            migrations/132_cbb_governance.sql
+            migrations/133_cbb_terminology_context.sql
+            migrations/134_research_ingestion_provenance.sql
+            migrations/135_research_extraction_review_gate.sql
+            migrations/136_research_content_rights_purge.sql
+            migrations/137_research_full_text_access_normalization.sql
+            migrations/138_research_evidence_assessment.sql
+            migrations/139_research_evidence_safety_review.sql
+            migrations/140_research_claim_assessment_insert_guard.sql
+            migrations/141_research_latest_assessment_approval_gate.sql
+            migrations/142_research_release_lifecycle.sql
+            migrations/143_growth_opportunity_governance.sql
+            migrations/144_growth_scenario_sets.sql
+            migrations/145_growth_scenario_set_grid_integrity.sql
+            migrations/146_growth_experiment_kpi_evidence_linkage.sql
+            migrations/147_ai_decision_envelope_lifecycle_replay.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -314,6 +331,14 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-dlq-replay-idempotency.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-webhook.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-reconciliation.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/cbb-evidence-provenance.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/cbb-governance.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-ingestion-provenance.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-release-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-opportunity-governance.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-scenario-sets.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-experiment-outcomes.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \

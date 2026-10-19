@@ -17,8 +17,19 @@ import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto'
 import { DecideResearchWatchlistDto } from './dto/decide-research-watchlist.dto';
 import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
+import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
+import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto';
+import {
+  CompleteResearchExtractionDto,
+  CreateResearchIngestionJobDto,
+  DecideResearchExtractionItemDto,
+  FailResearchIngestionJobDto,
+  PauseResearchIngestionJobDto,
+  ResearchIngestionCheckpointDto,
+} from './dto/research-ingestion.dto';
+import { ResearchIngestionService } from './research-ingestion.service';
 import { ResearchService } from './research.service';
 
 interface FactoryOsRequestContext {
@@ -35,7 +46,10 @@ type FactoryOsRequest = Request & { factoryos?: FactoryOsRequestContext };
 
 @Controller('research')
 export class ResearchController {
-  constructor(private readonly research: ResearchService) {}
+  constructor(
+    private readonly research: ResearchService,
+    private readonly ingestion: ResearchIngestionService,
+  ) {}
 
   @Post('watchlists')
   @UseGuards(PermissionGuard)
@@ -113,6 +127,160 @@ export class ResearchController {
     return this.research.decideSource(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
   }
 
+  @Post('sources/:sourceId/ingestion-jobs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  createIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Body() body: CreateResearchIngestionJobDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.createJob(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
+  }
+
+  @Get('ingestion-jobs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listIngestionJobs(
+    @Req() req: FactoryOsRequest,
+    @Query('source_id') sourceId?: string,
+    @Query('status') status?: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listJobs(c.tenantId, {
+      source_id: sourceId, status, limit: rawLimit === undefined ? 50 : Number(rawLimit),
+    });
+  }
+
+  // The ingestion worker uses a tenant-scoped lease. No raw source body is
+  // accepted by this route; checkpoints are metadata-only and resumable.
+  @Post('ingestion-jobs/claim-next')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  claimNextIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Query('lease_seconds') rawLeaseSeconds?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.claimNextJob(
+      c.userId, c.tenantId, rawLeaseSeconds === undefined ? 300 : Number(rawLeaseSeconds), c.requestId, c.traceId,
+    );
+  }
+
+  @Post('ingestion-jobs/:jobId/checkpoint')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  checkpointIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: ResearchIngestionCheckpointDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.checkpoint(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/pause')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  pauseIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: PauseResearchIngestionJobDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.pauseJob(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/failure')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  failIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: FailResearchIngestionJobDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.failJob(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/extraction')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  completeResearchExtraction(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: CompleteResearchExtractionDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.completeExtraction(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/extraction-items/:itemId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideResearchExtractionItem(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Body() body: DecideResearchExtractionItemDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.decideExtractionItem(c.userId, c.tenantId, jobId, itemId, body, c.requestId, c.traceId);
+  }
+
+  @Get('ingestion-jobs/:jobId/extraction')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listResearchExtractionProvenance(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+  ): Promise<unknown> {
+    const context = this.context(req);
+    return this.ingestion.listExtractionProvenance(context.userId, context.tenantId, jobId);
+  }
+
+  @Get('ingestion-jobs/:jobId/events')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listIngestionJobEvents(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listJobEvents(c.userId, c.tenantId, jobId);
+  }
+
+  @Get('sources/:sourceId/content-purges')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listResearchSourceContentPurges(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const context = this.context(req);
+    return this.ingestion.listSourceContentPurges(
+      context.userId, context.tenantId, sourceId,
+      rawLimit === undefined ? 100 : Number(rawLimit),
+    );
+  }
+
+  @Get('sources/:sourceId/rights-history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listSourceRightsHistory(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listSourceRightsHistory(
+      c.userId, c.tenantId, sourceId, rawLimit === undefined ? 100 : Number(rawLimit),
+    );
+  }
+
   @Post('sources/:sourceId/claims')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.write')
@@ -140,6 +308,46 @@ export class ResearchController {
       topic,
       limit: rawLimit === undefined ? 50 : Number(rawLimit),
     });
+  }
+
+  @Post('claims/:claimId/assess-evidence')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  assessClaimEvidence(
+    @Req() req: FactoryOsRequest,
+    @Param('claimId', new ParseUUIDPipe()) claimId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.assessClaimEvidence(c.userId, c.tenantId, claimId, c.requestId, c.traceId);
+  }
+
+  @Get('claims/:claimId/evidence-assessments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listClaimEvidenceAssessments(
+    @Req() req: FactoryOsRequest,
+    @Param('claimId', new ParseUUIDPipe()) claimId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.listClaimEvidenceAssessments(
+      c.userId, c.tenantId, claimId, rawLimit === undefined ? 50 : Number(rawLimit),
+    );
+  }
+
+  @Post('claims/:claimId/evidence-assessments/:assessmentId/safety-decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideResearchEvidenceSafety(
+    @Req() req: FactoryOsRequest,
+    @Param('claimId', new ParseUUIDPipe()) claimId: string,
+    @Param('assessmentId', new ParseUUIDPipe()) assessmentId: string,
+    @Body() body: DecideResearchEvidenceSafetyDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.decideEvidenceSafety(
+      c.userId, c.tenantId, claimId, assessmentId, body, c.requestId, c.traceId,
+    );
   }
 
   @Post('claims/:claimId/decision')
@@ -203,6 +411,29 @@ export class ResearchController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.promoteRelease(c.userId, c.tenantId, releaseId, body, c.requestId, c.traceId);
+  }
+
+  @Get('releases/:releaseId/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  releaseHistory(
+    @Req() req: FactoryOsRequest,
+    @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.listReleaseHistory(c.tenantId, releaseId);
+  }
+
+  @Post('releases/:releaseId/rollback')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  rollbackRelease(
+    @Req() req: FactoryOsRequest,
+    @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
+    @Body() body: RollbackResearchReleaseDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.rollbackRelease(c.userId, c.tenantId, releaseId, body, c.requestId, c.traceId);
   }
 
   @Post('claims/:claimId/relevance')

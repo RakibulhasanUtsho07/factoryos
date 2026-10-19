@@ -503,17 +503,20 @@ export class CbbService {
   async getBusinessMap(
     tenantId: string,
     factoryId: string,
+    requestedVersionId?: string,
   ) {
     this.validateScope(
       tenantId,
       factoryId,
     );
 
-    const version =
-      await this.getCurrentVersion(
-        tenantId,
-        factoryId,
-      );
+    if (requestedVersionId) {
+      this.validateUuid(requestedVersionId, 'versionId');
+    }
+
+    const version = requestedVersionId
+      ? await this.getBlueprintVersionById(tenantId, factoryId, requestedVersionId)
+      : await this.getCurrentVersion(tenantId, factoryId);
 
     if (!version) {
       return null;
@@ -542,6 +545,12 @@ export class CbbService {
             'VERIFIED',
             'INFERRED'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=e.tenant_id AND c.factory_id=e.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='ENTITY'
+              AND c.subject_id=e.id AND c.status='OPEN'
+          )
 
         ORDER BY
           CASE
@@ -559,6 +568,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -623,6 +633,24 @@ export class CbbService {
             'VERIFIED',
             'INFERRED'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=r.tenant_id AND c.factory_id=r.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='RELATION'
+              AND c.subject_id=r.id AND c.status='OPEN'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=from_entity.tenant_id AND c.factory_id=from_entity.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='ENTITY'
+              AND c.subject_id=from_entity.id AND c.status='OPEN'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=to_entity.tenant_id AND c.factory_id=to_entity.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='ENTITY'
+              AND c.subject_id=to_entity.id AND c.status='OPEN'
+          )
 
         ORDER BY
           CASE
@@ -640,11 +668,87 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
         },
       );
+
+
+    // Expose the exact source records linked to visible graph items. Restricted
+    // source records require the separate review-only evidence endpoint.
+    const targetIds = [
+      ...entitiesResult.rows.map((row) => row.id),
+      ...relationsResult.rows.map((row) => row.id),
+    ];
+    const evidenceByTarget = new Map<string, Record<string, unknown>[]>();
+    if (targetIds.length > 0) {
+      const evidenceResult = await this.database.query<QueryResultRow>(
+        `
+        SELECT
+          l.target_type,
+          l.target_id::text AS target_id,
+          l.link_type,
+          e.id::text AS evidence_id,
+          e.source_type,
+          e.source_ref,
+          e.source_uri,
+          e.source_system,
+          e.source_record_id,
+          e.source_version,
+          e.source_timestamp::text AS source_timestamp,
+          e.evidence_grade,
+          e.confidence,
+          e.state,
+          e.content_hash,
+          e.created_at::text AS created_at
+        FROM business_evidence_links l
+        INNER JOIN business_evidence e
+          ON e.id = l.evidence_id
+         AND e.tenant_id = l.tenant_id
+         AND e.factory_id = l.factory_id
+        WHERE
+          l.tenant_id = $1
+          AND l.factory_id = $2
+          AND l.blueprint_id = $3
+          AND l.blueprint_version_id = $4
+          AND l.target_type IN ('ENTITY', 'RELATION')
+          AND l.target_id = ANY($5::uuid[])
+          AND e.visibility = 'INTERNAL'
+        ORDER BY l.target_type, l.target_id, e.created_at, e.id
+        `,
+        [
+          tenantId,
+          factoryId,
+          version.blueprintId,
+          version.versionId,
+          targetIds,
+        ],
+        { tenantId },
+      );
+      for (const row of evidenceResult.rows) {
+        const key = String(row.target_type) + ':' + String(row.target_id);
+        const current = evidenceByTarget.get(key) ?? [];
+        current.push({
+          evidenceId: String(row.evidence_id),
+          sourceType: row.source_type,
+          sourceRef: row.source_ref,
+          sourceUri: row.source_uri ?? null,
+          sourceSystem: row.source_system ?? null,
+          sourceRecordId: row.source_record_id ?? null,
+          sourceVersion: row.source_version ?? null,
+          sourceTimestamp: row.source_timestamp,
+          evidenceGrade: row.evidence_grade ?? null,
+          confidence: this.normalizeNullableNumber(row.confidence as number | string | null),
+          state: row.state,
+          contentHash: row.content_hash,
+          linkType: row.link_type,
+          recordedAt: row.created_at,
+        });
+        evidenceByTarget.set(key, current);
+      }
+    }
 
     return {
       tenantId,
@@ -708,6 +812,9 @@ export class CbbService {
 
             createdAt:
               row.created_at,
+
+            evidence:
+              evidenceByTarget.get('ENTITY:' + row.id) ?? [],
           }),
         ),
 
@@ -745,6 +852,9 @@ export class CbbService {
 
             createdAt:
               row.created_at,
+
+            evidence:
+              evidenceByTarget.get('RELATION:' + row.id) ?? [],
           }),
         ),
 
@@ -827,7 +937,18 @@ export class CbbService {
            'INFERRED'
          )
 
-        WHERE
+        
+         AND NOT EXISTS (
+           SELECT 1 FROM business_conflicts step_conflict
+           WHERE step_conflict.tenant_id = ps.tenant_id
+             AND step_conflict.factory_id = ps.factory_id
+             AND step_conflict.blueprint_id = $4
+             AND step_conflict.subject_type = 'PROCESS_STEP'
+             AND step_conflict.subject_id = ps.id
+             AND step_conflict.status = 'OPEN'
+         )
+
+WHERE
           p.tenant_id = $1
           AND p.factory_id = $2
           AND p.blueprint_version_id = $3
@@ -837,7 +958,18 @@ export class CbbService {
             'INFERRED'
           )
 
-        GROUP BY
+        
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts process_conflict
+            WHERE process_conflict.tenant_id = p.tenant_id
+              AND process_conflict.factory_id = p.factory_id
+              AND process_conflict.blueprint_id = $4
+              AND process_conflict.subject_type = 'PROCESS'
+              AND process_conflict.subject_id = p.id
+              AND process_conflict.status = 'OPEN'
+          )
+
+GROUP BY
           p.id,
           p.name,
           p.description,
@@ -865,6 +997,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -1014,13 +1147,25 @@ export class CbbService {
             'INFERRED'
           )
 
-        LIMIT 1
+        
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts process_conflict
+            WHERE process_conflict.tenant_id = p.tenant_id
+              AND process_conflict.factory_id = p.factory_id
+              AND process_conflict.blueprint_id = $5
+              AND process_conflict.subject_type = 'PROCESS'
+              AND process_conflict.subject_id = p.id
+              AND process_conflict.status = 'OPEN'
+          )
+
+LIMIT 1
         `,
         [
           processId,
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -1077,7 +1222,18 @@ export class CbbService {
             'INFERRED'
           )
 
-        ORDER BY
+        
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts step_conflict
+            WHERE step_conflict.tenant_id = ps.tenant_id
+              AND step_conflict.factory_id = ps.factory_id
+              AND step_conflict.blueprint_id = $5
+              AND step_conflict.subject_type = 'PROCESS_STEP'
+              AND step_conflict.subject_id = ps.id
+              AND step_conflict.status = 'OPEN'
+          )
+
+ORDER BY
           ps.sequence_no ASC
         `,
         [
@@ -1085,6 +1241,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -1212,6 +1369,46 @@ export class CbbService {
   // ============================================================
   // PRIVATE: CURRENT VERSION
   // ============================================================
+
+  private async getBlueprintVersionById(
+    tenantId: string,
+    factoryId: string,
+    versionId: string,
+  ) {
+    const result = await this.database.query<CbbVersionRow>(
+      `
+      SELECT b.id::text AS blueprint_id,
+        b.status AS blueprint_status,
+        v.id::text AS version_id,
+        v.version::text AS version,
+        v.graph_hash, v.evidence_count,
+        v.readiness_score::text AS readiness_score,
+        v.status AS version_status, v.change_reason,
+        v.created_at::text AS created_at
+      FROM business_blueprints b
+      INNER JOIN business_blueprint_versions v
+        ON v.blueprint_id=b.id AND v.tenant_id=b.tenant_id AND v.factory_id=b.factory_id
+      WHERE b.tenant_id=$1 AND b.factory_id=$2 AND v.id=$3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, versionId],
+      { tenantId },
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      blueprintId: row.blueprint_id,
+      blueprintStatus: row.blueprint_status,
+      versionId: row.version_id,
+      version: row.version,
+      graphHash: row.graph_hash,
+      evidenceCount: row.evidence_count,
+      readinessScore: this.normalizeNullableNumber(row.readiness_score),
+      versionStatus: row.version_status,
+      changeReason: row.change_reason,
+      createdAt: row.created_at,
+    };
+  }
 
   private async getCurrentVersion(
     tenantId: string,

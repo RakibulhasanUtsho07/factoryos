@@ -1,10 +1,11 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
+import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { GrowthService } from './growth.service';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -58,6 +59,35 @@ describe('GrowthService', () => {
       USER_ID, TENANT_ID, FACTORY_ID, dto, null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows only the currently assigned decision owner to accept or reject a hypothesis', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'PROPOSED' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'owner-assignment-id', owner_user_id: 'c90a5f40-c8bb-44e8-8b3d-2f879d56aa10' }] });
+    const dto: DecideGrowthOpportunityDto = { decision: 'ACCEPT', reason: 'Review proposal and evidence' };
+
+    await expect(service.decideOpportunity(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query.mock.calls[1][0]).toContain("role_code = 'DECISION_OWNER'");
+  });
+
+  it('fails closed when the database governance readiness gate is incomplete', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'PROPOSED' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'owner-assignment-id', owner_user_id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ ready: false }] });
+    const dto: DecideGrowthOpportunityDto = { decision: 'ACCEPT', reason: 'Review proposal and evidence' };
+
+    await expect(service.decideOpportunity(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(client.query.mock.calls[2][0]).toContain('factoryos_growth_opportunity_governance_ready');
   });
 
   it('uses a deterministic, version-labelled sensitivity formula instead of pretending to forecast', () => {
@@ -194,45 +224,175 @@ describe('GrowthService', () => {
   });
 
 
-  it('persists a factory-scoped AI learning signal atomically with an outcome', async () => {
-    client.query
-      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'a08ea4b8-ed43-4fb9-8561-1ef47d43b041',
-          opportunity_id: OPPORTUNITY_ID,
-          experiment_result_id: null,
-          assessment: 'POSITIVE',
-          realized_metrics: { scrap_rate_delta_pct: -3.2 },
-          evidence_refs: ['quality-report:pilot-17'],
-          notes: null,
-          observed_at: '2026-10-11T10:00:00.000Z',
-          created_at: '2026-10-11T10:00:00.000Z',
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ id: '0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38' }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] });
-
+  it('persists KPI actuals, evidence links and a factory-scoped learning signal atomically', async () => {
+    client.query.mockImplementation(async (queryText: unknown) => {
+      const sql = String(queryText);
+      if (sql.includes('SELECT id::text AS id, status FROM growth_opportunities')) return { rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] };
+      if (sql.includes('INSERT INTO growth_opportunity_outcomes')) return { rows: [{
+        id: 'a08ea4b8-e83e-43ab-a576-e3db6a06b70c', opportunity_id: OPPORTUNITY_ID, experiment_result_id: null,
+        assessment: 'POSITIVE', realized_metrics: { scrap_rate_delta_pct: -3.2 }, evidence_refs: ['quality-report:pilot-17'],
+        notes: null, observed_at: '2026-10-11T10:00:00.000Z', created_at: '2026-10-11T10:00:00.000Z',
+      }] };
+      if (sql.includes('INSERT INTO growth_outcome_kpi_measurements')) return { rows: [{
+        id: 'bb6b2a76-5f52-4e5e-b9c8-3bd75d79d71a', metric_key: 'scrap_rate_delta_pct',
+        baseline_value: '0', actual_value: '-3.2', target_value: '-2', unit: 'pct',
+        direction: 'DECREASE', evidence_ref: 'quality-report:pilot-17', source_experiment_kpi_id: null,
+      }] };
+      if (sql.includes('INSERT INTO ai_learning_signals')) return { rows: [{ id: '0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38' }] };
+      return { rows: [] };
+    });
     const result = await service.recordOpportunityOutcome(
       USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
       {
-        assessment: 'POSITIVE',
-        realized_metrics: { scrap_rate_delta_pct: -3.2 },
+        assessment: 'POSITIVE', realized_metrics: { scrap_rate_delta_pct: -3.2 },
         evidence_refs: ['quality-report:pilot-17'],
-        observed_at: '2026-10-11T10:00:00.000Z',
-        confidence: 0.8,
-      },
-      null,
-      null,
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_delta_pct', unit: 'pct', direction: 'DECREASE',
+          baseline_value: 0, actual_value: -3.2, target_value: -2, evidence_ref: 'quality-report:pilot-17',
+        }],
+        observed_at: '2026-10-11T10:00:00.000Z', confidence: 0.8,
+      }, null, null,
     );
-
     expect(result.learning_signal_id).toBe('0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38');
-    expect(client.query.mock.calls[3][0]).toContain('INSERT INTO ai_learning_signals');
-    expect(client.query.mock.calls[3][1][5]).toContain('"assessment":"POSITIVE"');
-    expect(client.query.mock.calls[4][1][4]).toBe('GROWTH.OPPORTUNITY_OUTCOME_RECORDED');
-    expect(client.query.mock.calls[5][1][4]).toBe('AI.LEARNING_SIGNAL_RECORDED');
+    expect(result.kpi_measurements).toHaveLength(1);
+    expect(client.query.mock.calls.some(([query]) => String(query).includes('INSERT INTO growth_outcome_kpi_measurements'))).toBe(true);
+    const signalCall = client.query.mock.calls.find(([query]) => String(query).includes('INSERT INTO ai_learning_signals'));
+    expect(signalCall?.[1]?.[5]).toContain('"metric_key":"scrap_rate_delta_pct"');
+  });
+
+  it('rejects a KPI whose actual value disagrees with the realized metric snapshot', async () => {
+    await expect(service.recordOpportunityOutcome(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
+      {
+        assessment: 'POSITIVE', realized_metrics: { scrap_rate_delta_pct: -3.2 },
+        evidence_refs: ['quality-report:pilot-17'],
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_delta_pct', unit: 'pct', direction: 'DECREASE',
+          baseline_value: 0, actual_value: -2.5, target_value: -2, evidence_ref: 'quality-report:pilot-17',
+        }],
+        observed_at: '2026-10-11T10:00:00.000Z',
+      }, null, null,
+    )).rejects.toThrow('Each KPI actual_value must match realized_metrics at the same metric_key');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+
+  it('returns experiment result and realized outcome KPI evidence in opportunity detail', async () => {
+    database.query.mockImplementation(async (queryText: unknown) => {
+      const sql = String(queryText);
+      if (sql.includes('FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3')) {
+        return { rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] };
+      }
+      if (sql.includes('FROM growth_experiments WHERE opportunity_id')) {
+        return { rows: [{ id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa', name: 'Yield pilot' }] };
+      }
+      if (sql.includes('FROM growth_experiment_results r')) {
+        return { rows: [{
+          id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          experiment_id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+          assessment: 'POSITIVE', pre_measurements: { scrap_rate_pct: 8 },
+          post_measurements: { scrap_rate_pct: 5 }, evidence_refs: ['production-report:pilot-1'],
+        }] };
+      }
+      if (sql.includes('FROM growth_experiment_result_kpis')) {
+        return { rows: [{
+          id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+          experiment_result_id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          metric_key: 'scrap_rate_pct', baseline_value: '8', actual_value: '5',
+          target_value: '4', unit: 'pct', direction: 'DECREASE',
+          evidence_ref: 'production-report:pilot-1',
+        }] };
+      }
+      if (sql.includes('FROM growth_opportunity_outcomes WHERE')) {
+        return { rows: [{
+          id: 'ddf4aa7c-9f41-443c-b769-99c22e763b03',
+          experiment_result_id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          realized_metrics: { scrap_rate_pct: 4.5 }, evidence_refs: ['quality-report:final-check'],
+        }] };
+      }
+      if (sql.includes('FROM growth_outcome_kpi_measurements')) {
+        return { rows: [{
+          id: 'e289c43b-75d3-4c9e-86e5-3274f2fc3e81',
+          outcome_id: 'ddf4aa7c-9f41-443c-b769-99c22e763b03',
+          source_experiment_kpi_id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+          metric_key: 'scrap_rate_pct', baseline_value: '8', actual_value: '4.5',
+          target_value: '4', unit: 'pct', direction: 'DECREASE',
+          evidence_ref: 'quality-report:final-check',
+        }] };
+      }
+      return { rows: [] };
+    });
+    const result = await service.getOpportunity(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID) as {
+      experiments: Array<{ results: Array<{ kpi_measurements: Array<{ metric_key: string; actual_value: string }> }> }>;
+      outcomes: Array<{ kpi_measurements: Array<{ source_experiment_kpi_id: string; evidence_ref: string }> }>;
+    };
+    expect(result.experiments[0].results[0].kpi_measurements[0]).toEqual(expect.objectContaining({
+      metric_key: 'scrap_rate_pct', actual_value: '5',
+    }));
+    expect(result.outcomes[0].kpi_measurements[0]).toEqual(expect.objectContaining({
+      source_experiment_kpi_id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+      evidence_ref: 'quality-report:final-check',
+    }));
+  });
+
+  it('stores measured experiment KPIs with evidence and numeric pre/post linkage', async () => {
+    client.query.mockImplementation(async (queryText: unknown) => {
+      const sql = String(queryText);
+      if (sql.includes('FROM growth_experiments WHERE id = $1')) {
+        return { rows: [{ id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa', opportunity_id: OPPORTUNITY_ID, status: 'RUNNING' }] };
+      }
+      if (sql.includes('INSERT INTO growth_experiment_results')) {
+        return { rows: [{
+          id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          experiment_id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+          assessment: 'POSITIVE', stop_condition_triggered: false,
+          pre_measurements: { scrap_rate_pct: 8 }, post_measurements: { scrap_rate_pct: 5 },
+          evidence_refs: ['production-report:pilot-1'], observed_at: '2026-10-10T10:00:00.000Z',
+        }] };
+      }
+      if (sql.includes('INSERT INTO growth_experiment_result_kpis')) {
+        return { rows: [{
+          id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+          metric_key: 'scrap_rate_pct', baseline_value: '8', actual_value: '5',
+          target_value: '4', unit: 'pct', direction: 'DECREASE', evidence_ref: 'production-report:pilot-1',
+        }] };
+      }
+      return { rows: [] };
+    });
+    const result = await service.recordExperimentResult(
+      USER_ID, TENANT_ID, FACTORY_ID, '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+      {
+        pre_measurements: { scrap_rate_pct: 8 }, post_measurements: { scrap_rate_pct: 5 },
+        assessment: 'POSITIVE', stop_condition_triggered: false,
+        evidence_refs: ['production-report:pilot-1'],
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_pct', unit: 'pct', direction: 'DECREASE',
+          target_value: 4, evidence_ref: 'production-report:pilot-1',
+        }],
+        observed_at: '2026-10-10T10:00:00.000Z',
+      }, null, null,
+    );
+    expect(result.kpi_measurements).toHaveLength(1);
+    expect(client.query.mock.calls.some(([query, values]) =>
+      String(query).includes('INSERT INTO growth_experiment_result_kpis') && values?.[6] === 8 && values?.[7] === 5,
+    )).toBe(true);
+  });
+
+  it('rejects KPI evidence references that do not belong to the captured experiment result', async () => {
+    await expect(service.recordExperimentResult(
+      USER_ID, TENANT_ID, FACTORY_ID, '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+      {
+        pre_measurements: { scrap_rate_pct: 8 }, post_measurements: { scrap_rate_pct: 5 },
+        assessment: 'POSITIVE', stop_condition_triggered: false,
+        evidence_refs: ['production-report:pilot-1'],
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_pct', unit: 'pct', direction: 'DECREASE',
+          evidence_ref: 'other-report:wrong-source',
+        }],
+        observed_at: '2026-10-10T10:00:00.000Z',
+      }, null, null,
+    )).rejects.toThrow('Each KPI evidence_ref must be included in experiment result evidence_refs');
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
 

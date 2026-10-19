@@ -1,4 +1,8 @@
 import {
+  createHash,
+} from 'node:crypto';
+
+import {
   jest,
 } from '@jest/globals';
 
@@ -111,6 +115,42 @@ const aiToolGateway = {
   execute: jest.fn(),
 };
 
+function canonicalizeForHash(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeForHash);
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record).sort().map((key) => [
+        key,
+        canonicalizeForHash(record[key]),
+      ]),
+    );
+  }
+  return value;
+}
+
+function decisionRequestHash(input: {
+  tenantId: string;
+  factoryId: string;
+  traceId: string;
+  actorId: string;
+  objective: string;
+  reasoningMode: string;
+  contextVersion: string | null;
+  riskClass: string | null;
+  outputState: string;
+  metadata: Record<string, unknown>;
+}): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalizeForHash({
+      envelopeVersion: '1.0.0',
+      ...input,
+    })), 'utf8')
+    .digest('hex');
+}
+
 describe(
   'AiRuntimeService',
   () => {
@@ -192,55 +232,176 @@ describe(
     );
 
     it(
-      'returns an existing decision as idempotent replay for the same trace',
+      'returns an idempotent decision only when the canonical envelope fingerprint matches',
       async () => {
-        databaseQueryMock.mockResolvedValueOnce({
-          rows: [
-            {
-              id: decisionId,
-              tenant_id: tenantId,
-              factory_id: factoryId,
-              request_id: requestId,
-              trace_id: traceId,
-              actor_id: userId,
-              objective: 'Existing',
-              reasoning_mode: 'FACT',
-              context_version: 'cbb-2',
-              risk_class: null,
-              output_state: 'ANSWER',
-              metadata: {},
-              created_at: '2026-10-07T00:00:00.000Z',
-              updated_at: '2026-10-07T00:00:00.000Z',
-            },
-          ],
+        const input = {
+          objective: 'Explain order delay',
+          reasoning_mode: 'HYPOTHESIS',
+          context_version: 'cbb-2',
+          output_state: 'ANSWER',
+        };
+        const requestHash = decisionRequestHash({
+          tenantId,
+          factoryId,
+          traceId,
+          actorId: userId,
+          objective: input.objective,
+          reasoningMode: input.reasoning_mode,
+          contextVersion: input.context_version,
+          riskClass: null,
+          outputState: input.output_state,
+          metadata: {},
         });
 
-        const result =
-          await service.createDecision(
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{
+            id: decisionId,
+            tenant_id: tenantId,
+            factory_id: factoryId,
+            request_id: requestId,
+            trace_id: traceId,
+            actor_id: userId,
+            objective: input.objective,
+            reasoning_mode: input.reasoning_mode,
+            context_version: input.context_version,
+            risk_class: null,
+            output_state: input.output_state,
+            metadata: {},
+            envelope_version: '1.0.0',
+            request_hash: requestHash,
+            created_at: '2026-10-07T00:00:00.000Z',
+            updated_at: '2026-10-07T00:00:00.000Z',
+          }],
+        });
+
+        const result = await service.createDecision(
+          tenantId,
+          factoryId,
+          userId,
+          requestId,
+          traceId,
+          input,
+        );
+
+        expect(result.idempotent).toBe(true);
+        expect(result.decision.envelopeVersion).toBe('1.0.0');
+        expect(result.decision.decisionHash).toBe(requestHash);
+        expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
+      'rejects a trace replay when the canonical envelope payload differs',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [{
+            id: decisionId,
+            tenant_id: tenantId,
+            factory_id: factoryId,
+            request_id: requestId,
+            trace_id: traceId,
+            actor_id: userId,
+            objective: 'Existing',
+            reasoning_mode: 'FACT',
+            context_version: 'cbb-2',
+            risk_class: null,
+            output_state: 'ANSWER',
+            metadata: {},
+            envelope_version: '1.0.0',
+            request_hash: 'a'.repeat(64),
+            created_at: '2026-10-07T00:00:00.000Z',
+            updated_at: '2026-10-07T00:00:00.000Z',
+          }],
+        });
+
+        await expect(
+          service.createDecision(
             tenantId,
             factoryId,
             userId,
             requestId,
             traceId,
             {
-              objective:
-                'Different retry body',
-              reasoning_mode:
-                'HYPOTHESIS',
-              output_state:
-                'ANSWER',
+              objective: 'Different retry body',
+              reasoning_mode: 'HYPOTHESIS',
+              output_state: 'ANSWER',
             },
-          );
+          ),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(databaseQueryMock).toHaveBeenCalledTimes(1);
+      },
+    );
 
-        expect(
-          result.idempotent,
-        ).toBe(true);
-        expect(
-          result.decision.objective,
-        ).toBe('Existing');
-        expect(
-          databaseQueryMock,
-        ).toHaveBeenCalledTimes(1);
+    it(
+      'reports missing fingerprints and lifecycle gaps during material replay',
+      async () => {
+        databaseQueryMock
+          .mockResolvedValueOnce({
+            rows: [{
+              id: decisionId,
+              tenant_id: tenantId,
+              factory_id: factoryId,
+              request_id: requestId,
+              trace_id: traceId,
+              actor_id: userId,
+              objective: 'Explain order delay',
+              reasoning_mode: 'FACT',
+              context_version: null,
+              risk_class: null,
+              output_state: 'ANSWER',
+              metadata: {},
+              envelope_version: '1.0.0',
+              request_hash: null,
+              created_at: '2026-10-07T00:00:00.000Z',
+              updated_at: '2026-10-07T00:00:00.000Z',
+            }],
+          })
+          .mockResolvedValueOnce({ rows: [] }) // contexts
+          .mockResolvedValueOnce({ rows: [] }) // verifications
+          .mockResolvedValueOnce({ rows: [] }) // actions
+          .mockResolvedValueOnce({ rows: [] }) // executions
+          .mockResolvedValueOnce({ rows: [] }) // outcomes
+          .mockResolvedValueOnce({ rows: [] }) // learning signals
+          .mockResolvedValueOnce({ rows: [] }) // releases
+          .mockResolvedValueOnce({
+            rows: [{
+              current_state: 'CREATED',
+              version: 1,
+              updated_at: '2026-10-07T00:00:00.000Z',
+            }],
+          })
+          .mockResolvedValueOnce({
+            rows: [{
+              id: '6f1a5555-5555-4555-8555-555555555555',
+              sequence_no: 2,
+              from_state: null,
+              to_state: 'CREATED',
+              transition_reason: 'LEGACY_BACKFILL',
+              context_package_id: null,
+              verification_run_id: null,
+              action_intent_id: null,
+              execution_record_id: null,
+              outcome_id: null,
+              evidence_refs: [],
+              metadata: { legacyBaseline: true },
+              actor_id: userId,
+              occurred_at: '2026-10-07T00:00:00.000Z',
+            }],
+          })
+          .mockResolvedValueOnce({ rows: [] }); // evidence references
+
+        const result = await service.replayDecision(
+          tenantId,
+          factoryId,
+          userId,
+          traceId,
+        );
+
+        expect(result.replay.completeness.status).toBe('PARTIAL');
+        expect(result.replay.completeness.blockers).toContain('CANONICAL_REQUEST_HASH_MISSING');
+        expect(result.replay.completeness.blockers).toContain('LIFECYCLE_LEDGER_INCOMPLETE');
+        expect(result.replay.lifecycle.currentState).toBe('CREATED');
+        expect(result.replayHash).toHaveLength(64);
       },
     );
 

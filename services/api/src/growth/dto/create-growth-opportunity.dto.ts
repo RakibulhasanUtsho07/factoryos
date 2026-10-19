@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize, IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject,
-  IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested,
+  IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength, ValidateNested,
 } from 'class-validator';
 import { CreateOpportunityEvidenceDto } from './create-opportunity-evidence.dto';
 
@@ -31,6 +31,7 @@ export class CreateGrowthOpportunityDto {
   @IsArray()
   @ArrayMinSize(1)
   @IsString({ each: true })
+  @MinLength(5, { each: true })
   @MaxLength(2000, { each: true })
   assumptions!: string[];
 

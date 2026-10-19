@@ -16,9 +16,28 @@ import { CreateGrowthValidationUnknownDto } from './dto/create-growth-validation
 import { DecideGrowthValidationUnknownDto } from './dto/decide-growth-validation-unknown.dto';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
+import { CreateGrowthScenarioSetDto } from './dto/create-growth-scenario-set.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
+import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
+import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
+import { CreateGrowthConstraintDto } from './dto/create-growth-constraint.dto';
+import { CreateGrowthEvidenceGapDto } from './dto/create-growth-evidence-gap.dto';
+import { DecideGrowthEvidenceGapDto } from './dto/decide-growth-evidence-gap.dto';
+import { AssignGrowthDecisionOwnerDto } from './dto/assign-growth-decision-owner.dto';
+import { evaluateGrowthGovernanceReadiness } from './growth-governance';
+import {
+  buildGrowthScenarioPlan,
+  canonicalizeGrowthScenarioInput,
+  GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+} from './growth-scenario-engine';
+import type {
+  GrowthScenarioPlanEntry,
+  GrowthScenarioProfilesInput,
+  GrowthScenarioProfileInput,
+  GrowthScenarioSensitivityAxisInput,
+} from './growth-scenario-engine';
 
 interface OpportunityRow extends QueryResultRow {
   id: string;
@@ -79,8 +98,8 @@ export class GrowthService {
     const currency = (dto.currency ?? 'BDT').trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestException('currency must be a 3-letter currency code');
     if (!Array.isArray(dto.assumptions) || !dto.assumptions.length
-      || dto.assumptions.some(value => !value.trim())) {
-      throw new BadRequestException('Every growth opportunity must state its assumptions');
+      || dto.assumptions.some(value => !value.trim() || value.trim().length < 5)) {
+      throw new BadRequestException('Every growth opportunity assumption must contain at least 5 non-whitespace characters');
     }
     const affectedNodes = [...new Set((dto.affected_business_nodes ?? []).map(id => id.toLowerCase()))];
     if (affectedNodes.length !== (dto.affected_business_nodes ?? []).length) {
@@ -190,6 +209,166 @@ export class GrowthService {
       { tenantId },
     );
     return result.rows;
+  }
+
+  async listScenarioSets(tenantId: string, factoryId: string, opportunityId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const opportunity = await this.database.query<{ id: string }>(
+      'SELECT id::text AS id FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3',
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+
+    const result = await this.database.query<{
+      id: string;
+      set_name: string;
+      set_version: number;
+      expected_scenario_count: number;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      input_hash: string;
+      scenario_count: number;
+      scenario_types: string[];
+      decision_ready: boolean;
+      sensitivity_decision_ready: boolean;
+      created_by: string;
+      created_at: string;
+    }>(
+      `
+      SELECT s.id::text AS id, s.set_name, s.set_version, s.expected_scenario_count, s.model_version,
+        s.data_vintage::text AS data_vintage, s.baseline_source_ref, s.inputs,
+        s.input_hash, s.created_by::text AS created_by, s.created_at::text AS created_at,
+        (SELECT COUNT(*)::int FROM growth_scenario_set_members m
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id) AS scenario_count,
+        COALESCE((SELECT array_agg(DISTINCT m.scenario_type::text ORDER BY m.scenario_type::text)
+          FROM growth_scenario_set_members m
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id),
+          ARRAY[]::text[]) AS scenario_types,
+        COALESCE((SELECT
+            COUNT(DISTINCT m.scenario_type) = 4 AND COALESCE(bool_and(sc.decision_ready), FALSE)
+          FROM growth_scenario_set_members m
+          JOIN growth_scenarios sc ON sc.id = m.scenario_id
+            AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+            AND sc.opportunity_id = m.opportunity_id
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
+            AND m.scenario_type IN ('BASE','UPSIDE','DOWNSIDE','STRESS')), FALSE) AS decision_ready,
+        COALESCE((SELECT bool_and(sc.decision_ready)
+          FROM growth_scenario_set_members m
+          JOIN growth_scenarios sc ON sc.id = m.scenario_id
+            AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+            AND sc.opportunity_id = m.opportunity_id
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
+            AND m.scenario_type = 'CUSTOM'
+          HAVING COUNT(*) > 0), FALSE) AS sensitivity_decision_ready
+      FROM growth_scenario_sets s
+      WHERE s.opportunity_id = $1 AND s.tenant_id = $2 AND s.factory_id = $3
+      ORDER BY s.set_version DESC
+      LIMIT 50
+      `,
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    return result.rows;
+  }
+
+  async getScenarioSet(
+    tenantId: string,
+    factoryId: string,
+    opportunityId: string,
+    scenarioSetId: string,
+  ) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    this.validateUuid(scenarioSetId, 'scenarioSetId');
+    const setResult = await this.database.query<{
+      id: string;
+      set_name: string;
+      set_version: number;
+      expected_scenario_count: number;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      input_hash: string;
+      created_by: string;
+      created_at: string;
+    }>(
+      `
+      SELECT id::text AS id, set_name, set_version, expected_scenario_count, model_version,
+        data_vintage::text AS data_vintage, baseline_source_ref, inputs, input_hash,
+        created_by::text AS created_by, created_at::text AS created_at
+      FROM growth_scenario_sets
+      WHERE id = $1 AND opportunity_id = $2 AND tenant_id = $3 AND factory_id = $4
+      `,
+      [scenarioSetId, opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    const scenarioSet = setResult.rows[0];
+    if (!scenarioSet) throw new NotFoundException('Growth scenario set not found');
+
+    const memberResult = await this.database.query<{
+      scenario_key: string;
+      scenario_type: string;
+      sensitivity_parameter: string | null;
+      sensitivity_value: string | null;
+      position: number;
+      id: string;
+      scenario_name: string;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      output_snapshot: Record<string, unknown>;
+      input_hash: string;
+      decision_ready: boolean;
+      created_at: string;
+    }>(
+      `
+      SELECT m.scenario_key, m.scenario_type, m.sensitivity_parameter,
+        m.sensitivity_value::text AS sensitivity_value, m.position,
+        sc.id::text AS id, sc.scenario_name, sc.model_version,
+        sc.data_vintage::text AS data_vintage, sc.baseline_source_ref,
+        sc.inputs, sc.output_snapshot, sc.input_hash, sc.decision_ready,
+        sc.created_at::text AS created_at
+      FROM growth_scenario_set_members m
+      JOIN growth_scenarios sc ON sc.id = m.scenario_id
+        AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+        AND sc.opportunity_id = m.opportunity_id
+      WHERE m.scenario_set_id = $1 AND m.opportunity_id = $2
+        AND m.tenant_id = $3 AND m.factory_id = $4
+      ORDER BY m.position
+      `,
+      [scenarioSetId, opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    const scenarios = memberResult.rows;
+    const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
+    const presentTypes = requiredTypes.filter(type => scenarios.some(row => row.scenario_type === type));
+    const standardScenarios = scenarios.filter(row => requiredTypes.includes(row.scenario_type));
+    const sensitivityScenarios = scenarios.filter(row => row.scenario_type === 'CUSTOM');
+    return {
+      ...scenarioSet,
+      scenario_count: scenarios.length,
+      decision_ready: presentTypes.length === requiredTypes.length
+        && standardScenarios.length === requiredTypes.length
+        && standardScenarios.every(row => row.decision_ready),
+      sensitivity_decision_ready: sensitivityScenarios.length > 0
+        && sensitivityScenarios.every(row => row.decision_ready),
+      scenario_type_coverage: {
+        required: requiredTypes,
+        present: presentTypes,
+        missing: requiredTypes.filter(type => !presentTypes.includes(type)),
+      },
+      scenarios,
+    };
   }
 
   async compareScenarios(tenantId: string, factoryId: string, opportunityId: string) {
@@ -358,34 +537,94 @@ export class GrowthService {
     );
     const row = opportunity.rows[0];
     if (!row) throw new NotFoundException('Growth opportunity not found');
-    const [evidence, scenarios, experiments, outcomes, unknowns] = await Promise.all([
+    const [evidence, scenarios, experiments, experimentResults, experimentResultKpis, outcomes, outcomeKpis, unknowns] = await Promise.all([
       this.database.query(
         'SELECT id::text AS id, evidence_type, origin_class, research_claim_id::text AS research_claim_id, business_entity_id::text AS business_entity_id, reference_ref, citation_url, description, confidence::text AS confidence, evidence_snapshot, captured_at::text AS captured_at FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY captured_at',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, scenario_name, scenario_type, model_version, data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, decision_ready, created_at::text AS created_at FROM growth_scenarios WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, name, objective, hypothesis, leading_indicators, duration_days, owner_user_id::text AS owner_user_id, baseline_measurements, stop_conditions, status, started_at::text AS started_at, ended_at::text AS ended_at, created_at::text AS created_at FROM growth_experiments WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
-      this.database.query(
+      this.database.query<{
+        id: string; experiment_id: string; assessment: string; stop_condition_triggered: boolean;
+        pre_measurements: Record<string, unknown>; post_measurements: Record<string, unknown>;
+        evidence_refs: string[]; result_notes: string | null; observed_at: string; created_at: string;
+      }>(
+        `SELECT r.id::text AS id, r.experiment_id::text AS experiment_id, r.assessment,
+          r.stop_condition_triggered, r.pre_measurements, r.post_measurements, r.evidence_refs,
+          r.result_notes, r.observed_at::text AS observed_at, r.created_at::text AS created_at
+         FROM growth_experiment_results r
+         JOIN growth_experiments e ON e.id = r.experiment_id AND e.tenant_id = r.tenant_id AND e.factory_id = r.factory_id
+         WHERE e.opportunity_id = $1 AND r.tenant_id = $2 AND r.factory_id = $3
+         ORDER BY r.observed_at DESC`,
+        [opportunityId, tenantId, factoryId], { tenantId },
+      ),
+      this.database.query<{
+        id: string; experiment_result_id: string; metric_key: string; baseline_value: string;
+        actual_value: string; target_value: string | null; unit: string; direction: string;
+        evidence_ref: string; created_at: string;
+      }>(
+        `SELECT id::text AS id, experiment_result_id::text AS experiment_result_id,
+          metric_key, baseline_value::text AS baseline_value, actual_value::text AS actual_value,
+          target_value::text AS target_value, unit, direction, evidence_ref, created_at::text AS created_at
+         FROM growth_experiment_result_kpis
+         WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+         ORDER BY experiment_result_id, metric_key`,
+        [opportunityId, tenantId, factoryId], { tenantId },
+      ),
+      this.database.query<{
+        id: string; experiment_result_id: string | null; assessment: string;
+        realized_metrics: Record<string, unknown>; evidence_refs: string[]; notes: string | null;
+        observed_at: string; created_at: string;
+      }>(
         'SELECT id::text AS id, experiment_result_id::text AS experiment_result_id, assessment, realized_metrics, evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at FROM growth_opportunity_outcomes WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY observed_at DESC',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
+      ),
+      this.database.query<{
+        id: string; outcome_id: string; source_experiment_kpi_id: string | null;
+        metric_key: string; baseline_value: string; actual_value: string; target_value: string | null;
+        unit: string; direction: string; evidence_ref: string; created_at: string;
+      }>(
+        `SELECT id::text AS id, outcome_id::text AS outcome_id,
+          source_experiment_kpi_id::text AS source_experiment_kpi_id, metric_key,
+          baseline_value::text AS baseline_value, actual_value::text AS actual_value,
+          target_value::text AS target_value, unit, direction, evidence_ref, created_at::text AS created_at
+         FROM growth_outcome_kpi_measurements
+         WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+         ORDER BY outcome_id, metric_key`,
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, question, decision_variable, impact_if_wrong::text AS impact_if_wrong, probability_unknown::text AS probability_unknown, validation_effort::text AS validation_effort, priority_score::text AS priority_score, validation_method, owner_user_id::text AS owner_user_id, status, resolution_evidence_ref, resolution_notes, resolved_at::text AS resolved_at, created_at::text AS created_at FROM growth_validation_unknowns WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY CASE WHEN status IN (\'RESOLVED\', \'NOT_MATERIAL\') THEN 1 ELSE 0 END, priority_score DESC, created_at',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
     ]);
-    return { ...row, evidence: evidence.rows, scenarios: scenarios.rows, experiments: experiments.rows, outcomes: outcomes.rows, validation_unknowns: unknowns.rows };
+    const resultsWithKpis = experimentResults.rows.map(result => ({
+      ...result,
+      kpi_measurements: experimentResultKpis.rows.filter(kpi => kpi.experiment_result_id === result.id),
+    }));
+    const outcomesWithKpis = outcomes.rows.map(outcome => ({
+      ...outcome,
+      kpi_measurements: outcomeKpis.rows.filter(kpi => kpi.outcome_id === outcome.id),
+    }));
+    const experimentsWithResults = experiments.rows.map(experiment => ({
+      ...experiment,
+      results: resultsWithKpis.filter(result => result.experiment_id === experiment.id),
+    }));
+    return {
+      ...row,
+      evidence: evidence.rows,
+      scenarios: scenarios.rows,
+      experiments: experimentsWithResults,
+      experiment_results: resultsWithKpis,
+      outcomes: outcomesWithKpis,
+      validation_unknowns: unknowns.rows,
+    };
   }
 
   async createValidationUnknown(
@@ -592,14 +831,113 @@ export class GrowthService {
         );
         if (!current.rows[0]) throw new NotFoundException('Growth opportunity not found');
         if (current.rows[0].status !== 'PROPOSED') throw new ConflictException('Only proposed growth opportunities can be accepted or rejected');
+        const decisionOwner = await client.query<{ id: string; owner_user_id: string }>(
+          `SELECT id::text AS id, owner_user_id::text AS owner_user_id
+             FROM growth_opportunity_decision_owners
+            WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+              AND role_code = 'DECISION_OWNER' AND active_to IS NULL
+            FOR SHARE`,
+          [opportunityId, tenantId, factoryId],
+        );
+        if (!decisionOwner.rows[0]) {
+          throw new ConflictException('Assign a named DECISION_OWNER before making the opportunity decision');
+        }
+        if (decisionOwner.rows[0].owner_user_id !== userId) {
+          throw new ForbiddenException('Only the currently assigned decision owner may accept or reject this opportunity');
+        }
+        let readinessSnapshot: Record<string, unknown> = { readiness_required: false, reason: 'rejected' };
         if (dto.decision === 'ACCEPT') {
-          const evidence = await client.query<{ count: number }>(
-            'SELECT COUNT(*)::int AS count FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
-            [opportunityId, tenantId, factoryId],
+          const gate = await client.query<{ ready: boolean }>(
+            'SELECT factoryos_growth_opportunity_governance_ready($1, $2, $3) AS ready',
+            [tenantId, factoryId, opportunityId],
           );
-          if (!evidence.rows[0] || evidence.rows[0].count < 1) {
-            throw new ConflictException('An opportunity requires visible evidence before acceptance');
+          if (gate.rows[0]?.ready !== true) {
+            throw new ConflictException('Growth governance is incomplete. Review /opportunities/:id/governance for assumptions, constraints, and evidence gaps.');
           }
+          const governanceSnapshot = await client.query<{ snapshot: Record<string, unknown> }>(
+            `SELECT jsonb_build_object(
+               'contract_version', 'growth-opportunity-governance.v1',
+               'decision_owner_assignment_id', $4::text,
+               'decision_owner_user_id', $5::text,
+               'assumptions', COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', a.id::text,
+                   'statement', a.statement,
+                   'rationale', a.rationale,
+                   'risk_if_false', a.risk_if_false,
+                   'confidence_pct', a.confidence_pct::text,
+                   'validation_method', a.validation_method,
+                   'owner_user_id', a.owner_user_id::text,
+                   'blocks_decision', a.blocks_decision,
+                   'latest_decision', last_decision.decision,
+                   'evidence_refs', COALESCE(last_decision.evidence_refs, '[]'::jsonb),
+                   'decided_at', last_decision.decided_at
+                 ) ORDER BY a.created_at, a.id)
+                 FROM growth_opportunity_assumptions a
+                 LEFT JOIN LATERAL (
+                   SELECT d.decision, d.evidence_refs, d.decided_at
+                     FROM growth_opportunity_assumption_decisions d
+                    WHERE d.assumption_id = a.id AND d.tenant_id = a.tenant_id
+                      AND d.factory_id = a.factory_id AND d.opportunity_id = a.opportunity_id
+                    ORDER BY d.decided_at DESC, d.id DESC LIMIT 1
+                 ) last_decision ON TRUE
+                 WHERE a.opportunity_id = $3 AND a.tenant_id = $1 AND a.factory_id = $2
+               ), '[]'::jsonb),
+               'latest_constraints', COALESCE((
+                 SELECT jsonb_agg(to_jsonb(c) ORDER BY c.dimension)
+                   FROM (
+                     SELECT DISTINCT ON (dimension)
+                       id::text AS id, dimension, applicability, constraint_name, limit_operator,
+                       threshold_value::text AS threshold_value, observed_value::text AS observed_value,
+                       unit, source_evidence_ref, source_as_of::text AS source_as_of, rationale
+                       FROM growth_opportunity_constraints
+                      WHERE opportunity_id = $3 AND tenant_id = $1 AND factory_id = $2
+                      ORDER BY dimension, created_at DESC, id DESC
+                   ) c
+               ), '[]'::jsonb),
+               'blocking_evidence_gaps', COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', g.id::text, 'question', g.question, 'required_evidence', g.required_evidence,
+                   'impact', g.impact, 'latest_decision', last_event.decision,
+                   'evidence_refs', COALESCE(last_event.evidence_refs, '[]'::jsonb),
+                   'decision_reason', last_event.reason
+                 ) ORDER BY g.created_at, g.id)
+                   FROM growth_opportunity_evidence_gaps g
+                   LEFT JOIN LATERAL (
+                     SELECT e.decision, e.evidence_refs, e.reason
+                       FROM growth_opportunity_evidence_gap_events e
+                      WHERE e.evidence_gap_id = g.id AND e.tenant_id = g.tenant_id
+                        AND e.factory_id = g.factory_id AND e.opportunity_id = g.opportunity_id
+                      ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+                   ) last_event ON TRUE
+                  WHERE g.opportunity_id = $3 AND g.tenant_id = $1 AND g.factory_id = $2
+                    AND g.blocks_decision
+               ), '[]'::jsonb),
+               'evidence_count', (
+                 SELECT COUNT(*)::int FROM growth_opportunity_evidence
+                  WHERE opportunity_id = $3 AND tenant_id = $1 AND factory_id = $2
+               ),
+               'evidence_items', COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', e.id::text, 'evidence_type', e.evidence_type,
+                   'origin_class', e.origin_class, 'reference_ref', e.reference_ref,
+                   'citation_url', e.citation_url, 'description', e.description,
+                   'confidence', e.confidence::text, 'captured_at', e.captured_at
+                 ) ORDER BY e.captured_at, e.id)
+                   FROM growth_opportunity_evidence e
+                  WHERE e.opportunity_id = $3 AND e.tenant_id = $1 AND e.factory_id = $2
+               ), '[]'::jsonb)
+             ) AS snapshot`,
+            [tenantId, factoryId, opportunityId, decisionOwner.rows[0].id, decisionOwner.rows[0].owner_user_id],
+          );
+          const readinessDetails = governanceSnapshot.rows[0]?.snapshot;
+          if (!readinessDetails) throw new Error('GROWTH_GOVERNANCE_DECISION_SNAPSHOT_FAILED');
+          readinessSnapshot = {
+            readiness_required: true,
+            ready: true,
+            assessed_at: new Date().toISOString(),
+            ...readinessDetails,
+          };
         }
         const updated = await client.query<OpportunityRow>(
           `
@@ -618,6 +956,14 @@ export class GrowthService {
         );
         const result = updated.rows[0];
         if (!result) throw new ConflictException('Opportunity decision lost a concurrent update');
+        await client.query(
+          `INSERT INTO growth_opportunity_decision_history
+             (tenant_id, factory_id, opportunity_id, decision, actor_user_id,
+              owner_assignment_id, reason, readiness_snapshot, request_id, trace_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::uuid,$10::uuid)`,
+          [tenantId, factoryId, opportunityId, dto.decision, userId, decisionOwner.rows[0].id,
+            reason, JSON.stringify(readinessSnapshot), this.uuidOrNull(requestId), this.uuidOrNull(traceId)],
+        );
         await this.insertOutbox(client, {
           tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
           aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_' + next,
@@ -700,16 +1046,19 @@ export class GrowthService {
         );
         const snapshotOutput = { ...output, constraintGate };
         const fullInputs = {
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
           ...inputs,
           projected_constraint_metrics: dto.projected_constraint_metrics ?? null,
           constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
         };
-        inputHash = createHash('sha256').update(JSON.stringify({
-          modelVersion, dataVintage: vintage.toISOString(),
-          baselineSourceRef: dto.baseline_source_ref.trim(),
+        inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+          model_version: modelVersion,
+          data_vintage: vintage.toISOString(),
+          baseline_source_ref: dto.baseline_source_ref.trim(),
           inputs: fullInputs,
-          constraintsSnapshot: opportunity.rows[0].constraints_snapshot ?? {},
-          constraintGate,
+          constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
+          constraint_gate: constraintGate,
         })).digest('hex');
         const inserted = await client.query(
           `
@@ -746,6 +1095,308 @@ export class GrowthService {
       payload: { opportunityId, scenarioType: dto.scenario_type, modelVersion, inputHash, decisionReady: result.decision_ready, constraintGate: (result.output_snapshot as Record<string, unknown>)?.constraintGate },
     });
     return result;
+  }
+
+  async createScenarioSet(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    opportunityId: string,
+    dto: CreateGrowthScenarioSetDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const setName = typeof dto.set_name === 'string' ? dto.set_name.trim() : '';
+    const baselineSourceRef = typeof dto.baseline_source_ref === 'string' ? dto.baseline_source_ref.trim() : '';
+    if (!setName || setName.length > 140) {
+      throw new BadRequestException('set_name must contain 1–140 non-whitespace characters');
+    }
+    if (!baselineSourceRef) throw new BadRequestException('A traceable baseline_source_ref is required');
+    const vintage = new Date(dto.data_vintage);
+    if (!Number.isFinite(vintage.getTime())) throw new BadRequestException('data_vintage must be a valid timestamp');
+    if (vintage.getTime() > Date.now() + 5 * 60 * 1000) {
+      throw new BadRequestException('data_vintage cannot be in the future');
+    }
+    const baseline = {
+      baseline_revenue: dto.baseline?.baseline_revenue,
+      baseline_variable_cost: dto.baseline?.baseline_variable_cost,
+      baseline_fixed_cost: dto.baseline?.baseline_fixed_cost,
+    };
+    if (
+      !Number.isFinite(baseline.baseline_revenue) || baseline.baseline_revenue <= 0
+      || baseline.baseline_revenue > 1_000_000_000_000
+      || !Number.isFinite(baseline.baseline_variable_cost) || baseline.baseline_variable_cost < 0
+      || baseline.baseline_variable_cost > 1_000_000_000_000
+      || !Number.isFinite(baseline.baseline_fixed_cost) || baseline.baseline_fixed_cost < 0
+      || baseline.baseline_fixed_cost > 1_000_000_000_000
+    ) {
+      throw new BadRequestException('Scenario baseline values must be finite and within supported non-negative bounds');
+    }
+
+    let plan: GrowthScenarioPlanEntry[];
+    try {
+      plan = buildGrowthScenarioPlan(
+        dto.profiles as unknown as GrowthScenarioProfilesInput,
+        dto.sensitivity as GrowthScenarioSensitivityAxisInput[],
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'SCENARIO_PLAN_INVALID';
+      throw new BadRequestException(reason);
+    }
+    const modelVersion = 'factoryos.growth.financial-sensitivity.v1';
+    const profileSnapshot = (profile: GrowthScenarioProfileInput) => ({
+      price_change_pct: profile.price_change_pct,
+      volume_change_pct: profile.volume_change_pct,
+      variable_cost_change_pct: profile.variable_cost_change_pct,
+      fixed_cost_change_pct: profile.fixed_cost_change_pct,
+      investment: profile.investment,
+      uncertainty_pct: profile.uncertainty_pct,
+      projected_constraint_metrics: profile.projected_constraint_metrics ?? null,
+    });
+    let inputHash = '';
+
+    const result = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const opportunityResult = await client.query<{
+          status: string;
+          constraints_snapshot: Record<string, unknown> | null;
+        }>(
+          'SELECT status, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+          [opportunityId, tenantId, factoryId],
+        );
+        const opportunity = opportunityResult.rows[0];
+        if (!opportunity) throw new NotFoundException('Growth opportunity not found');
+        if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.status)) {
+          throw new ConflictException('Scenario sets may only be run against accepted or in-progress hypotheses');
+        }
+        const constraintsSnapshot = opportunity.constraints_snapshot ?? {};
+        const evidenceResult = await client.query<{ reference_ref: string | null; citation_url: string | null }>(
+          'SELECT reference_ref, citation_url FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
+          [opportunityId, tenantId, factoryId],
+        );
+        const evidenceReferences = new Set(
+          evidenceResult.rows.flatMap(item => [item.reference_ref, item.citation_url])
+            .filter((ref): ref is string => typeof ref === 'string' && ref.trim().length > 0)
+            .map(ref => ref.trim()),
+        );
+        if (!evidenceReferences.has(baselineSourceRef)) {
+          throw new BadRequestException(
+            'baseline_source_ref must match a reference_ref or citation_url attached to this opportunity',
+          );
+        }
+        const versionResult = await client.query<{ next_version: number | string }>(
+          `SELECT COALESCE(MAX(set_version), 0) + 1 AS next_version
+             FROM growth_scenario_sets
+            WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3`,
+          [tenantId, factoryId, opportunityId],
+        );
+        const setVersion = Number(versionResult.rows[0]?.next_version ?? 1);
+        if (!Number.isInteger(setVersion) || setVersion < 1) {
+          throw new ConflictException('Unable to allocate a monotonic scenario-set version');
+        }
+        const normalizedInputs = {
+          schema_version: 1,
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+          model_version: modelVersion,
+          set_name: setName,
+          baseline,
+          profiles: {
+            base: profileSnapshot(dto.profiles.base as unknown as GrowthScenarioProfileInput),
+            upside: profileSnapshot(dto.profiles.upside as unknown as GrowthScenarioProfileInput),
+            downside: profileSnapshot(dto.profiles.downside as unknown as GrowthScenarioProfileInput),
+            stress: profileSnapshot(dto.profiles.stress as unknown as GrowthScenarioProfileInput),
+          },
+          sensitivity: dto.sensitivity.map(axis => ({
+            parameter: axis.parameter,
+            low_value: axis.low_value,
+            high_value: axis.high_value,
+            points: axis.points,
+            projected_constraint_metrics: axis.projected_constraint_metrics ?? null,
+          })),
+          constraints_snapshot: constraintsSnapshot,
+        };
+        inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+          data_vintage: vintage.toISOString(),
+          baseline_source_ref: baselineSourceRef,
+          inputs: normalizedInputs,
+        })).digest('hex');
+
+        const setInsert = await client.query<{
+          id: string;
+          set_name: string;
+          set_version: number;
+          model_version: string;
+          data_vintage: string;
+          baseline_source_ref: string;
+          inputs: Record<string, unknown>;
+          input_hash: string;
+          created_by: string;
+          created_at: string;
+        }>(
+          `
+          INSERT INTO growth_scenario_sets (
+            tenant_id, factory_id, opportunity_id, set_name, set_version,
+            expected_scenario_count, model_version, data_vintage, baseline_source_ref,
+            inputs, input_hash, created_by
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10::jsonb, $11, $12)
+          RETURNING id::text AS id, set_name, set_version, expected_scenario_count, model_version,
+            data_vintage::text AS data_vintage, baseline_source_ref, inputs, input_hash,
+            created_by::text AS created_by, created_at::text AS created_at
+          `,
+          [
+            tenantId, factoryId, opportunityId, setName, setVersion, plan.length, modelVersion,
+            vintage.toISOString(), baselineSourceRef, JSON.stringify(normalizedInputs), inputHash, userId,
+          ],
+        );
+        const scenarioSet = setInsert.rows[0];
+        if (!scenarioSet) throw new Error('GROWTH_SCENARIO_SET_INSERT_FAILED');
+        const createdScenarios: Array<Record<string, unknown>> = [];
+
+        for (const entry of plan) {
+          const profile = entry.profile;
+          const financialInputs = {
+            ...baseline,
+            price_change_pct: profile.price_change_pct,
+            volume_change_pct: profile.volume_change_pct,
+            variable_cost_change_pct: profile.variable_cost_change_pct,
+            fixed_cost_change_pct: profile.fixed_cost_change_pct,
+            investment: profile.investment,
+            uncertainty_pct: profile.uncertainty_pct,
+          };
+          const constraintGate = this.evaluateConstraintGate(
+            constraintsSnapshot,
+            profile.projected_constraint_metrics as unknown as Record<string, unknown> | undefined,
+            evidenceReferences,
+          );
+          const outputSnapshot = { ...this.runSensitivityModel(financialInputs), constraintGate };
+          const fullInputs = {
+            canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+            ...financialInputs,
+            projected_constraint_metrics: profile.projected_constraint_metrics ?? null,
+            constraints_snapshot: constraintsSnapshot,
+            scenario_set: { id: scenarioSet.id, version: setVersion, input_hash: inputHash },
+            sensitivity: entry.sensitivity_parameter
+              ? { parameter: entry.sensitivity_parameter, value: entry.sensitivity_value }
+              : null,
+          };
+          const scenarioInputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+            canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+            model_version: modelVersion,
+            scenario_key: entry.scenario_key,
+            data_vintage: vintage.toISOString(),
+            baseline_source_ref: baselineSourceRef,
+            inputs: fullInputs,
+            output_snapshot: outputSnapshot,
+          })).digest('hex');
+          const scenarioInsert = await client.query<{
+            id: string;
+            scenario_name: string;
+            scenario_type: string;
+            model_version: string;
+            data_vintage: string;
+            baseline_source_ref: string;
+            inputs: Record<string, unknown>;
+            output_snapshot: Record<string, unknown>;
+            input_hash: string;
+            decision_ready: boolean;
+            created_at: string;
+          }>(
+            `
+            INSERT INTO growth_scenarios (
+              tenant_id, factory_id, opportunity_id, scenario_name, scenario_type,
+              model_version, data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9::jsonb, $10::jsonb, $11, $12)
+            RETURNING id::text AS id, scenario_name, scenario_type, model_version,
+              data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot,
+              input_hash, decision_ready, created_at::text AS created_at
+            `,
+            [
+              tenantId, factoryId, opportunityId, `${entry.display_name} (set v${setVersion})`,
+              entry.scenario_type, modelVersion, vintage.toISOString(), baselineSourceRef,
+              JSON.stringify(fullInputs), JSON.stringify(outputSnapshot), scenarioInputHash, userId,
+            ],
+          );
+          const scenario = scenarioInsert.rows[0];
+          if (!scenario) throw new Error('GROWTH_SCENARIO_SET_MEMBER_INSERT_FAILED');
+          await client.query(
+            `
+            INSERT INTO growth_scenario_set_members (
+              tenant_id, factory_id, opportunity_id, scenario_set_id, scenario_id,
+              scenario_key, scenario_type, sensitivity_parameter, sensitivity_value, position
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `,
+            [
+              tenantId, factoryId, opportunityId, scenarioSet.id, scenario.id,
+              entry.scenario_key, entry.scenario_type, entry.sensitivity_parameter,
+              entry.sensitivity_value, entry.position,
+            ],
+          );
+          createdScenarios.push({
+            ...scenario,
+            scenario_key: entry.scenario_key,
+            position: entry.position,
+            sensitivity_parameter: entry.sensitivity_parameter,
+            sensitivity_value: entry.sensitivity_value,
+          });
+        }
+
+        await this.insertOutbox(client, {
+          tenantId, factoryId, userId, aggregateType: 'GROWTH_SCENARIO_SET',
+          aggregateId: scenarioSet.id, eventType: 'GROWTH.SCENARIO_SET_CREATED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            scenario_set_id: scenarioSet.id, opportunity_id: opportunityId,
+            set_version: setVersion, input_hash: inputHash, scenario_count: createdScenarios.length,
+          },
+        });
+        return { scenarioSet, scenarios: createdScenarios };
+      },
+    );
+
+    const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
+    const presentTypes = requiredTypes.filter(type =>
+      result.scenarios.some(scenario => scenario.scenario_type === type),
+    );
+    const standardScenarios = result.scenarios.filter(scenario =>
+      requiredTypes.includes(String(scenario.scenario_type)),
+    );
+    const sensitivityScenarios = result.scenarios.filter(scenario => scenario.scenario_type === 'CUSTOM');
+    const standardDecisionReady = presentTypes.length === requiredTypes.length
+      && standardScenarios.length === requiredTypes.length
+      && standardScenarios.every(scenario => scenario.decision_ready === true);
+    const sensitivityDecisionReady = sensitivityScenarios.length > 0
+      && sensitivityScenarios.every(scenario => scenario.decision_ready === true);
+
+    await this.auditSafely({
+      tenantId, factoryId, userId, action: 'SCENARIO_SET_RUN',
+      resourceId: result.scenarioSet.id, requestId, traceId,
+      payload: {
+        opportunityId, setVersion: result.scenarioSet.set_version,
+        inputHash: result.scenarioSet.input_hash, scenarioCount: result.scenarios.length,
+        modelVersion, decisionReady: standardDecisionReady,
+        sensitivityDecisionReady,
+        missingStandardScenarioTypes: requiredTypes.filter(type => !presentTypes.includes(type)),
+      },
+    });
+    return {
+      ...result.scenarioSet,
+      scenario_count: result.scenarios.length,
+      decision_ready: standardDecisionReady,
+      sensitivity_decision_ready: sensitivityDecisionReady,
+      scenario_type_coverage: {
+        required: requiredTypes,
+        present: presentTypes,
+        missing: requiredTypes.filter(type => !presentTypes.includes(type)),
+      },
+      scenarios: result.scenarios,
+    };
   }
 
   async createExperiment(
@@ -856,203 +1507,240 @@ export class GrowthService {
   }
 
   async recordExperimentResult(
-    userId: string,
-    tenantId: string,
-    factoryId: string,
-    experimentId: string,
-    dto: RecordGrowthExperimentResultDto,
-    requestId: string | null,
-    traceId: string | null,
+    userId: string, tenantId: string, factoryId: string, experimentId: string,
+    dto: RecordGrowthExperimentResultDto, requestId: string | null, traceId: string | null,
   ) {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(experimentId, 'experimentId');
-    if (!dto.evidence_refs.length) throw new BadRequestException('Experiment outcomes require evidence references');
+    if (!Array.isArray(dto.evidence_refs) || !dto.evidence_refs.length) throw new BadRequestException('Experiment outcomes require evidence references');
+    const evidenceRefs = dto.evidence_refs.map(value => typeof value === 'string' ? value.trim() : '');
+    if (evidenceRefs.some(value => !value) || new Set(evidenceRefs).size !== evidenceRefs.length) throw new BadRequestException('Experiment evidence references must be non-empty and unique');
+    if (!dto.pre_measurements || typeof dto.pre_measurements !== 'object' || Array.isArray(dto.pre_measurements)
+      || !dto.post_measurements || typeof dto.post_measurements !== 'object' || Array.isArray(dto.post_measurements)) throw new BadRequestException('Experiment pre/post measurements must be JSON objects');
+    if (!Array.isArray(dto.kpi_measurements) || dto.kpi_measurements.length < 1 || dto.kpi_measurements.length > 100) throw new BadRequestException('Experiment results require 1–100 explicit KPI measurements');
+    const keys = new Set<string>();
+    const kpis = dto.kpi_measurements.map(item => {
+      const metricKey = typeof item.metric_key === 'string' ? item.metric_key.trim() : '';
+      if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey) || keys.has(metricKey)) throw new BadRequestException('KPI metric keys must be unique lowercase identifiers');
+      keys.add(metricKey);
+      const unit = typeof item.unit === 'string' ? item.unit.trim() : '';
+      if (!unit || unit.length > 40) throw new BadRequestException('Every KPI requires a unit');
+      if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('KPI direction must be INCREASE, DECREASE or TARGET');
+      const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
+      if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in experiment result evidence_refs');
+      const baselineValue = dto.pre_measurements[metricKey], actualValue = dto.post_measurements[metricKey];
+      if (typeof baselineValue !== 'number' || !Number.isFinite(baselineValue) || Math.abs(baselineValue) > 1e12
+        || typeof actualValue !== 'number' || !Number.isFinite(actualValue) || Math.abs(actualValue) > 1e12) throw new BadRequestException('Each KPI metric_key must identify finite numeric values in both pre_measurements and post_measurements');
+      const targetValue = item.target_value ?? null;
+      if (targetValue !== null && (!Number.isFinite(targetValue) || Math.abs(targetValue) > 1e12)) throw new BadRequestException('KPI target_value must be finite and within supported numeric bounds');
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+    });
     const observedAt = new Date(dto.observed_at);
     if (!Number.isFinite(observedAt.getTime())) throw new BadRequestException('observed_at must be a valid timestamp');
-    const result = await this.database.transaction(
-      { tenantId, userId },
-      async client => {
-        const current = await client.query<{ id: string; opportunity_id: string; status: string }>(
-          'SELECT id::text AS id, opportunity_id::text AS opportunity_id, status FROM growth_experiments WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
-          [experimentId, tenantId, factoryId],
+
+    const result = await this.database.transaction({ tenantId, userId }, async client => {
+      const current = await client.query<{ id: string; opportunity_id: string; status: string }>(
+        'SELECT id::text AS id, opportunity_id::text AS opportunity_id, status FROM growth_experiments WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [experimentId, tenantId, factoryId],
+      );
+      const experiment = current.rows[0];
+      if (!experiment) throw new NotFoundException('Growth experiment not found');
+      if (experiment.status !== 'RUNNING') throw new ConflictException('Experiment results can only be recorded while the experiment is running');
+      const inserted = await client.query(
+        `INSERT INTO growth_experiment_results (
+          tenant_id, factory_id, experiment_id, pre_measurements, post_measurements,
+          assessment, stop_condition_triggered, result_notes, evidence_refs, observed_at, recorded_by
+        ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10::timestamptz, $11)
+        RETURNING id::text AS id, experiment_id::text AS experiment_id, assessment,
+          stop_condition_triggered, pre_measurements, post_measurements, evidence_refs,
+          observed_at::text AS observed_at, created_at::text AS created_at`,
+        [tenantId, factoryId, experimentId, JSON.stringify(dto.pre_measurements), JSON.stringify(dto.post_measurements),
+          dto.assessment, dto.stop_condition_triggered, dto.result_notes?.trim() || null,
+          JSON.stringify(evidenceRefs), observedAt.toISOString(), userId],
+      );
+      const insertedRow = inserted.rows[0];
+      if (!insertedRow) throw new Error('GROWTH_EXPERIMENT_RESULT_INSERT_FAILED');
+      const savedKpis: Array<Record<string, unknown>> = [];
+      for (const kpi of kpis) {
+        const saved = await client.query(
+          `INSERT INTO growth_experiment_result_kpis (
+            tenant_id, factory_id, opportunity_id, experiment_id, experiment_result_id,
+            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
+            actual_value::text AS actual_value, target_value::text AS target_value,
+            unit, direction, evidence_ref, created_at::text AS created_at`,
+          [tenantId, factoryId, experiment.opportunity_id, experimentId, insertedRow.id, kpi.metricKey,
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
         );
-        const experiment = current.rows[0];
-        if (!experiment) throw new NotFoundException('Growth experiment not found');
-        if (experiment.status !== 'RUNNING') throw new ConflictException('Experiment results can only be recorded while the experiment is running');
-        const inserted = await client.query(
-          `
-          INSERT INTO growth_experiment_results (
-            tenant_id, factory_id, experiment_id, pre_measurements, post_measurements,
-            assessment, stop_condition_triggered, result_notes, evidence_refs,
-            observed_at, recorded_by
-          )
-          VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10::timestamptz, $11)
-          RETURNING id::text AS id, experiment_id::text AS experiment_id, assessment,
-            stop_condition_triggered, pre_measurements, post_measurements, evidence_refs,
-            observed_at::text AS observed_at, created_at::text AS created_at
-          `,
-          [
-            tenantId, factoryId, experimentId, JSON.stringify(dto.pre_measurements),
-            JSON.stringify(dto.post_measurements), dto.assessment, dto.stop_condition_triggered,
-            dto.result_notes?.trim() || null, JSON.stringify(dto.evidence_refs.map(v => v.trim())),
-            observedAt.toISOString(), userId,
-          ],
-        );
-        const insertedRow = inserted.rows[0];
-        if (!insertedRow) throw new Error('GROWTH_EXPERIMENT_RESULT_INSERT_FAILED');
-        const nextStatus = dto.stop_condition_triggered ? 'STOPPED' : 'COMPLETED';
-        await client.query(
-          'UPDATE growth_experiments SET status = $1, ended_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
-          [nextStatus, experimentId, tenantId, factoryId, 'RUNNING'],
-        );
-        await this.insertOutbox(client, {
-          tenantId, factoryId, userId, aggregateType: 'GROWTH_EXPERIMENT_RESULT',
-          aggregateId: insertedRow.id, eventType: 'GROWTH.EXPERIMENT_RESULT_RECORDED',
-          correlationId: this.correlationId(requestId, traceId),
-          payload: { result_id: insertedRow.id, experiment_id: experimentId, status: nextStatus, assessment: dto.assessment },
-        });
-        return { ...insertedRow, experiment_status: nextStatus, opportunity_id: experiment.opportunity_id };
-      },
-    );
+        if (!saved.rows[0]) throw new Error('GROWTH_EXPERIMENT_KPI_INSERT_FAILED');
+        savedKpis.push(saved.rows[0]);
+      }
+      const nextStatus = dto.stop_condition_triggered ? 'STOPPED' : 'COMPLETED';
+      await client.query(
+        'UPDATE growth_experiments SET status = $1, ended_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
+        [nextStatus, experimentId, tenantId, factoryId, 'RUNNING'],
+      );
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_EXPERIMENT_RESULT',
+        aggregateId: insertedRow.id, eventType: 'GROWTH.EXPERIMENT_RESULT_RECORDED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { result_id: insertedRow.id, experiment_id: experimentId, status: nextStatus,
+          assessment: dto.assessment, kpi_keys: kpis.map(item => item.metricKey), evidence_ref_count: evidenceRefs.length },
+      });
+      return { ...insertedRow, kpi_measurements: savedKpis, experiment_status: nextStatus, opportunity_id: experiment.opportunity_id };
+    });
     await this.auditSafely({
-      tenantId, factoryId, userId, action: 'EXPERIMENT_RESULT',
-      resourceId: result.id, requestId, traceId,
-      payload: { experimentId, assessment: dto.assessment, stopConditionTriggered: dto.stop_condition_triggered },
+      tenantId, factoryId, userId, action: 'EXPERIMENT_RESULT', resourceId: result.id, requestId, traceId,
+      payload: { experimentId, assessment: dto.assessment, stopConditionTriggered: dto.stop_condition_triggered, kpiKeys: kpis.map(item => item.metricKey) },
     });
     return result;
   }
 
   async recordOpportunityOutcome(
-    userId: string,
-    tenantId: string,
-    factoryId: string,
-    opportunityId: string,
-    dto: RecordGrowthOpportunityOutcomeDto,
-    requestId: string | null,
-    traceId: string | null,
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: RecordGrowthOpportunityOutcomeDto, requestId: string | null, traceId: string | null,
   ) {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
     const observedAt = new Date(dto.observed_at);
     if (!Number.isFinite(observedAt.getTime())) throw new BadRequestException('observed_at must be a valid timestamp');
-    if (!dto.evidence_refs.length) throw new BadRequestException('Realized outcomes require evidence references');
+    if (!Array.isArray(dto.evidence_refs) || !dto.evidence_refs.length) throw new BadRequestException('Realized outcomes require evidence references');
+    const evidenceRefs = dto.evidence_refs.map(value => typeof value === 'string' ? value.trim() : '');
+    if (evidenceRefs.some(value => !value) || new Set(evidenceRefs).size !== evidenceRefs.length) throw new BadRequestException('Outcome evidence references must be non-empty and unique');
+    if (!dto.realized_metrics || typeof dto.realized_metrics !== 'object' || Array.isArray(dto.realized_metrics)) throw new BadRequestException('realized_metrics must be a JSON object');
+    if (!Array.isArray(dto.kpi_measurements) || dto.kpi_measurements.length < 1 || dto.kpi_measurements.length > 100) throw new BadRequestException('Realized outcomes require 1–100 explicit KPI measurements');
+    const keys = new Set<string>();
+    const kpis = dto.kpi_measurements.map(item => {
+      const metricKey = typeof item.metric_key === 'string' ? item.metric_key.trim() : '';
+      if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey) || keys.has(metricKey)) throw new BadRequestException('Outcome KPI metric keys must be unique lowercase identifiers');
+      keys.add(metricKey);
+      const unit = typeof item.unit === 'string' ? item.unit.trim() : '';
+      if (!unit || unit.length > 40) throw new BadRequestException('Every realized KPI requires a unit');
+      if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('Invalid KPI direction');
+      const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
+      if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in outcome evidence_refs');
+      const baselineValue = item.baseline_value, actualValue = item.actual_value, targetValue = item.target_value ?? null;
+      if (![baselineValue, actualValue, ...(targetValue === null ? [] : [targetValue])].every(value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12)) {
+        throw new BadRequestException('KPI baseline, actual and target values must be finite and within supported numeric bounds');
+      }
+      if (typeof dto.realized_metrics[metricKey] !== 'number' || !Number.isFinite(dto.realized_metrics[metricKey] as number)
+        || dto.realized_metrics[metricKey] !== actualValue) throw new BadRequestException('Each KPI actual_value must match realized_metrics at the same metric_key');
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+    });
 
-    const outcome = await this.database.transaction(
-      { tenantId, userId },
-      async client => {
-        const opportunity = await client.query<{ id: string; status: string }>(
-          'SELECT id::text AS id, status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
-          [opportunityId, tenantId, factoryId],
+    const outcome = await this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ id: string; status: string }>(
+        'SELECT id::text AS id, status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [opportunityId, tenantId, factoryId],
+      );
+      const op = opportunity.rows[0];
+      if (!op) throw new NotFoundException('Growth opportunity not found');
+      if (!['ACCEPTED', 'IN_PROGRESS', 'REALIZED'].includes(op.status)) throw new ConflictException('Outcomes require an accepted or in-progress opportunity');
+      const sourceKpis = new Map<string, Record<string, unknown>>();
+      if (dto.experiment_result_id) {
+        const sourceResult = await client.query<{ id: string }>(
+          `SELECT r.id::text AS id FROM growth_experiment_results r
+           JOIN growth_experiments e ON e.id = r.experiment_id AND e.tenant_id = r.tenant_id AND e.factory_id = r.factory_id
+           WHERE r.id = $1 AND e.opportunity_id = $2 AND r.tenant_id = $3 AND r.factory_id = $4`,
+          [dto.experiment_result_id, opportunityId, tenantId, factoryId],
         );
-        const op = opportunity.rows[0];
-        if (!op) throw new NotFoundException('Growth opportunity not found');
-        if (!['ACCEPTED', 'IN_PROGRESS', 'REALIZED'].includes(op.status)) {
-          throw new ConflictException('Outcomes require an accepted or in-progress opportunity');
-        }
-        if (dto.experiment_result_id) {
-          const experimentResult = await client.query<{ id: string }>(
-            `
-            SELECT r.id::text AS id
-            FROM growth_experiment_results r
-            JOIN growth_experiments e
-              ON e.id = r.experiment_id AND e.tenant_id = r.tenant_id AND e.factory_id = r.factory_id
-            WHERE r.id = $1 AND e.opportunity_id = $2
-              AND r.tenant_id = $3 AND r.factory_id = $4
-            `,
-            [dto.experiment_result_id, opportunityId, tenantId, factoryId],
-          );
-          if (!experimentResult.rows[0]) throw new BadRequestException('Experiment result must belong to this opportunity');
-          const existingOutcome = await client.query<{ id: string }>(
-            'SELECT id::text AS id FROM growth_opportunity_outcomes WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1',
-            [dto.experiment_result_id, tenantId, factoryId],
-          );
-          if (existingOutcome.rows[0]) {
-            throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
+        if (!sourceResult.rows[0]) throw new BadRequestException('Experiment result must belong to this opportunity');
+        const existing = await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM growth_opportunity_outcomes WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1',
+          [dto.experiment_result_id, tenantId, factoryId],
+        );
+        if (existing.rows[0]) throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
+        const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null }>(
+          `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value
+           FROM growth_experiment_result_kpis
+           WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 AND opportunity_id = $4
+           ORDER BY metric_key`,
+          [dto.experiment_result_id, tenantId, factoryId, opportunityId],
+        );
+        if (!sourceRows.rows.length) throw new ConflictException('The experiment result has no normalized KPI measurements to link');
+        if (sourceRows.rows.length !== kpis.length) throw new BadRequestException('A realized outcome linked to an experiment must carry every KPI from that result');
+        for (const sourceKpi of sourceRows.rows) {
+          const input = kpis.find(item => item.metricKey === sourceKpi.metric_key);
+          if (!input || input.unit !== sourceKpi.unit || input.direction !== sourceKpi.direction
+            || input.baselineValue !== Number(sourceKpi.baseline_value)
+            || input.targetValue !== (sourceKpi.target_value === null ? null : Number(sourceKpi.target_value))) {
+            throw new BadRequestException('Outcome KPI key, unit, baseline, target and direction must match its linked experiment result');
           }
+          sourceKpis.set(sourceKpi.metric_key, sourceKpi);
         }
-        const inserted = await client.query(
-          `
-          INSERT INTO growth_opportunity_outcomes (
-            tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
-            realized_metrics, evidence_refs, notes, observed_at, recorded_by
-          )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::timestamptz, $10)
-          RETURNING id::text AS id, opportunity_id::text AS opportunity_id,
-            experiment_result_id::text AS experiment_result_id, assessment, realized_metrics,
-            evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at
-          `,
-          [
-            tenantId, factoryId, opportunityId, dto.experiment_result_id ?? null, dto.assessment,
-            JSON.stringify(dto.realized_metrics), JSON.stringify(dto.evidence_refs.map(v => v.trim())),
-            dto.notes?.trim() || null, observedAt.toISOString(), userId,
-          ],
-        );
-        const result = inserted.rows[0];
-        if (!result) throw new Error('GROWTH_OPPORTUNITY_OUTCOME_INSERT_FAILED');
-        if (op.status === 'ACCEPTED') {
-          await client.query(
-            'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
-            ['IN_PROGRESS', opportunityId, tenantId, factoryId, 'ACCEPTED'],
-          );
-        }
-        if (op.status !== 'REALIZED') {
-          await client.query(
-            'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
-            ['REALIZED', opportunityId, tenantId, factoryId, 'IN_PROGRESS'],
-          );
-        }
-        const signal = await client.query<{ id: string }>(
-          `
-          INSERT INTO ai_learning_signals (
-            tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
-            source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
-          )
-          VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT', $4, $5, 'FACTORY', $6::jsonb, $7)
-          RETURNING id::text AS id
-          `,
-          [
-            tenantId, factoryId, result.id, 'Growth outcome recorded: ' + dto.assessment,
-            dto.confidence ?? 0.5,
-            JSON.stringify({
-              source: 'GROWTH_OUTCOME',
-              opportunityId,
-              experimentResultId: dto.experiment_result_id ?? null,
-              assessment: dto.assessment,
-              realizedMetrics: dto.realized_metrics,
-              evidenceRefs: dto.evidence_refs.map(v => v.trim()),
-              observedAt: observedAt.toISOString(),
-              confidenceMeaning: 'Confidence recorded by the outcome submitter; not a calibrated probability of causal effect.',
-            }),
-            userId,
-          ],
-        );
-        const learningSignal = signal.rows[0];
-        if (!learningSignal) throw new Error('GROWTH_OUTCOME_LEARNING_SIGNAL_INSERT_FAILED');
+      }
 
-        await this.insertOutbox(client, {
-          tenantId, factoryId, userId, aggregateType: 'GROWTH_OUTCOME',
-          aggregateId: result.id, eventType: 'GROWTH.OPPORTUNITY_OUTCOME_RECORDED',
-          correlationId: this.correlationId(requestId, traceId),
-          payload: {
-            outcome_id: result.id, opportunity_id: opportunityId, assessment: dto.assessment,
-            learning_signal_id: learningSignal.id,
-          },
-        });
-        await this.insertOutbox(client, {
-          tenantId, factoryId, userId, aggregateType: 'AI_LEARNING_SIGNAL',
-          aggregateId: learningSignal.id, eventType: 'AI.LEARNING_SIGNAL_RECORDED',
-          correlationId: this.correlationId(requestId, traceId),
-          payload: {
-            signal_id: learningSignal.id, source_growth_outcome_id: result.id,
-            tenant_scope: 'FACTORY', signal_type: 'GROWTH_OUTCOME_ASSESSMENT',
-          },
-        });
-        return { ...result, learning_signal_id: learningSignal.id };
-      },
-    );
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_outcomes (
+          tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
+          realized_metrics, evidence_refs, notes, observed_at, recorded_by
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::timestamptz, $10)
+        RETURNING id::text AS id, opportunity_id::text AS opportunity_id,
+          experiment_result_id::text AS experiment_result_id, assessment, realized_metrics,
+          evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at`,
+        [tenantId, factoryId, opportunityId, dto.experiment_result_id ?? null, dto.assessment,
+          JSON.stringify(dto.realized_metrics), JSON.stringify(evidenceRefs), dto.notes?.trim() || null, observedAt.toISOString(), userId],
+      );
+      const result = inserted.rows[0];
+      if (!result) throw new Error('GROWTH_OPPORTUNITY_OUTCOME_INSERT_FAILED');
+      const savedKpis: Array<Record<string, unknown>> = [];
+      for (const kpi of kpis) {
+        const sourceKpi = sourceKpis.get(kpi.metricKey);
+        const saved = await client.query(
+          `INSERT INTO growth_outcome_kpi_measurements (
+            tenant_id, factory_id, opportunity_id, outcome_id, source_experiment_kpi_id,
+            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
+            actual_value::text AS actual_value, target_value::text AS target_value,
+            unit, direction, evidence_ref, source_experiment_kpi_id::text AS source_experiment_kpi_id,
+            created_at::text AS created_at`,
+          [tenantId, factoryId, opportunityId, result.id, sourceKpi?.id ?? null, kpi.metricKey,
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
+        );
+        if (!saved.rows[0]) throw new Error('GROWTH_OUTCOME_KPI_INSERT_FAILED');
+        savedKpis.push(saved.rows[0]);
+      }
+      if (op.status === 'ACCEPTED') await client.query(
+        'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
+        ['IN_PROGRESS', opportunityId, tenantId, factoryId, 'ACCEPTED'],
+      );
+      if (op.status !== 'REALIZED') await client.query(
+        'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
+        ['REALIZED', opportunityId, tenantId, factoryId, 'IN_PROGRESS'],
+      );
+      const signal = await client.query<{ id: string }>(
+        `INSERT INTO ai_learning_signals (
+          tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
+          source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
+        ) VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT', $4, $5, 'FACTORY', $6::jsonb, $7)
+        RETURNING id::text AS id`,
+        [tenantId, factoryId, result.id, 'Growth outcome recorded: ' + dto.assessment, dto.confidence ?? 0.5,
+          JSON.stringify({ source: 'GROWTH_OUTCOME', opportunityId, experimentResultId: dto.experiment_result_id ?? null,
+            assessment: dto.assessment, realizedMetrics: dto.realized_metrics, kpiMeasurements: savedKpis,
+            evidenceRefs, observedAt: observedAt.toISOString(),
+            confidenceMeaning: 'Confidence recorded by the outcome submitter; not a calibrated probability of causal effect.' }), userId],
+      );
+      const learningSignal = signal.rows[0];
+      if (!learningSignal) throw new Error('GROWTH_OUTCOME_LEARNING_SIGNAL_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OUTCOME', aggregateId: result.id,
+        eventType: 'GROWTH.OPPORTUNITY_OUTCOME_RECORDED', correlationId: this.correlationId(requestId, traceId),
+        payload: { outcome_id: result.id, opportunity_id: opportunityId, assessment: dto.assessment,
+          learning_signal_id: learningSignal.id, kpi_count: savedKpis.length, experiment_result_id: dto.experiment_result_id ?? null },
+      });
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'AI_LEARNING_SIGNAL', aggregateId: learningSignal.id,
+        eventType: 'AI.LEARNING_SIGNAL_RECORDED', correlationId: this.correlationId(requestId, traceId),
+        payload: { signal_id: learningSignal.id, source_growth_outcome_id: result.id,
+          tenant_scope: 'FACTORY', signal_type: 'GROWTH_OUTCOME_ASSESSMENT' },
+      });
+      return { ...result, kpi_measurements: savedKpis, learning_signal_id: learningSignal.id };
+    });
     await this.auditSafely({
-      tenantId, factoryId, userId, action: 'OPPORTUNITY_OUTCOME',
-      resourceId: outcome.id, requestId, traceId, payload: { opportunityId, assessment: dto.assessment },
+      tenantId, factoryId, userId, action: 'OPPORTUNITY_OUTCOME', resourceId: outcome.id, requestId, traceId,
+      payload: { opportunityId, assessment: dto.assessment, experimentResultId: dto.experiment_result_id ?? null, kpiKeys: kpis.map(item => item.metricKey) },
     });
     return outcome;
   }
@@ -1410,6 +2098,457 @@ export class GrowthService {
     }
   }
 
+
+  async getOpportunityGovernance(tenantId: string, factoryId: string, opportunityId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const scoped = await this.database.query<{ id: string; created_by: string }>(
+      'SELECT id::text AS id, created_by::text AS created_by FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3',
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    if (!scoped.rows[0]) throw new NotFoundException('Growth opportunity not found');
+
+    const [assumptions, constraints, evidenceGaps, owners, evidence] = await Promise.all([
+      this.database.query(
+        `SELECT a.id::text AS id, a.statement, a.rationale, a.risk_if_false,
+                a.confidence_pct::text AS confidence_pct, a.validation_method,
+                a.initial_evidence_refs, a.owner_user_id::text AS owner_user_id,
+                a.blocks_decision, a.created_by::text AS created_by, a.created_at::text AS created_at,
+                last_decision.decision AS latest_decision,
+                COALESCE(last_decision.evidence_refs, '[]'::jsonb) AS evidence_refs,
+                last_decision.reason AS decision_reason,
+                last_decision.decided_by::text AS decision_owner_user_id,
+                last_decision.decided_at::text AS decided_at
+           FROM growth_opportunity_assumptions a
+           LEFT JOIN LATERAL (
+             SELECT d.decision, d.evidence_refs, d.reason, d.decided_by, d.decided_at
+               FROM growth_opportunity_assumption_decisions d
+              WHERE d.assumption_id = a.id AND d.tenant_id = a.tenant_id
+                AND d.factory_id = a.factory_id AND d.opportunity_id = a.opportunity_id
+              ORDER BY d.decided_at DESC, d.id DESC LIMIT 1
+           ) last_decision ON TRUE
+          WHERE a.opportunity_id = $1 AND a.tenant_id = $2 AND a.factory_id = $3
+          ORDER BY a.created_at, a.id`,
+        [opportunityId, tenantId, factoryId],
+        { tenantId },
+      ),
+      this.database.query(
+        `SELECT DISTINCT ON (c.dimension)
+                c.id::text AS id, c.dimension, c.applicability, c.constraint_name,
+                c.limit_operator, c.threshold_value::text AS threshold_value,
+                c.observed_value::text AS observed_value, c.unit, c.source_evidence_ref,
+                c.source_as_of::text AS source_as_of, c.rationale,
+                c.owner_user_id::text AS owner_user_id, c.created_by::text AS created_by,
+                c.created_at::text AS created_at
+           FROM growth_opportunity_constraints c
+          WHERE c.opportunity_id = $1 AND c.tenant_id = $2 AND c.factory_id = $3
+          ORDER BY c.dimension, c.created_at DESC, c.id DESC`,
+        [opportunityId, tenantId, factoryId],
+        { tenantId },
+      ),
+      this.database.query(
+        `SELECT g.id::text AS id, g.question, g.required_evidence, g.impact,
+                g.owner_user_id::text AS owner_user_id, g.due_at::text AS due_at,
+                g.blocks_decision, g.created_by::text AS created_by, g.created_at::text AS created_at,
+                COALESCE(last_event.decision, 'OPEN') AS latest_decision,
+                COALESCE(last_event.evidence_refs, '[]'::jsonb) AS evidence_refs,
+                last_event.reason AS decision_reason,
+                last_event.actor_user_id::text AS last_actor_user_id,
+                last_event.created_at::text AS last_decision_at
+           FROM growth_opportunity_evidence_gaps g
+           LEFT JOIN LATERAL (
+             SELECT e.decision, e.evidence_refs, e.reason, e.actor_user_id, e.created_at
+               FROM growth_opportunity_evidence_gap_events e
+              WHERE e.evidence_gap_id = g.id AND e.tenant_id = g.tenant_id
+                AND e.factory_id = g.factory_id AND e.opportunity_id = g.opportunity_id
+              ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+           ) last_event ON TRUE
+          WHERE g.opportunity_id = $1 AND g.tenant_id = $2 AND g.factory_id = $3
+          ORDER BY CASE WHEN COALESCE(last_event.decision, 'OPEN') IN ('RESOLVED','WAIVED') THEN 1 ELSE 0 END,
+                   CASE g.impact WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 ELSE 1 END DESC,
+                   g.created_at`,
+        [opportunityId, tenantId, factoryId],
+        { tenantId },
+      ),
+      this.database.query(
+        `SELECT own.id::text AS id, own.role_code, own.owner_user_id::text AS owner_user_id,
+                own.rationale, own.assigned_by::text AS assigned_by, own.assigned_at::text AS assigned_at,
+                own.active_to::text AS active_to,
+                (u.status = 'ACTIVE' AND EXISTS (
+                  SELECT 1 FROM tenant_memberships tm
+                   WHERE tm.user_id = own.owner_user_id AND tm.tenant_id = own.tenant_id
+                     AND tm.status = 'ACTIVE'
+                )) AS owner_active
+           FROM growth_opportunity_decision_owners own
+           JOIN users u ON u.id = own.owner_user_id
+          WHERE own.opportunity_id = $1 AND own.tenant_id = $2 AND own.factory_id = $3
+          ORDER BY CASE WHEN own.active_to IS NULL THEN 0 ELSE 1 END, own.assigned_at DESC, own.id DESC`,
+        [opportunityId, tenantId, factoryId],
+        { tenantId },
+      ),
+      this.database.query<{ count: number }>(
+        'SELECT COUNT(*)::int AS count FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
+        [opportunityId, tenantId, factoryId],
+        { tenantId },
+      ),
+    ]);
+
+    const constraintRows = constraints.rows as Array<{
+      id: string; dimension: string; applicability: string; limit_operator: string | null;
+      threshold_value: string | null; observed_value: string | null; unit: string | null;
+      source_evidence_ref: string | null; rationale: string;
+    }>;
+    const assumptionRows = assumptions.rows as Array<{
+      id: string; statement: string; blocks_decision: boolean; latest_decision: string | null; evidence_refs: unknown;
+    }>;
+    const gapRows = evidenceGaps.rows as Array<{
+      id: string; question: string; impact: string; blocks_decision: boolean;
+      latest_decision: string | null; evidence_refs: unknown;
+    }>;
+    const ownerRows = owners.rows as Array<{ role_code: string; owner_user_id: string; active_to: string | null; owner_active: boolean }>;
+    const readiness = evaluateGrowthGovernanceReadiness({
+      evidence_count: evidence.rows[0]?.count ?? 0,
+      decision_owner_assigned: ownerRows.some(owner => owner.role_code === 'DECISION_OWNER' && owner.active_to === null
+        && owner.owner_active && owner.owner_user_id !== scoped.rows[0]?.created_by),
+      assumptions: assumptionRows,
+      constraints: constraintRows,
+      evidence_gaps: gapRows,
+    });
+    return {
+      opportunity_id: opportunityId,
+      assumptions: assumptions.rows,
+      constraints: constraintRows,
+      evidence_gaps: evidenceGaps.rows,
+      decision_owners: owners.rows,
+      readiness,
+      interpretation: 'Deterministic completeness checklist. READY is not an approval, forecast, or causal conclusion.',
+    };
+  }
+
+  async addOpportunityAssumption(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: CreateGrowthAssumptionDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const refs = dto.evidence_refs ?? [];
+    return this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ status: string }>(
+        'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [opportunityId, tenantId, factoryId],
+      );
+      if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+      if (!['PROPOSED', 'ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
+        throw new ConflictException('Assumptions can only be added while an opportunity is open');
+      }
+      const ownerUserId = dto.owner_user_id ?? userId;
+      await this.assertActiveTenantUser(client, tenantId, ownerUserId);
+      await this.assertOpportunityEvidenceRefs(client, tenantId, factoryId, opportunityId, refs);
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_assumptions
+           (tenant_id, factory_id, opportunity_id, statement, rationale, risk_if_false,
+            confidence_pct, validation_method, initial_evidence_refs, owner_user_id,
+            blocks_decision, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)
+         RETURNING id::text AS id, statement, risk_if_false, confidence_pct::text AS confidence_pct,
+                   owner_user_id::text AS owner_user_id, blocks_decision, created_at::text AS created_at`,
+        [tenantId, factoryId, opportunityId, dto.statement.trim(), dto.rationale?.trim() ?? '',
+          dto.risk_if_false, dto.confidence_pct, dto.validation_method.trim(), JSON.stringify(refs),
+          ownerUserId, dto.blocks_decision ?? true, userId],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('GROWTH_ASSUMPTION_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
+        aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_ASSUMPTION_ADDED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { opportunity_id: opportunityId, assumption_id: row.id, blocks_decision: dto.blocks_decision ?? true },
+      });
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_ASSUMPTION_ADD',
+        resourceId: String(row.id), requestId, traceId, payload: { opportunityId, risk: dto.risk_if_false },
+      });
+      return row;
+    });
+  }
+
+  async decideOpportunityAssumption(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string, assumptionId: string,
+    dto: DecideGrowthAssumptionDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    this.validateUuid(assumptionId, 'assumptionId');
+    const refs = dto.evidence_refs ?? [];
+    if (['VALIDATED', 'REFUTED', 'WAIVED'].includes(dto.decision) && refs.length === 0) {
+      throw new BadRequestException('VALIDATED, REFUTED and WAIVED assumption decisions require evidence references');
+    }
+    return this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ status: string }>(
+        'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
+        [opportunityId, tenantId, factoryId],
+      );
+      if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+      if (!['PROPOSED', 'ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
+        throw new ConflictException('Assumptions can only be reviewed while the opportunity is open');
+      }
+      const assumption = await client.query<{ id: string }>(
+        'SELECT id::text AS id FROM growth_opportunity_assumptions WHERE id = $1 AND opportunity_id = $2 AND tenant_id = $3 AND factory_id = $4',
+        [assumptionId, opportunityId, tenantId, factoryId],
+      );
+      if (!assumption.rows[0]) throw new NotFoundException('Growth assumption not found in this opportunity');
+      await this.assertOpportunityEvidenceRefs(client, tenantId, factoryId, opportunityId, refs);
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_assumption_decisions
+           (tenant_id, factory_id, opportunity_id, assumption_id, decision, reason, evidence_refs,
+            decided_by, request_id, trace_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::uuid,$10::uuid)
+         RETURNING id::text AS id, assumption_id::text AS assumption_id, decision, reason,
+                   evidence_refs, decided_by::text AS decided_by, decided_at::text AS decided_at`,
+        [tenantId, factoryId, opportunityId, assumptionId, dto.decision, dto.reason.trim(),
+          JSON.stringify(refs), userId, this.uuidOrNull(requestId), this.uuidOrNull(traceId)],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('GROWTH_ASSUMPTION_DECISION_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
+        aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_ASSUMPTION_DECIDED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { opportunity_id: opportunityId, assumption_id: assumptionId, decision: dto.decision },
+      });
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_ASSUMPTION_DECIDE',
+        resourceId: assumptionId, requestId, traceId,
+        payload: { opportunityId, decision: dto.decision, evidenceCount: refs.length },
+      });
+      return row;
+    });
+  }
+
+  async addOpportunityConstraint(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: CreateGrowthConstraintDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    if (dto.applicability === 'APPLICABLE') {
+      if (dto.limit_operator === undefined || dto.threshold_value === undefined
+        || dto.observed_value === undefined || !dto.unit?.trim()
+        || !dto.source_evidence_ref?.trim() || !dto.source_as_of) {
+        throw new BadRequestException('Applicable constraints require a limit, observed value, unit, evidence reference and source vintage');
+      }
+      const date = new Date(dto.source_as_of);
+      if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now() + 5 * 60 * 1000) {
+        throw new BadRequestException('source_as_of must be a valid non-future timestamp');
+      }
+    }
+    if (dto.applicability === 'NOT_APPLICABLE' && dto.rationale.trim().length < 10) {
+      throw new BadRequestException('Not-applicable constraints require a reasoned explanation of at least 10 characters');
+    }
+    return this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ status: string }>(
+        'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [opportunityId, tenantId, factoryId],
+      );
+      if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+      if (!['PROPOSED', 'ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
+        throw new ConflictException('Constraints can only be recorded while an opportunity is open');
+      }
+      const ownerUserId = dto.owner_user_id ?? userId;
+      await this.assertActiveTenantUser(client, tenantId, ownerUserId);
+      if (dto.applicability === 'APPLICABLE') {
+        await this.assertOpportunityEvidenceRefs(client, tenantId, factoryId, opportunityId, [dto.source_evidence_ref!]);
+      }
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_constraints
+           (tenant_id, factory_id, opportunity_id, dimension, applicability, constraint_name,
+            limit_operator, threshold_value, observed_value, unit, source_evidence_ref, source_as_of,
+            rationale, owner_user_id, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::timestamptz,$13,$14,$15)
+         RETURNING id::text AS id, dimension, applicability, constraint_name, limit_operator,
+                   threshold_value::text AS threshold_value, observed_value::text AS observed_value,
+                   unit, source_evidence_ref, source_as_of::text AS source_as_of, rationale,
+                   owner_user_id::text AS owner_user_id, created_at::text AS created_at`,
+        [tenantId, factoryId, opportunityId, dto.dimension, dto.applicability, dto.constraint_name.trim(),
+          dto.limit_operator ?? null, dto.threshold_value ?? null, dto.observed_value ?? null,
+          dto.unit?.trim() ?? null, dto.source_evidence_ref?.trim() ?? null, dto.source_as_of ?? null,
+          dto.rationale.trim(), ownerUserId, userId],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('GROWTH_CONSTRAINT_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
+        aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_CONSTRAINT_RECORDED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { opportunity_id: opportunityId, constraint_id: row.id, dimension: dto.dimension, applicability: dto.applicability },
+      });
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_CONSTRAINT_RECORD',
+        resourceId: String(row.id), requestId, traceId,
+        payload: { opportunityId, dimension: dto.dimension, applicability: dto.applicability },
+      });
+      return row;
+    });
+  }
+
+  async addOpportunityEvidenceGap(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: CreateGrowthEvidenceGapDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    if (dto.due_at && !Number.isFinite(new Date(dto.due_at).getTime())) {
+      throw new BadRequestException('due_at must be a valid timestamp');
+    }
+    return this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ status: string }>(
+        'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [opportunityId, tenantId, factoryId],
+      );
+      if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+      if (!['PROPOSED', 'ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
+        throw new ConflictException('Evidence gaps can only be added while an opportunity is open');
+      }
+      const ownerUserId = dto.owner_user_id ?? userId;
+      await this.assertActiveTenantUser(client, tenantId, ownerUserId);
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_evidence_gaps
+           (tenant_id, factory_id, opportunity_id, question, required_evidence, impact,
+            owner_user_id, due_at, blocks_decision, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10)
+         RETURNING id::text AS id, question, required_evidence, impact,
+                   owner_user_id::text AS owner_user_id, due_at::text AS due_at,
+                   blocks_decision, created_at::text AS created_at`,
+        [tenantId, factoryId, opportunityId, dto.question.trim(), dto.required_evidence.trim(),
+          dto.impact, ownerUserId, dto.due_at ?? null, dto.blocks_decision ?? true, userId],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('GROWTH_EVIDENCE_GAP_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
+        aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_EVIDENCE_GAP_ADDED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { opportunity_id: opportunityId, evidence_gap_id: row.id, impact: dto.impact, blocks_decision: dto.blocks_decision ?? true },
+      });
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_EVIDENCE_GAP_ADD',
+        resourceId: String(row.id), requestId, traceId, payload: { opportunityId, impact: dto.impact },
+      });
+      return row;
+    });
+  }
+
+  async decideOpportunityEvidenceGap(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string, gapId: string,
+    dto: DecideGrowthEvidenceGapDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    this.validateUuid(gapId, 'gapId');
+    const refs = dto.evidence_refs ?? [];
+    if (dto.decision === 'RESOLVED' && refs.length === 0) {
+      throw new BadRequestException('Resolving an evidence gap requires evidence references');
+    }
+    return this.database.transaction({ tenantId, userId }, async client => {
+      const gap = await client.query<{ id: string }>(
+        'SELECT id::text AS id FROM growth_opportunity_evidence_gaps WHERE id = $1 AND opportunity_id = $2 AND tenant_id = $3 AND factory_id = $4',
+        [gapId, opportunityId, tenantId, factoryId],
+      );
+      if (!gap.rows[0]) throw new NotFoundException('Evidence gap not found in this opportunity');
+      if (dto.decision === 'RESOLVED') {
+        await this.assertOpportunityEvidenceRefs(client, tenantId, factoryId, opportunityId, refs);
+      }
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_evidence_gap_events
+           (tenant_id, factory_id, opportunity_id, evidence_gap_id, decision, reason,
+            evidence_refs, actor_user_id, request_id, trace_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::uuid,$10::uuid)
+         RETURNING id::text AS id, evidence_gap_id::text AS evidence_gap_id, decision, reason,
+                   evidence_refs, actor_user_id::text AS actor_user_id, created_at::text AS created_at`,
+        [tenantId, factoryId, opportunityId, gapId, dto.decision, dto.reason.trim(),
+          JSON.stringify(refs), userId, this.uuidOrNull(requestId), this.uuidOrNull(traceId)],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('GROWTH_EVIDENCE_GAP_EVENT_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
+        aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_EVIDENCE_GAP_' + dto.decision,
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { opportunity_id: opportunityId, evidence_gap_id: gapId, decision: dto.decision },
+      });
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_EVIDENCE_GAP_' + dto.decision,
+        resourceId: gapId, requestId, traceId, payload: { opportunityId, evidenceCount: refs.length },
+      });
+      return row;
+    });
+  }
+
+  async assignOpportunityDecisionOwner(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: AssignGrowthDecisionOwnerDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    return this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ created_by: string; status: string }>(
+        'SELECT created_by::text AS created_by, status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [opportunityId, tenantId, factoryId],
+      );
+      if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+      if (['REJECTED', 'REALIZED', 'CLOSED'].includes(opportunity.rows[0].status)) {
+        throw new ConflictException('Decision ownership cannot be reassigned after the opportunity is closed');
+      }
+      await this.assertActiveTenantUser(client, tenantId, dto.owner_user_id);
+      if (dto.role_code === 'DECISION_OWNER' && dto.owner_user_id === opportunity.rows[0].created_by) {
+        throw new BadRequestException('The decision owner must be different from the opportunity creator');
+      }
+      await client.query(
+        `UPDATE growth_opportunity_decision_owners SET active_to = clock_timestamp()
+          WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+            AND role_code = $4 AND active_to IS NULL`,
+        [opportunityId, tenantId, factoryId, dto.role_code],
+      );
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_decision_owners
+           (tenant_id, factory_id, opportunity_id, role_code, owner_user_id, rationale, assigned_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         RETURNING id::text AS id, role_code, owner_user_id::text AS owner_user_id,
+                   rationale, assigned_by::text AS assigned_by, assigned_at::text AS assigned_at`,
+        [tenantId, factoryId, opportunityId, dto.role_code, dto.owner_user_id, dto.rationale.trim(), userId],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error('GROWTH_DECISION_OWNER_ASSIGNMENT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OPPORTUNITY',
+        aggregateId: opportunityId, eventType: 'GROWTH.OPPORTUNITY_OWNER_ASSIGNED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { opportunity_id: opportunityId, role_code: dto.role_code, owner_user_id: dto.owner_user_id },
+      });
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_OPPORTUNITY_OWNER_ASSIGN',
+        resourceId: String(row.id), requestId, traceId, payload: { opportunityId, role: dto.role_code, ownerId: dto.owner_user_id },
+      });
+      return row;
+    });
+  }
+
+  private async assertOpportunityEvidenceRefs(
+    client: PoolClient, tenantId: string, factoryId: string, opportunityId: string, refs: string[],
+  ) {
+    for (const ref of refs) {
+      if (typeof ref !== 'string' || !ref.trim()) throw new BadRequestException('Evidence references cannot be blank');
+      const found = await client.query<{ exists: boolean }>(
+        'SELECT factoryos_growth_opportunity_evidence_ref_exists($1, $2, $3, $4) AS exists',
+        [tenantId, factoryId, opportunityId, ref.trim()],
+      );
+      if (found.rows[0]?.exists !== true) {
+        throw new BadRequestException('Evidence reference is not attached to this opportunity: ' + ref);
+      }
+    }
+  }
+
   private validateScope(userId: string, tenantId: string, factoryId: string) {
     this.validateUuid(userId, 'userId');
     this.validateReadScope(tenantId, factoryId);
@@ -1430,6 +2569,10 @@ export class GrowthService {
       throw new BadRequestException('limit must be between 1 and 100');
     }
     return limit;
+  }
+
+  private uuidOrNull(value: string | null): string | null {
+    return value && isUUID(value) ? value : null;
   }
 
   private correlationId(requestId: string | null, traceId: string | null) {

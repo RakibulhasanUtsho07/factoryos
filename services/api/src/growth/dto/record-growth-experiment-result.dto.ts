@@ -1,4 +1,6 @@
-import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { GrowthExperimentKpiDto } from './growth-kpi-measurement.dto';
 
 export class RecordGrowthExperimentResultDto {
   @IsObject()
@@ -23,6 +25,13 @@ export class RecordGrowthExperimentResultDto {
   @IsString({ each: true })
   @MaxLength(2000, { each: true })
   evidence_refs!: string[];
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => GrowthExperimentKpiDto)
+  kpi_measurements!: GrowthExperimentKpiDto[];
 
   @IsDateString()
   observed_at!: string;
