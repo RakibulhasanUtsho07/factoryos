@@ -64,17 +64,75 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           `
           INSERT INTO research_claims (
             tenant_id, namespace, source_id, claim_text, evidence_grade, evidence_strength,
-            topic_tags, provenance_ref, status, created_by, reviewed_by, reviewed_at, review_reason
+            topic_tags, provenance_ref, status, created_by
           )
           VALUES ($1, 'TENANT', $2, 'A research claim supported by a cited paper.',
             'B', 'MODERATE', '["quality"]'::jsonb, '{"section":"Results","page":4}'::jsonb,
-            'APPROVED', $3, $3, clock_timestamp(), 'evidence checked')
+            'PROPOSED', $3)
           RETURNING id::text AS id
           `,
           [tenantId, sourceId, userId],
         );
+        const fixtureClaimId = claim.rows[0].id;
+        const fixtureClaim = await client.query(
+          `SELECT c.*, s.title AS source_title, s.authors AS source_authors,
+              s.publication_date::text AS publication_date, s.doi, s.source_url,
+              s.source_revision, s.rights_version
+           FROM research_claims c
+           JOIN research_sources s ON s.id=c.source_id AND s.tenant_id=c.tenant_id
+           WHERE c.id=$1 AND c.tenant_id=$2`,
+          [fixtureClaimId, tenantId],
+        );
+        const fixtureEvidence = fixtureClaim.rows[0];
+        const digestEmpty = `encode(sha256(convert_to('', 'UTF8')), 'hex')`;
+        await client.query(
+          `INSERT INTO research_evidence_assessments (
+             tenant_id, claim_id, source_id, source_revision, rights_version,
+             claim_fingerprint, rubric_version, evidence_score, suggested_grade, grade_factors,
+             citation_status, citation_findings, citation_verification_level,
+             safety_status, safety_flags, evidence_snapshot, assessed_by
+           )
+           SELECT c.tenant_id, c.id, s.id, s.source_revision, s.rights_version,
+             repeat('a',64), 'research-evidence-rubric.v1', 45, 'D',
+             jsonb_build_object(
+               'citation', jsonb_build_object('score',25,'max',25,'explanation','The fixture uses a precise locator and registered source identity.'),
+               'source_identity', jsonb_build_object('score',15,'max',15,'explanation','A source title and DOI or URL are registered.'),
+               'authors_and_date', jsonb_build_object('score',5,'max',10,'explanation','Authorship is known but publication date is not supplied.'),
+               'methodology', jsonb_build_object('score',0,'max',15,'explanation','No methodology description is recorded.'),
+               'dataset_description', jsonb_build_object('score',0,'max',15,'explanation','No dataset description is recorded.'),
+               'limitations', jsonb_build_object('score',0,'max',10,'explanation','No limitations are recorded.'),
+               'practical_implication', jsonb_build_object('score',0,'max',5,'explanation','No practical implication is recorded.'),
+               'independent_corroboration', jsonb_build_object('score',0,'max',5,'explanation','No independent corroborating source is linked.')
+             ),
+             'CONSISTENT', '[]'::jsonb, 'METADATA_ONLY', 'CLEAR', '[]'::jsonb,
+             jsonb_build_object(
+               'claimId', c.id::text, 'sourceId', s.id::text,
+               'claimTextSha256', encode(sha256(convert_to(c.claim_text,'UTF8')),'hex'),
+               'methodologySha256', encode(sha256(convert_to(COALESCE(c.methodology,''),'UTF8')),'hex'),
+               'datasetDescriptionSha256', encode(sha256(convert_to(COALESCE(c.dataset_description,''),'UTF8')),'hex'),
+               'limitationsSha256', encode(sha256(convert_to(COALESCE(c.limitations,''),'UTF8')),'hex'),
+               'practicalImplicationSha256', encode(sha256(convert_to(COALESCE(c.practical_implication,''),'UTF8')),'hex'),
+               'storedExcerptSha256', encode(sha256(convert_to(COALESCE(c.stored_excerpt,''),'UTF8')),'hex'),
+               'provenanceRef', c.provenance_ref, 'topicTags', c.topic_tags,
+               'evidenceGrade', c.evidence_grade, 'evidenceStrength', c.evidence_strength,
+               'sourceTitle', s.title, 'sourceDoi', s.doi, 'sourceUrl', s.source_url,
+               'sourceAuthors', s.authors, 'publicationDate', s.publication_date::text,
+               'sourceRevision', s.source_revision, 'rightsVersion', s.rights_version
+             ), $3
+           FROM research_claims c
+           JOIN research_sources s ON s.id=c.source_id AND s.tenant_id=c.tenant_id
+           WHERE c.id=$1 AND c.tenant_id=$2`,
+          [fixtureClaimId, tenantId, userId],
+        );
+        await client.query(
+          `UPDATE research_claims
+           SET status='APPROVED', reviewed_by=$1, reviewed_at=clock_timestamp(),
+               review_reason='Fixture claim approved after metadata assessment'
+           WHERE id=$2 AND tenant_id=$3`,
+          [userId, fixtureClaimId, tenantId],
+        );
 
-        await test(client, { tenantId, userId, factoryId, sourceId, claimId: claim.rows[0].id });
+        await test(client, { tenantId, userId, factoryId, sourceId, claimId: fixtureClaimId });
         throw new Error(ROLLBACK_MARKER);
       },
     )).rejects.toThrow(ROLLBACK_MARKER);
