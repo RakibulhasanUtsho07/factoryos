@@ -86,8 +86,8 @@ export class GrowthService {
     const currency = (dto.currency ?? 'BDT').trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) throw new BadRequestException('currency must be a 3-letter currency code');
     if (!Array.isArray(dto.assumptions) || !dto.assumptions.length
-      || dto.assumptions.some(value => !value.trim())) {
-      throw new BadRequestException('Every growth opportunity must state its assumptions');
+      || dto.assumptions.some(value => !value.trim() || value.trim().length < 5)) {
+      throw new BadRequestException('Every growth opportunity assumption must contain at least 5 non-whitespace characters');
     }
     const affectedNodes = [...new Set((dto.affected_business_nodes ?? []).map(id => id.toLowerCase()))];
     if (affectedNodes.length !== (dto.affected_business_nodes ?? []).length) {
