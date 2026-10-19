@@ -105,7 +105,12 @@ describe('CbbGovernanceService', () => {
     queue(
       { rows: [{ id: blueprintId, current_version_id: versionId }] },
       { rows: [{ target_type: 'ENTITY', target_id: entityId, created_at: '2026-01-01T00:00:00Z', last_evidence_at: '2026-01-01T00:00:00Z' }] },
-      { rows: [] },
+      { rows: [] }, // staleness-review insert
+      { rows: [{ id: blueprintId }] }, // visibility gate: active blueprint
+      { rows: [] }, // visibility gate: caller roles
+      { rows: [] }, // visibility gate: blueprint grants
+      { rows: [] }, // candidate ACL: caller roles
+      { rows: [] }, // candidate ACL: target grants
     );
     const result = await service.scanStaleness({ tenantId, factoryId, userId }, 30);
 
