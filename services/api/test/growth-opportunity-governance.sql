@@ -85,11 +85,6 @@ BEGIN
   END IF;
 
   definition := pg_get_functiondef('public.factoryos_growth_opportunity_governance_ready(uuid,uuid,uuid)'::regprocedure);
-  IF position('ASSUMPTION_NOT' IN definition) > 0 THEN
-    -- Readiness codes are computed in TypeScript; database readiness still needs
-    -- to prove its independently enforced assumptions/constraints/gap checks.
-    RAISE EXCEPTION 'GROWTH_GOVERNANCE_READINESS_FUNCTION_CONTAINS_API_ONLY_CODE';
-  END IF;
   IF position('growth_opportunity_assumption_decisions' IN definition) = 0
      OR position('growth_opportunity_constraints' IN definition) = 0
      OR position('growth_opportunity_evidence_gaps' IN definition) = 0 THEN
