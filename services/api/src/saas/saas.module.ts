@@ -9,7 +9,9 @@ import { SaasReleaseRolloutService } from './saas-release-rollout.service';
 import { SaasSandboxController } from './saas-sandbox.controller';
 import { SaasSandboxService } from './saas-sandbox.service';
 import { SaasTenantDataTransferController } from './saas-tenant-data-transfer.controller';
+import { SaasTenantRetentionController } from './saas-tenant-retention.controller';
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
+import { SaasTenantRetentionService } from './saas-tenant-retention.service';
 import { SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, SAAS_TENANT_TRANSFER_DATASET_SOURCE } from './saas-tenant-data-transfer.adapters';
 import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
@@ -30,6 +32,7 @@ import { SaasUsageService } from './saas-usage.service';
     SaasReleaseRolloutController,
     SaasDeploymentProfileController,
     SaasTenantDataTransferController,
+    SaasTenantRetentionController,
   ],
   providers: [
     SaasUsageService,
@@ -38,6 +41,7 @@ import { SaasUsageService } from './saas-usage.service';
     SaasReleaseRolloutService,
     SaasDeploymentProfileService,
     SaasTenantDataTransferService,
+    SaasTenantRetentionService,
     SaasTenantPostgresDatasetSource,
     { provide: SAAS_TENANT_TRANSFER_DATASET_SOURCE, useExisting: SaasTenantPostgresDatasetSource },
     SaasTenantPostgresMigrationTargetAdapter,
@@ -53,6 +57,7 @@ import { SaasUsageService } from './saas-usage.service';
     SaasReleaseRolloutService,
     SaasDeploymentProfileService,
     SaasTenantDataTransferService,
+    SaasTenantRetentionService,
     SaasTenantDataTransferWorkerService,
   ],
 })
