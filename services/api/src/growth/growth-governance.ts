@@ -99,6 +99,26 @@ export function evaluateGrowthGovernanceReadiness(
       && Boolean(constraint.source_evidence_ref?.trim());
     if (constraint.applicability !== 'APPLICABLE' || !complete) {
       block('CONSTRAINT_EVIDENCE_MISSING', 'Record a sourced limit, observed value, unit and source vintage.', dimension);
+      continue;
+    }
+    const threshold = Number(constraint.threshold_value);
+    const observed = Number(constraint.observed_value);
+    if (!Number.isFinite(threshold) || !Number.isFinite(observed)) {
+      block('CONSTRAINT_VALUE_INVALID', 'Constraint limit and observed value must be finite numbers.', dimension);
+      continue;
+    }
+    const withinLimit = constraint.limit_operator === 'MAX'
+      ? observed <= threshold
+      : constraint.limit_operator === 'MIN'
+        ? observed >= threshold
+        : Math.abs(observed - threshold) < 0.0001;
+    if (!withinLimit) {
+      block(
+        'CONSTRAINT_LIMIT_VIOLATED',
+        'Observed ' + String(observed) + ' ' + (constraint.unit ?? '') +
+          ' violates the ' + constraint.limit_operator + ' threshold of ' + String(threshold) + '.',
+        dimension,
+      );
     }
   }
 
