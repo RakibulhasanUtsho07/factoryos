@@ -1412,10 +1412,10 @@ export class ResearchService {
       throw new ConflictException('A passing automated evaluation attached to the current draft is required before promotion');
     }
     const evaluationResult = await this.database.query<{
-      id: string; status: string; content_fingerprint: string; results: Record<string, unknown>;
+      id: string; evaluation_version: string; status: string; content_fingerprint: string; results: Record<string, unknown>;
     }>(
       `
-      SELECT id::text AS id, status, content_fingerprint, results
+      SELECT id::text AS id, evaluation_version, status, content_fingerprint, results
       FROM research_release_evaluations
       WHERE id = $1 AND release_id = $2 AND tenant_id = $3 AND namespace = $4
       `,
@@ -1424,8 +1424,9 @@ export class ResearchService {
     );
     const evaluation = evaluationResult.rows[0];
     if (!evaluation || evaluation.status !== 'PASSED'
+      || evaluation.evaluation_version !== 'research-release-contract.v2'
       || evaluation.content_fingerprint !== report.contentFingerprint) {
-      throw new ConflictException('The attached research evaluation is absent, failed, or stale; evaluate the draft again');
+      throw new ConflictException('The attached research evaluation is absent, failed, stale, or uses an outdated contract version; evaluate the draft again');
     }
     const reviewSummary = dto.safety_review_summary.trim();
     const regressionRef = dto.regression_evidence_ref.trim();
@@ -1626,9 +1627,9 @@ export class ResearchService {
       throw new ConflictException('Rollback target is no longer eligible: current evidence, citation, rights and safety checks must pass');
     }
     const evaluationResult = await this.database.query<{
-      id: string; status: string; content_fingerprint: string;
+      id: string; evaluation_version: string; status: string; content_fingerprint: string;
     }>(
-      `SELECT id::text AS id, status, content_fingerprint
+      `SELECT id::text AS id, evaluation_version, status, content_fingerprint
        FROM research_release_evaluations
        WHERE id = $1 AND release_id = $2 AND tenant_id = $3 AND namespace = 'TENANT'`,
       [target.evaluation_id, target.id, tenantId],
@@ -1636,8 +1637,9 @@ export class ResearchService {
     );
     const evaluation = evaluationResult.rows[0];
     if (!evaluation || evaluation.status !== 'PASSED'
+      || evaluation.evaluation_version !== 'research-release-contract.v2'
       || evaluation.content_fingerprint !== report.contentFingerprint) {
-      throw new ConflictException('Rollback target evaluation is stale; an older release cannot be re-evaluated in place');
+      throw new ConflictException('Rollback target evaluation is stale or uses an outdated contract version; create and approve a fresh release instead');
     }
 
     const rollback = await this.database.transaction(
