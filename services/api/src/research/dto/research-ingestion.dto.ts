@@ -186,3 +186,17 @@ export class PauseResearchIngestionJobDto {
   @MaxLength(500)
   reason!: string;
 }
+
+export class DecideResearchExtractionItemDto {
+  @IsInt()
+  @Min(0)
+  expected_review_version!: number;
+
+  @IsIn(['APPROVE', 'REJECT'])
+  decision!: 'APPROVE' | 'REJECT';
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  reason!: string;
+}
