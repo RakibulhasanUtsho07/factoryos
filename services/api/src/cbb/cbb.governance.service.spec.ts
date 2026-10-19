@@ -66,10 +66,13 @@ describe('CbbGovernanceService', () => {
   });
 
   it('redacts field-restricted attributes without hiding an otherwise visible target', async () => {
-    queue(
-      { rows: [] }, // active user's roles
-      { rows: [{ target_id: entityId, target_type: 'ENTITY', role_id: roleId, field_name: 'description', access_level: 'READ' }] },
-    );
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT DISTINCT ur.role_id::text AS role_id')) return { rows: [] };
+      if (sql.includes('FROM business_acl WHERE tenant_id=$1 AND factory_id=$2 AND target_type=$3')) {
+        return { rows: [{ target_id: entityId, target_type: 'ENTITY', role_id: roleId, field_name: 'description', access_level: 'READ' }] };
+      }
+      throw new Error('Unexpected SQL in field-redaction test: ' + sql);
+    });
     const result = await service.filterBusinessMap(tenantId, factoryId, userId, {
       nodes: [{ id: entityId, name: 'Visible term', description: 'sensitive details' }],
       edges: [],
