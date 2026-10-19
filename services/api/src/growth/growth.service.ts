@@ -1284,29 +1284,36 @@ export class GrowthService {
       },
     );
 
+    const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
+    const presentTypes = requiredTypes.filter(type =>
+      result.scenarios.some(scenario => scenario.scenario_type === type),
+    );
+    const standardScenarios = result.scenarios.filter(scenario =>
+      requiredTypes.includes(String(scenario.scenario_type)),
+    );
+    const sensitivityScenarios = result.scenarios.filter(scenario => scenario.scenario_type === 'CUSTOM');
+    const standardDecisionReady = presentTypes.length === requiredTypes.length
+      && standardScenarios.length === requiredTypes.length
+      && standardScenarios.every(scenario => scenario.decision_ready === true);
+    const sensitivityDecisionReady = sensitivityScenarios.length > 0
+      && sensitivityScenarios.every(scenario => scenario.decision_ready === true);
+
     await this.auditSafely({
       tenantId, factoryId, userId, action: 'SCENARIO_SET_RUN',
       resourceId: result.scenarioSet.id, requestId, traceId,
       payload: {
         opportunityId, setVersion: result.scenarioSet.set_version,
         inputHash: result.scenarioSet.input_hash, scenarioCount: result.scenarios.length,
-        modelVersion, decisionReady: result.scenarios.every(scenario => scenario.decision_ready === true),
+        modelVersion, decisionReady: standardDecisionReady,
+        sensitivityDecisionReady,
+        missingStandardScenarioTypes: requiredTypes.filter(type => !presentTypes.includes(type)),
       },
     });
-    const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
-    const presentTypes = requiredTypes.filter(type =>
-      result.scenarios.some(scenario => scenario.scenario_type === type),
-    );
-    const standardScenarios = result.scenarios.filter(scenario => requiredTypes.includes(String(scenario.scenario_type)));
-    const sensitivityScenarios = result.scenarios.filter(scenario => scenario.scenario_type === 'CUSTOM');
     return {
       ...result.scenarioSet,
       scenario_count: result.scenarios.length,
-      decision_ready: presentTypes.length === requiredTypes.length
-        && standardScenarios.length === requiredTypes.length
-        && standardScenarios.every(scenario => scenario.decision_ready === true),
-      sensitivity_decision_ready: sensitivityScenarios.length > 0
-        && sensitivityScenarios.every(scenario => scenario.decision_ready === true),
+      decision_ready: standardDecisionReady,
+      sensitivity_decision_ready: sensitivityDecisionReady,
       scenario_type_coverage: {
         required: requiredTypes,
         present: presentTypes,
