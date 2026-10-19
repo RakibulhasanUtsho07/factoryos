@@ -236,7 +236,7 @@ describe('ResearchService', () => {
         rows: [{
           id: evaluationId,
           status: 'PASSED',
-          evaluation_version: 'research-release-contract.v1',
+          evaluation_version: 'research-release-contract.v2',
           content_fingerprint: 'a'.repeat(64),
           results: {
             consistencyPassed: true,
@@ -316,7 +316,7 @@ describe('ResearchService', () => {
         rows: [{
           id: evaluationId,
           status: 'REVIEW_REQUIRED',
-          evaluation_version: 'research-release-contract.v1',
+          evaluation_version: 'research-release-contract.v2',
           content_fingerprint: 'b'.repeat(64),
           results: { consistencyPassed: true, citationCoveragePassed: true, rightsPassed: true, safetyPassed: false },
           evaluated_at: '2026-10-11T00:00:00.000Z',
