@@ -796,9 +796,6 @@ export class ResearchService {
           throw new ConflictException('Invalid research claim review transition');
         }
         if (next === 'APPROVED') {
-          if (row.evidence_grade === 'UNASSESSED') {
-            throw new BadRequestException('An evidence grade must be assigned before a claim is approved');
-          }
           const sourceResult = await client.query<{
             access_status: string; license_status: string; full_text_storage_allowed: boolean;
             source_revision: number; rights_version: number;
