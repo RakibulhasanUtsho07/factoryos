@@ -541,6 +541,93 @@ describe(
     );
 
     it(
+      'rejects an authorization idempotency replay when its target changes',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              target: {
+                decision_id: decisionId,
+                plan_id: 'original-plan',
+              },
+              idempotency_key: 'reuse-target-key',
+            },
+          ],
+        });
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            userId,
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              idempotency_key: 'reuse-target-key',
+            },
+          ),
+        ).rejects.toThrow(
+          'idempotency_key is already bound to a different AI action request',
+        );
+
+        expect(aiToolRegistry.getTool).not.toHaveBeenCalled();
+        expect(evaluatePolicyMock).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
+      'rejects an authorization idempotency replay from a different actor',
+      async () => {
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [decisionRow],
+        });
+        databaseQueryMock.mockResolvedValueOnce({
+          rows: [
+            {
+              ...authorizedActionInsertRow,
+              idempotency_key: 'reuse-actor-key',
+              created_by: userId,
+            },
+          ],
+        });
+
+        await expect(
+          service.authorizeAction(
+            tenantId,
+            factoryId,
+            '5e8d2d2b-4a11-4ac7-8db9-cda1eafaf002',
+            {
+              decision_id: decisionId,
+              action_type: 'PLAN.CHANGE',
+              tool_version: '1.0.0',
+              target: approvalBoundTarget,
+              resource_type: 'PLAN',
+              resource_id: 'plan-1',
+              payload: approvalBoundPayload,
+              idempotency_key: 'reuse-actor-key',
+            },
+          ),
+        ).rejects.toThrow(
+          'idempotency_key is already bound to a different AI action request',
+        );
+
+        expect(aiToolRegistry.getTool).not.toHaveBeenCalled();
+        expect(evaluatePolicyMock).not.toHaveBeenCalled();
+        expect(databaseQueryMock).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it(
       'creates an approval request when policy requires human approval',
       async () => {
         /*
