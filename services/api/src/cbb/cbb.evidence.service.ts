@@ -119,20 +119,37 @@ export class CbbEvidenceService {
 
   async listEvidence(tenantId: string, factoryId: string, options: {
     sourceType?: string; state?: CbbEvidenceState; sourceKey?: string; limit?: number; offset?: number;
+    visibility?: 'INTERNAL' | 'RESTRICTED'; targetType?: CbbEvidenceTargetType; targetId?: string;
   }) {
     this.validateReadScope(tenantId, factoryId);
     const sourceType = options.sourceType?.trim().toUpperCase() || null;
     const state = options.state ?? null;
     const sourceKey = options.sourceKey?.trim() || null;
+    const visibility = options.visibility ?? 'INTERNAL';
+    if (visibility !== 'INTERNAL' && visibility !== 'RESTRICTED') {
+      throw new BadRequestException('Unsupported evidence visibility filter');
+    }
+    const targetType = options.targetType ?? null;
+    const targetId = options.targetId ?? null;
+    if ((targetType === null) !== (targetId === null)) {
+      throw new BadRequestException('target_type and target_id must be supplied together');
+    }
+    if (targetId !== null) this.uuid(targetId, 'target_id');
     const limit = this.limit(options.limit);
     const offset = this.offset(options.offset);
-    const filters = [tenantId, factoryId, sourceType, state, sourceKey];
+    const filters = [tenantId, factoryId, sourceType, state, sourceKey, visibility, targetType, targetId];
     const count = await this.database.query<Row>(
       `SELECT COUNT(*)::int AS total FROM business_evidence e
        WHERE e.tenant_id=$1 AND e.factory_id=$2
          AND ($3::text IS NULL OR e.source_type=$3)
          AND ($4::text IS NULL OR e.state=$4)
-         AND ($5::text IS NULL OR e.source_key=$5)`,
+         AND ($5::text IS NULL OR e.source_key=$5)
+         AND e.visibility=$6
+         AND ($7::text IS NULL OR EXISTS (
+           SELECT 1 FROM business_evidence_links l
+           WHERE l.evidence_id=e.id AND l.tenant_id=e.tenant_id AND l.factory_id=e.factory_id
+             AND l.target_type=$7 AND l.target_id=$8::uuid
+         ))`,
       filters, { tenantId },
     );
     const rows = await this.database.query<Row>(
@@ -146,7 +163,7 @@ export class CbbEvidenceService {
          AND ($3::text IS NULL OR e.source_type=$3)
          AND ($4::text IS NULL OR e.state=$4)
          AND ($5::text IS NULL OR e.source_key=$5)
-       ORDER BY e.created_at DESC, e.id DESC LIMIT $6 OFFSET $7`,
+       ORDER BY e.created_at DESC, e.id DESC LIMIT $9 OFFSET $10`,
       [...filters, limit, offset], { tenantId },
     );
     const ids = rows.rows.map((row) => String(row.id));

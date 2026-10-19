@@ -88,6 +88,27 @@ describe('CbbEvidenceService', () => {
     }));
   });
 
+  it('filters evidence by the requested graph target and defaults to internal visibility', async () => {
+    queue(
+      { rows: [{ total: 0 }] },
+      { rows: [] },
+    );
+    const result = await service.listEvidence(tenantId, factoryId, {
+      targetType: 'ENTITY',
+      targetId: entityId,
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(result.items).toEqual([]);
+    expect(query.mock.calls[0]?.[1]).toEqual([
+      tenantId, factoryId, null, null, null, 'INTERNAL', 'ENTITY', entityId,
+    ]);
+    expect(query.mock.calls[1]?.[1]).toEqual([
+      tenantId, factoryId, null, null, null, 'INTERNAL', 'ENTITY', entityId, 20, 0,
+    ]);
+  });
+
   it('treats an identical source revision as an idempotent replay', async () => {
     queue(
       { rows: [{ id: blueprintId }] },

@@ -48,6 +48,8 @@ export class ListCbbEvidenceQueryDto {
   @IsOptional() @IsString() @MaxLength(100) source_type?: string;
   @IsOptional() @IsIn([...CBB_EVIDENCE_STATES]) state?: CbbEvidenceState;
   @IsOptional() @IsString() @MaxLength(1000) source_key?: string;
+  @IsOptional() @IsIn([...CBB_EVIDENCE_TARGET_TYPES]) target_type?: CbbEvidenceTargetType;
+  @IsOptional() @IsUUID() target_id?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(100000) offset?: number;
 }

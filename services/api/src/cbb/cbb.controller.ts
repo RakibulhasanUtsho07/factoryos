@@ -455,8 +455,29 @@ export class CbbController {
       sourceType: query.source_type,
       state: query.state,
       sourceKey: query.source_key,
+      targetType: query.target_type,
+      targetId: query.target_id,
       limit: query.limit,
       offset: query.offset,
+      visibility: 'INTERNAL',
+    });
+  }
+
+  @Get('evidence/restricted')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async listRestrictedEvidence(@Req() request: FactoryOsRequest, @Query() query: ListCbbEvidenceQueryDto) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.listEvidence(tenantId, factoryId, {
+      sourceType: query.source_type,
+      state: query.state,
+      sourceKey: query.source_key,
+      targetType: query.target_type,
+      targetId: query.target_id,
+      limit: query.limit,
+      offset: query.offset,
+      visibility: 'RESTRICTED',
     });
   }
 
