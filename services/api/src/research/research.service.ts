@@ -826,6 +826,9 @@ export class ResearchService {
               );
             }
           }
+          if (!dto.evidence_grade || !['A', 'B', 'C', 'D'].includes(dto.evidence_grade)) {
+            throw new BadRequestException('The approving reviewer must assign a final evidence grade A-D');
+          }
           const evidenceAssessment = await client.query<{
             citation_status: string; safety_status: string;
           }>(
@@ -848,14 +851,16 @@ export class ResearchService {
         const updated = await client.query<ResearchClaimRow>(
           `
           UPDATE research_claims SET status = $1, reviewed_by = $2,
-            reviewed_at = clock_timestamp(), review_reason = $3, updated_at = clock_timestamp()
+            reviewed_at = clock_timestamp(), review_reason = $3,
+            evidence_grade = CASE WHEN $6::text IS NULL THEN evidence_grade ELSE $6::text END,
+            updated_at = clock_timestamp()
           WHERE id = $4 AND tenant_id = $5
           RETURNING id::text AS id, tenant_id::text AS tenant_id, namespace,
             source_id::text AS source_id, claim_text, methodology, dataset_description,
             limitations, practical_implication, evidence_grade, evidence_strength,
             topic_tags, provenance_ref, status
           `,
-          [next, actorUserId, dto.reason.trim(), claimId, tenantId],
+          [next, actorUserId, dto.reason.trim(), claimId, tenantId, next === 'APPROVED' ? dto.evidence_grade : null],
         );
         const result = updated.rows[0];
         if (!result) throw new Error('RESEARCH_CLAIM_REVIEW_UPDATE_FAILED');
@@ -863,14 +868,14 @@ export class ResearchService {
           tenantId, factoryId: null, userId: actorUserId, aggregateType: 'RESEARCH_CLAIM',
           aggregateId: claimId, eventType: 'RESEARCH.CLAIM_' + next,
           correlationId: this.correlationId(requestId, traceId),
-          payload: { claim_id: claimId, status: next, reason: dto.reason.trim() },
+          payload: { claim_id: claimId, status: next, reason: dto.reason.trim(), evidence_grade: next === 'APPROVED' ? dto.evidence_grade : null },
         });
         return result;
       },
     );
     await this.auditSafely({
       tenantId, userId: actorUserId, factoryId: null, action: 'CLAIM_' + claim.status,
-      resourceId: claimId, requestId, traceId, payload: { reason: dto.reason },
+      resourceId: claimId, requestId, traceId, payload: { reason: dto.reason, evidenceGrade: next === 'APPROVED' ? dto.evidence_grade : null },
     });
     return claim;
   }
