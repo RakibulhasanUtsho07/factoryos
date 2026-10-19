@@ -101,3 +101,44 @@ Still separate work includes provider-specific crawling and retry policy, custom
 ## CBB evidence provenance — Phase D Round 25
 
 CBB source metadata, immutable digest/revision lineage, exact-version graph links, conflict history and optimistic conflict review are documented in [CBB evidence provenance, source links and conflict handling](cbb-evidence-provenance.md). Source evidence is metadata plus a SHA-256 fingerprint, not a cached source body; external source fetching and live connector ingestion remain separate integrations.
+
+
+## Growth opportunity governance — assumptions, constraints, missing evidence and decision ownership
+
+Migration `143_growth_opportunity_governance.sql` makes the opportunity's decision basis explicit instead of keeping all four dimensions only in free-text JSON.
+
+### Governance API
+
+All paths below are under `/api/growth` and require the authenticated tenant/factory scope.
+
+| Method and path | Permission | Purpose |
+|---|---|---|
+| GET `/opportunities/:opportunityId/governance` | `growth.read` | Returns assumptions with their latest review, the latest constraint snapshot per dimension, open/resolved evidence gaps, owner assignment history, and a deterministic readiness checklist. |
+| POST `/opportunities/:opportunityId/assumptions` | `growth.write` | Adds an immutable assumption with risk-if-false, submitter confidence, validation method, evidence references, owner and whether it blocks the decision. |
+| POST `/opportunities/:opportunityId/assumptions/:assumptionId/decision` | `growth.review` | Appends `VALIDATED`, `REFUTED`, `DEFERRED` or `NEEDS_EVIDENCE`; validation/refutation must cite evidence already attached to the same opportunity. |
+| POST `/opportunities/:opportunityId/constraints` | `growth.write` | Appends a dimensioned limit/observed-value record, units, source reference and source vintage, or a reasoned `NOT_APPLICABLE` decision. |
+| POST `/opportunities/:opportunityId/evidence-gaps` | `growth.write` | Records a specific unknown, the evidence required to close it, impact, due date, owner and decision-blocking flag. |
+| POST `/opportunities/:opportunityId/evidence-gaps/:gapId/decision` | `growth.review` | Appends gap lifecycle decisions `IN_REVIEW`, `RESOLVED`, `WAIVED` or `REOPENED`; resolution requires opportunity-attached evidence. |
+| POST `/opportunities/:opportunityId/decision-owners` | `growth.review` | Assigns/reassigns `DECISION_OWNER`, `BUSINESS_OWNER`, `FINANCE_REVIEWER`, `OPERATIONS_REVIEWER`, `QUALITY_REVIEWER`, `RISK_REVIEWER` or `EVIDENCE_OWNER`. |
+
+### Required decision controls
+
+- **Assumptions are hypotheses, not facts.** Existing assumption strings are imported as unvalidated, high-risk governance records. A blocking assumption needs a latest `VALIDATED` decision supported by opportunity-attached evidence. `REFUTED`, `DEFERRED` and `NEEDS_EVIDENCE` remain visible in history but cannot satisfy the acceptance gate.
+- **Constraints are explicit, versioned records.** Before acceptance, the latest entry for each core dimension—capacity, quality, cash and delivery—must state either `APPLICABLE` with an operator, threshold, observed value, unit, source evidence and as-of timestamp, or `NOT_APPLICABLE` with a reason. `UNKNOWN`, missing measurements, missing source references and future source timestamps are not silently treated as a pass. New records supersede earlier observations without rewriting their history.
+- **Missing evidence is tracked as work.** A gap states the question, required evidence, impact, owner, optional due date and whether it blocks a decision. A blocking gap must have the latest state `RESOLVED` with evidence, or a reasoned `WAIVED` decision. A resolved gap without references is rejected. Reopened gaps block readiness again.
+- **Decision ownership is separate from authorship.** A named active `DECISION_OWNER` is mandatory and must be different from the opportunity creator. Only that active owner can accept or reject the hypothesis; the selected owner, actor, reason, readiness snapshot and request/trace references are recorded in append-only decision history. Reviewer role permissions still gate the HTTP commands.
+- **One gate at both layers.** `GET .../governance` reports `READY` or `BLOCKED` with stable blocker codes and missing-evidence details. The service rejects an acceptance that is not ready, and PostgreSQL independently re-checks evidence, assumption review, the latest core constraints, blocking gaps, actor identity and decision-owner assignment in the state-transition trigger. Rejected proposals can still be rejected by the named decision owner when the evidence is insufficient.
+- **Scoped and auditable.** Governance tables use forced tenant RLS and composite tenant/factory/opportunity foreign keys. Assumption definitions, constraint snapshots and gap definitions are immutable; assumption decisions, gap events and decision history are append-only. Mutations produce outbox events and audit records. Owner changes close the previous assignment and preserve its history.
+- **Conservative semantics.** Readiness is a deterministic completeness/control check, not a forecast, probability, legal conclusion or approval by itself. `NOT_APPLICABLE` is an explicit reviewer-owned decision and should not be used to avoid measuring a real constraint. Constraint sources are manually/adapter-supplied today; this slice does not automatically connect every ERP, finance, quality or delivery system.
+
+### Verification and traceability
+
+| Requirement area | Backend enforcement | Verification |
+|---|---|---|
+| Make assumptions explicit and validate or refute them with evidence | Immutable assumption register; append-only review decisions; evidence references must be attached to this opportunity | `growth-governance.spec.ts`; PostgreSQL contract test |
+| Make constraints, units and source freshness visible | Immutable per-dimension constraint snapshots; the four core dimensions are required; incomplete/unknown constraints block acceptance | `growth-governance.spec.ts`; migration 143 guards |
+| Track missing evidence and accountable closure | Evidence-gap register plus append-only state events; resolution references must exist on the same opportunity | PostgreSQL contract test and readiness tests |
+| Assign decision ownership and avoid self-approval | Active role assignment, creator/owner separation, decision actor check, append-only decision snapshot | PostgreSQL lifecycle trigger; Research/Growth integration suite |
+| Keep tenant/factory boundaries | Forced RLS, composite foreign keys, owner membership checks and API scope guards | `growth-opportunity-governance.sql` plus full PostgreSQL CI |
+
+`growth_opportunity_decision_history.readiness_snapshot` records what the service checked at decision time. This is the governance record for why an opportunity was accepted; later evidence does not retroactively rewrite that historical decision. Opportunity-level financial sensitivity still requires its own data-vintaged scenario and constraint gate; a `READY` governance response does not automatically mark a scenario decision-ready.
