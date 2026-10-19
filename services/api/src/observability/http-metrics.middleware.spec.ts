@@ -15,7 +15,7 @@ describe('HttpMetricsMiddleware', () => {
       writableEnded: true,
       once: jest.fn((event: string, callback: () => void) => {
         listeners.set(event, callback);
-        return res;
+        return undefined;
       }),
     } as unknown as Response;
     const next = jest.fn() as unknown as NextFunction;

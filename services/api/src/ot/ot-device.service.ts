@@ -67,7 +67,7 @@ export class OtDeviceService {
   async register(scope: OtRequestScope, dto: RegisterOtDeviceDto, rawIdempotencyKey?: string) {
     this.validateScope(scope);
     const idempotencyKey = rawIdempotencyKey?.trim() ?? '';
-    if (!idempotencyKey || idempotencyKey.length > 200 || /[\u0000-\u001f\u007f]/.test(idempotencyKey)) {
+    if (!idempotencyKey || idempotencyKey.length > 200 || hasControlCharacters(idempotencyKey)) {
       throw new BadRequestException('A valid Idempotency-Key header of 1 to 200 characters is required');
     }
     const metadata = this.normalizeObject(dto.metadata ?? {}, 'metadata');
@@ -288,13 +288,13 @@ export class OtDeviceService {
       const eventType = event.event_type?.trim() ?? '';
       const streamKey = event.stream_key?.trim() ?? '';
       const sourceSequence = event.source_sequence ?? null;
-      if (!sourceEventId || sourceEventId.length > 200 || /[\u0000-\u001f\u007f]/.test(sourceEventId)) {
+      if (!sourceEventId || sourceEventId.length > 200 || hasControlCharacters(sourceEventId)) {
         throw new BadRequestException('source_event_id must be 1 to 200 safe characters');
       }
       if (!/^[A-Z][A-Z0-9_.-]{0,99}$/.test(eventType)) {
         throw new BadRequestException('event_type has an invalid format');
       }
-      if (!streamKey || streamKey.length > 160 || /[\u0000-\u001f\u007f]/.test(streamKey)) {
+      if (!streamKey || streamKey.length > 160 || hasControlCharacters(streamKey)) {
         throw new BadRequestException('stream_key must be 1 to 160 safe characters');
       }
       if (sourceSequence !== null && (!Number.isSafeInteger(sourceSequence) || sourceSequence < 1)) {

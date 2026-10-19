@@ -158,6 +158,7 @@ export class AppModule
         RequestIdMiddleware,
         TraceIdMiddleware,
         TenantContextMiddleware,
+        HttpMetricsMiddleware,
       )
       .forRoutes({
         path: '*path',

@@ -58,7 +58,6 @@ export class OtDeviceTransitionDto {
 export class OtTelemetrySampleDto {
   @IsString()
   @Length(1, 200)
-  @Matches(/^[^\u0000-\u001f\u007f]+$/)
   source_event_id!: string;
 
   @IsString()
@@ -68,7 +67,6 @@ export class OtTelemetrySampleDto {
 
   @IsString()
   @Length(1, 160)
-  @Matches(/^[^\u0000-\u001f\u007f]+$/)
   stream_key!: string;
 
   @IsOptional()
