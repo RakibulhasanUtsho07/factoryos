@@ -123,8 +123,9 @@ describe('CbbGovernanceService', () => {
     queue(
       { rows: [{ id: aclId, blueprint_id: blueprintId, blueprint_version_id: versionId, target_type: 'ENTITY',
         target_id: entityId, review_status: 'OPEN', review_version: 2, last_evidence_at: '2026-01-01T00:00:00Z' }] },
-      { rows: [] },
-      { rows: [] },
+      { rows: [] }, // target-specific advisory lock
+      { rows: [] }, // active user's roles
+      { rows: [] }, // no object/field ACL grants
       { rows: [{ current_version_id: versionId }] },
       { rows: [{ id: '90000000-0000-4000-8000-000000000001' }] },
       { rows: [{ id: aclId, review_status: 'MARKED_STALE', review_version: 3, reviewed_at: '2026-10-19T00:00:00Z' }] },
