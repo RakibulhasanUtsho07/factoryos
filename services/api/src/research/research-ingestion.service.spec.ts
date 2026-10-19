@@ -311,6 +311,111 @@ describe('ResearchIngestionService', () => {
       payload: expect.objectContaining({ sourceId: SOURCE_ID, claimIds: [CLAIM_ID], safetyResult: 'REVIEW_REQUIRED' }),
     }));
   });
+
+  it('records a reviewer decision against the exact extraction output and current rights version', async () => {
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_extraction_items i')) {
+        return { rows: [{
+          id: ITEM_ID, tenant_id: TENANT_ID, extraction_run_id: RUN_ID, item_key: 'claim-001',
+          safety_flags: ['PROMPT_CONTROL_INSTRUCTION'], review_status: 'REVIEW_REQUIRED',
+          job_id: JOB_ID, source_id: SOURCE_ID, source_revision: 1, rights_version: 1,
+          output_sha256: '1'.repeat(64), safety_result: 'REVIEW_REQUIRED',
+          job_stage: 'COMPLETE', job_progress: 100,
+          access_status: 'APPROVED', license_status: 'OPEN_ACCESS',
+          rights_basis: 'Repository rights allow metadata processing.',
+          current_source_revision: 1, current_rights_version: 1,
+        }] };
+      }
+      if (sql.includes('SELECT id FROM research_extraction_item_reviews')) return { rows: [] };
+      if (sql.includes('INSERT INTO research_extraction_item_reviews')) {
+        return { rows: [{
+          id: 'b3cc8a8c-4c0f-4f62-a1ea-8d2b83700001',
+          extraction_item_id: ITEM_ID, decision: 'APPROVE',
+          reason: 'Reviewed the source context and confirmed the extracted claim.',
+          source_revision: 1, rights_version: 1, output_sha256: '1'.repeat(64),
+          safety_flags: ['PROMPT_CONTROL_INSTRUCTION'], reviewed_by: USER_ID,
+          created_at: '2026-10-19T00:00:00Z',
+        }] };
+      }
+      if (sql.includes('INSERT INTO research_ingestion_events')) return { rows: [] };
+      throw new Error('Unexpected SQL in extraction-item review test: ' + sql);
+    });
+
+    const result = await service.decideExtractionItem(USER_ID, TENANT_ID, JOB_ID, ITEM_ID, {
+      expected_review_version: 0,
+      decision: 'APPROVE',
+      reason: 'Reviewed the source context and confirmed the extracted claim.',
+    }, null, null);
+
+    expect(result).toMatchObject({
+      extraction_item_id: ITEM_ID, decision: 'APPROVE',
+      source_revision: 1, rights_version: 1, output_sha256: '1'.repeat(64),
+    });
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining('FOR UPDATE OF i,s'), [ITEM_ID, TENANT_ID, JOB_ID],
+    );
+    expect(audit.recordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      action: 'RESEARCH_EXTRACTION_ITEM_REVIEWED',
+      resourceId: ITEM_ID,
+      payload: expect.objectContaining({ decision: 'APPROVE', sourceRevision: 1, rightsVersion: 1 }),
+    }));
+  });
+
+  it('rejects extraction-item review when the source revision or rights version changed', async () => {
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_extraction_items i')) {
+        return { rows: [{
+          id: ITEM_ID, tenant_id: TENANT_ID, extraction_run_id: RUN_ID, item_key: 'claim-001',
+          safety_flags: [], review_status: 'PROPOSED', job_id: JOB_ID, source_id: SOURCE_ID,
+          source_revision: 1, rights_version: 1, output_sha256: '1'.repeat(64),
+          safety_result: 'PASS', job_stage: 'COMPLETE', job_progress: 100,
+          access_status: 'APPROVED', license_status: 'OPEN_ACCESS',
+          rights_basis: 'Repository rights allow metadata processing.',
+          current_source_revision: 2, current_rights_version: 1,
+        }] };
+      }
+      throw new Error('Unexpected SQL in stale extraction review test: ' + sql);
+    });
+
+    await expect(service.decideExtractionItem(USER_ID, TENANT_ID, JOB_ID, ITEM_ID, {
+      expected_review_version: 0,
+      decision: 'APPROVE',
+      reason: 'Reviewed the source context and confirmed the extracted claim.',
+    }, null, null)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'RESEARCH_EXTRACTION_SOURCE_OR_RIGHTS_VERSION_CHANGED' }),
+    });
+
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO research_extraction_item_reviews'))).toBe(false);
+    expect(audit.recordWithClient).not.toHaveBeenCalled();
+  });
+
+  it('rejects a second extraction-item decision instead of rewriting review history', async () => {
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM research_extraction_items i')) {
+        return { rows: [{
+          id: ITEM_ID, tenant_id: TENANT_ID, extraction_run_id: RUN_ID, item_key: 'claim-001',
+          safety_flags: [], review_status: 'PROPOSED', job_id: JOB_ID, source_id: SOURCE_ID,
+          source_revision: 1, rights_version: 1, output_sha256: '1'.repeat(64),
+          safety_result: 'PASS', job_stage: 'COMPLETE', job_progress: 100,
+          access_status: 'APPROVED', license_status: 'OPEN_ACCESS',
+          rights_basis: 'Repository rights allow metadata processing.',
+          current_source_revision: 1, current_rights_version: 1,
+        }] };
+      }
+      if (sql.includes('SELECT id FROM research_extraction_item_reviews')) {
+        return { rows: [{ id: 'b3cc8a8c-4c0f-4f62-a1ea-8d2b83700001' }] };
+      }
+      throw new Error('Unexpected SQL in duplicate extraction review test: ' + sql);
+    });
+
+    await expect(service.decideExtractionItem(USER_ID, TENANT_ID, JOB_ID, ITEM_ID, {
+      expected_review_version: 0,
+      decision: 'REJECT',
+      reason: 'The source interpretation is unsupported.',
+    }, null, null)).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO research_extraction_item_reviews'))).toBe(false);
+  });
 });
 
 function argumentsAsArray(value: unknown): unknown[] {
