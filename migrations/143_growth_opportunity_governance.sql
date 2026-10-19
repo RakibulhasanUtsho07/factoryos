@@ -50,10 +50,10 @@ CREATE TABLE growth_opportunity_assumption_decisions (
     FOREIGN KEY (assumption_id, tenant_id, factory_id, opportunity_id)
     REFERENCES growth_opportunity_assumptions(id, tenant_id, factory_id, opportunity_id) ON DELETE RESTRICT,
   CONSTRAINT fk_growth_assumption_decision_actor FOREIGN KEY (decided_by) REFERENCES users(id) ON DELETE RESTRICT,
-  CONSTRAINT chk_growth_assumption_decision_value CHECK (decision IN ('VALIDATED','REFUTED','DEFERRED','NEEDS_EVIDENCE')),
+  CONSTRAINT chk_growth_assumption_decision_value CHECK (decision IN ('VALIDATED','REFUTED','DEFERRED','NEEDS_EVIDENCE','WAIVED')),
   CONSTRAINT chk_growth_assumption_decision_reason CHECK (length(btrim(reason)) BETWEEN 10 AND 2000),
   CONSTRAINT chk_growth_assumption_decision_refs CHECK (jsonb_typeof(evidence_refs) = 'array'),
-  CONSTRAINT chk_growth_assumption_decision_evidence CHECK (decision NOT IN ('VALIDATED','REFUTED') OR jsonb_array_length(evidence_refs) > 0)
+  CONSTRAINT chk_growth_assumption_decision_evidence CHECK (decision NOT IN ('VALIDATED','REFUTED','WAIVED') OR jsonb_array_length(evidence_refs) > 0)
 );
 CREATE INDEX idx_growth_assumption_decisions_latest
   ON growth_opportunity_assumption_decisions
@@ -253,7 +253,7 @@ BEGIN
      OR NEW.tenant_id IS DISTINCT FROM factoryos_current_tenant_id() THEN
     RAISE EXCEPTION 'GROWTH_ASSUMPTION_DECISION_ACTOR_OR_TENANT_MISMATCH' USING ERRCODE = '42501';
   END IF;
-  IF NEW.decision IN ('VALIDATED','REFUTED') THEN
+  IF NEW.decision IN ('VALIDATED','REFUTED','WAIVED') THEN
     FOR v_ref IN SELECT jsonb_array_elements_text(NEW.evidence_refs) LOOP
       IF NOT factoryos_growth_opportunity_evidence_ref_exists(NEW.tenant_id, NEW.factory_id, NEW.opportunity_id, v_ref) THEN
         RAISE EXCEPTION 'GROWTH_ASSUMPTION_DECISION_EVIDENCE_NOT_ATTACHED_TO_OPPORTUNITY' USING ERRCODE = '23514';
@@ -522,7 +522,7 @@ BEGIN
     ) last_decision ON TRUE
     WHERE a.tenant_id = p_tenant_id AND a.factory_id = p_factory_id
       AND a.opportunity_id = p_opportunity_id AND a.blocks_decision
-      AND (last_decision.decision IS DISTINCT FROM 'VALIDATED'
+      AND (COALESCE(last_decision.decision NOT IN ('VALIDATED','WAIVED'), TRUE)
         OR COALESCE(jsonb_array_length(last_decision.evidence_refs), 0) = 0)
   ) THEN
     RETURN FALSE;
