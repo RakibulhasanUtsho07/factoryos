@@ -3,8 +3,8 @@ import { BadRequestException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { AuditService } from './audit.service';
 
-const databaseQuery = jest.fn();
-const clientQuery = jest.fn();
+const databaseQuery = jest.fn<(...args: unknown[]) => Promise<unknown>>();
+const clientQuery = jest.fn<(...args: unknown[]) => Promise<{ rows: Array<{ id: string }> }>>();
 const database = { query: databaseQuery };
 const client = { query: clientQuery } as unknown as PoolClient;
 
