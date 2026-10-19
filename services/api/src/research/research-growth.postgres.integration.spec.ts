@@ -235,7 +235,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           source_snapshot, resume_checkpoint, lease_owner, lease_expires_at, created_by
         )
         VALUES ($1, 'TENANT', $2, 'METADATA_ONLY', 'QUEUED', 'QUEUED', 0,
-          0, 3, 1, $3, $4, 1, 1, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $6)
+          0, 3, 1, $3, $4, 1, 1, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, NULL, NULL, $6)
         RETURNING id::text AS id
         `,
         [f.tenantId, f.sourceId, 'rights-' + randomUUID(), 'c'.repeat(64), 'd'.repeat(64), f.userId],
@@ -300,7 +300,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           source_snapshot,resume_checkpoint,created_by,completed_at
         )
         VALUES ($1,'TENANT',$2,'METADATA_ONLY','QUEUED','QUEUED',0,
-          0,3,1,$3,$4,1,1,$5,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6)
+          0,3,1,$3,$4,1,1,$5,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6,NULL)
         RETURNING id::text AS id
         `,
         [f.tenantId, f.sourceId, 'extract-' + randomUUID(), 'e'.repeat(64), 'f'.repeat(64), f.userId],
