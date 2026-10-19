@@ -71,6 +71,9 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
+  -- PostgreSQL computes the durable fingerprint from the exact JSONB snapshot it stores.
+  NEW.claim_fingerprint := encode(sha256(convert_to(NEW.evidence_snapshot::text, 'UTF8')), 'hex');
+
   SELECT c.*, s.title AS current_source_title, s.doi AS current_source_doi,
          s.source_url AS current_source_url, s.authors AS current_source_authors,
          s.publication_date AS current_publication_date,
