@@ -12,7 +12,8 @@ BEGIN
     'research_extraction_items',
     'research_source_rights_history',
     'research_extraction_item_reviews',
-    'research_source_content_purges'
+    'research_source_content_purges',
+    'research_evidence_assessments'
   ] LOOP
     IF to_regclass('public.' || required_table) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_TABLE_MISSING: %', required_table;
@@ -50,7 +51,9 @@ BEGIN
     'idx_research_extraction_item_review_history',
     'uq_research_extraction_item_review',
     'uq_research_claim_id_tenant',
-    'idx_research_source_content_purges_timeline'
+    'idx_research_source_content_purges_timeline',
+    'idx_research_evidence_assessment_history',
+    'idx_research_evidence_assessment_source_version'
   ] LOOP
     IF to_regclass('public.' || required_index) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_INDEX_MISSING: %', required_index;
@@ -70,7 +73,9 @@ BEGIN
     'research_extracted_claim_review_guard',
     'research_source_z_excerpt_purge_guard',
     'research_source_content_purges_immutable',
-    'research_source_a_access_normalize_guard'
+    'research_source_a_access_normalize_guard',
+    'research_evidence_assessments_guard',
+    'research_claim_evidence_assessment_guard'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger t
@@ -115,6 +120,8 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version='136_research_content_rights_purge'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='137_research_full_text_access_normalization'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='138_research_evidence_assessment'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_INGESTION_MIGRATION_REGISTRATION_MISSING';
   END IF;
@@ -129,6 +136,30 @@ BEGIN
   IF position('Extracted claims require explicit extraction-item review'
       IN pg_get_functiondef('public.factoryos_guard_research_extracted_claim_review()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'RESEARCH_EXTRACTION_REVIEW_APPROVAL_GUARD_MISSING';
+  END IF;
+
+  IF position('RESEARCH_CLAIM_APPROVAL_REQUIRES_CURRENT_EVIDENCE_ASSESSMENT'
+      IN pg_get_functiondef('public.factoryos_guard_research_claim_evidence_assessment()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_CLAIM_EVIDENCE_ASSESSMENT_APPROVAL_GATE_MISSING';
+  END IF;
+
+  IF position('RESEARCH_EVIDENCE_ASSESSMENT_SNAPSHOT_CONTENT_MISMATCH'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_assessment()'::regprocedure)) = 0
+     OR position('RESEARCH_EVIDENCE_ASSESSMENTS_ARE_APPEND_ONLY'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_assessment()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_EVIDENCE_ASSESSMENT_IMMUTABILITY_GUARD_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    WHERE c.oid=to_regclass('public.research_evidence_assessments')
+      AND c.relrowsecurity AND c.relforcerowsecurity
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname='public' AND tablename='research_evidence_assessments'
+      AND policyname='research_evidence_assessments_tenant_isolation'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_EVIDENCE_ASSESSMENT_TENANT_ISOLATION_MISSING';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM permissions WHERE code='research.ingest') THEN
