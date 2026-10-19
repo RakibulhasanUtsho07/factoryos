@@ -20,6 +20,7 @@ import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
+import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto';
 import {
   CompleteResearchExtractionDto,
   CreateResearchIngestionJobDto,
@@ -410,6 +411,29 @@ export class ResearchController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.promoteRelease(c.userId, c.tenantId, releaseId, body, c.requestId, c.traceId);
+  }
+
+  @Get('releases/:releaseId/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  releaseHistory(
+    @Req() req: FactoryOsRequest,
+    @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.listReleaseHistory(c.tenantId, releaseId);
+  }
+
+  @Post('releases/:releaseId/rollback')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  rollbackRelease(
+    @Req() req: FactoryOsRequest,
+    @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
+    @Body() body: RollbackResearchReleaseDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.rollbackRelease(c.userId, c.tenantId, releaseId, body, c.requestId, c.traceId);
   }
 
   @Post('claims/:claimId/relevance')
