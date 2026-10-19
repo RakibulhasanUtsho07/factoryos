@@ -103,6 +103,13 @@ BEGIN
     RAISE EXCEPTION 'GROWTH_GOVERNANCE_OPPORTUNITY_DECISION_GUARD_MISSING';
   END IF;
 
+  IF position('BEFORE INSERT OR UPDATE OR DELETE' IN pg_get_triggerdef((
+       SELECT oid FROM pg_trigger
+        WHERE tgname = 'growth_opportunity_assumptions_immutable' AND NOT tgisinternal
+     ))) = 0 THEN
+    RAISE EXCEPTION 'GROWTH_GOVERNANCE_ASSUMPTION_OWNER_INSERT_GUARD_MISSING';
+  END IF;
+
   definition := pg_get_functiondef('public.factoryos_guard_growth_assumption_decision()'::regprocedure);
   IF position('NEW.actor_user_id' IN definition) > 0
      OR position('NEW.decided_by' IN definition) = 0 THEN
