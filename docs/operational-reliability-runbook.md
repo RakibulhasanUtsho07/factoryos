@@ -99,3 +99,35 @@ The OT API slice stores device registration metadata and accepts bounded, normal
 Capture: UTC incident window, affected service/tenant/factory where authorized, current and prior release SHA, workflow links, metric snapshots, sanitized request/trace IDs, DB health and pool observations, last successful migration, backup/restore evidence, event/claim identifiers, decision-maker and next action. Avoid attaching raw secrets, complete private payloads or tenant data dumps to tickets.
 
 Close an incident only after the remediation is deployed and verified, the alert has cleared for the agreed observation window, and regression coverage or a documented follow-up exists. Record unresolved risks and assign an owner and due date; never mark a runbook gate as passed based only on a green CI badge.
+
+## 7. Bounded API load smoke test (non-production only)
+
+The repository includes `scripts/performance/api-load-smoke.mjs`, available as `npm --workspace services/api run test:load-smoke`. Both API CI workflows syntax-check the harness. It uses only Node's built-in fetch; it does not require a load-testing package or write application data by design (choose a read-only health/diagnostic route for the default run).
+
+Defaults are intentionally conservative: 15 seconds, concurrency 5, 100,000 attempted requests maximum, and a five-second timeout per request. The report contains request rate, status/error counts and p50/p95/p99/max latencies; it never prints bearer tokens. A supplied p95 threshold is an operator-selected guardrail, not an approved FactoryOS SLO.
+
+Linux/macOS example against a local API:
+
+~~~sh
+FACTORYOS_LOAD_BASE_URL=http://localhost:3001 \
+FACTORYOS_LOAD_PATH=/health \
+FACTORYOS_LOAD_DURATION_SECONDS=15 \
+FACTORYOS_LOAD_CONCURRENCY=5 \
+FACTORYOS_LOAD_MAX_REQUESTS=1000 \
+npm --workspace services/api run test:load-smoke
+~~~
+
+PowerShell example:
+
+~~~powershell
+$env:FACTORYOS_LOAD_BASE_URL = "http://localhost:3001"
+$env:FACTORYOS_LOAD_PATH = "/health"
+$env:FACTORYOS_LOAD_DURATION_SECONDS = "15"
+$env:FACTORYOS_LOAD_CONCURRENCY = "5"
+$env:FACTORYOS_LOAD_MAX_REQUESTS = "1000"
+npm --workspace services/api run test:load-smoke
+~~~
+
+Remote targets are rejected unless `FACTORYOS_LOAD_ALLOW_REMOTE=true` is explicitly set. Set this only after confirming that the URL targets an isolated, approved staging/performance environment with synthetic data, a known request budget, an agreed time window, and the owner's permission. Do not direct the script to production or perform a denial-of-service exercise with it. Set `FACTORYOS_LOAD_BEARER_TOKEN` only for a separately approved authenticated read-only route; the token is never part of the URL/report.
+
+For example, require `FACTORYOS_LOAD_MAX_P95_MS=500` only if a 500 ms target has been formally approved for that route. The run fails when observed HTTP 5xx/network error rate exceeds `FACTORYOS_LOAD_MAX_ERROR_RATE` (default 1%), or when configured p95 threshold is exceeded. Save the sanitized JSON output with the candidate SHA and environment shape. A short smoke run is not capacity certification: test representative business journeys, realistic read/write mix, connection pool/DB pressure, saturation, soak behavior and recovery separately under an approved plan.
