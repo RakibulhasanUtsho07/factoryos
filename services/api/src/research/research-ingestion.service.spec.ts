@@ -40,6 +40,7 @@ describe('ResearchIngestionService', () => {
     abstract: 'An approved abstract with reported study outcomes.',
     source_url: 'https://research.example.test/paper/1',
     source_metadata: { repository: 'test' },
+    ingested_at: '2026-10-18T12:30:00.000Z',
     source_revision: 1,
     rights_version: 1,
     license_status: 'OPEN_ACCESS',
@@ -144,6 +145,10 @@ describe('ResearchIngestionService', () => {
     expect(result).toMatchObject({ id: JOB_ID, status: 'QUEUED', source_id: SOURCE_ID, mode: 'METADATA_ONLY' });
     expect(result).not.toHaveProperty('source_snapshot');
     expect(result).not.toHaveProperty('rights_snapshot');
+    const insertCall = client.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO research_ingestion_jobs'));
+    expect(JSON.parse(String(argumentsAsArray(insertCall?.[1])[9]))).toMatchObject({
+      sourceId: SOURCE_ID, ingestedAt: '2026-10-18T12:30:00.000Z', sourceRevision: 1,
+    });
     expect(client.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO research_ingestion_events'),
       expect.any(Array),
