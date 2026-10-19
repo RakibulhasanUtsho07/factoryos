@@ -308,6 +308,31 @@ export class ResearchController {
     });
   }
 
+  @Post('claims/:claimId/assess-evidence')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  assessClaimEvidence(
+    @Req() req: FactoryOsRequest,
+    @Param('claimId', new ParseUUIDPipe()) claimId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.assessClaimEvidence(c.userId, c.tenantId, claimId, c.requestId, c.traceId);
+  }
+
+  @Get('claims/:claimId/evidence-assessments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listClaimEvidenceAssessments(
+    @Req() req: FactoryOsRequest,
+    @Param('claimId', new ParseUUIDPipe()) claimId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.listClaimEvidenceAssessments(
+      c.userId, c.tenantId, claimId, rawLimit === undefined ? 50 : Number(rawLimit),
+    );
+  }
+
   @Post('claims/:claimId/decision')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.review')
