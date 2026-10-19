@@ -165,6 +165,33 @@ describe('ResearchService', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('refuses a knowledge release when an approved claim has no assessment for the current source version', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: CLAIM_ID, tenant_id: TENANT_ID, namespace: 'TENANT', source_id: SOURCE_ID,
+        claim_text: 'A previously approved research statement.', methodology: 'Controlled study',
+        dataset_description: 'Production measurements', limitations: 'Single facility',
+        practical_implication: 'Validate before rollout', evidence_grade: 'B', evidence_strength: 'MODERATE',
+        topic_tags: ['quality'], provenance_ref: { page: 4, section: 'Results' }, status: 'APPROVED',
+        stored_excerpt: null, source_title: 'Manufacturing quality study',
+        source_url: 'https://publisher.example/paper', doi: '10.1234/quality-study',
+        license_status: 'OPEN_ACCESS', access_status: 'APPROVED',
+        rights_basis: 'Verified open-access licence', source_revision: 2, rights_version: 3,
+        current_evidence_assessment_id: null, current_evidence_citation_status: null,
+        current_evidence_safety_status: null, current_evidence_safety_flags: null,
+        safety_review_decision: null,
+      }],
+    });
+
+    await expect(service.createRelease(
+      USER_ID, TENANT_ID,
+      { release_key: 'stale-evidence', version: 1, title: 'Stale evidence', claim_ids: [CLAIM_ID], evidence_grade: 'B' },
+      null, null,
+    )).rejects.toThrow('Every claim requires a current source- and rights-version-bound evidence assessment');
+    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires a source locator to be present before a release can be validated', async () => {
     database.query.mockResolvedValueOnce({
       rows: [{
