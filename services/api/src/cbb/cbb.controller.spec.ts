@@ -93,6 +93,10 @@ const cbbChangeService = {
   createFeedback,
 };
 
+const filterBusinessMap = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, map: unknown) => map);
+const filterProcessResult = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, result: unknown) => result);
+const cbbGovernanceService = { filterBusinessMap, filterProcessResult };
+
 describe(
   'CbbController',
   () => {
@@ -148,6 +152,7 @@ describe(
             cbbService as never,
             cbbChangeService as never,
             {} as never,
+            cbbGovernanceService as never,
           );
       },
     );
