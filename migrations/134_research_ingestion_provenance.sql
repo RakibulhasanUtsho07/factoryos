@@ -271,6 +271,10 @@ AS $$
 DECLARE
   action_name TEXT;
 BEGIN
+  -- Global corpus sources are intentionally not written into tenant audit history.
+  IF NEW.namespace <> 'TENANT' OR NEW.tenant_id IS NULL THEN
+    RETURN NEW;
+  END IF;
   IF TG_OP = 'INSERT' THEN
     action_name := 'REGISTERED';
   ELSIF NEW.access_status = 'REVOKED' AND OLD.access_status IS DISTINCT FROM NEW.access_status THEN
