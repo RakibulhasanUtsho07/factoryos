@@ -89,7 +89,7 @@ Database safeguards serialize concurrent version allocation by locking the paren
 | Forecast validity | This is fixed, deterministic arithmetic and one-factor sensitivity, not a fitted model | No model calibration, statistical confidence distribution, Monte Carlo, causal inference or automatic source reconciliation is claimed by this task |
 
 
-For illustration, the request's `profiles` explicitly state all six numeric assumptions per case; the engine does not decide what “upside” or “stress” means for a business. Teams must set those inputs from their approved operating hypothesis and include dates/references that identify the baseline evidence. The outputs are reproducible deterministic arithmetic under `factoryos.growth.financial-sensitivity.v1`; they are not statistical forecasts, calibrated probability intervals, causal effects, Monte Carlo simulations or a substitute for financial and operations review.
+For illustration, the request's `profiles` explicitly state all six numeric assumptions per case; the engine does not decide what “upside” or “stress” means for a business. Teams must set those inputs from their approved operating hypothesis and include dates/references that identify the baseline evidence. The submitted `baseline_source_ref` must exactly match (after trimming whitespace) a `reference_ref` or `citation_url` already attached to that same opportunity; both the API and database trigger reject unlinked source pointers. The outputs are reproducible deterministic arithmetic under `factoryos.growth.financial-sensitivity.v1`; they are not statistical forecasts, calibrated probability intervals, causal effects, Monte Carlo simulations or a substitute for financial and operations review.
 
 ## Consistency and safety properties
 
