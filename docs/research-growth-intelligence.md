@@ -55,6 +55,17 @@ Evidence origin is explicit: external research, client-private CBB, operational 
 - Opportunity, experiment and scenario writes are factory-authorized via IAM and emit transactional outbox events; writes are audited separately through the platform audit service.
 - The sensitivity engine is deterministic arithmetic, not an AI forecast or causal model. It explicitly discloses the assumptions it uses.
 
+## SRS traceability for source rights and ingestion provenance
+
+| SRS requirement | Implementation in this backend slice | Boundary / remaining integration |
+| --- | --- | --- |
+| FR-RES-01 / FR-RES-02 | Supported source-type taxonomy and source metadata preserve title, authors, publication date, identifier/DOI, venue, abstract, URL, rights status and ingestion timestamp; source/rights snapshots carry revision lineage. | This slice does not fetch arbitrary web URLs or parse uploaded files; approved provider/storage adapters remain separate. |
+| FR-RES-05 | Approval and ingestion require current, documented reuse rights; full-text mode and excerpt persistence require explicit storage permission. Revocation/restriction purges stored excerpts while preserving only digest, locator, version and immutable purge evidence. | Production legal policy must still configure allowed license bases and source-specific contractual terms. |
+| FR-RES-06 | Source content is treated as untrusted; prompt-control/data-exfiltration heuristics flag extraction candidates, never authorize tools or auto-approve claims. Checkpoints reject obvious raw body/excerpt fields. | Heuristic flags are not a production-grade malware/prompt-injection classifier; security evaluation remains required. |
+| FR-RES-07 / FR-RES-08 | Extraction manifests retain extractor/schema/model metadata, worker-attested input hash, server-computed output hash, structured claims, source locators and immutable per-item review decisions. Claims remain proposed until independently reviewed. | An extraction provider/worker must produce the extraction output; the API does not call an LLM by itself. |
+| FR-RES-12 / FR-RES-14 | Source decisions, rights snapshots, job events, extraction run/item lineage, review decisions and content-purge audit are tenant-scoped and queryable by authorized reviewers. | Reproducing the exact input bytes requires a trusted connector/artifact store; input SHA-256 is worker-attested until then. |
+| FR-RES-03 / FR-RES-04 / FR-RES-11 | Topic watchlist configuration already exists; this migration series adds resumable jobs and source/right staleness checks. | Scheduled crawler execution, cross-version/similarity deduplication and continuous freshness-monitoring worker are separate integrations, not claimed as complete by this slice. |
+
 ## IAM permissions
 
 The API permission catalog defines `research.read/write/review/ingest` and `growth.read/write/review`. Migration `134_research_ingestion_provenance.sql` registers the distinct `research.ingest` worker permission but does not automatically grant it to production roles. Assign `research.write` to source registrars, `research.review` to rights reviewers, `research.read` to consumers, and `research.ingest` only to the trusted worker identity permitted to claim jobs and persist extraction output. Production role grants remain explicit; the local development seed does not imply that a production role has this worker permission.
