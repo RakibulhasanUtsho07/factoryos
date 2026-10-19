@@ -88,7 +88,7 @@ describe('CbbEvidenceService', () => {
       resourceId: evidenceId,
       payload: expect.objectContaining({ contentHash: digestA, revisionNo: 1 }),
     }));
-    expect(auditRecordWithClient).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
   });
 
   it('filters evidence by the requested graph target and defaults to internal visibility', async () => {
@@ -179,7 +179,7 @@ describe('CbbEvidenceService', () => {
       action: 'LINK_SOURCE_EVIDENCE',
       payload: expect.objectContaining({ linkType: 'CONTRADICTS', conflictId }),
     }));
-    expect(auditRecordWithClient).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
   });
 
   it('does not reopen a closed conflict when the same contradiction link is replayed', async () => {
