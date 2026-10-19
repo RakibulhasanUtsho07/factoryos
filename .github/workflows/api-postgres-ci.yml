@@ -218,6 +218,7 @@ jobs:
             migrations/130_integration_operational_reconciliation.sql
             migrations/131_cbb_evidence_provenance.sql
             migrations/132_cbb_governance.sql
+            migrations/133_cbb_terminology_context.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
