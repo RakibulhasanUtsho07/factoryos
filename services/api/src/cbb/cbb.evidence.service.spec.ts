@@ -173,6 +173,46 @@ describe('CbbEvidenceService', () => {
     }));
   });
 
+  it('appends new supporting evidence to an existing open conflict with actor attribution', async () => {
+    const priorEvidenceId = 'e0000000-0000-4000-8000-000000000003';
+    const link: TestRow = {
+      id: otherEvidenceId,
+      evidence_id: otherEvidenceId,
+      blueprint_id: blueprintId,
+      blueprint_version_id: versionId,
+      target_type: 'ENTITY',
+      target_id: entityId,
+      link_type: 'SUPPORTS',
+      created_by: userId,
+      created_at: '2026-10-19T05:00:00Z',
+    };
+    queue(
+      { rows: [{ id: otherEvidenceId }] },
+      { rows: [{ id: blueprintId, current_version_id: versionId }] },
+      { rows: [{ id: entityId }] },
+      { rows: [link] },
+      { rows: [{ id: conflictId, version: 1, evidence_refs: [priorEvidenceId] }] },
+      { rows: [] },
+    );
+
+    const result = await service.createEvidenceLink(
+      { tenantId, factoryId, userId },
+      otherEvidenceId,
+      { target_type: 'ENTITY', target_id: entityId, link_type: 'SUPPORTS' } as LinkCbbEvidenceDto,
+    );
+
+    expect(result.conflictId).toBe(conflictId);
+    expect(query.mock.calls[5]?.[0]).toContain('updated_by=$2');
+    expect(query.mock.calls[5]?.[1]).toEqual([
+      JSON.stringify([priorEvidenceId, otherEvidenceId]),
+      userId,
+      conflictId,
+      tenantId,
+      factoryId,
+      1,
+    ]);
+  });
+
   it('does not let stale conflict decisions overwrite a newer review version', async () => {
     queue({ rows: [{ id: conflictId, status: 'OPEN', version: 2, evidence_refs: [evidenceId] }] });
     await expect(service.decideConflict(
