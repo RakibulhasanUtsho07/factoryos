@@ -17,6 +17,7 @@ import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto'
 import { DecideResearchWatchlistDto } from './dto/decide-research-watchlist.dto';
 import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
+import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
 import {
@@ -330,6 +331,21 @@ export class ResearchController {
     const c = this.context(req);
     return this.research.listClaimEvidenceAssessments(
       c.userId, c.tenantId, claimId, rawLimit === undefined ? 50 : Number(rawLimit),
+    );
+  }
+
+  @Post('claims/:claimId/evidence-assessments/:assessmentId/safety-decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideResearchEvidenceSafety(
+    @Req() req: FactoryOsRequest,
+    @Param('claimId', new ParseUUIDPipe()) claimId: string,
+    @Param('assessmentId', new ParseUUIDPipe()) assessmentId: string,
+    @Body() body: DecideResearchEvidenceSafetyDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.decideEvidenceSafety(
+      c.userId, c.tenantId, claimId, assessmentId, body, c.requestId, c.traceId,
     );
   }
 
