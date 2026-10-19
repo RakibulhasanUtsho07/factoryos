@@ -2,8 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
-import { AuditService } from '../../audit/audit.service';
-import { DatabaseService } from '../../database/database.service';
+import { AuditService } from '../audit/audit.service';
+import { DatabaseService } from '../database/database.service';
 import {
   CBB_EVIDENCE_LINK_TYPES, CBB_EVIDENCE_STATES, CBB_EVIDENCE_TARGET_TYPES,
   type CbbEvidenceLinkType, type CbbEvidenceTargetType, type CbbEvidenceState,

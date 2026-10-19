@@ -12,13 +12,18 @@ ALTER TABLE business_evidence
   ADD COLUMN IF NOT EXISTS supersedes_evidence_id UUID,
   ADD COLUMN IF NOT EXISTS revision_no INTEGER NOT NULL DEFAULT 1;
 
-ALTER TABLE business_evidence
-  ADD CONSTRAINT chk_business_evidence_revision_positive
-    CHECK (revision_no >= 1),
-  ADD CONSTRAINT chk_business_evidence_source_key
-    CHECK (source_key IS NULL OR length(btrim(source_key)) BETWEEN 1 AND 1000),
-  ADD CONSTRAINT chk_business_evidence_source_uri
-    CHECK (source_uri IS NULL OR source_uri ~* '^https?://');
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_evidence'::regclass AND conname='chk_business_evidence_revision_positive') THEN
+    ALTER TABLE business_evidence ADD CONSTRAINT chk_business_evidence_revision_positive CHECK (revision_no >= 1);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_evidence'::regclass AND conname='chk_business_evidence_source_key') THEN
+    ALTER TABLE business_evidence ADD CONSTRAINT chk_business_evidence_source_key CHECK (source_key IS NULL OR length(btrim(source_key)) BETWEEN 1 AND 1000);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_evidence'::regclass AND conname='chk_business_evidence_source_uri') THEN
+    ALTER TABLE business_evidence ADD CONSTRAINT chk_business_evidence_source_uri CHECK (source_uri IS NULL OR source_uri ~* '^https?://');
+  END IF;
+END $;
 
 DO $$
 BEGIN
@@ -62,54 +67,48 @@ ALTER TABLE business_evidence_links
   ADD COLUMN IF NOT EXISTS blueprint_id UUID,
   ADD COLUMN IF NOT EXISTS blueprint_version_id UUID;
 
+WITH candidates AS (
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_entities e ON l.target_type = 'ENTITY' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+  UNION ALL
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_relations e ON l.target_type = 'RELATION' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+  UNION ALL
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_processes e ON l.target_type = 'PROCESS' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+  UNION ALL
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_process_steps e ON l.target_type = 'PROCESS_STEP' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+  UNION ALL
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_rules e ON l.target_type = 'RULE' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+  UNION ALL
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_terms e ON l.target_type = 'TERM' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+  UNION ALL
+  SELECT l.id, e.blueprint_version_id, v.blueprint_id
+  FROM business_evidence_links l
+  JOIN business_exceptions e ON l.target_type = 'EXCEPTION' AND e.id=l.target_id AND e.tenant_id=l.tenant_id AND e.factory_id=l.factory_id
+  JOIN business_blueprint_versions v ON v.id=e.blueprint_version_id AND v.tenant_id=e.tenant_id AND v.factory_id=e.factory_id
+)
 UPDATE business_evidence_links l
-SET
-  blueprint_version_id = COALESCE(l.blueprint_version_id, target.blueprint_version_id),
-  blueprint_id = COALESCE(l.blueprint_id, target.blueprint_id)
-FROM LATERAL (
-  SELECT e.blueprint_version_id, v.blueprint_id
-  FROM business_entities e
-  JOIN business_blueprint_versions v
-    ON v.id = e.blueprint_version_id AND v.tenant_id = e.tenant_id AND v.factory_id = e.factory_id
-  WHERE l.target_type = 'ENTITY' AND e.id = l.target_id AND e.tenant_id = l.tenant_id AND e.factory_id = l.factory_id
-  UNION ALL
-  SELECT r.blueprint_version_id, v.blueprint_id
-  FROM business_relations r
-  JOIN business_blueprint_versions v
-    ON v.id = r.blueprint_version_id AND v.tenant_id = r.tenant_id AND v.factory_id = r.factory_id
-  WHERE l.target_type = 'RELATION' AND r.id = l.target_id AND r.tenant_id = l.tenant_id AND r.factory_id = l.factory_id
-  UNION ALL
-  SELECT p.blueprint_version_id, v.blueprint_id
-  FROM business_processes p
-  JOIN business_blueprint_versions v
-    ON v.id = p.blueprint_version_id AND v.tenant_id = p.tenant_id AND v.factory_id = p.factory_id
-  WHERE l.target_type = 'PROCESS' AND p.id = l.target_id AND p.tenant_id = l.tenant_id AND p.factory_id = l.factory_id
-  UNION ALL
-  SELECT s.blueprint_version_id, v.blueprint_id
-  FROM business_process_steps s
-  JOIN business_blueprint_versions v
-    ON v.id = s.blueprint_version_id AND v.tenant_id = s.tenant_id AND v.factory_id = s.factory_id
-  WHERE l.target_type = 'PROCESS_STEP' AND s.id = l.target_id AND s.tenant_id = l.tenant_id AND s.factory_id = l.factory_id
-  UNION ALL
-  SELECT r.blueprint_version_id, v.blueprint_id
-  FROM business_rules r
-  JOIN business_blueprint_versions v
-    ON v.id = r.blueprint_version_id AND v.tenant_id = r.tenant_id AND v.factory_id = r.factory_id
-  WHERE l.target_type = 'RULE' AND r.id = l.target_id AND r.tenant_id = l.tenant_id AND r.factory_id = l.factory_id
-  UNION ALL
-  SELECT t.blueprint_version_id, v.blueprint_id
-  FROM business_terms t
-  JOIN business_blueprint_versions v
-    ON v.id = t.blueprint_version_id AND v.tenant_id = t.tenant_id AND v.factory_id = t.factory_id
-  WHERE l.target_type = 'TERM' AND t.id = l.target_id AND t.tenant_id = l.tenant_id AND t.factory_id = l.factory_id
-  UNION ALL
-  SELECT e.blueprint_version_id, v.blueprint_id
-  FROM business_exceptions e
-  JOIN business_blueprint_versions v
-    ON v.id = e.blueprint_version_id AND v.tenant_id = e.tenant_id AND v.factory_id = e.factory_id
-  WHERE l.target_type = 'EXCEPTION' AND e.id = l.target_id AND e.tenant_id = l.tenant_id AND e.factory_id = l.factory_id
-) AS target
-WHERE l.blueprint_version_id IS NULL OR l.blueprint_id IS NULL;
+SET blueprint_version_id = COALESCE(l.blueprint_version_id, candidates.blueprint_version_id),
+    blueprint_id = COALESCE(l.blueprint_id, candidates.blueprint_id)
+FROM candidates
+WHERE candidates.id = l.id
+  AND (l.blueprint_version_id IS NULL OR l.blueprint_id IS NULL);
 
 DO $$
 BEGIN
@@ -370,8 +369,12 @@ ALTER TABLE business_conflicts
   ADD COLUMN IF NOT EXISTS resolution_reason TEXT,
   ADD COLUMN IF NOT EXISTS resolution_evidence_id UUID;
 
-ALTER TABLE business_conflicts
-  ADD CONSTRAINT chk_business_conflicts_version_positive CHECK (version >= 1);
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='business_conflicts'::regclass AND conname='chk_business_conflicts_version_positive') THEN
+    ALTER TABLE business_conflicts ADD CONSTRAINT chk_business_conflicts_version_positive CHECK (version >= 1);
+  END IF;
+END $;
 
 DO $$
 BEGIN
