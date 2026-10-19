@@ -391,6 +391,9 @@ BEGIN
      OR NEW.tenant_id IS DISTINCT FROM factoryos_current_tenant_id() THEN
     RAISE EXCEPTION 'GROWTH_EVIDENCE_GAP_EVENT_ACTOR_OR_TENANT_MISMATCH' USING ERRCODE = '42501';
   END IF;
+  -- Serialize per-gap transitions so concurrent reviewers cannot both act on
+  -- the same stale prior state and produce an invalid history ordering.
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.evidence_gap_id::text, 0));
   SELECT decision INTO v_previous
     FROM growth_opportunity_evidence_gap_events
    WHERE evidence_gap_id = NEW.evidence_gap_id
