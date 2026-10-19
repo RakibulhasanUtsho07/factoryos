@@ -230,6 +230,7 @@ jobs:
             migrations/142_research_release_lifecycle.sql
             migrations/143_growth_opportunity_governance.sql
             migrations/144_growth_scenario_sets.sql
+            migrations/145_growth_scenario_set_grid_integrity.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted

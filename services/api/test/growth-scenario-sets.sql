@@ -91,8 +91,13 @@ BEGIN
   definition := pg_get_functiondef('public.factoryos_guard_growth_scenario_set_completeness()'::regprocedure);
   IF position('expected_scenario_count' IN definition) = 0
      OR position('actual_standard_count <> 4' IN definition) = 0
-     OR position('actual_custom_count <> expected_sensitivity_count' IN definition) = 0 THEN
-    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_COMPLETENESS_GUARD_INCOMPLETE';
+     OR position('actual_custom_count <> expected_sensitivity_count' IN definition) = 0
+     OR position('WITH ORDINALITY' IN definition) = 0
+     OR position('generate_series' IN definition) = 0
+     OR position('expected_position' IN definition) = 0
+     OR position('GROWTH_SCENARIO_SET_SENSITIVITY_GRID_POINT_MISMATCH' IN definition) = 0
+     OR position('GROWTH_SCENARIO_SET_SENSITIVITY_PROJECTION_COUNT_MISMATCH' IN definition) = 0 THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_COMPLETENESS_OR_GRID_GUARD_INCOMPLETE';
   END IF;
 
   definition := pg_get_functiondef('public.factoryos_guard_growth_scenario_set_member()'::regprocedure);
@@ -104,6 +109,8 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version = '144_growth_scenario_sets'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version = '145_growth_scenario_set_grid_integrity'
   ) THEN
     RAISE EXCEPTION 'GROWTH_SCENARIO_SET_MIGRATION_NOT_REGISTERED';
   END IF;
