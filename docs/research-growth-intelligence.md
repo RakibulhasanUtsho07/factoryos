@@ -55,7 +55,7 @@ Evidence origin is explicit: external research, client-private CBB, operational 
 
 ## IAM permissions
 
-The API permission catalog defines `research.read/write/review` and `growth.read/write/review`. The migration registers the codes without automatically granting access to production roles. Tenant administrators must grant these permissions to the appropriate roles; the local `ORG_ADMIN` seed grants them for development/testing.
+The API permission catalog defines `research.read/write/review/ingest` and `growth.read/write/review`. Migration `134_research_ingestion_provenance.sql` registers the distinct `research.ingest` worker permission but does not automatically grant it to production roles. Assign `research.write` to source registrars, `research.review` to rights reviewers, `research.read` to consumers, and `research.ingest` only to the trusted worker identity permitted to claim jobs and persist extraction output. Production role grants remain explicit; the local development seed does not imply that a production role has this worker permission.
 
 ## Explicit remaining gaps before claiming full SRS completion
 
