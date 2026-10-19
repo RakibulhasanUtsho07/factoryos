@@ -317,8 +317,9 @@ BEGIN
     ),
     jsonb_build_object(
       'namespace', NEW.namespace, 'sourceType', NEW.source_type, 'title', NEW.title,
-      'doi', NEW.doi, 'sourceUrl', NEW.source_url, 'publicationDate', NEW.publication_date,
-      'venue', NEW.venue, 'sourceMetadata', NEW.source_metadata
+      'authors', NEW.authors, 'publicationDate', NEW.publication_date,
+      'doi', NEW.doi, 'venue', NEW.venue, 'abstract', NEW.abstract,
+      'sourceUrl', NEW.source_url, 'sourceMetadata', NEW.source_metadata
     ),
     COALESCE(NEW.reviewed_by, NEW.created_by)
   );
