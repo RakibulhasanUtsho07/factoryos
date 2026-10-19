@@ -112,6 +112,20 @@ Migration `147_ai_decision_envelope_lifecycle_replay.sql` strengthens the WP05 d
 
 The PostgreSQL contract `services/api/test/ai-decision-envelope-lifecycle.sql` covers lifecycle bootstrap, context evidence persistence, ordered context/verification transitions, invalid transition rejection, event immutability and migration registration. Unit regressions cover trace reuse with a different canonical payload and incomplete legacy replay. Exact replay of nondeterministic model generation, external evidence retrieval/retention and full UI acceptance remain separate work.
 
+## Action authorization, approval binding, scoped execution and replay regression matrix
+
+The action authorization and execution boundary now has explicit regression coverage for the Blueprint §14.3 governed-execution path and the HLD/LLD concurrency/idempotency controls:
+
+- Authorization idempotency is bound to tenant, factory, initiating actor, decision, action/tool/version, canonical target, resource type/ID, and payload hash. Reusing a key from another actor or with a changed target conflicts before policy evaluation or a new action token can be returned.
+- Approval negative cases cover mismatched action, policy, resource ID, risk class, payload/decision metadata, target, and expiry. A null approved resource is not treated as a wildcard. A mismatch fails before an authorized action token is minted.
+- Action-token lookup is tenant/factory scoped in SQL and the returned row is checked again in the runtime boundary. A cross-tenant or cross-factory row returned by a faulty adapter fails as not found and never reaches the tool gateway.
+- A matching replay of a durable execution returns the existing immutable execution record without re-invoking the gateway. Replays with a changed execution key conflict.
+- If a reserved claim loses the race before the FOR UPDATE read, execution stops before the gateway and before inserting an execution record. A claim already finalized by a concurrent actor is not reopened.
+- An approval is re-checked under the locked finalization transaction immediately before gateway execution. If the approval was revoked or expired after the earlier preflight, the claim is invalidated and the gateway is not invoked.
+- Existing execution-claim recovery remains operator-led. These regression cases do not permit an ambiguous or stale claim to be retried automatically.
+
+Primary evidence: services/api/src/ai/ai.runtime.service.wave2.spec.ts, services/api/src/ai/ai.runtime.execution-claim-recovery.spec.ts, services/api/src/ai/tools/ai.tool.gateway.service.spec.ts, and the runtime implementation in services/api/src/ai/ai.runtime.service.ts. The complete API and PostgreSQL CI runs for the candidate branch remain the release evidence; unit tests alone do not constitute full production acceptance.
+
 ## Verification policy
 
 Before this scope is accepted for merge/release:
