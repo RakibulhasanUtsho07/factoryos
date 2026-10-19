@@ -35,7 +35,7 @@ BEGIN
     'uq_research_release_lifecycle_identity',
     'pk_research_release_channels',
     'fk_research_release_channel_active_release',
-    'research_release_lifecycle_events_pkey',
+    'pk_research_release_lifecycle_events',
     'fk_research_release_lifecycle_release',
     'fk_research_release_lifecycle_related_release',
     'chk_research_release_lifecycle_event_type'
