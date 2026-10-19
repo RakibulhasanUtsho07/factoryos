@@ -10,10 +10,11 @@ type Query = (sql: string, values?: unknown[]) => Promise<TestResult>;
 
 const query = jest.fn<Query>();
 const auditRecord = jest.fn<(input: unknown) => Promise<string>>();
+const auditRecordWithClient = jest.fn<(client: PoolClient, input: unknown) => Promise<string>>();
 const client = { query } as unknown as PoolClient;
 const transaction = jest.fn(async (_context: unknown, callback: (c: PoolClient) => Promise<unknown>) => callback(client));
 const database = { query, transaction };
-const auditService = { record: auditRecord };
+const auditService = { record: auditRecord, recordWithClient: auditRecordWithClient };
 
 describe('CbbEvidenceService', () => {
   const tenantId = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -58,6 +59,7 @@ describe('CbbEvidenceService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    auditRecordWithClient.mockResolvedValue('audit-event-id');
     service = new CbbEvidenceService(database as never, auditService as never);
   });
 
@@ -80,12 +82,13 @@ describe('CbbEvidenceService', () => {
     expect(result.sourceUri).toBeNull();
     expect(result.replayed).toBe(false);
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(auditRecord).toHaveBeenCalledWith(expect.objectContaining({
+    expect(auditRecordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
       eventType: 'BUSINESS_MODEL_EVIDENCE',
       action: 'RECORD_SOURCE_EVIDENCE',
       resourceId: evidenceId,
       payload: expect.objectContaining({ contentHash: digestA, revisionNo: 1 }),
     }));
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
   });
 
   it('filters evidence by the requested graph target and defaults to internal visibility', async () => {
@@ -124,7 +127,7 @@ describe('CbbEvidenceService', () => {
 
     expect(result.replayed).toBe(true);
     expect(result.id).toBe(evidenceId);
-    expect(auditRecord).not.toHaveBeenCalled();
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
   });
 
   it('rejects a changed source without the latest predecessor to prevent lost updates', async () => {
@@ -137,7 +140,7 @@ describe('CbbEvidenceService', () => {
       { tenantId, factoryId, userId },
       createDto({ content_hash: digestB, source_version: '2' }),
     )).rejects.toBeInstanceOf(ConflictException);
-    expect(auditRecord).not.toHaveBeenCalled();
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
   });
 
   it('requires explicit timezone metadata for source timestamps', async () => {
@@ -172,10 +175,11 @@ describe('CbbEvidenceService', () => {
 
     expect(result.conflictId).toBe(conflictId);
     expect(result.replayed).toBe(false);
-    expect(auditRecord).toHaveBeenCalledWith(expect.objectContaining({
+    expect(auditRecordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
       action: 'LINK_SOURCE_EVIDENCE',
       payload: expect.objectContaining({ linkType: 'CONTRADICTS', conflictId }),
     }));
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
   });
 
   it('does not reopen a closed conflict when the same contradiction link is replayed', async () => {
@@ -211,7 +215,7 @@ describe('CbbEvidenceService', () => {
     expect(result.conflictId).toBeNull();
     expect(query).toHaveBeenCalledTimes(8);
     expect(query.mock.calls[7]?.[0]).toContain("status='OPEN'");
-    expect(auditRecord).not.toHaveBeenCalled();
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
   });
 
   it('appends new supporting evidence to an existing open conflict with actor attribution', async () => {
@@ -265,7 +269,7 @@ describe('CbbEvidenceService', () => {
         resolution_reference: 'Approved decision record', resolution_evidence_id: evidenceId,
       },
     )).rejects.toBeInstanceOf(ConflictException);
-    expect(auditRecord).not.toHaveBeenCalled();
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
   });
 
   it('returns only links for the requested graph target', async () => {
