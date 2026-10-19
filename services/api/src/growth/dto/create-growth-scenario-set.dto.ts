@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsDefined,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -139,10 +140,12 @@ export class CreateGrowthScenarioSetDto {
   @MaxLength(2000)
   baseline_source_ref!: string;
 
+  @IsDefined()
   @ValidateNested()
   @Type(() => GrowthScenarioSetBaselineDto)
   baseline!: GrowthScenarioSetBaselineDto;
 
+  @IsDefined()
   @ValidateNested()
   @Type(() => GrowthScenarioSetProfilesDto)
   profiles!: GrowthScenarioSetProfilesDto;
