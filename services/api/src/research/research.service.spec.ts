@@ -176,6 +176,13 @@ describe('ResearchService', () => {
         source_url: 'https://example.org/paper', doi: null,
         license_status: 'OPEN_ACCESS', access_status: 'APPROVED',
         rights_basis: 'Open-access reuse terms verified',
+        source_revision: 1,
+        rights_version: 1,
+        current_evidence_assessment_id: 'bb2d1014-b7bc-4e7e-ad61-8746e8e00003',
+        current_evidence_citation_status: 'CONSISTENT',
+        current_evidence_safety_status: 'CLEAR',
+        current_evidence_safety_flags: [],
+        safety_review_decision: null,
       }],
     });
 
