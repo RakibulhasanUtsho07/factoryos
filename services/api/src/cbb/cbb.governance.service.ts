@@ -1,5 +1,5 @@
 import {
-  BadRequestException, ConflictException, Injectable, NotFoundException,
+  BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException,
 } from '@nestjs/common';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { isUUID } from 'class-validator';
@@ -67,7 +67,11 @@ export class CbbGovernanceService {
         if (!role.rows[0]) throw new NotFoundException('Role was not found in this tenant');
         await this.assertTarget(client, scope, dto.target_type, dto.target_id, blueprint.id, blueprint.current_version_id);
         await client.query(
-          `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+          'SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+          [`cbb-acl-target:${scope.tenantId}:${scope.factoryId}:${dto.target_type}:${dto.target_id}`],
+        );
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
           [`cbb-acl:${scope.tenantId}:${scope.factoryId}:${dto.role_id}:${dto.target_type}:${dto.target_id}:${fieldName ?? '*'}`],
         );
         await client.query(
@@ -299,6 +303,18 @@ export class CbbGovernanceService {
         throw new ConflictException({ code: 'CBB_STALENESS_VERSION_MISMATCH', currentVersion: Number(review.review_version) });
       }
       if (review.review_status !== 'OPEN') throw new ConflictException('Only open staleness reviews may be decided');
+      await this.assertTargetWriteAccessInClient(client, scope, String(review.target_type) as TargetType, String(review.target_id),
+        dto.action === 'MARK_STALE' ? ['state'] : []);
+      if (dto.action === 'MARK_STALE') {
+        const current = await client.query<DbRow>(
+          `SELECT current_version_id::text AS current_version_id FROM business_blueprints
+           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='ACTIVE' FOR SHARE`,
+          [review.blueprint_id, scope.tenantId, scope.factoryId],
+        );
+        if (String(current.rows[0]?.current_version_id ?? '') !== String(review.blueprint_version_id)) {
+          throw new ConflictException({ code: 'CBB_STALENESS_SOURCE_VERSION_ADVANCED', message: 'Rescan staleness against the current CBB version before marking an item stale' });
+        }
+      }
       let proposalId: string | null = null;
       if (dto.action === 'MARK_STALE') {
         const proposal = await client.query<DbRow>(
@@ -500,6 +516,7 @@ export class CbbGovernanceService {
     return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
       const blueprint = await this.currentBlueprint(client, scope, true);
       await this.assertTarget(client, scope, dto.source_type, dto.source_id, blueprint.id, blueprint.current_version_id);
+      await this.assertTargetWriteAccessInClient(client, scope, dto.source_type, dto.source_id);
       const existing = await client.query<DbRow>(
         `SELECT id::text AS id FROM business_cbb_impact_links WHERE tenant_id=$1 AND factory_id=$2
          AND blueprint_version_id=$3 AND source_type=$4 AND source_id=$5 AND impacted_type=$6
@@ -600,6 +617,7 @@ export class CbbGovernanceService {
       );
       const blueprint = blueprintResult.rows[0];
       if (!blueprint || !blueprint.current_version_id) throw new NotFoundException('Active CBB blueprint/version was not found');
+      await this.assertTargetWriteAccessInClient(client, scope, 'BLUEPRINT', String(blueprint.id));
       const currentVersionId = String(blueprint.current_version_id);
       if (currentVersionId !== dto.expected_current_version_id) {
         throw new ConflictException({ code: 'CBB_ROLLBACK_CURRENT_VERSION_MISMATCH', currentVersionId });
@@ -938,6 +956,87 @@ export class CbbGovernanceService {
       visible.push(safe);
     }
     return visible;
+  }
+
+  async assertTargetWriteAccess(scope: Scope, targetType: TargetType, targetId: string, fields: string[] = []) {
+    this.validateScope(scope);
+    this.validateTargetType(targetType);
+    this.uuid(targetId, 'targetId');
+    return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
+      await this.assertTargetWriteAccessInClient(client, scope, targetType, targetId, fields);
+      return { targetType, targetId, allowed: true };
+    });
+  }
+
+  async assertProposalWriteAccess(scope: Scope, proposalId: string) {
+    this.validateScope(scope);
+    this.uuid(proposalId, 'proposalId');
+    const result = await this.database.query<DbRow>(
+      `SELECT target_type,target_id::text AS target_id FROM business_change_proposals
+       WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [proposalId, scope.tenantId, scope.factoryId], { tenantId: scope.tenantId },
+    );
+    const proposal = result.rows[0];
+    if (!proposal) throw new NotFoundException('CBB proposal was not found in this factory');
+    await this.assertTargetWriteAccess(scope, String(proposal.target_type) as TargetType,
+      proposal.target_id ? String(proposal.target_id) : String((await this.database.query<DbRow>(
+        'SELECT id::text AS id FROM business_blueprints WHERE tenant_id=$1 AND factory_id=$2 AND status=$3 LIMIT 1',
+        [scope.tenantId, scope.factoryId, 'ACTIVE'], { tenantId: scope.tenantId },
+      )).rows[0]?.id ?? ''));
+    return { allowed: true };
+  }
+
+  async assertConflictWriteAccess(scope: Scope, conflictId: string) {
+    this.validateScope(scope);
+    this.uuid(conflictId, 'conflictId');
+    const result = await this.database.query<DbRow>(
+      `SELECT subject_type,subject_id::text AS subject_id FROM business_conflicts
+       WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [conflictId, scope.tenantId, scope.factoryId], { tenantId: scope.tenantId },
+    );
+    const conflict = result.rows[0];
+    if (!conflict) throw new NotFoundException('CBB conflict was not found in this factory');
+    await this.assertTargetWriteAccess(scope, String(conflict.subject_type) as TargetType, String(conflict.subject_id));
+    return { allowed: true };
+  }
+
+  private async assertTargetWriteAccessInClient(
+    client: PoolClient,
+    scope: Scope,
+    targetType: TargetType,
+    targetId: string,
+    fields: string[] = [],
+  ) {
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+      [`cbb-acl-target:${scope.tenantId}:${scope.factoryId}:${targetType}:${targetId}`],
+    );
+    const roleRows = await client.query<DbRow>(
+      `SELECT DISTINCT ur.role_id::text AS role_id
+       FROM tenant_memberships tm JOIN user_roles ur ON ur.membership_id=tm.id
+       JOIN roles r ON r.id=ur.role_id AND r.tenant_id=tm.tenant_id
+       WHERE tm.tenant_id=$1 AND tm.user_id=$2 AND tm.status='ACTIVE'
+         AND (ur.factory_id IS NULL OR ur.factory_id=$3)`,
+      [scope.tenantId, scope.userId, scope.factoryId],
+    );
+    const roleIds = new Set(roleRows.rows.map((row) => String(row.role_id)));
+    const grants = await client.query<DbRow>(
+      `SELECT role_id::text AS role_id,field_name,access_level FROM business_acl
+       WHERE tenant_id=$1 AND factory_id=$2 AND target_type=$3 AND target_id=$4 FOR SHARE`,
+      [scope.tenantId, scope.factoryId, targetType, targetId],
+    );
+    const objectGrants = grants.rows.filter((row) => row.field_name === null || row.field_name === undefined);
+    if (objectGrants.length && !objectGrants.some((row) =>
+      roleIds.has(String(row.role_id)) && ['EDIT','OWNER'].includes(String(row.access_level)))) {
+      throw new ForbiddenException('CBB target is read-only or restricted for this role');
+    }
+    for (const field of fields) {
+      const fieldGrants = grants.rows.filter((row) => String(row.field_name ?? '').toLowerCase() === field.toLowerCase());
+      if (fieldGrants.length && !fieldGrants.some((row) =>
+        roleIds.has(String(row.role_id)) && ['EDIT','OWNER'].includes(String(row.access_level)))) {
+        throw new ForbiddenException('CBB field ' + field + ' is read-only or restricted for this role');
+      }
+    }
   }
 
   private async assertTargetReadable(tenantId: string, factoryId: string, userId: string, targetType: TargetType, targetId: string) {
