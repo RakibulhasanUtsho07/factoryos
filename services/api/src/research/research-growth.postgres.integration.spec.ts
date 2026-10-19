@@ -911,6 +911,15 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         `,
         [f.tenantId, f.factoryId, opportunityId, f.userId],
       );
+      const evidenceGap = await client.query<{ id: string }>(
+        `INSERT INTO growth_opportunity_evidence_gaps
+           (tenant_id, factory_id, opportunity_id, question, required_evidence, impact,
+            owner_user_id, blocks_decision, created_by)
+         VALUES ($1,$2,$3,'Is the pilot baseline still representative?',
+           'A current and reviewed monthly quality report','HIGH',$4,TRUE,$4)
+         RETURNING id::text AS id`,
+        [f.tenantId, f.factoryId, opportunityId, f.userId],
+      );
       await client.query(
         `INSERT INTO growth_opportunity_decision_owners
            (tenant_id, factory_id, opportunity_id, role_code, owner_user_id, rationale, assigned_by)
@@ -954,6 +963,26 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           [f.tenantId, f.factoryId, opportunityId, dimension, dimension + ' reviewed for fixture', f.userId],
         );
       }
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.decisionUserId]);
+      await client.query('SAVEPOINT reject_open_evidence_gap');
+      await expect(client.query(
+        `UPDATE growth_opportunities
+            SET status = 'ACCEPTED', decided_by = $1, decided_at = clock_timestamp(),
+                decision_reason = 'try while a blocking evidence gap remains open'
+          WHERE id = $2`,
+        [f.decisionUserId, opportunityId],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_open_evidence_gap');
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.userId]);
+      await client.query(
+        `INSERT INTO growth_opportunity_evidence_gap_events
+           (tenant_id, factory_id, opportunity_id, evidence_gap_id, decision, reason,
+            evidence_refs, actor_user_id)
+         VALUES ($1,$2,$3,$4,'RESOLVED',
+           'Current monthly quality evidence confirms the baseline period',
+           '["quality-report:monthly-scrap"]'::jsonb,$5)`,
+        [f.tenantId, f.factoryId, opportunityId, evidenceGap.rows[0].id, f.userId],
+      );
       await client.query("SELECT set_config('app.user_id', $1, true)", [f.decisionUserId]);
       await client.query(
         `
