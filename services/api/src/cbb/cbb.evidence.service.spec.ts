@@ -107,6 +107,10 @@ describe('CbbEvidenceService', () => {
     expect(query.mock.calls[1]?.[1]).toEqual([
       tenantId, factoryId, null, null, null, 'INTERNAL', 'ENTITY', entityId, 20, 0,
     ]);
+    // Keep page contents consistent with the count query: filters on the count
+    // alone can both leak restricted records and return unrelated targets.
+    expect(query.mock.calls[1]?.[0]).toContain('AND e.visibility=$6');
+    expect(query.mock.calls[1]?.[0]).toContain('AND ($7::text IS NULL OR EXISTS');
   });
 
   it('treats an identical source revision as an idempotent replay', async () => {
@@ -262,5 +266,51 @@ describe('CbbEvidenceService', () => {
       },
     )).rejects.toBeInstanceOf(ConflictException);
     expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it('returns only links for the requested graph target', async () => {
+    const link = {
+      id: 'd0000000-0000-4000-8000-000000000001',
+      evidence_id: evidenceId,
+      blueprint_id: blueprintId,
+      blueprint_version_id: versionId,
+      target_type: 'ENTITY',
+      target_id: entityId,
+      link_type: 'SUPPORTS',
+      created_by: userId,
+      created_at: '2026-10-19T05:00:00.000Z',
+    };
+    queue(
+      { rows: [{ total: 1 }] },
+      { rows: [evidenceRow()] },
+      { rows: [link] },
+    );
+
+    const result = await service.listEvidence(tenantId, factoryId, {
+      targetType: 'ENTITY',
+      targetId: entityId,
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.links).toEqual([link]);
+    expect(query.mock.calls[2]?.[0]).toContain('target_type=$4 AND target_id=$5::uuid');
+    expect(query.mock.calls[2]?.[1]).toEqual([tenantId, factoryId, [evidenceId], 'ENTITY', entityId]);
+  });
+
+  it('restricts source revision history to the caller-specified visibility', async () => {
+    queue(
+      { rows: [{ source_key: 'erp:po-100' }] },
+      { rows: [evidenceRow()] },
+    );
+
+    const result = await service.getEvidenceHistory(tenantId, factoryId, evidenceId, 'INTERNAL');
+
+    expect(result.revisions).toHaveLength(1);
+    expect(query.mock.calls[0]?.[0]).toContain('visibility=$4');
+    expect(query.mock.calls[0]?.[1]).toEqual([evidenceId, tenantId, factoryId, 'INTERNAL']);
+    expect(query.mock.calls[1]?.[0]).toContain('visibility=$5');
+    expect(query.mock.calls[1]?.[1]).toEqual([tenantId, factoryId, 'erp:po-100', evidenceId, 'INTERNAL']);
   });
 });
