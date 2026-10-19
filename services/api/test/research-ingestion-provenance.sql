@@ -157,6 +157,8 @@ BEGIN
   IF position('RESEARCH_EVIDENCE_ASSESSMENT_SNAPSHOT_CONTENT_MISMATCH'
       IN pg_get_functiondef('public.factoryos_guard_research_evidence_assessment()'::regprocedure)) = 0
      OR position('RESEARCH_EVIDENCE_ASSESSMENTS_ARE_APPEND_ONLY'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_assessment()'::regprocedure)) = 0
+     OR position('NEW.claim_fingerprint := encode(sha256(convert_to(NEW.evidence_snapshot::text'
       IN pg_get_functiondef('public.factoryos_guard_research_evidence_assessment()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'RESEARCH_EVIDENCE_ASSESSMENT_IMMUTABILITY_GUARD_MISSING';
   END IF;
