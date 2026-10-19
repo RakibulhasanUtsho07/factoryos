@@ -121,7 +121,7 @@ SELECT r.tenant_id, r.id, r.release_key, r.version, 'BASELINE_IMPORTED',
 CREATE OR REPLACE FUNCTION factoryos_guard_research_release_version_sequence()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $version_guard$
 DECLARE
   v_max_version INTEGER;
 BEGIN
@@ -138,7 +138,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$version_guard$;
 
 CREATE TRIGGER research_release_version_sequence_guard
 BEFORE INSERT ON research_knowledge_releases
