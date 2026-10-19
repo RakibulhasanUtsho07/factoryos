@@ -59,6 +59,10 @@ Before production rollout:
 3. Confirm restricted-evidence read paths and all mutation + audit/history guarantees under tenant/factory-scoped credentials.
 4. Confirm CI is green for the exact branch head; a local or mock-only test pass is not a substitute for the PostgreSQL contract.
 
+## Related CBB governance
+
+Round 26 adds role-aware visibility, staleness review, canonical terminology aliases, impact tracing, and audited version rollback. See [CBB governance](cbb-governance.md) for SRS traceability, API permissions, data lifecycle and acceptance checks.
+
 ## Boundaries
 
 This slice provides backend provenance, versioning, and conflict governance. It does not imply that an external crawler, source authenticity verification service, legal rights review, human review UI, or SRS-wide end-to-end acceptance is delivered unless those are separately implemented and tested.
