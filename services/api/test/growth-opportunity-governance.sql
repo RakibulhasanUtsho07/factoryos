@@ -43,7 +43,7 @@ BEGIN
     'uq_growth_decision_owner_current_role',
     'fk_growth_opportunity_decision_history_owner',
     'chk_growth_opportunity_decision_history_decision',
-    'chk_growth_evidence_gap_event_resolution_evidence'
+    'chk_growth_gap_event_resolution_evidence'
   ] LOOP
     IF required_constraint = 'uq_growth_decision_owner_current_role' THEN
       IF NOT EXISTS (
