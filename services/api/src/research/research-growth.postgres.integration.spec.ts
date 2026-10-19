@@ -439,6 +439,11 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         [claim.rows[0].id, f.tenantId],
       );
       expect(stored.rows[0].stored_excerpt).toBeNull();
+      const revokedSource = await client.query<{ full_text_storage_allowed: boolean }>(
+        'SELECT full_text_storage_allowed FROM research_sources WHERE id=$1 AND tenant_id=$2',
+        [f.sourceId, f.tenantId],
+      );
+      expect(revokedSource.rows[0].full_text_storage_allowed).toBe(false);
       expect(stored.rows[0].provenance_ref).toMatchObject({
         page: 7,
         section: 'Results',
