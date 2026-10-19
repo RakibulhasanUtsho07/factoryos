@@ -462,7 +462,11 @@ BEGIN
         USING ERRCODE = '40001';
     END IF;
     IF NEW.status = 'OPEN' THEN
-      IF NOT (OLD.evidence_refs <@ NEW.evidence_refs) OR NEW.resolved_by IS NOT NULL
+      IF NOT (OLD.evidence_refs <@ NEW.evidence_refs) OR NEW.evidence_refs = OLD.evidence_refs
+         OR jsonb_array_length(NEW.evidence_refs) <> (
+           SELECT COUNT(DISTINCT value) FROM jsonb_array_elements_text(NEW.evidence_refs) AS evidence(value)
+         )
+         OR NEW.resolved_by IS NOT NULL
          OR NEW.resolved_at IS NOT NULL OR NEW.resolution_reason IS NOT NULL
          OR NEW.resolution_evidence_id IS NOT NULL OR NEW.resolution_ref IS NOT NULL THEN
         RAISE EXCEPTION 'CBB_CONFLICT_EVIDENCE_CAN_ONLY_APPEND_WHILE_OPEN'
@@ -590,19 +594,43 @@ CREATE TRIGGER business_conflicts_record_history
 AFTER INSERT OR UPDATE ON business_conflicts
 FOR EACH ROW EXECUTE FUNCTION factoryos_cbb_record_conflict_history();
 
+CREATE OR REPLACE FUNCTION factoryos_cbb_guard_conflict_history_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+BEGIN
+  -- Only the AFTER trigger on business_conflicts may append history.
+  IF pg_trigger_depth() <= 1 THEN
+    RAISE EXCEPTION 'CBB_CONFLICT_HISTORY_IS_TRIGGER_MANAGED'
+      USING ERRCODE = '55000';
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS business_conflict_history_guard_insert ON business_conflict_history;
+CREATE TRIGGER business_conflict_history_guard_insert
+BEFORE INSERT ON business_conflict_history
+FOR EACH ROW EXECUTE FUNCTION factoryos_cbb_guard_conflict_history_insert();
+
 CREATE OR REPLACE FUNCTION factoryos_cbb_reject_conflict_history_update()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $$
+AS $
 BEGIN
+  -- Permit only a cascade delete caused by deleting its scoped parent conflict;
+  -- direct attempts to rewrite or delete audit history are rejected.
+  IF TG_OP = 'DELETE' AND pg_trigger_depth() > 1 THEN
+    RETURN OLD;
+  END IF;
   RAISE EXCEPTION 'CBB_CONFLICT_HISTORY_IS_APPEND_ONLY'
     USING ERRCODE = '55000';
 END;
-$$;
+$;
 
 DROP TRIGGER IF EXISTS business_conflict_history_immutable ON business_conflict_history;
 CREATE TRIGGER business_conflict_history_immutable
-BEFORE UPDATE ON business_conflict_history
+BEFORE UPDATE OR DELETE ON business_conflict_history
 FOR EACH ROW EXECUTE FUNCTION factoryos_cbb_reject_conflict_history_update();
 
 ALTER TABLE business_conflict_history ENABLE ROW LEVEL SECURITY;
