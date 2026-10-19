@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -50,6 +51,18 @@ import {
 } from './dto/list-business-changes.dto';
 import { CbbChangeService } from './cbb.change.service';
 import { CbbEvidenceService } from './cbb.evidence.service';
+import { CbbGovernanceService } from './cbb.governance.service';
+import {
+  CreateCbbImpactLinkDto,
+  CreateCbbTerminologyAliasDto,
+  DecideCbbStalenessDto,
+  DecideCbbTerminologyAliasDto,
+  GrantCbbAccessDto,
+  ImpactTraceQueryDto,
+  ResolveCbbTerminologyQueryDto,
+  RollbackCbbVersionDto,
+  ScanCbbStalenessDto,
+} from './dto/cbb-governance.dto';
 import {
   CreateCbbEvidenceDto,
   LinkCbbEvidenceDto,
@@ -107,6 +120,9 @@ export class CbbController {
 
     private readonly cbbEvidenceService:
       CbbEvidenceService,
+
+    private readonly cbbGovernanceService:
+      CbbGovernanceService,
   ) {}
 
   // ============================================================
@@ -151,18 +167,9 @@ export class CbbController {
     @Req()
     request: FactoryOsRequest,
   ) {
-    const {
-      tenantId,
-      factoryId,
-    } =
-      this.getAuthenticatedFactoryContext(
-        request,
-      );
-
-    return this.cbbService.getBusinessMap(
-      tenantId,
-      factoryId,
-    );
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    const map = await this.cbbService.getBusinessMap(tenantId, factoryId);
+    return this.cbbGovernanceService.filterBusinessMap(tenantId, factoryId, userId, map);
   }
 
   @Get('processes')
@@ -177,18 +184,9 @@ export class CbbController {
     @Req()
     request: FactoryOsRequest,
   ) {
-    const {
-      tenantId,
-      factoryId,
-    } =
-      this.getAuthenticatedFactoryContext(
-        request,
-      );
-
-    return this.cbbService.listProcesses(
-      tenantId,
-      factoryId,
-    );
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    const result = await this.cbbService.listProcesses(tenantId, factoryId);
+    return this.cbbGovernanceService.filterProcessResult(tenantId, factoryId, userId, result);
   }
 
   @Get(
@@ -211,19 +209,9 @@ export class CbbController {
     )
     processId: string,
   ) {
-    const {
-      tenantId,
-      factoryId,
-    } =
-      this.getAuthenticatedFactoryContext(
-        request,
-      );
-
-    return this.cbbService.getProcess(
-      tenantId,
-      factoryId,
-      processId,
-    );
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    const result = await this.cbbService.getProcess(tenantId, factoryId, processId);
+    return this.cbbGovernanceService.filterProcessResult(tenantId, factoryId, userId, result);
   }
 
   // ============================================================
@@ -432,8 +420,9 @@ export class CbbController {
     @Req() request: FactoryOsRequest,
     @Param('versionId', new ParseUUIDPipe()) versionId: string,
   ) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbService.getBusinessMap(tenantId, factoryId, versionId);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    const map = await this.cbbService.getBusinessMap(tenantId, factoryId, versionId);
+    return this.cbbGovernanceService.filterBusinessMap(tenantId, factoryId, userId, map);
   }
 
   @Post('evidence')
@@ -555,6 +544,147 @@ export class CbbController {
   ) {
     const context = this.getAuthenticatedFactoryContext(request);
     return this.cbbEvidenceService.decideConflict(context, conflictId, body);
+  }
+
+  // ============================================================
+  // CBB ACCESS, STALENESS, TERMINOLOGY, IMPACT AND ROLLBACK
+  // ============================================================
+
+  @Get('access')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listCbbAccess(@Req() request: FactoryOsRequest) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listAccess(tenantId, factoryId);
+  }
+
+  @Post('access')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async grantCbbAccess(@Req() request: FactoryOsRequest, @Body() body: GrantCbbAccessDto) {
+    return this.cbbGovernanceService.grantAccess(this.getAuthenticatedFactoryContext(request), body);
+  }
+
+  @Delete('access/:aclId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async revokeCbbAccess(
+    @Req() request: FactoryOsRequest,
+    @Param('aclId', new ParseUUIDPipe()) aclId: string,
+  ) {
+    return this.cbbGovernanceService.revokeAccess(this.getAuthenticatedFactoryContext(request), aclId);
+  }
+
+  @Get('staleness')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listCbbStaleness(@Req() request: FactoryOsRequest) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listStaleness(tenantId, factoryId);
+  }
+
+  @Post('staleness/scan')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async scanCbbStaleness(@Req() request: FactoryOsRequest, @Body() body: ScanCbbStalenessDto) {
+    return this.cbbGovernanceService.scanStaleness(this.getAuthenticatedFactoryContext(request), body.threshold_days);
+  }
+
+  @Post('staleness/:reviewId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async decideCbbStaleness(
+    @Req() request: FactoryOsRequest,
+    @Param('reviewId', new ParseUUIDPipe()) reviewId: string,
+    @Body() body: DecideCbbStalenessDto,
+  ) {
+    return this.cbbGovernanceService.decideStaleness(this.getAuthenticatedFactoryContext(request), reviewId, body);
+  }
+
+  @Get('terminology')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listCbbTerminology(@Req() request: FactoryOsRequest, @Query('search') search?: string) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listTerminology(tenantId, factoryId, search);
+  }
+
+  @Get('terminology/resolve')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async resolveCbbTerminology(@Req() request: FactoryOsRequest, @Query() query: ResolveCbbTerminologyQueryDto) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.resolveTerminology(tenantId, factoryId, query.term, query.source_system);
+  }
+
+  @Post('terminology/aliases')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async createCbbTerminologyAlias(@Req() request: FactoryOsRequest, @Body() body: CreateCbbTerminologyAliasDto) {
+    return this.cbbGovernanceService.createTerminologyAlias(this.getAuthenticatedFactoryContext(request), body);
+  }
+
+  @Post('terminology/aliases/:aliasId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async decideCbbTerminologyAlias(
+    @Req() request: FactoryOsRequest,
+    @Param('aliasId', new ParseUUIDPipe()) aliasId: string,
+    @Body() body: DecideCbbTerminologyAliasDto,
+  ) {
+    return this.cbbGovernanceService.decideTerminologyAlias(this.getAuthenticatedFactoryContext(request), aliasId, body);
+  }
+
+  @Post('impact-links')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async createCbbImpactLink(@Req() request: FactoryOsRequest, @Body() body: CreateCbbImpactLinkDto) {
+    return this.cbbGovernanceService.addImpactLink(this.getAuthenticatedFactoryContext(request), body);
+  }
+
+  @Get('impact/:targetType/:targetId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getCbbImpactTrace(
+    @Req() request: FactoryOsRequest,
+    @Param('targetType') targetType: string,
+    @Param('targetId', new ParseUUIDPipe()) targetId: string,
+    @Query() query: ImpactTraceQueryDto,
+  ) {
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.getImpactTrace(
+      tenantId, factoryId, userId, targetType as 'BLUEPRINT' | 'ENTITY' | 'RELATION' | 'PROCESS' | 'PROCESS_STEP' | 'RULE' | 'TERM' | 'EXCEPTION',
+      targetId, query.depth ?? 3,
+    );
+  }
+
+  @Post('versions/rollback')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async rollbackCbbVersion(@Req() request: FactoryOsRequest, @Body() body: RollbackCbbVersionDto) {
+    return this.cbbGovernanceService.rollbackToVersion(this.getAuthenticatedFactoryContext(request), body);
+  }
+
+  @Get('rollback-history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listCbbRollbackHistory(@Req() request: FactoryOsRequest) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listRollbackEvents(tenantId, factoryId);
   }
 
   // ============================================================
