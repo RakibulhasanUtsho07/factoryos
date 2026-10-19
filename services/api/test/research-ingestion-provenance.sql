@@ -100,6 +100,10 @@ BEGIN
     RAISE EXCEPTION 'RESEARCH_EXTRACTION_REVIEW_APPROVAL_GUARD_MISSING';
   END IF;
 
+  IF NOT EXISTS (SELECT 1 FROM permissions WHERE code='research.ingest') THEN
+    RAISE EXCEPTION 'RESEARCH_INGESTION_PERMISSION_MISSING';
+  END IF;
+
   IF position('RESEARCH_INGESTION_JOB_TERMINAL'
       IN pg_get_functiondef('public.factoryos_research_ingestion_job_transition_guard()'::regprocedure)) = 0
      OR position('RESEARCH_INGESTION_PROGRESS_CANNOT_MOVE_BACKWARD'
