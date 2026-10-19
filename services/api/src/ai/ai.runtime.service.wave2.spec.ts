@@ -863,7 +863,7 @@ describe(
         ).rejects.toThrow(message);
 
         expect(databaseQueryMock).toHaveBeenCalledTimes(2);
-        expect(aiToolRegistry.getTool).not.toHaveBeenCalled();
+        expect(aiToolRegistry.getTool).toHaveBeenCalledTimes(1);
       },
     );
 
