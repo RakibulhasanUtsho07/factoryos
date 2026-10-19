@@ -467,6 +467,48 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         [f.tenantId, item.rows[0].id, '2'.repeat(64), f.userId],
       );
       await client.query(
+        `
+        INSERT INTO research_evidence_assessments (
+          tenant_id,claim_id,source_id,source_revision,rights_version,
+          claim_fingerprint,rubric_version,evidence_score,suggested_grade,grade_factors,
+          citation_status,citation_findings,citation_verification_level,
+          safety_status,safety_flags,evidence_snapshot,assessed_by
+        )
+        SELECT c.tenant_id,c.id,s.id,s.source_revision,s.rights_version,
+          repeat('0',64),'research-evidence-rubric.v1',45,'D',
+          jsonb_build_object(
+            'citation',jsonb_build_object('score',25,'max',25,'explanation','Precise locator and registered identity'),
+            'source_identity',jsonb_build_object('score',15,'max',15,'explanation','Registered source title and identifier'),
+            'authors_and_date',jsonb_build_object('score',5,'max',10,'explanation','Source author is recorded but publication date is absent'),
+            'methodology',jsonb_build_object('score',0,'max',15,'explanation','Methodology not recorded'),
+            'dataset_description',jsonb_build_object('score',0,'max',15,'explanation','Dataset description not recorded'),
+            'limitations',jsonb_build_object('score',0,'max',10,'explanation','Limitations not recorded'),
+            'practical_implication',jsonb_build_object('score',0,'max',5,'explanation','Practical implication not recorded'),
+            'independent_corroboration',jsonb_build_object('score',0,'max',5,'explanation','Independent corroboration not linked')
+          ),
+          'CONSISTENT','[]'::jsonb,'METADATA_ONLY','CLEAR','[]'::jsonb,
+          jsonb_build_object(
+            'claimId',c.id::text,'sourceId',s.id::text,
+            'claimTextSha256',encode(sha256(convert_to(c.claim_text,'UTF8')),'hex'),
+            'methodologySha256',encode(sha256(convert_to(COALESCE(c.methodology,''),'UTF8')),'hex'),
+            'datasetDescriptionSha256',encode(sha256(convert_to(COALESCE(c.dataset_description,''),'UTF8')),'hex'),
+            'limitationsSha256',encode(sha256(convert_to(COALESCE(c.limitations,''),'UTF8')),'hex'),
+            'practicalImplicationSha256',encode(sha256(convert_to(COALESCE(c.practical_implication,''),'UTF8')),'hex'),
+            'storedExcerptSha256',encode(sha256(convert_to(COALESCE(c.stored_excerpt,''),'UTF8')),'hex'),
+            'provenanceRef',c.provenance_ref,'topicTags',c.topic_tags,
+            'evidenceGrade',c.evidence_grade,'evidenceStrength',c.evidence_strength,
+            'sourceTitle',s.title,'sourceDoi',s.doi,'sourceUrl',s.source_url,
+            'sourceAuthors',s.authors,'publicationDate',s.publication_date::text,
+            'sourceRevision',s.source_revision,'rightsVersion',s.rights_version
+          ),$3
+        FROM research_claims c
+        JOIN research_sources s ON s.id=c.source_id AND s.tenant_id=c.tenant_id
+        WHERE c.id=$1 AND c.tenant_id=$2
+        `,
+        [claim.rows[0].id, f.tenantId, f.userId],
+      );
+
+      await client.query(
         `UPDATE research_claims
          SET status='APPROVED',reviewed_by=$1,reviewed_at=clock_timestamp(),
              review_reason='Extraction item explicitly approved'
