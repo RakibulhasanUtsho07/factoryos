@@ -221,6 +221,7 @@ export class GrowthService {
       id: string;
       set_name: string;
       set_version: number;
+      expected_scenario_count: number;
       model_version: string;
       data_vintage: string;
       baseline_source_ref: string;
@@ -234,17 +235,26 @@ export class GrowthService {
       created_at: string;
     }>(
       `
-      SELECT s.id::text AS id, s.set_name, s.set_version, s.model_version,
+      SELECT s.id::text AS id, s.set_name, s.set_version, s.expected_scenario_count, s.model_version,
         s.data_vintage::text AS data_vintage, s.baseline_source_ref, s.inputs,
         s.input_hash, s.created_by::text AS created_by, s.created_at::text AS created_at,
         (SELECT COUNT(*)::int FROM growth_scenario_set_members m
           WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
             AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id) AS scenario_count,
-        COALESCE((SELECT array_agg(DISTINCT m.scenario_type ORDER BY m.scenario_type)
+        COALESCE((SELECT array_agg(DISTINCT m.scenario_type::text ORDER BY m.scenario_type::text)
           FROM growth_scenario_set_members m
           WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
             AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id),
           ARRAY[]::text[]) AS scenario_types,
+        COALESCE((SELECT
+            COUNT(DISTINCT m.scenario_type) = 4 AND COALESCE(bool_and(sc.decision_ready), FALSE)
+          FROM growth_scenario_set_members m
+          JOIN growth_scenarios sc ON sc.id = m.scenario_id
+            AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+            AND sc.opportunity_id = m.opportunity_id
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
+            AND m.scenario_type IN ('BASE','UPSIDE','DOWNSIDE','STRESS')), FALSE) AS decision_ready,
         COALESCE((SELECT bool_and(sc.decision_ready)
           FROM growth_scenario_set_members m
           JOIN growth_scenarios sc ON sc.id = m.scenario_id
@@ -252,15 +262,8 @@ export class GrowthService {
             AND sc.opportunity_id = m.opportunity_id
           WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
             AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
-            AND m.scenario_type <> 'CUSTOM'), FALSE) AS decision_ready,
-        COALESCE((SELECT bool_and(sc.decision_ready)
-          FROM growth_scenario_set_members m
-          JOIN growth_scenarios sc ON sc.id = m.scenario_id
-            AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
-            AND sc.opportunity_id = m.opportunity_id
-          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
-            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
-            AND m.scenario_type = 'CUSTOM'), FALSE) AS sensitivity_decision_ready
+            AND m.scenario_type = 'CUSTOM'
+          HAVING COUNT(*) > 0), FALSE) AS sensitivity_decision_ready
       FROM growth_scenario_sets s
       WHERE s.opportunity_id = $1 AND s.tenant_id = $2 AND s.factory_id = $3
       ORDER BY s.set_version DESC
@@ -285,6 +288,7 @@ export class GrowthService {
       id: string;
       set_name: string;
       set_version: number;
+      expected_scenario_count: number;
       model_version: string;
       data_vintage: string;
       baseline_source_ref: string;
@@ -294,7 +298,7 @@ export class GrowthService {
       created_at: string;
     }>(
       `
-      SELECT id::text AS id, set_name, set_version, model_version,
+      SELECT id::text AS id, set_name, set_version, expected_scenario_count, model_version,
         data_vintage::text AS data_vintage, baseline_source_ref, inputs, input_hash,
         created_by::text AS created_by, created_at::text AS created_at
       FROM growth_scenario_sets
@@ -1049,9 +1053,9 @@ export class GrowthService {
       throw new BadRequestException('data_vintage cannot be in the future');
     }
     const baseline = {
-      baseline_revenue: dto.baseline?.baseline_revenue,
-      baseline_variable_cost: dto.baseline?.baseline_variable_cost,
-      baseline_fixed_cost: dto.baseline?.baseline_fixed_cost,
+      baseline_revenue: dto.baseline.baseline_revenue,
+      baseline_variable_cost: dto.baseline.baseline_variable_cost,
+      baseline_fixed_cost: dto.baseline.baseline_fixed_cost,
     };
     if (
       !Number.isFinite(baseline.baseline_revenue) || baseline.baseline_revenue <= 0
@@ -1162,15 +1166,16 @@ export class GrowthService {
           `
           INSERT INTO growth_scenario_sets (
             tenant_id, factory_id, opportunity_id, set_name, set_version,
-            model_version, data_vintage, baseline_source_ref, inputs, input_hash, created_by
+            expected_scenario_count, model_version, data_vintage, baseline_source_ref,
+            inputs, input_hash, created_by
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9::jsonb, $10, $11)
-          RETURNING id::text AS id, set_name, set_version, model_version,
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10::jsonb, $11, $12)
+          RETURNING id::text AS id, set_name, set_version, expected_scenario_count, model_version,
             data_vintage::text AS data_vintage, baseline_source_ref, inputs, input_hash,
             created_by::text AS created_by, created_at::text AS created_at
           `,
           [
-            tenantId, factoryId, opportunityId, setName, setVersion, modelVersion,
+            tenantId, factoryId, opportunityId, setName, setVersion, plan.length, modelVersion,
             vintage.toISOString(), baselineSourceRef, JSON.stringify(normalizedInputs), inputHash, userId,
           ],
         );
