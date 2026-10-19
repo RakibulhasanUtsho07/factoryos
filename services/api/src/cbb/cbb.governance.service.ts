@@ -1007,6 +1007,71 @@ export class CbbGovernanceService {
     return rows.rows;
   }
 
+  async filterChangeProposalResult(tenantId: string, factoryId: string, userId: string, result: unknown) {
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) {
+      if (result && typeof result === 'object') {
+        const value = result as Record<string, unknown>;
+        if (Array.isArray(value.items)) return { ...value, items: [], count: 0 };
+      }
+      return result;
+    }
+    if (!result || typeof result !== 'object') return result;
+    const value = result as Record<string, unknown>;
+    if (!Array.isArray(value.items)) return result;
+    const items = value.items as Array<Record<string, unknown>>;
+    const blueprintItems = items.filter((item) => String(item.targetType) === 'BLUEPRINT' && !item.targetId);
+    const rows = items
+      .filter((item) => item.targetId && String(item.targetType) !== 'BLUEPRINT')
+      .map((item) => ({ ...item, target_type: String(item.targetType), target_id: String(item.targetId) })) as DbRow[];
+    const visibleRows = await this.filterTargetRowsByAcl(tenantId, factoryId, userId, rows);
+    const visibleKeys = new Set(visibleRows.map((row) => String(row.target_type) + ':' + String(row.target_id)));
+    const visibleItems = items.filter((item) => {
+      if (String(item.targetType) === 'BLUEPRINT') return blueprintItems.includes(item);
+      return !!item.targetId && visibleKeys.has(String(item.targetType) + ':' + String(item.targetId));
+    });
+    return { ...value, items: visibleItems, count: visibleItems.length };
+  }
+
+  async filterConflictResult(tenantId: string, factoryId: string, userId: string, result: unknown) {
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) {
+      if (result && typeof result === 'object') {
+        const value = result as Record<string, unknown>;
+        if (Array.isArray(value.items)) return { ...value, items: [], total: 0 };
+      }
+      return result;
+    }
+    if (!result || typeof result !== 'object') return result;
+    const value = result as Record<string, unknown>;
+    if (!Array.isArray(value.items)) return result;
+    const items = value.items as Array<Record<string, unknown>>;
+    const rows = items
+      .filter((item) => item.subjectId && item.subjectType)
+      .map((item) => ({ ...item, target_type: String(item.subjectType), target_id: String(item.subjectId) })) as DbRow[];
+    const visibleRows = await this.filterTargetRowsByAcl(tenantId, factoryId, userId, rows);
+    const visibleKeys = new Set(visibleRows.map((row) => String(row.target_type) + ':' + String(row.target_id)));
+    const visibleItems = items.filter((item) =>
+      !!item.subjectId && visibleKeys.has(String(item.subjectType) + ':' + String(item.subjectId)),
+    );
+    return { ...value, items: visibleItems, total: visibleItems.length };
+  }
+
+  async assertConflictReadAccess(tenantId: string, factoryId: string, userId: string, conflictId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
+    this.uuid(conflictId, 'conflictId');
+    const result = await this.database.query<DbRow>(
+      `SELECT subject_type,subject_id::text AS subject_id FROM business_conflicts
+       WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [conflictId, tenantId, factoryId], { tenantId },
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('CBB conflict was not found in this factory');
+    await this.assertTargetReadAccess(
+      tenantId, factoryId, userId, String(row.subject_type) as TargetType, String(row.subject_id),
+    );
+    return { allowed: true };
+  }
+
   async canReadActiveBlueprint(tenantId: string, factoryId: string, userId: string): Promise<boolean> {
     this.validateReadScope(tenantId, factoryId);
     this.uuid(userId, 'userId');
