@@ -1630,6 +1630,14 @@ export class GrowthService {
       throw new BadRequestException('VALIDATED and REFUTED assumption decisions require evidence references');
     }
     return this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ status: string }>(
+        'SELECT status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
+        [opportunityId, tenantId, factoryId],
+      );
+      if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+      if (!['PROPOSED', 'ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
+        throw new ConflictException('Assumptions can only be reviewed while the opportunity is open');
+      }
       const assumption = await client.query<{ id: string }>(
         'SELECT id::text AS id FROM growth_opportunity_assumptions WHERE id = $1 AND opportunity_id = $2 AND tenant_id = $3 AND factory_id = $4',
         [assumptionId, opportunityId, tenantId, factoryId],
@@ -1906,6 +1914,10 @@ export class GrowthService {
       throw new BadRequestException('limit must be between 1 and 100');
     }
     return limit;
+  }
+
+  private uuidOrNull(value: string | null): string | null {
+    return value && isUUID(value) ? value : null;
   }
 
   private correlationId(requestId: string | null, traceId: string | null) {
