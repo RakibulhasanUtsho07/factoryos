@@ -355,6 +355,7 @@ describe('Research release lifecycle', () => {
         rows: [{
           id: EVALUATION_ID,
           status: 'PASSED',
+          evaluation_version: 'research-release-contract.v2',
           content_fingerprint: 'c'.repeat(64),
         }],
       });
