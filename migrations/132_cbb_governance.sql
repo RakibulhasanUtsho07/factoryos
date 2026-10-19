@@ -210,7 +210,7 @@ BEGIN
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
   RETURN NEW;
 END;
-$;
+$$;
 DROP TRIGGER IF EXISTS business_acl_record_history ON business_acl;
 CREATE TRIGGER business_acl_record_history
 AFTER INSERT OR UPDATE OR DELETE ON business_acl
