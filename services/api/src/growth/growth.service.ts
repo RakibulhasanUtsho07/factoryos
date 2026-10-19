@@ -1698,8 +1698,8 @@ export class GrowthService {
     this.validateUuid(opportunityId, 'opportunityId');
     this.validateUuid(assumptionId, 'assumptionId');
     const refs = dto.evidence_refs ?? [];
-    if (['VALIDATED', 'REFUTED'].includes(dto.decision) && refs.length === 0) {
-      throw new BadRequestException('VALIDATED and REFUTED assumption decisions require evidence references');
+    if (['VALIDATED', 'REFUTED', 'WAIVED'].includes(dto.decision) && refs.length === 0) {
+      throw new BadRequestException('VALIDATED, REFUTED and WAIVED assumption decisions require evidence references');
     }
     return this.database.transaction({ tenantId, userId }, async client => {
       const opportunity = await client.query<{ status: string }>(
