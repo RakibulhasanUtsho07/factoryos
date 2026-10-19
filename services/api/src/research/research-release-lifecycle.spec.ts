@@ -223,6 +223,56 @@ describe('Research release lifecycle', () => {
     expect(audit.record).not.toHaveBeenCalled();
   });
 
+  it('refuses rollback when the historical passing evaluation fingerprint is stale against current evidence', async () => {
+    const validator = service as unknown as {
+      validateReleaseClaims: (tenantId: string, claimIds: string[]) => Promise<unknown>;
+    };
+    jest.spyOn(validator, 'validateReleaseClaims').mockResolvedValue(passingReport);
+
+    database.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: CURRENT_RELEASE_ID,
+          release_key: 'quality-research',
+          version: 3,
+          status: 'PROMOTED',
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: TARGET_RELEASE_ID,
+          release_key: 'quality-research',
+          version: 2,
+          status: 'PROMOTED',
+          claim_ids: ['aa2f63c4-dd22-4f10-bf4d-67f091700001'],
+          evaluation_id: EVALUATION_ID,
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: EVALUATION_ID,
+          status: 'PASSED',
+          content_fingerprint: 'd'.repeat(64),
+        }],
+      });
+
+    await expect(service.rollbackRelease(
+      USER_ID,
+      TENANT_ID,
+      CURRENT_RELEASE_ID,
+      {
+        target_release_id: TARGET_RELEASE_ID,
+        reason: 'The historical release fingerprint no longer matches verified evidence.',
+      },
+      'request-rollback-stale',
+      'trace-rollback-stale',
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(database.query).toHaveBeenCalledTimes(3);
+    expect(database.transaction).not.toHaveBeenCalled();
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
   it('switches the active pointer transactionally and records both sides of a rollback', async () => {
     const validator = service as unknown as {
       validateReleaseClaims: (tenantId: string, claimIds: string[]) => Promise<unknown>;
