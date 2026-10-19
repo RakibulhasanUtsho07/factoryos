@@ -125,6 +125,21 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1
+      FROM growth_opportunity_evidence e
+     WHERE e.opportunity_id = NEW.opportunity_id
+       AND e.tenant_id = NEW.tenant_id
+       AND e.factory_id = NEW.factory_id
+       AND (
+         btrim(COALESCE(e.reference_ref, '')) = btrim(NEW.baseline_source_ref)
+         OR btrim(COALESCE(e.citation_url, '')) = btrim(NEW.baseline_source_ref)
+       )
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_BASELINE_SOURCE_NOT_ATTACHED_TO_OPPORTUNITY'
+      USING ERRCODE = '23514';
+  END IF;
+
   SELECT COALESCE(MAX(s.set_version), 0) + 1
     INTO expected_version
     FROM growth_scenario_sets s
