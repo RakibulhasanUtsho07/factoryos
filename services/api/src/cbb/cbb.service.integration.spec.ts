@@ -849,6 +849,8 @@ describe(
             'business_rules',
             'business_terms',
             'business_exceptions',
+            'business_evidence',
+            'business_evidence_links',
           ];
 
           try {

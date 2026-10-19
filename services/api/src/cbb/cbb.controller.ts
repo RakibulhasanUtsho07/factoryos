@@ -49,6 +49,14 @@ import {
   ListBusinessChangesDto,
 } from './dto/list-business-changes.dto';
 import { CbbChangeService } from './cbb.change.service';
+import { CbbEvidenceService } from './cbb.evidence.service';
+import {
+  CreateCbbEvidenceDto,
+  LinkCbbEvidenceDto,
+  ListCbbEvidenceQueryDto,
+  ListCbbConflictsQueryDto,
+  DecideCbbConflictDto,
+} from './dto/cbb-evidence.dto';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -96,6 +104,9 @@ export class CbbController {
 
     private readonly cbbChangeService:
       CbbChangeService,
+
+    private readonly cbbEvidenceService:
+      CbbEvidenceService,
   ) {}
 
   // ============================================================
@@ -397,6 +408,120 @@ export class CbbController {
       body?.reason ??
         null,
     );
+  }
+
+
+  // ============================================================
+  // SOURCE EVIDENCE, VERSION HISTORY AND CONFLICT REVIEW
+  // ============================================================
+
+  @Get('versions')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listVersions(@Req() request: FactoryOsRequest) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.listBlueprintVersions(tenantId, factoryId);
+  }
+
+  @Get('versions/:versionId/map')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getVersionMap(
+    @Req() request: FactoryOsRequest,
+    @Param('versionId', new ParseUUIDPipe()) versionId: string,
+  ) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbService.getBusinessMap(tenantId, factoryId, versionId);
+  }
+
+  @Post('evidence')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async createEvidence(@Req() request: FactoryOsRequest, @Body() body: CreateCbbEvidenceDto) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.createEvidence(context, body);
+  }
+
+  @Get('evidence')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listEvidence(@Req() request: FactoryOsRequest, @Query() query: ListCbbEvidenceQueryDto) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.listEvidence(tenantId, factoryId, {
+      sourceType: query.source_type,
+      state: query.state,
+      sourceKey: query.source_key,
+      limit: query.limit,
+      offset: query.offset,
+    });
+  }
+
+  @Get('evidence/:evidenceId/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getEvidenceHistory(
+    @Req() request: FactoryOsRequest,
+    @Param('evidenceId', new ParseUUIDPipe()) evidenceId: string,
+  ) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.getEvidenceHistory(tenantId, factoryId, evidenceId);
+  }
+
+  @Post('evidence/:evidenceId/links')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async linkEvidence(
+    @Req() request: FactoryOsRequest,
+    @Param('evidenceId', new ParseUUIDPipe()) evidenceId: string,
+    @Body() body: LinkCbbEvidenceDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.createEvidenceLink(context, evidenceId, body);
+  }
+
+  @Get('conflicts')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async listConflicts(@Req() request: FactoryOsRequest, @Query() query: ListCbbConflictsQueryDto) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.listConflicts(tenantId, factoryId, {
+      status: query.status,
+      subjectType: query.subject_type,
+      limit: query.limit,
+      offset: query.offset,
+    });
+  }
+
+  @Get('conflicts/:conflictId/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.read')
+  @RequireFactoryScope()
+  async getConflictHistory(
+    @Req() request: FactoryOsRequest,
+    @Param('conflictId', new ParseUUIDPipe()) conflictId: string,
+  ) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.getConflictHistory(tenantId, factoryId, conflictId);
+  }
+
+  @Post('conflicts/:conflictId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async decideConflict(
+    @Req() request: FactoryOsRequest,
+    @Param('conflictId', new ParseUUIDPipe()) conflictId: string,
+    @Body() body: DecideCbbConflictDto,
+  ) {
+    const context = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.decideConflict(context, conflictId, body);
   }
 
   // ============================================================

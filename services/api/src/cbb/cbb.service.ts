@@ -503,17 +503,20 @@ export class CbbService {
   async getBusinessMap(
     tenantId: string,
     factoryId: string,
+    requestedVersionId?: string,
   ) {
     this.validateScope(
       tenantId,
       factoryId,
     );
 
-    const version =
-      await this.getCurrentVersion(
-        tenantId,
-        factoryId,
-      );
+    if (requestedVersionId) {
+      this.validateUuid(requestedVersionId, 'versionId');
+    }
+
+    const version = requestedVersionId
+      ? await this.getBlueprintVersionById(tenantId, factoryId, requestedVersionId)
+      : await this.getCurrentVersion(tenantId, factoryId);
 
     if (!version) {
       return null;
@@ -542,6 +545,12 @@ export class CbbService {
             'VERIFIED',
             'INFERRED'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=e.tenant_id AND c.factory_id=e.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='ENTITY'
+              AND c.subject_id=e.id AND c.status='OPEN'
+          )
 
         ORDER BY
           CASE
@@ -559,6 +568,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -623,6 +633,24 @@ export class CbbService {
             'VERIFIED',
             'INFERRED'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=r.tenant_id AND c.factory_id=r.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='RELATION'
+              AND c.subject_id=r.id AND c.status='OPEN'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=from_entity.tenant_id AND c.factory_id=from_entity.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='ENTITY'
+              AND c.subject_id=from_entity.id AND c.status='OPEN'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM business_conflicts c
+            WHERE c.tenant_id=to_entity.tenant_id AND c.factory_id=to_entity.factory_id
+              AND c.blueprint_id=$4 AND c.subject_type='ENTITY'
+              AND c.subject_id=to_entity.id AND c.status='OPEN'
+          )
 
         ORDER BY
           CASE
@@ -640,6 +668,7 @@ export class CbbService {
           tenantId,
           factoryId,
           version.versionId,
+          version.blueprintId,
         ],
         {
           tenantId,
@@ -1212,6 +1241,46 @@ export class CbbService {
   // ============================================================
   // PRIVATE: CURRENT VERSION
   // ============================================================
+
+  private async getBlueprintVersionById(
+    tenantId: string,
+    factoryId: string,
+    versionId: string,
+  ) {
+    const result = await this.database.query<CbbVersionRow>(
+      `
+      SELECT b.id::text AS blueprint_id,
+        b.status AS blueprint_status,
+        v.id::text AS version_id,
+        v.version::text AS version,
+        v.graph_hash, v.evidence_count,
+        v.readiness_score::text AS readiness_score,
+        v.status AS version_status, v.change_reason,
+        v.created_at::text AS created_at
+      FROM business_blueprints b
+      INNER JOIN business_blueprint_versions v
+        ON v.blueprint_id=b.id AND v.tenant_id=b.tenant_id AND v.factory_id=b.factory_id
+      WHERE b.tenant_id=$1 AND b.factory_id=$2 AND v.id=$3
+      LIMIT 1
+      `,
+      [tenantId, factoryId, versionId],
+      { tenantId },
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      blueprintId: row.blueprint_id,
+      blueprintStatus: row.blueprint_status,
+      versionId: row.version_id,
+      version: row.version,
+      graphHash: row.graph_hash,
+      evidenceCount: row.evidence_count,
+      readinessScore: this.normalizeNullableNumber(row.readiness_score),
+      versionStatus: row.version_status,
+      changeReason: row.change_reason,
+      createdAt: row.created_at,
+    };
+  }
 
   private async getCurrentVersion(
     tenantId: string,
