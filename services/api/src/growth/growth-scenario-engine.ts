@@ -1,3 +1,5 @@
+export const GROWTH_SCENARIO_CANONICALIZATION_VERSION = 2 as const;
+
 export type GrowthScenarioSensitivityParameter =
   | 'price_change_pct'
   | 'volume_change_pct'
@@ -162,7 +164,7 @@ export function canonicalizeGrowthScenarioInput(value: unknown): string {
     if (item && typeof item === 'object') {
       const entries = Object.entries(item as Record<string, unknown>)
         .filter(([, child]) => child !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([key, child]) => [key, normalize(child)]);
       return Object.fromEntries(entries);
     }

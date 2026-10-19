@@ -27,7 +27,11 @@ import { CreateGrowthEvidenceGapDto } from './dto/create-growth-evidence-gap.dto
 import { DecideGrowthEvidenceGapDto } from './dto/decide-growth-evidence-gap.dto';
 import { AssignGrowthDecisionOwnerDto } from './dto/assign-growth-decision-owner.dto';
 import { evaluateGrowthGovernanceReadiness } from './growth-governance';
-import { buildGrowthScenarioPlan, canonicalizeGrowthScenarioInput } from './growth-scenario-engine';
+import {
+  buildGrowthScenarioPlan,
+  canonicalizeGrowthScenarioInput,
+  GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+} from './growth-scenario-engine';
 import type {
   GrowthScenarioPlanEntry,
   GrowthScenarioProfilesInput,
@@ -982,16 +986,19 @@ export class GrowthService {
         );
         const snapshotOutput = { ...output, constraintGate };
         const fullInputs = {
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
           ...inputs,
           projected_constraint_metrics: dto.projected_constraint_metrics ?? null,
           constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
         };
-        inputHash = createHash('sha256').update(JSON.stringify({
-          modelVersion, dataVintage: vintage.toISOString(),
-          baselineSourceRef: dto.baseline_source_ref.trim(),
+        inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
+          model_version: modelVersion,
+          data_vintage: vintage.toISOString(),
+          baseline_source_ref: dto.baseline_source_ref.trim(),
           inputs: fullInputs,
-          constraintsSnapshot: opportunity.rows[0].constraints_snapshot ?? {},
-          constraintGate,
+          constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
+          constraint_gate: constraintGate,
         })).digest('hex');
         const inserted = await client.query(
           `
@@ -1132,6 +1139,7 @@ export class GrowthService {
         }
         const normalizedInputs = {
           schema_version: 1,
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
           model_version: modelVersion,
           set_name: setName,
           baseline,
@@ -1151,6 +1159,7 @@ export class GrowthService {
           constraints_snapshot: constraintsSnapshot,
         };
         inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+          canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
           data_vintage: vintage.toISOString(),
           baseline_source_ref: baselineSourceRef,
           inputs: normalizedInputs,
@@ -1206,6 +1215,7 @@ export class GrowthService {
           );
           const outputSnapshot = { ...this.runSensitivityModel(financialInputs), constraintGate };
           const fullInputs = {
+            canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
             ...financialInputs,
             projected_constraint_metrics: profile.projected_constraint_metrics ?? null,
             constraints_snapshot: constraintsSnapshot,
@@ -1215,6 +1225,7 @@ export class GrowthService {
               : null,
           };
           const scenarioInputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+            canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
             model_version: modelVersion,
             scenario_key: entry.scenario_key,
             data_vintage: vintage.toISOString(),

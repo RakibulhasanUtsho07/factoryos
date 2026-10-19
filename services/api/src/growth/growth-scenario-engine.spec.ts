@@ -1,6 +1,7 @@
 import {
   buildGrowthScenarioPlan,
   canonicalizeGrowthScenarioInput,
+  GROWTH_SCENARIO_CANONICALIZATION_VERSION,
   type GrowthScenarioProfilesInput,
 } from './growth-scenario-engine';
 
@@ -92,12 +93,15 @@ describe('growth scenario planning engine', () => {
     }])).toThrow('SCENARIO_SENSITIVITY_PROJECTION_COUNT_MISMATCH:price_change_pct');
   });
 
-  it('canonicalizes object keys so equivalent input snapshots have the same bytes', () => {
+  it('canonicalizes object keys with locale-independent ordering for stable cross-runtime fingerprints', () => {
     expect(canonicalizeGrowthScenarioInput({
       baseline: { revenue: 100, variableCost: 40 }, model: 'v1',
     })).toBe(canonicalizeGrowthScenarioInput({
       model: 'v1', baseline: { variableCost: 40, revenue: 100 },
     }));
     expect(canonicalizeGrowthScenarioInput({ value: -0 })).toBe('{"value":0}');
+    expect(GROWTH_SCENARIO_CANONICALIZATION_VERSION).toBe(2);
+    expect(canonicalizeGrowthScenarioInput({ 'ä': 3, a: 2, Z: 1 }))
+      .toBe('{"Z":1,"a":2,"ä":3}');
   });
 });
