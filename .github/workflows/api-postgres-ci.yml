@@ -233,6 +233,7 @@ jobs:
             migrations/145_growth_scenario_set_grid_integrity.sql
             migrations/146_growth_experiment_kpi_evidence_linkage.sql
             migrations/147_ai_decision_envelope_lifecycle_replay.sql
+            migrations/148_ot_device_registry_spool.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
