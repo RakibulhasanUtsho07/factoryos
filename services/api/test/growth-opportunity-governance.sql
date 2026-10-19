@@ -91,6 +91,10 @@ BEGIN
      OR position('c.observed_value = c.threshold_value' IN definition) = 0 THEN
     RAISE EXCEPTION 'GROWTH_GOVERNANCE_NUMERIC_CONSTRAINT_CHECK_MISSING';
   END IF;
+  IF position('tenant_memberships' IN definition) = 0
+     OR position('owner_user_id IS DISTINCT FROM o.created_by' IN definition) = 0 THEN
+    RAISE EXCEPTION 'GROWTH_GOVERNANCE_ACTIVE_INDEPENDENT_OWNER_CHECK_MISSING';
+  END IF;
   IF position('growth_opportunity_assumption_decisions' IN definition) = 0
      OR position('growth_opportunity_constraints' IN definition) = 0
      OR position('growth_opportunity_evidence_gaps' IN definition) = 0 THEN
