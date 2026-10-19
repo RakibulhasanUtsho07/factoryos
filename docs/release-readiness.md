@@ -11,27 +11,33 @@ This checklist is deliberately separate from deployment. Passing CI does not mea
 - Store database credentials, JWT-related secrets, and OIDC configuration in the hosting platform's secret manager, not in Git or `.env.example`.
 - Use a dedicated least-privileged application database role.
 
-## Database migration 028 — manual release gate
+## Migration and destructive-change manual release gate
 
-Do not run migration 028 against production until all of the following are verified:
+Do not apply a production migration until all of the following are verified:
 
 1. Confirm the target database identity and environment independently; never rely only on a shell prompt or a database name copied from an example.
-2. Verify migrations 001–027 are applied and migration 028 is not already recorded.
-3. Take a fresh backup and prove restore to an isolated database.
-4. Apply migration 028 only to an isolated restore first; run the claim reconciliation SQL verification and PostgreSQL integration tests there.
-5. Review locking, transaction duration, operator permissions, audit retention, and the manual recovery procedure with the database owner.
+2. Compare the complete ordered migration list in .github/workflows/api-postgres-ci.yml with applied schema_migrations entries, including same-prefix migrations whose order is dependency-sensitive. Do not use the maximum numeric filename as proof that all migrations ran.
+3. Take a fresh, access-restricted backup and prove restore to an isolated database.
+4. Apply the exact candidate migration sequence to the isolated restore first; run its SQL contract verification and the PostgreSQL integration tests there.
+5. Review RLS, locking, transaction duration, operator permissions, audit retention, and the manual recovery procedure with the database owner.
 6. Agree on a rollback/forward-fix plan. Do not assume destructive schema rollback is safe after application writes begin.
 7. Schedule production execution with an operator present, capture migration output, and run post-migration smoke tests.
 
+Migration 028's execution-claim reconciliation has additional manual recovery risk: preserve a fresh backup, confirm the isolated restore, inspect claim/execution evidence, and obtain operator review before any production reconciliation action. A CI application of migration 028 is not authorization to run it against production.
+
 ## CI scope
 
-The repository has three automated verification workflows:
+The repository has automated API, PostgreSQL integration, frontend and dependency-security verification workflows. Confirm the exact workflow set that applies to the candidate SHA:
 
 - **API CI** runs API lint, build, and the unit tests that do not require PostgreSQL integration fixtures.
-- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies migrations 001–028 in dependency order, seeds CI-only fixtures, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
+- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in .github/workflows/api-postgres-ci.yml through migrations/148_ot_device_registry_spool.sql at this baseline, verifies that no numbered migration is omitted, runs SQL contract suites, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
 - **Web CI** installs the npm workspace dependencies, runs the frontend lint command, and builds the Next.js application.
 
 A green GitHub Actions run verifies only the commit and environment shown in that run. It does not mean the application was deployed, that production configuration was entered in a hosting platform, or that any production migration was applied.
+
+## Backup and restore evidence
+
+Before any production database change, follow docs/operational-reliability-runbook.md to create a restricted backup, restore it into an isolated database, apply the candidate migration sequence there, and run application/tenant-scope smoke tests. Record backup integrity, the restored database identity, candidate SHA, migration results, and operator sign-off.
 
 ## Release completion criteria
 
