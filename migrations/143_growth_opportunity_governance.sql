@@ -274,9 +274,16 @@ BEGIN
      OR NEW.tenant_id IS DISTINCT FROM factoryos_current_tenant_id() THEN
     RAISE EXCEPTION 'GROWTH_ASSUMPTION_ACTOR_OR_TENANT_MISMATCH' USING ERRCODE = '42501';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM users u JOIN tenant_memberships tm ON tm.user_id = u.id
+     WHERE u.id = NEW.owner_user_id AND u.status = 'ACTIVE'
+       AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_ASSUMPTION_OWNER_MUST_BE_AN_ACTIVE_TENANT_MEMBER' USING ERRCODE = '23514';
+  END IF;
   RETURN NEW;
 END;
-$$;
+$;
 CREATE TRIGGER growth_opportunity_assumptions_immutable
 BEFORE UPDATE OR DELETE ON growth_opportunity_assumptions
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_assumption_records();
@@ -298,6 +305,13 @@ BEGIN
      AND NOT factoryos_growth_opportunity_evidence_ref_exists(NEW.tenant_id, NEW.factory_id, NEW.opportunity_id, NEW.source_evidence_ref) THEN
     RAISE EXCEPTION 'GROWTH_CONSTRAINT_SOURCE_EVIDENCE_NOT_ATTACHED_TO_OPPORTUNITY' USING ERRCODE = '23514';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM users u JOIN tenant_memberships tm ON tm.user_id = u.id
+     WHERE u.id = NEW.owner_user_id AND u.status = 'ACTIVE'
+       AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_CONSTRAINT_OWNER_MUST_BE_AN_ACTIVE_TENANT_MEMBER' USING ERRCODE = '23514';
+  END IF;
   IF NEW.source_as_of > clock_timestamp() + interval '5 minutes' THEN
     RAISE EXCEPTION 'GROWTH_CONSTRAINT_SOURCE_AS_OF_CANNOT_BE_IN_FUTURE' USING ERRCODE = '23514';
   END IF;
@@ -318,9 +332,16 @@ BEGIN
      OR NEW.tenant_id IS DISTINCT FROM factoryos_current_tenant_id() THEN
     RAISE EXCEPTION 'GROWTH_EVIDENCE_GAP_ACTOR_OR_TENANT_MISMATCH' USING ERRCODE = '42501';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM users u JOIN tenant_memberships tm ON tm.user_id = u.id
+     WHERE u.id = NEW.owner_user_id AND u.status = 'ACTIVE'
+       AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_EVIDENCE_GAP_OWNER_MUST_BE_AN_ACTIVE_TENANT_MEMBER' USING ERRCODE = '23514';
+  END IF;
   RETURN NEW;
 END;
-$$;
+$;
 CREATE TRIGGER growth_opportunity_evidence_gaps_immutable
 BEFORE UPDATE OR DELETE ON growth_opportunity_evidence_gaps
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_evidence_gap_record();
@@ -396,6 +417,13 @@ BEGIN
   IF NEW.assigned_by IS DISTINCT FROM factoryos_current_user_id()
      OR NEW.tenant_id IS DISTINCT FROM factoryos_current_tenant_id() THEN
     RAISE EXCEPTION 'GROWTH_DECISION_OWNER_ASSIGNMENT_ACTOR_OR_TENANT_MISMATCH' USING ERRCODE = '42501';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM users u JOIN tenant_memberships tm ON tm.user_id = u.id
+     WHERE u.id = NEW.owner_user_id AND u.status = 'ACTIVE'
+       AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_DECISION_OWNER_MUST_BE_AN_ACTIVE_TENANT_MEMBER' USING ERRCODE = '23514';
   END IF;
   SELECT created_by INTO v_created_by FROM growth_opportunities
    WHERE id = NEW.opportunity_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
@@ -512,7 +540,7 @@ BEGIN
               AND c2.opportunity_id = c.opportunity_id AND c2.dimension = c.dimension
             ORDER BY c2.created_at DESC, c2.id DESC LIMIT 1
          )
-         AND (c.applicability = 'NOT_APPLICABLE'
+         AND (c.applicability = 'NOT_APPLICABLE' AND length(btrim(c.rationale)) >= 10
            OR (c.applicability = 'APPLICABLE'
              AND c.source_evidence_ref IS NOT NULL AND c.source_as_of IS NOT NULL
              AND c.threshold_value IS NOT NULL AND c.observed_value IS NOT NULL
@@ -564,6 +592,13 @@ BEGIN
     END IF;
 
     IF NEW.status IN ('ACCEPTED','REJECTED') THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM users u JOIN tenant_memberships tm ON tm.user_id = u.id
+         WHERE u.id = NEW.decided_by AND u.status = 'ACTIVE'
+           AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+      ) THEN
+        RAISE EXCEPTION 'GROWTH_OPPORTUNITY_DECISION_ACTOR_MUST_BE_AN_ACTIVE_TENANT_MEMBER' USING ERRCODE = '23514';
+      END IF;
       IF NOT EXISTS (
         SELECT 1 FROM growth_opportunity_decision_owners own
          WHERE own.tenant_id = NEW.tenant_id AND own.factory_id = NEW.factory_id
