@@ -13,7 +13,8 @@ BEGIN
     'research_source_rights_history',
     'research_extraction_item_reviews',
     'research_source_content_purges',
-    'research_evidence_assessments'
+    'research_evidence_assessments',
+    'research_evidence_safety_reviews'
   ] LOOP
     IF to_regclass('public.' || required_table) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_TABLE_MISSING: %', required_table;
@@ -53,7 +54,9 @@ BEGIN
     'uq_research_claim_id_tenant',
     'idx_research_source_content_purges_timeline',
     'idx_research_evidence_assessment_history',
-    'idx_research_evidence_assessment_source_version'
+    'idx_research_evidence_assessment_source_version',
+    'uq_research_evidence_assessment_scope',
+    'idx_research_evidence_safety_review_claim'
   ] LOOP
     IF to_regclass('public.' || required_index) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_INDEX_MISSING: %', required_index;
@@ -75,7 +78,9 @@ BEGIN
     'research_source_content_purges_immutable',
     'research_source_a_access_normalize_guard',
     'research_evidence_assessments_guard',
-    'research_claim_evidence_assessment_guard'
+    'research_claim_evidence_assessment_guard',
+    'research_evidence_safety_review_guard',
+    'research_evidence_score_consistency_guard'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger t
@@ -122,6 +127,8 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version='137_research_full_text_access_normalization'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='138_research_evidence_assessment'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='139_research_evidence_safety_review'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_INGESTION_MIGRATION_REGISTRATION_MISSING';
   END IF;
@@ -160,6 +167,32 @@ BEGIN
       AND policyname='research_evidence_assessments_tenant_isolation'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_EVIDENCE_ASSESSMENT_TENANT_ISOLATION_MISSING';
+  END IF;
+
+  IF position('RESEARCH_EVIDENCE_RUBRIC_FACTORS_DO_NOT_MATCH_SCORE'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_score_consistency()'::regprocedure)) = 0
+     OR position('RESEARCH_EVIDENCE_GRADE_DOES_NOT_MATCH_RUBRIC_THRESHOLDS'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_score_consistency()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_EVIDENCE_RUBRIC_DATABASE_CONSISTENCY_GUARD_MISSING';
+  END IF;
+
+  IF position('RESEARCH_EVIDENCE_SAFETY_REVIEW_SOURCE_VERSION_STALE'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_safety_review()'::regprocedure)) = 0
+     OR position('RESEARCH_EVIDENCE_SAFETY_REVIEWS_ARE_APPEND_ONLY'
+      IN pg_get_functiondef('public.factoryos_guard_research_evidence_safety_review()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_EVIDENCE_SAFETY_REVIEW_INTEGRITY_GUARD_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    WHERE c.oid=to_regclass('public.research_evidence_safety_reviews')
+      AND c.relrowsecurity AND c.relforcerowsecurity
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname='public' AND tablename='research_evidence_safety_reviews'
+      AND policyname='research_evidence_safety_reviews_tenant_isolation'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_EVIDENCE_SAFETY_REVIEW_TENANT_ISOLATION_MISSING';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM permissions WHERE code='research.ingest') THEN
