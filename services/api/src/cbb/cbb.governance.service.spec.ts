@@ -379,4 +379,153 @@ describe('CbbGovernanceService', () => {
     expect(query.mock.calls[0]?.[0]).toContain('proposed_payload');
     expect(query.mock.calls[3]?.[1]).toEqual([tenantId, factoryId, 'ENTITY', entityId]);
   });
+
+  it('lists an alias when only the alias matches the search and its canonical term is readable', async () => {
+    const canonicalTermId = '70000000-0000-4000-8000-000000000001';
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT b.id::text AS blueprint_id,b.current_version_id::text AS version_id')) {
+        return { rows: [{ blueprint_id: blueprintId, version_id: versionId }] };
+      }
+      if (sql.includes('SELECT DISTINCT ur.role_id::text AS role_id')) return { rows: [] };
+      if (sql.includes('FROM business_acl WHERE tenant_id=$1 AND factory_id=$2 AND target_type=$3 AND target_id=ANY($4::uuid[])')) {
+        return { rows: [] };
+      }
+      if (sql.includes('lower(canonical_term)=ANY($4::text[])')) {
+        return { rows: [{ id: canonicalTermId, canonical_term: 'Purchase Order', term: 'Purchase Order', state: 'VERIFIED' }] };
+      }
+      if (sql.includes('FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3')) {
+        return { rows: [] };
+      }
+      if (sql.includes('FROM business_terminology_aliases WHERE tenant_id=$1 AND factory_id=$2')) {
+        return { rows: [{
+          id: '71000000-0000-4000-8000-000000000001',
+          alias: 'PO',
+          canonical_term: 'Purchase Order',
+          language_code: 'en-us',
+          source_system: 'ERP',
+          state: 'VERIFIED',
+          version: 2,
+        }] };
+      }
+      throw new Error('Unexpected SQL in alias-only terminology search: ' + sql);
+    });
+
+    const result = await service.listTerminology(tenantId, factoryId, userId, 'PO');
+
+    expect(result.canonicalTerms).toEqual([]);
+    expect(result.aliases).toHaveLength(1);
+    expect(result.aliases[0]).toMatchObject({ alias: 'PO', canonical_term: 'Purchase Order' });
+  });
+
+  it('does not list aliases whose canonical CBB term is hidden by the active role ACL', async () => {
+    const canonicalTermId = '70000000-0000-4000-8000-000000000001';
+    query.mockImplementation(async (sql: string, values: unknown[] = []) => {
+      if (sql.includes('SELECT b.id::text AS blueprint_id,b.current_version_id::text AS version_id')) {
+        return { rows: [{ blueprint_id: blueprintId, version_id: versionId }] };
+      }
+      if (sql.includes('SELECT DISTINCT ur.role_id::text AS role_id')) return { rows: [] };
+      if (sql.includes('FROM business_acl WHERE tenant_id=$1 AND factory_id=$2 AND target_type=$3 AND target_id=ANY($4::uuid[])')) {
+        if (values[2] === 'TERM') {
+          return { rows: [{
+            target_id: canonicalTermId,
+            target_type: 'TERM',
+            role_id: roleId,
+            field_name: null,
+            access_level: 'READ',
+          }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('lower(canonical_term)=ANY($4::text[])')) {
+        return { rows: [{ id: canonicalTermId, canonical_term: 'Purchase Order', term: 'Purchase Order', state: 'VERIFIED' }] };
+      }
+      if (sql.includes('FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3')) return { rows: [] };
+      if (sql.includes('FROM business_terminology_aliases WHERE tenant_id=$1 AND factory_id=$2')) {
+        return { rows: [{
+          id: '71000000-0000-4000-8000-000000000001',
+          alias: 'PO',
+          canonical_term: 'Purchase Order',
+          language_code: 'en-us',
+          source_system: 'ERP',
+          state: 'VERIFIED',
+          version: 2,
+        }] };
+      }
+      throw new Error('Unexpected SQL in hidden-canonical alias test: ' + sql);
+    });
+
+    const result = await service.listTerminology(tenantId, factoryId, userId, 'PO');
+
+    expect(result.canonicalTerms).toEqual([]);
+    expect(result.aliases).toEqual([]);
+  });
+
+  it('creates the same alias spelling independently for a source-language context and audits the write', async () => {
+    const canonicalTermId = '70000000-0000-4000-8000-000000000001';
+    const aliasId = '71000000-0000-4000-8000-000000000001';
+    queue(
+      { rows: [{ id: blueprintId, current_version_id: versionId }] }, // active CBB
+      { rows: [{ id: canonicalTermId, canonical_term: 'Purchase Order' }] }, // trusted canonical term
+      { rows: [] }, // target ACL advisory lock
+      { rows: [] }, // active user's roles
+      { rows: [] }, // no restricted canonical-term grants
+      { rows: [] }, // no conflicting canonical term in this source/language context
+      { rows: [] }, // exact alias-context advisory lock
+      { rows: [] }, // no duplicate in this exact context
+      { rows: [{
+        id: aliasId, alias: 'PO', canonical_term: 'Purchase Order', language_code: 'en-us',
+        source_system: 'ERP', state: 'PROPOSED', version: 1, created_at: '2026-10-19T00:00:00Z',
+      }] },
+    );
+
+    const result = await service.createTerminologyAlias(
+      { tenantId, factoryId, userId },
+      { alias: 'PO', canonical_term: 'Purchase Order', language_code: 'EN-US', source_system: 'ERP' },
+    );
+
+    expect(result).toMatchObject({ id: aliasId, alias: 'PO', language_code: 'en-us', source_system: 'ERP' });
+    expect(query.mock.calls[7]?.[1]).toEqual([tenantId, factoryId, 'PO', 'en-us', 'ERP']);
+    expect(recordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      action: 'CREATE_ALIAS',
+      payload: expect.objectContaining({ alias: 'PO', languageCode: 'en-us', sourceSystem: 'ERP' }),
+    }));
+  });
+
+  it('uses the most specific source and language terminology match rather than a generic alias', async () => {
+    const canonicalTermId = '70000000-0000-4000-8000-000000000001';
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT id::text AS blueprint_id,current_version_id::text AS version_id FROM business_blueprints')) {
+        return { rows: [{ blueprint_id: blueprintId, version_id: versionId }] };
+      }
+      if (sql.includes('SELECT DISTINCT ur.role_id::text AS role_id')) return { rows: [] };
+      if (sql.includes('FROM business_acl WHERE tenant_id=$1 AND factory_id=$2 AND target_type=$3 AND target_id=ANY($4::uuid[])')) {
+        return { rows: [] };
+      }
+      if (sql.includes('FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3')) {
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT a.id::text AS alias_id')) {
+        return { rows: [{
+          alias_id: '71000000-0000-4000-8000-000000000001',
+          alias: 'PO',
+          canonical_term: 'Purchase Order',
+          language_code: 'en-us',
+          source_system: 'ERP',
+          state: 'VERIFIED',
+          version: 1,
+          canonical_term_id: canonicalTermId,
+          context_specificity: 2,
+        }] };
+      }
+      throw new Error('Unexpected SQL in context-specific terminology resolution: ' + sql);
+    });
+
+    const result = await service.resolveTerminology(tenantId, factoryId, userId, 'PO', 'ERP', 'EN-US');
+
+    expect(result).toMatchObject({ matchedBy: 'ALIAS', ambiguous: undefined });
+    expect(result.match).toMatchObject({ alias: 'PO', canonical_term: 'Purchase Order' });
+    expect(query.mock.calls[3]?.[1]).toEqual([tenantId, factoryId, versionId, 'PO', 'ERP', 'en-us']);
+    expect(query.mock.calls[4]?.[0]).toContain('MAX(context_specificity)');
+    expect(query.mock.calls[4]?.[1]).toEqual([tenantId, factoryId, 'PO', versionId, 'ERP', 'en-us']);
+  });
 });
