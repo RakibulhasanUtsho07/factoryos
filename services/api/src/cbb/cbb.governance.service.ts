@@ -1351,17 +1351,49 @@ export class CbbGovernanceService {
     this.validateScope(scope);
     this.uuid(proposalId, 'proposalId');
     const result = await this.database.query<DbRow>(
-      `SELECT target_type,target_id::text AS target_id FROM business_change_proposals
-       WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      `SELECT target_type,target_id::text AS target_id,proposal_type,proposed_state,proposed_payload
+       FROM business_change_proposals WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
       [proposalId, scope.tenantId, scope.factoryId], { tenantId: scope.tenantId },
     );
     const proposal = result.rows[0];
     if (!proposal) throw new NotFoundException('CBB proposal was not found in this factory');
-    await this.assertTargetWriteAccess(scope, String(proposal.target_type) as TargetType,
-      proposal.target_id ? String(proposal.target_id) : String((await this.database.query<DbRow>(
-        'SELECT id::text AS id FROM business_blueprints WHERE tenant_id=$1 AND factory_id=$2 AND status=$3 LIMIT 1',
-        [scope.tenantId, scope.factoryId, 'ACTIVE'], { tenantId: scope.tenantId },
-      )).rows[0]?.id ?? ''));
+    const targetType = String(proposal.target_type) as TargetType;
+    const proposalType = String(proposal.proposal_type ?? '').trim().toUpperCase();
+    let payload: Record<string, unknown> = {};
+    if (proposal.proposed_payload && typeof proposal.proposed_payload === 'object' && !Array.isArray(proposal.proposed_payload)) {
+      payload = proposal.proposed_payload as Record<string, unknown>;
+    } else if (typeof proposal.proposed_payload === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(proposal.proposed_payload);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
+      } catch {
+        throw new BadRequestException('CBB proposal payload is not valid JSON');
+      }
+    }
+    const allowedFieldsByTarget: Record<TargetType, readonly string[]> = {
+      BLUEPRINT: ['name', 'description', 'status', 'metadata'],
+      ENTITY: ['entity_type', 'name', 'description', 'state', 'confidence', 'metadata'],
+      RELATION: ['from_entity_id', 'to_entity_id', 'relation_type', 'state', 'confidence', 'metadata'],
+      PROCESS: ['name', 'description', 'owner_ref', 'state', 'confidence', 'metadata'],
+      PROCESS_STEP: ['process_id', 'sequence_no', 'name', 'description', 'owner_ref', 'inputs', 'outputs', 'state', 'confidence', 'metadata'],
+      RULE: ['name', 'rule_type', 'description', 'expression_ref', 'state', 'confidence', 'metadata'],
+      TERM: ['term', 'canonical_term', 'language_code', 'source_system', 'state', 'confidence', 'metadata'],
+      EXCEPTION: ['name', 'description', 'trigger_ref', 'handling_ref', 'state', 'confidence', 'metadata'],
+    };
+    const fieldSet = new Set(Object.keys(payload).filter((key) => allowedFieldsByTarget[targetType]?.includes(key)));
+    if (proposal.proposed_state) fieldSet.add('state');
+    if (proposalType.includes('SET_STATE') || proposalType.includes('RETIRE') ||
+        proposalType.includes('DELETE') || proposalType.includes('REMOVE') || proposalType.startsWith('VERIFY')) {
+      fieldSet.add('state');
+    }
+    if (proposalType.includes('DESCRIPTION')) fieldSet.add('description');
+    if (proposalType.includes('OWNER')) fieldSet.add('owner_ref');
+
+    const resolvedTargetId = proposal.target_id ? String(proposal.target_id) : String((await this.database.query<DbRow>(
+      'SELECT id::text AS id FROM business_blueprints WHERE tenant_id=$1 AND factory_id=$2 AND status=$3 LIMIT 1',
+      [scope.tenantId, scope.factoryId, 'ACTIVE'], { tenantId: scope.tenantId },
+    )).rows[0]?.id ?? '');
+    await this.assertTargetWriteAccess(scope, targetType, resolvedTargetId, [...fieldSet]);
     return { allowed: true };
   }
 
