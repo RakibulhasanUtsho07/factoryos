@@ -540,6 +540,21 @@ DECLARE
   v_dimension TEXT;
 BEGIN
   IF NOT EXISTS (
+    SELECT 1
+      FROM growth_opportunity_decision_owners own
+      JOIN growth_opportunities o
+        ON o.id = own.opportunity_id AND o.tenant_id = own.tenant_id AND o.factory_id = own.factory_id
+      JOIN users u ON u.id = own.owner_user_id AND u.status = 'ACTIVE'
+      JOIN tenant_memberships tm
+        ON tm.user_id = own.owner_user_id AND tm.tenant_id = own.tenant_id AND tm.status = 'ACTIVE'
+     WHERE own.tenant_id = p_tenant_id AND own.factory_id = p_factory_id
+       AND own.opportunity_id = p_opportunity_id AND own.role_code = 'DECISION_OWNER'
+       AND own.active_to IS NULL AND own.owner_user_id IS DISTINCT FROM o.created_by
+  ) THEN
+    RETURN FALSE;
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM growth_opportunity_evidence
      WHERE tenant_id = p_tenant_id AND factory_id = p_factory_id AND opportunity_id = p_opportunity_id
   ) THEN
