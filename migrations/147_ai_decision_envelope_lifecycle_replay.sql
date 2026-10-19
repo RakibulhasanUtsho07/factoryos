@@ -487,6 +487,11 @@ CREATE TRIGGER ai_context_evidence_immutable
 BEFORE UPDATE OR DELETE ON ai_context_evidence_refs
 FOR EACH ROW EXECUTE FUNCTION factoryos_reject_ai_context_evidence_mutation();
 
+DROP TRIGGER IF EXISTS ai_context_evidence_refs_capture ON ai_context_packages;
+CREATE TRIGGER ai_context_evidence_refs_capture
+AFTER INSERT ON ai_context_packages
+FOR EACH ROW EXECUTE FUNCTION factoryos_capture_ai_context_evidence_refs();
+
 DROP TRIGGER IF EXISTS ai_decision_lifecycle_state_has_event ON ai_decision_lifecycle_states;
 CREATE CONSTRAINT TRIGGER ai_decision_lifecycle_state_has_event
 AFTER INSERT OR UPDATE ON ai_decision_lifecycle_states

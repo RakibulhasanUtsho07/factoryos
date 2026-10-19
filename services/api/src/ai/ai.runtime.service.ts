@@ -3823,6 +3823,7 @@ export class AiRuntimeService {
     if (!decision.request_hash) blockers.push('CANONICAL_REQUEST_HASH_MISSING');
     else if (!canonicalHashMatches) blockers.push('CANONICAL_REQUEST_HASH_MISMATCH');
     if (!lifecycleComplete) blockers.push('LIFECYCLE_LEDGER_INCOMPLETE');
+    if (contexts.length === 0) blockers.push('CONTEXT_PACKAGE_MISSING');
     if (!contextHashesComplete) blockers.push('CONTEXT_PACKAGE_HASH_MISMATCH');
     if (!evidenceRefsComplete) blockers.push('CONTEXT_EVIDENCE_REFERENCES_INCOMPLETE');
     const completeness = {
