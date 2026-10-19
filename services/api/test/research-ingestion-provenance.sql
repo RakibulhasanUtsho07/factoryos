@@ -47,7 +47,9 @@ BEGIN
     'uq_research_claim_extraction_item',
     'idx_research_source_rights_history',
     'idx_research_extraction_item_review_history',
-    'uq_research_extraction_item_review'
+    'uq_research_extraction_item_review',
+    'uq_research_claim_id_tenant',
+    'idx_research_source_content_purges_timeline'
   ] LOOP
     IF to_regclass('public.' || required_index) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_INDEX_MISSING: %', required_index;
@@ -64,7 +66,9 @@ BEGIN
     'research_source_rights_history_immutable',
     'research_extraction_item_review_guard',
     'research_extraction_item_reviews_immutable',
-    'research_extracted_claim_review_guard'
+    'research_extracted_claim_review_guard',
+    'research_source_z_excerpt_purge_guard',
+    'research_source_content_purges_immutable'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger t
@@ -91,8 +95,17 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version='134_research_ingestion_provenance'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='135_research_extraction_review_gate'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='136_research_content_rights_purge'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_INGESTION_MIGRATION_REGISTRATION_MISSING';
+  END IF;
+
+  IF position('SOURCE_ACCESS_REVOKED'
+      IN pg_get_functiondef('public.factoryos_research_purge_unlicensed_excerpts()'::regprocedure)) = 0
+     OR position('storedExcerptSha256'
+      IN pg_get_functiondef('public.factoryos_research_purge_unlicensed_excerpts()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RIGHTS_EXCERPT_PURGE_GUARD_MISSING';
   END IF;
 
   IF position('Extracted claims require explicit extraction-item review'
