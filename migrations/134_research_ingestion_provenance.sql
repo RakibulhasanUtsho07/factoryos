@@ -372,7 +372,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TRIGGER research_source_rights_history_record
 AFTER INSERT OR UPDATE ON research_sources
