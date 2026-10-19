@@ -40,6 +40,9 @@ describe('CbbGovernanceService', () => {
 
   it('hides ACL-protected graph nodes from roles without a matching grant and removes dangling edges', async () => {
     queue(
+      { rows: [{ blueprint_id: blueprintId }] }, // version-to-blueprint lookup
+      { rows: [] }, // user roles for blueprint
+      { rows: [] }, // no blueprint ACL
       { rows: [] }, // user roles for nodes
       { rows: [{ target_id: entityId, target_type: 'ENTITY', role_id: roleId, field_name: null, access_level: 'READ' }] },
       { rows: [] }, // user roles for edges
@@ -61,8 +64,13 @@ describe('CbbGovernanceService', () => {
 
   it('redacts field-restricted attributes without hiding an otherwise visible target', async () => {
     queue(
+      { rows: [{ blueprint_id: blueprintId }] },
+      { rows: [] },
+      { rows: [] },
       { rows: [] },
       { rows: [{ target_id: entityId, target_type: 'ENTITY', role_id: roleId, field_name: 'description', access_level: 'READ' }] },
+      { rows: [] },
+      { rows: [] },
     );
     const result = await service.filterBusinessMap(tenantId, factoryId, userId, {
       nodes: [{ id: entityId, name: 'Visible term', description: 'sensitive details' }],
