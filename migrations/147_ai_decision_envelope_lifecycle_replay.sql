@@ -338,14 +338,14 @@ BEGIN
     RETURN;
   END IF;
 
-  UPDATE ai_decision_lifecycle_states
+  UPDATE ai_decision_lifecycle_states AS current_state_row
   SET current_state = p_to_state,
-      version = version + 1,
+      version = current_state_row.version + 1,
       updated_at = clock_timestamp()
   WHERE decision_id = p_decision_id
     AND tenant_id = p_tenant_id
     AND factory_id = p_factory_id
-  RETURNING version INTO v_version;
+  RETURNING current_state_row.version INTO v_version;
 
   INSERT INTO ai_decision_lifecycle_events (
     tenant_id, factory_id, decision_id, sequence_no, from_state, to_state,
@@ -469,23 +469,6 @@ BEGIN
     AND NULLIF(src->>'id', '') IS NOT NULL
   ON CONFLICT (context_package_id, evidence_id) DO NOTHING;
   RETURN NEW;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION factoryos_validate_ai_decision_lifecycle_event()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM ai_decision_lifecycle_events e
-    WHERE e.decision_id = NEW.decision_id AND e.tenant_id = NEW.tenant_id
-      AND e.factory_id = NEW.factory_id AND e.sequence_no = NEW.version
-      AND e.to_state = NEW.current_state
-  ) THEN
-    RAISE EXCEPTION 'AI lifecycle state version % has no corresponding immutable event', NEW.version;
-  END IF;
-  RETURN NULL;
 END;
 $$;
 

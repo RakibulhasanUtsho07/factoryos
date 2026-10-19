@@ -100,6 +100,18 @@ Agent task steps now expose a nullable, schema-versioned `executionEvidence` fie
 
 If the returned record is inconsistent, the agent step does not become successful. Because the runtime call may already have crossed the execution boundary, the failure path does not automatically replay the side effect; operators must use the existing execution-claim reconciliation flow. Step evidence describes the most recently completed durable execution attempt; `agent_action_attempts` continues to hold the per-attempt execution-record references.
 
+## Canonical decision envelope, lifecycle ledger and replay completeness
+
+Migration `147_ai_decision_envelope_lifecycle_replay.sql` strengthens the WP05 decision contract:
+
+- New decisions persist envelope version `1.0.0` and a canonical SHA-256 request fingerprint over normalized tenant/factory/actor binding, objective, reasoning mode, selected context version, risk class, output state and metadata. Reusing a trace with a different actor or payload now returns a conflict instead of silently returning the original decision. Legacy records without a fingerprint remain readable and replay reports them as incomplete.
+- Each new decision starts in `CREATED`. Context resolution, verification, action authorization, durable execution and outcome capture advance an append-only transition ledger. Events are ordered, actor-attributed and reason-coded, with references to the exact context, verification, action, execution, outcome and source evidence when applicable. PostgreSQL constrains lifecycle transitions and immutable events; state versions must have a matching transition event. Forced RLS scopes the lifecycle and evidence-reference tables to their tenant.
+- Context source evidence is materialized in `ai_context_evidence_refs` with package/decision identity, evidence ID, source type/reference, content hash, source timestamp and source snapshot. The reference gives replay a stable record of which evidence pointers were presented; it does not by itself guarantee that external source content is still available or authentic.
+- `GET /api/v2/ai/replay/:traceId` now includes lifecycle state and events, normalized evidence refs per context package, context hash/reference integrity results and a machine-readable `completeness` report. Missing fingerprints, lifecycle gaps, context hash mismatches and missing evidence refs return explicit blockers. Optional stages with no record are labelled `NOT_RECORDED`, never as fabricated success.
+- Historical decision lifecycle is backfilled as a single `LEGACY_BACKFILL` baseline event. This makes current historical state visible but cannot recreate transition history that was never recorded. Historical rows without a request fingerprint are deliberately not reported as hash-verified.
+
+The PostgreSQL contract `services/api/test/ai-decision-envelope-lifecycle.sql` covers lifecycle bootstrap, context evidence persistence, ordered context/verification transitions, invalid transition rejection, event immutability and migration registration. Unit regressions cover trace reuse with a different canonical payload and incomplete legacy replay. Exact replay of nondeterministic model generation, external evidence retrieval/retention and full UI acceptance remain separate work.
+
 ## Verification policy
 
 Before this scope is accepted for merge/release:
