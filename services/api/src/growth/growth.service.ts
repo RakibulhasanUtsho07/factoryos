@@ -1447,203 +1447,240 @@ export class GrowthService {
   }
 
   async recordExperimentResult(
-    userId: string,
-    tenantId: string,
-    factoryId: string,
-    experimentId: string,
-    dto: RecordGrowthExperimentResultDto,
-    requestId: string | null,
-    traceId: string | null,
+    userId: string, tenantId: string, factoryId: string, experimentId: string,
+    dto: RecordGrowthExperimentResultDto, requestId: string | null, traceId: string | null,
   ) {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(experimentId, 'experimentId');
-    if (!dto.evidence_refs.length) throw new BadRequestException('Experiment outcomes require evidence references');
+    if (!Array.isArray(dto.evidence_refs) || !dto.evidence_refs.length) throw new BadRequestException('Experiment outcomes require evidence references');
+    const evidenceRefs = dto.evidence_refs.map(value => typeof value === 'string' ? value.trim() : '');
+    if (evidenceRefs.some(value => !value) || new Set(evidenceRefs).size !== evidenceRefs.length) throw new BadRequestException('Experiment evidence references must be non-empty and unique');
+    if (!dto.pre_measurements || typeof dto.pre_measurements !== 'object' || Array.isArray(dto.pre_measurements)
+      || !dto.post_measurements || typeof dto.post_measurements !== 'object' || Array.isArray(dto.post_measurements)) throw new BadRequestException('Experiment pre/post measurements must be JSON objects');
+    if (!Array.isArray(dto.kpi_measurements) || dto.kpi_measurements.length < 1 || dto.kpi_measurements.length > 100) throw new BadRequestException('Experiment results require 1–100 explicit KPI measurements');
+    const keys = new Set<string>();
+    const kpis = dto.kpi_measurements.map(item => {
+      const metricKey = typeof item.metric_key === 'string' ? item.metric_key.trim() : '';
+      if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey) || keys.has(metricKey)) throw new BadRequestException('KPI metric keys must be unique lowercase identifiers');
+      keys.add(metricKey);
+      const unit = typeof item.unit === 'string' ? item.unit.trim() : '';
+      if (!unit || unit.length > 40) throw new BadRequestException('Every KPI requires a unit');
+      if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('KPI direction must be INCREASE, DECREASE or TARGET');
+      const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
+      if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in experiment result evidence_refs');
+      const baselineValue = dto.pre_measurements[metricKey], actualValue = dto.post_measurements[metricKey];
+      if (typeof baselineValue !== 'number' || !Number.isFinite(baselineValue) || Math.abs(baselineValue) > 1e12
+        || typeof actualValue !== 'number' || !Number.isFinite(actualValue) || Math.abs(actualValue) > 1e12) throw new BadRequestException('Each KPI metric_key must identify finite numeric values in both pre_measurements and post_measurements');
+      const targetValue = item.target_value ?? null;
+      if (targetValue !== null && (!Number.isFinite(targetValue) || Math.abs(targetValue) > 1e12)) throw new BadRequestException('KPI target_value must be finite and within supported numeric bounds');
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+    });
     const observedAt = new Date(dto.observed_at);
     if (!Number.isFinite(observedAt.getTime())) throw new BadRequestException('observed_at must be a valid timestamp');
-    const result = await this.database.transaction(
-      { tenantId, userId },
-      async client => {
-        const current = await client.query<{ id: string; opportunity_id: string; status: string }>(
-          'SELECT id::text AS id, opportunity_id::text AS opportunity_id, status FROM growth_experiments WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
-          [experimentId, tenantId, factoryId],
+
+    const result = await this.database.transaction({ tenantId, userId }, async client => {
+      const current = await client.query<{ id: string; opportunity_id: string; status: string }>(
+        'SELECT id::text AS id, opportunity_id::text AS opportunity_id, status FROM growth_experiments WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [experimentId, tenantId, factoryId],
+      );
+      const experiment = current.rows[0];
+      if (!experiment) throw new NotFoundException('Growth experiment not found');
+      if (experiment.status !== 'RUNNING') throw new ConflictException('Experiment results can only be recorded while the experiment is running');
+      const inserted = await client.query(
+        `INSERT INTO growth_experiment_results (
+          tenant_id, factory_id, experiment_id, pre_measurements, post_measurements,
+          assessment, stop_condition_triggered, result_notes, evidence_refs, observed_at, recorded_by
+        ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10::timestamptz, $11)
+        RETURNING id::text AS id, experiment_id::text AS experiment_id, assessment,
+          stop_condition_triggered, pre_measurements, post_measurements, evidence_refs,
+          observed_at::text AS observed_at, created_at::text AS created_at`,
+        [tenantId, factoryId, experimentId, JSON.stringify(dto.pre_measurements), JSON.stringify(dto.post_measurements),
+          dto.assessment, dto.stop_condition_triggered, dto.result_notes?.trim() || null,
+          JSON.stringify(evidenceRefs), observedAt.toISOString(), userId],
+      );
+      const insertedRow = inserted.rows[0];
+      if (!insertedRow) throw new Error('GROWTH_EXPERIMENT_RESULT_INSERT_FAILED');
+      const savedKpis: Array<Record<string, unknown>> = [];
+      for (const kpi of kpis) {
+        const saved = await client.query(
+          `INSERT INTO growth_experiment_result_kpis (
+            tenant_id, factory_id, opportunity_id, experiment_id, experiment_result_id,
+            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
+            actual_value::text AS actual_value, target_value::text AS target_value,
+            unit, direction, evidence_ref, created_at::text AS created_at`,
+          [tenantId, factoryId, experiment.opportunity_id, experimentId, insertedRow.id, kpi.metricKey,
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
         );
-        const experiment = current.rows[0];
-        if (!experiment) throw new NotFoundException('Growth experiment not found');
-        if (experiment.status !== 'RUNNING') throw new ConflictException('Experiment results can only be recorded while the experiment is running');
-        const inserted = await client.query(
-          `
-          INSERT INTO growth_experiment_results (
-            tenant_id, factory_id, experiment_id, pre_measurements, post_measurements,
-            assessment, stop_condition_triggered, result_notes, evidence_refs,
-            observed_at, recorded_by
-          )
-          VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10::timestamptz, $11)
-          RETURNING id::text AS id, experiment_id::text AS experiment_id, assessment,
-            stop_condition_triggered, pre_measurements, post_measurements, evidence_refs,
-            observed_at::text AS observed_at, created_at::text AS created_at
-          `,
-          [
-            tenantId, factoryId, experimentId, JSON.stringify(dto.pre_measurements),
-            JSON.stringify(dto.post_measurements), dto.assessment, dto.stop_condition_triggered,
-            dto.result_notes?.trim() || null, JSON.stringify(dto.evidence_refs.map(v => v.trim())),
-            observedAt.toISOString(), userId,
-          ],
-        );
-        const insertedRow = inserted.rows[0];
-        if (!insertedRow) throw new Error('GROWTH_EXPERIMENT_RESULT_INSERT_FAILED');
-        const nextStatus = dto.stop_condition_triggered ? 'STOPPED' : 'COMPLETED';
-        await client.query(
-          'UPDATE growth_experiments SET status = $1, ended_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
-          [nextStatus, experimentId, tenantId, factoryId, 'RUNNING'],
-        );
-        await this.insertOutbox(client, {
-          tenantId, factoryId, userId, aggregateType: 'GROWTH_EXPERIMENT_RESULT',
-          aggregateId: insertedRow.id, eventType: 'GROWTH.EXPERIMENT_RESULT_RECORDED',
-          correlationId: this.correlationId(requestId, traceId),
-          payload: { result_id: insertedRow.id, experiment_id: experimentId, status: nextStatus, assessment: dto.assessment },
-        });
-        return { ...insertedRow, experiment_status: nextStatus, opportunity_id: experiment.opportunity_id };
-      },
-    );
+        if (!saved.rows[0]) throw new Error('GROWTH_EXPERIMENT_KPI_INSERT_FAILED');
+        savedKpis.push(saved.rows[0]);
+      }
+      const nextStatus = dto.stop_condition_triggered ? 'STOPPED' : 'COMPLETED';
+      await client.query(
+        'UPDATE growth_experiments SET status = $1, ended_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
+        [nextStatus, experimentId, tenantId, factoryId, 'RUNNING'],
+      );
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_EXPERIMENT_RESULT',
+        aggregateId: insertedRow.id, eventType: 'GROWTH.EXPERIMENT_RESULT_RECORDED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: { result_id: insertedRow.id, experiment_id: experimentId, status: nextStatus,
+          assessment: dto.assessment, kpi_keys: kpis.map(item => item.metricKey), evidence_ref_count: evidenceRefs.length },
+      });
+      return { ...insertedRow, kpi_measurements: savedKpis, experiment_status: nextStatus, opportunity_id: experiment.opportunity_id };
+    });
     await this.auditSafely({
-      tenantId, factoryId, userId, action: 'EXPERIMENT_RESULT',
-      resourceId: result.id, requestId, traceId,
-      payload: { experimentId, assessment: dto.assessment, stopConditionTriggered: dto.stop_condition_triggered },
+      tenantId, factoryId, userId, action: 'EXPERIMENT_RESULT', resourceId: result.id, requestId, traceId,
+      payload: { experimentId, assessment: dto.assessment, stopConditionTriggered: dto.stop_condition_triggered, kpiKeys: kpis.map(item => item.metricKey) },
     });
     return result;
   }
 
   async recordOpportunityOutcome(
-    userId: string,
-    tenantId: string,
-    factoryId: string,
-    opportunityId: string,
-    dto: RecordGrowthOpportunityOutcomeDto,
-    requestId: string | null,
-    traceId: string | null,
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: RecordGrowthOpportunityOutcomeDto, requestId: string | null, traceId: string | null,
   ) {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
     const observedAt = new Date(dto.observed_at);
     if (!Number.isFinite(observedAt.getTime())) throw new BadRequestException('observed_at must be a valid timestamp');
-    if (!dto.evidence_refs.length) throw new BadRequestException('Realized outcomes require evidence references');
+    if (!Array.isArray(dto.evidence_refs) || !dto.evidence_refs.length) throw new BadRequestException('Realized outcomes require evidence references');
+    const evidenceRefs = dto.evidence_refs.map(value => typeof value === 'string' ? value.trim() : '');
+    if (evidenceRefs.some(value => !value) || new Set(evidenceRefs).size !== evidenceRefs.length) throw new BadRequestException('Outcome evidence references must be non-empty and unique');
+    if (!dto.realized_metrics || typeof dto.realized_metrics !== 'object' || Array.isArray(dto.realized_metrics)) throw new BadRequestException('realized_metrics must be a JSON object');
+    if (!Array.isArray(dto.kpi_measurements) || dto.kpi_measurements.length < 1 || dto.kpi_measurements.length > 100) throw new BadRequestException('Realized outcomes require 1–100 explicit KPI measurements');
+    const keys = new Set<string>();
+    const kpis = dto.kpi_measurements.map(item => {
+      const metricKey = typeof item.metric_key === 'string' ? item.metric_key.trim() : '';
+      if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey) || keys.has(metricKey)) throw new BadRequestException('Outcome KPI metric keys must be unique lowercase identifiers');
+      keys.add(metricKey);
+      const unit = typeof item.unit === 'string' ? item.unit.trim() : '';
+      if (!unit || unit.length > 40) throw new BadRequestException('Every realized KPI requires a unit');
+      if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('Invalid KPI direction');
+      const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
+      if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in outcome evidence_refs');
+      const baselineValue = item.baseline_value, actualValue = item.actual_value, targetValue = item.target_value ?? null;
+      if (![baselineValue, actualValue, ...(targetValue === null ? [] : [targetValue])].every(value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12)) {
+        throw new BadRequestException('KPI baseline, actual and target values must be finite and within supported numeric bounds');
+      }
+      if (typeof dto.realized_metrics[metricKey] !== 'number' || !Number.isFinite(dto.realized_metrics[metricKey] as number)
+        || dto.realized_metrics[metricKey] !== actualValue) throw new BadRequestException('Each KPI actual_value must match realized_metrics at the same metric_key');
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+    });
 
-    const outcome = await this.database.transaction(
-      { tenantId, userId },
-      async client => {
-        const opportunity = await client.query<{ id: string; status: string }>(
-          'SELECT id::text AS id, status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
-          [opportunityId, tenantId, factoryId],
+    const outcome = await this.database.transaction({ tenantId, userId }, async client => {
+      const opportunity = await client.query<{ id: string; status: string }>(
+        'SELECT id::text AS id, status FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+        [opportunityId, tenantId, factoryId],
+      );
+      const op = opportunity.rows[0];
+      if (!op) throw new NotFoundException('Growth opportunity not found');
+      if (!['ACCEPTED', 'IN_PROGRESS', 'REALIZED'].includes(op.status)) throw new ConflictException('Outcomes require an accepted or in-progress opportunity');
+      const sourceKpis = new Map<string, Record<string, unknown>>();
+      if (dto.experiment_result_id) {
+        const sourceResult = await client.query<{ id: string }>(
+          `SELECT r.id::text AS id FROM growth_experiment_results r
+           JOIN growth_experiments e ON e.id = r.experiment_id AND e.tenant_id = r.tenant_id AND e.factory_id = r.factory_id
+           WHERE r.id = $1 AND e.opportunity_id = $2 AND r.tenant_id = $3 AND r.factory_id = $4`,
+          [dto.experiment_result_id, opportunityId, tenantId, factoryId],
         );
-        const op = opportunity.rows[0];
-        if (!op) throw new NotFoundException('Growth opportunity not found');
-        if (!['ACCEPTED', 'IN_PROGRESS', 'REALIZED'].includes(op.status)) {
-          throw new ConflictException('Outcomes require an accepted or in-progress opportunity');
-        }
-        if (dto.experiment_result_id) {
-          const experimentResult = await client.query<{ id: string }>(
-            `
-            SELECT r.id::text AS id
-            FROM growth_experiment_results r
-            JOIN growth_experiments e
-              ON e.id = r.experiment_id AND e.tenant_id = r.tenant_id AND e.factory_id = r.factory_id
-            WHERE r.id = $1 AND e.opportunity_id = $2
-              AND r.tenant_id = $3 AND r.factory_id = $4
-            `,
-            [dto.experiment_result_id, opportunityId, tenantId, factoryId],
-          );
-          if (!experimentResult.rows[0]) throw new BadRequestException('Experiment result must belong to this opportunity');
-          const existingOutcome = await client.query<{ id: string }>(
-            'SELECT id::text AS id FROM growth_opportunity_outcomes WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1',
-            [dto.experiment_result_id, tenantId, factoryId],
-          );
-          if (existingOutcome.rows[0]) {
-            throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
+        if (!sourceResult.rows[0]) throw new BadRequestException('Experiment result must belong to this opportunity');
+        const existing = await client.query<{ id: string }>(
+          'SELECT id::text AS id FROM growth_opportunity_outcomes WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 LIMIT 1',
+          [dto.experiment_result_id, tenantId, factoryId],
+        );
+        if (existing.rows[0]) throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
+        const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null }>(
+          `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value
+           FROM growth_experiment_result_kpis
+           WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 AND opportunity_id = $4
+           ORDER BY metric_key`,
+          [dto.experiment_result_id, tenantId, factoryId, opportunityId],
+        );
+        if (!sourceRows.rows.length) throw new ConflictException('The experiment result has no normalized KPI measurements to link');
+        if (sourceRows.rows.length !== kpis.length) throw new BadRequestException('A realized outcome linked to an experiment must carry every KPI from that result');
+        for (const sourceKpi of sourceRows.rows) {
+          const input = kpis.find(item => item.metricKey === sourceKpi.metric_key);
+          if (!input || input.unit !== sourceKpi.unit || input.direction !== sourceKpi.direction
+            || input.baselineValue !== Number(sourceKpi.baseline_value)
+            || input.targetValue !== (sourceKpi.target_value === null ? null : Number(sourceKpi.target_value))) {
+            throw new BadRequestException('Outcome KPI key, unit, baseline, target and direction must match its linked experiment result');
           }
+          sourceKpis.set(sourceKpi.metric_key, sourceKpi);
         }
-        const inserted = await client.query(
-          `
-          INSERT INTO growth_opportunity_outcomes (
-            tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
-            realized_metrics, evidence_refs, notes, observed_at, recorded_by
-          )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::timestamptz, $10)
-          RETURNING id::text AS id, opportunity_id::text AS opportunity_id,
-            experiment_result_id::text AS experiment_result_id, assessment, realized_metrics,
-            evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at
-          `,
-          [
-            tenantId, factoryId, opportunityId, dto.experiment_result_id ?? null, dto.assessment,
-            JSON.stringify(dto.realized_metrics), JSON.stringify(dto.evidence_refs.map(v => v.trim())),
-            dto.notes?.trim() || null, observedAt.toISOString(), userId,
-          ],
-        );
-        const result = inserted.rows[0];
-        if (!result) throw new Error('GROWTH_OPPORTUNITY_OUTCOME_INSERT_FAILED');
-        if (op.status === 'ACCEPTED') {
-          await client.query(
-            'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
-            ['IN_PROGRESS', opportunityId, tenantId, factoryId, 'ACCEPTED'],
-          );
-        }
-        if (op.status !== 'REALIZED') {
-          await client.query(
-            'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
-            ['REALIZED', opportunityId, tenantId, factoryId, 'IN_PROGRESS'],
-          );
-        }
-        const signal = await client.query<{ id: string }>(
-          `
-          INSERT INTO ai_learning_signals (
-            tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
-            source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
-          )
-          VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT', $4, $5, 'FACTORY', $6::jsonb, $7)
-          RETURNING id::text AS id
-          `,
-          [
-            tenantId, factoryId, result.id, 'Growth outcome recorded: ' + dto.assessment,
-            dto.confidence ?? 0.5,
-            JSON.stringify({
-              source: 'GROWTH_OUTCOME',
-              opportunityId,
-              experimentResultId: dto.experiment_result_id ?? null,
-              assessment: dto.assessment,
-              realizedMetrics: dto.realized_metrics,
-              evidenceRefs: dto.evidence_refs.map(v => v.trim()),
-              observedAt: observedAt.toISOString(),
-              confidenceMeaning: 'Confidence recorded by the outcome submitter; not a calibrated probability of causal effect.',
-            }),
-            userId,
-          ],
-        );
-        const learningSignal = signal.rows[0];
-        if (!learningSignal) throw new Error('GROWTH_OUTCOME_LEARNING_SIGNAL_INSERT_FAILED');
+      }
 
-        await this.insertOutbox(client, {
-          tenantId, factoryId, userId, aggregateType: 'GROWTH_OUTCOME',
-          aggregateId: result.id, eventType: 'GROWTH.OPPORTUNITY_OUTCOME_RECORDED',
-          correlationId: this.correlationId(requestId, traceId),
-          payload: {
-            outcome_id: result.id, opportunity_id: opportunityId, assessment: dto.assessment,
-            learning_signal_id: learningSignal.id,
-          },
-        });
-        await this.insertOutbox(client, {
-          tenantId, factoryId, userId, aggregateType: 'AI_LEARNING_SIGNAL',
-          aggregateId: learningSignal.id, eventType: 'AI.LEARNING_SIGNAL_RECORDED',
-          correlationId: this.correlationId(requestId, traceId),
-          payload: {
-            signal_id: learningSignal.id, source_growth_outcome_id: result.id,
-            tenant_scope: 'FACTORY', signal_type: 'GROWTH_OUTCOME_ASSESSMENT',
-          },
-        });
-        return { ...result, learning_signal_id: learningSignal.id };
-      },
-    );
+      const inserted = await client.query(
+        `INSERT INTO growth_opportunity_outcomes (
+          tenant_id, factory_id, opportunity_id, experiment_result_id, assessment,
+          realized_metrics, evidence_refs, notes, observed_at, recorded_by
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::timestamptz, $10)
+        RETURNING id::text AS id, opportunity_id::text AS opportunity_id,
+          experiment_result_id::text AS experiment_result_id, assessment, realized_metrics,
+          evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at`,
+        [tenantId, factoryId, opportunityId, dto.experiment_result_id ?? null, dto.assessment,
+          JSON.stringify(dto.realized_metrics), JSON.stringify(evidenceRefs), dto.notes?.trim() || null, observedAt.toISOString(), userId],
+      );
+      const result = inserted.rows[0];
+      if (!result) throw new Error('GROWTH_OPPORTUNITY_OUTCOME_INSERT_FAILED');
+      const savedKpis: Array<Record<string, unknown>> = [];
+      for (const kpi of kpis) {
+        const sourceKpi = sourceKpis.get(kpi.metricKey);
+        const saved = await client.query(
+          `INSERT INTO growth_outcome_kpi_measurements (
+            tenant_id, factory_id, opportunity_id, outcome_id, source_experiment_kpi_id,
+            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
+            actual_value::text AS actual_value, target_value::text AS target_value,
+            unit, direction, evidence_ref, source_experiment_kpi_id::text AS source_experiment_kpi_id,
+            created_at::text AS created_at`,
+          [tenantId, factoryId, opportunityId, result.id, sourceKpi?.id ?? null, kpi.metricKey,
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
+        );
+        if (!saved.rows[0]) throw new Error('GROWTH_OUTCOME_KPI_INSERT_FAILED');
+        savedKpis.push(saved.rows[0]);
+      }
+      if (op.status === 'ACCEPTED') await client.query(
+        'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
+        ['IN_PROGRESS', opportunityId, tenantId, factoryId, 'ACCEPTED'],
+      );
+      if (op.status !== 'REALIZED') await client.query(
+        'UPDATE growth_opportunities SET status = $1, updated_at = clock_timestamp() WHERE id = $2 AND tenant_id = $3 AND factory_id = $4 AND status = $5',
+        ['REALIZED', opportunityId, tenantId, factoryId, 'IN_PROGRESS'],
+      );
+      const signal = await client.query<{ id: string }>(
+        `INSERT INTO ai_learning_signals (
+          tenant_id, factory_id, source_decision_id, source_outcome_id, source_execution_id,
+          source_growth_outcome_id, signal_type, label, confidence, tenant_scope, payload, created_by
+        ) VALUES ($1, $2, NULL, NULL, NULL, $3, 'GROWTH_OUTCOME_ASSESSMENT', $4, $5, 'FACTORY', $6::jsonb, $7)
+        RETURNING id::text AS id`,
+        [tenantId, factoryId, result.id, 'Growth outcome recorded: ' + dto.assessment, dto.confidence ?? 0.5,
+          JSON.stringify({ source: 'GROWTH_OUTCOME', opportunityId, experimentResultId: dto.experiment_result_id ?? null,
+            assessment: dto.assessment, realizedMetrics: dto.realized_metrics, kpiMeasurements: savedKpis,
+            evidenceRefs, observedAt: observedAt.toISOString(),
+            confidenceMeaning: 'Confidence recorded by the outcome submitter; not a calibrated probability of causal effect.' }), userId],
+      );
+      const learningSignal = signal.rows[0];
+      if (!learningSignal) throw new Error('GROWTH_OUTCOME_LEARNING_SIGNAL_INSERT_FAILED');
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_OUTCOME', aggregateId: result.id,
+        eventType: 'GROWTH.OPPORTUNITY_OUTCOME_RECORDED', correlationId: this.correlationId(requestId, traceId),
+        payload: { outcome_id: result.id, opportunity_id: opportunityId, assessment: dto.assessment,
+          learning_signal_id: learningSignal.id, kpi_count: savedKpis.length, experiment_result_id: dto.experiment_result_id ?? null },
+      });
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'AI_LEARNING_SIGNAL', aggregateId: learningSignal.id,
+        eventType: 'AI.LEARNING_SIGNAL_RECORDED', correlationId: this.correlationId(requestId, traceId),
+        payload: { signal_id: learningSignal.id, source_growth_outcome_id: result.id,
+          tenant_scope: 'FACTORY', signal_type: 'GROWTH_OUTCOME_ASSESSMENT' },
+      });
+      return { ...result, kpi_measurements: savedKpis, learning_signal_id: learningSignal.id };
+    });
     await this.auditSafely({
-      tenantId, factoryId, userId, action: 'OPPORTUNITY_OUTCOME',
-      resourceId: outcome.id, requestId, traceId, payload: { opportunityId, assessment: dto.assessment },
+      tenantId, factoryId, userId, action: 'OPPORTUNITY_OUTCOME', resourceId: outcome.id, requestId, traceId,
+      payload: { opportunityId, assessment: dto.assessment, experimentResultId: dto.experiment_result_id ?? null, kpiKeys: kpis.map(item => item.metricKey) },
     });
     return outcome;
   }

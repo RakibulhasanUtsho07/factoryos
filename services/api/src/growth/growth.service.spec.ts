@@ -224,45 +224,56 @@ describe('GrowthService', () => {
   });
 
 
-  it('persists a factory-scoped AI learning signal atomically with an outcome', async () => {
-    client.query
-      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'a08ea4b8-ed43-4fb9-8561-1ef47d43b041',
-          opportunity_id: OPPORTUNITY_ID,
-          experiment_result_id: null,
-          assessment: 'POSITIVE',
-          realized_metrics: { scrap_rate_delta_pct: -3.2 },
-          evidence_refs: ['quality-report:pilot-17'],
-          notes: null,
-          observed_at: '2026-10-11T10:00:00.000Z',
-          created_at: '2026-10-11T10:00:00.000Z',
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ id: '0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38' }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] });
-
+  it('persists KPI actuals, evidence links and a factory-scoped learning signal atomically', async () => {
+    client.query.mockImplementation(async (queryText: unknown) => {
+      const sql = String(queryText);
+      if (sql.includes('SELECT id::text AS id, status FROM growth_opportunities')) return { rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] };
+      if (sql.includes('INSERT INTO growth_opportunity_outcomes')) return { rows: [{
+        id: 'a08ea4b8-e83e-43ab-a576-e3db6a06b70c', opportunity_id: OPPORTUNITY_ID, experiment_result_id: null,
+        assessment: 'POSITIVE', realized_metrics: { scrap_rate_delta_pct: -3.2 }, evidence_refs: ['quality-report:pilot-17'],
+        notes: null, observed_at: '2026-10-11T10:00:00.000Z', created_at: '2026-10-11T10:00:00.000Z',
+      }] };
+      if (sql.includes('INSERT INTO growth_outcome_kpi_measurements')) return { rows: [{
+        id: 'bb6b2a76-5f52-4e5e-b9c8-3bd75d79d71a', metric_key: 'scrap_rate_delta_pct',
+        baseline_value: '0', actual_value: '-3.2', target_value: '-2', unit: 'pct',
+        direction: 'DECREASE', evidence_ref: 'quality-report:pilot-17', source_experiment_kpi_id: null,
+      }] };
+      if (sql.includes('INSERT INTO ai_learning_signals')) return { rows: [{ id: '0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38' }] };
+      return { rows: [] };
+    });
     const result = await service.recordOpportunityOutcome(
       USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
       {
-        assessment: 'POSITIVE',
-        realized_metrics: { scrap_rate_delta_pct: -3.2 },
+        assessment: 'POSITIVE', realized_metrics: { scrap_rate_delta_pct: -3.2 },
         evidence_refs: ['quality-report:pilot-17'],
-        observed_at: '2026-10-11T10:00:00.000Z',
-        confidence: 0.8,
-      },
-      null,
-      null,
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_delta_pct', unit: 'pct', direction: 'DECREASE',
+          baseline_value: 0, actual_value: -3.2, target_value: -2, evidence_ref: 'quality-report:pilot-17',
+        }],
+        observed_at: '2026-10-11T10:00:00.000Z', confidence: 0.8,
+      }, null, null,
     );
-
     expect(result.learning_signal_id).toBe('0e06a9e0-bfcc-4dd3-9d13-4b60750dcb38');
-    expect(client.query.mock.calls[3][0]).toContain('INSERT INTO ai_learning_signals');
-    expect(client.query.mock.calls[3][1][5]).toContain('"assessment":"POSITIVE"');
-    expect(client.query.mock.calls[4][1][4]).toBe('GROWTH.OPPORTUNITY_OUTCOME_RECORDED');
-    expect(client.query.mock.calls[5][1][4]).toBe('AI.LEARNING_SIGNAL_RECORDED');
+    expect(result.kpi_measurements).toHaveLength(1);
+    expect(client.query.mock.calls.some(([query]) => String(query).includes('INSERT INTO growth_outcome_kpi_measurements'))).toBe(true);
+    const signalCall = client.query.mock.calls.find(([query]) => String(query).includes('INSERT INTO ai_learning_signals'));
+    expect(signalCall?.[1]?.[5]).toContain('"metric_key":"scrap_rate_delta_pct"');
+  });
+
+  it('rejects a KPI whose actual value disagrees with the realized metric snapshot', async () => {
+    await expect(service.recordOpportunityOutcome(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
+      {
+        assessment: 'POSITIVE', realized_metrics: { scrap_rate_delta_pct: -3.2 },
+        evidence_refs: ['quality-report:pilot-17'],
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_delta_pct', unit: 'pct', direction: 'DECREASE',
+          baseline_value: 0, actual_value: -2.5, target_value: -2, evidence_ref: 'quality-report:pilot-17',
+        }],
+        observed_at: '2026-10-11T10:00:00.000Z',
+      }, null, null,
+    )).rejects.toThrow('Each KPI actual_value must match realized_metrics at the same metric_key');
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
 
