@@ -155,7 +155,7 @@ export class ResearchController {
   // accepted by this route; checkpoints are metadata-only and resumable.
   @Post('ingestion-jobs/claim-next')
   @UseGuards(PermissionGuard)
-  @RequirePermission('research.write')
+  @RequirePermission('research.ingest')
   claimNextIngestionJob(
     @Req() req: FactoryOsRequest,
     @Query('lease_seconds') rawLeaseSeconds?: string,
@@ -168,7 +168,7 @@ export class ResearchController {
 
   @Post('ingestion-jobs/:jobId/checkpoint')
   @UseGuards(PermissionGuard)
-  @RequirePermission('research.write')
+  @RequirePermission('research.ingest')
   checkpointIngestionJob(
     @Req() req: FactoryOsRequest,
     @Param('jobId', new ParseUUIDPipe()) jobId: string,
@@ -180,7 +180,7 @@ export class ResearchController {
 
   @Post('ingestion-jobs/:jobId/pause')
   @UseGuards(PermissionGuard)
-  @RequirePermission('research.write')
+  @RequirePermission('research.ingest')
   pauseIngestionJob(
     @Req() req: FactoryOsRequest,
     @Param('jobId', new ParseUUIDPipe()) jobId: string,
@@ -192,7 +192,7 @@ export class ResearchController {
 
   @Post('ingestion-jobs/:jobId/failure')
   @UseGuards(PermissionGuard)
-  @RequirePermission('research.write')
+  @RequirePermission('research.ingest')
   failIngestionJob(
     @Req() req: FactoryOsRequest,
     @Param('jobId', new ParseUUIDPipe()) jobId: string,
@@ -204,7 +204,7 @@ export class ResearchController {
 
   @Post('ingestion-jobs/:jobId/extraction')
   @UseGuards(PermissionGuard)
-  @RequirePermission('research.write')
+  @RequirePermission('research.ingest')
   completeResearchExtraction(
     @Req() req: FactoryOsRequest,
     @Param('jobId', new ParseUUIDPipe()) jobId: string,
