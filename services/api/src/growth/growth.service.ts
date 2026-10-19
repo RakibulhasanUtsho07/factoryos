@@ -16,6 +16,7 @@ import { CreateGrowthValidationUnknownDto } from './dto/create-growth-validation
 import { DecideGrowthValidationUnknownDto } from './dto/decide-growth-validation-unknown.dto';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
+import { CreateGrowthScenarioSetDto } from './dto/create-growth-scenario-set.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
@@ -26,6 +27,13 @@ import { CreateGrowthEvidenceGapDto } from './dto/create-growth-evidence-gap.dto
 import { DecideGrowthEvidenceGapDto } from './dto/decide-growth-evidence-gap.dto';
 import { AssignGrowthDecisionOwnerDto } from './dto/assign-growth-decision-owner.dto';
 import { evaluateGrowthGovernanceReadiness } from './growth-governance';
+import { buildGrowthScenarioPlan, canonicalizeGrowthScenarioInput } from './growth-scenario-engine';
+import type {
+  GrowthScenarioPlanEntry,
+  GrowthScenarioProfilesInput,
+  GrowthScenarioProfileInput,
+  GrowthScenarioSensitivityAxisInput,
+} from './growth-scenario-engine';
 
 interface OpportunityRow extends QueryResultRow {
   id: string;
@@ -197,6 +205,146 @@ export class GrowthService {
       { tenantId },
     );
     return result.rows;
+  }
+
+  async listScenarioSets(tenantId: string, factoryId: string, opportunityId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const opportunity = await this.database.query<{ id: string }>(
+      'SELECT id::text AS id FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3',
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
+
+    const result = await this.database.query<{
+      id: string;
+      set_name: string;
+      set_version: number;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      input_hash: string;
+      scenario_count: number;
+      scenario_types: string[];
+      decision_ready: boolean;
+      created_by: string;
+      created_at: string;
+    }>(
+      `
+      SELECT s.id::text AS id, s.set_name, s.set_version, s.model_version,
+        s.data_vintage::text AS data_vintage, s.baseline_source_ref, s.inputs,
+        s.input_hash, s.created_by::text AS created_by, s.created_at::text AS created_at,
+        (SELECT COUNT(*)::int FROM growth_scenario_set_members m
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id) AS scenario_count,
+        COALESCE((SELECT array_agg(DISTINCT m.scenario_type ORDER BY m.scenario_type)
+          FROM growth_scenario_set_members m
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id),
+          ARRAY[]::text[]) AS scenario_types,
+        COALESCE((SELECT bool_and(sc.decision_ready)
+          FROM growth_scenario_set_members m
+          JOIN growth_scenarios sc ON sc.id = m.scenario_id
+            AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+            AND sc.opportunity_id = m.opportunity_id
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id), FALSE) AS decision_ready
+      FROM growth_scenario_sets s
+      WHERE s.opportunity_id = $1 AND s.tenant_id = $2 AND s.factory_id = $3
+      ORDER BY s.set_version DESC
+      LIMIT 50
+      `,
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    return result.rows;
+  }
+
+  async getScenarioSet(
+    tenantId: string,
+    factoryId: string,
+    opportunityId: string,
+    scenarioSetId: string,
+  ) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    this.validateUuid(scenarioSetId, 'scenarioSetId');
+    const setResult = await this.database.query<{
+      id: string;
+      set_name: string;
+      set_version: number;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      input_hash: string;
+      created_by: string;
+      created_at: string;
+    }>(
+      `
+      SELECT id::text AS id, set_name, set_version, model_version,
+        data_vintage::text AS data_vintage, baseline_source_ref, inputs, input_hash,
+        created_by::text AS created_by, created_at::text AS created_at
+      FROM growth_scenario_sets
+      WHERE id = $1 AND opportunity_id = $2 AND tenant_id = $3 AND factory_id = $4
+      `,
+      [scenarioSetId, opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    const scenarioSet = setResult.rows[0];
+    if (!scenarioSet) throw new NotFoundException('Growth scenario set not found');
+
+    const memberResult = await this.database.query<{
+      scenario_key: string;
+      scenario_type: string;
+      sensitivity_parameter: string | null;
+      sensitivity_value: string | null;
+      position: number;
+      id: string;
+      scenario_name: string;
+      model_version: string;
+      data_vintage: string;
+      baseline_source_ref: string;
+      inputs: Record<string, unknown>;
+      output_snapshot: Record<string, unknown>;
+      input_hash: string;
+      decision_ready: boolean;
+      created_at: string;
+    }>(
+      `
+      SELECT m.scenario_key, m.scenario_type, m.sensitivity_parameter,
+        m.sensitivity_value::text AS sensitivity_value, m.position,
+        sc.id::text AS id, sc.scenario_name, sc.model_version,
+        sc.data_vintage::text AS data_vintage, sc.baseline_source_ref,
+        sc.inputs, sc.output_snapshot, sc.input_hash, sc.decision_ready,
+        sc.created_at::text AS created_at
+      FROM growth_scenario_set_members m
+      JOIN growth_scenarios sc ON sc.id = m.scenario_id
+        AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+        AND sc.opportunity_id = m.opportunity_id
+      WHERE m.scenario_set_id = $1 AND m.opportunity_id = $2
+        AND m.tenant_id = $3 AND m.factory_id = $4
+      ORDER BY m.position
+      `,
+      [scenarioSetId, opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    const scenarios = memberResult.rows;
+    const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
+    const presentTypes = requiredTypes.filter(type => scenarios.some(row => row.scenario_type === type));
+    return {
+      ...scenarioSet,
+      scenario_count: scenarios.length,
+      decision_ready: scenarios.length > 0 && scenarios.every(row => row.decision_ready),
+      scenario_type_coverage: {
+        required: requiredTypes,
+        present: presentTypes,
+        missing: requiredTypes.filter(type => !presentTypes.includes(type)),
+      },
+      scenarios,
+    };
   }
 
   async compareScenarios(tenantId: string, factoryId: string, opportunityId: string) {
@@ -860,6 +1008,285 @@ export class GrowthService {
       payload: { opportunityId, scenarioType: dto.scenario_type, modelVersion, inputHash, decisionReady: result.decision_ready, constraintGate: (result.output_snapshot as Record<string, unknown>)?.constraintGate },
     });
     return result;
+  }
+
+  async createScenarioSet(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    opportunityId: string,
+    dto: CreateGrowthScenarioSetDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const setName = typeof dto.set_name === 'string' ? dto.set_name.trim() : '';
+    const baselineSourceRef = typeof dto.baseline_source_ref === 'string' ? dto.baseline_source_ref.trim() : '';
+    if (!setName || setName.length > 140) {
+      throw new BadRequestException('set_name must contain 1–140 non-whitespace characters');
+    }
+    if (!baselineSourceRef) throw new BadRequestException('A traceable baseline_source_ref is required');
+    const vintage = new Date(dto.data_vintage);
+    if (!Number.isFinite(vintage.getTime())) throw new BadRequestException('data_vintage must be a valid timestamp');
+    if (vintage.getTime() > Date.now() + 5 * 60 * 1000) {
+      throw new BadRequestException('data_vintage cannot be in the future');
+    }
+    const baseline = {
+      baseline_revenue: dto.baseline?.baseline_revenue,
+      baseline_variable_cost: dto.baseline?.baseline_variable_cost,
+      baseline_fixed_cost: dto.baseline?.baseline_fixed_cost,
+    };
+    if (
+      !Number.isFinite(baseline.baseline_revenue) || baseline.baseline_revenue <= 0
+      || baseline.baseline_revenue > 1_000_000_000_000
+      || !Number.isFinite(baseline.baseline_variable_cost) || baseline.baseline_variable_cost < 0
+      || baseline.baseline_variable_cost > 1_000_000_000_000
+      || !Number.isFinite(baseline.baseline_fixed_cost) || baseline.baseline_fixed_cost < 0
+      || baseline.baseline_fixed_cost > 1_000_000_000_000
+    ) {
+      throw new BadRequestException('Scenario baseline values must be finite and within supported non-negative bounds');
+    }
+
+    let plan: GrowthScenarioPlanEntry[];
+    try {
+      plan = buildGrowthScenarioPlan(
+        dto.profiles as unknown as GrowthScenarioProfilesInput,
+        dto.sensitivity as GrowthScenarioSensitivityAxisInput[],
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'SCENARIO_PLAN_INVALID';
+      throw new BadRequestException(reason);
+    }
+    const modelVersion = 'factoryos.growth.financial-sensitivity.v1';
+    const profileSnapshot = (profile: GrowthScenarioProfileInput) => ({
+      price_change_pct: profile.price_change_pct,
+      volume_change_pct: profile.volume_change_pct,
+      variable_cost_change_pct: profile.variable_cost_change_pct,
+      fixed_cost_change_pct: profile.fixed_cost_change_pct,
+      investment: profile.investment,
+      uncertainty_pct: profile.uncertainty_pct,
+      projected_constraint_metrics: profile.projected_constraint_metrics ?? null,
+    });
+    let inputHash = '';
+
+    const result = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const opportunityResult = await client.query<{
+          status: string;
+          constraints_snapshot: Record<string, unknown> | null;
+        }>(
+          'SELECT status, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR UPDATE',
+          [opportunityId, tenantId, factoryId],
+        );
+        const opportunity = opportunityResult.rows[0];
+        if (!opportunity) throw new NotFoundException('Growth opportunity not found');
+        if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.status)) {
+          throw new ConflictException('Scenario sets may only be run against accepted or in-progress hypotheses');
+        }
+        const constraintsSnapshot = opportunity.constraints_snapshot ?? {};
+        const evidenceResult = await client.query<{ reference_ref: string | null; citation_url: string | null }>(
+          'SELECT reference_ref, citation_url FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
+          [opportunityId, tenantId, factoryId],
+        );
+        const evidenceReferences = new Set(
+          evidenceResult.rows.flatMap(item => [item.reference_ref, item.citation_url])
+            .filter((ref): ref is string => typeof ref === 'string' && ref.trim().length > 0)
+            .map(ref => ref.trim()),
+        );
+        const versionResult = await client.query<{ next_version: number | string }>(
+          `SELECT COALESCE(MAX(set_version), 0) + 1 AS next_version
+             FROM growth_scenario_sets
+            WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3`,
+          [tenantId, factoryId, opportunityId],
+        );
+        const setVersion = Number(versionResult.rows[0]?.next_version ?? 1);
+        if (!Number.isInteger(setVersion) || setVersion < 1) {
+          throw new ConflictException('Unable to allocate a monotonic scenario-set version');
+        }
+        const normalizedInputs = {
+          schema_version: 1,
+          model_version: modelVersion,
+          set_name: setName,
+          baseline,
+          profiles: {
+            base: profileSnapshot(dto.profiles.base as unknown as GrowthScenarioProfileInput),
+            upside: profileSnapshot(dto.profiles.upside as unknown as GrowthScenarioProfileInput),
+            downside: profileSnapshot(dto.profiles.downside as unknown as GrowthScenarioProfileInput),
+            stress: profileSnapshot(dto.profiles.stress as unknown as GrowthScenarioProfileInput),
+          },
+          sensitivity: dto.sensitivity.map(axis => ({
+            parameter: axis.parameter,
+            low_value: axis.low_value,
+            high_value: axis.high_value,
+            points: axis.points,
+          })),
+          constraints_snapshot: constraintsSnapshot,
+        };
+        inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+          data_vintage: vintage.toISOString(),
+          baseline_source_ref: baselineSourceRef,
+          inputs: normalizedInputs,
+        })).digest('hex');
+
+        const setInsert = await client.query<{
+          id: string;
+          set_name: string;
+          set_version: number;
+          model_version: string;
+          data_vintage: string;
+          baseline_source_ref: string;
+          inputs: Record<string, unknown>;
+          input_hash: string;
+          created_by: string;
+          created_at: string;
+        }>(
+          `
+          INSERT INTO growth_scenario_sets (
+            tenant_id, factory_id, opportunity_id, set_name, set_version,
+            model_version, data_vintage, baseline_source_ref, inputs, input_hash, created_by
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9::jsonb, $10, $11)
+          RETURNING id::text AS id, set_name, set_version, model_version,
+            data_vintage::text AS data_vintage, baseline_source_ref, inputs, input_hash,
+            created_by::text AS created_by, created_at::text AS created_at
+          `,
+          [
+            tenantId, factoryId, opportunityId, setName, setVersion, modelVersion,
+            vintage.toISOString(), baselineSourceRef, JSON.stringify(normalizedInputs), inputHash, userId,
+          ],
+        );
+        const scenarioSet = setInsert.rows[0];
+        if (!scenarioSet) throw new Error('GROWTH_SCENARIO_SET_INSERT_FAILED');
+        const createdScenarios: Array<Record<string, unknown>> = [];
+
+        for (const entry of plan) {
+          const profile = entry.profile;
+          const financialInputs = {
+            ...baseline,
+            price_change_pct: profile.price_change_pct,
+            volume_change_pct: profile.volume_change_pct,
+            variable_cost_change_pct: profile.variable_cost_change_pct,
+            fixed_cost_change_pct: profile.fixed_cost_change_pct,
+            investment: profile.investment,
+            uncertainty_pct: profile.uncertainty_pct,
+          };
+          const constraintGate = this.evaluateConstraintGate(
+            constraintsSnapshot,
+            profile.projected_constraint_metrics as unknown as Record<string, unknown> | undefined,
+            evidenceReferences,
+          );
+          const outputSnapshot = { ...this.runSensitivityModel(financialInputs), constraintGate };
+          const fullInputs = {
+            ...financialInputs,
+            projected_constraint_metrics: profile.projected_constraint_metrics ?? null,
+            constraints_snapshot: constraintsSnapshot,
+            scenario_set: { id: scenarioSet.id, version: setVersion, input_hash: inputHash },
+            sensitivity: entry.sensitivity_parameter
+              ? { parameter: entry.sensitivity_parameter, value: entry.sensitivity_value }
+              : null,
+          };
+          const scenarioInputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
+            model_version: modelVersion,
+            scenario_key: entry.scenario_key,
+            data_vintage: vintage.toISOString(),
+            baseline_source_ref: baselineSourceRef,
+            inputs: fullInputs,
+            output_snapshot: outputSnapshot,
+          })).digest('hex');
+          const scenarioInsert = await client.query<{
+            id: string;
+            scenario_name: string;
+            scenario_type: string;
+            model_version: string;
+            data_vintage: string;
+            baseline_source_ref: string;
+            inputs: Record<string, unknown>;
+            output_snapshot: Record<string, unknown>;
+            input_hash: string;
+            decision_ready: boolean;
+            created_at: string;
+          }>(
+            `
+            INSERT INTO growth_scenarios (
+              tenant_id, factory_id, opportunity_id, scenario_name, scenario_type,
+              model_version, data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9::jsonb, $10::jsonb, $11, $12)
+            RETURNING id::text AS id, scenario_name, scenario_type, model_version,
+              data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot,
+              input_hash, decision_ready, created_at::text AS created_at
+            `,
+            [
+              tenantId, factoryId, opportunityId, `${entry.display_name} (set v${setVersion})`,
+              entry.scenario_type, modelVersion, vintage.toISOString(), baselineSourceRef,
+              JSON.stringify(fullInputs), JSON.stringify(outputSnapshot), scenarioInputHash, userId,
+            ],
+          );
+          const scenario = scenarioInsert.rows[0];
+          if (!scenario) throw new Error('GROWTH_SCENARIO_SET_MEMBER_INSERT_FAILED');
+          await client.query(
+            `
+            INSERT INTO growth_scenario_set_members (
+              tenant_id, factory_id, opportunity_id, scenario_set_id, scenario_id,
+              scenario_key, scenario_type, sensitivity_parameter, sensitivity_value, position
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `,
+            [
+              tenantId, factoryId, opportunityId, scenarioSet.id, scenario.id,
+              entry.scenario_key, entry.scenario_type, entry.sensitivity_parameter,
+              entry.sensitivity_value, entry.position,
+            ],
+          );
+          createdScenarios.push({
+            ...scenario,
+            scenario_key: entry.scenario_key,
+            position: entry.position,
+            sensitivity_parameter: entry.sensitivity_parameter,
+            sensitivity_value: entry.sensitivity_value,
+          });
+        }
+
+        await this.insertOutbox(client, {
+          tenantId, factoryId, userId, aggregateType: 'GROWTH_SCENARIO_SET',
+          aggregateId: scenarioSet.id, eventType: 'GROWTH.SCENARIO_SET_CREATED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            scenario_set_id: scenarioSet.id, opportunity_id: opportunityId,
+            set_version: setVersion, input_hash: inputHash, scenario_count: createdScenarios.length,
+          },
+        });
+        return { scenarioSet, scenarios: createdScenarios };
+      },
+    );
+
+    await this.auditSafely({
+      tenantId, factoryId, userId, action: 'SCENARIO_SET_RUN',
+      resourceId: result.scenarioSet.id, requestId, traceId,
+      payload: {
+        opportunityId, setVersion: result.scenarioSet.set_version,
+        inputHash: result.scenarioSet.input_hash, scenarioCount: result.scenarios.length,
+        modelVersion, decisionReady: result.scenarios.every(scenario => scenario.decision_ready === true),
+      },
+    });
+    const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
+    const presentTypes = requiredTypes.filter(type =>
+      result.scenarios.some(scenario => scenario.scenario_type === type),
+    );
+    return {
+      ...result.scenarioSet,
+      scenario_count: result.scenarios.length,
+      decision_ready: result.scenarios.length > 0
+        && result.scenarios.every(scenario => scenario.decision_ready === true),
+      scenario_type_coverage: {
+        required: requiredTypes,
+        present: presentTypes,
+        missing: requiredTypes.filter(type => !presentTypes.includes(type)),
+      },
+      scenarios: result.scenarios,
+    };
   }
 
   async createExperiment(
