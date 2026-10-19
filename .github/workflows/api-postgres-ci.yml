@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'services/api/**'
+      - 'scripts/performance/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
       - 'scripts/seed-dev-factory-manager.sql'
@@ -15,6 +16,7 @@ on:
     branches: [main, dev, rakibul-hasan]
     paths:
       - 'services/api/**'
+      - 'scripts/performance/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
       - 'scripts/seed-dev-factory-manager.sql'
@@ -377,6 +379,9 @@ jobs:
           DEV_AUTH_SECRET=ci-only-dev-secret
           OUTBOX_DISPATCHER_ENABLED=false
           EOF
+
+      - name: Validate bounded load-smoke harness syntax
+        run: node --check scripts/performance/api-load-smoke.mjs
 
       - name: Lint API
         working-directory: services/api
