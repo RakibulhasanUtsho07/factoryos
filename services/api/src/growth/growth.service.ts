@@ -537,34 +537,78 @@ export class GrowthService {
     );
     const row = opportunity.rows[0];
     if (!row) throw new NotFoundException('Growth opportunity not found');
-    const [evidence, scenarios, experiments, outcomes, unknowns] = await Promise.all([
+    const [evidence, scenarios, experiments, experimentResults, experimentResultKpis, outcomes, outcomeKpis, unknowns] = await Promise.all([
       this.database.query(
         'SELECT id::text AS id, evidence_type, origin_class, research_claim_id::text AS research_claim_id, business_entity_id::text AS business_entity_id, reference_ref, citation_url, description, confidence::text AS confidence, evidence_snapshot, captured_at::text AS captured_at FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY captured_at',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, scenario_name, scenario_type, model_version, data_vintage::text AS data_vintage, baseline_source_ref, inputs, output_snapshot, input_hash, decision_ready, created_at::text AS created_at FROM growth_scenarios WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, name, objective, hypothesis, leading_indicators, duration_days, owner_user_id::text AS owner_user_id, baseline_measurements, stop_conditions, status, started_at::text AS started_at, ended_at::text AS ended_at, created_at::text AS created_at FROM growth_experiments WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
+      ),
+      this.database.query(
+        `SELECT r.id::text AS id, r.experiment_id::text AS experiment_id, r.assessment,
+          r.stop_condition_triggered, r.pre_measurements, r.post_measurements, r.evidence_refs,
+          r.result_notes, r.observed_at::text AS observed_at, r.created_at::text AS created_at
+         FROM growth_experiment_results r
+         JOIN growth_experiments e ON e.id = r.experiment_id AND e.tenant_id = r.tenant_id AND e.factory_id = r.factory_id
+         WHERE e.opportunity_id = $1 AND r.tenant_id = $2 AND r.factory_id = $3
+         ORDER BY r.observed_at DESC`,
+        [opportunityId, tenantId, factoryId], { tenantId },
+      ),
+      this.database.query(
+        `SELECT id::text AS id, experiment_result_id::text AS experiment_result_id,
+          metric_key, baseline_value::text AS baseline_value, actual_value::text AS actual_value,
+          target_value::text AS target_value, unit, direction, evidence_ref, created_at::text AS created_at
+         FROM growth_experiment_result_kpis
+         WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+         ORDER BY experiment_result_id, metric_key`,
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, experiment_result_id::text AS experiment_result_id, assessment, realized_metrics, evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at FROM growth_opportunity_outcomes WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY observed_at DESC',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
+      ),
+      this.database.query(
+        `SELECT id::text AS id, outcome_id::text AS outcome_id,
+          source_experiment_kpi_id::text AS source_experiment_kpi_id, metric_key,
+          baseline_value::text AS baseline_value, actual_value::text AS actual_value,
+          target_value::text AS target_value, unit, direction, evidence_ref, created_at::text AS created_at
+         FROM growth_outcome_kpi_measurements
+         WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+         ORDER BY outcome_id, metric_key`,
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
       this.database.query(
         'SELECT id::text AS id, question, decision_variable, impact_if_wrong::text AS impact_if_wrong, probability_unknown::text AS probability_unknown, validation_effort::text AS validation_effort, priority_score::text AS priority_score, validation_method, owner_user_id::text AS owner_user_id, status, resolution_evidence_ref, resolution_notes, resolved_at::text AS resolved_at, created_at::text AS created_at FROM growth_validation_unknowns WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY CASE WHEN status IN (\'RESOLVED\', \'NOT_MATERIAL\') THEN 1 ELSE 0 END, priority_score DESC, created_at',
-        [opportunityId, tenantId, factoryId],
-        { tenantId },
+        [opportunityId, tenantId, factoryId], { tenantId },
       ),
     ]);
-    return { ...row, evidence: evidence.rows, scenarios: scenarios.rows, experiments: experiments.rows, outcomes: outcomes.rows, validation_unknowns: unknowns.rows };
+    const resultsWithKpis = experimentResults.rows.map(result => ({
+      ...result,
+      kpi_measurements: experimentResultKpis.rows.filter(kpi => kpi.experiment_result_id === result.id),
+    }));
+    const outcomesWithKpis = outcomes.rows.map(outcome => ({
+      ...outcome,
+      kpi_measurements: outcomeKpis.rows.filter(kpi => kpi.outcome_id === outcome.id),
+    }));
+    const experimentsWithResults = experiments.rows.map(experiment => ({
+      ...experiment,
+      results: resultsWithKpis.filter(result => result.experiment_id === experiment.id),
+    }));
+    return {
+      ...row,
+      evidence: evidence.rows,
+      scenarios: scenarios.rows,
+      experiments: experimentsWithResults,
+      experiment_results: resultsWithKpis,
+      outcomes: outcomesWithKpis,
+      validation_unknowns: unknowns.rows,
+    };
   }
 
   async createValidationUnknown(
