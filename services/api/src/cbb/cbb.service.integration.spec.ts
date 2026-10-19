@@ -1225,12 +1225,13 @@ it(
     );
 
     /*
-     * Only the visible verified relation should be returned.
+     * The only verified relation touches the conflicted Production node,
+     * so it must also be withheld until the evidence conflict is reviewed.
      */
     expect(
       result?.edges,
     ).toHaveLength(
-      1,
+      0,
     );
 
     /*
