@@ -23,6 +23,7 @@ import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
+import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto';
 import {
   scanResearchPromptInjection,
   scoreResearchEvidence,
@@ -1044,14 +1045,32 @@ export class ResearchService {
     traceId: string | null,
   ) {
     this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    const releaseKey = dto.release_key.trim();
     const claimIds = [...new Set(dto.claim_ids.map(id => id.toLowerCase()))];
-    if (claimIds.length === 0 || claimIds.length !== dto.claim_ids.length) {
-      throw new BadRequestException('A release requires one or more unique claim IDs');
+    if (!releaseKey || claimIds.length === 0 || claimIds.length !== dto.claim_ids.length) {
+      throw new BadRequestException('A release requires a key and one or more unique claim IDs');
     }
     const report = await this.validateReleaseClaims(tenantId, claimIds);
     const created = await this.database.transaction(
       { tenantId, userId },
       async client => {
+        // Serialize version allocation per tenant/release key. The database trigger
+        // independently checks strict version progression for direct SQL writers.
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [tenantId + ':' + releaseKey],
+        );
+        const versionResult = await client.query<{ next_version: number }>(
+          'SELECT (COALESCE(MAX(version), 0) + 1)::integer AS next_version FROM research_knowledge_releases WHERE tenant_id = $1 AND release_key = $2',
+          [tenantId, releaseKey],
+        );
+        const nextVersion = Number(versionResult.rows[0]?.next_version ?? 1);
+        if (dto.version !== nextVersion) {
+          throw new ConflictException(
+            'Release version must be the next revision for this key; expected version ' + nextVersion,
+          );
+        }
         const result = await client.query(
           `
           INSERT INTO research_knowledge_releases (
@@ -1063,7 +1082,7 @@ export class ResearchService {
             release_key, version, title, claim_ids, source_list, evidence_grade,
             status, validation_report, created_at::text AS created_at
           `,
-          [tenantId, dto.release_key.trim(), dto.version, dto.title.trim(),
+          [tenantId, releaseKey, dto.version, dto.title.trim(),
             JSON.stringify(claimIds), JSON.stringify(report.sources), dto.evidence_grade,
             userId, JSON.stringify(report.validation)],
         );
@@ -1081,7 +1100,7 @@ export class ResearchService {
     await this.auditSafely({
       tenantId, userId, factoryId: null, action: 'RELEASE_DRAFT',
       resourceId: created.id, requestId, traceId,
-      payload: { releaseKey: dto.release_key, version: dto.version, claimCount: claimIds.length },
+      payload: { releaseKey, version: dto.version, claimCount: claimIds.length },
     });
     return created;
   }
@@ -1238,14 +1257,30 @@ export class ResearchService {
     this.validateUuid(tenantId, 'tenantId');
     return (await this.database.query(
       `
-      SELECT id::text AS id, tenant_id::text AS tenant_id, namespace, release_key, version,
-        title, claim_ids, source_list, evidence_grade, status, validation_report,
-        regression_evidence_ref, evaluation_id::text AS evaluation_id, reviewed_by::text AS reviewed_by, reviewed_at::text AS reviewed_at,
-        effective_at::text AS effective_at, created_at::text AS created_at
+      SELECT research_knowledge_releases.id::text AS id,
+        research_knowledge_releases.tenant_id::text AS tenant_id,
+        research_knowledge_releases.namespace, research_knowledge_releases.release_key,
+        research_knowledge_releases.version, research_knowledge_releases.title,
+        research_knowledge_releases.claim_ids, research_knowledge_releases.source_list,
+        research_knowledge_releases.evidence_grade, research_knowledge_releases.status,
+        research_knowledge_releases.validation_report, research_knowledge_releases.regression_evidence_ref,
+        research_knowledge_releases.evaluation_id::text AS evaluation_id,
+        research_knowledge_releases.reviewed_by::text AS reviewed_by,
+        research_knowledge_releases.reviewed_at::text AS reviewed_at,
+        research_knowledge_releases.effective_at::text AS effective_at,
+        research_knowledge_releases.created_at::text AS created_at,
+        channels.active_release_id::text AS active_release_id,
+        channels.active_version, channels.revision AS channel_revision,
+        COALESCE(channels.active_release_id = research_knowledge_releases.id, FALSE) AS is_active
       FROM research_knowledge_releases
-      WHERE (tenant_id = $1 OR (tenant_id IS NULL AND status = 'PROMOTED'))
+      LEFT JOIN research_release_channels channels
+        ON channels.tenant_id = research_knowledge_releases.tenant_id
+       AND channels.release_key = research_knowledge_releases.release_key
+       AND research_knowledge_releases.tenant_id IS NOT NULL
+      WHERE (research_knowledge_releases.tenant_id = $1
+          OR (research_knowledge_releases.tenant_id IS NULL AND research_knowledge_releases.status = 'PROMOTED'))
         AND (
-          status <> 'PROMOTED'
+          research_knowledge_releases.status <> 'PROMOTED'
           OR NOT EXISTS (
             SELECT 1
             FROM jsonb_array_elements_text(research_knowledge_releases.claim_ids) AS release_claim(claim_id)
@@ -1262,12 +1297,83 @@ export class ResearchService {
             )
           )
         )
-      ORDER BY CASE WHEN tenant_id IS NULL THEN 0 ELSE 1 END, version DESC, created_at DESC
+      ORDER BY CASE WHEN research_knowledge_releases.tenant_id IS NULL THEN 0 ELSE 1 END,
+        research_knowledge_releases.release_key, research_knowledge_releases.version DESC,
+        research_knowledge_releases.created_at DESC
       LIMIT $2
       `,
       [tenantId, this.limit(limit)],
       { tenantId },
     )).rows;
+  }
+
+  async listReleaseHistory(tenantId: string, releaseId: string) {
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(releaseId, 'releaseId');
+    const releaseResult = await this.database.query<{ release_key: string }>(
+      `SELECT release_key FROM research_knowledge_releases
+       WHERE id = $1 AND tenant_id = $2 AND namespace = 'TENANT'`,
+      [releaseId, tenantId],
+      { tenantId },
+    );
+    const releaseKey = releaseResult.rows[0]?.release_key;
+    if (!releaseKey) throw new NotFoundException('Tenant research release not found');
+
+    const versionsResult = await this.database.query(
+      `
+      SELECT r.id::text AS id, r.release_key, r.version, r.title, r.status,
+        r.claim_ids, r.source_list, r.evidence_grade, r.validation_report,
+        r.evaluation_id::text AS evaluation_id, r.regression_evidence_ref,
+        r.reviewed_by::text AS reviewed_by, r.reviewed_at::text AS reviewed_at,
+        r.effective_at::text AS effective_at, r.created_at::text AS created_at,
+        ch.active_release_id::text AS active_release_id, ch.active_version,
+        ch.revision AS channel_revision,
+        COALESCE(ch.active_release_id = r.id, FALSE) AS is_active,
+        NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(r.claim_ids) AS release_claim(claim_id)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM research_claims c
+            JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+            WHERE c.id::text = release_claim.claim_id
+              AND c.status = 'APPROVED'
+              AND (c.tenant_id = $1 OR c.tenant_id IS NULL)
+              AND s.access_status = 'APPROVED'
+              AND s.license_status IN ('OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED')
+              AND NULLIF(BTRIM(s.rights_basis), '') IS NOT NULL
+          )
+        ) AS currently_eligible
+      FROM research_knowledge_releases r
+      LEFT JOIN research_release_channels ch
+        ON ch.tenant_id = r.tenant_id AND ch.release_key = r.release_key
+      WHERE r.tenant_id = $1 AND r.namespace = 'TENANT' AND r.release_key = $2
+      ORDER BY r.version DESC, r.created_at DESC
+      `,
+      [tenantId, releaseKey],
+      { tenantId },
+    );
+    const eventsResult = await this.database.query(
+      `
+      SELECT id::text AS id, release_id::text AS release_id, release_key, version,
+        event_type, related_release_id::text AS related_release_id, related_version,
+        reason, actor_user_id::text AS actor_user_id, request_id, trace_id,
+        created_at::text AS created_at
+      FROM research_release_lifecycle_events
+      WHERE tenant_id = $1 AND release_key = $2
+      ORDER BY created_at ASC, id ASC
+      `,
+      [tenantId, releaseKey],
+      { tenantId },
+    );
+    const active = (versionsResult.rows as Array<Record<string, unknown>>)[0];
+    return {
+      release_key: releaseKey,
+      active_release_id: active?.active_release_id ?? null,
+      active_version: active?.active_version ?? null,
+      channel_revision: active?.channel_revision ?? null,
+      versions: versionsResult.rows,
+      lifecycle_events: eventsResult.rows,
+    };
   }
 
   async promoteRelease(
@@ -1278,6 +1384,8 @@ export class ResearchService {
     requestId: string | null,
     traceId: string | null,
   ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
     this.validateUuid(releaseId, 'releaseId');
     if (new Date(dto.effective_at).getTime() > Date.now() + 365 * 24 * 60 * 60 * 1000) {
       throw new BadRequestException('effective_at cannot be more than one year in the future');
@@ -1292,6 +1400,7 @@ export class ResearchService {
     );
     const row = current.rows[0];
     if (!row) throw new NotFoundException('Tenant research release not found');
+    if (row.namespace !== 'TENANT') throw new ForbiddenException('Only tenant-owned research releases may be promoted from this API');
     if (row.status !== 'DRAFT') throw new ConflictException('Only draft research releases may be promoted');
     const claimIds = Array.isArray(row.claim_ids) ? row.claim_ids : [];
     const report = await this.validateReleaseClaims(tenantId, claimIds);
@@ -1299,8 +1408,7 @@ export class ResearchService {
       || !report.validation.rightsPassed || !report.validation.safetyPassed) {
       throw new ConflictException('Research release has failed consistency, citation, rights or content-safety checks');
     }
-    if (!dto.evaluation_id || !isUUID(dto.evaluation_id)
-      || row.evaluation_id !== dto.evaluation_id) {
+    if (!dto.evaluation_id || !isUUID(dto.evaluation_id) || row.evaluation_id !== dto.evaluation_id) {
       throw new ConflictException('A passing automated evaluation attached to the current draft is required before promotion');
     }
     const evaluationResult = await this.database.query<{
@@ -1321,7 +1429,7 @@ export class ResearchService {
     }
     const reviewSummary = dto.safety_review_summary.trim();
     const regressionRef = dto.regression_evidence_ref.trim();
-    if (!reviewSummary || !regressionRef) {
+    if (reviewSummary.length < 10 || !regressionRef) {
       throw new BadRequestException('Safety review and regression evidence references are required');
     }
     const promoted = await this.database.transaction(
@@ -1351,21 +1459,267 @@ export class ResearchService {
         );
         const result = updated.rows[0];
         if (!result) throw new ConflictException('Research release changed during promotion');
+
+        const initializedChannel = await client.query<{
+          active_release_id: string; active_version: number; revision: number;
+        }>(
+          `
+          INSERT INTO research_release_channels (
+            tenant_id, release_key, active_release_id, active_version, revision, updated_by
+          )
+          VALUES ($1, $2, $3, $4, 1, $5)
+          ON CONFLICT (tenant_id, release_key) DO NOTHING
+          RETURNING active_release_id::text AS active_release_id, active_version, revision
+          `,
+          [tenantId, row.release_key, releaseId, row.version, userId],
+        );
+
+        let previous: { active_release_id: string; active_version: number; revision: number } | null = null;
+        let channelRevision = 1;
+        if (!initializedChannel.rows[0]) {
+          const channelResult = await client.query<{
+            active_release_id: string; active_version: number; revision: number;
+          }>(
+            `
+            SELECT active_release_id::text AS active_release_id, active_version, revision
+            FROM research_release_channels
+            WHERE tenant_id = $1 AND release_key = $2
+            FOR UPDATE
+            `,
+            [tenantId, row.release_key],
+          );
+          previous = channelResult.rows[0] ?? null;
+          if (!previous) throw new ConflictException('Release activation channel disappeared during promotion');
+          if (previous.active_release_id === releaseId) {
+            throw new ConflictException('This release version is already active');
+          }
+          if (previous.active_version >= row.version) {
+            throw new ConflictException('Promotion must advance the active version; use rollback to return to an older version');
+          }
+          const switched = await client.query<{ revision: number }>(
+            `
+            UPDATE research_release_channels
+            SET active_release_id = $1, active_version = $2,
+                revision = revision + 1, updated_by = $3
+            WHERE tenant_id = $4 AND release_key = $5 AND active_release_id = $6
+            RETURNING revision
+            `,
+            [releaseId, row.version, userId, tenantId, row.release_key, previous.active_release_id],
+          );
+          if (!switched.rows[0]) throw new ConflictException('Release activation changed concurrently; reload version history');
+          channelRevision = Number(switched.rows[0].revision);
+        } else {
+          channelRevision = Number(initializedChannel.rows[0].revision);
+        }
+
+        const promotionReason = 'Promotion approved: ' + reviewSummary;
+        if (previous) {
+          await client.query(
+            `
+            INSERT INTO research_release_lifecycle_events (
+              tenant_id, release_id, release_key, version, event_type,
+              related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+            )
+            VALUES ($1, $2, $3, $4, 'SUPERSEDED', $5, $6, $7, $8, $9, $10)
+            `,
+            [tenantId, previous.active_release_id, row.release_key, previous.active_version,
+              releaseId, row.version,
+              'Superseded by version ' + row.version + ': ' + reviewSummary,
+              userId, requestId, traceId],
+          );
+        }
+        await client.query(
+          `
+          INSERT INTO research_release_lifecycle_events (
+            tenant_id, release_id, release_key, version, event_type,
+            related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+          )
+          VALUES ($1, $2, $3, $4, 'PROMOTED', $5, $6, $7, $8, $9, $10)
+          `,
+          [tenantId, releaseId, row.release_key, row.version,
+            previous?.active_release_id ?? null, previous?.active_version ?? null,
+            promotionReason, userId, requestId, traceId],
+        );
+
         await this.insertOutbox(client, {
           tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_RELEASE',
           aggregateId: releaseId, eventType: 'RESEARCH.RELEASE_PROMOTED',
           correlationId: this.correlationId(requestId, traceId),
-          payload: { release_id: releaseId, release_key: row.release_key, version: row.version, status: 'PROMOTED' },
+          payload: {
+            release_id: releaseId, release_key: row.release_key, version: row.version,
+            status: 'PROMOTED', supersedes_release_id: previous?.active_release_id ?? null,
+            active_version: row.version, channel_revision: channelRevision,
+          },
         });
-        return result;
+        return {
+          ...result,
+          supersedes_release_id: previous?.active_release_id ?? null,
+          active_release_id: releaseId,
+          active_version: row.version,
+          channel_revision: channelRevision,
+        };
       },
     );
     await this.auditSafely({
       tenantId, userId, factoryId: null, action: 'RELEASE_PROMOTE',
       resourceId: releaseId, requestId, traceId,
-      payload: { releaseKey: row.release_key, version: row.version, safetyReviewSummary: reviewSummary, regressionEvidenceRef: regressionRef },
+      payload: {
+        releaseKey: row.release_key, version: row.version,
+        supersedesReleaseId: promoted.supersedes_release_id,
+        safetyReviewSummary: reviewSummary, regressionEvidenceRef: regressionRef,
+      },
     });
     return promoted;
+  }
+
+  async rollbackRelease(
+    userId: string,
+    tenantId: string,
+    releaseId: string,
+    dto: RollbackResearchReleaseDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(releaseId, 'releaseId');
+    this.validateUuid(dto.target_release_id, 'target_release_id');
+    const reason = dto.reason.trim();
+    if (reason.length < 10) throw new BadRequestException('Rollback reason must contain at least 10 characters');
+    if (releaseId === dto.target_release_id) throw new BadRequestException('A release cannot roll back to itself');
+
+    const currentResult = await this.database.query<{
+      id: string; release_key: string; version: number; status: string;
+    }>(
+      `SELECT id::text AS id, release_key, version, status
+       FROM research_knowledge_releases
+       WHERE id = $1 AND tenant_id = $2 AND namespace = 'TENANT'`,
+      [releaseId, tenantId],
+      { tenantId, userId },
+    );
+    const current = currentResult.rows[0];
+    if (!current) throw new NotFoundException('Tenant research release not found');
+
+    const targetResult = await this.database.query<{
+      id: string; release_key: string; version: number; status: string;
+      claim_ids: string[]; evaluation_id: string | null;
+    }>(
+      `SELECT id::text AS id, release_key, version, status, claim_ids,
+          evaluation_id::text AS evaluation_id
+       FROM research_knowledge_releases
+       WHERE id = $1 AND tenant_id = $2 AND namespace = 'TENANT'`,
+      [dto.target_release_id, tenantId],
+      { tenantId, userId },
+    );
+    const target = targetResult.rows[0];
+    if (!target) throw new NotFoundException('Rollback target is not a tenant release');
+    if (target.release_key !== current.release_key || target.version >= current.version) {
+      throw new ConflictException('Rollback target must be an older version of the same release key');
+    }
+    if (target.status !== 'PROMOTED' || !target.evaluation_id) {
+      throw new ConflictException('Rollback target must be a previously promoted, evaluated version');
+    }
+
+    const report = await this.validateReleaseClaims(tenantId, target.claim_ids);
+    if (!report.validation.consistencyPassed || !report.validation.citationCoveragePassed
+      || !report.validation.rightsPassed || !report.validation.safetyPassed) {
+      throw new ConflictException('Rollback target is no longer eligible: current evidence, citation, rights and safety checks must pass');
+    }
+    const evaluationResult = await this.database.query<{
+      id: string; status: string; content_fingerprint: string;
+    }>(
+      `SELECT id::text AS id, status, content_fingerprint
+       FROM research_release_evaluations
+       WHERE id = $1 AND release_id = $2 AND tenant_id = $3 AND namespace = 'TENANT'`,
+      [target.evaluation_id, target.id, tenantId],
+      { tenantId, userId },
+    );
+    const evaluation = evaluationResult.rows[0];
+    if (!evaluation || evaluation.status !== 'PASSED'
+      || evaluation.content_fingerprint !== report.contentFingerprint) {
+      throw new ConflictException('Rollback target evaluation is stale; an older release cannot be re-evaluated in place');
+    }
+
+    const rollback = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const channelResult = await client.query<{
+          active_release_id: string; active_version: number; revision: number;
+        }>(
+          `SELECT active_release_id::text AS active_release_id, active_version, revision
+           FROM research_release_channels
+           WHERE tenant_id = $1 AND release_key = $2
+           FOR UPDATE`,
+          [tenantId, current.release_key],
+        );
+        const channel = channelResult.rows[0];
+        if (!channel || channel.active_release_id !== releaseId || channel.active_version !== current.version) {
+          throw new ConflictException('Release is no longer the active version; reload history before attempting rollback');
+        }
+
+        const targetCurrent = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM research_knowledge_releases
+           WHERE id = $1 AND tenant_id = $2 AND release_key = $3
+             AND version = $4 AND status = 'PROMOTED'
+           FOR SHARE`,
+          [target.id, tenantId, current.release_key, target.version],
+        );
+        if (!targetCurrent.rows[0]) {
+          throw new ConflictException('Rollback target changed while the request was being processed');
+        }
+        const updated = await client.query<{ revision: number }>(
+          `UPDATE research_release_channels
+           SET active_release_id = $1, active_version = $2,
+               revision = revision + 1, updated_by = $3
+           WHERE tenant_id = $4 AND release_key = $5 AND active_release_id = $6
+           RETURNING revision`,
+          [target.id, target.version, userId, tenantId, current.release_key, releaseId],
+        );
+        if (!updated.rows[0]) throw new ConflictException('Release activation changed concurrently; reload history');
+
+        await client.query(
+          `INSERT INTO research_release_lifecycle_events (
+             tenant_id, release_id, release_key, version, event_type,
+             related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+           )
+           VALUES ($1, $2, $3, $4, 'ROLLBACK_FROM', $5, $6, $7, $8, $9, $10)`,
+          [tenantId, releaseId, current.release_key, current.version, target.id, target.version,
+            reason, userId, requestId, traceId],
+        );
+        await client.query(
+          `INSERT INTO research_release_lifecycle_events (
+             tenant_id, release_id, release_key, version, event_type,
+             related_release_id, related_version, reason, actor_user_id, request_id, trace_id
+           )
+           VALUES ($1, $2, $3, $4, 'ROLLBACK_TO', $5, $6, $7, $8, $9, $10)`,
+          [tenantId, target.id, current.release_key, target.version, releaseId, current.version,
+            reason, userId, requestId, traceId],
+        );
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_RELEASE',
+          aggregateId: target.id, eventType: 'RESEARCH.RELEASE_ROLLED_BACK',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            release_key: current.release_key,
+            from_release_id: releaseId, from_version: current.version,
+            to_release_id: target.id, to_version: target.version,
+            reason, channel_revision: updated.rows[0].revision,
+          },
+        });
+        return {
+          release_key: current.release_key,
+          from_release_id: releaseId, from_version: current.version,
+          active_release_id: target.id, active_version: target.version,
+          reason, channel_revision: Number(updated.rows[0].revision),
+        };
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'RELEASE_ROLLBACK',
+      resourceId: releaseId, requestId, traceId,
+      payload: { ...rollback, reason },
+    });
+    return rollback;
   }
 
   async createRelevance(
