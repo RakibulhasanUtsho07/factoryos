@@ -355,4 +355,28 @@ describe('CbbGovernanceService', () => {
       tenantId, factoryId, versionId, 3, entityId, blueprintId, userId,
     ]);
   });
+
+  it('enforces field-level edit grants before an approved description proposal can be promoted', async () => {
+    queue(
+      { rows: [{
+        target_type: 'ENTITY',
+        target_id: entityId,
+        proposal_type: 'UPDATE_DESCRIPTION',
+        proposed_state: null,
+        proposed_payload: { description: 'Updated entity description' },
+      }] },
+      { rows: [] }, // ACL transaction advisory lock
+      { rows: [] }, // caller roles do not include the grantee
+      { rows: [{ target_id: entityId, role_id: roleId, field_name: 'description', access_level: 'READ' }] },
+    );
+
+    await expect(service.assertProposalWriteAccess(
+      { tenantId, factoryId, userId },
+      aclId,
+    )).rejects.toThrow('CBB field description is read-only or restricted for this role');
+
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(query.mock.calls[0]?.[0]).toContain('proposed_payload');
+    expect(query.mock.calls[3]?.[1]).toEqual([tenantId, factoryId, 'ENTITY', entityId]);
+  });
 });
