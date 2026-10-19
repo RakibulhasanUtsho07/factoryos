@@ -234,6 +234,7 @@ jobs:
             migrations/146_growth_experiment_kpi_evidence_linkage.sql
             migrations/147_ai_decision_envelope_lifecycle_replay.sql
             migrations/148_ot_device_registry_spool.sql
+            migrations/149_saas_data_retention_erasure_governance.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -341,6 +342,7 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-experiment-outcomes.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ot-device-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-data-retention-contract.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
