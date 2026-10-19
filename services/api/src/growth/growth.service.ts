@@ -622,16 +622,73 @@ export class GrowthService {
           if (gate.rows[0]?.ready !== true) {
             throw new ConflictException('Growth governance is incomplete. Review /opportunities/:id/governance for assumptions, constraints, and evidence gaps.');
           }
-          readinessSnapshot = { readiness_required: true, ready: true, assessed_at: new Date().toISOString() };
-        }
-        if (dto.decision === 'ACCEPT') {
-          const evidence = await client.query<{ count: number }>(
-            'SELECT COUNT(*)::int AS count FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
-            [opportunityId, tenantId, factoryId],
+          const governanceSnapshot = await client.query<{ snapshot: Record<string, unknown> }>(
+            `SELECT jsonb_build_object(
+               'contract_version', 'growth-opportunity-governance.v1',
+               'decision_owner_assignment_id', $4::text,
+               'decision_owner_user_id', $5::text,
+               'assumptions', COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', a.id::text,
+                   'statement', a.statement,
+                   'blocks_decision', a.blocks_decision,
+                   'latest_decision', last_decision.decision,
+                   'evidence_refs', COALESCE(last_decision.evidence_refs, '[]'::jsonb),
+                   'decided_at', last_decision.decided_at
+                 ) ORDER BY a.created_at, a.id)
+                 FROM growth_opportunity_assumptions a
+                 LEFT JOIN LATERAL (
+                   SELECT d.decision, d.evidence_refs, d.decided_at
+                     FROM growth_opportunity_assumption_decisions d
+                    WHERE d.assumption_id = a.id AND d.tenant_id = a.tenant_id
+                      AND d.factory_id = a.factory_id AND d.opportunity_id = a.opportunity_id
+                    ORDER BY d.decided_at DESC, d.id DESC LIMIT 1
+                 ) last_decision ON TRUE
+                 WHERE a.opportunity_id = $3 AND a.tenant_id = $1 AND a.factory_id = $2
+               ), '[]'::jsonb),
+               'latest_constraints', COALESCE((
+                 SELECT jsonb_agg(to_jsonb(c) ORDER BY c.dimension)
+                   FROM (
+                     SELECT DISTINCT ON (dimension)
+                       id::text AS id, dimension, applicability, constraint_name, limit_operator,
+                       threshold_value::text AS threshold_value, observed_value::text AS observed_value,
+                       unit, source_evidence_ref, source_as_of::text AS source_as_of, rationale
+                       FROM growth_opportunity_constraints
+                      WHERE opportunity_id = $3 AND tenant_id = $1 AND factory_id = $2
+                      ORDER BY dimension, created_at DESC, id DESC
+                   ) c
+               ), '[]'::jsonb),
+               'blocking_evidence_gaps', COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', g.id::text, 'question', g.question, 'required_evidence', g.required_evidence,
+                   'impact', g.impact, 'latest_decision', last_event.decision,
+                   'evidence_refs', COALESCE(last_event.evidence_refs, '[]'::jsonb),
+                   'decision_reason', last_event.reason
+                 ) ORDER BY g.created_at, g.id)
+                   FROM growth_opportunity_evidence_gaps g
+                   LEFT JOIN LATERAL (
+                     SELECT e.decision, e.evidence_refs, e.reason
+                       FROM growth_opportunity_evidence_gap_events e
+                      WHERE e.evidence_gap_id = g.id AND e.tenant_id = g.tenant_id
+                        AND e.factory_id = g.factory_id AND e.opportunity_id = g.opportunity_id
+                      ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+                   ) last_event ON TRUE
+                  WHERE g.opportunity_id = $3 AND g.tenant_id = $1 AND g.factory_id = $2
+                    AND g.blocks_decision
+               ), '[]'::jsonb),
+               'evidence_count', (
+                 SELECT COUNT(*)::int FROM growth_opportunity_evidence
+                  WHERE opportunity_id = $3 AND tenant_id = $1 AND factory_id = $2
+               )
+             ) AS snapshot`,
+            [tenantId, factoryId, opportunityId, decisionOwner.rows[0].id, decisionOwner.rows[0].owner_user_id],
           );
-          if (!evidence.rows[0] || evidence.rows[0].count < 1) {
-            throw new ConflictException('An opportunity requires visible evidence before acceptance');
-          }
+          readinessSnapshot = {
+            readiness_required: true,
+            ready: true,
+            assessed_at: new Date().toISOString(),
+            ...(governanceSnapshot.rows[0]?.snapshot ?? {}),
+          };
         }
         const updated = await client.query<OpportunityRow>(
           `
