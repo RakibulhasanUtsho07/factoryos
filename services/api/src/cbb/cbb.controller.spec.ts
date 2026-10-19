@@ -147,6 +147,7 @@ describe(
           new CbbController(
             cbbService as never,
             cbbChangeService as never,
+            {} as never,
           );
       },
     );
