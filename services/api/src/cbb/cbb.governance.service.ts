@@ -201,7 +201,7 @@ export class CbbGovernanceService {
     if (!Number.isInteger(thresholdDays) || thresholdDays < 1 || thresholdDays > 3650) {
       throw new BadRequestException('threshold_days must be between 1 and 3650');
     }
-    return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
+    const scan = await this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
       const blueprint = await this.currentBlueprint(client, scope, true);
       const candidates = await client.query<DbRow>(
         `WITH targets AS (
@@ -267,10 +267,29 @@ export class CbbGovernanceService {
       return { blueprintVersionId: String(blueprint.current_version_id), thresholdDays,
         candidateCount: candidates.rows.length, refreshedCount: createdOrRefreshed, candidates: candidates.rows };
     });
+    if (!(await this.canReadActiveBlueprint(scope.tenantId, scope.factoryId, scope.userId))) {
+      return { ...scan, candidateCount: 0, refreshedCount: 0, candidates: [] };
+    }
+    const visibleCandidates = await this.filterTargetRowsByAcl(
+      scope.tenantId, scope.factoryId, scope.userId, scan.candidates as DbRow[],
+    );
+    return {
+      ...scan,
+      candidateCount: visibleCandidates.length,
+      refreshedCount: visibleCandidates.length,
+      candidates: visibleCandidates,
+    };
   }
 
-  async listStaleness(tenantId: string, factoryId: string, status?: 'OPEN' | 'MARKED_STALE' | 'RECONFIRMED' | 'DISMISSED') {
+  async listStaleness(
+    tenantId: string,
+    factoryId: string,
+    userId: string,
+    status?: 'OPEN' | 'MARKED_STALE' | 'RECONFIRMED' | 'DISMISSED',
+  ) {
     this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) return [];
     const rows = await this.database.query<DbRow>(
       `SELECT id::text AS id, blueprint_id::text AS blueprint_id, blueprint_version_id::text AS blueprint_version_id,
          target_type,target_id::text AS target_id,last_evidence_at::text AS last_evidence_at,
@@ -281,7 +300,7 @@ export class CbbGovernanceService {
        ORDER BY CASE WHEN review_status='OPEN' THEN 0 ELSE 1 END,last_scanned_at DESC,id DESC LIMIT 500`,
       [tenantId, factoryId, status ?? null], { tenantId },
     );
-    return rows.rows;
+    return this.filterTargetRowsByAcl(tenantId, factoryId, userId, rows.rows);
   }
 
   async decideStaleness(scope: Scope, reviewId: string, dto: DecideCbbStalenessDto) {
@@ -349,15 +368,21 @@ export class CbbGovernanceService {
     });
   }
 
-  async listTerminology(tenantId: string, factoryId: string, search?: string) {
+  async listTerminology(tenantId: string, factoryId: string, userId: string, search?: string) {
     this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
     const blueprint = await this.database.query<DbRow>(
-      `SELECT b.current_version_id::text AS version_id FROM business_blueprints b
+      `SELECT b.id::text AS blueprint_id,b.current_version_id::text AS version_id FROM business_blueprints b
        WHERE b.tenant_id=$1 AND b.factory_id=$2 AND b.status='ACTIVE' LIMIT 1`,
       [tenantId, factoryId], { tenantId },
     );
+    const blueprintId = blueprint.rows[0]?.blueprint_id ? String(blueprint.rows[0].blueprint_id) : null;
     const versionId = blueprint.rows[0]?.version_id ? String(blueprint.rows[0].version_id) : null;
-    if (!versionId) return { canonicalTerms: [], aliases: [] };
+    if (!blueprintId || !versionId ||
+        !(await this.filterItemsByAcl(tenantId, factoryId, userId, 'BLUEPRINT', [{ id: blueprintId }])).length) {
+      return { canonicalTerms: [], aliases: [] };
+    }
+
     const termRows = await this.database.query<DbRow>(
       `SELECT id::text AS id,term,canonical_term,language_code,source_system,state,confidence,metadata
        FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3
@@ -365,7 +390,15 @@ export class CbbGovernanceService {
        ORDER BY lower(canonical_term),lower(term) LIMIT 500`,
       [tenantId, factoryId, versionId, search?.trim() || null], { tenantId },
     );
-    const aliases = await this.database.query<DbRow>(
+    const canonicalTerms = await this.filterItemsByAcl(
+      tenantId, factoryId, userId, 'TERM', termRows.rows as Array<Record<string, unknown>>,
+    );
+    const canonicalKeys = new Set(canonicalTerms
+      .filter((row) => ['VERIFIED', 'INFERRED'].includes(String(row.state)))
+      .map((row) => String(row.canonical_term ?? '').normalize('NFKC').toLocaleLowerCase())
+      .filter(Boolean));
+
+    const aliasResult = await this.database.query<DbRow>(
       `SELECT id::text AS id,alias,canonical_term,language_code,source_system,state,metadata,
          version,created_by::text AS created_by,updated_by::text AS updated_by,created_at::text AS created_at,
          updated_at::text AS updated_at
@@ -374,7 +407,10 @@ export class CbbGovernanceService {
        ORDER BY lower(canonical_term),lower(alias) LIMIT 500`,
       [tenantId, factoryId, search?.trim() || null], { tenantId },
     );
-    return { blueprintVersionId: versionId, canonicalTerms: termRows.rows, aliases: aliases.rows };
+    const aliases = aliasResult.rows.filter((row) =>
+      canonicalKeys.has(String(row.canonical_term).normalize('NFKC').toLocaleLowerCase()),
+    );
+    return { blueprintVersionId: versionId, canonicalTerms, aliases };
   }
 
   async createTerminologyAlias(scope: Scope, dto: CreateCbbTerminologyAliasDto) {
@@ -466,44 +502,98 @@ export class CbbGovernanceService {
     });
   }
 
-  async resolveTerminology(tenantId: string, factoryId: string, term: string, sourceSystem?: string) {
+  async resolveTerminology(
+    tenantId: string,
+    factoryId: string,
+    userId: string,
+    term: string,
+    sourceSystem?: string,
+  ) {
     this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
     const needle = this.requiredText(term, 'term', 300).normalize('NFKC');
     const blueprint = await this.database.query<DbRow>(
-      `SELECT current_version_id::text AS version_id FROM business_blueprints
+      `SELECT id::text AS blueprint_id,current_version_id::text AS version_id FROM business_blueprints
        WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' LIMIT 1`,
       [tenantId, factoryId], { tenantId },
     );
+    const blueprintId = blueprint.rows[0]?.blueprint_id ? String(blueprint.rows[0].blueprint_id) : null;
     const versionId = blueprint.rows[0]?.version_id ? String(blueprint.rows[0].version_id) : null;
-    if (!versionId) return { input: needle, match: null, candidates: [] };
+    if (!blueprintId || !versionId ||
+        !(await this.filterItemsByAcl(tenantId, factoryId, userId, 'BLUEPRINT', [{ id: blueprintId }])).length) {
+      return { input: needle, match: null, matchedBy: null, candidates: [] };
+    }
+
     const direct = await this.database.query<DbRow>(
-      `SELECT term,canonical_term,language_code,source_system,state,confidence
+      `SELECT id::text AS id,term,canonical_term,language_code,source_system,state,confidence
        FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3
          AND (lower(term)=lower($4) OR lower(canonical_term)=lower($4))
          AND ($5::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($5))
        ORDER BY CASE state WHEN 'VERIFIED' THEN 0 WHEN 'INFERRED' THEN 1 ELSE 2 END,lower(term) LIMIT 20`,
       [tenantId, factoryId, versionId, needle, sourceSystem?.trim() || null], { tenantId },
     );
-    if (direct.rows[0] && ['VERIFIED','INFERRED'].includes(String(direct.rows[0].state))) {
-      return { input: needle, match: direct.rows[0], matchedBy: 'CBB_TERM', candidates: direct.rows };
+    const visibleDirect = await this.filterItemsByAcl(
+      tenantId, factoryId, userId, 'TERM', direct.rows as Array<Record<string, unknown>>,
+    );
+    const trustedDirect = visibleDirect.filter((row) => ['VERIFIED', 'INFERRED'].includes(String(row.state)));
+    if (trustedDirect.length) {
+      const canonicalKeys = new Set(trustedDirect.map((row) =>
+        String(row.canonical_term ?? row.term).normalize('NFKC').toLocaleLowerCase()));
+      if (canonicalKeys.size === 1) {
+        return { input: needle, match: trustedDirect[0], matchedBy: 'CBB_TERM', candidates: trustedDirect };
+      }
+      return { input: needle, match: null, matchedBy: null, ambiguous: true, candidates: trustedDirect };
     }
+
     const aliases = await this.database.query<DbRow>(
-      `SELECT alias,canonical_term,language_code,source_system,state,version
-       FROM business_terminology_aliases WHERE tenant_id=$1 AND factory_id=$2
-         AND lower(alias)=lower($3) AND state IN ('VERIFIED','INFERRED')
-         AND ($4::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($4))
-       ORDER BY CASE state WHEN 'VERIFIED' THEN 0 ELSE 1 END,version DESC LIMIT 20`,
-      [tenantId, factoryId, needle, sourceSystem?.trim() || null], { tenantId },
+      `SELECT a.alias,a.canonical_term,a.language_code,a.source_system,a.state,a.version,
+          t.id::text AS canonical_term_id
+       FROM business_terminology_aliases a
+       JOIN business_terms t ON t.tenant_id=a.tenant_id AND t.factory_id=a.factory_id
+         AND t.blueprint_version_id=$4 AND lower(t.canonical_term)=lower(a.canonical_term)
+         AND t.state IN ('VERIFIED','INFERRED')
+       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND lower(a.alias)=lower($3)
+         AND a.state IN ('VERIFIED','INFERRED')
+         AND ($5::text IS NULL OR a.source_system IS NULL OR lower(a.source_system)=lower($5))
+       ORDER BY CASE a.state WHEN 'VERIFIED' THEN 0 ELSE 1 END,a.version DESC LIMIT 20`,
+      [tenantId, factoryId, needle, versionId, sourceSystem?.trim() || null], { tenantId },
     );
-    if (aliases.rows[0]) return { input: needle, match: aliases.rows[0], matchedBy: 'ALIAS', candidates: aliases.rows };
+    const visibleCanonicalTerms = await this.filterItemsByAcl(
+      tenantId, factoryId, userId, 'TERM',
+      aliases.rows.map((row) => ({ ...row, id: String(row.canonical_term_id) })),
+    );
+    const visibleCanonicalIds = new Set(visibleCanonicalTerms.map((row) => String(row.id)));
+    const visibleAliases = aliases.rows.filter((row) => visibleCanonicalIds.has(String(row.canonical_term_id)));
+    if (visibleAliases.length) {
+      const canonicals = new Set(visibleAliases.map((row) => String(row.canonical_term).normalize('NFKC').toLocaleLowerCase()));
+      if (canonicals.size === 1) {
+        const { canonical_term_id: _canonicalTermId, ...match } = visibleAliases[0] as DbRow & { canonical_term_id: string };
+        return { input: needle, match, matchedBy: 'ALIAS', candidates: visibleAliases.map(({ canonical_term_id: _id, ...row }) => row) };
+      }
+      return { input: needle, match: null, matchedBy: null, ambiguous: true,
+        candidates: visibleAliases.map(({ canonical_term_id: _id, ...row }) => row) };
+    }
+
     const suggestions = await this.database.query<DbRow>(
-      `SELECT alias,canonical_term,language_code,source_system,state
-       FROM business_terminology_aliases WHERE tenant_id=$1 AND factory_id=$2
-         AND lower(alias) LIKE '%' || lower($3) || '%' AND state='PROPOSED'
-       ORDER BY lower(alias) LIMIT 10`,
-      [tenantId, factoryId, needle], { tenantId },
+      `SELECT a.alias,a.canonical_term,a.language_code,a.source_system,a.state,t.id::text AS canonical_term_id
+       FROM business_terminology_aliases a
+       JOIN business_terms t ON t.tenant_id=a.tenant_id AND t.factory_id=a.factory_id
+         AND t.blueprint_version_id=$4 AND lower(t.canonical_term)=lower(a.canonical_term)
+         AND t.state IN ('VERIFIED','INFERRED')
+       WHERE a.tenant_id=$1 AND a.factory_id=$2
+         AND lower(a.alias) LIKE '%' || lower($3) || '%' AND a.state='PROPOSED'
+       ORDER BY lower(a.alias) LIMIT 10`,
+      [tenantId, factoryId, needle, versionId], { tenantId },
     );
-    return { input: needle, match: null, matchedBy: null, candidates: suggestions.rows };
+    const visibleSuggestionTerms = await this.filterItemsByAcl(
+      tenantId, factoryId, userId, 'TERM',
+      suggestions.rows.map((row) => ({ ...row, id: String(row.canonical_term_id) })),
+    );
+    const visibleSuggestionIds = new Set(visibleSuggestionTerms.map((row) => String(row.id)));
+    const safeSuggestions = suggestions.rows
+      .filter((row) => visibleSuggestionIds.has(String(row.canonical_term_id)))
+      .map(({ canonical_term_id: _id, ...row }) => row);
+    return { input: needle, match: null, matchedBy: null, candidates: safeSuggestions };
   }
 
   async addImpactLink(scope: Scope, dto: CreateCbbImpactLinkDto) {
@@ -548,9 +638,13 @@ export class CbbGovernanceService {
 
   async getImpactTrace(tenantId: string, factoryId: string, userId: string, sourceType: TargetType, sourceId: string, depth = 3) {
     this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
     this.validateTargetType(sourceType);
     if (sourceType === 'BLUEPRINT') throw new BadRequestException('Impact trace requires a typed graph target, not the whole blueprint');
     this.uuid(sourceId, 'sourceId');
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) {
+      throw new NotFoundException('CBB blueprint was not found or is not visible to this role');
+    }
     if (!Number.isInteger(depth) || depth < 1 || depth > 5) throw new BadRequestException('depth must be between 1 and 5');
     await this.assertTargetReadable(tenantId, factoryId, userId, sourceType, sourceId);
     const bp = await this.database.query<DbRow>(
@@ -899,8 +993,10 @@ export class CbbGovernanceService {
     });
   }
 
-  async listRollbackEvents(tenantId: string, factoryId: string) {
+  async listRollbackEvents(tenantId: string, factoryId: string, userId: string) {
     this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) return [];
     const rows = await this.database.query<DbRow>(
       `SELECT id::text AS id,blueprint_id::text AS blueprint_id,from_version_id::text AS from_version_id,
          restored_from_version_id::text AS restored_from_version_id,to_version_id::text AS to_version_id,
@@ -909,6 +1005,64 @@ export class CbbGovernanceService {
       [tenantId, factoryId], { tenantId },
     );
     return rows.rows;
+  }
+
+  async canReadActiveBlueprint(tenantId: string, factoryId: string, userId: string): Promise<boolean> {
+    this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
+    const result = await this.database.query<DbRow>(
+      `SELECT id::text AS id FROM business_blueprints
+       WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' LIMIT 1`,
+      [tenantId, factoryId], { tenantId },
+    );
+    const blueprintId = result.rows[0]?.id ? String(result.rows[0].id) : null;
+    if (!blueprintId) return false;
+    return (await this.filterItemsByAcl(tenantId, factoryId, userId, 'BLUEPRINT', [{ id: blueprintId }])).length > 0;
+  }
+
+  async assertTargetReadAccess(
+    tenantId: string,
+    factoryId: string,
+    userId: string,
+    targetType: TargetType,
+    targetId: string,
+  ) {
+    this.validateReadScope(tenantId, factoryId);
+    this.uuid(userId, 'userId');
+    this.validateTargetType(targetType);
+    this.uuid(targetId, 'targetId');
+    if (!(await this.canReadActiveBlueprint(tenantId, factoryId, userId))) {
+      throw new NotFoundException('CBB blueprint was not found or is not visible to this role');
+    }
+    await this.assertTargetReadable(tenantId, factoryId, userId, targetType, targetId);
+    return { allowed: true };
+  }
+
+  async filterTargetRowsByAcl(
+    tenantId: string,
+    factoryId: string,
+    userId: string,
+    rows: DbRow[],
+  ): Promise<DbRow[]> {
+    const visibleKeys = new Set<string>();
+    const groups = new Map<TargetType, DbRow[]>();
+    for (const row of rows) {
+      const targetType = String(row.target_type) as TargetType;
+      const targetId = String(row.target_id ?? '');
+      if (!targetId || !isUUID(targetId)) continue;
+      this.validateTargetType(targetType);
+      groups.set(targetType, [...(groups.get(targetType) ?? []), row]);
+    }
+    for (const [targetType, group] of groups) {
+      const visible = await this.filterItemsByAcl(
+        tenantId, factoryId, userId, targetType,
+        group.map((row) => ({ ...row, id: String(row.target_id) })),
+      );
+      for (const row of visible) visibleKeys.add(targetType + ':' + String(row.id));
+    }
+    return rows.filter((row) =>
+      visibleKeys.has(String(row.target_type) + ':' + String(row.target_id)),
+    );
   }
 
   private async filterItemsByAcl(
