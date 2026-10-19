@@ -621,8 +621,8 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async listCbbTerminology(@Req() request: FactoryOsRequest, @Query('search') search?: string) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbGovernanceService.listTerminology(tenantId, factoryId, search);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listTerminology(tenantId, factoryId, userId, search);
   }
 
   @Get('terminology/resolve')
@@ -630,8 +630,10 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async resolveCbbTerminology(@Req() request: FactoryOsRequest, @Query() query: ResolveCbbTerminologyQueryDto) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbGovernanceService.resolveTerminology(tenantId, factoryId, query.term, query.source_system);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.resolveTerminology(
+      tenantId, factoryId, userId, query.term, query.source_system, query.language_code,
+    );
   }
 
   @Post('terminology/aliases')
