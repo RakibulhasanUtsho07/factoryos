@@ -13,6 +13,7 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import {
   CompleteResearchExtractionDto,
+  DecideResearchExtractionItemDto,
   CreateResearchIngestionJobDto,
   FailResearchIngestionJobDto,
   PauseResearchIngestionJobDto,
@@ -594,6 +595,109 @@ export class ResearchIngestionService {
         },
         claims: claimIds,
       };
+    });
+  }
+
+  async decideExtractionItem(
+    userId: string,
+    tenantId: string,
+    jobId: string,
+    itemId: string,
+    dto: DecideResearchExtractionItemDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId);
+    this.uuid(jobId, 'jobId');
+    this.uuid(itemId, 'itemId');
+    const reason = this.text(dto.reason, 'reason', 2000);
+    if (reason.length < 10) throw new BadRequestException('Review reason must contain at least 10 characters');
+    if (dto.expected_review_version !== 0) {
+      throw new ConflictException({ code: 'RESEARCH_EXTRACTION_REVIEW_VERSION_MISMATCH', currentVersion: 1 });
+    }
+    if (!['APPROVE', 'REJECT'].includes(dto.decision)) {
+      throw new BadRequestException('Unsupported extraction-item review decision');
+    }
+
+    return this.database.transaction({ tenantId, userId }, async (client: PoolClient) => {
+      const result = await client.query<DbRow>(
+        `SELECT i.id::text AS id,i.tenant_id::text AS tenant_id,
+            i.extraction_run_id::text AS extraction_run_id,i.item_key,i.safety_flags,i.review_status,
+            r.job_id::text AS job_id,r.source_id::text AS source_id,r.source_revision,r.rights_version,
+            r.output_sha256,r.safety_result,
+            j.stage AS job_stage,j.progress_percent AS job_progress,
+            s.access_status,s.license_status,s.rights_basis,s.source_revision AS current_source_revision,
+            s.rights_version AS current_rights_version
+         FROM research_extraction_items i
+         JOIN research_extraction_runs r ON r.id=i.extraction_run_id AND r.tenant_id=i.tenant_id
+         JOIN research_ingestion_jobs j ON j.id=r.job_id AND j.tenant_id=r.tenant_id
+         JOIN research_sources s ON s.id=r.source_id AND s.tenant_id=r.tenant_id
+         WHERE i.id=$1 AND i.tenant_id=$2 AND j.id=$3
+         FOR UPDATE OF i,s`,
+        [itemId, tenantId, jobId],
+      );
+      const item = result.rows[0];
+      if (!item) throw new NotFoundException('Research extraction item not found for this tenant/job');
+      if (item.access_status !== 'APPROVED'
+        || !RIGHTS_PERMITTED.includes(String(item.license_status))
+        || !String(item.rights_basis ?? '').trim()) {
+        throw new ForbiddenException('Extraction-item review requires currently approved source rights');
+      }
+      if (Number(item.source_revision) !== Number(item.current_source_revision)
+        || Number(item.rights_version) !== Number(item.current_rights_version)) {
+        throw new ConflictException({
+          code: 'RESEARCH_EXTRACTION_SOURCE_OR_RIGHTS_VERSION_CHANGED',
+          message: 'Source metadata or rights changed after extraction; queue a new ingestion job',
+        });
+      }
+      const existing = await client.query<DbRow>(
+        'SELECT id FROM research_extraction_item_reviews WHERE extraction_item_id=$1 AND tenant_id=$2',
+        [itemId, tenantId],
+      );
+      if (existing.rows[0]) {
+        throw new ConflictException('This extraction item has already received its immutable review decision');
+      }
+      const inserted = await client.query<DbRow>(
+        `INSERT INTO research_extraction_item_reviews (
+           tenant_id,extraction_item_id,source_revision,rights_version,output_sha256,
+           decision,reason,safety_flags,reviewed_by
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+         RETURNING id::text AS id,extraction_item_id::text AS extraction_item_id,
+           decision,reason,source_revision,rights_version,output_sha256,safety_flags,
+           reviewed_by::text AS reviewed_by,created_at::text AS created_at`,
+        [
+          tenantId, itemId, Number(item.source_revision), Number(item.rights_version),
+          String(item.output_sha256), dto.decision, reason, JSON.stringify(item.safety_flags ?? []), userId,
+        ],
+      );
+      const review = inserted.rows[0];
+      if (!review) throw new Error('RESEARCH_EXTRACTION_ITEM_REVIEW_INSERT_FAILED');
+      await client.query(
+        `INSERT INTO research_ingestion_events
+           (tenant_id,job_id,event_type,from_status,to_status,stage,progress_percent,detail,actor_user_id)
+         VALUES ($1,$2,'EXTRACTION_ITEM_REVIEWED',NULL,NULL,$3,$4,$5::jsonb,$6)`,
+        [
+          tenantId, jobId, String(item.job_stage), Number(item.job_progress),
+          JSON.stringify({
+            itemId, decision: dto.decision, reason,
+            sourceRevision: Number(item.source_revision), rightsVersion: Number(item.rights_version),
+            outputSha256: String(item.output_sha256), safetyFlagCount: Array.isArray(item.safety_flags) ? item.safety_flags.length : 0,
+          }),
+          userId,
+        ],
+      );
+      await this.auditInTransaction(client, {
+        tenantId, actorUserId: userId, action: 'RESEARCH_EXTRACTION_ITEM_REVIEWED',
+        resourceType: 'RESEARCH_EXTRACTION_ITEM', resourceId: itemId,
+        correlationId: this.correlationId(requestId, traceId),
+        payload: {
+          jobId, decision: dto.decision, sourceRevision: Number(item.source_revision),
+          rightsVersion: Number(item.rights_version), outputSha256: String(item.output_sha256),
+          safetyFlagCount: Array.isArray(item.safety_flags) ? item.safety_flags.length : 0,
+        },
+      });
+      return review;
     });
   }
 
