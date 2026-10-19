@@ -234,12 +234,19 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           source_revision, rights_version, rights_fingerprint, rights_snapshot,
           source_snapshot, resume_checkpoint, lease_owner, lease_expires_at, created_by
         )
-        VALUES ($1, 'TENANT', $2, 'METADATA_ONLY', 'RUNNING', 'FETCH_METADATA', 20,
-          1, 3, 2, $3, $4, 1, 1, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-          $6, clock_timestamp() + INTERVAL '5 minutes', $6)
+        VALUES ($1, 'TENANT', $2, 'METADATA_ONLY', 'QUEUED', 'QUEUED', 0,
+          0, 3, 1, $3, $4, 1, 1, $5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $6)
         RETURNING id::text AS id
         `,
         [f.tenantId, f.sourceId, 'rights-' + randomUUID(), 'c'.repeat(64), 'd'.repeat(64), f.userId],
+      );
+      await client.query(
+        `UPDATE research_ingestion_jobs
+         SET status='RUNNING',stage='FETCH_METADATA',progress_percent=20,attempt_count=1,
+             lease_owner=$1,lease_expires_at=clock_timestamp()+INTERVAL '5 minutes',
+             version=version+1
+         WHERE id=$2 AND tenant_id=$3`,
+        [f.userId, job.rows[0].id, f.tenantId],
       );
 
       await client.query(
@@ -292,11 +299,26 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           source_revision,rights_version,rights_fingerprint,rights_snapshot,
           source_snapshot,resume_checkpoint,created_by,completed_at
         )
-        VALUES ($1,'TENANT',$2,'METADATA_ONLY','SUCCEEDED','COMPLETE',100,
-          1,3,4,$3,$4,1,1,$5,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6,clock_timestamp())
+        VALUES ($1,'TENANT',$2,'METADATA_ONLY','QUEUED','QUEUED',0,
+          0,3,1,$3,$4,1,1,$5,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6)
         RETURNING id::text AS id
         `,
         [f.tenantId, f.sourceId, 'extract-' + randomUUID(), 'e'.repeat(64), 'f'.repeat(64), f.userId],
+      );
+      await client.query(
+        `UPDATE research_ingestion_jobs
+         SET status='RUNNING',stage='EXTRACT_CLAIMS',progress_percent=70,attempt_count=1,
+             lease_owner=$1,lease_expires_at=clock_timestamp()+INTERVAL '5 minutes',
+             version=version+1
+         WHERE id=$2 AND tenant_id=$3`,
+        [f.userId, job.rows[0].id, f.tenantId],
+      );
+      await client.query(
+        `UPDATE research_ingestion_jobs
+         SET status='SUCCEEDED',stage='COMPLETE',progress_percent=100,
+             lease_owner=NULL,lease_expires_at=NULL,completed_at=clock_timestamp(),version=version+1
+         WHERE id=$1 AND tenant_id=$2`,
+        [job.rows[0].id, f.tenantId],
       );
       const run = await client.query<{ id: string }>(
         `
