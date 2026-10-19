@@ -44,6 +44,7 @@ export class DecideCbbTerminologyAliasDto {
 export class ResolveCbbTerminologyQueryDto {
   @IsString() @MaxLength(300) term!: string;
   @IsOptional() @IsString() @MaxLength(150) source_system?: string;
+  @IsOptional() @IsString() @MaxLength(20) language_code?: string;
 }
 
 export class CreateCbbImpactLinkDto {
