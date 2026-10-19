@@ -86,6 +86,11 @@ BEGIN
   END IF;
 
   definition := pg_get_functiondef('public.factoryos_growth_opportunity_governance_ready(uuid,uuid,uuid)'::regprocedure);
+  IF position('c.observed_value <= c.threshold_value' IN definition) = 0
+     OR position('c.observed_value >= c.threshold_value' IN definition) = 0
+     OR position('c.observed_value = c.threshold_value' IN definition) = 0 THEN
+    RAISE EXCEPTION 'GROWTH_GOVERNANCE_NUMERIC_CONSTRAINT_CHECK_MISSING';
+  END IF;
   IF position('growth_opportunity_assumption_decisions' IN definition) = 0
      OR position('growth_opportunity_constraints' IN definition) = 0
      OR position('growth_opportunity_evidence_gaps' IN definition) = 0 THEN
