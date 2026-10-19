@@ -1,8 +1,8 @@
 import { ArrayMaxSize, IsArray, IsIn, IsNotEmpty, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class DecideGrowthAssumptionDto {
-  @IsIn(['VALIDATED', 'REFUTED', 'DEFERRED', 'NEEDS_EVIDENCE'])
-  decision!: 'VALIDATED' | 'REFUTED' | 'DEFERRED' | 'NEEDS_EVIDENCE';
+  @IsIn(['VALIDATED', 'REFUTED', 'DEFERRED', 'NEEDS_EVIDENCE', 'WAIVED'])
+  decision!: 'VALIDATED' | 'REFUTED' | 'DEFERRED' | 'NEEDS_EVIDENCE' | 'WAIVED';
 
   @IsString()
   @IsNotEmpty()
