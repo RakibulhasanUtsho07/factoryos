@@ -175,3 +175,14 @@ export class CompleteResearchExtractionDto {
   @Type(() => ResearchExtractedClaimDto)
   claims!: ResearchExtractedClaimDto[];
 }
+
+export class PauseResearchIngestionJobDto {
+  @IsInt()
+  @Min(1)
+  expected_version!: number;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason!: string;
+}
