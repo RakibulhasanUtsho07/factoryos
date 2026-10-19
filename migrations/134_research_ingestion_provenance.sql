@@ -1,5 +1,14 @@
 BEGIN;
 
+-- Ingestion workers get a distinct least-privilege permission; this migration
+-- does not silently assign it to production roles.
+INSERT INTO permissions (code, description)
+VALUES (
+  'research.ingest',
+  'Claim resumable research ingestion jobs and persist extraction provenance'
+)
+ON CONFLICT (code) DO UPDATE SET description=EXCLUDED.description;
+
 -- WP08 / Phase D: source-rights revision history and resumable ingestion/extraction lineage.
 ALTER TABLE research_sources
   ADD COLUMN IF NOT EXISTS source_revision INTEGER NOT NULL DEFAULT 1,
