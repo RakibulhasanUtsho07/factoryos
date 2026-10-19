@@ -88,6 +88,30 @@ describe('growth opportunity governance readiness', () => {
     expect(result.blockers).toContain('BLOCKING_EVIDENCE_GAP_OPEN:gap-1');
   });
 
+  it('accepts a reasoned reviewer waiver only when it cites attached evidence', () => {
+    const result = evaluateGrowthGovernanceReadiness({
+      evidence_count: 2,
+      decision_owner_assigned: true,
+      assumptions: [{ ...validatedAssumption, latest_decision: 'WAIVED', evidence_refs: ['risk-review:waiver-17'] }],
+      constraints: passedConstraints,
+      evidence_gaps: [],
+    });
+    expect(result.ready).toBe(true);
+    expect(result.blockers).toEqual([]);
+  });
+
+  it('does not treat a refuted blocking assumption as validated', () => {
+    const result = evaluateGrowthGovernanceReadiness({
+      evidence_count: 2,
+      decision_owner_assigned: true,
+      assumptions: [{ ...validatedAssumption, latest_decision: 'REFUTED', evidence_refs: ['quality-report:baseline'] }],
+      constraints: passedConstraints,
+      evidence_gaps: [],
+    });
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain('ASSUMPTION_NOT_VALIDATED:assumption-1');
+  });
+
   it('returns ready only when ownership, assumptions, constraints and gaps are complete', () => {
     const result = evaluateGrowthGovernanceReadiness({
       evidence_count: 2,
