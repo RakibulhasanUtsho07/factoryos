@@ -19,6 +19,14 @@ import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto'
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
+import {
+  CompleteResearchExtractionDto,
+  CreateResearchIngestionJobDto,
+  FailResearchIngestionJobDto,
+  PauseResearchIngestionJobDto,
+  ResearchIngestionCheckpointDto,
+} from './dto/research-ingestion.dto';
+import { ResearchIngestionService } from './research-ingestion.service';
 import { ResearchService } from './research.service';
 
 interface FactoryOsRequestContext {
@@ -35,7 +43,10 @@ type FactoryOsRequest = Request & { factoryos?: FactoryOsRequestContext };
 
 @Controller('research')
 export class ResearchController {
-  constructor(private readonly research: ResearchService) {}
+  constructor(
+    private readonly research: ResearchService,
+    private readonly ingestion: ResearchIngestionService,
+  ) {}
 
   @Post('watchlists')
   @UseGuards(PermissionGuard)
@@ -111,6 +122,121 @@ export class ResearchController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.research.decideSource(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
+  }
+
+  @Post('sources/:sourceId/ingestion-jobs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  createIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Body() body: CreateResearchIngestionJobDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.createJob(c.userId, c.tenantId, sourceId, body, c.requestId, c.traceId);
+  }
+
+  @Get('ingestion-jobs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listIngestionJobs(
+    @Req() req: FactoryOsRequest,
+    @Query('source_id') sourceId?: string,
+    @Query('status') status?: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listJobs(c.tenantId, {
+      source_id: sourceId, status, limit: rawLimit === undefined ? 50 : Number(rawLimit),
+    });
+  }
+
+  // The ingestion worker uses a tenant-scoped lease. No raw source body is
+  // accepted by this route; checkpoints are metadata-only and resumable.
+  @Post('ingestion-jobs/claim-next')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  claimNextIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Query('lease_seconds') rawLeaseSeconds?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.claimNextJob(
+      c.userId, c.tenantId, rawLeaseSeconds === undefined ? 300 : Number(rawLeaseSeconds), c.requestId, c.traceId,
+    );
+  }
+
+  @Post('ingestion-jobs/:jobId/checkpoint')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  checkpointIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: ResearchIngestionCheckpointDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.checkpoint(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/pause')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  pauseIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: PauseResearchIngestionJobDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.pauseJob(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/failure')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  failIngestionJob(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: FailResearchIngestionJobDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.failJob(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Post('ingestion-jobs/:jobId/extraction')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  completeResearchExtraction(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+    @Body() body: CompleteResearchExtractionDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.completeExtraction(c.userId, c.tenantId, jobId, body, c.requestId, c.traceId);
+  }
+
+  @Get('ingestion-jobs/:jobId/events')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listIngestionJobEvents(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listJobEvents(c.userId, c.tenantId, jobId);
+  }
+
+  @Get('sources/:sourceId/rights-history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listSourceRightsHistory(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.ingestion.listSourceRightsHistory(
+      c.userId, c.tenantId, sourceId, rawLimit === undefined ? 100 : Number(rawLimit),
+    );
   }
 
   @Post('sources/:sourceId/claims')
