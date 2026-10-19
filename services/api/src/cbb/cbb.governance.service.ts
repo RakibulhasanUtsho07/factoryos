@@ -126,6 +126,19 @@ export class CbbGovernanceService {
   async filterBusinessMap(tenantId: string, factoryId: string, userId: string, map: unknown) {
     if (!map || typeof map !== 'object') return map;
     const value = map as Record<string, unknown>;
+    const version = value.version && typeof value.version === 'object'
+      ? value.version as Record<string, unknown>
+      : null;
+    if (version && typeof version.id === 'string') {
+      const blueprintResult = await this.database.query<DbRow>(
+        'SELECT blueprint_id::text AS blueprint_id FROM business_blueprint_versions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+        [version.id, tenantId, factoryId], { tenantId },
+      );
+      const blueprintId = blueprintResult.rows[0]?.blueprint_id ? String(blueprintResult.rows[0].blueprint_id) : null;
+      if (blueprintId && !(await this.filterItemsByAcl(tenantId, factoryId, userId, 'BLUEPRINT', [{ id: blueprintId }])).length) {
+        return { ...value, nodes: [], edges: [], accessControl: { enforced: true, scope: 'ROLE_AND_TARGET', blueprintVisible: false } };
+      }
+    }
     const nodes = Array.isArray(value.nodes) ? value.nodes as Array<Record<string, unknown>> : [];
     const edges = Array.isArray(value.edges) ? value.edges as Array<Record<string, unknown>> : [];
     const visibleNodes = await this.filterItemsByAcl(tenantId, factoryId, userId, 'ENTITY', nodes);
@@ -140,6 +153,20 @@ export class CbbGovernanceService {
   }
 
   async filterProcessResult(tenantId: string, factoryId: string, userId: string, result: unknown) {
+    if (!result) return result;
+    const blueprintResult = await this.database.query<DbRow>(
+      "SELECT id::text AS id FROM business_blueprints WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' LIMIT 1",
+      [tenantId, factoryId], { tenantId },
+    );
+    const blueprintId = blueprintResult.rows[0]?.id ? String(blueprintResult.rows[0].id) : null;
+    if (blueprintId && !(await this.filterItemsByAcl(tenantId, factoryId, userId, 'BLUEPRINT', [{ id: blueprintId }])).length) {
+      if (Array.isArray(result)) return [];
+      if (typeof result === 'object') {
+        const value = result as Record<string, unknown>;
+        if (Array.isArray(value.items)) return { ...value, items: [] };
+      }
+      return null;
+    }
     if (Array.isArray(result)) {
       return this.filterItemsByAcl(tenantId, factoryId, userId, 'PROCESS', result as Array<Record<string, unknown>>);
     }
@@ -504,6 +531,7 @@ export class CbbGovernanceService {
   async getImpactTrace(tenantId: string, factoryId: string, userId: string, sourceType: TargetType, sourceId: string, depth = 3) {
     this.validateReadScope(tenantId, factoryId);
     this.validateTargetType(sourceType);
+    if (sourceType === 'BLUEPRINT') throw new BadRequestException('Impact trace requires a typed graph target, not the whole blueprint');
     this.uuid(sourceId, 'sourceId');
     if (!Number.isInteger(depth) || depth < 1 || depth > 5) throw new BadRequestException('depth must be between 1 and 5');
     await this.assertTargetReadable(tenantId, factoryId, userId, sourceType, sourceId);
