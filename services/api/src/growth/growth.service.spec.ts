@@ -277,6 +277,125 @@ describe('GrowthService', () => {
   });
 
 
+  it('returns experiment result and realized outcome KPI evidence in opportunity detail', async () => {
+    database.query.mockImplementation(async (queryText: unknown) => {
+      const sql = String(queryText);
+      if (sql.includes('FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3')) {
+        return { rows: [{ id: OPPORTUNITY_ID, status: 'IN_PROGRESS' }] };
+      }
+      if (sql.includes('FROM growth_experiments WHERE opportunity_id')) {
+        return { rows: [{ id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa', name: 'Yield pilot' }] };
+      }
+      if (sql.includes('FROM growth_experiment_results r')) {
+        return { rows: [{
+          id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          experiment_id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+          assessment: 'POSITIVE', pre_measurements: { scrap_rate_pct: 8 },
+          post_measurements: { scrap_rate_pct: 5 }, evidence_refs: ['production-report:pilot-1'],
+        }] };
+      }
+      if (sql.includes('FROM growth_experiment_result_kpis')) {
+        return { rows: [{
+          id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+          experiment_result_id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          metric_key: 'scrap_rate_pct', baseline_value: '8', actual_value: '5',
+          target_value: '4', unit: 'pct', direction: 'DECREASE',
+          evidence_ref: 'production-report:pilot-1',
+        }] };
+      }
+      if (sql.includes('FROM growth_opportunity_outcomes WHERE')) {
+        return { rows: [{
+          id: 'ddf4aa7c-9f41-443c-b769-99c22e763b03',
+          experiment_result_id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          realized_metrics: { scrap_rate_pct: 4.5 }, evidence_refs: ['quality-report:final-check'],
+        }] };
+      }
+      if (sql.includes('FROM growth_outcome_kpi_measurements')) {
+        return { rows: [{
+          id: 'e289c43b-75d3-4c9e-86e5-3274f2fc3e81',
+          outcome_id: 'ddf4aa7c-9f41-443c-b769-99c22e763b03',
+          source_experiment_kpi_id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+          metric_key: 'scrap_rate_pct', baseline_value: '8', actual_value: '4.5',
+          target_value: '4', unit: 'pct', direction: 'DECREASE',
+          evidence_ref: 'quality-report:final-check',
+        }] };
+      }
+      return { rows: [] };
+    });
+    const result = await service.getOpportunity(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID) as {
+      experiments: Array<{ results: Array<{ kpi_measurements: Array<{ metric_key: string; actual_value: string }> }> }>;
+      outcomes: Array<{ kpi_measurements: Array<{ source_experiment_kpi_id: string; evidence_ref: string }> }>;
+    };
+    expect(result.experiments[0].results[0].kpi_measurements[0]).toEqual(expect.objectContaining({
+      metric_key: 'scrap_rate_pct', actual_value: '5',
+    }));
+    expect(result.outcomes[0].kpi_measurements[0]).toEqual(expect.objectContaining({
+      source_experiment_kpi_id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+      evidence_ref: 'quality-report:final-check',
+    }));
+  });
+
+  it('stores measured experiment KPIs with evidence and numeric pre/post linkage', async () => {
+    client.query.mockImplementation(async (queryText: unknown) => {
+      const sql = String(queryText);
+      if (sql.includes('FROM growth_experiments WHERE id = $1')) {
+        return { rows: [{ id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa', opportunity_id: OPPORTUNITY_ID, status: 'RUNNING' }] };
+      }
+      if (sql.includes('INSERT INTO growth_experiment_results')) {
+        return { rows: [{
+          id: 'b2e3dbf1-26b1-4c93-9686-f9d906c0b4e4',
+          experiment_id: '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+          assessment: 'POSITIVE', stop_condition_triggered: false,
+          pre_measurements: { scrap_rate_pct: 8 }, post_measurements: { scrap_rate_pct: 5 },
+          evidence_refs: ['production-report:pilot-1'], observed_at: '2026-10-10T10:00:00.000Z',
+        }] };
+      }
+      if (sql.includes('INSERT INTO growth_experiment_result_kpis')) {
+        return { rows: [{
+          id: '73d4e2d5-073d-4e6e-8ae8-31932c6af4bf',
+          metric_key: 'scrap_rate_pct', baseline_value: '8', actual_value: '5',
+          target_value: '4', unit: 'pct', direction: 'DECREASE', evidence_ref: 'production-report:pilot-1',
+        }] };
+      }
+      return { rows: [] };
+    });
+    const result = await service.recordExperimentResult(
+      USER_ID, TENANT_ID, FACTORY_ID, '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+      {
+        pre_measurements: { scrap_rate_pct: 8 }, post_measurements: { scrap_rate_pct: 5 },
+        assessment: 'POSITIVE', stop_condition_triggered: false,
+        evidence_refs: ['production-report:pilot-1'],
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_pct', unit: 'pct', direction: 'DECREASE',
+          target_value: 4, evidence_ref: 'production-report:pilot-1',
+        }],
+        observed_at: '2026-10-10T10:00:00.000Z',
+      }, null, null,
+    );
+    expect(result.kpi_measurements).toHaveLength(1);
+    expect(client.query.mock.calls.some(([query, values]) =>
+      String(query).includes('INSERT INTO growth_experiment_result_kpis') && values?.[6] === 8 && values?.[7] === 5,
+    )).toBe(true);
+  });
+
+  it('rejects KPI evidence references that do not belong to the captured experiment result', async () => {
+    await expect(service.recordExperimentResult(
+      USER_ID, TENANT_ID, FACTORY_ID, '4b32c4a9-60ac-480b-aeb5-1d7b12a2dafa',
+      {
+        pre_measurements: { scrap_rate_pct: 8 }, post_measurements: { scrap_rate_pct: 5 },
+        assessment: 'POSITIVE', stop_condition_triggered: false,
+        evidence_refs: ['production-report:pilot-1'],
+        kpi_measurements: [{
+          metric_key: 'scrap_rate_pct', unit: 'pct', direction: 'DECREASE',
+          evidence_ref: 'other-report:wrong-source',
+        }],
+        observed_at: '2026-10-10T10:00:00.000Z',
+      }, null, null,
+    )).rejects.toThrow('Each KPI evidence_ref must be included in experiment result evidence_refs');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+
   it('ranks scenario comparisons only when model, baseline, vintage and constraint gates match', async () => {
     database.query
       .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'ACCEPTED', currency: 'BDT' }] })
