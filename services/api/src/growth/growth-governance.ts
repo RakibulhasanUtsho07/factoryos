@@ -71,10 +71,10 @@ export function evaluateGrowthGovernanceReadiness(
 
   for (const assumption of input.assumptions) {
     if (!assumption.blocks_decision) continue;
-    if (assumption.latest_decision !== 'VALIDATED' || !hasEvidenceRefs(assumption.evidence_refs)) {
+    if (!['VALIDATED', 'WAIVED'].includes(assumption.latest_decision ?? '') || !hasEvidenceRefs(assumption.evidence_refs)) {
       block(
         'ASSUMPTION_NOT_VALIDATED',
-        'Record a VALIDATED assumption decision with evidence references attached to this opportunity.',
+        'Record a VALIDATED decision, or an explicit reviewer WAIVED decision, with evidence attached to this opportunity.',
         assumption.id,
       );
     }
