@@ -138,7 +138,7 @@ describe('CbbGovernanceService', () => {
 
     expect(result.review_status).toBe('MARKED_STALE');
     expect(result.proposalId).toBe('90000000-0000-4000-8000-000000000001');
-    expect(query.mock.calls[4]?.[0]).toContain("'SET_STATE','STALE'");
+    expect(query.mock.calls[5]?.[0]).toContain("'SET_STATE','STALE'");
     expect(query.mock.calls[4]?.[1]).toContain(JSON.stringify({
       state: 'STALE', stalenessReviewId: aclId, lastEvidenceAt: '2026-01-01T00:00:00Z',
     }));
