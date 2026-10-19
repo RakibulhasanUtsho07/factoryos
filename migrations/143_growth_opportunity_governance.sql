@@ -579,6 +579,11 @@ BEGIN
            OR (c.applicability = 'APPLICABLE'
              AND c.source_evidence_ref IS NOT NULL AND c.source_as_of IS NOT NULL
              AND c.threshold_value IS NOT NULL AND c.observed_value IS NOT NULL
+             AND (
+               (c.limit_operator = 'MAX' AND c.observed_value <= c.threshold_value)
+               OR (c.limit_operator = 'MIN' AND c.observed_value >= c.threshold_value)
+               OR (c.limit_operator = 'EQUALS' AND c.observed_value = c.threshold_value)
+             )
              AND factoryos_growth_opportunity_evidence_ref_exists(
                c.tenant_id, c.factory_id, c.opportunity_id, c.source_evidence_ref
              )))
