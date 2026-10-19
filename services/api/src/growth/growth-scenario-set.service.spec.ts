@@ -126,6 +126,24 @@ describe('GrowthService scenario sets', () => {
     }));
   });
 
+  it('rejects missing baseline before opening a transaction', async () => {
+    const database = {
+      transaction: jest.fn(),
+      query: jest.fn(),
+    };
+    const service = new GrowthService(
+      database as unknown as DatabaseService,
+      { record: jest.fn() } as unknown as AuditService,
+    );
+    const dto = scenarioSetInput();
+    (dto as unknown as { baseline?: unknown }).baseline = undefined;
+
+    await expect(service.createScenarioSet(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toThrow('Scenario baseline values must be finite and within supported non-negative bounds');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('does not write a partial set if the opportunity is not accepted or in progress', async () => {
     const client = {
       query: jest.fn().mockResolvedValue({ rows: [{ status: 'PROPOSED', constraints_snapshot: {} }] }),
