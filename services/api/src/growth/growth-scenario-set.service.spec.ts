@@ -114,7 +114,17 @@ describe('GrowthService scenario sets', () => {
       'BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS',
     ]);
     expect(result.scenarios.slice(4).map(item => item.sensitivity_value)).toEqual([-10, 0, 10]);
-    expect(client.query.mock.calls.filter(([query]) => String(query).includes('INSERT INTO growth_scenarios ('))).toHaveLength(7);
+    const setInsert = client.query.mock.calls.find(([query]) =>
+      String(query).includes('INSERT INTO growth_scenario_sets'),
+    );
+    expect(JSON.parse(String(setInsert?.[1]?.[9])).canonicalization_version).toBe(2);
+    const scenarioInserts = client.query.mock.calls.filter(([query]) =>
+      String(query).includes('INSERT INTO growth_scenarios ('),
+    );
+    expect(scenarioInserts).toHaveLength(7);
+    expect(scenarioInserts.every(([, values]) =>
+      JSON.parse(String(values?.[8])).canonicalization_version === 2,
+    )).toBe(true);
     expect(client.query.mock.calls.filter(([query]) => String(query).includes('INSERT INTO growth_scenario_set_members'))).toHaveLength(7);
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'SCENARIO_SET_RUN',
