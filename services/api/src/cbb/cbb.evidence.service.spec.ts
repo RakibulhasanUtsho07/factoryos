@@ -317,4 +317,66 @@ describe('CbbEvidenceService', () => {
     expect(query.mock.calls[1]?.[0]).toContain('visibility=$5');
     expect(query.mock.calls[1]?.[1]).toEqual([tenantId, factoryId, 'erp:po-100', evidenceId, 'INTERNAL']);
   });
+
+  it('does not report evidence creation success when the transactional audit insert fails', async () => {
+    queue(
+      { rows: [{ id: blueprintId }] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [evidenceRow()] },
+    );
+    auditRecordWithClient.mockRejectedValueOnce(new Error('AUDIT_EVENT_INSERT_FAILED'));
+
+    await expect(service.createEvidence(
+      { tenantId, factoryId, userId },
+      createDto(),
+    )).rejects.toThrow('AUDIT_EVENT_INSERT_FAILED');
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(auditRecordWithClient).toHaveBeenCalledWith(client, expect.any(Object));
+  });
+
+  it('records conflict decisions in the same transaction as the state transition', async () => {
+    queue(
+      { rows: [{ id: conflictId, status: 'OPEN', version: 2, evidence_refs: [evidenceId] }] },
+      { rows: [{ id: evidenceId }] },
+      { rows: [{ id: conflictId, status: 'RESOLVED', version: 3, resolved_at: '2026-10-19T06:00:00.000Z' }] },
+    );
+
+    const result = await service.decideConflict(
+      { tenantId, factoryId, userId },
+      conflictId,
+      {
+        action: 'RESOLVE',
+        expected_version: 2,
+        reason: 'Reviewed and accepted the corrected source evidence',
+        resolution_reference: 'review-ticket: CBB-1042',
+        resolution_evidence_id: evidenceId,
+      },
+    );
+
+    expect(result).toEqual({
+      id: conflictId,
+      status: 'RESOLVED',
+      version: 3,
+      resolvedAt: '2026-10-19T06:00:00.000Z',
+    });
+    expect(auditRecordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
+      eventType: 'BUSINESS_MODEL_CONFLICT',
+      action: 'RESOLVE',
+      resourceId: conflictId,
+      payload: expect.objectContaining({ status: 'RESOLVED', version: 3 }),
+    }));
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-HTTP source URIs before opening a transaction', async () => {
+    await expect(service.createEvidence(
+      { tenantId, factoryId, userId },
+      createDto({ source_uri: 'javascript:alert(1)' }),
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(auditRecordWithClient).not.toHaveBeenCalled();
+  });
 });
