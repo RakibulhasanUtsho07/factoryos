@@ -550,7 +550,11 @@ export class GrowthService {
         'SELECT id::text AS id, name, objective, hypothesis, leading_indicators, duration_days, owner_user_id::text AS owner_user_id, baseline_measurements, stop_conditions, status, started_at::text AS started_at, ended_at::text AS ended_at, created_at::text AS created_at FROM growth_experiments WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at DESC',
         [opportunityId, tenantId, factoryId], { tenantId },
       ),
-      this.database.query(
+      this.database.query<{
+        id: string; experiment_id: string; assessment: string; stop_condition_triggered: boolean;
+        pre_measurements: Record<string, unknown>; post_measurements: Record<string, unknown>;
+        evidence_refs: string[]; result_notes: string | null; observed_at: string; created_at: string;
+      }>(
         `SELECT r.id::text AS id, r.experiment_id::text AS experiment_id, r.assessment,
           r.stop_condition_triggered, r.pre_measurements, r.post_measurements, r.evidence_refs,
           r.result_notes, r.observed_at::text AS observed_at, r.created_at::text AS created_at
@@ -560,7 +564,11 @@ export class GrowthService {
          ORDER BY r.observed_at DESC`,
         [opportunityId, tenantId, factoryId], { tenantId },
       ),
-      this.database.query(
+      this.database.query<{
+        id: string; experiment_result_id: string; metric_key: string; baseline_value: string;
+        actual_value: string; target_value: string | null; unit: string; direction: string;
+        evidence_ref: string; created_at: string;
+      }>(
         `SELECT id::text AS id, experiment_result_id::text AS experiment_result_id,
           metric_key, baseline_value::text AS baseline_value, actual_value::text AS actual_value,
           target_value::text AS target_value, unit, direction, evidence_ref, created_at::text AS created_at
@@ -569,11 +577,19 @@ export class GrowthService {
          ORDER BY experiment_result_id, metric_key`,
         [opportunityId, tenantId, factoryId], { tenantId },
       ),
-      this.database.query(
+      this.database.query<{
+        id: string; experiment_result_id: string | null; assessment: string;
+        realized_metrics: Record<string, unknown>; evidence_refs: string[]; notes: string | null;
+        observed_at: string; created_at: string;
+      }>(
         'SELECT id::text AS id, experiment_result_id::text AS experiment_result_id, assessment, realized_metrics, evidence_refs, notes, observed_at::text AS observed_at, created_at::text AS created_at FROM growth_opportunity_outcomes WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY observed_at DESC',
         [opportunityId, tenantId, factoryId], { tenantId },
       ),
-      this.database.query(
+      this.database.query<{
+        id: string; outcome_id: string; source_experiment_kpi_id: string | null;
+        metric_key: string; baseline_value: string; actual_value: string; target_value: string | null;
+        unit: string; direction: string; evidence_ref: string; created_at: string;
+      }>(
         `SELECT id::text AS id, outcome_id::text AS outcome_id,
           source_experiment_kpi_id::text AS source_experiment_kpi_id, metric_key,
           baseline_value::text AS baseline_value, actual_value::text AS actual_value,
