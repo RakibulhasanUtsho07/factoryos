@@ -22,6 +22,11 @@ import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto'
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
+import {
+  scanResearchPromptInjection,
+  scoreResearchEvidence,
+  validateResearchCitation,
+} from './research-evidence-validation';
 
 interface ResearchSourceRow extends QueryResultRow {
   id: string;
@@ -564,6 +569,196 @@ export class ResearchService {
     return result.rows;
   }
 
+  async assessClaimEvidence(
+    userId: string,
+    tenantId: string,
+    claimId: string,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(claimId, 'claimId');
+
+    const assessment = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const result = await client.query<Record<string, unknown>>(
+          `
+          SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.source_id::text AS source_id,
+            c.claim_text, c.methodology, c.dataset_description, c.limitations,
+            c.practical_implication, c.evidence_grade, c.evidence_strength, c.topic_tags,
+            c.provenance_ref, c.stored_excerpt, c.status,
+            s.title AS source_title, s.authors AS source_authors,
+            s.publication_date::text AS publication_date, s.doi, s.source_url,
+            s.access_status, s.license_status, s.rights_basis,
+            s.source_revision, s.rights_version,
+            (
+              SELECT count(DISTINCT other.source_id)::int
+              FROM research_claim_links l
+              JOIN research_claims other
+                ON other.id = CASE WHEN l.claim_a_id = c.id THEN l.claim_b_id ELSE l.claim_a_id END
+               AND other.tenant_id = c.tenant_id
+              JOIN research_sources other_source
+                ON other_source.id = other.source_id AND other_source.tenant_id = other.tenant_id
+              WHERE l.tenant_id = c.tenant_id
+                AND (l.claim_a_id = c.id OR l.claim_b_id = c.id)
+                AND l.relation_type = 'SUPPORTS'
+                AND other.status = 'APPROVED'
+                AND other.source_id <> c.source_id
+                AND other_source.access_status = 'APPROVED'
+                AND other_source.license_status IN ('OPEN_ACCESS','LICENSED','USER_PROVIDED_AUTHORIZED')
+                AND NULLIF(BTRIM(other_source.rights_basis), '') IS NOT NULL
+            ) AS independent_source_count
+          FROM research_claims c
+          JOIN research_sources s ON s.id = c.source_id AND s.tenant_id = c.tenant_id
+          WHERE c.id = $1 AND c.tenant_id = $2 AND c.namespace = 'TENANT'
+          FOR UPDATE OF c, s
+          `,
+          [claimId, tenantId],
+        );
+        const claim = result.rows[0];
+        if (!claim) throw new NotFoundException('Tenant research claim not found');
+        if (!['PROPOSED', 'APPROVED'].includes(String(claim.status))) {
+          throw new ConflictException('Only proposed or approved claims can be assessed');
+        }
+        if (claim.access_status !== 'APPROVED'
+          || !['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(String(claim.license_status))
+          || !String(claim.rights_basis ?? '').trim()) {
+          throw new ForbiddenException('Evidence assessment requires a currently approved source with documented reuse rights');
+        }
+
+        const citation = validateResearchCitation(claim.provenance_ref, {
+          doi: String(claim.doi ?? '') || null,
+          source_url: String(claim.source_url ?? '') || null,
+        });
+        const injectionInput = [
+          claim.claim_text, claim.stored_excerpt, claim.methodology,
+          claim.dataset_description, claim.limitations, claim.practical_implication,
+          claim.source_title,
+        ].filter((item): item is string => typeof item === 'string' && item.length > 0).join('\n');
+        const safetyFlags = scanResearchPromptInjection(injectionInput);
+        const rubric = scoreResearchEvidence({
+          citationStatus: citation.status,
+          title: String(claim.source_title ?? '') || null,
+          doi: String(claim.doi ?? '') || null,
+          sourceUrl: String(claim.source_url ?? '') || null,
+          authors: claim.source_authors,
+          publicationDate: String(claim.publication_date ?? '') || null,
+          methodology: String(claim.methodology ?? '') || null,
+          datasetDescription: String(claim.dataset_description ?? '') || null,
+          limitations: String(claim.limitations ?? '') || null,
+          practicalImplication: String(claim.practical_implication ?? '') || null,
+          independentSourceCount: Number(claim.independent_source_count ?? 0),
+        });
+
+        const textDigest = (value: unknown) =>
+          createHash('sha256').update(typeof value === 'string' ? value : '', 'utf8').digest('hex');
+        const evidenceSnapshot = {
+          claimId: String(claim.id),
+          sourceId: String(claim.source_id),
+          claimTextSha256: textDigest(claim.claim_text),
+          methodologySha256: textDigest(claim.methodology),
+          datasetDescriptionSha256: textDigest(claim.dataset_description),
+          limitationsSha256: textDigest(claim.limitations),
+          practicalImplicationSha256: textDigest(claim.practical_implication),
+          storedExcerptSha256: textDigest(claim.stored_excerpt),
+          provenanceRef: claim.provenance_ref,
+          topicTags: claim.topic_tags,
+          evidenceGrade: claim.evidence_grade,
+          evidenceStrength: claim.evidence_strength,
+          sourceTitle: claim.source_title,
+          sourceDoi: claim.doi,
+          sourceUrl: claim.source_url,
+          sourceAuthors: claim.source_authors,
+          publicationDate: claim.publication_date,
+          sourceRevision: Number(claim.source_revision),
+          rightsVersion: Number(claim.rights_version),
+        };
+        const claimFingerprint = createHash('sha256')
+          .update(this.canonicalJson(evidenceSnapshot))
+          .digest('hex');
+        const inserted = await client.query<Record<string, unknown>>(
+          `
+          INSERT INTO research_evidence_assessments (
+            tenant_id, claim_id, source_id, source_revision, rights_version,
+            claim_fingerprint, rubric_version, evidence_score, suggested_grade, grade_factors,
+            citation_status, citation_findings, citation_verification_level,
+            safety_status, safety_flags, evidence_snapshot, assessed_by
+          )
+          VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+            $11,$12::jsonb,$13,$14,$15::jsonb,$16::jsonb,$17
+          )
+          RETURNING id::text AS id, claim_id::text AS claim_id, source_id::text AS source_id,
+            source_revision, rights_version, claim_fingerprint, rubric_version,
+            evidence_score, suggested_grade, grade_factors, citation_status,
+            citation_findings, citation_verification_level, safety_status, safety_flags,
+            assessed_by::text AS assessed_by, created_at::text AS created_at
+          `,
+          [
+            tenantId, claimId, String(claim.source_id), Number(claim.source_revision),
+            Number(claim.rights_version), claimFingerprint, rubric.rubricVersion,
+            rubric.score, rubric.suggestedGrade, JSON.stringify(rubric.factors),
+            citation.status, JSON.stringify(citation.findings), citation.verificationLevel,
+            safetyFlags.length ? 'REVIEW_REQUIRED' : 'CLEAR', JSON.stringify(safetyFlags),
+            JSON.stringify(evidenceSnapshot), userId,
+          ],
+        );
+        const saved = inserted.rows[0];
+        if (!saved) throw new Error('RESEARCH_EVIDENCE_ASSESSMENT_INSERT_FAILED');
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_CLAIM',
+          aggregateId: claimId, eventType: 'RESEARCH.CLAIM_EVIDENCE_ASSESSED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            assessment_id: saved.id, claim_id: claimId,
+            suggested_grade: rubric.suggestedGrade, evidence_score: rubric.score,
+            citation_status: citation.status, safety_status: safetyFlags.length ? 'REVIEW_REQUIRED' : 'CLEAR',
+          },
+        });
+        return saved;
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'CLAIM_EVIDENCE_ASSESS',
+      resourceId: claimId, requestId, traceId,
+      payload: {
+        assessmentId: assessment.id, suggestedGrade: assessment.suggested_grade,
+        evidenceScore: assessment.evidence_score, citationStatus: assessment.citation_status,
+        safetyStatus: assessment.safety_status,
+      },
+    });
+    return assessment;
+  }
+
+  async listClaimEvidenceAssessments(userId: string, tenantId: string, claimId: string, limit = 50) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(claimId, 'claimId');
+    const safeLimit = this.limit(limit);
+    const claim = await this.database.query(
+      `SELECT id FROM research_claims WHERE id=$1 AND tenant_id=$2 AND namespace='TENANT'`,
+      [claimId, tenantId],
+      { tenantId, userId },
+    );
+    if (!claim.rows[0]) throw new NotFoundException('Tenant research claim not found');
+    const result = await this.database.query(
+      `SELECT id::text AS id, claim_id::text AS claim_id, source_id::text AS source_id,
+          source_revision, rights_version, claim_fingerprint, rubric_version,
+          evidence_score, suggested_grade, grade_factors, citation_status, citation_findings,
+          citation_verification_level, safety_status, safety_flags,
+          assessed_by::text AS assessed_by, created_at::text AS created_at
+       FROM research_evidence_assessments
+       WHERE tenant_id=$1 AND claim_id=$2
+       ORDER BY created_at DESC, id DESC
+       LIMIT $3`,
+      [tenantId, claimId, safeLimit],
+      { tenantId, userId },
+    );
+    return result.rows;
+  }
+
   async decideClaim(
     actorUserId: string,
     tenantId: string,
@@ -606,8 +801,9 @@ export class ResearchService {
           }
           const sourceResult = await client.query<{
             access_status: string; license_status: string; full_text_storage_allowed: boolean;
+            source_revision: number; rights_version: number;
           }>(
-            'SELECT access_status, license_status, full_text_storage_allowed FROM research_sources WHERE id = $1 AND tenant_id = $2',
+            'SELECT access_status, license_status, full_text_storage_allowed, source_revision, rights_version FROM research_sources WHERE id = $1 AND tenant_id = $2',
             [row.source_id, tenantId],
           );
           const source = sourceResult.rows[0];
@@ -629,6 +825,24 @@ export class ResearchService {
                 'Extracted claims require an explicit extraction-item review before claim approval',
               );
             }
+          }
+          const evidenceAssessment = await client.query<{
+            citation_status: string; safety_status: string;
+          }>(
+            `SELECT citation_status, safety_status
+             FROM research_evidence_assessments
+             WHERE claim_id=$1 AND tenant_id=$2 AND source_revision=$3 AND rights_version=$4
+             ORDER BY created_at DESC, id DESC LIMIT 1`,
+            [claimId, tenantId, source.source_revision, source.rights_version],
+          );
+          if (!evidenceAssessment.rows[0]) {
+            throw new ForbiddenException('Run a current evidence and citation assessment before approving this claim');
+          }
+          if (evidenceAssessment.rows[0].citation_status !== 'CONSISTENT') {
+            throw new ConflictException('Citation metadata must be consistent before approving this claim');
+          }
+          if (evidenceAssessment.rows[0].safety_status !== 'CLEAR') {
+            throw new ForbiddenException('Prompt-injection or data-exfiltration findings require reviewer resolution before claim approval');
           }
         }
         const updated = await client.query<ResearchClaimRow>(
@@ -1227,31 +1441,30 @@ export class ResearchService {
     let citationCoveragePassed = true;
     let rightsPassed = true;
     const sources = new Map<string, Record<string, unknown>>();
-    const unsafePatterns = [
-      /\bignore\s+(all|any|previous)\s+(system\s+)?instructions?\b/i,
-      /\b(disregard|override)\s+(all\s+|the\s+)?(system|developer|previous)\s+(prompt|instructions?)\b/i,
-      /\b(reveal|print|expose|exfiltrate)\s+(the\s+)?(system prompt|hidden instructions|secrets?)\b/i,
-      /\byou are now (chatgpt|an assistant|the system)\b/i,
-      /\bbegin\s+(system|developer)\s+prompt\b/i,
-    ];
     const safetyFlags: string[] = [];
+    const safetyFindings: Array<{ claimId: string; flags: string[] }> = [];
+    const citationFindings: Array<{ claimId: string; status: string; findings: string[] }> = [];
     for (const claim of result.rows) {
       const normalized = claim.claim_text.toLowerCase().replace(/\s+/g, ' ').trim();
       if (seen.has(normalized)) consistencyPassed = false;
       seen.add(normalized);
-      const locator = claim.provenance_ref;
-      if (!locator || !Object.keys(locator).some(key => {
-        const value = locator[key];
-        return value !== null && value !== undefined && String(value).trim() !== '';
-      }) || (!claim.doi && !claim.source_url)) {
-        citationCoveragePassed = false;
-      }
+      const citation = validateResearchCitation(claim.provenance_ref, {
+        doi: claim.doi,
+        source_url: claim.source_url,
+      });
+      citationFindings.push({ claimId: claim.id, status: citation.status, findings: citation.findings });
+      if (citation.status !== 'CONSISTENT') citationCoveragePassed = false;
       if (!['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(claim.license_status)
         || !claim.rights_basis?.trim()) {
         rightsPassed = false;
       }
-      const untrustedText = claim.claim_text + '\n' + (claim.stored_excerpt ?? '');
-      if (unsafePatterns.some(pattern => pattern.test(untrustedText))) safetyFlags.push(claim.id);
+      const untrustedText = [claim.claim_text, claim.stored_excerpt]
+        .filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
+      const flags = scanResearchPromptInjection(untrustedText);
+      if (flags.length) {
+        safetyFlags.push(claim.id);
+        safetyFindings.push({ claimId: claim.id, flags });
+      }
       sources.set(claim.source_id, {
         sourceId: claim.source_id,
         title: claim.source_title,
@@ -1292,10 +1505,13 @@ export class ResearchService {
         rightsPassed,
         safetyPassed: safetyFlags.length === 0,
         safetyFlags,
+        safetyFindings,
+        citationFindings,
+        citationVerificationLevel: 'METADATA_ONLY',
         safetyReviewRequired: safetyFlags.length > 0,
         safetyReviewed: false,
         automaticContractChecks: true,
-        evaluationVersion: 'research-release-contract.v1',
+        evaluationVersion: 'research-release-contract.v2',
         regressionRequired: true,
         claimCount: result.rows.length,
       },
