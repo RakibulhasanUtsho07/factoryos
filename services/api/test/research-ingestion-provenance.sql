@@ -142,6 +142,11 @@ BEGIN
     RAISE EXCEPTION 'RESEARCH_INGESTION_LIFECYCLE_GUARD_MISSING';
   END IF;
 
+  IF position('ingestedAt'
+      IN pg_get_functiondef('public.factoryos_research_record_source_history()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_SOURCE_INGESTION_TIMESTAMP_PROVENANCE_MISSING';
+  END IF;
+
   IF position('SOURCE_RIGHTS_CHANGED'
       IN pg_get_functiondef('public.factoryos_research_record_source_history()'::regprocedure)) = 0
      OR position('BLOCKED_RIGHTS'
