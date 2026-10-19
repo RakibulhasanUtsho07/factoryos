@@ -227,6 +227,13 @@ describe('ResearchService', () => {
           license_status: 'OPEN_ACCESS',
           access_status: 'APPROVED',
           rights_basis: 'CC BY licence verified',
+          source_revision: 1,
+          rights_version: 1,
+          current_evidence_assessment_id: 'bb2d1014-b7bc-4e7e-ad61-8746e8e00001',
+          current_evidence_citation_status: 'CONSISTENT',
+          current_evidence_safety_status: 'CLEAR',
+          current_evidence_safety_flags: [],
+          safety_review_decision: null,
         }],
       });
 
@@ -307,6 +314,13 @@ describe('ResearchService', () => {
           license_status: 'OPEN_ACCESS',
           access_status: 'APPROVED',
           rights_basis: 'Open access licence verified',
+          source_revision: 1,
+          rights_version: 1,
+          current_evidence_assessment_id: 'bb2d1014-b7bc-4e7e-ad61-8746e8e00002',
+          current_evidence_citation_status: 'CONSISTENT',
+          current_evidence_safety_status: 'REVIEW_REQUIRED',
+          current_evidence_safety_flags: ['PROMPT_CONTROL_INSTRUCTION', 'SECRET_EXTRACTION_INSTRUCTION'],
+          safety_review_decision: null,
         }],
       });
 
