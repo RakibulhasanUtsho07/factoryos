@@ -306,4 +306,53 @@ describe('CbbGovernanceService', () => {
     expect(result.items[0]?.links).toEqual([]);
     expect(result.total).toBe(1);
   });
+
+  it('does not allow a reviewer without canonical-term edit access to verify an alias', async () => {
+    queue(
+      { rows: [{ id: blueprintId, current_version_id: versionId }] }, // active blueprint lock
+      { rows: [{
+        id: aclId, state: 'PROPOSED', version: 1, alias: 'PO',
+        canonical_term: 'Purchase Order', canonical_term_id: entityId,
+      }] },
+      { rows: [] }, // target ACL advisory lock
+      { rows: [] }, // caller has no matching role
+      { rows: [{ target_id: entityId, role_id: roleId, field_name: null, access_level: 'READ' }] },
+    );
+
+    await expect(service.decideTerminologyAlias(
+      { tenantId, factoryId, userId },
+      aclId,
+      { action: 'VERIFY', expected_version: 1, reason: 'Reviewed and confirmed the ERP alias mapping' },
+    )).rejects.toThrow('read-only or restricted');
+
+    expect(query).toHaveBeenCalledTimes(5);
+    expect(query.mock.calls[1]?.[0]).toContain('FOR UPDATE OF a');
+    expect(recordWithClient).not.toHaveBeenCalled();
+  });
+
+  it('does not traverse impact edges or entities hidden by role ACLs', async () => {
+    queue(
+      { rows: [{ id: blueprintId }] }, // active blueprint visibility
+      { rows: [] }, // roles for blueprint
+      { rows: [] }, // no blueprint restriction
+      { rows: [] }, // roles for requested root target
+      { rows: [] }, // root target not restricted
+      { rows: [{ blueprint_id: blueprintId, version_id: versionId }] }, // active version
+      { rows: [{ id: entityId, entity_type: 'PROCESS', name: 'Visible start', state: 'VERIFIED', confidence: 0.9, depth: 0 }] },
+      { rows: [] }, // roles for trace nodes
+      { rows: [] }, // no node restrictions
+      { rows: [] }, // external impact links
+    );
+
+    const result = await service.getImpactTrace(
+      tenantId, factoryId, userId, 'ENTITY', entityId, 3,
+    );
+
+    expect(result.graph).toHaveLength(1);
+    expect(query.mock.calls[6]?.[0]).toContain("relation_acl.target_type='RELATION'");
+    expect(query.mock.calls[6]?.[0]).toContain("entity_acl.target_type='ENTITY'");
+    expect(query.mock.calls[6]?.[1]).toEqual([
+      tenantId, factoryId, versionId, 3, entityId, blueprintId, userId,
+    ]);
+  });
 });
