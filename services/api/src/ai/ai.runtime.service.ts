@@ -3768,16 +3768,19 @@ export class AiRuntimeService {
           sourceTimestamp: reference.source_timestamp,
           snapshot: reference.source_snapshot,
         }));
-      const expectedEvidenceIds = row.sources
-        .filter((source) => this.isObject(source) && source.type === 'BUSINESS_EVIDENCE')
+      const evidenceSources = row.sources.filter(
+        (source) => this.isObject(source) && source.type === 'BUSINESS_EVIDENCE',
+      );
+      // Retain malformed/missing IDs as an expected entry so replay cannot
+      // accidentally call a source snapshot complete by filtering it away.
+      const expectedEvidenceIds = evidenceSources
         .map((source) => this.isObject(source) && typeof source.id === 'string' ? source.id.toLowerCase() : '')
-        .filter((id) => id.length > 0)
         .sort();
       const actualEvidenceIds = refs.map((reference) => reference.evidenceId.toLowerCase()).sort();
       const evidenceReferenceIdsMatch =
         expectedEvidenceIds.length === actualEvidenceIds.length &&
-        expectedEvidenceIds.every((id, index) => id === actualEvidenceIds[index]);
-      const expectedReferenceCount = expectedEvidenceIds.length;
+        expectedEvidenceIds.every((id, index) => id.length > 0 && id === actualEvidenceIds[index]);
+      const expectedReferenceCount = evidenceSources.length;
       const hashMatches = this.computeHash({
         decisionId: row.decision_id,
         contextVersion: row.context_version,
