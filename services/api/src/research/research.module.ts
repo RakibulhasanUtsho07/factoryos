@@ -4,11 +4,12 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 import { ResearchController } from './research.controller';
 import { ResearchService } from './research.service';
+import { ResearchIngestionService } from './research-ingestion.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [ResearchController],
-  providers: [ResearchService],
-  exports: [ResearchService],
+  providers: [ResearchService, ResearchIngestionService],
+  exports: [ResearchService, ResearchIngestionService],
 })
 export class ResearchModule {}
