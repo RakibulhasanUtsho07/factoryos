@@ -1526,8 +1526,8 @@ export class GrowthService {
   async getOpportunityGovernance(tenantId: string, factoryId: string, opportunityId: string) {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
-    const scoped = await this.database.query<{ id: string }>(
-      'SELECT id::text AS id FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3',
+    const scoped = await this.database.query<{ id: string; created_by: string }>(
+      'SELECT id::text AS id, created_by::text AS created_by FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3',
       [opportunityId, tenantId, factoryId],
       { tenantId },
     );
@@ -1596,12 +1596,18 @@ export class GrowthService {
         { tenantId },
       ),
       this.database.query(
-        `SELECT id::text AS id, role_code, owner_user_id::text AS owner_user_id,
-                rationale, assigned_by::text AS assigned_by, assigned_at::text AS assigned_at,
-                active_to::text AS active_to
-           FROM growth_opportunity_decision_owners
-          WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
-          ORDER BY CASE WHEN active_to IS NULL THEN 0 ELSE 1 END, assigned_at DESC, id DESC`,
+        `SELECT own.id::text AS id, own.role_code, own.owner_user_id::text AS owner_user_id,
+                own.rationale, own.assigned_by::text AS assigned_by, own.assigned_at::text AS assigned_at,
+                own.active_to::text AS active_to,
+                (u.status = 'ACTIVE' AND EXISTS (
+                  SELECT 1 FROM tenant_memberships tm
+                   WHERE tm.user_id = own.owner_user_id AND tm.tenant_id = own.tenant_id
+                     AND tm.status = 'ACTIVE'
+                )) AS owner_active
+           FROM growth_opportunity_decision_owners own
+           JOIN users u ON u.id = own.owner_user_id
+          WHERE own.opportunity_id = $1 AND own.tenant_id = $2 AND own.factory_id = $3
+          ORDER BY CASE WHEN own.active_to IS NULL THEN 0 ELSE 1 END, own.assigned_at DESC, own.id DESC`,
         [opportunityId, tenantId, factoryId],
         { tenantId },
       ),
@@ -1624,10 +1630,11 @@ export class GrowthService {
       id: string; question: string; impact: string; blocks_decision: boolean;
       latest_decision: string | null; evidence_refs: unknown;
     }>;
-    const ownerRows = owners.rows as Array<{ role_code: string; owner_user_id: string; active_to: string | null }>;
+    const ownerRows = owners.rows as Array<{ role_code: string; owner_user_id: string; active_to: string | null; owner_active: boolean }>;
     const readiness = evaluateGrowthGovernanceReadiness({
       evidence_count: evidence.rows[0]?.count ?? 0,
-      decision_owner_assigned: ownerRows.some(owner => owner.role_code === 'DECISION_OWNER' && owner.active_to === null),
+      decision_owner_assigned: ownerRows.some(owner => owner.role_code === 'DECISION_OWNER' && owner.active_to === null
+        && owner.owner_active && owner.owner_user_id !== scoped.rows[0]?.created_by),
       assumptions: assumptionRows,
       constraints: constraintRows,
       evidence_gaps: gapRows,
