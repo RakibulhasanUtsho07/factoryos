@@ -44,6 +44,9 @@ import { AiModule } from './ai/ai.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
 import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
+import { HttpMetricsMiddleware } from './observability/http-metrics.middleware';
+import { HttpMetricsService } from './observability/http-metrics.service';
+import { InternalMetricsController } from './observability/internal-metrics.controller';
 
 @Module({
   imports: [
@@ -135,10 +138,13 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 
   controllers: [
     AppController,
+    InternalMetricsController,
   ],
 
   providers: [
     AppService,
+    HttpMetricsService,
+    HttpMetricsMiddleware,
   ],
 })
 export class AppModule
