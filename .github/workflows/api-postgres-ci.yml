@@ -228,6 +228,7 @@ jobs:
             migrations/140_research_claim_assessment_insert_guard.sql
             migrations/141_research_latest_assessment_approval_gate.sql
             migrations/142_research_release_lifecycle.sql
+            migrations/143_growth_opportunity_governance.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -330,6 +331,7 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/cbb-governance.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-ingestion-provenance.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-release-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-opportunity-governance.sql
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
