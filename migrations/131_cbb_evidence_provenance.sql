@@ -612,7 +612,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_cbb_record_conflict_history();
 CREATE OR REPLACE FUNCTION factoryos_cbb_guard_conflict_history_insert()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   -- Only the AFTER trigger on business_conflicts may append history.
   IF pg_trigger_depth() <= 1 THEN
@@ -621,8 +621,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
-
+$$;
 DROP TRIGGER IF EXISTS business_conflict_history_guard_insert ON business_conflict_history;
 CREATE TRIGGER business_conflict_history_guard_insert
 BEFORE INSERT ON business_conflict_history
@@ -631,7 +630,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_cbb_guard_conflict_history_insert();
 CREATE OR REPLACE FUNCTION factoryos_cbb_reject_conflict_history_update()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   -- Permit only a cascade delete caused by deleting its scoped parent conflict;
   -- direct attempts to rewrite or delete audit history are rejected.
@@ -641,8 +640,7 @@ BEGIN
   RAISE EXCEPTION 'CBB_CONFLICT_HISTORY_IS_APPEND_ONLY'
     USING ERRCODE = '55000';
 END;
-$;
-
+$$;
 DROP TRIGGER IF EXISTS business_conflict_history_immutable ON business_conflict_history;
 CREATE TRIGGER business_conflict_history_immutable
 BEFORE UPDATE OR DELETE ON business_conflict_history

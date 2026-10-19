@@ -153,6 +153,7 @@ describe('CbbEvidenceService', () => {
     queue(
       { rows: [{ id: otherEvidenceId }] },
       { rows: [{ id: blueprintId, current_version_id: versionId }] },
+      { rows: [] }, // transaction-scoped advisory lock
       { rows: [{ id: entityId }] },
       { rows: [link] },
       { rows: [{ evidence_id: evidenceId }, { evidence_id: otherEvidenceId }] },
@@ -189,6 +190,7 @@ describe('CbbEvidenceService', () => {
     queue(
       { rows: [{ id: otherEvidenceId }] },
       { rows: [{ id: blueprintId, current_version_id: versionId }] },
+      { rows: [] }, // transaction-scoped advisory lock
       { rows: [{ id: entityId }] },
       { rows: [link] },
       { rows: [{ id: conflictId, version: 1, evidence_refs: [priorEvidenceId] }] },
@@ -202,8 +204,8 @@ describe('CbbEvidenceService', () => {
     );
 
     expect(result.conflictId).toBe(conflictId);
-    expect(query.mock.calls[5]?.[0]).toContain('updated_by=$2');
-    expect(query.mock.calls[5]?.[1]).toEqual([
+    expect(query.mock.calls[6]?.[0]).toContain('updated_by=$2');
+    expect(query.mock.calls[6]?.[1]).toEqual([
       JSON.stringify([priorEvidenceId, otherEvidenceId]),
       userId,
       conflictId,
