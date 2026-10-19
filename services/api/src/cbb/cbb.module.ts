@@ -31,6 +31,7 @@ import {
 } from './cbb.promotion.service';
 
 import { CbbEvidenceService } from './cbb.evidence.service';
+import { CbbGovernanceService } from './cbb.governance.service';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { CbbEvidenceService } from './cbb.evidence.service';
     CbbChangeService,
     CbbPromotionService,
     CbbEvidenceService,
+    CbbGovernanceService,
   ],
 
   exports: [
@@ -55,6 +57,7 @@ import { CbbEvidenceService } from './cbb.evidence.service';
     CbbChangeService,
     CbbPromotionService,
     CbbEvidenceService,
+    CbbGovernanceService,
   ],
 })
 export class CbbModule {}
