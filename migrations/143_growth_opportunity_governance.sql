@@ -317,7 +317,7 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER growth_opportunity_assumptions_immutable
-BEFORE UPDATE OR DELETE ON growth_opportunity_assumptions
+BEFORE INSERT OR UPDATE OR DELETE ON growth_opportunity_assumptions
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_assumption_records();
 CREATE TRIGGER growth_opportunity_assumption_decisions_append_only
 BEFORE INSERT OR UPDATE OR DELETE ON growth_opportunity_assumption_decisions
