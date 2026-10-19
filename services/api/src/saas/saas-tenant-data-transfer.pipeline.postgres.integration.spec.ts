@@ -68,6 +68,8 @@ describe('SaaS tenant export/import pipeline PostgreSQL integration', () => {
         ['saas_provider_cost_events', 'trg_saas_provider_cost_events_immutable'],
         ['saas_provider_cost_reconciliations', 'trg_saas_provider_cost_recon_immutable'],
         ['saas_tenant_import_receipts', 'saas_tenant_import_receipts_immutable'],
+        ['business_evidence', 'business_evidence_immutable'],
+        ['business_evidence_links', 'business_evidence_links_immutable'],
       ] as const;
 
       const cleanupDatabase = async (pool: Pool, isTarget: boolean) => {

@@ -1131,7 +1131,7 @@ describe(
     // NORMAL BUSINESS MAP RETRIEVAL
     // ==========================================================
 it(
-  'returns VERIFIED and INFERRED graph items only',
+  'excludes conflicted nodes from the VERIFIED and INFERRED business map',
   async () => {
     const result =
       await service.getBusinessMap(
@@ -1149,7 +1149,7 @@ it(
     expect(
       nodes,
     ).toHaveLength(
-      3,
+      2,
     );
 
     /*
@@ -1162,13 +1162,9 @@ it(
      *   then entity_type,
      *   then name.
      *
-     * Therefore the API is allowed to return:
-     *
-     *   Production
-     *   ERP
-     *   Planner
-     *
-     * instead of a fixed alphabetical order.
+     * The "Production" entity has an open evidence conflict and
+     * must not be returned until an authorized reviewer resolves it.
+     * The remaining VERIFIED ERP and INFERRED Planner nodes remain visible.
      */
     expect(
       nodes.map(
@@ -1178,10 +1174,16 @@ it(
     ).toEqual(
       expect.arrayContaining([
         'ERP',
-        'Production',
         'Planner',
       ]),
     );
+
+    expect(
+      nodes.some(
+        (node) =>
+          node.name === 'Production',
+      ),
+    ).toBe(false);
 
     /*
      * PROPOSED items must never appear in normal retrieval.
