@@ -391,12 +391,13 @@ export class CbbGovernanceService {
     return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
       const blueprint = await this.currentBlueprint(client, scope, true);
       const canonicalFound = await client.query<DbRow>(
-        `SELECT canonical_term FROM business_terms WHERE tenant_id=$1 AND factory_id=$2
+        `SELECT id::text AS id,canonical_term FROM business_terms WHERE tenant_id=$1 AND factory_id=$2
            AND blueprint_version_id=$3 AND lower(canonical_term)=lower($4)
            AND state IN ('VERIFIED','INFERRED') LIMIT 1`,
         [scope.tenantId, scope.factoryId, blueprint.current_version_id, canonical],
       );
       if (!canonicalFound.rows[0]) throw new NotFoundException('Canonical term must exist in the current CBB dictionary');
+      await this.assertTargetWriteAccessInClient(client, scope, 'TERM', String(canonicalFound.rows[0].id), ['canonical_term']);
       const conflictingCanonical = await client.query<DbRow>(
         `SELECT canonical_term FROM business_terms WHERE tenant_id=$1 AND factory_id=$2
            AND blueprint_version_id=$3 AND lower(term)=lower($4) AND lower(canonical_term)<>lower($5) LIMIT 1`,
@@ -958,13 +959,18 @@ export class CbbGovernanceService {
     return visible;
   }
 
-  async assertTargetWriteAccess(scope: Scope, targetType: TargetType, targetId: string, fields: string[] = []) {
+  async assertTargetWriteAccess(scope: Scope, targetType: TargetType, targetId: string | null, fields: string[] = []) {
     this.validateScope(scope);
     this.validateTargetType(targetType);
-    this.uuid(targetId, 'targetId');
     return this.database.transaction({ tenantId: scope.tenantId, userId: scope.userId }, async (client: PoolClient) => {
-      await this.assertTargetWriteAccessInClient(client, scope, targetType, targetId, fields);
-      return { targetType, targetId, allowed: true };
+      let effectiveTargetId = targetId;
+      if (targetType === 'BLUEPRINT' && !effectiveTargetId) {
+        effectiveTargetId = String((await this.currentBlueprint(client, scope, true)).id);
+      }
+      if (!effectiveTargetId) throw new BadRequestException('targetId is required for this CBB target type');
+      this.uuid(effectiveTargetId, 'targetId');
+      await this.assertTargetWriteAccessInClient(client, scope, targetType, effectiveTargetId, fields);
+      return { targetType, targetId: effectiveTargetId, allowed: true };
     });
   }
 
