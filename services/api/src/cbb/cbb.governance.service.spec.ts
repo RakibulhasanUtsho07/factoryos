@@ -274,4 +274,36 @@ describe('CbbGovernanceService', () => {
       }),
     }));
   });
+
+  it('removes ACL-hidden graph targets from evidence link metadata', async () => {
+    const evidenceId = '90000000-0000-4000-8000-000000000001';
+    queue(
+      { rows: [{ id: blueprintId }] }, // active blueprint
+      { rows: [] }, // caller roles for blueprint
+      { rows: [] }, // no blueprint restriction
+      { rows: [] }, // caller roles for evidence-linked entity
+      { rows: [{ target_id: entityId, role_id: roleId, field_name: null, access_level: 'READ' }] },
+    );
+
+    const result = await service.filterEvidenceResult(tenantId, factoryId, userId, {
+      items: [{
+        id: evidenceId,
+        sourceType: 'ERP',
+        links: [{
+          evidence_id: evidenceId,
+          target_type: 'ENTITY',
+          target_id: entityId,
+          link_type: 'SUPPORTS',
+        }],
+      }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    }) as { items: Array<{ id: string; links: unknown[] }>; total: number };
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.id).toBe(evidenceId);
+    expect(result.items[0]?.links).toEqual([]);
+    expect(result.total).toBe(1);
+  });
 });
