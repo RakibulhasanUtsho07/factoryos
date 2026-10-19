@@ -1512,7 +1512,7 @@ export class ResearchService {
           channelRevision = Number(initializedChannel.rows[0].revision);
         }
 
-        const promotionReason = 'Promotion approved: ' + reviewSummary;
+        const promotionReason = ('Promotion approved: ' + reviewSummary).slice(0, 2000);
         if (previous) {
           await client.query(
             `
@@ -1524,7 +1524,7 @@ export class ResearchService {
             `,
             [tenantId, previous.active_release_id, row.release_key, previous.active_version,
               releaseId, row.version,
-              'Superseded by version ' + row.version + ': ' + reviewSummary,
+              ('Superseded by version ' + row.version + ': ' + reviewSummary).slice(0, 2000),
               userId, requestId, traceId],
           );
         }
