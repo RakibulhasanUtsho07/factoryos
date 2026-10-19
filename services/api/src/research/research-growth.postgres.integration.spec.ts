@@ -220,8 +220,12 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
 
   it('keeps evidence assessments and safety reviews append-only and tenant-isolated', async () => {
     await withFixture(async (client, f) => {
-      const assessment = await client.query<{ id: string; evidence_score: number; suggested_grade: string }>(
-        `SELECT id::text AS id, evidence_score, suggested_grade
+      const assessment = await client.query<{
+        id: string; evidence_score: number; suggested_grade: string;
+        claim_fingerprint: string; expected_fingerprint: string;
+      }>(
+        `SELECT id::text AS id, evidence_score, suggested_grade, claim_fingerprint,
+            encode(sha256(convert_to(evidence_snapshot::text, 'UTF8')), 'hex') AS expected_fingerprint
          FROM research_evidence_assessments
          WHERE tenant_id=$1 AND claim_id=$2 ORDER BY created_at DESC LIMIT 1`,
         [f.tenantId, f.claimId],
@@ -229,6 +233,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
       expect(assessment.rows).toHaveLength(1);
       expect(assessment.rows[0].evidence_score).toBe(45);
       expect(assessment.rows[0].suggested_grade).toBe('D');
+      expect(assessment.rows[0].claim_fingerprint).toBe(assessment.rows[0].expected_fingerprint);
 
       await client.query('SAVEPOINT protect_evidence_assessment');
       await expect(client.query(
