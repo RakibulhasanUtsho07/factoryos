@@ -314,51 +314,54 @@ BEGIN
     COALESCE(NEW.reviewed_by, NEW.created_by)
   );
 
-  IF TG_OP = 'UPDATE'
-     AND (OLD.rights_version IS DISTINCT FROM NEW.rights_version
-          OR OLD.source_revision IS DISTINCT FROM NEW.source_revision
-          OR OLD.access_status IS DISTINCT FROM NEW.access_status) THEN
-    INSERT INTO research_ingestion_events (
-      tenant_id, job_id, event_type, from_status, to_status, stage,
-      progress_percent, detail, actor_user_id
-    )
-    SELECT tenant_id, id, 'JOB_BLOCKED_SOURCE_CHANGE', status,
-           CASE
-             WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'BLOCKED_SOURCE_CHANGED'
-             ELSE 'BLOCKED_RIGHTS'
-           END,
-           stage, progress_percent,
-           jsonb_build_object(
-             'reasonCode',
-             CASE WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision
-               THEN 'SOURCE_REVISION_CHANGED' ELSE 'SOURCE_RIGHTS_CHANGED' END
-           ),
-           COALESCE(NEW.reviewed_by, NEW.created_by)
-      FROM research_ingestion_jobs
-     WHERE source_id = NEW.id AND tenant_id = NEW.tenant_id
-       AND status IN ('QUEUED','RUNNING','PAUSED');
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.rights_version IS DISTINCT FROM NEW.rights_version
+       OR OLD.source_revision IS DISTINCT FROM NEW.source_revision
+       OR OLD.access_status IS DISTINCT FROM NEW.access_status THEN
+      INSERT INTO research_ingestion_events (
+        tenant_id, job_id, event_type, from_status, to_status, stage,
+        progress_percent, detail, actor_user_id
+      )
+      SELECT tenant_id, id, 'JOB_BLOCKED_SOURCE_CHANGE', status,
+             CASE
+               WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'BLOCKED_SOURCE_CHANGED'
+               ELSE 'BLOCKED_RIGHTS'
+             END,
+             stage, progress_percent,
+             jsonb_build_object(
+               'reasonCode',
+               CASE WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision
+                 THEN 'SOURCE_REVISION_CHANGED' ELSE 'SOURCE_RIGHTS_CHANGED' END
+             ),
+             COALESCE(NEW.reviewed_by, NEW.created_by)
+        FROM research_ingestion_jobs
+       WHERE source_id = NEW.id AND tenant_id = NEW.tenant_id
+         AND status IN ('QUEUED','RUNNING','PAUSED');
 
-    UPDATE research_ingestion_jobs
-       SET status = CASE
-             WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'BLOCKED_SOURCE_CHANGED'
-             ELSE 'BLOCKED_RIGHTS'
-           END,
-           lease_owner = NULL,
-           lease_expires_at = NULL,
-           last_error_code = CASE
-             WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'SOURCE_REVISION_CHANGED'
-             ELSE 'SOURCE_RIGHTS_CHANGED'
-           END,
-           last_error_message = CASE
-             WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'Source metadata changed after this job was queued'
-             ELSE 'Source rights or access approval changed after this job was queued'
-           END,
-           retryable = FALSE,
-           completed_at = clock_timestamp(),
-           updated_at = clock_timestamp(),
-           version = version + 1
-     WHERE source_id = NEW.id AND tenant_id = NEW.tenant_id
-       AND status IN ('QUEUED','RUNNING','PAUSED');
+      UPDATE research_ingestion_jobs
+         SET status = CASE
+               WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'BLOCKED_SOURCE_CHANGED'
+               ELSE 'BLOCKED_RIGHTS'
+             END,
+             lease_owner = NULL,
+             lease_expires_at = NULL,
+             last_error_code = CASE
+               WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'SOURCE_REVISION_CHANGED'
+               ELSE 'SOURCE_RIGHTS_CHANGED'
+             END,
+             last_error_message = CASE
+               WHEN OLD.source_revision IS DISTINCT FROM NEW.source_revision THEN 'Source metadata changed after this job was queued'
+               ELSE 'Source rights or access approval changed after this job was queued'
+             END,
+             retryable = FALSE,
+             completed_at = clock_timestamp(),
+             updated_at = clock_timestamp(),
+             version = version + 1
+       WHERE source_id = NEW.id AND tenant_id = NEW.tenant_id
+         AND status IN ('QUEUED','RUNNING','PAUSED');
+    END IF;
+  END IF;
+ status IN ('QUEUED','RUNNING','PAUSED');
   END IF;
   RETURN NEW;
 END;
