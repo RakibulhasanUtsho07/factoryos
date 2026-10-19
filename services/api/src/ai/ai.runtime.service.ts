@@ -1264,10 +1264,14 @@ export class AiRuntimeService {
 
       if (existing) {
         if (
+          existing.tenant_id !== tenantId ||
+          existing.factory_id !== factoryId ||
+          existing.created_by !== actorUserId ||
           existing.decision_id !== decisionId ||
           existing.action_type !== actionType ||
           existing.tool_id !== actionType ||
           existing.tool_version !== toolVersion ||
+          this.computeHash(existing.target) !== this.computeHash(target) ||
           existing.resource_type !== resourceType ||
           existing.resource_id !== resourceId ||
           existing.payload_hash !== payloadHash
