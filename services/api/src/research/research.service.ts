@@ -20,6 +20,7 @@ import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto'
 import { DecideResearchWatchlistDto } from './dto/decide-research-watchlist.dto';
 import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto';
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
+import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
 import {
@@ -748,15 +749,115 @@ export class ResearchService {
           source_revision, rights_version, claim_fingerprint, rubric_version,
           evidence_score, suggested_grade, grade_factors, citation_status, citation_findings,
           citation_verification_level, safety_status, safety_flags,
-          assessed_by::text AS assessed_by, created_at::text AS created_at
-       FROM research_evidence_assessments
-       WHERE tenant_id=$1 AND claim_id=$2
+          assessed_by::text AS assessed_by, created_at::text AS created_at,
+          sr.decision AS safety_review_decision, sr.reason AS safety_review_reason,
+          sr.reviewed_by::text AS safety_reviewed_by, sr.created_at::text AS safety_reviewed_at
+       FROM research_evidence_assessments a
+       LEFT JOIN research_evidence_safety_reviews sr
+         ON sr.assessment_id=a.id AND sr.tenant_id=a.tenant_id
+       WHERE a.tenant_id=$1 AND a.claim_id=$2
        ORDER BY created_at DESC, id DESC
        LIMIT $3`,
       [tenantId, claimId, safeLimit],
       { tenantId, userId },
     );
     return result.rows;
+  }
+
+  async decideEvidenceSafety(
+    userId: string,
+    tenantId: string,
+    claimId: string,
+    assessmentId: string,
+    dto: DecideResearchEvidenceSafetyDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(claimId, 'claimId');
+    this.validateUuid(assessmentId, 'assessmentId');
+    const reason = dto.reason.trim();
+    if (reason.length < 10 || reason.length > 2000) {
+      throw new BadRequestException('Safety review reason must contain 10-2000 characters');
+    }
+    if (!['CLEAR', 'REJECT'].includes(dto.decision)) {
+      throw new BadRequestException('Unsupported evidence safety decision');
+    }
+
+    const review = await this.database.transaction(
+      { tenantId, userId },
+      async client => {
+        const result = await client.query<Record<string, unknown>>(
+          `SELECT a.id::text AS assessment_id, a.claim_id::text AS claim_id,
+              a.source_id::text AS source_id, a.source_revision, a.rights_version,
+              a.safety_status, a.citation_status,
+              s.source_revision AS current_source_revision, s.rights_version AS current_rights_version,
+              s.access_status, s.license_status, s.rights_basis
+           FROM research_evidence_assessments a
+           JOIN research_claims c ON c.id=a.claim_id AND c.tenant_id=a.tenant_id
+           JOIN research_sources s ON s.id=a.source_id AND s.tenant_id=a.tenant_id
+           WHERE a.id=$1 AND a.claim_id=$2 AND a.tenant_id=$3
+           FOR UPDATE OF a, c, s`,
+          [assessmentId, claimId, tenantId],
+        );
+        const assessment = result.rows[0];
+        if (!assessment) throw new NotFoundException('Evidence assessment not found for this tenant claim');
+        if (assessment.safety_status !== 'REVIEW_REQUIRED') {
+          throw new ConflictException('Only assessments with safety findings require an explicit safety review');
+        }
+        if (Number(assessment.source_revision) !== Number(assessment.current_source_revision)
+          || Number(assessment.rights_version) !== Number(assessment.current_rights_version)) {
+          throw new ConflictException('Source or rights changed after this assessment; create a fresh assessment before reviewing it');
+        }
+        if (assessment.access_status !== 'APPROVED'
+          || !['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(String(assessment.license_status))
+          || !String(assessment.rights_basis ?? '').trim()) {
+          throw new ForbiddenException('Safety review requires currently approved source reuse rights');
+        }
+        const existing = await client.query(
+          'SELECT id FROM research_evidence_safety_reviews WHERE assessment_id=$1 AND tenant_id=$2',
+          [assessmentId, tenantId],
+        );
+        if (existing.rows[0]) {
+          throw new ConflictException('This assessment already has an immutable safety-review decision');
+        }
+        const inserted = await client.query<Record<string, unknown>>(
+          `INSERT INTO research_evidence_safety_reviews (
+             tenant_id, assessment_id, claim_id, source_id, source_revision, rights_version,
+             decision, reason, reviewed_by
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           RETURNING id::text AS id, assessment_id::text AS assessment_id,
+             claim_id::text AS claim_id, source_id::text AS source_id,
+             source_revision, rights_version, decision, reason,
+             reviewed_by::text AS reviewed_by, created_at::text AS created_at`,
+          [
+            tenantId, assessmentId, claimId, String(assessment.source_id),
+            Number(assessment.source_revision), Number(assessment.rights_version),
+            dto.decision, reason, userId,
+          ],
+        );
+        const saved = inserted.rows[0];
+        if (!saved) throw new Error('RESEARCH_EVIDENCE_SAFETY_REVIEW_INSERT_FAILED');
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_CLAIM',
+          aggregateId: claimId, eventType: 'RESEARCH.CLAIM_EVIDENCE_SAFETY_REVIEWED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            claim_id: claimId, assessment_id: assessmentId,
+            safety_review_id: saved.id, decision: dto.decision, reason,
+          },
+        });
+        return saved;
+      },
+    );
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'CLAIM_EVIDENCE_SAFETY_REVIEW',
+      resourceId: claimId, requestId, traceId,
+      payload: { assessmentId, safetyReviewId: review.id, decision: dto.decision, reason },
+    });
+    return review;
   }
 
   async decideClaim(
@@ -827,12 +928,18 @@ export class ResearchService {
             throw new BadRequestException('The approving reviewer must assign a final evidence grade A-D');
           }
           const evidenceAssessment = await client.query<{
-            citation_status: string; safety_status: string;
+            citation_status: string; safety_status: string; safety_review_cleared: boolean;
           }>(
-            `SELECT citation_status, safety_status
-             FROM research_evidence_assessments
-             WHERE claim_id=$1 AND tenant_id=$2 AND source_revision=$3 AND rights_version=$4
-             ORDER BY created_at DESC, id DESC LIMIT 1`,
+            `SELECT a.citation_status, a.safety_status,
+                EXISTS (
+                  SELECT 1 FROM research_evidence_safety_reviews sr
+                   WHERE sr.assessment_id=a.id AND sr.tenant_id=a.tenant_id
+                     AND sr.source_revision=a.source_revision AND sr.rights_version=a.rights_version
+                     AND sr.decision='CLEAR'
+                ) AS safety_review_cleared
+             FROM research_evidence_assessments a
+             WHERE a.claim_id=$1 AND a.tenant_id=$2 AND a.source_revision=$3 AND a.rights_version=$4
+             ORDER BY a.created_at DESC, a.id DESC LIMIT 1`,
             [claimId, tenantId, source.source_revision, source.rights_version],
           );
           if (!evidenceAssessment.rows[0]) {
@@ -841,8 +948,9 @@ export class ResearchService {
           if (evidenceAssessment.rows[0].citation_status !== 'CONSISTENT') {
             throw new ConflictException('Citation metadata must be consistent before approving this claim');
           }
-          if (evidenceAssessment.rows[0].safety_status !== 'CLEAR') {
-            throw new ForbiddenException('Prompt-injection or data-exfiltration findings require reviewer resolution before claim approval');
+          if (evidenceAssessment.rows[0].safety_status !== 'CLEAR'
+            && evidenceAssessment.rows[0].safety_review_cleared !== true) {
+            throw new ForbiddenException('Prompt-injection or data-exfiltration findings require an explicit CLEAR safety-review decision before claim approval');
           }
         }
         const updated = await client.query<ResearchClaimRow>(
