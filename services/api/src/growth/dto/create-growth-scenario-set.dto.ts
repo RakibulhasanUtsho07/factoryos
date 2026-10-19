@@ -115,6 +115,14 @@ export class GrowthScenarioSensitivityAxisDto {
   @Min(2)
   @Max(11)
   points!: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(11)
+  @ValidateNested({ each: true })
+  @Type(() => ProjectedGrowthConstraintMetricsDto)
+  projected_constraint_metrics?: ProjectedGrowthConstraintMetricsDto[];
 }
 
 export class CreateGrowthScenarioSetDto {
