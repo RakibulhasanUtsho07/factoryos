@@ -95,7 +95,13 @@ const cbbChangeService = {
 
 const filterBusinessMap = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, map: unknown) => map);
 const filterProcessResult = jest.fn(async (_tenantId: string, _factoryId: string, _userId: string, result: unknown) => result);
-const cbbGovernanceService = { filterBusinessMap, filterProcessResult };
+const assertTargetWriteAccess = jest.fn(async () => ({ allowed: true }));
+const assertProposalWriteAccess = jest.fn(async () => ({ allowed: true }));
+const assertConflictWriteAccess = jest.fn(async () => ({ allowed: true }));
+const cbbGovernanceService = {
+  filterBusinessMap, filterProcessResult,
+  assertTargetWriteAccess, assertProposalWriteAccess, assertConflictWriteAccess,
+};
 
 describe(
   'CbbController',
