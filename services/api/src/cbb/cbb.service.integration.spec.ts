@@ -1318,6 +1318,72 @@ it(
     // ==========================================================
 
     it(
+      'excludes a process step while its evidence conflict remains open',
+      async () => {
+        const processResult = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_processes WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3 AND name = \'Order Fulfillment\' AND state=\'VERIFIED\' LIMIT 1',
+          [tenantAId, factoryAId, versionAId],
+        );
+        const processId = processResult.rows[0]?.id;
+        expect(processId).toBeDefined();
+        const stepResult = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_process_steps WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3 AND process_id=$4 AND state=\'VERIFIED\' ORDER BY sequence_no LIMIT 1',
+          [tenantAId, factoryAId, versionAId, processId],
+        );
+        const stepId = stepResult.rows[0]?.id;
+        expect(stepId).toBeDefined();
+        const evidence = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_evidence WHERE tenant_id=$1 AND factory_id=$2 ORDER BY created_at LIMIT 1',
+          [tenantAId, factoryAId],
+        );
+        expect(evidence.rows[0]?.id).toBeDefined();
+
+        await adminPool.query(
+          'INSERT INTO business_conflicts (tenant_id, factory_id, blueprint_id, subject_type, subject_id, status, description, evidence_refs, created_by) VALUES ($1,$2,$3,\'PROCESS_STEP\',$4,\'OPEN\',$5,$6::jsonb,$7)',
+          [
+            tenantAId, factoryAId, blueprintAId, stepId,
+            'Open process-step evidence conflict',
+            JSON.stringify([evidence.rows[0]?.id]), null,
+          ],
+        );
+
+        const result = await service.getProcess(tenantAId, factoryAId, processId as string);
+        expect(result?.process.id).toBe(processId);
+        expect(result?.steps).toHaveLength(0);
+      },
+    );
+
+    it(
+      'hides a process from list and detail retrieval while its evidence conflict is open',
+      async () => {
+        const processResult = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_processes WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3 AND name = \'Order Fulfillment\' AND state=\'VERIFIED\' LIMIT 1',
+          [tenantAId, factoryAId, versionAId],
+        );
+        const processId = processResult.rows[0]?.id;
+        expect(processId).toBeDefined();
+        const evidence = await adminPool.query<{ id: string }>(
+          'SELECT id::text AS id FROM business_evidence WHERE tenant_id=$1 AND factory_id=$2 ORDER BY created_at LIMIT 1',
+          [tenantAId, factoryAId],
+        );
+        expect(evidence.rows[0]?.id).toBeDefined();
+
+        await adminPool.query(
+          'INSERT INTO business_conflicts (tenant_id, factory_id, blueprint_id, subject_type, subject_id, status, description, evidence_refs, created_by) VALUES ($1,$2,$3,\'PROCESS\',$4,\'OPEN\',$5,$6::jsonb,$7)',
+          [
+            tenantAId, factoryAId, blueprintAId, processId,
+            'Open process evidence conflict',
+            JSON.stringify([evidence.rows[0]?.id]), null,
+          ],
+        );
+
+        const list = await service.listProcesses(tenantAId, factoryAId);
+        expect(list?.items.some((item) => item.id === processId)).toBe(false);
+        await expect(service.getProcess(tenantAId, factoryAId, processId as string)).resolves.toBeNull();
+      },
+    );
+
+    it(
       'does not return Tenant A data through Factory B scope',
       async () => {
         const result =
