@@ -32,6 +32,22 @@ describe('research evidence and citation validation', () => {
     });
   });
 
+  it('recognizes a DOI encoded in the registered source URL when the DOI field is absent', () => {
+    expect(validateResearchCitation(
+      { page: 3, doi: 'doi:10.1234/url-only-identity' },
+      { source_url: 'https://doi.org/10.1234/url-only-identity' },
+    ).status).toBe('CONSISTENT');
+  });
+
+  it('does not accept a DOI embedded in unrelated malformed text', () => {
+    const result = validateResearchCitation(
+      { page: 3, doi: 'not-a-doi 10.1234/real-suffix' },
+      { doi: '10.1234/real-suffix', source_url: 'https://publisher.example/paper' },
+    );
+    expect(result.status).toBe('INVALID');
+    expect(result.findings).toContain('CITATION_DOI_INVALID');
+  });
+
   it('rejects a citation whose DOI conflicts with the registered source', () => {
     const result = validateResearchCitation(
       { page: 2, doi: '10.9999/not-the-source' },
