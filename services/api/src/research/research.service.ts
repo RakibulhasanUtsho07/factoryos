@@ -1138,7 +1138,7 @@ export class ResearchService {
         safetyPassed,
         safetyReviewed: false,
         automaticContractChecks: true,
-        evaluationVersion: 'research-release-contract.v1',
+        evaluationVersion: 'research-release-contract.v2',
       };
       sources = report.sources;
       contentFingerprint = report.contentFingerprint;
@@ -1151,7 +1151,7 @@ export class ResearchService {
         safetyPassed: false,
         safetyReviewed: false,
         automaticContractChecks: true,
-        evaluationVersion: 'research-release-contract.v1',
+        evaluationVersion: 'research-release-contract.v2',
         claimCount: Array.isArray(release.claim_ids) ? release.claim_ids.length : 0,
         failureReason,
       };
@@ -1159,7 +1159,7 @@ export class ResearchService {
         .update(JSON.stringify({
           releaseId,
           claimIds: release.claim_ids,
-          evaluationVersion: 'research-release-contract.v1',
+          evaluationVersion: 'research-release-contract.v2',
           failureReason,
         }))
         .digest('hex');
@@ -1191,7 +1191,7 @@ export class ResearchService {
             tenant_id, namespace, release_id, evaluation_version, status,
             content_fingerprint, results, evaluated_by
           )
-          VALUES ($1, 'TENANT', $2, 'research-release-contract.v1', $3, $4, $5::jsonb, $6)
+          VALUES ($1, 'TENANT', $2, 'research-release-contract.v2', $3, $4, $5::jsonb, $6)
           RETURNING id::text AS id, status, evaluation_version, content_fingerprint,
             results, evaluated_at::text AS evaluated_at
           `,
