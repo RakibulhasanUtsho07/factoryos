@@ -8,6 +8,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient } from 'pg';
+import { scanResearchPromptInjection } from './research-evidence-validation';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
@@ -1035,17 +1036,7 @@ export class ResearchIngestionService {
   }
 
   private safetyFlags(text: string): string[] {
-    const flags: string[] = [];
-    if (/(ignore|disregard|override)\s+(all\s+)?(previous|prior|system)\s+instructions/i.test(text)) {
-      flags.push('PROMPT_CONTROL_INSTRUCTION');
-    }
-    if (/(reveal|print|expose|dump)\s+(the\s+)?(system prompt|hidden prompt|credentials|secrets|api keys)/i.test(text)) {
-      flags.push('SECRET_EXTRACTION_INSTRUCTION');
-    }
-    if (/(exfiltrat|send|upload|forward)\s+.{0,80}(credential|secret|private data|customer data)/i.test(text)) {
-      flags.push('POSSIBLE_DATA_EXFILTRATION_INSTRUCTION');
-    }
-    return [...new Set(flags)];
+    return scanResearchPromptInjection(text);
   }
 
   private hash(value: unknown) {
