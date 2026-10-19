@@ -36,6 +36,7 @@ BEGIN
     'uq_cbb_staleness_review_subject',
     'idx_cbb_staleness_open_scope',
     'uq_cbb_terminology_alias_scope',
+    'idx_cbb_terminology_alias_context',
     'idx_cbb_terminology_canonical_scope',
     'idx_cbb_terminology_history_scope',
     'uq_cbb_impact_link',
@@ -67,8 +68,15 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='132_cbb_governance'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='133_cbb_terminology_context'
   ) THEN
     RAISE EXCEPTION 'CBB_GOVERNANCE_MIGRATION_REGISTRATION_MISSING';
+  END IF;
+
+  IF position('language_code' IN pg_get_indexdef('public.uq_cbb_terminology_alias_scope'::regclass)) = 0
+     OR position('source_system' IN pg_get_indexdef('public.uq_cbb_terminology_alias_scope'::regclass)) = 0 THEN
+    RAISE EXCEPTION 'CBB_TERMINOLOGY_ALIAS_CONTEXT_UNIQUENESS_MISSING';
   END IF;
 
   IF position('CBB_GOVERNANCE_HISTORY_IS_APPEND_ONLY'
