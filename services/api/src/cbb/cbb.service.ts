@@ -675,6 +675,81 @@ export class CbbService {
         },
       );
 
+
+    // Expose the exact source records linked to visible graph items. Restricted
+    // source records require the separate review-only evidence endpoint.
+    const targetIds = [
+      ...entitiesResult.rows.map((row) => row.id),
+      ...relationsResult.rows.map((row) => row.id),
+    ];
+    const evidenceByTarget = new Map<string, Record<string, unknown>[]>();
+    if (targetIds.length > 0) {
+      const evidenceResult = await this.database.query<QueryResultRow>(
+        `
+        SELECT
+          l.target_type,
+          l.target_id::text AS target_id,
+          l.link_type,
+          e.id::text AS evidence_id,
+          e.source_type,
+          e.source_ref,
+          e.source_uri,
+          e.source_system,
+          e.source_record_id,
+          e.source_version,
+          e.source_timestamp::text AS source_timestamp,
+          e.evidence_grade,
+          e.confidence,
+          e.state,
+          e.content_hash,
+          e.created_at::text AS created_at
+        FROM business_evidence_links l
+        INNER JOIN business_evidence e
+          ON e.id = l.evidence_id
+         AND e.tenant_id = l.tenant_id
+         AND e.factory_id = l.factory_id
+        WHERE
+          l.tenant_id = $1
+          AND l.factory_id = $2
+          AND l.blueprint_id = $3
+          AND l.blueprint_version_id = $4
+          AND l.target_type IN ('ENTITY', 'RELATION')
+          AND l.target_id = ANY($5::uuid[])
+          AND e.visibility = 'INTERNAL'
+        ORDER BY l.target_type, l.target_id, e.created_at, e.id
+        `,
+        [
+          tenantId,
+          factoryId,
+          version.blueprintId,
+          version.versionId,
+          targetIds,
+        ],
+        { tenantId },
+      );
+      for (const row of evidenceResult.rows) {
+        const key = String(row.target_type) + ':' + String(row.target_id);
+        const current = evidenceByTarget.get(key) ?? [];
+        current.push({
+          evidenceId: String(row.evidence_id),
+          sourceType: row.source_type,
+          sourceRef: row.source_ref,
+          sourceUri: row.source_uri ?? null,
+          sourceSystem: row.source_system ?? null,
+          sourceRecordId: row.source_record_id ?? null,
+          sourceVersion: row.source_version ?? null,
+          sourceTimestamp: row.source_timestamp,
+          evidenceGrade: row.evidence_grade ?? null,
+          confidence: this.normalizeNullableNumber(row.confidence as number | string | null),
+          state: row.state,
+          contentHash: row.content_hash,
+          linkType: row.link_type,
+          recordedAt: row.created_at,
+        });
+        evidenceByTarget.set(key, current);
+      }
+    }
+
     return {
       tenantId,
 
@@ -737,6 +812,9 @@ export class CbbService {
 
             createdAt:
               row.created_at,
+
+            evidence:
+              evidenceByTarget.get('ENTITY:' + row.id) ?? [],
           }),
         ),
 
@@ -774,6 +852,9 @@ export class CbbService {
 
             createdAt:
               row.created_at,
+
+            evidence:
+              evidenceByTarget.get('RELATION:' + row.id) ?? [],
           }),
         ),
 

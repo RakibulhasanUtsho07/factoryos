@@ -278,6 +278,9 @@ describe(
 
           .mockResolvedValueOnce({
             rows: [],
+          })
+          .mockResolvedValueOnce({
+            rows: [],
           });
 
         const result =
