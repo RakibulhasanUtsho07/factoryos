@@ -490,7 +490,19 @@ export class CbbController {
     @Param('evidenceId', new ParseUUIDPipe()) evidenceId: string,
   ) {
     const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbEvidenceService.getEvidenceHistory(tenantId, factoryId, evidenceId);
+    return this.cbbEvidenceService.getEvidenceHistory(tenantId, factoryId, evidenceId, 'INTERNAL');
+  }
+
+  @Get('evidence/restricted/:evidenceId/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.business.review')
+  @RequireFactoryScope()
+  async getRestrictedEvidenceHistory(
+    @Req() request: FactoryOsRequest,
+    @Param('evidenceId', new ParseUUIDPipe()) evidenceId: string,
+  ) {
+    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbEvidenceService.getEvidenceHistory(tenantId, factoryId, evidenceId, 'RESTRICTED');
   }
 
   @Post('evidence/:evidenceId/links')
