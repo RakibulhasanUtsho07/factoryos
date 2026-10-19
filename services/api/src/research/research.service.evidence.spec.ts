@@ -113,6 +113,72 @@ describe('ResearchService evidence assessment workflow', () => {
     }));
   });
 
+  it('records an immutable, source-version-bound safety review with a reviewer reason', async () => {
+    const assessmentId = 'a0e4bc0d-06de-44e6-979c-51ecfe270001';
+    const reviewId = 'cf4f3cd0-392e-41b5-8a1a-3df07d4b2dd1';
+    client.query
+      .mockResolvedValueOnce({ rows: [{
+        assessment_id: assessmentId, claim_id: CLAIM_ID, source_id: SOURCE_ID,
+        source_revision: 2, rights_version: 3, safety_status: 'REVIEW_REQUIRED',
+        citation_status: 'CONSISTENT', current_source_revision: 2, current_rights_version: 3,
+        access_status: 'APPROVED', license_status: 'OPEN_ACCESS', rights_basis: 'Verified licence',
+      }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        id: reviewId, assessment_id: assessmentId, claim_id: CLAIM_ID, source_id: SOURCE_ID,
+        source_revision: 2, rights_version: 3, decision: 'CLEAR',
+        reason: 'Reviewed the flagged phrase as a quoted study example.',
+        reviewed_by: USER_ID, created_at: '2026-10-19T10:00:00.000Z',
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const review = await service.decideEvidenceSafety(
+      USER_ID, TENANT_ID, CLAIM_ID, assessmentId,
+      { decision: 'CLEAR', reason: 'Reviewed the flagged phrase as a quoted study example.' },
+      null, null,
+    );
+
+    expect(review).toMatchObject({ id: reviewId, decision: 'CLEAR', source_revision: 2, rights_version: 3 });
+    expect(String(client.query.mock.calls[2][0])).toContain('INSERT INTO research_evidence_safety_reviews');
+    expect(client.query.mock.calls[2][1][6]).toBe('CLEAR');
+    expect(client.query.mock.calls[2][1][7]).toBe('Reviewed the flagged phrase as a quoted study example.');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CLAIM_EVIDENCE_SAFETY_REVIEW',
+      resourceId: CLAIM_ID,
+    }));
+  });
+
+  it('allows flagged evidence approval only after a current explicit CLEAR safety review', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [{
+        id: CLAIM_ID, tenant_id: TENANT_ID, namespace: 'TENANT', source_id: SOURCE_ID,
+        claim_text: 'A claim with a source locator.', methodology: null, dataset_description: null,
+        limitations: null, practical_implication: null, evidence_grade: 'B', evidence_strength: 'LIMITED',
+        topic_tags: [], provenance_ref: { page: 2 }, status: 'PROPOSED', extraction_item_id: null,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        access_status: 'APPROVED', license_status: 'OPEN_ACCESS', full_text_storage_allowed: false,
+        source_revision: 2, rights_version: 3,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        citation_status: 'CONSISTENT', safety_status: 'REVIEW_REQUIRED', safety_review_cleared: true,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: CLAIM_ID, status: 'APPROVED', evidence_grade: 'B',
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.decideClaim(
+      USER_ID, TENANT_ID, CLAIM_ID,
+      { decision: 'APPROVE', evidence_grade: 'B', reason: 'Evidence and safety review are complete.' } as DecideResearchClaimDto,
+      null, null,
+    );
+
+    expect(result).toMatchObject({ id: CLAIM_ID, status: 'APPROVED' });
+    expect(String(client.query.mock.calls[3][0])).toContain("evidence_grade = CASE");
+    expect(String(client.query.mock.calls[4][0])).toContain('INSERT INTO outbox_events');
+  });
+
   it('blocks claim approval until a current citation and safety assessment exists', async () => {
     client.query
       .mockResolvedValueOnce({
