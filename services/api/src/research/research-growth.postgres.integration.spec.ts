@@ -402,6 +402,77 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
     });
   });
 
+  it('purges stored source excerpts on rights revocation but retains a verifiable digest audit', async () => {
+    await withFixture(async (client, f) => {
+      await client.query(
+        'UPDATE research_sources SET full_text_storage_allowed=TRUE WHERE id=$1 AND tenant_id=$2',
+        [f.sourceId, f.tenantId],
+      );
+      const excerpt = 'A licensed paper passage that must be erased when permission is withdrawn.';
+      const claim = await client.query<{ id: string }>(
+        `
+        INSERT INTO research_claims (
+          tenant_id,namespace,source_id,claim_text,evidence_grade,evidence_strength,
+          topic_tags,provenance_ref,stored_excerpt,status,created_by
+        )
+        VALUES ($1,'TENANT',$2,'Claim with a licensed excerpt','B','MODERATE',
+          '["rights"]'::jsonb,'{"page":7,"section":"Results"}'::jsonb,$3,'PROPOSED',$4)
+        RETURNING id::text AS id
+        `,
+        [f.tenantId, f.sourceId, excerpt, f.userId],
+      );
+      const expectedDigest = await client.query<{ digest: string }>(
+        "SELECT encode(sha256(convert_to($1,'UTF8')),'hex') AS digest",
+        [excerpt],
+      );
+
+      await client.query(
+        `UPDATE research_sources
+         SET access_status='REVOKED',reviewed_by=$1,reviewed_at=clock_timestamp(),
+             review_reason='Rights withdrawn by source owner'
+         WHERE id=$2 AND tenant_id=$3`,
+        [f.userId, f.sourceId, f.tenantId],
+      );
+
+      const stored = await client.query<{ stored_excerpt: string | null; provenance_ref: Record<string, unknown> }>(
+        'SELECT stored_excerpt,provenance_ref FROM research_claims WHERE id=$1 AND tenant_id=$2',
+        [claim.rows[0].id, f.tenantId],
+      );
+      expect(stored.rows[0].stored_excerpt).toBeNull();
+      expect(stored.rows[0].provenance_ref).toMatchObject({
+        page: 7,
+        section: 'Results',
+        storedExcerptPurged: true,
+        storedExcerptSha256: expectedDigest.rows[0].digest,
+        storedExcerptPurgeReason: 'SOURCE_ACCESS_REVOKED',
+      });
+      expect(stored.rows[0].provenance_ref.storedExcerptPurgedAt).toBeTruthy();
+
+      const purge = await client.query<{
+        source_revision: number; rights_version: number; excerpt_sha256: string;
+        purge_reason: string; actor_user_id: string;
+      }>(
+        `SELECT source_revision,rights_version,excerpt_sha256,purge_reason,actor_user_id::text AS actor_user_id
+         FROM research_source_content_purges WHERE tenant_id=$1 AND source_id=$2 AND claim_id=$3`,
+        [f.tenantId, f.sourceId, claim.rows[0].id],
+      );
+      expect(purge.rows).toEqual([{
+        source_revision: 1,
+        rights_version: 3,
+        excerpt_sha256: expectedDigest.rows[0].digest,
+        purge_reason: 'SOURCE_ACCESS_REVOKED',
+        actor_user_id: f.userId,
+      }]);
+
+      await client.query('SAVEPOINT reject_purge_audit_rewrite');
+      await expect(client.query(
+        'UPDATE research_source_content_purges SET purge_reason=$1 WHERE source_id=$2 AND claim_id=$3',
+        ['LICENSE_RESTRICTED', f.sourceId, claim.rows[0].id],
+      )).rejects.toMatchObject({ code: 'P0001' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_purge_audit_rewrite');
+    });
+  });
+
   it('prevents approving claims against a source whose rights are not approved', async () => {
     await withFixture(async (client, f) => {
       await client.query('SAVEPOINT rejected_claim_approval');
