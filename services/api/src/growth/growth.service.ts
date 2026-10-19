@@ -229,6 +229,7 @@ export class GrowthService {
       scenario_count: number;
       scenario_types: string[];
       decision_ready: boolean;
+      sensitivity_decision_ready: boolean;
       created_by: string;
       created_at: string;
     }>(
@@ -250,7 +251,16 @@ export class GrowthService {
             AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
             AND sc.opportunity_id = m.opportunity_id
           WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
-            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id), FALSE) AS decision_ready
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
+            AND m.scenario_type <> 'CUSTOM'), FALSE) AS decision_ready,
+        COALESCE((SELECT bool_and(sc.decision_ready)
+          FROM growth_scenario_set_members m
+          JOIN growth_scenarios sc ON sc.id = m.scenario_id
+            AND sc.tenant_id = m.tenant_id AND sc.factory_id = m.factory_id
+            AND sc.opportunity_id = m.opportunity_id
+          WHERE m.scenario_set_id = s.id AND m.tenant_id = s.tenant_id
+            AND m.factory_id = s.factory_id AND m.opportunity_id = s.opportunity_id
+            AND m.scenario_type = 'CUSTOM'), FALSE) AS sensitivity_decision_ready
       FROM growth_scenario_sets s
       WHERE s.opportunity_id = $1 AND s.tenant_id = $2 AND s.factory_id = $3
       ORDER BY s.set_version DESC
@@ -334,10 +344,16 @@ export class GrowthService {
     const scenarios = memberResult.rows;
     const requiredTypes = ['BASE', 'UPSIDE', 'DOWNSIDE', 'STRESS'];
     const presentTypes = requiredTypes.filter(type => scenarios.some(row => row.scenario_type === type));
+    const standardScenarios = scenarios.filter(row => requiredTypes.includes(row.scenario_type));
+    const sensitivityScenarios = scenarios.filter(row => row.scenario_type === 'CUSTOM');
     return {
       ...scenarioSet,
       scenario_count: scenarios.length,
-      decision_ready: scenarios.length > 0 && scenarios.every(row => row.decision_ready),
+      decision_ready: presentTypes.length === requiredTypes.length
+        && standardScenarios.length === requiredTypes.length
+        && standardScenarios.every(row => row.decision_ready),
+      sensitivity_decision_ready: sensitivityScenarios.length > 0
+        && sensitivityScenarios.every(row => row.decision_ready),
       scenario_type_coverage: {
         required: requiredTypes,
         present: presentTypes,
@@ -1121,6 +1137,7 @@ export class GrowthService {
             low_value: axis.low_value,
             high_value: axis.high_value,
             points: axis.points,
+            projected_constraint_metrics: axis.projected_constraint_metrics ?? null,
           })),
           constraints_snapshot: constraintsSnapshot,
         };
@@ -1275,11 +1292,16 @@ export class GrowthService {
     const presentTypes = requiredTypes.filter(type =>
       result.scenarios.some(scenario => scenario.scenario_type === type),
     );
+    const standardScenarios = result.scenarios.filter(scenario => requiredTypes.includes(String(scenario.scenario_type)));
+    const sensitivityScenarios = result.scenarios.filter(scenario => scenario.scenario_type === 'CUSTOM');
     return {
       ...result.scenarioSet,
       scenario_count: result.scenarios.length,
-      decision_ready: result.scenarios.length > 0
-        && result.scenarios.every(scenario => scenario.decision_ready === true),
+      decision_ready: presentTypes.length === requiredTypes.length
+        && standardScenarios.length === requiredTypes.length
+        && standardScenarios.every(scenario => scenario.decision_ready === true),
+      sensitivity_decision_ready: sensitivityScenarios.length > 0
+        && sensitivityScenarios.every(scenario => scenario.decision_ready === true),
       scenario_type_coverage: {
         required: requiredTypes,
         present: presentTypes,
