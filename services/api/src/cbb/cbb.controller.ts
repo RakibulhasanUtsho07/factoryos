@@ -141,18 +141,11 @@ export class CbbController {
     @Req()
     request: FactoryOsRequest,
   ) {
-    const {
-      tenantId,
-      factoryId,
-    } =
-      this.getAuthenticatedFactoryContext(
-        request,
-      );
-
-    return this.cbbService.getBusinessModel(
-      tenantId,
-      factoryId,
-    );
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    if (!(await this.cbbGovernanceService.canReadActiveBlueprint(tenantId, factoryId, userId))) {
+      return null;
+    }
+    return this.cbbService.getBusinessModel(tenantId, factoryId);
   }
 
   @Get('map')
@@ -292,31 +285,18 @@ export class CbbController {
     @Query()
     query: ListBusinessChangesDto,
   ) {
-    const {
-      tenantId,
-      factoryId,
-    } =
-      this.getAuthenticatedFactoryContext(
-        request,
-      );
-
-    return this.cbbChangeService.listChangeProposals(
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    const result = await this.cbbChangeService.listChangeProposals(
       tenantId,
       factoryId,
       {
-        status:
-          query.status,
-
-        targetType:
-          query.target_type,
-
-        limit:
-          query.limit,
-
-        offset:
-          query.offset,
+        status: query.status,
+        targetType: query.target_type,
+        limit: query.limit,
+        offset: query.offset,
       },
     );
+    return this.cbbGovernanceService.filterChangeProposalResult(tenantId, factoryId, userId, result);
   }
 
   @Post(
@@ -415,7 +395,8 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async listVersions(@Req() request: FactoryOsRequest) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    if (!(await this.cbbGovernanceService.canReadActiveBlueprint(tenantId, factoryId, userId))) return [];
     return this.cbbEvidenceService.listBlueprintVersions(tenantId, factoryId);
   }
 
@@ -520,13 +501,14 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async listConflicts(@Req() request: FactoryOsRequest, @Query() query: ListCbbConflictsQueryDto) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbEvidenceService.listConflicts(tenantId, factoryId, {
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    const result = await this.cbbEvidenceService.listConflicts(tenantId, factoryId, {
       status: query.status,
       subjectType: query.subject_type,
       limit: query.limit,
       offset: query.offset,
     });
+    return this.cbbGovernanceService.filterConflictResult(tenantId, factoryId, userId, result);
   }
 
   @Get('conflicts/:conflictId/history')
@@ -537,7 +519,8 @@ export class CbbController {
     @Req() request: FactoryOsRequest,
     @Param('conflictId', new ParseUUIDPipe()) conflictId: string,
   ) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    await this.cbbGovernanceService.assertConflictReadAccess(tenantId, factoryId, userId, conflictId);
     return this.cbbEvidenceService.getConflictHistory(tenantId, factoryId, conflictId);
   }
 
@@ -592,8 +575,8 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async listCbbStaleness(@Req() request: FactoryOsRequest) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbGovernanceService.listStaleness(tenantId, factoryId);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listStaleness(tenantId, factoryId, userId);
   }
 
   @Post('staleness/scan')
@@ -694,8 +677,8 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async listCbbRollbackHistory(@Req() request: FactoryOsRequest) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbGovernanceService.listRollbackEvents(tenantId, factoryId);
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    return this.cbbGovernanceService.listRollbackEvents(tenantId, factoryId, userId);
   }
 
   // ============================================================
