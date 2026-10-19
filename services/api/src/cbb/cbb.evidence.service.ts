@@ -234,6 +234,11 @@ export class CbbEvidenceService {
       );
       const bp = bpResult.rows[0];
       if (!bp || !bp.current_version_id) throw new ConflictException('The factory has no active blueprint version to link evidence to');
+      // Serialize provenance/conflict writes for this exact graph subject.
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [scope.tenantId + ':' + scope.factoryId + ':' + String(bp.id) + ':' + targetType + ':' + dto.target_id],
+      );
       await this.assertCurrentTarget(client, scope, targetType, dto.target_id, String(bp.current_version_id), String(bp.id));
       const inserted = await client.query<Row>(
         `INSERT INTO business_evidence_links (
@@ -299,6 +304,27 @@ export class CbbEvidenceService {
               JSON.stringify(refs), scope.userId],
           );
           conflictId = created.rows[0] ? String(created.rows[0].id) : null;
+        }
+      } else if (linkType === 'SUPPORTS') {
+        const open = await client.query<Row>(
+          `SELECT id::text AS id, version, evidence_refs FROM business_conflicts
+           WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_id=$3
+             AND subject_type=$4 AND subject_id=$5 AND status='OPEN' FOR UPDATE`,
+          [scope.tenantId, scope.factoryId, link.blueprint_id, targetType, dto.target_id],
+        );
+        if (open.rows[0]) {
+          const current = open.rows[0];
+          conflictId = String(current.id);
+          const before = this.jsonArray(current.evidence_refs);
+          const after = [...new Set([...before, evidenceId])];
+          if (after.length !== before.length) {
+            await client.query(
+              `UPDATE business_conflicts SET evidence_refs=$1::jsonb, updated_by=$2,
+                 version=version+1, updated_at=NOW()
+               WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND status='OPEN' AND version=$6`,
+              [JSON.stringify(after), scope.userId, conflictId, scope.tenantId, scope.factoryId, Number(current.version)],
+            );
+          }
         }
       }
       return { link, replayed, conflictId, newlyCreated: inserted.rows.length > 0 };

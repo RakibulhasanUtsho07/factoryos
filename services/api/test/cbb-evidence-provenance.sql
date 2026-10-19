@@ -133,6 +133,7 @@ BEGIN
   IF position('CBB_EVIDENCE_PREDECESSOR_IS_NOT_LATEST' IN pg_get_functiondef('public.factoryos_cbb_guard_evidence_revision()'::regprocedure)) = 0
      OR position('CBB_EVIDENCE_TARGET_NOT_FOUND_IN_FACTORY' IN pg_get_functiondef('public.factoryos_cbb_validate_evidence_link()'::regprocedure)) = 0
      OR position('CBB_CONFLICT_EXPECTED_VERSION_MISMATCH' IN pg_get_functiondef('public.factoryos_cbb_guard_conflict_transition()'::regprocedure)) = 0
+     OR position('CBB_CONFLICT_OPEN_DUPLICATE' IN pg_get_functiondef('public.factoryos_cbb_guard_conflict_transition()'::regprocedure)) = 0
      OR position('CBB_CONFLICT_HISTORY_IS_APPEND_ONLY' IN pg_get_functiondef('public.factoryos_cbb_reject_conflict_history_update()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'CBB_EVIDENCE_GUARD_FUNCTIONS_INCOMPLETE';
   END IF;

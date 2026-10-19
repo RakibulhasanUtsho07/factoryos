@@ -441,6 +441,20 @@ BEGIN
       RAISE EXCEPTION 'CBB_CONFLICT_MUST_START_OPEN'
         USING ERRCODE = '23514';
     END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended(
+      NEW.tenant_id::text || ':' || NEW.factory_id::text || ':' ||
+      NEW.blueprint_id::text || ':' || NEW.subject_type || ':' || NEW.subject_id::text,
+      0
+    ));
+    IF EXISTS (
+      SELECT 1 FROM business_conflicts existing
+      WHERE existing.tenant_id=NEW.tenant_id AND existing.factory_id=NEW.factory_id
+        AND existing.blueprint_id=NEW.blueprint_id AND existing.subject_type=NEW.subject_type
+        AND existing.subject_id=NEW.subject_id AND existing.status='OPEN'
+    ) THEN
+      RAISE EXCEPTION 'CBB_CONFLICT_OPEN_DUPLICATE'
+        USING ERRCODE = '23505';
+    END IF;
     IF jsonb_typeof(NEW.evidence_refs) <> 'array' THEN
       RAISE EXCEPTION 'CBB_CONFLICT_EVIDENCE_REFS_MUST_BE_ARRAY'
         USING ERRCODE = '23514';
