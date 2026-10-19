@@ -309,11 +309,10 @@ describe('CbbGovernanceService', () => {
 
   it('does not allow a reviewer without canonical-term edit access to verify an alias', async () => {
     queue(
-      { rows: [{ id: blueprintId, current_version_id: versionId }] }, // active blueprint lock
       { rows: [{
         id: aclId, state: 'PROPOSED', version: 1, alias: 'PO',
-        canonical_term: 'Purchase Order', canonical_term_id: entityId,
-      }] },
+        canonical_term: 'Purchase Order', canonical_term_id: entityId, blueprint_id: blueprintId,
+      }] }, // current alias and canonical CBB term
       { rows: [] }, // target ACL advisory lock
       { rows: [] }, // caller has no matching role
       { rows: [{ target_id: entityId, role_id: roleId, field_name: 'canonical_term', access_level: 'READ' }] },
@@ -325,8 +324,8 @@ describe('CbbGovernanceService', () => {
       { action: 'VERIFY', expected_version: 1, reason: 'Reviewed and confirmed the ERP alias mapping' },
     )).rejects.toThrow('read-only or restricted');
 
-    expect(query).toHaveBeenCalledTimes(5);
-    expect(query.mock.calls[1]?.[0]).toContain('FOR UPDATE OF a');
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(query.mock.calls[0]?.[0]).toContain('FOR UPDATE OF a');
     expect(recordWithClient).not.toHaveBeenCalled();
   });
 
@@ -522,7 +521,8 @@ describe('CbbGovernanceService', () => {
 
     const result = await service.resolveTerminology(tenantId, factoryId, userId, 'PO', 'ERP', 'EN-US');
 
-    expect(result).toMatchObject({ matchedBy: 'ALIAS', ambiguous: undefined });
+    expect(result.matchedBy).toBe('ALIAS');
+    expect(result).not.toHaveProperty('ambiguous', true);
     expect(result.match).toMatchObject({ alias: 'PO', canonical_term: 'Purchase Order' });
     expect(query.mock.calls[3]?.[1]).toEqual([tenantId, factoryId, versionId, 'PO', 'ERP', 'en-us']);
     expect(query.mock.calls[4]?.[0]).toContain('MAX(context_specificity)');
