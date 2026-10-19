@@ -7,6 +7,7 @@ import { ResearchService } from './research.service';
 import { CreateResearchSourceDto } from './dto/create-research-source.dto';
 import { CreateResearchClaimDto } from './dto/create-research-claim.dto';
 import { CreateResearchWatchlistDto } from './dto/create-research-watchlist.dto';
+import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -334,6 +335,54 @@ describe('ResearchService', () => {
 
     expect(evaluation.status).toBe('REVIEW_REQUIRED');
     expect((evaluation.results as Record<string, unknown>).safetyPassed).toBe(false);
+  });
+
+
+  it('requires explicit extraction-item review before trusting an extracted claim', async () => {
+    client.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: CLAIM_ID,
+          tenant_id: TENANT_ID,
+          namespace: 'TENANT',
+          source_id: SOURCE_ID,
+          extraction_item_id: 'aa2f63c4-dd22-4f10-bf4d-67f091700001',
+          claim_text: 'A candidate extracted from an untrusted source.',
+          methodology: null,
+          dataset_description: null,
+          limitations: null,
+          practical_implication: null,
+          evidence_grade: 'B',
+          evidence_strength: 'LIMITED',
+          topic_tags: ['security'],
+          provenance_ref: { locator: { page: 7 }, extraction: { runId: 'e2c4c7ea-e4ce-40a5-a930-05bcce700001' } },
+          status: 'PROPOSED',
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          access_status: 'APPROVED',
+          license_status: 'OPEN_ACCESS',
+          full_text_storage_allowed: false,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(service.decideClaim(
+      USER_ID,
+      TENANT_ID,
+      CLAIM_ID,
+      {
+        decision: 'APPROVE',
+        reason: 'Reviewed this claim for source quality and applicability.',
+      } as DecideResearchClaimDto,
+      null,
+      null,
+    )).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(String(client.query.mock.calls[2]?.[0])).toContain('research_extraction_item_reviews');
+    expect(audit.record).not.toHaveBeenCalled();
   });
 
 });
