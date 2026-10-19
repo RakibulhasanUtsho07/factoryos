@@ -116,7 +116,7 @@ export function validateResearchCitation(
   const sourceUrl = normalizeUrl(source.source_url);
   if (!sourceDoi && !sourceUrl) findings.add('SOURCE_IDENTITY_MISSING');
 
-  const suppliedDoiKeys = [...DOI_KEYS].filter((key) => nonEmpty(locator[key]));
+  const suppliedDoiKeys = DOI_KEYS.filter((key) => nonEmpty(locator[key]));
   for (const key of suppliedDoiKeys) {
     const citedDoi = normalizeDoi(locator[key]);
     if (!citedDoi) {
@@ -128,7 +128,7 @@ export function validateResearchCitation(
     }
   }
 
-  const suppliedUrlKeys = [...URL_KEYS].filter((key) => nonEmpty(locator[key]));
+  const suppliedUrlKeys = URL_KEYS.filter((key) => nonEmpty(locator[key]));
   for (const key of suppliedUrlKeys) {
     const citedUrl = cleanText(locator[key]);
     if (!normalizeUrl(citedUrl)) {
