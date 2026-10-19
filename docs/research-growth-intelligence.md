@@ -77,6 +77,18 @@ Database safeguards serialize concurrent version allocation by locking the paren
 
 `decision_ready` is deliberately the status of the **four standard cases** and requires all four types to be present and each to pass its exact source-backed constraint gate. `sensitivity_decision_ready` is a separate signal for the generated `CUSTOM` points and requires every such point to carry its own valid projection and pass the same gate. A missing projection is `REVIEW_REQUIRED`; a breached capacity, quality, cash or delivery constraint is `BLOCKED`. Financial ranking or arithmetic output does not override these controls.
 
+### Scenario SRS traceability
+
+| Requirement / control | Implementation | Verification / explicit boundary |
+|---|---|---|
+| FR-GRO-09 — reproducible decision scenarios | A frozen set input object, schema/model version, source reference, data vintage and canonical SHA-256 digest; immutable per-opportunity sequence | `growth-scenario-set.service.spec.ts`; PostgreSQL set-version guard; no silent in-place edits |
+| FR-EXP2-07 — compare the standard operating cases | Required `BASE`, `UPSIDE`, `DOWNSIDE`, `STRESS` rows share one baseline/source/vintage and preserve their own financial output and constraint-gate snapshot | `growth-scenario-engine.spec.ts`, service-set tests and PostgreSQL complete-set contract; explicit business assumptions still come from the submitter |
+| Sensitivity and bounded computation | Six supported one-factor parameters at most; per axis 2–11 inclusive, evenly spaced points; parameter domain and decimal-resolution checks; point-specific projections must match the exact grid length | Engine tests reject invalid ranges, duplicate axes, out-of-domain values and unaligned projection arrays |
+| Tenant isolation and auditability | Forced tenant RLS, composite tenant/factory/opportunity foreign keys, append-only headers/members/scenario rows, current actor checks, monotonically allocated versions, transactional outbox/audit | `growth-scenario-sets.sql` checks schema/trigger/RLS contracts; GitHub Actions applies the migration and contract |
+| Decision safety | The four standard cases must be present and pass source-backed capacity, quality, cash and delivery checks. The sensitivity readiness flag is separate and only becomes true when every generated point has its own valid passing constraint projection | Missing projections remain `REVIEW_REQUIRED`; limit breaches remain `BLOCKED`; numeric ROI alone cannot make a case decision-ready |
+| Forecast validity | This is fixed, deterministic arithmetic and one-factor sensitivity, not a fitted model | No model calibration, statistical confidence distribution, Monte Carlo, causal inference or automatic source reconciliation is claimed by this task |
+
+
 For illustration, the request's `profiles` explicitly state all six numeric assumptions per case; the engine does not decide what “upside” or “stress” means for a business. Teams must set those inputs from their approved operating hypothesis and include dates/references that identify the baseline evidence. The outputs are reproducible deterministic arithmetic under `factoryos.growth.financial-sensitivity.v1`; they are not statistical forecasts, calibrated probability intervals, causal effects, Monte Carlo simulations or a substitute for financial and operations review.
 
 ## Consistency and safety properties
