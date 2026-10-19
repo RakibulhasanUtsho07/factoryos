@@ -14,6 +14,7 @@ import { CreateSaasRetentionPolicyDto } from './dto/create-saas-retention-policy
 import { CreateSaasDataLegalHoldDto } from './dto/create-saas-data-legal-hold.dto';
 import { ReleaseSaasDataLegalHoldDto } from './dto/release-saas-data-legal-hold.dto';
 import { CreateSaasTenantErasureRequestDto } from './dto/create-saas-tenant-erasure-request.dto';
+import { CreateSaasExportPreservationAttestationDto } from './dto/create-saas-export-preservation-attestation.dto';
 import {
   ReviewSaasTenantErasureRequestDto,
   SaasTenantErasureReviewDecision,
@@ -54,6 +55,22 @@ interface LegalHoldRow extends QueryResultRow {
   release_reason: string | null;
   row_version: number;
   updated_at: string;
+}
+
+interface ExportPreservationAttestationRow extends QueryResultRow {
+  id: string;
+  tenant_id: string;
+  transfer_id: string;
+  transfer_version: string | number;
+  bundle_digest: string;
+  verification_method: string;
+  verification_reference: string;
+  reason: string;
+  idempotency_key: string;
+  request_hash: string;
+  verified_by_user_id: string;
+  verified_at: string;
+  created_at: string;
 }
 
 interface ErasureRequestRow extends QueryResultRow {
@@ -237,6 +254,110 @@ export class SaasTenantRetentionService {
     return this.mapHold(result);
   }
 
+  async attestExportPreservation(
+    tenantId: string,
+    actorUserId: string,
+    transferId: string,
+    input: CreateSaasExportPreservationAttestationDto,
+  ) {
+    this.identity(tenantId, actorUserId);
+    const normalizedTransferId = this.uuid(transferId, 'transferId');
+    await this.authorize(actorUserId, tenantId, 'saas.data_retention.approve');
+    const expectedVersion = this.integer(input?.expected_version, 'expected_version', 2, Number.MAX_SAFE_INTEGER);
+    const bundleDigest = this.sha256(input?.bundle_digest, 'bundle_digest');
+    const verificationMethod = input?.verification_method;
+    if (!['READ_BACK_HASH', 'SIGNATURE_VALIDATION', 'DUAL_CONTROL_REVIEW'].includes(verificationMethod)) {
+      throw new BadRequestException('verification_method is invalid');
+    }
+    const verificationReference = this.requiredString(input?.verification_reference, 'verification_reference', 200, 1);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(verificationReference)) {
+      throw new BadRequestException('verification_reference must be a non-secret opaque evidence identifier');
+    }
+    const reason = this.requiredString(input?.reason, 'reason', 1000, 3);
+    const idempotencyKey = this.idempotencyKey(input?.idempotency_key);
+    const requestHash = this.hash({
+      operation: 'EXPORT_PRESERVATION_ATTESTATION',
+      transferId: normalizedTransferId,
+      expectedVersion,
+      bundleDigest,
+      verificationMethod,
+      verificationReference,
+      reason,
+    });
+
+    const result = await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+      const replay = await client.query<ExportPreservationAttestationRow>(
+        'SELECT * FROM saas_tenant_data_export_preservation_attestations WHERE tenant_id=$1 AND idempotency_key=$2 FOR UPDATE',
+        [tenantId, idempotencyKey],
+      );
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_hash !== requestHash) {
+          throw new ConflictException('Idempotency-Key was used for another preservation attestation');
+        }
+        return { row: replay.rows[0], replayed: true };
+      }
+
+      const transfer = await client.query<{
+        id: string;
+        transfer_id: string;
+        version: string | number;
+        operation_type: string;
+        status: string;
+        source_bundle_reference: string | null;
+        source_bundle_digest: string | null;
+        source_manifest: Record<string, unknown> | string;
+        actor_user_id: string;
+      }>(
+        `SELECT id::text AS id, transfer_id::text AS transfer_id, version,
+                operation_type, status, source_bundle_reference, source_bundle_digest,
+                source_manifest, actor_user_id::text AS actor_user_id
+         FROM saas_tenant_data_transfers
+         WHERE tenant_id=$1 AND transfer_id=$2 AND version=$3 FOR SHARE`,
+        [tenantId, normalizedTransferId, expectedVersion],
+      );
+      const source = transfer.rows[0];
+      if (!source || source.operation_type !== 'EXPORT' || source.status !== 'COMPLETED'
+        || !source.source_bundle_reference || source.source_bundle_digest !== bundleDigest) {
+        throw new ConflictException('Preservation evidence must bind to the exact completed export version and digest');
+      }
+      if (source.actor_user_id === actorUserId) {
+        throw new ConflictException('The export creator/attester cannot independently verify the same export');
+      }
+      const existing = await client.query(
+        `SELECT id FROM saas_tenant_data_export_preservation_attestations
+         WHERE tenant_id=$1 AND transfer_id=$2 AND transfer_version=$3 FOR UPDATE`,
+        [tenantId, normalizedTransferId, expectedVersion],
+      );
+      if (existing.rows[0]) {
+        throw new ConflictException('This completed export version already has an immutable preservation attestation');
+      }
+
+      const inserted = await client.query<ExportPreservationAttestationRow>(
+        `INSERT INTO saas_tenant_data_export_preservation_attestations
+         (tenant_id, transfer_id, transfer_version, bundle_digest, verification_method,
+          verification_reference, reason, idempotency_key, request_hash, verified_by_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [tenantId, normalizedTransferId, expectedVersion, bundleDigest, verificationMethod,
+          verificationReference, reason, idempotencyKey, requestHash, actorUserId],
+      );
+      const row = inserted.rows[0];
+      await this.audit(client, tenantId, actorUserId, 'EXPORT_PRESERVATION_ATTESTED', row.id, {
+        transferId: normalizedTransferId,
+        transferVersion: expectedVersion,
+        bundleDigest,
+        verificationMethod,
+        verificationReference,
+      });
+      return { row, replayed: false };
+    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-export-preservation:' + tenantId + ':' + normalizedTransferId + ':' + expectedVersion });
+
+    return {
+      attestation: this.mapPreservationAttestation(result.row),
+      replayed: result.replayed,
+    };
+  }
+
   async createErasureRequest(tenantId: string, actorUserId: string, input: CreateSaasTenantErasureRequestDto) {
     this.identity(tenantId, actorUserId);
     await this.authorize(actorUserId, tenantId, 'saas.data_retention.write');
@@ -263,20 +384,22 @@ export class SaasTenantRetentionService {
         version: string | number;
         operation_type: string;
         status: string;
-        preservation_verified: boolean;
+        source_bundle_reference: string | null;
         source_bundle_digest: string | null;
+        actor_user_id: string;
         required_categories: SaasTransferDatasetCategory[] | string;
       }>(
         `SELECT transfer_id::text AS transfer_id, version, operation_type, status,
-                preservation_verified, source_bundle_digest, required_categories
+                source_bundle_reference, source_bundle_digest, actor_user_id::text AS actor_user_id,
+                required_categories
          FROM saas_tenant_data_transfers
          WHERE tenant_id=$1 AND transfer_id=$2 AND version=$3 FOR SHARE`,
         [tenantId, exportTransferId, exportVersion],
       );
       const sourceExport = exportResult.rows[0];
       if (!sourceExport || sourceExport.operation_type !== 'EXPORT' || sourceExport.status !== 'COMPLETED'
-        || sourceExport.preservation_verified !== true || sourceExport.source_bundle_digest !== exportDigest) {
-        throw new ConflictException('Erasure requires a completed, preservation-verified export with the matching digest');
+        || !sourceExport.source_bundle_reference || sourceExport.source_bundle_digest !== exportDigest) {
+        throw new ConflictException('Erasure requires a completed export with the matching artifact digest');
       }
       const exportedCategories = this.parseCategories(sourceExport.required_categories);
       if (categories.some((category) => !exportedCategories.includes(category))) {
@@ -288,6 +411,15 @@ export class SaasTenantRetentionService {
       );
       if (activeHolds.rows.some((hold) => this.categoriesOverlap(categories, this.parseCategories(hold.categories)))) {
         throw new ConflictException('An active legal hold blocks erasure for one or more requested categories');
+      }
+      const preservation = await client.query<{ id: string }>(
+        `SELECT id::text AS id FROM saas_tenant_data_export_preservation_attestations
+         WHERE tenant_id=$1 AND transfer_id=$2 AND transfer_version=$3
+           AND bundle_digest=$4 AND verified_by_user_id <> $5 FOR SHARE`,
+        [tenantId, exportTransferId, exportVersion, exportDigest, sourceExport.actor_user_id],
+      );
+      if (!preservation.rows[0]) {
+        throw new ConflictException('Erasure requires an independent preservation attestation for the completed export');
       }
       const inserted = await client.query<ErasureRequestRow>(
         `INSERT INTO saas_tenant_data_erasure_requests
@@ -533,6 +665,21 @@ export class SaasTenantRetentionService {
       releaseReason: row.release_reason,
       version: Number(row.row_version),
       updatedAt: row.updated_at,
+    };
+  }
+
+  private mapPreservationAttestation(row: ExportPreservationAttestationRow) {
+    return {
+      id: row.id,
+      transferId: row.transfer_id,
+      transferVersion: Number(row.transfer_version),
+      bundleDigest: row.bundle_digest,
+      verificationMethod: row.verification_method,
+      verificationReference: row.verification_reference,
+      reason: row.reason,
+      verifiedByUserId: row.verified_by_user_id,
+      verifiedAt: row.verified_at,
+      createdAt: row.created_at,
     };
   }
 
