@@ -911,6 +911,25 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         `,
         [f.tenantId, f.factoryId, opportunityId, f.userId],
       );
+      await client.query(
+        `INSERT INTO growth_opportunity_decision_owners
+           (tenant_id, factory_id, opportunity_id, role_code, owner_user_id, rationale, assigned_by)
+         VALUES ($1, $2, $3, 'DECISION_OWNER', $4,
+           'Independent owner assigned to test the incomplete-governance fail-closed gate', $5)`,
+        [f.tenantId, f.factoryId, opportunityId, f.decisionUserId, f.userId],
+      );
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.decisionUserId]);
+      await client.query('SAVEPOINT reject_incomplete_governance');
+      await expect(client.query(
+        `UPDATE growth_opportunities
+            SET status = 'ACCEPTED', decided_by = $1, decided_at = clock_timestamp(),
+                decision_reason = 'try before completing governance'
+          WHERE id = $2`,
+        [f.decisionUserId, opportunityId],
+      )).rejects.toMatchObject({ code: '23514' });
+      await client.query('ROLLBACK TO SAVEPOINT reject_incomplete_governance');
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.userId]);
+
       const seededAssumption = await client.query<{ id: string }>(
         'SELECT id::text AS id FROM growth_opportunity_assumptions WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at, id LIMIT 1',
         [opportunityId, f.tenantId, f.factoryId],
@@ -935,13 +954,6 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           [f.tenantId, f.factoryId, opportunityId, dimension, dimension + ' reviewed for fixture', f.userId],
         );
       }
-      await client.query(
-        `INSERT INTO growth_opportunity_decision_owners
-           (tenant_id, factory_id, opportunity_id, role_code, owner_user_id, rationale, assigned_by)
-         VALUES ($1, $2, $3, 'DECISION_OWNER', $4,
-           'Independent owner assigned after evidence and constraints were reviewed', $5)`,
-        [f.tenantId, f.factoryId, opportunityId, f.decisionUserId, f.userId],
-      );
       await client.query("SELECT set_config('app.user_id', $1, true)", [f.decisionUserId]);
       await client.query(
         `
