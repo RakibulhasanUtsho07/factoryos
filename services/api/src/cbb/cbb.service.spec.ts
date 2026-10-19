@@ -324,6 +324,74 @@ describe(
     );
 
     it(
+      'includes source provenance on visible business-map entities',
+      async () => {
+        const evidenceId = 'f0000000-0000-4000-8000-000000000001';
+        const entityId = 'a0000000-0000-0000-0000-000000000001';
+        database.query
+          .mockResolvedValueOnce({
+            rows: [{
+              blueprint_id: blueprintId,
+              blueprint_status: 'ACTIVE',
+              version_id: versionId,
+              version: '1',
+              graph_hash: 'cbb-graph-v1',
+              evidence_count: 1,
+              readiness_score: '0.9',
+              version_status: 'ACTIVE',
+              change_reason: null,
+              created_at: '2026-10-06T00:00:00.000Z',
+            }],
+          })
+          .mockResolvedValueOnce({
+            rows: [{
+              id: entityId,
+              entity_type: 'PROCESS',
+              name: 'Production planning',
+              description: null,
+              state: 'VERIFIED',
+              confidence: '0.95',
+              metadata: {},
+              created_at: '2026-10-06T00:00:00.000Z',
+            }],
+          })
+          .mockResolvedValueOnce({ rows: [] })
+          .mockResolvedValueOnce({
+            rows: [{
+              target_type: 'ENTITY',
+              target_id: entityId,
+              link_type: 'SUPPORTS',
+              evidence_id: evidenceId,
+              source_type: 'ERP',
+              source_ref: 'erp:process:planning',
+              source_uri: 'https://erp.example.test/process/planning',
+              source_system: 'ERP',
+              source_record_id: 'PROC-PLN-1',
+              source_version: '4',
+              source_timestamp: '2026-10-06T00:00:00.000Z',
+              evidence_grade: 'AUTHORITATIVE',
+              confidence: '0.95',
+              state: 'VERIFIED',
+              content_hash: 'a'.repeat(64),
+              created_at: '2026-10-06T00:00:00.000Z',
+            }],
+          });
+
+        const result = await service.getBusinessMap(tenantId, factoryId);
+        expect(result?.nodes).toHaveLength(1);
+        expect(result?.nodes[0]?.evidence).toEqual([
+          expect.objectContaining({
+            evidenceId,
+            sourceType: 'ERP',
+            sourceUri: 'https://erp.example.test/process/planning',
+            linkType: 'SUPPORTS',
+            contentHash: 'a'.repeat(64),
+          }),
+        ]);
+      },
+    );
+
+    it(
       'returns only verified or inferred processes for the current version',
       async () => {
         database.query

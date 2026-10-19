@@ -531,7 +531,11 @@ export class CbbEvidenceService {
     let parsed: URL;
     try { parsed = new URL(candidate); } catch { throw new BadRequestException('source_uri must be a valid HTTP(S) URL'); }
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new BadRequestException('source_uri must use HTTP or HTTPS');
-    return parsed.toString().slice(0, 2000);
+    const normalized = parsed.toString();
+    if (normalized.length > 2000) {
+      throw new BadRequestException('source_uri cannot exceed 2000 characters');
+    }
+    return normalized;
   }
   private confidence(value: number | undefined) {
     if (value === undefined) return null;

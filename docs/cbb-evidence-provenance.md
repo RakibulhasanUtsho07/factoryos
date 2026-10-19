@@ -32,7 +32,7 @@ Evidence list filtering accepts `source_type`, `state`, `source_key`, `target_ty
 ### Source revisions and replay rules
 
 - The first revision of a stable `source_key` is revision 1.
-- Re-submitting the same content digest returns the existing evidence record and does not create a duplicate revision or duplicate audit event.
+- Re-submitting the same digest with unchanged/omitted source-version metadata returns the existing evidence record and does not create a duplicate revision or audit event. A conflicting upstream version is rejected instead of silently discarding the changed version metadata.
 - A changed digest for an existing source conflicts unless the request supplies `supersedes_evidence_id` pointing to the exact latest revision in the same tenant/factory/source key.
 - Revision sequence, predecessor scope, source timestamp and 64-character SHA-256 digest are guarded by PostgreSQL, not only by DTO validation.
 - Evidence records and evidence links are immutable. Corrections create a new revision rather than editing historical provenance.
