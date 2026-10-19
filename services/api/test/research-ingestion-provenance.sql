@@ -11,7 +11,8 @@ BEGIN
     'research_extraction_runs',
     'research_extraction_items',
     'research_source_rights_history',
-    'research_extraction_item_reviews'
+    'research_extraction_item_reviews',
+    'research_source_content_purges'
   ] LOOP
     IF to_regclass('public.' || required_table) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_TABLE_MISSING: %', required_table;
@@ -99,6 +100,11 @@ BEGIN
     SELECT 1 FROM pg_constraint WHERE conname='chk_research_source_full_text_requires_current_access'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_FULL_TEXT_ACCESS_CONSTRAINT_MISSING';
+  END IF;
+
+  IF position('BASELINE_IMPORTED'
+      IN pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname='chk_research_source_rights_history_action'))) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_SOURCE_BASELINE_HISTORY_ACTION_MISSING';
   END IF;
 
   IF NOT EXISTS (
