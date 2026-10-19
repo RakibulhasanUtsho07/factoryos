@@ -10,7 +10,8 @@ BEGIN
     'research_ingestion_events',
     'research_extraction_runs',
     'research_extraction_items',
-    'research_source_rights_history'
+    'research_source_rights_history',
+    'research_extraction_item_reviews'
   ] LOOP
     IF to_regclass('public.' || required_table) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_TABLE_MISSING: %', required_table;
@@ -44,7 +45,9 @@ BEGIN
     'uq_research_extraction_item_key',
     'idx_research_extraction_items_review',
     'uq_research_claim_extraction_item',
-    'idx_research_source_rights_history'
+    'idx_research_source_rights_history',
+    'idx_research_extraction_item_review_history',
+    'uq_research_extraction_item_review'
   ] LOOP
     IF to_regclass('public.' || required_index) IS NULL THEN
       RAISE EXCEPTION 'RESEARCH_INGESTION_REQUIRED_INDEX_MISSING: %', required_index;
@@ -58,7 +61,10 @@ BEGIN
     'research_ingestion_events_immutable',
     'research_extraction_runs_immutable',
     'research_extraction_items_immutable',
-    'research_source_rights_history_immutable'
+    'research_source_rights_history_immutable',
+    'research_extraction_item_review_guard',
+    'research_extraction_item_reviews_immutable',
+    'research_extracted_claim_review_guard'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger t
@@ -83,8 +89,15 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='134_research_ingestion_provenance'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='135_research_extraction_review_gate'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_INGESTION_MIGRATION_REGISTRATION_MISSING';
+  END IF;
+
+  IF position('Extracted claims require explicit extraction-item review'
+      IN pg_get_functiondef('public.factoryos_guard_research_extracted_claim_review()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_EXTRACTION_REVIEW_APPROVAL_GUARD_MISSING';
   END IF;
 
   IF position('RESEARCH_INGESTION_JOB_TERMINAL'
