@@ -83,6 +83,7 @@ export class ResearchIngestionService {
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
       throw new BadRequestException('max_attempts must be between 1 and 10');
     }
+    const correlationId = this.correlationId(requestId, traceId);
 
     return this.database.transaction({ tenantId, userId }, async (client: PoolClient) => {
       const source = await this.lockSource(client, tenantId, sourceId);
@@ -109,7 +110,7 @@ export class ResearchIngestionService {
           tenantId, sourceId, mode, maxAttempts, idempotencyKey, requestHash,
           Number(source.source_revision), Number(source.rights_version), rightsFingerprint,
           JSON.stringify(rightsSnapshot), JSON.stringify(sourceSnapshot),
-          this.correlationId(requestId, traceId), userId,
+          correlationId, userId,
         ],
       );
 
@@ -141,7 +142,7 @@ export class ResearchIngestionService {
       await this.auditInTransaction(client, {
         tenantId, actorUserId: userId, action: 'INGESTION_JOB_CREATED',
         resourceType: 'RESEARCH_INGESTION_JOB', resourceId: String(row.id),
-        correlationId: this.correlationId(requestId, traceId),
+        correlationId,
         payload: { sourceId, mode, maxAttempts, rightsFingerprint, sourceRevision: Number(source.source_revision) },
       });
       return this.safeJob(row);
@@ -258,7 +259,7 @@ export class ResearchIngestionService {
       await this.auditInTransaction(client, {
         tenantId, actorUserId: userId, action: 'INGESTION_JOB_CLAIMED',
         resourceType: 'RESEARCH_INGESTION_JOB', resourceId: String(row.id),
-        correlationId: this.uuidOrNull(traceId) ?? this.uuidOrNull(requestId),
+        correlationId: this.uuidOrNull(traceId) ?? this.uuidOrNull(requestId) ?? this.uuidOrNull(String(job.correlation_id ?? '')),
         payload: { attempt: Number(row.attempt_count), leaseSeconds, resumed: fromStatus !== 'QUEUED' },
       });
       return { job: this.safeJob(row), claimed: true };
@@ -340,6 +341,7 @@ export class ResearchIngestionService {
         `UPDATE research_ingestion_jobs
          SET status='PAUSED',lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp(),version=version+1
          WHERE id=$1 AND tenant_id=$2 AND version=$3 AND status='RUNNING' AND lease_owner=$4
+           AND lease_expires_at > clock_timestamp()
          RETURNING *`,
         [jobId, tenantId, dto.expected_version, userId],
       );
@@ -390,6 +392,7 @@ export class ResearchIngestionService {
              completed_at=CASE WHEN $1='FAILED' THEN clock_timestamp() ELSE NULL END,
              updated_at=clock_timestamp(),version=version+1
          WHERE id=$6 AND tenant_id=$7 AND version=$8 AND status='RUNNING' AND lease_owner=$9
+           AND lease_expires_at > clock_timestamp()
          RETURNING *`,
         [nextStatus, delaySeconds, code, message, shouldRetry, jobId, tenantId, dto.expected_version, userId],
       );
