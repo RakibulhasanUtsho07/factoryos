@@ -1523,6 +1523,12 @@ export class ResearchService {
       rights_basis: string | null;
       source_id: string;
       stored_excerpt: string | null;
+      source_revision: number;
+      rights_version: number;
+      current_evidence_assessment_id: string | null;
+      current_evidence_citation_status: string | null;
+      current_evidence_safety_status: string | null;
+      current_evidence_safety_flags: string[] | null;
       safety_review_decision: string | null;
     }>(
       `
@@ -1532,11 +1538,16 @@ export class ResearchService {
         c.topic_tags, c.provenance_ref, c.status, c.stored_excerpt,
         s.title AS source_title, s.source_url, s.doi,
         s.license_status, s.access_status, s.rights_basis,
+        s.source_revision, s.rights_version,
+        latest_assessment.id::text AS current_evidence_assessment_id,
+        latest_assessment.citation_status AS current_evidence_citation_status,
+        latest_assessment.safety_status AS current_evidence_safety_status,
+        latest_assessment.safety_flags AS current_evidence_safety_flags,
         sr.decision AS safety_review_decision
       FROM research_claims c
       JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
       LEFT JOIN LATERAL (
-        SELECT a.id
+        SELECT a.id, a.citation_status, a.safety_status, a.safety_flags
         FROM research_evidence_assessments a
         WHERE a.claim_id = c.id AND a.tenant_id = c.tenant_id AND a.source_id = s.id
           AND a.source_revision = s.source_revision AND a.rights_version = s.rights_version
@@ -1567,6 +1578,9 @@ export class ResearchService {
     const safetyFindings: Array<{ claimId: string; flags: string[]; reviewDecision: 'CLEAR' | null }> = [];
     const citationFindings: Array<{ claimId: string; status: string; findings: string[] }> = [];
     for (const claim of result.rows) {
+      if (!claim.current_evidence_assessment_id) {
+        throw new ConflictException('Every claim requires a current source- and rights-version-bound evidence assessment before release evaluation');
+      }
       const normalized = claim.claim_text.toLowerCase().replace(/\s+/g, ' ').trim();
       if (seen.has(normalized)) consistencyPassed = false;
       seen.add(normalized);
@@ -1574,19 +1588,36 @@ export class ResearchService {
         doi: claim.doi,
         source_url: claim.source_url,
       });
-      citationFindings.push({ claimId: claim.id, status: citation.status, findings: citation.findings });
-      if (citation.status !== 'CONSISTENT') citationCoveragePassed = false;
+      const citationConsistent = citation.status === 'CONSISTENT'
+        && claim.current_evidence_citation_status === 'CONSISTENT';
+      citationFindings.push({
+        claimId: claim.id,
+        status: citationConsistent ? 'CONSISTENT' : citation.status !== 'CONSISTENT' ? citation.status : 'REVIEW_REQUIRED',
+        findings: citation.status !== 'CONSISTENT' ? citation.findings
+          : claim.current_evidence_citation_status !== 'CONSISTENT' ? ['CURRENT_ASSESSMENT_CITATION_NOT_CONSISTENT'] : [],
+      });
+      if (!citationConsistent) citationCoveragePassed = false;
       if (!['OPEN_ACCESS', 'LICENSED', 'USER_PROVIDED_AUTHORIZED'].includes(claim.license_status)
         || !claim.rights_basis?.trim()) {
         rightsPassed = false;
       }
-      const untrustedText = [claim.claim_text, claim.stored_excerpt]
-        .filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
-      const flags = scanResearchPromptInjection(untrustedText);
+      const untrustedText = [
+        claim.claim_text, claim.stored_excerpt, claim.methodology, claim.dataset_description,
+        claim.limitations, claim.practical_implication,
+      ].filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
+      const persistedFlags = Array.isArray(claim.current_evidence_safety_flags)
+        ? claim.current_evidence_safety_flags.filter((flag): flag is string => typeof flag === 'string') : [];
+      const flags = [...new Set([...persistedFlags, ...scanResearchPromptInjection(untrustedText)])];
+      if (claim.current_evidence_safety_status === 'REVIEW_REQUIRED' && flags.length === 0) {
+        flags.push('SAFETY_REVIEW_REQUIRED');
+      }
       if (flags.length) {
         const reviewDecision = claim.safety_review_decision === 'CLEAR' ? 'CLEAR' : null;
         safetyFindings.push({ claimId: claim.id, flags, reviewDecision });
         if (reviewDecision !== 'CLEAR') safetyFlags.push(claim.id);
+      }
+      if (!['CLEAR', 'REVIEW_REQUIRED'].includes(String(claim.current_evidence_safety_status))) {
+        safetyFlags.push(claim.id);
       }
       sources.set(claim.source_id, {
         sourceId: claim.source_id,
@@ -1614,6 +1645,12 @@ export class ResearchService {
       licenseStatus: claim.license_status,
       accessStatus: claim.access_status,
       rightsBasis: claim.rights_basis,
+      sourceRevision: Number(claim.source_revision),
+      rightsVersion: Number(claim.rights_version),
+      evidenceAssessmentId: claim.current_evidence_assessment_id,
+      evidenceCitationStatus: claim.current_evidence_citation_status,
+      evidenceSafetyStatus: claim.current_evidence_safety_status,
+      evidenceSafetyFlags: claim.current_evidence_safety_flags ?? [],
       safetyReviewDecision: claim.safety_review_decision ?? null,
     }));
     const contentFingerprint = createHash('sha256')
