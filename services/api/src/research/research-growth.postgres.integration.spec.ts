@@ -40,6 +40,10 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           'INSERT INTO users (id, external_subject, email, display_name, status) VALUES ($1, $2, $3, $4, $5)',
           [userId, 'rg-' + userId, 'rg-' + userId + '@factoryos.test', 'Research growth actor', 'ACTIVE'],
         );
+        await client.query(
+          "INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, 'ACTIVE')",
+          [tenantId, userId],
+        );
         const factory = await client.query<{ id: string }>(
           'INSERT INTO factories (tenant_id, code, name, status) VALUES ($1, $2, $3, $4) RETURNING id::text AS id',
           [tenantId, 'RG-' + randomUUID().slice(0, 8), 'Research growth factory', 'ACTIVE'],
