@@ -18,6 +18,20 @@ describe('research evidence and citation validation', () => {
     });
   });
 
+  it('validates the nested locator used by extracted-claim provenance', () => {
+    expect(validateResearchCitation(
+      {
+        locator: { page: 7, section: 'Results' },
+        extraction: { runId: 'a0e4bc0d-06de-44e6-979c-51ecfe270001', itemKey: 'claim-7' },
+      },
+      { doi: '10.1234/extracted-study', source_url: 'https://publisher.example/paper' },
+    )).toEqual({
+      status: 'CONSISTENT',
+      findings: [],
+      verificationLevel: 'METADATA_ONLY',
+    });
+  });
+
   it('rejects a citation whose DOI conflicts with the registered source', () => {
     const result = validateResearchCitation(
       { page: 2, doi: '10.9999/not-the-source' },
