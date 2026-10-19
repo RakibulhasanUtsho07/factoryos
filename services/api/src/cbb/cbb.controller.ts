@@ -427,8 +427,13 @@ export class CbbController {
   @RequirePermission('ai.business.read')
   @RequireFactoryScope()
   async listEvidence(@Req() request: FactoryOsRequest, @Query() query: ListCbbEvidenceQueryDto) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbEvidenceService.listEvidence(tenantId, factoryId, {
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    if (query.target_type && query.target_id) {
+      await this.cbbGovernanceService.assertTargetReadAccess(
+        tenantId, factoryId, userId, query.target_type, query.target_id,
+      );
+    }
+    const result = await this.cbbEvidenceService.listEvidence(tenantId, factoryId, {
       sourceType: query.source_type,
       state: query.state,
       sourceKey: query.source_key,
@@ -438,6 +443,7 @@ export class CbbController {
       offset: query.offset,
       visibility: 'INTERNAL',
     });
+    return this.cbbGovernanceService.filterEvidenceResult(tenantId, factoryId, userId, result);
   }
 
   @Get('evidence/restricted')
@@ -445,8 +451,13 @@ export class CbbController {
   @RequirePermission('ai.business.review')
   @RequireFactoryScope()
   async listRestrictedEvidence(@Req() request: FactoryOsRequest, @Query() query: ListCbbEvidenceQueryDto) {
-    const { tenantId, factoryId } = this.getAuthenticatedFactoryContext(request);
-    return this.cbbEvidenceService.listEvidence(tenantId, factoryId, {
+    const { tenantId, factoryId, userId } = this.getAuthenticatedFactoryContext(request);
+    if (query.target_type && query.target_id) {
+      await this.cbbGovernanceService.assertTargetReadAccess(
+        tenantId, factoryId, userId, query.target_type, query.target_id,
+      );
+    }
+    const result = await this.cbbEvidenceService.listEvidence(tenantId, factoryId, {
       sourceType: query.source_type,
       state: query.state,
       sourceKey: query.source_key,
@@ -456,6 +467,7 @@ export class CbbController {
       offset: query.offset,
       visibility: 'RESTRICTED',
     });
+    return this.cbbGovernanceService.filterEvidenceResult(tenantId, factoryId, userId, result);
   }
 
   @Get('evidence/:evidenceId/history')
