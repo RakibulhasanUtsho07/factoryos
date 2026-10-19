@@ -104,7 +104,12 @@ export function validateResearchCitation(
     };
   }
 
-  const locator = locatorValue as Record<string, unknown>;
+  const outer = locatorValue as Record<string, unknown>;
+  // Extraction provenance wraps the actual locator with immutable run metadata.
+  // Validate the located passage itself, not the wrapper keys (for example "extraction").
+  const locator = outer.locator && typeof outer.locator === 'object' && !Array.isArray(outer.locator)
+    ? outer.locator as Record<string, unknown>
+    : outer;
   const hasPreciseLocator = PRECISE_LOCATORS.some((key) => {
     const value = locator[key];
     if (key === 'page') return Number.isInteger(value) && Number(value) > 0;
