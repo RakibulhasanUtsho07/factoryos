@@ -151,6 +151,7 @@ describe('ResearchService evidence assessment workflow', () => {
       CLAIM_ID,
       {
         decision: 'APPROVE',
+        evidence_grade: 'B',
         reason: 'Reviewed evidence and citation locator for the claim.',
       } as DecideResearchClaimDto,
       null,
@@ -180,7 +181,7 @@ describe('ResearchService evidence assessment workflow', () => {
 
     await expect(service.decideClaim(
       USER_ID, TENANT_ID, CLAIM_ID,
-      { decision: 'APPROVE', reason: 'Review the conflicting citation before approval.' } as DecideResearchClaimDto,
+      { decision: 'APPROVE', evidence_grade: 'B', reason: 'Review the conflicting citation before approval.' } as DecideResearchClaimDto,
       null, null,
     )).rejects.toBeInstanceOf(ConflictException);
 
