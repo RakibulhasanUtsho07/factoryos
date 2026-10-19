@@ -129,6 +129,8 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version='138_research_evidence_assessment'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='139_research_evidence_safety_review'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='140_research_claim_assessment_insert_guard'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_INGESTION_MIGRATION_REGISTRATION_MISSING';
   END IF;
@@ -181,6 +183,13 @@ BEGIN
      OR position('RESEARCH_EVIDENCE_SAFETY_REVIEWS_ARE_APPEND_ONLY'
       IN pg_get_functiondef('public.factoryos_guard_research_evidence_safety_review()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'RESEARCH_EVIDENCE_SAFETY_REVIEW_INTEGRITY_GUARD_MISSING';
+  END IF;
+
+  IF position('INSERT' IN upper(pg_get_triggerdef((
+      SELECT oid FROM pg_trigger
+      WHERE tgname='research_claim_evidence_assessment_guard' AND NOT tgisinternal
+    )))) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_CLAIM_ASSESSMENT_INSERT_GUARD_MISSING';
   END IF;
 
   IF NOT EXISTS (
