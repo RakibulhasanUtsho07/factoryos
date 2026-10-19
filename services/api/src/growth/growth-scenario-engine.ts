@@ -28,6 +28,7 @@ export interface GrowthScenarioSensitivityAxisInput {
   low_value: number;
   high_value: number;
   points: number;
+  projected_constraint_metrics?: Array<Record<string, unknown> | null>;
 }
 
 export interface GrowthScenarioPlanEntry {
@@ -119,6 +120,9 @@ export function buildGrowthScenarioPlan(
       throw new Error(`SCENARIO_SENSITIVITY_POINT_COUNT_INVALID:${axis.parameter}`);
     }
 
+    if (axis.projected_constraint_metrics && axis.projected_constraint_metrics.length !== axis.points) {
+      throw new Error(`SCENARIO_SENSITIVITY_PROJECTION_COUNT_MISMATCH:${axis.parameter}`);
+    }
     const axisValues = Array.from({ length: axis.points }, (_, index) =>
       normalizedNumber(axis.low_value + (axis.high_value - axis.low_value) * index / (axis.points - 1)),
     );
@@ -132,7 +136,13 @@ export function buildGrowthScenarioPlan(
         scenario_type: 'CUSTOM',
         display_name: `Sensitivity ${axis.parameter} = ${value.toFixed(4)}`,
         position: position++,
-        profile: { ...profiles.base, [axis.parameter]: value },
+        profile: {
+          ...profiles.base,
+          [axis.parameter]: value,
+          projected_constraint_metrics: axis.projected_constraint_metrics
+            ? axis.projected_constraint_metrics[index] ?? null
+            : null,
+        },
         sensitivity_parameter: axis.parameter,
         sensitivity_value: value,
       });
@@ -158,5 +168,5 @@ export function canonicalizeGrowthScenarioInput(value: unknown): string {
     }
     return item;
   };
-  return JSON.stringify(normalize(value));
+  return JSON.stringify(normalize(value)) ?? 'null';
 }
