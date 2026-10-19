@@ -229,10 +229,10 @@ BEGIN
       WHEN 'BLOCKED' THEN NEW.current_state IN ('CONTEXT_READY','VERIFIED','REVIEW_REQUIRED','BLOCKED','ACTION_PENDING_APPROVAL','ACTION_AUTHORIZED','CANCELLED')
       WHEN 'ACTION_PENDING_APPROVAL' THEN NEW.current_state IN ('ACTION_PENDING_APPROVAL','ACTION_AUTHORIZED','BLOCKED','FAILED','CANCELLED')
       WHEN 'ACTION_AUTHORIZED' THEN NEW.current_state IN ('ACTION_AUTHORIZED','ACTION_PENDING_APPROVAL','EXECUTING','COMPLETED','FAILED','OUTCOME_CAPTURED','CANCELLED')
-      WHEN 'EXECUTING' THEN NEW.current_state IN ('EXECUTING','COMPLETED','FAILED','CANCELLED')
-      WHEN 'COMPLETED' THEN NEW.current_state IN ('COMPLETED','OUTCOME_CAPTURED')
+      WHEN 'EXECUTING' THEN NEW.current_state IN ('EXECUTING','CONTEXT_READY','VERIFIED','REVIEW_REQUIRED','BLOCKED','ACTION_PENDING_APPROVAL','ACTION_AUTHORIZED','COMPLETED','FAILED','OUTCOME_CAPTURED','CANCELLED')
+      WHEN 'COMPLETED' THEN NEW.current_state IN ('COMPLETED','CONTEXT_READY','VERIFIED','REVIEW_REQUIRED','BLOCKED','ACTION_PENDING_APPROVAL','ACTION_AUTHORIZED','EXECUTING','FAILED','OUTCOME_CAPTURED','CANCELLED')
       WHEN 'FAILED' THEN NEW.current_state IN ('FAILED','CONTEXT_READY','VERIFIED','ACTION_PENDING_APPROVAL','ACTION_AUTHORIZED','OUTCOME_CAPTURED','CANCELLED')
-      WHEN 'OUTCOME_CAPTURED' THEN NEW.current_state IN ('OUTCOME_CAPTURED','CONTEXT_READY','VERIFIED','CANCELLED')
+      WHEN 'OUTCOME_CAPTURED' THEN NEW.current_state IN ('OUTCOME_CAPTURED','CONTEXT_READY','VERIFIED','REVIEW_REQUIRED','BLOCKED','ACTION_PENDING_APPROVAL','ACTION_AUTHORIZED','EXECUTING','COMPLETED','FAILED','CANCELLED')
       WHEN 'CANCELLED' THEN NEW.current_state = 'CANCELLED'
       ELSE FALSE
     END;
@@ -368,6 +368,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_actor UUID;
+  v_decision_id UUID;
   v_state VARCHAR(40);
   v_reason VARCHAR(120);
   v_context UUID;
@@ -388,8 +389,10 @@ BEGIN
   END IF;
 
   IF TG_TABLE_NAME = 'ai_context_packages' THEN
-    v_actor := (SELECT d.actor_id FROM ai_decision_envelopes d
-                WHERE d.id = NEW.decision_id AND d.tenant_id = NEW.tenant_id AND d.factory_id = NEW.factory_id);
+    v_decision_id := NEW.decision_id;
+    SELECT d.actor_id INTO v_actor
+    FROM ai_decision_envelopes d
+    WHERE d.id = NEW.decision_id AND d.tenant_id = NEW.tenant_id AND d.factory_id = NEW.factory_id;
     v_state := 'CONTEXT_READY';
     v_reason := 'CONTEXT_RESOLVED';
     v_context := NEW.id;
@@ -400,20 +403,72 @@ BEGIN
     WHERE src->>'type' = 'BUSINESS_EVIDENCE';
     v_metadata := jsonb_build_object('contextVersion', NEW.context_version, 'packageHash', NEW.package_hash);
   ELSIF TG_TABLE_NAME = 'ai_verification_runs' THEN
-    v_actor := (SELECT d.actor_id FROM ai_decision_envelopes d
-                WHERE d.id = NEW.decision_id AND d.tenant_id = NEW.tenant_id AND d.factory_id = NEW.factory_id);
+    v_decision_id := NEW.decision_id;
+    SELECT d.actor_id INTO v_actor
+    FROM ai_decision_envelopes d
+    WHERE d.id = NEW.decision_id AND d.tenant_id = NEW.tenant_id AND d.factory_id = NEW.factory_id;
     v_state := CASE NEW.status WHEN 'PASSED' THEN 'VERIFIED' WHEN 'REVIEW_REQUIRED' THEN 'REVIEW_REQUIRED' ELSE 'BLOCKED' END;
     v_reason := CASE NEW.status WHEN 'PASSED' THEN 'VERIFICATION_PASSED' WHEN 'REVIEW_REQUIRED' THEN 'VERIFICATION_REVIEW_REQUIRED' ELSE 'VERIFICATION_BLOCKED' END;
     v_context := NEW.context_package_id;
     v_verification := NEW.id;
     v_metadata := jsonb_build_object('verificationStatus', NEW.status);
   ELSIF TG_TABLE_NAME = 'ai_action_intents' THEN
+    v_decision_id := NEW.decision_id;
     v_actor := NEW.created_by;
     v_action := NEW.id;
     v_state := CASE NEW.authorization_status WHEN 'AUTHORIZED' THEN 'ACTION_AUTHORIZED' WHEN 'APPROVAL_REQUIRED' THEN 'ACTION_PENDING_APPROVAL' ELSE 'BLOCKED' END;
     v_reason := CASE NEW.authorization_status WHEN 'AUTHORIZED' THEN 'ACTION_AUTHORIZED' WHEN 'APPROVAL_REQUIRED' THEN 'ACTION_APPROVAL_REQUIRED' ELSE 'ACTION_DENIED' END;
     v_metadata := jsonb_build_object('actionType', NEW.action_type, 'authorizationStatus', NEW.authorization_status, 'riskClass', NEW.risk_class);
+  ELSIF TG_TABLE_NAME = 'ai_execution_claims' THEN
+    SELECT a.created_by, a.decision_id
+      INTO v_actor, v_decision_id
+    FROM ai_action_intents a
+    WHERE a.id = NEW.action_intent_id
+      AND a.tenant_id = NEW.tenant_id
+      AND a.factory_id = NEW.factory_id;
+    IF v_decision_id IS NULL THEN
+      RAISE EXCEPTION 'AI execution claim has no scoped action/decision';
+    END IF;
+    v_action := NEW.action_intent_id;
+    IF TG_OP = 'UPDATE' THEN
+      IF NEW.status = OLD.status THEN
+        RETURN NEW;
+      END IF;
+      -- The execution-record insert already captures the authoritative
+      -- terminal result in the same transaction. Do not double-advance it.
+      IF EXISTS (
+        SELECT 1 FROM ai_execution_records e
+        WHERE e.tenant_id = NEW.tenant_id
+          AND e.factory_id = NEW.factory_id
+          AND e.action_intent_id = NEW.action_intent_id
+      ) THEN
+        RETURN NEW;
+      END IF;
+      v_state := CASE NEW.status WHEN 'COMPLETED' THEN 'COMPLETED' ELSE 'FAILED' END;
+      v_reason := CASE NEW.status
+        WHEN 'COMPLETED' THEN 'EXECUTION_CLAIM_RECONCILED_COMPLETED'
+        ELSE 'EXECUTION_CLAIM_RECONCILED_FAILED'
+      END;
+      v_metadata := jsonb_build_object(
+        'executionKey', NEW.execution_key,
+        'claimStatus', NEW.status,
+        'failureCode', NEW.failure_code,
+        'manualReconciliationRequired', true
+      );
+    ELSE
+      IF NEW.status <> 'CLAIMED' THEN
+        RETURN NEW;
+      END IF;
+      v_state := 'EXECUTING';
+      v_reason := 'EXECUTION_CLAIMED';
+      v_metadata := jsonb_build_object(
+        'executionKey', NEW.execution_key,
+        'toolVersion', NEW.tool_version,
+        'inputsHash', NEW.inputs_hash
+      );
+    END IF;
   ELSIF TG_TABLE_NAME = 'ai_execution_records' THEN
+    v_decision_id := NEW.decision_id;
     SELECT a.created_by INTO v_actor
     FROM ai_action_intents a
     WHERE a.id = NEW.action_intent_id AND a.tenant_id = NEW.tenant_id AND a.factory_id = NEW.factory_id;
@@ -423,6 +478,7 @@ BEGIN
     v_reason := CASE NEW.status WHEN 'SUCCEEDED' THEN 'EXECUTION_SUCCEEDED' ELSE 'EXECUTION_FAILED' END;
     v_metadata := jsonb_build_object('executionKey', NEW.execution_key, 'executionStatus', NEW.status, 'inputsHash', NEW.inputs_hash);
   ELSIF TG_TABLE_NAME = 'ai_outcome_links' THEN
+    v_decision_id := NEW.decision_id;
     v_actor := NEW.created_by;
     v_action := NEW.action_intent_id;
     v_execution := NEW.execution_record_id;
@@ -435,12 +491,13 @@ BEGIN
   END IF;
 
   IF v_actor IS NULL THEN
-    SELECT d.actor_id INTO v_actor FROM ai_decision_envelopes d
-    WHERE d.id = NEW.decision_id AND d.tenant_id = NEW.tenant_id AND d.factory_id = NEW.factory_id;
+    SELECT d.actor_id INTO v_actor
+    FROM ai_decision_envelopes d
+    WHERE d.id = v_decision_id AND d.tenant_id = NEW.tenant_id AND d.factory_id = NEW.factory_id;
   END IF;
 
   PERFORM factoryos_transition_ai_decision_lifecycle(
-    NEW.tenant_id, NEW.factory_id, NEW.decision_id, v_actor, v_state, v_reason,
+    NEW.tenant_id, NEW.factory_id, v_decision_id, v_actor, v_state, v_reason,
     v_context, v_verification, v_action, v_execution, v_outcome,
     v_evidence_refs, v_metadata
   );
@@ -521,6 +578,11 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_capture_ai_decision_lifecycle();
 DROP TRIGGER IF EXISTS ai_decision_lifecycle_from_execution ON ai_execution_records;
 CREATE TRIGGER ai_decision_lifecycle_from_execution
 AFTER INSERT ON ai_execution_records
+FOR EACH ROW EXECUTE FUNCTION factoryos_capture_ai_decision_lifecycle();
+
+DROP TRIGGER IF EXISTS ai_decision_lifecycle_from_execution_claim ON ai_execution_claims;
+CREATE TRIGGER ai_decision_lifecycle_from_execution_claim
+AFTER INSERT OR UPDATE OF status ON ai_execution_claims
 FOR EACH ROW EXECUTE FUNCTION factoryos_capture_ai_decision_lifecycle();
 
 DROP TRIGGER IF EXISTS ai_decision_lifecycle_from_outcome ON ai_outcome_links;

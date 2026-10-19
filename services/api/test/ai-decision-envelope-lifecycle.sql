@@ -17,6 +17,10 @@ DECLARE
   v_current_version INTEGER;
   v_illegal_transition_rejected BOOLEAN := FALSE;
   v_bad_hash_rejected BOOLEAN := FALSE;
+  v_action_one UUID := gen_random_uuid();
+  v_action_two UUID := gen_random_uuid();
+  v_claim UUID := gen_random_uuid();
+  v_execution UUID := gen_random_uuid();
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '147_ai_decision_envelope_lifecycle_replay') THEN
     RAISE EXCEPTION 'AI decision lifecycle migration marker is missing';
@@ -112,6 +116,55 @@ BEGIN
                    AND from_state='CONTEXT_READY' AND to_state='VERIFIED'
                    AND verification_run_id=v_verification AND context_package_id=v_context) THEN
     RAISE EXCEPTION 'Verification transition is missing context/evidence linkage';
+  END IF;
+
+  INSERT INTO ai_action_intents (
+    id, tenant_id, factory_id, decision_id, action_type, tool_id, tool_version,
+    target, resource_type, resource_id, payload, payload_hash, risk_class,
+    authorization_status, "authorization", action_token_hash, token_expires_at, created_by
+  ) VALUES (
+    v_action_one, v_tenant, v_factory, v_decision, 'AI.RUNTIME.NOOP', 'AI.RUNTIME.NOOP', '1.0.0',
+    '{}'::jsonb, NULL, NULL, '{}'::jsonb, repeat('d',64), 'L0',
+    'AUTHORIZED', '{}'::jsonb, repeat('e',64), clock_timestamp() + interval '5 minutes', v_actor
+  );
+
+  INSERT INTO ai_execution_claims (
+    id, tenant_id, factory_id, action_intent_id, execution_key, tool_version, inputs_hash
+  ) VALUES (
+    v_claim, v_tenant, v_factory, v_action_one, 'ai-lifecycle-test-execution', '1.0.0', repeat('d',64)
+  );
+  IF NOT EXISTS (SELECT 1 FROM ai_decision_lifecycle_states
+                 WHERE decision_id=v_decision AND current_state='EXECUTING' AND version=5) THEN
+    RAISE EXCEPTION 'Claimed execution did not transition the decision to EXECUTING';
+  END IF;
+
+  INSERT INTO ai_execution_records (
+    id, tenant_id, factory_id, decision_id, action_intent_id, execution_key,
+    executor_type, tool_version, inputs_hash, result, error, status, finished_at
+  ) VALUES (
+    v_execution, v_tenant, v_factory, v_decision, v_action_one, 'ai-lifecycle-test-execution',
+    'AI_TOOL_GATEWAY', '1.0.0', repeat('d',64), '{}'::jsonb, '{}'::jsonb, 'SUCCEEDED', clock_timestamp()
+  );
+  UPDATE ai_execution_claims
+  SET status='COMPLETED', completed_at=clock_timestamp()
+  WHERE id=v_claim AND tenant_id=v_tenant AND factory_id=v_factory;
+  IF NOT EXISTS (SELECT 1 FROM ai_decision_lifecycle_states
+                 WHERE decision_id=v_decision AND current_state='COMPLETED' AND version=6) THEN
+    RAISE EXCEPTION 'Durable execution result did not transition the decision to COMPLETED';
+  END IF;
+
+  INSERT INTO ai_action_intents (
+    id, tenant_id, factory_id, decision_id, action_type, tool_id, tool_version,
+    target, resource_type, resource_id, payload, payload_hash, risk_class,
+    authorization_status, "authorization", action_token_hash, token_expires_at, created_by
+  ) VALUES (
+    v_action_two, v_tenant, v_factory, v_decision, 'AI.RUNTIME.NOOP', 'AI.RUNTIME.NOOP', '1.0.0',
+    '{}'::jsonb, NULL, NULL, '{}'::jsonb, repeat('f',64), 'L0',
+    'AUTHORIZED', '{}'::jsonb, repeat('1',64), clock_timestamp() + interval '5 minutes', v_actor
+  );
+  IF NOT EXISTS (SELECT 1 FROM ai_decision_lifecycle_states
+                 WHERE decision_id=v_decision AND current_state='ACTION_AUTHORIZED' AND version=7) THEN
+    RAISE EXCEPTION 'A completed decision must support a subsequent authorized tool step';
   END IF;
 
   BEGIN
