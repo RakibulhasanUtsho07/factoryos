@@ -72,8 +72,6 @@ describe('CbbGovernanceService', () => {
       { rows: [] },
       { rows: [] },
       { rows: [{ target_id: entityId, target_type: 'ENTITY', role_id: roleId, field_name: 'description', access_level: 'READ' }] },
-      { rows: [] },
-      { rows: [] },
     );
     const result = await service.filterBusinessMap(tenantId, factoryId, userId, {
       nodes: [{ id: entityId, name: 'Visible term', description: 'sensitive details' }],
@@ -125,6 +123,9 @@ describe('CbbGovernanceService', () => {
     queue(
       { rows: [{ id: aclId, blueprint_id: blueprintId, blueprint_version_id: versionId, target_type: 'ENTITY',
         target_id: entityId, review_status: 'OPEN', review_version: 2, last_evidence_at: '2026-01-01T00:00:00Z' }] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [{ current_version_id: versionId }] },
       { rows: [{ id: '90000000-0000-4000-8000-000000000001' }] },
       { rows: [{ id: aclId, review_status: 'MARKED_STALE', review_version: 3, reviewed_at: '2026-10-19T00:00:00Z' }] },
     );
@@ -136,8 +137,8 @@ describe('CbbGovernanceService', () => {
 
     expect(result.review_status).toBe('MARKED_STALE');
     expect(result.proposalId).toBe('90000000-0000-4000-8000-000000000001');
-    expect(query.mock.calls[1]?.[0]).toContain("'SET_STATE','STALE'");
-    expect(query.mock.calls[1]?.[1]).toContain(JSON.stringify({
+    expect(query.mock.calls[4]?.[0]).toContain("'SET_STATE','STALE'");
+    expect(query.mock.calls[4]?.[1]).toContain(JSON.stringify({
       state: 'STALE', stalenessReviewId: aclId, lastEvidenceAt: '2026-01-01T00:00:00Z',
     }));
     expect(recordWithClient).toHaveBeenCalledWith(client, expect.objectContaining({
