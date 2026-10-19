@@ -13,6 +13,7 @@ import { CreateGrowthValidationUnknownDto } from './dto/create-growth-validation
 import { DecideGrowthValidationUnknownDto } from './dto/decide-growth-validation-unknown.dto';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
+import { CreateGrowthScenarioSetDto } from './dto/create-growth-scenario-set.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
@@ -145,6 +146,46 @@ export class GrowthController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.decideOpportunity(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
+  }
+
+  @Post('opportunities/:opportunityId/scenario-sets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  createScenarioSet(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: CreateGrowthScenarioSetDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.createScenarioSet(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Get('opportunities/:opportunityId/scenario-sets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  listScenarioSets(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.listScenarioSets(c.tenantId, c.factoryId, opportunityId);
+  }
+
+  @Get('opportunities/:opportunityId/scenario-sets/:scenarioSetId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  getScenarioSet(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Param('scenarioSetId', new ParseUUIDPipe()) scenarioSetId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.getScenarioSet(c.tenantId, c.factoryId, opportunityId, scenarioSetId);
   }
 
   @Post('opportunities/:opportunityId/scenarios')
