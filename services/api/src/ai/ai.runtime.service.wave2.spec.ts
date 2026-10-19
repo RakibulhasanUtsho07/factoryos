@@ -1600,6 +1600,9 @@ describe(
          *   6. outcome query
          *   7. learning query
          *   8. release query
+         *   9. lifecycle state
+         *  10. ordered lifecycle events
+         *  11. normalized context evidence references
          *
          * Only the first result contains the decision. The remaining
          * lifecycle collections are intentionally empty for this replay case.
@@ -1635,6 +1638,10 @@ describe(
         databaseQueryMock.mockResolvedValueOnce({
           rows: [],
         });
+
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] }); // lifecycle state
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] }); // lifecycle events
+        databaseQueryMock.mockResolvedValueOnce({ rows: [] }); // evidence refs
 
         const result =
           await service.replayDecision(

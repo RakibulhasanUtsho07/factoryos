@@ -116,7 +116,7 @@ BEGIN
 
   BEGIN
     UPDATE ai_decision_lifecycle_states
-    SET current_state='COMPLETED', version=version+1, updated_at=clock_timestamp()
+    SET current_state='CREATED', version=version+1, updated_at=clock_timestamp()
     WHERE decision_id=v_decision;
   EXCEPTION WHEN OTHERS THEN
     v_illegal_transition_rejected := TRUE;
