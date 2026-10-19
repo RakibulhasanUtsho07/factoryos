@@ -393,22 +393,17 @@ export class CbbGovernanceService {
     const canonicalTerms = await this.filterItemsByAcl(
       tenantId, factoryId, userId, 'TERM', termRows.rows as Array<Record<string, unknown>>,
     );
-    const canonicalKeys = new Set(canonicalTerms
-      .filter((row) => ['VERIFIED', 'INFERRED'].includes(String(row.state)))
-      .map((row) => String(row.canonical_term ?? '').normalize('NFKC').toLocaleLowerCase())
-      .filter(Boolean));
-
     const aliasResult = await this.database.query<DbRow>(
       `SELECT id::text AS id,alias,canonical_term,language_code,source_system,state,metadata,
          version,created_by::text AS created_by,updated_by::text AS updated_by,created_at::text AS created_at,
          updated_at::text AS updated_at
        FROM business_terminology_aliases WHERE tenant_id=$1 AND factory_id=$2
          AND ($3::text IS NULL OR alias ILIKE '%' || $3 || '%' OR canonical_term ILIKE '%' || $3 || '%')
-       ORDER BY lower(canonical_term),lower(alias) LIMIT 500`,
+       ORDER BY lower(canonical_term),lower(alias),source_system NULLS FIRST,language_code NULLS FIRST LIMIT 500`,
       [tenantId, factoryId, search?.trim() || null], { tenantId },
     );
-    const aliases = aliasResult.rows.filter((row) =>
-      canonicalKeys.has(String(row.canonical_term).normalize('NFKC').toLocaleLowerCase()),
+    const aliases = await this.filterTerminologyAliasesByAcl(
+      tenantId, factoryId, userId, versionId, aliasResult.rows,
     );
     return { blueprintVersionId: versionId, canonicalTerms, aliases };
   }
@@ -629,6 +624,38 @@ export class CbbGovernanceService {
       .filter((row) => visibleSuggestionIds.has(String(row.canonical_term_id)))
       .map(stripCanonicalTermId);
     return { input: needle, match: null, matchedBy: null, candidates: safeSuggestions };
+  }
+
+  /**
+   * An alias is visible only when its canonical CBB term is visible.
+   * Resolve the canonical independently of the user's search string; otherwise
+   * searching by alias alone leaks either nothing or alias rows for hidden terms.
+   */
+  private async filterTerminologyAliasesByAcl(
+    tenantId: string,
+    factoryId: string,
+    userId: string,
+    versionId: string,
+    aliases: DbRow[],
+  ): Promise<DbRow[]> {
+    if (!aliases.length) return [];
+    const canonicalKeys = [...new Set(aliases.map((row) =>
+      String(row.canonical_term).normalize('NFKC').toLocaleLowerCase()).filter(Boolean))];
+    if (!canonicalKeys.length) return [];
+    const terms = await this.database.query<DbRow>(
+      `SELECT DISTINCT ON (lower(canonical_term)) id::text AS id,canonical_term,term,state
+       FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3
+         AND lower(canonical_term)=ANY($4::text[]) AND state IN ('VERIFIED','INFERRED')
+       ORDER BY lower(canonical_term),CASE state WHEN 'VERIFIED' THEN 0 ELSE 1 END,lower(term)`,
+      [tenantId, factoryId, versionId, canonicalKeys], { tenantId },
+    );
+    const visibleTerms = await this.filterItemsByAcl(
+      tenantId, factoryId, userId, 'TERM', terms.rows as Array<Record<string, unknown>>,
+    );
+    const visibleKeys = new Set(visibleTerms.map((row) =>
+      String(row.canonical_term ?? '').normalize('NFKC').toLocaleLowerCase()));
+    return aliases.filter((row) =>
+      visibleKeys.has(String(row.canonical_term).normalize('NFKC').toLocaleLowerCase()));
   }
 
   async addImpactLink(scope: Scope, dto: CreateCbbImpactLinkDto) {
