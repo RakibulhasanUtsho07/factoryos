@@ -117,7 +117,7 @@ export function validateResearchCitation(
   });
   if (!hasPreciseLocator) findings.add('PRECISE_LOCATOR_MISSING');
 
-  const sourceDoi = normalizeDoi(source.doi);
+  const sourceDoi = normalizeDoi(source.doi) ?? normalizeDoi(source.source_url);
   const sourceUrl = normalizeUrl(source.source_url);
   if (!sourceDoi && !sourceUrl) findings.add('SOURCE_IDENTITY_MISSING');
 
