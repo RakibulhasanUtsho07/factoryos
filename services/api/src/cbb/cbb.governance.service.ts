@@ -559,7 +559,7 @@ export class CbbGovernanceService {
     this.validateReadScope(tenantId, factoryId);
     this.uuid(userId, 'userId');
     const needle = this.requiredText(term, 'term', 300).normalize('NFKC');
-    const normalizedSourceSystem = sourceSystem?.trim() || null;
+    const normalizedSourceSystem = sourceSystem?.trim().normalize('NFKC') || null;
     const normalizedLanguage = languageCode?.trim().normalize('NFKC') || null;
     const blueprint = await this.database.query<DbRow>(
       `SELECT id::text AS blueprint_id,current_version_id::text AS version_id FROM business_blueprints
@@ -574,11 +574,19 @@ export class CbbGovernanceService {
     }
 
     const direct = await this.database.query<DbRow>(
-      `SELECT id::text AS id,term,canonical_term,language_code,source_system,state,confidence
-       FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3
-         AND (lower(term)=lower($4) OR lower(canonical_term)=lower($4))
-         AND ($5::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($5))
-         AND ($6::text IS NULL OR language_code IS NULL OR lower(language_code)=lower($6))
+      `WITH candidates AS (
+         SELECT id::text AS id,term,canonical_term,language_code,source_system,state,confidence,
+           (CASE WHEN $5::text IS NOT NULL AND source_system IS NOT NULL AND lower(source_system)=lower($5) THEN 1 ELSE 0 END
+            + CASE WHEN $6::text IS NOT NULL AND language_code IS NOT NULL AND lower(language_code)=lower($6) THEN 1 ELSE 0 END)
+             AS context_specificity
+         FROM business_terms WHERE tenant_id=$1 AND factory_id=$2 AND blueprint_version_id=$3
+           AND (lower(term)=lower($4) OR lower(canonical_term)=lower($4))
+           AND state IN ('VERIFIED','INFERRED')
+           AND ($5::text IS NULL OR source_system IS NULL OR lower(source_system)=lower($5))
+           AND ($6::text IS NULL OR language_code IS NULL OR lower(language_code)=lower($6))
+       )
+       SELECT id,term,canonical_term,language_code,source_system,state,confidence
+       FROM candidates WHERE context_specificity=(SELECT MAX(context_specificity) FROM candidates)
        ORDER BY CASE state WHEN 'VERIFIED' THEN 0 WHEN 'INFERRED' THEN 1 ELSE 2 END,lower(term) LIMIT 20`,
       [tenantId, factoryId, versionId, needle, normalizedSourceSystem, normalizedLanguage], { tenantId },
     );
@@ -596,17 +604,26 @@ export class CbbGovernanceService {
     }
 
     const aliases = await this.database.query<DbRow>(
-      `SELECT a.alias,a.canonical_term,a.language_code,a.source_system,a.state,a.version,
-          t.id::text AS canonical_term_id
-       FROM business_terminology_aliases a
-       JOIN business_terms t ON t.tenant_id=a.tenant_id AND t.factory_id=a.factory_id
-         AND t.blueprint_version_id=$4 AND lower(t.canonical_term)=lower(a.canonical_term)
-         AND t.state IN ('VERIFIED','INFERRED')
-       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND lower(a.alias)=lower($3)
-         AND a.state IN ('VERIFIED','INFERRED')
-         AND ($5::text IS NULL OR a.source_system IS NULL OR lower(a.source_system)=lower($5))
-         AND ($6::text IS NULL OR a.language_code IS NULL OR lower(a.language_code)=lower($6))
-       ORDER BY CASE a.state WHEN 'VERIFIED' THEN 0 ELSE 1 END,a.version DESC LIMIT 20`,
+      `WITH candidates AS (
+         SELECT a.id::text AS alias_id,a.alias,a.canonical_term,a.language_code,a.source_system,a.state,a.version,
+           t.id::text AS canonical_term_id,
+           (CASE WHEN $5::text IS NOT NULL AND a.source_system IS NOT NULL AND lower(a.source_system)=lower($5) THEN 1 ELSE 0 END
+            + CASE WHEN $6::text IS NOT NULL AND a.language_code IS NOT NULL AND lower(a.language_code)=lower($6) THEN 1 ELSE 0 END)
+             AS context_specificity
+         FROM business_terminology_aliases a
+         JOIN business_terms t ON t.tenant_id=a.tenant_id AND t.factory_id=a.factory_id
+           AND t.blueprint_version_id=$4 AND lower(t.canonical_term)=lower(a.canonical_term)
+           AND t.state IN ('VERIFIED','INFERRED')
+         WHERE a.tenant_id=$1 AND a.factory_id=$2 AND lower(a.alias)=lower($3)
+           AND a.state IN ('VERIFIED','INFERRED')
+           AND ($5::text IS NULL OR a.source_system IS NULL OR lower(a.source_system)=lower($5))
+           AND ($6::text IS NULL OR a.language_code IS NULL OR lower(a.language_code)=lower($6))
+       )
+       SELECT DISTINCT ON (alias_id,canonical_term_id)
+         alias_id,alias,canonical_term,language_code,source_system,state,version,canonical_term_id,context_specificity
+       FROM candidates
+       WHERE context_specificity=(SELECT MAX(context_specificity) FROM candidates)
+       ORDER BY alias_id,canonical_term_id,CASE state WHEN 'VERIFIED' THEN 0 ELSE 1 END,version DESC LIMIT 20`,
       [tenantId, factoryId, needle, versionId, normalizedSourceSystem, normalizedLanguage], { tenantId },
     );
     const visibleCanonicalTerms = await this.filterItemsByAcl(
@@ -618,6 +635,8 @@ export class CbbGovernanceService {
     const stripCanonicalTermId = (row: DbRow) => {
       const value = { ...row };
       delete value.canonical_term_id;
+      delete value.alias_id;
+      delete value.context_specificity;
       return value;
     };
     if (visibleAliases.length) {
