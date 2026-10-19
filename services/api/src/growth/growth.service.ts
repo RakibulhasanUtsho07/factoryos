@@ -1053,9 +1053,9 @@ export class GrowthService {
       throw new BadRequestException('data_vintage cannot be in the future');
     }
     const baseline = {
-      baseline_revenue: dto.baseline.baseline_revenue,
-      baseline_variable_cost: dto.baseline.baseline_variable_cost,
-      baseline_fixed_cost: dto.baseline.baseline_fixed_cost,
+      baseline_revenue: dto.baseline?.baseline_revenue,
+      baseline_variable_cost: dto.baseline?.baseline_variable_cost,
+      baseline_fixed_cost: dto.baseline?.baseline_fixed_cost,
     };
     if (
       !Number.isFinite(baseline.baseline_revenue) || baseline.baseline_revenue <= 0
