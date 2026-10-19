@@ -1,10 +1,11 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
+import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { GrowthService } from './growth.service';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -58,6 +59,35 @@ describe('GrowthService', () => {
       USER_ID, TENANT_ID, FACTORY_ID, dto, null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('allows only the currently assigned decision owner to accept or reject a hypothesis', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'PROPOSED' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'owner-assignment-id', owner_user_id: 'c90a5f40-c8bb-44e8-8b3d-2f879d56aa10' }] });
+    const dto: DecideGrowthOpportunityDto = { decision: 'ACCEPT', reason: 'Review proposal and evidence' };
+
+    await expect(service.decideOpportunity(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query.mock.calls[1][0]).toContain("role_code = 'DECISION_OWNER'");
+  });
+
+  it('fails closed when the database governance readiness gate is incomplete', async () => {
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: OPPORTUNITY_ID, status: 'PROPOSED' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'owner-assignment-id', owner_user_id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ ready: false }] });
+    const dto: DecideGrowthOpportunityDto = { decision: 'ACCEPT', reason: 'Review proposal and evidence' };
+
+    await expect(service.decideOpportunity(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(client.query.mock.calls[2][0]).toContain('factoryos_growth_opportunity_governance_ready');
   });
 
   it('uses a deterministic, version-labelled sensitivity formula instead of pretending to forecast', () => {
