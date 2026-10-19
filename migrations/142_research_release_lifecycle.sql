@@ -28,7 +28,7 @@ CREATE TABLE research_release_channels (
 );
 
 CREATE TABLE research_release_lifecycle_events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   release_id UUID NOT NULL,
   release_key VARCHAR(160) NOT NULL,
@@ -41,6 +41,7 @@ CREATE TABLE research_release_lifecycle_events (
   request_id VARCHAR(200),
   trace_id VARCHAR(200),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT pk_research_release_lifecycle_events PRIMARY KEY (id),
   CONSTRAINT fk_research_release_lifecycle_release
     FOREIGN KEY (release_id, tenant_id, release_key, version)
     REFERENCES research_knowledge_releases(id, tenant_id, release_key, version) ON DELETE RESTRICT,
