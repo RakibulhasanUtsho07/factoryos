@@ -1745,6 +1745,18 @@ export class AiRuntimeService {
     );
   }
 
+  // The SQL lookup is already tenant/factory scoped. Retain an explicit
+  // boundary assertion as defense in depth if a repository adapter or mock
+  // ever returns a row outside that predicate.
+  if (
+    action.tenant_id !== tenantId ||
+    action.factory_id !== factoryId
+  ) {
+    throw new NotFoundException(
+      'AI action token was not found for this factory',
+    );
+  }
+
   if (action.authorization_status !== 'AUTHORIZED') {
     throw new ConflictException(
       'AI action intent is not authorized for execution',
