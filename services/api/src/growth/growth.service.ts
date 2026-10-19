@@ -631,6 +631,11 @@ export class GrowthService {
                  SELECT jsonb_agg(jsonb_build_object(
                    'id', a.id::text,
                    'statement', a.statement,
+                   'rationale', a.rationale,
+                   'risk_if_false', a.risk_if_false,
+                   'confidence_pct', a.confidence_pct::text,
+                   'validation_method', a.validation_method,
+                   'owner_user_id', a.owner_user_id::text,
                    'blocks_decision', a.blocks_decision,
                    'latest_decision', last_decision.decision,
                    'evidence_refs', COALESCE(last_decision.evidence_refs, '[]'::jsonb),
@@ -679,7 +684,17 @@ export class GrowthService {
                'evidence_count', (
                  SELECT COUNT(*)::int FROM growth_opportunity_evidence
                   WHERE opportunity_id = $3 AND tenant_id = $1 AND factory_id = $2
-               )
+               ),
+               'evidence_items', COALESCE((
+                 SELECT jsonb_agg(jsonb_build_object(
+                   'id', e.id::text, 'evidence_type', e.evidence_type,
+                   'origin_class', e.origin_class, 'reference_ref', e.reference_ref,
+                   'citation_url', e.citation_url, 'description', e.description,
+                   'confidence', e.confidence::text, 'captured_at', e.captured_at
+                 ) ORDER BY e.captured_at, e.id)
+                   FROM growth_opportunity_evidence e
+                  WHERE e.opportunity_id = $3 AND e.tenant_id = $1 AND e.factory_id = $2
+               ), '[]'::jsonb)
              ) AS snapshot`,
             [tenantId, factoryId, opportunityId, decisionOwner.rows[0].id, decisionOwner.rows[0].owner_user_id],
           );
