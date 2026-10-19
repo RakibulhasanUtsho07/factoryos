@@ -50,6 +50,7 @@ interface ResearchClaimRow extends QueryResultRow {
   tenant_id: string | null;
   namespace: 'GLOBAL' | 'TENANT';
   source_id: string;
+  extraction_item_id?: string | null;
   claim_text: string;
   methodology: string | null;
   dataset_description: string | null;
