@@ -228,6 +228,17 @@ export class ResearchController {
     return this.ingestion.decideExtractionItem(c.userId, c.tenantId, jobId, itemId, body, c.requestId, c.traceId);
   }
 
+  @Get('ingestion-jobs/:jobId/extraction')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listResearchExtractionProvenance(
+    @Req() req: FactoryOsRequest,
+    @Param('jobId', new ParseUUIDPipe()) jobId: string,
+  ): Promise<unknown> {
+    const context = this.context(req);
+    return this.ingestion.listExtractionProvenance(context.userId, context.tenantId, jobId);
+  }
+
   @Get('ingestion-jobs/:jobId/events')
   @UseGuards(PermissionGuard)
   @RequirePermission('research.read')
@@ -237,6 +248,21 @@ export class ResearchController {
   ): Promise<unknown> {
     const c = this.context(req);
     return this.ingestion.listJobEvents(c.userId, c.tenantId, jobId);
+  }
+
+  @Get('sources/:sourceId/content-purges')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listResearchSourceContentPurges(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const context = this.context(req);
+    return this.ingestion.listSourceContentPurges(
+      context.userId, context.tenantId, sourceId,
+      rawLimit === undefined ? 100 : Number(rawLimit),
+    );
   }
 
   @Get('sources/:sourceId/rights-history')
