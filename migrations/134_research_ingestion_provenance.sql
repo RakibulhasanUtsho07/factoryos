@@ -180,7 +180,6 @@ CREATE TABLE research_extraction_items (
   excerpt_sha256 CHAR(64),
   safety_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
   review_status VARCHAR(24) NOT NULL DEFAULT 'PROPOSED',
-  claim_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_research_extraction_item_key UNIQUE (extraction_run_id, item_key),
   CONSTRAINT uq_research_extraction_item_scope UNIQUE (id, tenant_id),
@@ -206,13 +205,8 @@ ALTER TABLE research_claims
   ADD CONSTRAINT fk_research_claim_extraction_item
     FOREIGN KEY (extraction_item_id, tenant_id)
     REFERENCES research_extraction_items(id, tenant_id) ON DELETE RESTRICT;
-ALTER TABLE research_extraction_items
-  ADD CONSTRAINT fk_research_extraction_item_claim
-    FOREIGN KEY (claim_id) REFERENCES research_claims(id) ON DELETE RESTRICT;
 CREATE UNIQUE INDEX uq_research_claim_extraction_item
   ON research_claims (extraction_item_id) WHERE extraction_item_id IS NOT NULL;
-CREATE UNIQUE INDEX uq_research_extraction_item_claim
-  ON research_extraction_items (claim_id) WHERE claim_id IS NOT NULL;
 
 CREATE TABLE research_source_rights_history (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
