@@ -275,7 +275,7 @@ BEGIN
 
   RETURN NULL;
 END;
-$;
+$$;
 
 CREATE CONSTRAINT TRIGGER growth_scenario_set_completeness_guard
 AFTER INSERT ON growth_scenario_sets
