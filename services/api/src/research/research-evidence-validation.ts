@@ -54,7 +54,7 @@ function normalizeDoi(value: unknown): string | null {
     .replace(/^doi\s*:\s*/i, '')
     .replace(/[?#].*$/, '')
     .replace(/[.)\],;]+$/, '');
-  const match = withoutPrefix.match(/10\.\d{4,9}\/[^\s]+/i);
+  const match = withoutPrefix.match(/^10\.\d{4,9}\/[^\s]+$/i);
   return match ? match[0].toLowerCase() : null;
 }
 
@@ -79,7 +79,7 @@ function normalizeUrl(value: unknown): string | null {
 
 function sameSourceUrl(candidate: string, source: ResearchCitationSource): boolean {
   const candidateDoi = normalizeDoi(candidate);
-  const sourceDoi = normalizeDoi(source.doi);
+  const sourceDoi = normalizeDoi(source.doi) ?? normalizeDoi(source.source_url);
   if (candidateDoi && sourceDoi) return candidateDoi === sourceDoi;
   const candidateUrl = normalizeUrl(candidate);
   const sourceUrl = normalizeUrl(source.source_url);
