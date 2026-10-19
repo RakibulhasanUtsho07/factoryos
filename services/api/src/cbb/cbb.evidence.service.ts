@@ -163,6 +163,12 @@ export class CbbEvidenceService {
          AND ($3::text IS NULL OR e.source_type=$3)
          AND ($4::text IS NULL OR e.state=$4)
          AND ($5::text IS NULL OR e.source_key=$5)
+         AND e.visibility=$6
+         AND ($7::text IS NULL OR EXISTS (
+           SELECT 1 FROM business_evidence_links l
+           WHERE l.evidence_id=e.id AND l.tenant_id=e.tenant_id AND l.factory_id=e.factory_id
+             AND l.target_type=$7 AND l.target_id=$8::uuid
+         ))
        ORDER BY e.created_at DESC, e.id DESC LIMIT $9 OFFSET $10`,
       [...filters, limit, offset], { tenantId },
     );
@@ -174,8 +180,9 @@ export class CbbEvidenceService {
            blueprint_version_id::text AS blueprint_version_id, target_type, target_id::text AS target_id,
            link_type, created_by::text AS created_by, created_at::text AS created_at
          FROM business_evidence_links WHERE tenant_id=$1 AND factory_id=$2 AND evidence_id=ANY($3::uuid[])
+           AND ($4::text IS NULL OR (target_type=$4 AND target_id=$5::uuid))
          ORDER BY created_at, id`,
-        [tenantId, factoryId, ids], { tenantId },
+        [tenantId, factoryId, ids, targetType, targetId], { tenantId },
       );
       for (const link of links.rows) {
         const key = String(link.evidence_id);
@@ -188,12 +195,20 @@ export class CbbEvidenceService {
     };
   }
 
-  async getEvidenceHistory(tenantId: string, factoryId: string, evidenceId: string) {
+  async getEvidenceHistory(
+    tenantId: string,
+    factoryId: string,
+    evidenceId: string,
+    visibility: 'INTERNAL' | 'RESTRICTED' = 'INTERNAL',
+  ) {
     this.validateReadScope(tenantId, factoryId);
     this.uuid(evidenceId, 'evidenceId');
+    if (visibility !== 'INTERNAL' && visibility !== 'RESTRICTED') {
+      throw new BadRequestException('Unsupported evidence visibility filter');
+    }
     const target = await this.database.query<Row>(
-      'SELECT source_key FROM business_evidence WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
-      [evidenceId, tenantId, factoryId], { tenantId },
+      'SELECT source_key FROM business_evidence WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND visibility=$4',
+      [evidenceId, tenantId, factoryId, visibility], { tenantId },
     );
     if (!target.rows[0]) throw new NotFoundException('Evidence was not found in this factory');
     const sourceKey = target.rows[0].source_key ?? null;
@@ -203,10 +218,10 @@ export class CbbEvidenceService {
          state, content_hash, visibility, metadata, created_by::text AS created_by, created_at::text AS created_at,
          source_key, source_system, source_record_id, source_version, source_uri,
          supersedes_evidence_id::text AS supersedes_evidence_id, revision_no
-       FROM business_evidence WHERE tenant_id=$1 AND factory_id=$2
+       FROM business_evidence WHERE tenant_id=$1 AND factory_id=$2 AND visibility=$5
          AND (($3::text IS NOT NULL AND source_key=$3) OR ($3::text IS NULL AND id=$4))
        ORDER BY revision_no ASC, created_at ASC, id ASC`,
-      [tenantId, factoryId, sourceKey, evidenceId], { tenantId },
+      [tenantId, factoryId, sourceKey, evidenceId, visibility], { tenantId },
     );
     return { sourceKey, evidenceId, revisions: history.rows.map((row) => this.mapEvidence(row)) };
   }
