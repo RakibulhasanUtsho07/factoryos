@@ -560,7 +560,7 @@ export class CbbGovernanceService {
     this.uuid(userId, 'userId');
     const needle = this.requiredText(term, 'term', 300).normalize('NFKC');
     const normalizedSourceSystem = sourceSystem?.trim().normalize('NFKC') || null;
-    const normalizedLanguage = languageCode?.trim().normalize('NFKC') || null;
+    const normalizedLanguage = languageCode?.trim().normalize('NFKC').toLocaleLowerCase() || null;
     const blueprint = await this.database.query<DbRow>(
       `SELECT id::text AS blueprint_id,current_version_id::text AS version_id FROM business_blueprints
        WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' LIMIT 1`,
