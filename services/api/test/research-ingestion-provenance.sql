@@ -68,7 +68,8 @@ BEGIN
     'research_extraction_item_reviews_immutable',
     'research_extracted_claim_review_guard',
     'research_source_z_excerpt_purge_guard',
-    'research_source_content_purges_immutable'
+    'research_source_content_purges_immutable',
+    'research_source_a_access_normalize_guard'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger t
@@ -92,11 +93,22 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='research_sources' AND column_name='full_text_storage_allowed'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='chk_research_source_full_text_requires_current_access'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_FULL_TEXT_ACCESS_CONSTRAINT_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='134_research_ingestion_provenance'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='135_research_extraction_review_gate'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='136_research_content_rights_purge'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='137_research_full_text_access_normalization'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_INGESTION_MIGRATION_REGISTRATION_MISSING';
   END IF;
