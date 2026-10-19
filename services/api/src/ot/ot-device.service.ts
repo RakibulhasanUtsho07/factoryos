@@ -347,13 +347,13 @@ export class OtDeviceService {
 
         for (const event of events) {
           const existing = await client.query(
-            `SELECT id::text AS id, payload_sha256
+            `SELECT id::text AS id, event_fingerprint_sha256
              FROM ot_telemetry_events
              WHERE tenant_id=$1 AND factory_id=$2 AND device_id=$3 AND source_event_id=$4`,
             [scope.tenantId, scope.factoryId, deviceId, event.sourceEventId],
           );
           if (existing.rows[0]) {
-            if (existing.rows[0].payload_sha256 !== event.envelopeHash) {
+            if (existing.rows[0].event_fingerprint_sha256 !== event.envelopeHash) {
               throw new ConflictException('A source_event_id was replayed with a different event fingerprint');
             }
             replayed += 1;
@@ -388,13 +388,13 @@ export class OtDeviceService {
           const inserted = await client.query(
             `INSERT INTO ot_telemetry_events (
                tenant_id, factory_id, device_id, source_event_id, event_type,
-               stream_key, source_sequence, observed_at, delivery_status, payload, payload_sha256
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10::jsonb,$11)
+               stream_key, source_sequence, observed_at, delivery_status, payload, payload_sha256, event_fingerprint_sha256
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10::jsonb,$11,$12)
              RETURNING id::text AS id`,
             [
               scope.tenantId, scope.factoryId, deviceId, event.sourceEventId, event.eventType,
               event.streamKey, event.sourceSequence, event.observedAt, deliveryStatus,
-              JSON.stringify(event.payload), event.envelopeHash,
+              JSON.stringify(event.payload), event.payloadHash, event.envelopeHash,
             ],
           );
           if (event.sourceSequence !== null) {
@@ -420,14 +420,9 @@ export class OtDeviceService {
         }
 
         if (accepted > 0) {
-          const latest = await client.query<OtDeviceRow>(
-            `UPDATE ot_devices SET row_version=row_version+1, updated_at=clock_timestamp(),
-                    updated_by_user_id=$4
-             WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
-             RETURNING ${DEVICE_SELECT}`,
-            [deviceId, scope.tenantId, scope.factoryId, scope.userId],
-          );
-          await this.appendHistory(client, scope, latest.rows[0] ?? device, 'TELEMETRY_BATCH_INGESTED', null, {
+          // Telemetry receipt is not a device lifecycle transition. Keep row_version
+          // reserved for optimistic concurrency on registry status changes.
+          await this.appendHistory(client, scope, device, 'TELEMETRY_BATCH_INGESTED', null, {
             accepted,
             late,
             sequence_gaps: gaps,

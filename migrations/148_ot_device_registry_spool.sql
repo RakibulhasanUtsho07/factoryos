@@ -140,6 +140,7 @@ CREATE TABLE ot_telemetry_events (
   delivery_status varchar(16) NOT NULL,
   payload jsonb NOT NULL,
   payload_sha256 varchar(64) NOT NULL,
+  event_fingerprint_sha256 varchar(64) NOT NULL,
   CONSTRAINT uq_ot_telemetry_event_scope UNIQUE (id, tenant_id, factory_id),
   CONSTRAINT uq_ot_telemetry_source_event UNIQUE (tenant_id, factory_id, device_id, source_event_id),
   CONSTRAINT fk_ot_telemetry_device FOREIGN KEY (device_id, tenant_id, factory_id)
@@ -152,7 +153,197 @@ CREATE TABLE ot_telemetry_events (
   CONSTRAINT chk_ot_telemetry_payload CHECK (
     jsonb_typeof(payload) = 'object' AND octet_length(payload::text) <= 4096
   ),
-  CONSTRAINT chk_ot_telemetry_payload_hash CHECK (payload_sha256 ~ '^[0-9a-f]{64}$')
+  CONSTRAINT chk_ot_telemetry_payload_hash CHECK (payload_sha256 ~ '^[0-9a-f]{64}
+);
+CREATE UNIQUE INDEX uq_ot_telemetry_sequence
+  ON ot_telemetry_events (tenant_id, factory_id, device_id, stream_key, source_sequence)
+  WHERE source_sequence IS NOT NULL;
+CREATE INDEX idx_ot_telemetry_timeline
+  ON ot_telemetry_events (tenant_id, factory_id, device_id, observed_at DESC, id);
+CREATE INDEX idx_ot_telemetry_delivery
+  ON ot_telemetry_events (tenant_id, factory_id, device_id, delivery_status, received_at DESC);
+
+CREATE OR REPLACE FUNCTION public.factoryos_guard_ot_device_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'OT device records are retained; revoke a device instead of deleting it'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF (NEW.tenant_id, NEW.factory_id, NEW.display_name, NEW.device_key, NEW.protocol,
+      NEW.connection_reference, NEW.secret_reference, NEW.metadata, NEW.idempotency_key,
+      NEW.request_hash, NEW.created_by_user_id, NEW.created_at)
+     IS DISTINCT FROM
+     (OLD.tenant_id, OLD.factory_id, OLD.display_name, OLD.device_key, OLD.protocol,
+      OLD.connection_reference, OLD.secret_reference, OLD.metadata, OLD.idempotency_key,
+      OLD.request_hash, OLD.created_by_user_id, OLD.created_at) THEN
+    RAISE EXCEPTION 'OT device registration contract is immutable'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF NEW.row_version <> OLD.row_version + 1 THEN
+    RAISE EXCEPTION 'OT device lifecycle updates require the next row version'
+      USING ERRCODE = '40001';
+  END IF;
+
+  IF NOT (
+    (OLD.status = 'PENDING_REVIEW' AND NEW.status IN ('ACTIVE', 'REVOKED'))
+    OR (OLD.status = 'ACTIVE' AND NEW.status IN ('PAUSED', 'REVOKED'))
+    OR (OLD.status = 'PAUSED' AND NEW.status IN ('ACTIVE', 'REVOKED'))
+  ) THEN
+    RAISE EXCEPTION 'invalid OT device lifecycle transition: % -> %', OLD.status, NEW.status
+      USING ERRCODE = '55000';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_ot_device_update_guard
+  BEFORE UPDATE OR DELETE ON ot_devices
+  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_ot_device_update();
+
+CREATE OR REPLACE FUNCTION public.factoryos_guard_ot_append_only()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only; write a compensating event instead', TG_TABLE_NAME
+    USING ERRCODE = '55000';
+END;
+$$;
+
+CREATE TRIGGER trg_ot_device_history_append_only
+  BEFORE UPDATE OR DELETE ON ot_device_history
+  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_ot_append_only();
+
+CREATE TRIGGER trg_ot_telemetry_events_append_only
+  BEFORE UPDATE OR DELETE ON ot_telemetry_events
+  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_ot_append_only();
+
+-- RLS is forced at the table boundary in addition to explicit tenant/factory
+-- predicates in every service query. The composite foreign keys bind child rows
+-- to the same tenant and factory as their device.
+DO $$
+DECLARE table_name text;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'ot_devices', 'ot_device_history', 'ot_device_stream_cursors', 'ot_telemetry_events'
+  ] LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', table_name);
+    EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', table_name);
+    EXECUTE format('CREATE POLICY %I ON public.%I USING (tenant_id = factoryos_current_tenant_id()) WITH CHECK (tenant_id = factoryos_current_tenant_id())',
+      table_name || '_tenant_scope', table_name);
+  END LOOP;
+END;
+$$;
+
+INSERT INTO schema_migrations(version, checksum)
+VALUES ('148_ot_device_registry_spool', NULL)
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+ AND event_fingerprint_sha256 ~ '^[0-9a-f]{64}
+);
+CREATE UNIQUE INDEX uq_ot_telemetry_sequence
+  ON ot_telemetry_events (tenant_id, factory_id, device_id, stream_key, source_sequence)
+  WHERE source_sequence IS NOT NULL;
+CREATE INDEX idx_ot_telemetry_timeline
+  ON ot_telemetry_events (tenant_id, factory_id, device_id, observed_at DESC, id);
+CREATE INDEX idx_ot_telemetry_delivery
+  ON ot_telemetry_events (tenant_id, factory_id, device_id, delivery_status, received_at DESC);
+
+CREATE OR REPLACE FUNCTION public.factoryos_guard_ot_device_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'OT device records are retained; revoke a device instead of deleting it'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF (NEW.tenant_id, NEW.factory_id, NEW.display_name, NEW.device_key, NEW.protocol,
+      NEW.connection_reference, NEW.secret_reference, NEW.metadata, NEW.idempotency_key,
+      NEW.request_hash, NEW.created_by_user_id, NEW.created_at)
+     IS DISTINCT FROM
+     (OLD.tenant_id, OLD.factory_id, OLD.display_name, OLD.device_key, OLD.protocol,
+      OLD.connection_reference, OLD.secret_reference, OLD.metadata, OLD.idempotency_key,
+      OLD.request_hash, OLD.created_by_user_id, OLD.created_at) THEN
+    RAISE EXCEPTION 'OT device registration contract is immutable'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF NEW.row_version <> OLD.row_version + 1 THEN
+    RAISE EXCEPTION 'OT device lifecycle updates require the next row version'
+      USING ERRCODE = '40001';
+  END IF;
+
+  IF NOT (
+    (OLD.status = 'PENDING_REVIEW' AND NEW.status IN ('ACTIVE', 'REVOKED'))
+    OR (OLD.status = 'ACTIVE' AND NEW.status IN ('PAUSED', 'REVOKED'))
+    OR (OLD.status = 'PAUSED' AND NEW.status IN ('ACTIVE', 'REVOKED'))
+  ) THEN
+    RAISE EXCEPTION 'invalid OT device lifecycle transition: % -> %', OLD.status, NEW.status
+      USING ERRCODE = '55000';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_ot_device_update_guard
+  BEFORE UPDATE OR DELETE ON ot_devices
+  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_ot_device_update();
+
+CREATE OR REPLACE FUNCTION public.factoryos_guard_ot_append_only()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only; write a compensating event instead', TG_TABLE_NAME
+    USING ERRCODE = '55000';
+END;
+$$;
+
+CREATE TRIGGER trg_ot_device_history_append_only
+  BEFORE UPDATE OR DELETE ON ot_device_history
+  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_ot_append_only();
+
+CREATE TRIGGER trg_ot_telemetry_events_append_only
+  BEFORE UPDATE OR DELETE ON ot_telemetry_events
+  FOR EACH ROW EXECUTE FUNCTION public.factoryos_guard_ot_append_only();
+
+-- RLS is forced at the table boundary in addition to explicit tenant/factory
+-- predicates in every service query. The composite foreign keys bind child rows
+-- to the same tenant and factory as their device.
+DO $$
+DECLARE table_name text;
+BEGIN
+  FOREACH table_name IN ARRAY ARRAY[
+    'ot_devices', 'ot_device_history', 'ot_device_stream_cursors', 'ot_telemetry_events'
+  ] LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', table_name);
+    EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', table_name);
+    EXECUTE format('CREATE POLICY %I ON public.%I USING (tenant_id = factoryos_current_tenant_id()) WITH CHECK (tenant_id = factoryos_current_tenant_id())',
+      table_name || '_tenant_scope', table_name);
+  END LOOP;
+END;
+$$;
+
+INSERT INTO schema_migrations(version, checksum)
+VALUES ('148_ot_device_registry_spool', NULL)
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+)
 );
 CREATE UNIQUE INDEX uq_ot_telemetry_sequence
   ON ot_telemetry_events (tenant_id, factory_id, device_id, stream_key, source_sequence)
