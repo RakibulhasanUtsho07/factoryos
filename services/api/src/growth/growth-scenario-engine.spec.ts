@@ -61,6 +61,37 @@ describe('growth scenario planning engine', () => {
     ])).toThrow('SCENARIO_SENSITIVITY_PARAMETER_DUPLICATED:investment');
   });
 
+  it('does not inherit base constraints and requires one projection per sensitivity point', () => {
+    const projected = {
+      capacity_utilization_pct: 80,
+      quality_yield_pct: 99,
+      cash_after_investment: 100000,
+      cash_currency: 'BDT',
+      delivery_backlog_days: 3,
+    };
+    const plan = buildGrowthScenarioPlan({
+      ...profiles,
+      base: profile({ projected_constraint_metrics: projected }),
+    }, [{
+      parameter: 'price_change_pct',
+      low_value: -10,
+      high_value: 10,
+      points: 3,
+      projected_constraint_metrics: [projected, null, projected],
+    }]);
+    expect(plan[0].profile.projected_constraint_metrics).toEqual(projected);
+    expect(plan.slice(4).map(item => item.profile.projected_constraint_metrics))
+      .toEqual([projected, null, projected]);
+
+    expect(() => buildGrowthScenarioPlan(profiles, [{
+      parameter: 'price_change_pct',
+      low_value: -10,
+      high_value: 10,
+      points: 3,
+      projected_constraint_metrics: [projected],
+    }])).toThrow('SCENARIO_SENSITIVITY_PROJECTION_COUNT_MISMATCH:price_change_pct');
+  });
+
   it('canonicalizes object keys so equivalent input snapshots have the same bytes', () => {
     expect(canonicalizeGrowthScenarioInput({
       baseline: { revenue: 100, variableCost: 40 }, model: 'v1',
