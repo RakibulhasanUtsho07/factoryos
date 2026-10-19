@@ -116,6 +116,34 @@ SELECT r.tenant_id, r.id, r.release_key, r.version, 'BASELINE_IMPORTED',
    AND r.namespace = 'TENANT'
    AND r.status = 'PROMOTED';
 
+-- Tenant release keys use strict, monotonically increasing integer revisions.
+-- Rollback changes the active pointer; it never reuses a historic version number.
+CREATE OR REPLACE FUNCTION factoryos_guard_research_release_version_sequence()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_max_version INTEGER;
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.tenant_id IS NOT NULL AND NEW.namespace = 'TENANT' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended(NEW.tenant_id::text || ':' || NEW.release_key, 0));
+    SELECT COALESCE(MAX(version), 0)::integer INTO v_max_version
+      FROM research_knowledge_releases
+     WHERE tenant_id = NEW.tenant_id AND release_key = NEW.release_key;
+    IF NEW.version <> v_max_version + 1 THEN
+      RAISE EXCEPTION 'RESEARCH_RELEASE_VERSION_MUST_INCREMENT_BY_ONE: expected %, received %',
+        v_max_version + 1, NEW.version
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER research_release_version_sequence_guard
+BEFORE INSERT ON research_knowledge_releases
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_research_release_version_sequence();
+
 CREATE OR REPLACE FUNCTION factoryos_guard_research_release_channel()
 RETURNS TRIGGER
 LANGUAGE plpgsql
