@@ -436,6 +436,9 @@ export class ResearchIngestionService {
         throw new ConflictException({ code: 'RESEARCH_INGESTION_VERSION_MISMATCH', currentVersion: Number(job.version) });
       }
       this.assertCurrentSnapshot(job, source);
+      if (STAGES.indexOf(String(job.stage)) < STAGES.indexOf('EXTRACT_CLAIMS')) {
+        throw new ConflictException('Ingestion must reach claim extraction before committing extracted claims');
+      }
       if (String(job.lease_owner) !== userId || !job.lease_expires_at ||
           new Date(String(job.lease_expires_at)).getTime() <= Date.now()) {
         throw new ConflictException('Ingestion worker lease expired before extraction commit');
@@ -550,11 +553,7 @@ export class ResearchIngestionService {
         const claim = claimResult.rows[0];
         if (!claim) throw new Error('RESEARCH_EXTRACTED_CLAIM_INSERT_FAILED');
         claimIds.push(String(claim.id));
-        await client.query(
-          'UPDATE research_extraction_items SET claim_id=$1 WHERE id=$2 AND tenant_id=$3',
-          [String(claim.id), String(extractionItem.id), tenantId],
-        );
-      }
+        }
       const updated = await client.query<DbRow>(
         `UPDATE research_ingestion_jobs
          SET status='SUCCEEDED',stage='COMPLETE',progress_percent=100,lease_owner=NULL,lease_expires_at=NULL,
