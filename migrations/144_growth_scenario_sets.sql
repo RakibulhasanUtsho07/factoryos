@@ -14,6 +14,7 @@ CREATE TABLE growth_scenario_sets (
   opportunity_id UUID NOT NULL,
   set_name VARCHAR(140) NOT NULL,
   set_version INTEGER NOT NULL,
+  expected_scenario_count INTEGER NOT NULL,
   model_version VARCHAR(100) NOT NULL,
   data_vintage TIMESTAMPTZ NOT NULL,
   baseline_source_ref TEXT NOT NULL,
@@ -34,6 +35,8 @@ CREATE TABLE growth_scenario_sets (
     CHECK (length(btrim(set_name)) BETWEEN 1 AND 140),
   CONSTRAINT chk_growth_scenario_set_version
     CHECK (set_version > 0),
+  CONSTRAINT chk_growth_scenario_set_expected_count
+    CHECK (expected_scenario_count BETWEEN 6 AND 70),
   CONSTRAINT chk_growth_scenario_set_model
     CHECK (length(btrim(model_version)) BETWEEN 1 AND 100),
   CONSTRAINT chk_growth_scenario_set_vintage
@@ -93,6 +96,9 @@ CREATE TABLE growth_scenario_set_members (
 CREATE INDEX idx_growth_scenario_set_members_order
   ON growth_scenario_set_members
   (tenant_id, factory_id, opportunity_id, scenario_set_id, position);
+CREATE UNIQUE INDEX uq_growth_scenario_set_standard_type
+  ON growth_scenario_set_members (scenario_set_id, scenario_type)
+  WHERE scenario_type <> 'CUSTOM';
 
 CREATE OR REPLACE FUNCTION factoryos_guard_growth_scenario_set_version()
 RETURNS TRIGGER
@@ -178,17 +184,103 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  IF NEW.scenario_type = 'CUSTOM'
-     AND (NEW.sensitivity_parameter IS NULL OR NEW.sensitivity_value IS NULL) THEN
-    RAISE EXCEPTION 'GROWTH_SCENARIO_SENSITIVITY_METADATA_REQUIRED'
+  IF NEW.scenario_type = 'CUSTOM' THEN
+    IF NEW.sensitivity_parameter IS NULL OR NEW.sensitivity_value IS NULL
+       OR NEW.scenario_key NOT LIKE 'SENSITIVITY:%' THEN
+      RAISE EXCEPTION 'GROWTH_SCENARIO_SENSITIVITY_METADATA_REQUIRED'
+        USING ERRCODE = '23514';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM growth_scenarios sc
+       WHERE sc.id = NEW.scenario_id AND sc.tenant_id = NEW.tenant_id
+         AND sc.factory_id = NEW.factory_id AND sc.opportunity_id = NEW.opportunity_id
+         AND sc.inputs #>> '{sensitivity,parameter}' = NEW.sensitivity_parameter
+         AND (sc.inputs #>> '{sensitivity,value}')::NUMERIC = NEW.sensitivity_value
+    ) THEN
+      RAISE EXCEPTION 'GROWTH_SCENARIO_SENSITIVITY_VALUE_BINDING_MISMATCH'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF NEW.scenario_key <> NEW.scenario_type
+     OR NEW.sensitivity_parameter IS NOT NULL OR NEW.sensitivity_value IS NOT NULL THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_STANDARD_CASE_KEY_MISMATCH'
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
 END;
-$$;
+$;
 CREATE TRIGGER growth_scenario_set_member_guard
 BEFORE INSERT ON growth_scenario_set_members
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_scenario_set_member();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_growth_scenario_set_completeness()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+DECLARE
+  expected_count INTEGER;
+  expected_sensitivity_count INTEGER;
+  actual_count INTEGER;
+  actual_standard_count INTEGER;
+  actual_custom_count INTEGER;
+BEGIN
+  SELECT s.expected_scenario_count,
+         COALESCE((
+           SELECT SUM((axis.value ->> 'points')::INTEGER)
+             FROM jsonb_array_elements(s.inputs -> 'sensitivity') AS axis(value)
+         ), 0)::INTEGER
+    INTO expected_count, expected_sensitivity_count
+    FROM growth_scenario_sets s
+   WHERE s.id = NEW.id
+     AND s.tenant_id = NEW.tenant_id
+     AND s.factory_id = NEW.factory_id
+     AND s.opportunity_id = NEW.opportunity_id;
+
+  IF NOT FOUND OR expected_count <> 4 + expected_sensitivity_count THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_EXPECTED_COUNT_DOES_NOT_MATCH_INPUTS'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT COUNT(*)::INTEGER,
+         COUNT(*) FILTER (WHERE m.scenario_type IN ('BASE','UPSIDE','DOWNSIDE','STRESS'))::INTEGER,
+         COUNT(*) FILTER (WHERE m.scenario_type = 'CUSTOM')::INTEGER
+    INTO actual_count, actual_standard_count, actual_custom_count
+    FROM growth_scenario_set_members m
+   WHERE m.scenario_set_id = NEW.id
+     AND m.tenant_id = NEW.tenant_id
+     AND m.factory_id = NEW.factory_id
+     AND m.opportunity_id = NEW.opportunity_id;
+
+  IF actual_count <> expected_count
+     OR actual_standard_count <> 4
+     OR actual_custom_count <> expected_sensitivity_count
+     OR NOT EXISTS (
+       SELECT 1 FROM growth_scenario_set_members m
+        WHERE m.scenario_set_id = NEW.id AND m.scenario_type = 'BASE'
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM growth_scenario_set_members m
+        WHERE m.scenario_set_id = NEW.id AND m.scenario_type = 'UPSIDE'
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM growth_scenario_set_members m
+        WHERE m.scenario_set_id = NEW.id AND m.scenario_type = 'DOWNSIDE'
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM growth_scenario_set_members m
+        WHERE m.scenario_set_id = NEW.id AND m.scenario_type = 'STRESS'
+     ) THEN
+    RAISE EXCEPTION 'GROWTH_SCENARIO_SET_MUST_COMMIT_COMPLETE_STANDARD_CASES_AND_SENSITIVITY_GRID'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NULL;
+END;
+$;
+
+CREATE CONSTRAINT TRIGGER growth_scenario_set_completeness_guard
+AFTER INSERT ON growth_scenario_sets
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_scenario_set_completeness();
 
 CREATE TRIGGER growth_scenario_sets_immutable
 BEFORE UPDATE OR DELETE ON growth_scenario_sets
