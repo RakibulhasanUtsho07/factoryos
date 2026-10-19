@@ -23,14 +23,14 @@ Do not apply a production migration until all of the following are verified:
 6. Agree on a rollback/forward-fix plan. Do not assume destructive schema rollback is safe after application writes begin.
 7. Schedule production execution with an operator present, capture migration output, and run post-migration smoke tests.
 
-Migration 028's execution-claim reconciliation has additional manual recovery risk: preserve a fresh backup, confirm the isolated restore, inspect claim/execution evidence, and obtain operator review before any production reconciliation action. A CI application of migration 028 is not authorization to run it against production.
+Migration 149 creates retention-policy, legal-hold and erasure-review control-plane records; it does not delete tenant data. Any subsequent physical purge must be gated by approved per-category storage mappings, legal-hold checks and audited deletion verification. Migration 028's execution-claim reconciliation has additional manual recovery risk: preserve a fresh backup, confirm the isolated restore, inspect claim/execution evidence, and obtain operator review before any production reconciliation action. A CI application of migration 028 is not authorization to run it against production.
 
 ## CI scope
 
 The repository has automated API, PostgreSQL integration, frontend and dependency-security verification workflows. Confirm the exact workflow set that applies to the candidate SHA:
 
 - **API CI** runs API lint, build, and the unit tests that do not require PostgreSQL integration fixtures.
-- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in .github/workflows/api-postgres-ci.yml through migrations/148_ot_device_registry_spool.sql at this baseline, verifies that no numbered migration is omitted, runs SQL contract suites, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
+- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in .github/workflows/api-postgres-ci.yml through migrations/149_saas_data_retention_erasure_governance.sql at this baseline, verifies that no numbered migration is omitted, runs SQL contract suites, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
 - **Web CI** installs the npm workspace dependencies, runs the frontend lint command, and builds the Next.js application.
 
 A green GitHub Actions run verifies only the commit and environment shown in that run. It does not mean the application was deployed, that production configuration was entered in a hosting platform, or that any production migration was applied.
