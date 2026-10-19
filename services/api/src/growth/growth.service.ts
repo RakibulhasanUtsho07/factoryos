@@ -698,11 +698,13 @@ export class GrowthService {
              ) AS snapshot`,
             [tenantId, factoryId, opportunityId, decisionOwner.rows[0].id, decisionOwner.rows[0].owner_user_id],
           );
+          const readinessDetails = governanceSnapshot.rows[0]?.snapshot;
+          if (!readinessDetails) throw new Error('GROWTH_GOVERNANCE_DECISION_SNAPSHOT_FAILED');
           readinessSnapshot = {
             readiness_required: true,
             ready: true,
             assessed_at: new Date().toISOString(),
-            ...(governanceSnapshot.rows[0]?.snapshot ?? {}),
+            ...readinessDetails,
           };
         }
         const updated = await client.query<OpportunityRow>(
