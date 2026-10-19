@@ -241,6 +241,11 @@ export class CbbController {
       this.getAuthenticatedFactoryContext(
         request,
       );
+    await this.cbbGovernanceService.assertTargetWriteAccess(
+      { tenantId, factoryId, userId },
+      body.target_type,
+      body.target_id ?? null,
+    );
 
     return this.cbbChangeService.createChangeProposal(
       tenantId,
@@ -345,6 +350,7 @@ export class CbbController {
       this.getAuthenticatedFactoryContext(
         request,
       );
+    await this.cbbGovernanceService.assertProposalWriteAccess({ tenantId, factoryId, userId }, proposalId);
 
     return this.cbbChangeService.approveChangeProposal(
       tenantId,
@@ -387,6 +393,7 @@ export class CbbController {
       this.getAuthenticatedFactoryContext(
         request,
       );
+    await this.cbbGovernanceService.assertProposalWriteAccess({ tenantId, factoryId, userId }, proposalId);
 
     return this.cbbChangeService.rejectChangeProposal(
       tenantId,
@@ -504,6 +511,7 @@ export class CbbController {
     @Body() body: LinkCbbEvidenceDto,
   ) {
     const context = this.getAuthenticatedFactoryContext(request);
+    await this.cbbGovernanceService.assertTargetWriteAccess(context, body.target_type, body.target_id);
     return this.cbbEvidenceService.createEvidenceLink(context, evidenceId, body);
   }
 
@@ -543,6 +551,7 @@ export class CbbController {
     @Body() body: DecideCbbConflictDto,
   ) {
     const context = this.getAuthenticatedFactoryContext(request);
+    await this.cbbGovernanceService.assertConflictWriteAccess(context, conflictId);
     return this.cbbEvidenceService.decideConflict(context, conflictId, body);
   }
 
