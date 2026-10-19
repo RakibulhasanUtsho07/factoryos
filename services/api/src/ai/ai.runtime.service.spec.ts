@@ -134,6 +134,7 @@ function canonicalizeForHash(value: unknown): unknown {
 function decisionRequestHash(input: {
   tenantId: string;
   factoryId: string;
+  traceId: string;
   actorId: string;
   objective: string;
   reasoningMode: string;
@@ -242,6 +243,7 @@ describe(
         const requestHash = decisionRequestHash({
           tenantId,
           factoryId,
+          traceId,
           actorId: userId,
           objective: input.objective,
           reasoningMode: input.reasoning_mode,
@@ -331,7 +333,7 @@ describe(
     );
 
     it(
-      'reports incomplete fingerprint during material replay instead of claiming completeness',
+      'reports missing fingerprints and lifecycle gaps during material replay',
       async () => {
         databaseQueryMock
           .mockResolvedValueOnce({
@@ -371,7 +373,7 @@ describe(
           .mockResolvedValueOnce({
             rows: [{
               id: '6f1a5555-5555-4555-8555-555555555555',
-              sequence_no: 1,
+              sequence_no: 2,
               from_state: null,
               to_state: 'CREATED',
               transition_reason: 'LEGACY_BACKFILL',
@@ -397,6 +399,7 @@ describe(
 
         expect(result.replay.completeness.status).toBe('PARTIAL');
         expect(result.replay.completeness.blockers).toContain('CANONICAL_REQUEST_HASH_MISSING');
+        expect(result.replay.completeness.blockers).toContain('LIFECYCLE_LEDGER_INCOMPLETE');
         expect(result.replay.lifecycle.currentState).toBe('CREATED');
         expect(result.replayHash).toHaveLength(64);
       },

@@ -356,6 +356,7 @@ export class AiRuntimeService {
     const requestHash = this.computeDecisionRequestHash({
       tenantId,
       factoryId,
+      traceId,
       actorId: actorUserId,
       objective,
       reasoningMode,
@@ -3767,9 +3768,16 @@ export class AiRuntimeService {
           sourceTimestamp: reference.source_timestamp,
           snapshot: reference.source_snapshot,
         }));
-      const expectedReferenceCount = row.sources.filter(
-        (source) => this.isObject(source) && source.type === 'BUSINESS_EVIDENCE',
-      ).length;
+      const expectedEvidenceIds = row.sources
+        .filter((source) => this.isObject(source) && source.type === 'BUSINESS_EVIDENCE')
+        .map((source) => this.isObject(source) && typeof source.id === 'string' ? source.id.toLowerCase() : '')
+        .filter((id) => id.length > 0)
+        .sort();
+      const actualEvidenceIds = refs.map((reference) => reference.evidenceId.toLowerCase()).sort();
+      const evidenceReferenceIdsMatch =
+        expectedEvidenceIds.length === actualEvidenceIds.length &&
+        expectedEvidenceIds.every((id, index) => id === actualEvidenceIds[index]);
+      const expectedReferenceCount = expectedEvidenceIds.length;
       const hashMatches = this.computeHash({
         decisionId: row.decision_id,
         contextVersion: row.context_version,
@@ -3785,7 +3793,9 @@ export class AiRuntimeService {
           packageHashMatches: hashMatches,
           sourceReferenceCount: expectedReferenceCount,
           persistedEvidenceReferenceCount: refs.length,
-          evidenceReferencesComplete: expectedReferenceCount === refs.length,
+          evidenceReferenceIdsMatch,
+          evidenceReferencesComplete:
+            expectedReferenceCount === refs.length && evidenceReferenceIdsMatch,
         },
       };
     });
@@ -3793,10 +3803,16 @@ export class AiRuntimeService {
     const lifecycleState = lifecycleStateResult.rows[0] ?? null;
     const lifecycleEvents = lifecycleEventResult.rows;
     const latestLifecycleEvent = lifecycleEvents[lifecycleEvents.length - 1] ?? null;
+    const lifecycleSequenceComplete = lifecycleEvents.every((event, index) =>
+      event.sequence_no === index + 1 &&
+      (index === 0
+        ? event.from_state === null && event.to_state === 'CREATED'
+        : event.from_state === lifecycleEvents[index - 1]?.to_state),
+    );
     const lifecycleComplete = Boolean(
       lifecycleState &&
       lifecycleEvents.length === lifecycleState.version &&
-      lifecycleEvents.every((event, index) => event.sequence_no === index + 1) &&
+      lifecycleSequenceComplete &&
       latestLifecycleEvent?.to_state === lifecycleState.current_state,
     );
     const canonicalHashMatches = Boolean(
@@ -3804,6 +3820,7 @@ export class AiRuntimeService {
       decision.request_hash === this.computeDecisionRequestHash({
         tenantId: decision.tenant_id,
         factoryId: decision.factory_id,
+        traceId: decision.trace_id,
         actorId: decision.actor_id,
         objective: decision.objective,
         reasoningMode: decision.reasoning_mode,
@@ -3847,7 +3864,7 @@ export class AiRuntimeService {
           count: contexts.length,
         },
         evidenceReferences: {
-          status: evidenceRefsComplete ? 'COMPLETE' : 'INCOMPLETE',
+          status: contexts.length === 0 ? 'NOT_APPLICABLE' : evidenceRefsComplete ? 'COMPLETE' : 'INCOMPLETE',
           expected: contexts.reduce((sum, context) => sum + context.integrity.sourceReferenceCount, 0),
           persisted: contexts.reduce((sum, context) => sum + context.integrity.persistedEvidenceReferenceCount, 0),
         },
@@ -3959,6 +3976,7 @@ export class AiRuntimeService {
   private computeDecisionRequestHash(input: {
     tenantId: string;
     factoryId: string;
+    traceId: string;
     actorId: string;
     objective: string;
     reasoningMode: string;
@@ -3971,6 +3989,7 @@ export class AiRuntimeService {
       envelopeVersion: '1.0.0',
       tenantId: input.tenantId,
       factoryId: input.factoryId,
+      traceId: input.traceId,
       actorId: input.actorId,
       objective: input.objective,
       reasoningMode: input.reasoningMode,
