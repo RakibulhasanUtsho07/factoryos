@@ -399,6 +399,17 @@ BEGIN
   END IF;
   SELECT created_by INTO v_created_by FROM growth_opportunities
    WHERE id = NEW.opportunity_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM users u
+      JOIN tenant_memberships tm ON tm.user_id = u.id
+     WHERE u.id = NEW.owner_user_id
+       AND u.status = 'ACTIVE'
+       AND tm.tenant_id = NEW.tenant_id
+       AND tm.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_DECISION_OWNER_MUST_BE_AN_ACTIVE_TENANT_MEMBER' USING ERRCODE = '23514';
+  END IF;
   IF NEW.role_code = 'DECISION_OWNER' AND NEW.owner_user_id = v_created_by THEN
     RAISE EXCEPTION 'GROWTH_DECISION_OWNER_MUST_DIFFER_FROM_OPPORTUNITY_CREATOR' USING ERRCODE = '23514';
   END IF;
