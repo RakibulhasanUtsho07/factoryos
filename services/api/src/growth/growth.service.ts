@@ -1115,6 +1115,11 @@ export class GrowthService {
             .filter((ref): ref is string => typeof ref === 'string' && ref.trim().length > 0)
             .map(ref => ref.trim()),
         );
+        if (!evidenceReferences.has(baselineSourceRef)) {
+          throw new BadRequestException(
+            'baseline_source_ref must match a reference_ref or citation_url attached to this opportunity',
+          );
+        }
         const versionResult = await client.query<{ next_version: number | string }>(
           `SELECT COALESCE(MAX(set_version), 0) + 1 AS next_version
              FROM growth_scenario_sets
