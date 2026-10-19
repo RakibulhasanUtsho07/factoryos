@@ -198,17 +198,50 @@ INSERT INTO growth_opportunity_assumptions (
   blocks_decision, created_by, created_at
 )
 SELECT o.tenant_id, o.factory_id, o.id,
-       btrim(a.statement),
-       'Imported from the legacy assumptions array; rationale/evidence must be reviewed.',
+       CASE WHEN length(btrim(a.statement)) >= 5
+            THEN left(btrim(a.statement), 4000)
+            ELSE 'Legacy assumption needs clarification: ' ||
+                 COALESCE(NULLIF(left(btrim(a.statement), 3500), ''), 'blank previous value')
+       END,
+       'Imported from the legacy assumptions array; rationale/evidence must be reviewed. Original value: ' ||
+         COALESCE(NULLIF(left(btrim(a.statement), 1000), ''), '[blank]'),
        'HIGH', 50,
-       'Assign an evidence owner, test against factory data, and record an explicit review decision.',
+       'Clarify the prior statement, attach evidence, and record a VALIDATED or reasoned WAIVED review decision.',
        '[]'::jsonb, o.owner_user_id, TRUE, o.created_by, o.created_at
 FROM growth_opportunities o
-CROSS JOIN LATERAL jsonb_array_elements_text(o.assumptions) AS a(statement)
-WHERE length(btrim(a.statement)) >= 5;
+CROSS JOIN LATERAL jsonb_array_elements_text(o.assumptions) AS a(statement);
+
+CREATE OR REPLACE FUNCTION factoryos_guard_growth_assumptions_payload()
+RETURNS TRIGGER LANGUAGE plpgsql AS $
+DECLARE
+  invalid_count INTEGER;
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.assumptions IS DISTINCT FROM OLD.assumptions THEN
+    RAISE EXCEPTION 'GROWTH_OPPORTUNITY_ASSUMPTIONS_ARRAY_IS_IMMUTABLE_USE_GOVERNANCE_RECORDS'
+      USING ERRCODE = '55000';
+  END IF;
+  IF jsonb_typeof(NEW.assumptions) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'GROWTH_OPPORTUNITY_ASSUMPTIONS_MUST_BE_AN_ARRAY'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT COUNT(*)::integer INTO invalid_count
+    FROM jsonb_array_elements(NEW.assumptions) AS item(value)
+   WHERE jsonb_typeof(item.value) IS DISTINCT FROM 'string'
+      OR length(btrim(item.value #>> '{}')) < 5
+      OR length(btrim(item.value #>> '{}')) > 2000;
+  IF invalid_count > 0 THEN
+    RAISE EXCEPTION 'GROWTH_OPPORTUNITY_ASSUMPTIONS_MUST_BE_NONBLANK_STRINGS_OF_5_TO_2000_CHARACTERS'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+CREATE TRIGGER growth_opportunity_assumptions_payload_guard
+BEFORE INSERT OR UPDATE OF assumptions ON growth_opportunities
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_assumptions_payload();
 
 CREATE OR REPLACE FUNCTION factoryos_seed_growth_opportunity_assumptions()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+RETURNS TRIGGER LANGUAGE plpgsql AS $
 BEGIN
   INSERT INTO growth_opportunity_assumptions (
     tenant_id, factory_id, opportunity_id, statement, rationale, risk_if_false,
@@ -218,10 +251,9 @@ BEGIN
   SELECT NEW.tenant_id, NEW.factory_id, NEW.id, btrim(item.statement),
          'Imported from the opportunity assumptions payload; verify before decision.',
          'HIGH', 50,
-         'Attach source evidence and submit an explicit VALIDATED/REFUTED review.',
+         'Attach source evidence and submit an explicit VALIDATED, REFUTED or WAIVED review.',
          '[]'::jsonb, NEW.owner_user_id, TRUE, NEW.created_by
-  FROM jsonb_array_elements_text(NEW.assumptions) AS item(statement)
-  WHERE length(btrim(item.statement)) >= 5;
+  FROM jsonb_array_elements_text(NEW.assumptions) AS item(statement);
   RETURN NEW;
 END;
 $$;
