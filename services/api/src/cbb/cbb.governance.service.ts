@@ -618,7 +618,6 @@ export class CbbGovernanceService {
       );
       const blueprint = blueprintResult.rows[0];
       if (!blueprint || !blueprint.current_version_id) throw new NotFoundException('Active CBB blueprint/version was not found');
-      await this.assertTargetWriteAccessInClient(client, scope, 'BLUEPRINT', String(blueprint.id));
       const currentVersionId = String(blueprint.current_version_id);
       if (currentVersionId !== dto.expected_current_version_id) {
         throw new ConflictException({ code: 'CBB_ROLLBACK_CURRENT_VERSION_MISMATCH', currentVersionId });
@@ -631,6 +630,7 @@ export class CbbGovernanceService {
       );
       const source = targetResult.rows[0];
       if (!source) throw new NotFoundException('Rollback target version was not found in this factory blueprint');
+      await this.assertTargetWriteAccessInClient(client, scope, 'BLUEPRINT', String(blueprint.id));
       const next = await client.query<DbRow>(
         `SELECT COALESCE(MAX(version),0)+1 AS next_version FROM business_blueprint_versions
          WHERE blueprint_id=$1 AND tenant_id=$2 AND factory_id=$3`,
