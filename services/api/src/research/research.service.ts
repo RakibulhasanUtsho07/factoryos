@@ -1523,6 +1523,7 @@ export class ResearchService {
       rights_basis: string | null;
       source_id: string;
       stored_excerpt: string | null;
+      safety_review_decision: string | null;
     }>(
       `
       SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.namespace,
@@ -1530,9 +1531,20 @@ export class ResearchService {
         c.limitations, c.practical_implication, c.evidence_grade, c.evidence_strength,
         c.topic_tags, c.provenance_ref, c.status, c.stored_excerpt,
         s.title AS source_title, s.source_url, s.doi,
-        s.license_status, s.access_status, s.rights_basis
+        s.license_status, s.access_status, s.rights_basis,
+        sr.decision AS safety_review_decision
       FROM research_claims c
       JOIN research_sources s ON s.id = c.source_id AND s.namespace = c.namespace
+      LEFT JOIN LATERAL (
+        SELECT a.id
+        FROM research_evidence_assessments a
+        WHERE a.claim_id = c.id AND a.tenant_id = c.tenant_id AND a.source_id = s.id
+          AND a.source_revision = s.source_revision AND a.rights_version = s.rights_version
+        ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+      ) latest_assessment ON TRUE
+      LEFT JOIN research_evidence_safety_reviews sr
+        ON sr.assessment_id = latest_assessment.id AND sr.tenant_id = c.tenant_id
+       AND sr.claim_id = c.id AND sr.source_id = s.id AND sr.decision = 'CLEAR'
       WHERE c.id = ANY($1::uuid[])
         AND c.status = 'APPROVED'
         AND s.access_status = 'APPROVED'
@@ -1552,7 +1564,7 @@ export class ResearchService {
     let rightsPassed = true;
     const sources = new Map<string, Record<string, unknown>>();
     const safetyFlags: string[] = [];
-    const safetyFindings: Array<{ claimId: string; flags: string[] }> = [];
+    const safetyFindings: Array<{ claimId: string; flags: string[]; reviewDecision: 'CLEAR' | null }> = [];
     const citationFindings: Array<{ claimId: string; status: string; findings: string[] }> = [];
     for (const claim of result.rows) {
       const normalized = claim.claim_text.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -1572,8 +1584,9 @@ export class ResearchService {
         .filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
       const flags = scanResearchPromptInjection(untrustedText);
       if (flags.length) {
-        safetyFlags.push(claim.id);
-        safetyFindings.push({ claimId: claim.id, flags });
+        const reviewDecision = claim.safety_review_decision === 'CLEAR' ? 'CLEAR' : null;
+        safetyFindings.push({ claimId: claim.id, flags, reviewDecision });
+        if (reviewDecision !== 'CLEAR') safetyFlags.push(claim.id);
       }
       sources.set(claim.source_id, {
         sourceId: claim.source_id,
@@ -1601,6 +1614,7 @@ export class ResearchService {
       licenseStatus: claim.license_status,
       accessStatus: claim.access_status,
       rightsBasis: claim.rights_basis,
+      safetyReviewDecision: claim.safety_review_decision ?? null,
     }));
     const contentFingerprint = createHash('sha256')
       .update(JSON.stringify(claimsFingerprint))
