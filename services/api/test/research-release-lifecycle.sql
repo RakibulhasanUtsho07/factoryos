@@ -87,11 +87,12 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid = 'public.research_knowledge_releases'::regclass
-      AND conname = 'uq_research_release_tenant_version'
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND tablename = 'research_knowledge_releases'
+      AND indexname = 'uq_research_release_tenant_version'
   ) THEN
-    RAISE EXCEPTION 'RESEARCH_RELEASE_VERSION_IDENTITY_CONSTRAINT_MISSING';
+    RAISE EXCEPTION 'RESEARCH_RELEASE_VERSION_IDENTITY_INDEX_MISSING';
   END IF;
 
   RAISE NOTICE 'Research release approval, versioning, supersession and rollback contract passed';
