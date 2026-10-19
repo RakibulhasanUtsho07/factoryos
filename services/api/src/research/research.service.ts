@@ -580,7 +580,8 @@ export class ResearchService {
           SELECT c.id::text AS id, c.tenant_id::text AS tenant_id, c.namespace,
             c.source_id::text AS source_id, c.claim_text, c.methodology, c.dataset_description,
             c.limitations, c.practical_implication, c.evidence_grade, c.evidence_strength,
-            c.topic_tags, c.provenance_ref, c.status
+            c.topic_tags, c.provenance_ref, c.status,
+            c.extraction_item_id::text AS extraction_item_id
           FROM research_claims c
           WHERE c.id = $1 AND c.tenant_id = $2
           FOR UPDATE
@@ -615,6 +616,18 @@ export class ResearchService {
           }
           if (!row.provenance_ref || !Object.keys(row.provenance_ref).length) {
             throw new BadRequestException('A claim must have source provenance before approval');
+          }
+          if (row.extraction_item_id) {
+            const extractionReview = await client.query<{ decision: string }>(
+              `SELECT decision FROM research_extraction_item_reviews
+               WHERE extraction_item_id=$1 AND tenant_id=$2`,
+              [row.extraction_item_id, tenantId],
+            );
+            if (extractionReview.rows[0]?.decision !== 'APPROVE') {
+              throw new ForbiddenException(
+                'Extracted claims require an explicit extraction-item review before claim approval',
+              );
+            }
           }
         }
         const updated = await client.query<ResearchClaimRow>(
