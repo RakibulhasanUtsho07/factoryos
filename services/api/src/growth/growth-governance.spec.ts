@@ -59,6 +59,39 @@ describe('growth opportunity governance readiness', () => {
     ]));
   });
 
+  it('blocks readiness when the observed value exceeds a MAX constraint', () => {
+    const result = evaluateGrowthGovernanceReadiness({
+      evidence_count: 1,
+      decision_owner_assigned: true,
+      assumptions: [],
+      constraints: [
+        ...passedConstraints.filter(item => item.dimension !== 'CAPACITY'),
+        { ...passedConstraints[0], applicability: 'APPLICABLE', rationale: 'Capacity ceiling',
+          limit_operator: 'MAX', threshold_value: 80, observed_value: 84, unit: '%',
+          source_evidence_ref: 'capacity-report:october' },
+      ],
+      evidence_gaps: [],
+    });
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain('CONSTRAINT_LIMIT_VIOLATED:CAPACITY');
+  });
+
+  it('accepts constraint readings at the exact inclusive limit', () => {
+    const result = evaluateGrowthGovernanceReadiness({
+      evidence_count: 1,
+      decision_owner_assigned: true,
+      assumptions: [],
+      constraints: [
+        ...passedConstraints.filter(item => item.dimension !== 'CAPACITY'),
+        { ...passedConstraints[0], applicability: 'APPLICABLE', rationale: 'Capacity ceiling',
+          limit_operator: 'MAX', threshold_value: '80.0000', observed_value: '80.0000', unit: '%',
+          source_evidence_ref: 'capacity-report:october' },
+      ],
+      evidence_gaps: [],
+    });
+    expect(result.ready).toBe(true);
+  });
+
   it('blocks an applicable constraint if its source snapshot is incomplete', () => {
     const result = evaluateGrowthGovernanceReadiness({
       evidence_count: 1,
