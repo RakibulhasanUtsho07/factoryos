@@ -119,6 +119,10 @@ describe('GrowthService scenario sets', () => {
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'SCENARIO_SET_RUN',
       resourceId: SCENARIO_SET_ID,
+      payload: expect.objectContaining({
+        decisionReady: false,
+        sensitivityDecisionReady: false,
+      }),
     }));
   });
 
