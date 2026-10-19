@@ -24,11 +24,12 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
 
   async function withFixture(
     test: (client: PoolClient, fixture: {
-      tenantId: string; userId: string; factoryId: string; sourceId: string; claimId: string;
+      tenantId: string; userId: string; decisionUserId: string; factoryId: string; sourceId: string; claimId: string;
     }) => Promise<void>,
   ) {
     const tenantId = randomUUID();
     const userId = randomUUID();
+    const decisionUserId = randomUUID();
     await expect(database.transaction(
       { tenantId, userId },
       async client => {
@@ -41,8 +42,16 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           [userId, 'rg-' + userId, 'rg-' + userId + '@factoryos.test', 'Research growth actor', 'ACTIVE'],
         );
         await client.query(
+          'INSERT INTO users (id, external_subject, email, display_name, status) VALUES ($1, $2, $3, $4, $5)',
+          [decisionUserId, 'rg-' + decisionUserId, 'rg-' + decisionUserId + '@factoryos.test', 'Growth decision owner', 'ACTIVE'],
+        );
+        await client.query(
           "INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, 'ACTIVE')",
           [tenantId, userId],
+        );
+        await client.query(
+          "INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES ($1, $2, 'ACTIVE')",
+          [tenantId, decisionUserId],
         );
         const factory = await client.query<{ id: string }>(
           'INSERT INTO factories (tenant_id, code, name, status) VALUES ($1, $2, $3, $4) RETURNING id::text AS id',
@@ -125,7 +134,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           [userId, fixtureClaimId, tenantId],
         );
 
-        await test(client, { tenantId, userId, factoryId, sourceId, claimId: fixtureClaimId });
+        await test(client, { tenantId, userId, decisionUserId, factoryId, sourceId, claimId: fixtureClaimId });
         throw new Error(ROLLBACK_MARKER);
       },
     )).rejects.toThrow(ROLLBACK_MARKER);
@@ -148,6 +157,9 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
       'research_sources', 'research_claims', 'research_claim_links', 'research_knowledge_releases', 'research_release_evaluations', 'research_topic_watchlists',
       'research_evidence_assessments', 'research_evidence_safety_reviews',
       'research_relevance_mappings', 'growth_opportunities', 'growth_opportunity_evidence', 'growth_validation_unknowns',
+      'growth_opportunity_assumptions', 'growth_opportunity_assumption_decisions', 'growth_opportunity_constraints',
+      'growth_opportunity_evidence_gaps', 'growth_opportunity_evidence_gap_events',
+      'growth_opportunity_decision_owners', 'growth_opportunity_decision_history',
       'growth_scenarios', 'growth_experiments', 'growth_experiment_results', 'growth_opportunity_outcomes',
     ];
     const result = await database.query<{
@@ -848,6 +860,14 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         `,
         [f.tenantId, f.factoryId, f.userId],
       );
+      await client.query(
+        `INSERT INTO growth_opportunity_decision_owners
+           (tenant_id, factory_id, opportunity_id, role_code, owner_user_id, rationale, assigned_by)
+         VALUES ($1, $2, $3, 'DECISION_OWNER', $4,
+           'Independent owner assigned for the acceptance contract test', $5)`,
+        [f.tenantId, f.factoryId, opportunity.rows[0].id, f.decisionUserId, f.userId],
+      );
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.decisionUserId]);
       await client.query('SAVEPOINT require_evidence');
       await expect(client.query(
         `
@@ -855,7 +875,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         SET status = 'ACCEPTED', decided_by = $1, decided_at = clock_timestamp(), decision_reason = 'approve'
         WHERE id = $2
         `,
-        [f.userId, opportunity.rows[0].id],
+        [f.decisionUserId, opportunity.rows[0].id],
       )).rejects.toMatchObject({ code: '23514' });
       await client.query('ROLLBACK TO SAVEPOINT require_evidence');
     });
@@ -891,14 +911,47 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         `,
         [f.tenantId, f.factoryId, opportunityId, f.userId],
       );
+      const seededAssumption = await client.query<{ id: string }>(
+        'SELECT id::text AS id FROM growth_opportunity_assumptions WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3 ORDER BY created_at, id LIMIT 1',
+        [opportunityId, f.tenantId, f.factoryId],
+      );
+      expect(seededAssumption.rows[0]).toBeDefined();
+      await client.query(
+        `INSERT INTO growth_opportunity_assumption_decisions
+           (tenant_id, factory_id, opportunity_id, assumption_id, decision, reason, evidence_refs, decided_by)
+         VALUES ($1,$2,$3,$4,'VALIDATED',
+           'Baseline assumption verified against monthly quality evidence',
+           '["quality-report:monthly-scrap"]'::jsonb,$5)`,
+        [f.tenantId, f.factoryId, opportunityId, seededAssumption.rows[0].id, f.userId],
+      );
+      for (const dimension of ['CAPACITY', 'QUALITY', 'CASH', 'DELIVERY']) {
+        await client.query(
+          `INSERT INTO growth_opportunity_constraints
+             (tenant_id, factory_id, opportunity_id, dimension, applicability, constraint_name,
+              rationale, owner_user_id, created_by)
+           VALUES ($1,$2,$3,$4,'NOT_APPLICABLE',$5,
+             'Reviewed and explicitly judged non-blocking for the narrow scenario fixture',
+             $6,$6)`,
+          [f.tenantId, f.factoryId, opportunityId, dimension, dimension + ' reviewed for fixture', f.userId],
+        );
+      }
+      await client.query(
+        `INSERT INTO growth_opportunity_decision_owners
+           (tenant_id, factory_id, opportunity_id, role_code, owner_user_id, rationale, assigned_by)
+         VALUES ($1, $2, $3, 'DECISION_OWNER', $4,
+           'Independent owner assigned after evidence and constraints were reviewed', $5)`,
+        [f.tenantId, f.factoryId, opportunityId, f.decisionUserId, f.userId],
+      );
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.decisionUserId]);
       await client.query(
         `
         UPDATE growth_opportunities
         SET status = 'ACCEPTED', decided_by = $1, decided_at = clock_timestamp(), decision_reason = 'approved with evidence'
         WHERE id = $2
         `,
-        [f.userId, opportunityId],
+        [f.decisionUserId, opportunityId],
       );
+      await client.query("SELECT set_config('app.user_id', $1, true)", [f.userId]);
       const scenario = await client.query<{ id: string; decision_ready: boolean }>(
         `
         INSERT INTO growth_scenarios (
