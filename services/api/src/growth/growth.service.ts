@@ -1689,6 +1689,7 @@ export class GrowthService {
 
       const snapshot = {
         schema_version: 1,
+        canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
         method_version: metrics.method_version,
         model_version: modelVersion,
         metric_key: metricKey,
