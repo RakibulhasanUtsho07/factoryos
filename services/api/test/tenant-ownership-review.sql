@@ -64,7 +64,8 @@ BEGIN
   END IF;
 
   FOR item IN
-    SELECT r.relation_name, r.ownership_class, r.evidence_type, r.scope_predicate, c.oid,
+    SELECT r.relation_name, r.ownership_class, r.evidence_type, r.scope_predicate,
+           r.export_disposition, r.erasure_disposition, c.oid,
            c.relrowsecurity, c.relforcerowsecurity
     FROM factoryos_governance.tenant_relation_ownership_reviews r
     JOIN pg_class c ON c.relname = r.relation_name
