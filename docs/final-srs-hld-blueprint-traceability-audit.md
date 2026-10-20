@@ -9,11 +9,11 @@
 
 ## 1. Executive decision
 
-**Decision: NOT READY FOR FORMAL SRS/HLD/Blueprint SIGN-OFF; the source-based audit matrix is now present.** The supplied Library contains the final FactoryOS AI SRS v2.1 FINAL Product-Ready Manufacturing SaaS (FOS-SRS-001, dated 2026-10-02), HLD/LLD v1.0 and Engineering Implementation Blueprint v1.0 (both dated 2026-10-02). They were inspected directly. They are not yet committed as original PDF artifacts in this repository; their exact bytes are pinned in [the source baseline manifest](audit-source-baseline-manifest.md), including SHA-256 checksums. The ID-by-ID register still has 37 priorities needing review and a 51-count difference between the SRS's cumulative 950 design-scope requirements and 899 distinct FR/NFR IDs extracted. Source-based traceability is materially improved, but that discrepancy, per-row acceptance evidence and formal owner approval must be closed before sign-off.
+**Decision: NOT READY FOR FORMAL SRS/HLD/Blueprint SIGN-OFF; the source-based audit matrix is now present.** The supplied Library contains the final FactoryOS AI SRS v2.1 FINAL Product-Ready Manufacturing SaaS (FOS-SRS-001, dated 2026-10-02), HLD/LLD v1.0 and Engineering Implementation Blueprint v1.0 (both dated 2026-10-02). They were inspected directly. They are not yet committed as original PDF artifacts in this repository; their exact bytes are pinned in [the source baseline manifest](audit-source-baseline-manifest.md), including SHA-256 checksums. The ID-by-ID register has 899 distinct extracted FR/NFR IDs, while SRS §140 reports 950 cumulative design-scope requirements; those metrics use different counting bases and the 51 arithmetic difference is not evidence of missing code. Thirty-seven row priorities still need manual source review. Traceability is materially improved, but source count/revision accounting, per-row acceptance evidence and formal owner approval must be closed before sign-off.
 
 The inspected Library copies identify the source baseline as follows: (1) `FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(8).pdf`, FOS-SRS-001, version 2.1 Final Product-Ready, dated 2026-10-02, uploaded to the Library 2026-10-17; (2) `FactoryOS_AI_v2_1_System_Architecture_Technical_Design_HLD_LLD(3).pdf`, HLD/LLD v1.0, dated 2026-10-02; and (3) `FactoryOS_AI_v2_1_Engineering_Implementation_Blueprint_v1_0(8).pdf`, Implementation Blueprint v1.0, dated 2026-10-02. These are available to the auditor but not committed under this repository's `docs/` tree. Their exact-copy hashes are recorded in [docs/audit-source-baseline-manifest.md](audit-source-baseline-manifest.md); Product/Architecture still need to confirm the approved source-of-record and its owner.
 
-The SRS final scope ledger (§140) states 950 cumulative design-scope requirements (P0=296, P1=582, P2=72), while the source-text extraction in [Requirement-by-Requirement Evidence Matrix](srs-v2.1-requirement-evidence-matrix.md) detected 899 distinct FR/NFR IDs; 37 priority cells could not be parsed confidently. The difference may reflect cumulative/superseded versions, source table formatting or IDs needing manual reconciliation; it must be explicitly explained against the final SRS rather than silently treated as complete. This matrix includes each detected ID and a conservative status/evidence boundary. The companion [Requirement Evidence Register](requirement-evidence-register.md) summarizes high-risk domains.
+The SRS final scope ledger (§140) states 950 cumulative design-scope requirements (P0=296, P1=582, P2=72), while the source-text extraction in [Requirement-by-Requirement Evidence Matrix](srs-v2.1-requirement-evidence-matrix.md) detected 899 distinct FR/NFR IDs; 37 priority cells could not be parsed confidently. The distinct-ID extraction and cumulative-scope count are not directly comparable. Reconcile repeated/revised IDs, the SRS cumulative scope ledger and final normative tables with Product/Architecture; do not interpret the arithmetic difference as missing requirements or as a completion percentage. This matrix includes each detected ID and a conservative status/evidence boundary. The companion [Requirement Evidence Register](requirement-evidence-register.md) summarizes high-risk domains.
 
 ### Verified repository CI evidence
 
@@ -118,7 +118,7 @@ The source SRS v2.1 final §135 defines these production-readiness scenarios. So
 - **NFR-PROD-18 (P0):** operational/release evidence is auditable.
 - HLD/LLD §23 proposes (it does not by itself approve) critical OLTP baseline RPO ≤5 minutes/RTO ≤60 minutes with monthly restore tests and quarterly DR exercises; important-domain RPO ≤1 hour/RTO ≤4 hours with quarterly restore tests. Service owner/Operations must explicitly approve or replace these proposed targets.
 
-## 4. Priority gap register
+## 5. Priority gap register
 
 Priority labels in this table are **provisional** until they are validated against the authoritative SRS and the organization’s release-risk policy.
 
@@ -143,7 +143,7 @@ Priority labels in this table are **provisional** until they are validated again
 | P1-07 | Real billing and external enterprise integrations need adapter evidence | Staging billing/invoice and ERP/SFTP provider contract tests, reconciliation/replay tests and approved source-of-record policy |
 | P1-08 | Agent planner refusal/evaluation and real compensators not fully accepted | Tests against real planner/policy and each registered production executor, verified effect status, explicit approved compensator, audit lineage and manual recovery evidence |
 
-## 5. P2 and sector-pack backlog
+## 6. P2 and sector-pack backlog
 
 These are **proposed backlog candidates, not newly invented SRS requirements**. Product/Architecture must accept, reject or re-prioritize each candidate after the SRS baseline is available.
 
@@ -166,7 +166,7 @@ These are **proposed backlog candidates, not newly invented SRS requirements**. 
 | P2-15 | Full profitability and finance-close pack | Allocated actual/forecast costs, customer/product variance, working-capital/cash forecasting, period-close reconciliation and verified accounting feed. Depends on FR-FIN-03/04/08/09 acceptance. |
 | P2-16 | Full schema/transfer expansion pack | Review every NO_DIRECT_TENANT_ID relation, additional indirect-ownership joins, all tenant-owned export adapters and external-store erasure receipts. This should close P1-01 before being treated as optional enhancement. |
 
-## 6. Requirement orphan and change-control rules
+## 7. Requirement orphan and change-control rules
 
 The following rules apply when the master SRS is imported:
 
@@ -177,7 +177,7 @@ The following rules apply when the master SRS is imported:
 5. **Production gate:** record exact SHA, workflow run URLs, migration manifest/result, test output, deployment environment, operator/approver and rollback/forward-fix decision.
 6. **Change after audit:** any requirement-affecting source, migration, workflow or adapter change invalidates only the linked evidence rows by default, but the exact SHA and affected row mapping must be regenerated before release.
 
-## 7. Final audit conclusion
+## 8. Final audit conclusion
 
 The repository is **implementation-rich but not formally SRS-sign-off-complete**. API CI, PostgreSQL CI and production dependency-security workflows passed on the exact code/configuration SHAs shown above; the present audit also identifies bounded acceptance gaps rather than treating a successful test run as universal acceptance.
 
