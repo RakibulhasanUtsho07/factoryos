@@ -1158,6 +1158,34 @@ describe(
       expect((service as any).retryDelaySeconds(20)).toBe(60);
     });
 
+    it('does not retry a permanent executor failure even when retry budget remains', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({
+        status: 'RUNNING',
+        retry_count: 0,
+        retry_limit: 3,
+      });
+      (service as any).failTask = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue({});
+
+      await (service as any).applyFailure(
+        tenantId,
+        factoryId,
+        userId,
+        task,
+        step,
+        {
+          code: 'EXECUTOR_NOT_CONFIGURED',
+          message: 'No registered executor exists',
+        },
+      );
+
+      expect(database.query).not.toHaveBeenCalled();
+      const call = (service as any).failTask.mock.calls[0] as unknown[];
+      expect(call[4]).toBe('AI_AGENT_NON_RETRYABLE_FAILURE');
+    });
+
     it('does not schedule a retry if backoff would outlive the task deadline', async () => {
       const task = taskRow({
         state: 'EXECUTING',
@@ -1178,7 +1206,12 @@ describe(
         userId,
         task,
         step,
-        { code: 'TRANSIENT', message: 'execution failed' },
+        {
+          code: 'TRANSIENT',
+          message: 'execution failed',
+          retryable: true,
+          sideEffectStatus: 'NOT_COMMITTED',
+        },
       );
 
       expect(database.query).not.toHaveBeenCalled();
@@ -1197,7 +1230,12 @@ describe(
         userId,
         task,
         step,
-        { code: 'TRANSIENT', message: 'execution failed' },
+        {
+          code: 'TRANSIENT',
+          message: 'execution failed',
+          retryable: true,
+          sideEffectStatus: 'NOT_COMMITTED',
+        },
       );
 
       const queryCalls = (database.query as unknown as {
@@ -1228,7 +1266,12 @@ describe(
         userId,
         task,
         step,
-        { code: 'TRANSIENT', message: 'execution failed' },
+        {
+          code: 'TRANSIENT',
+          message: 'execution failed',
+          retryable: true,
+          sideEffectStatus: 'NOT_COMMITTED',
+        },
       );
 
       const queryCalls = (database.query as unknown as {
