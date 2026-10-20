@@ -2,20 +2,42 @@
 
 **Status:** Engineering runbook for the repository implementation. Production-specific values, alert routing, RPO/RTO and final SLOs require owner approval before release.
 
-## 1. Observability and safe metrics scraping
+## 1. Distributed tracing, logs and operational metrics
 
-Every request has an x-request-id and x-trace-id. An incoming x-trace-id is preserved only when it matches the bounded pattern `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`; malformed or oversized values are replaced with a generated UUID. Correlation identifiers are not authentication credentials. Do not put customer data, secrets, access tokens, or personally identifiable information in them.
+### Request correlation and W3C Trace Context
 
-The process exposes low-cardinality Prometheus text metrics at GET /internal/metrics:
+Every request receives a bounded x-request-id and correlation x-trace-id. The API also accepts and emits W3C Trace Context version 00 traceparent and a validated bounded tracestate when present. A valid inbound traceparent keeps its trace ID and parent-span relationship while this API creates a new server-span ID. Invalid/all-zero context is not reflected; a new trace context is created. Legacy non-W3C x-trace-id values are preserved only as compatibility correlation IDs.
 
-- factoryos_http_requests_total by bounded HTTP method and status class
-- factoryos_http_requests_in_flight by bounded method
-- factoryos_http_request_duration_seconds histogram
-- factoryos_process_uptime_seconds
+Root traces are sampled using TRACE_SAMPLE_RATIO (default 0.1, valid range 0–1); an inbound W3C sampling decision is respected. Sampled requests produce sanitized structured http.server.request JSON logs containing trace ID, span ID, parent span ID, request ID, bounded route template, method, status and duration. Do not add request/response bodies, full URLs, query strings, authorization headers, secrets, tenant IDs or user identifiers.
 
-The scrape route is **disabled by default**. Set METRICS_SCRAPE_TOKEN in the deployment secret manager to a high-entropy value of at least 32 characters, then send Authorization: Bearer token from a restricted metrics collector. An unconfigured endpoint responds as not found; a missing or invalid token is rejected. Rotate the token through the secret manager and update the collector as one controlled operation. Never commit the token or put it in a URL.
+### OTLP/HTTP trace export
 
-Metrics are process-local and reset on restart. They deliberately have no tenant, user, trace, or URL-path labels, avoiding high-cardinality labels and cross-tenant traffic disclosure. They are not a durable telemetry store and do not replace a central collector, per-instance scraping, log aggregation or distributed tracing backend.
+The optional OtlpTraceExporter emits OpenTelemetry-compatible OTLP/HTTP JSON spans to OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (fixed URL ending in /v1/traces). Remote endpoints must use HTTPS; loopback HTTP is allowed only outside production. OTEL_SERVICE_NAME defaults to factoryos-api; OTEL_EXPORTER_OTLP_TRACES_TOKEN is an optional collector bearer token and must be kept in the deployment secret manager.
+
+Export is non-blocking with a bounded in-memory queue (2,048 spans), batches of at most 128 and a 1.5-second collector timeout. Collector errors drop the failed batch rather than blocking or retaining an infinite backlog; these losses are exposed in exporter metrics. If no endpoint is configured, trace export is disabled while request correlation headers continue to work. Use a central OpenTelemetry Collector/backend for persistence, cross-service search, retention and alerting; process-local buffering is not durable.
+
+### Prometheus-compatible operational metrics
+
+When enabled, GET /api/internal/metrics returns Prometheus text exposition. It is disabled when METRICS_SCRAPE_TOKEN is missing or shorter than 32 characters. Set a high-entropy token out of band in a secret manager; a restricted collector must send Authorization: Bearer token. Comparison is constant-time after equal-length validation. Never put the token in a URL or commit it.
+
+The exported metric families include:
+
+- factoryos_http_requests_total by bounded method and status class.
+- factoryos_http_route_requests_total by bounded route template, method and status class. Raw URLs, query strings and customer IDs are never labels; unmatched/dynamic unsafe paths are grouped as unmatched or a sanitized :id template.
+- factoryos_http_requests_in_flight and factoryos_http_request_duration_seconds histogram.
+- factoryos_process_memory_bytes, factoryos_process_cpu_seconds_total, factoryos_nodejs_event_loop_utilization_ratio and factoryos_process_uptime_seconds.
+- factoryos_dependency_health{dependency="database"}: 1 healthy, 0 unhealthy, -1 not yet checked by a readiness probe.
+- factoryos_trace_spans_exported_total, factoryos_trace_spans_dropped_total, factoryos_trace_export_errors_total and factoryos_trace_export_queue_length.
+
+Metrics are process-local, reset on restart and must be scraped per instance. They do not replace centralized storage, alert routing, DB pool/lock metrics, business outcome metrics, OT edge queue-age signals or production SLO approval.
+
+### Health endpoints and release operation
+
+- GET /api/health/live is a dependency-free liveness probe.
+- GET /api/health/ready checks SELECT 1 against PostgreSQL and updates the dependency-health metric.
+- GET /api/health remains backward-compatible as a readiness check.
+
+Configure scrape access from a private network or collector identity, not the public internet. Scrape every API instance, attach the deployed commit SHA in the monitoring system target metadata, alert on exporter errors/queue saturation and process saturation, and validate alert delivery with a test notification before release. Proposed thresholds later in this runbook are engineering starting points; named owners must approve actual SLOs and alert windows.
 
 ## 2. Initial alerting rules
 
@@ -25,7 +47,7 @@ The following are **proposed starting thresholds, not approved contractual SLOs*
 |---|---|---|
 | HTTP 5xx ratio | Above 1% for 5 minutes, with meaningful request volume | Inspect per-instance request rates, API CI/release SHA, recent deployments, DB connectivity and application logs. |
 | Request latency | p95 above 500 ms for 10 minutes on ordinary API traffic | Separate database saturation, lock waits, downstream calls and CPU pressure; do not include long-running administrative jobs in an ordinary-request SLO without an explicit policy. |
-| API/database health | Three consecutive failed external probes of GET /health | Check database reachability, connection limits, credentials/secret rotation, recent migrations and host pressure. |
+| API/database health | Three consecutive failed external probes of GET /api/health/ready | Check database reachability, connection limits, credentials/secret rotation, recent migrations and host pressure. |
 | Request saturation | In-flight request count grows continuously and does not drain | Check downstream dependencies and connection pools; capture a trace/correlation ID from a representative failed request. |
 | OT telemetry gaps | New SEQUENCE_GAP or LATE records exceed the device/domain-specific baseline | Compare stream cursors, source sequences, source clocks and reconnect logs before replaying data. Preserve original event IDs and timestamps. |
 
@@ -44,7 +66,7 @@ histogram_quantile(
 )
 ~~~
 
-The request metrics do not measure end-user availability, business success, queue age, DB pool utilization or OT protocol health. Add those signals to the selected monitoring backend before accepting a production SLO. Do not infer durable alerting from the presence of metrics alone.
+The request metrics do not measure end-user availability, business success, queue age, DB pool utilization or OT protocol health. For route-level failures, inspect factoryos_http_route_requests_total grouped by route/status_class; for exporter loss, alert on rate(factoryos_trace_export_errors_total[5m]) and factoryos_trace_export_queue_length. Add those signals to the selected monitoring backend before accepting a production SLO. Do not infer durable alerting from the presence of metrics alone.
 
 ## 3. Migration release gate
 

@@ -65,6 +65,16 @@ These are proposed candidates for product/architecture review, not asserted SRS 
 - [ ] Fresh backup is restored into an isolated target; migration and application smoke tests pass; RPO/RTO, load and security evidence are attached.
 - [ ] Unresolved P0/P1 risks have an explicit owner, approved exception or release block.
 
+## Cross-cutting operational observability — distributed tracing and metrics
+
+| Area | Repository evidence | Status | Release / operational acceptance gate |
+|---|---|---|---|
+| W3C distributed tracing | TraceIdMiddleware validates version-00 traceparent, creates a server span ID, preserves upstream trace/parent relationships and emits response context; sampled HTTP spans are exported as bounded OTLP/HTTP JSON by OtlpTraceExporter. | Repository implementation and unit coverage added | Configure private collector, trace token, sampling and central backend retention. Verify two-service propagation and OTLP delivery in staging; collector behavior is not proven by unit tests. |
+| Operational metrics | HttpMetricsService emits method/status and low-cardinality route counters, in-flight/duration histogram, process memory/CPU/uptime/event-loop gauges, last database readiness and OTLP exporter queue/error counters. Scrape route uses a strong bearer token and is unavailable by default. | Repository implementation and unit coverage added | Deploy per-instance scraping and dashboards, validate access restriction and alert delivery, and have an owner approve SLO/error-budget thresholds. Metrics are process-local and reset on restart. |
+| Liveness/readiness and privacy | /api/health/live is dependency-free; /api/health/ready checks DB connectivity. Sampled structured logs omit payloads, full URLs, tenant/user IDs and authorization credentials. | Repository implementation and unit coverage added | Run deployed probes, confirm no high-cardinality or sensitive labels, validate log access/retention, and link target environment dashboard/alert verification to the release SHA. |
+
+The operational contract and environment variables are documented in docs/distributed-tracing-operational-metrics.md and docs/operational-reliability-runbook.md. As with the rest of this provisional traceability audit, signed source SRS/HLD acceptance and environment-specific collector/alert verification remain outside repository CI.
+
 ## 6. Related repository evidence
 
 - docs/ai-runtime-agent-execution-traceability.md
