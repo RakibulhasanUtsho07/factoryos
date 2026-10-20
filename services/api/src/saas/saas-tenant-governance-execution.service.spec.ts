@@ -199,7 +199,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
         eventType: 'SAAS_DATA_GOVERNANCE',
-        action: 'RETENTION_EXECUTION_BLOCKED',
+        action: 'RETENTION_DRY_RUN_BLOCKED',
       }),
     );
   });
