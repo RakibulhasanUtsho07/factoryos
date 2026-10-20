@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: traceability-audit-\${{ github.workflow }}-\${{ github.ref }}
+  group: traceability-audit-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
