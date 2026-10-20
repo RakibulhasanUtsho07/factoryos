@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { link, unlink, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 const env = process.env;
 const output = env.FACTORYOS_RECOVERY_EVIDENCE_JSON;
@@ -90,10 +90,12 @@ const receipt = {
 const serialized = JSON.stringify(receipt, null, 2) + '\n';
 const absoluteOutput = resolve(output);
 const temporaryOutput = absoluteOutput + '.partial-' + process.pid;
-await mkdir(dirname(absoluteOutput), { recursive: false }).catch((error) => {
-  if (error.code !== 'EEXIST') throw error;
-});
 await writeFile(temporaryOutput, serialized, { flag: 'wx', mode: 0o600 });
-await rename(temporaryOutput, absoluteOutput);
+try {
+  // Hard-link creation fails when the destination exists, so a rerun cannot overwrite evidence.
+  await link(temporaryOutput, absoluteOutput);
+} finally {
+  await unlink(temporaryOutput).catch(() => undefined);
+}
 console.log('dr_evidence_receipt=' + absoluteOutput);
 console.log('dr_evidence_sha256=' + createHash('sha256').update(serialized).digest('hex'));
