@@ -362,6 +362,18 @@ export class SaasTenantRetentionService {
     this.identity(tenantId, actorUserId);
     await this.authorize(actorUserId, tenantId, 'saas.data_retention.write');
     const categories = this.categories(input?.categories);
+    const erasureReadyCategories = new Set<SaasTransferDatasetCategory>([
+      SaasTransferDatasetCategory.BUSINESS_DATA,
+      SaasTransferDatasetCategory.EVIDENCE,
+      SaasTransferDatasetCategory.AI_CONTEXT,
+      SaasTransferDatasetCategory.LEARNING_EVALUATION,
+    ]);
+    const unsupportedCategories = categories.filter((category) => !erasureReadyCategories.has(category));
+    if (unsupportedCategories.length) {
+      throw new ConflictException(
+        'Erasure cannot be approved for categories without a reviewed deletion adapter: ' + unsupportedCategories.join(', '),
+      );
+    }
     const exportTransferId = this.uuid(input?.export_transfer_id, 'export_transfer_id');
     const exportVersion = this.integer(input?.export_transfer_version, 'export_transfer_version', 1, Number.MAX_SAFE_INTEGER);
     const exportDigest = this.sha256(input?.export_bundle_digest, 'export_bundle_digest');
