@@ -2,6 +2,7 @@ import { jest } from '@jest/globals';
 import type { NextFunction, Request, Response } from 'express';
 import { HttpMetricsMiddleware } from './http-metrics.middleware';
 import { HttpMetricsService } from './http-metrics.service';
+import { OtlpTraceExporter } from './otlp-trace-exporter.service';
 
 describe('HttpMetricsMiddleware', () => {
   it('records exactly once when a response emits finish and close', () => {
@@ -19,7 +20,7 @@ describe('HttpMetricsMiddleware', () => {
       }),
     } as unknown as Response;
     const next = jest.fn() as unknown as NextFunction;
-    const middleware = new HttpMetricsMiddleware(metrics);
+    const middleware = new HttpMetricsMiddleware(metrics, { exportServerSpan: jest.fn() } as unknown as OtlpTraceExporter);
 
     middleware.use({ method: 'GET' } as Request, res, next);
     expect(next).toHaveBeenCalledTimes(1);
@@ -43,7 +44,7 @@ describe('HttpMetricsMiddleware', () => {
         return res;
       }),
     } as unknown as Response;
-    new HttpMetricsMiddleware(metrics).use({ method: 'POST' } as Request, res, jest.fn() as unknown as NextFunction);
+    new HttpMetricsMiddleware(metrics, { exportServerSpan: jest.fn() } as unknown as OtlpTraceExporter).use({ method: 'POST' } as Request, res, jest.fn() as unknown as NextFunction);
     listeners.get('close')?.();
     expect(metrics.completeRequest).toHaveBeenCalledWith('POST', 499, expect.any(Number));
   });

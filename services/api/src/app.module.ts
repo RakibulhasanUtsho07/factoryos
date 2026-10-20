@@ -45,8 +45,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
 import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 import { HttpMetricsMiddleware } from './observability/http-metrics.middleware';
-import { HttpMetricsService } from './observability/http-metrics.service';
-import { InternalMetricsController } from './observability/internal-metrics.controller';
+import { ObservabilityModule } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -134,17 +133,15 @@ import { InternalMetricsController } from './observability/internal-metrics.cont
     IntegrationsModule,
 
     OtDeviceModule,
+    ObservabilityModule,
   ],
 
   controllers: [
     AppController,
-    InternalMetricsController,
   ],
 
   providers: [
     AppService,
-    HttpMetricsService,
-    HttpMetricsMiddleware,
   ],
 })
 export class AppModule
