@@ -290,10 +290,13 @@ jobs:
           chmod 600 "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE factoryos_recovery_restore_test_ci'
+          psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
+            -c 'GRANT CONNECT ON DATABASE factoryos_recovery_restore_test_ci TO factoryos_app'
           PGSERVICEFILE="$RUNNER_TEMP/factoryos-recovery.pg_service.conf" \
           GNUPGHOME="$GNUPGHOME" \
           FACTORYOS_DR_MODE=RELEASE_GATE \
           FACTORYOS_MIGRATION_MANIFEST_MODE=IDEMPOTENT_REPLAY \
+          FACTORYOS_DR_APPLICATION_DATABASE_URL="postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_recovery_restore_test_ci" \
           FACTORYOS_BACKUP_PGSERVICE=factoryos-ci-source \
           FACTORYOS_RESTORE_PGSERVICE=factoryos-ci-restore \
           FACTORYOS_BACKUP_OUTPUT="$recovery_backup_dir/factoryos-ci-recovery.dump.gpg" \
