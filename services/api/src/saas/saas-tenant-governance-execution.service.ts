@@ -155,7 +155,7 @@ export class SaasTenantGovernanceExecutionService {
         if (replay.rows[0].request_hash !== requestHash) {
           throw new ConflictException('Idempotency-Key was used for a different retention run');
         }
-        return { row: replay.rows[0], replayed: true, request: undefined };
+        return { row: replay.rows[0], replayed: true };
       }
 
       const policyResult = await client.query<RetentionPolicyRow>(
@@ -351,7 +351,7 @@ export class SaasTenantGovernanceExecutionService {
           if (replay.rows[0].request_hash !== requestHash) {
             throw new ConflictException('Idempotency-Key was used for a different erasure execution');
           }
-          return { row: replay.rows[0], replayed: true };
+          return { row: replay.rows[0], replayed: true, request: undefined };
         }
 
         const found = await client.query<ErasureRequestRow>(
