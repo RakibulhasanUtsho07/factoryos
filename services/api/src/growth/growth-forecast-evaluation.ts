@@ -210,10 +210,11 @@ export function summarizeGrowthForecastCalibration(
       calibration_gap_pct_points: gap,
       status,
     };
-  }).sort((a, b) =>
-    a.model_version.localeCompare(b.model_version)
-    || a.metric_key.localeCompare(b.metric_key)
-    || a.unit.localeCompare(b.unit)
-    || (a.nominal_coverage_pct ?? -1) - (b.nominal_coverage_pct ?? -1),
-  );
+  }).sort((a, b) => {
+    const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+    return compare(a.model_version, b.model_version)
+      || compare(a.metric_key, b.metric_key)
+      || compare(a.unit, b.unit)
+      || (a.nominal_coverage_pct ?? -1) - (b.nominal_coverage_pct ?? -1);
+  });
 }
