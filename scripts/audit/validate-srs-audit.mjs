@@ -174,7 +174,7 @@ for (const cells of exceptionRows.slice(1)) {
   assert.equal(cells.length, exceptionHeader.length, 'Malformed exception CSV row for ' + cells[0]);
   const row = Object.fromEntries(exceptionHeader.map((key, index) => [key, cells[index]]));
   exceptionIds.push(row.requirementId);
-  assert.match(row.requirementId, /^(FR|NFR)-[A-Z0-9]+-\\d{2}$/);
+  assert.match(row.requirementId, /^(FR|NFR)-[A-Z0-9]+-\d{2}$/);
   assert.ok(Number(row.literalFindCount) > 0, 'Source exception needs literal occurrence search result: ' + row.requirementId);
   assert.ok(row.sourcePagesWithLiteralOccurrence.trim(), 'Source exception needs source page locations: ' + row.requirementId);
   assert.equal(row.oneLineNormativeRowSearchMatches, '0', 'One-line source-row diagnostic changed for ' + row.requirementId);
