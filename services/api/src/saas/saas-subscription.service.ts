@@ -71,13 +71,36 @@ export class SaasSubscriptionService {
    * window are enforced on every tool execution (no stale cache).
    */
   async assertAiCapabilityAvailable(tenantId: string): Promise<void> {
+    return this.assertCapabilityAvailable(tenantId, 'ai.runtime');
+  }
+
+  /**
+   * Resolve a plan feature from its canonical dotted key (for example,
+   * "ai.runtime" or "research.ingestion"). Subscription status and feature
+   * entitlement are separate gates: being paid/active is not itself a grant
+   * for every capability.
+   *
+   * A listed capability must be exactly true. During legacy compatibility,
+   * an absent key preserves established behavior; after explicit subscription
+   * enforcement is enabled, an absent key is denied (fail closed).
+   */
+  async assertCapabilityAvailable(tenantId: string, capabilityCode: string): Promise<void> {
     this.assertUuid(tenantId, 'tenantId');
+    if (
+      typeof capabilityCode !== 'string' ||
+      !/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/.test(capabilityCode) ||
+      capabilityCode.length > 120
+    ) {
+      throw new BadRequestException('capabilityCode must be a canonical lower-case capability key');
+    }
+
     const result = await this.database.query<{
       enforcement_mode: SaasEntitlementEnforcementMode;
       status: SubscriptionStatus | null;
       trial_ends_at: string | null;
       current_period_start: string | null;
       current_period_end: string | null;
+      plan_capabilities: Record<string, unknown> | null;
     }>(
       `SELECT
          COALESCE((
@@ -90,11 +113,16 @@ export class SaasSubscriptionService {
          subscription.status,
          subscription.trial_ends_at::text AS trial_ends_at,
          subscription.current_period_start::text AS current_period_start,
-         subscription.current_period_end::text AS current_period_end
+         subscription.current_period_end::text AS current_period_end,
+         subscription.capabilities AS plan_capabilities
        FROM (SELECT $1::uuid AS tenant_id) scope
        LEFT JOIN LATERAL (
-         SELECT s.status, s.trial_ends_at, s.current_period_start, s.current_period_end
+         SELECT s.status, s.trial_ends_at, s.current_period_start, s.current_period_end, p.capabilities
          FROM saas_subscriptions s
+         JOIN saas_subscription_plans p
+           ON p.tenant_id = s.tenant_id
+          AND p.plan_code = s.plan_code
+          AND p.version = s.plan_version
          WHERE s.tenant_id = scope.tenant_id
          ORDER BY s.created_at DESC, s.id DESC
          LIMIT 1
@@ -104,40 +132,46 @@ export class SaasSubscriptionService {
     );
 
     const subscription = result.rows[0];
-    // The no-row branch is kept fail-compatible with older database adapters;
-    // PostgreSQL returns one row from the SELECT above even when no subscription exists.
+    // PostgreSQL returns one row even when no subscription record exists.
     if (!subscription) return;
+    const enforcementMode = subscription.enforcement_mode ?? SaasEntitlementEnforcementMode.LEGACY_COMPATIBLE;
     if (!subscription.status) {
-      if (subscription.enforcement_mode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED) {
+      if (enforcementMode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED) {
         throw new ForbiddenException(
-          'This tenant requires an eligible subscription before premium AI execution',
+          'This tenant requires an eligible subscription before capability access',
         );
       }
-      return; // Unmigrated tenants remain explicitly identified as legacy-compatible.
-    }
-
-    const now = Date.now();
-    if (
-      subscription.status === 'TRIAL' &&
-      subscription.trial_ends_at !== null &&
-      new Date(subscription.trial_ends_at).getTime() > now
-    ) {
       return;
     }
 
-    if (
+    const now = Date.now();
+    const trialEligible =
+      subscription.status === 'TRIAL' &&
+      subscription.trial_ends_at !== null &&
+      new Date(subscription.trial_ends_at).getTime() > now;
+    const activeEligible =
       subscription.status === 'ACTIVE' &&
       subscription.current_period_start !== null &&
       subscription.current_period_end !== null &&
       new Date(subscription.current_period_start).getTime() <= now &&
-      new Date(subscription.current_period_end).getTime() > now
-    ) {
-      return;
+      new Date(subscription.current_period_end).getTime() > now;
+    if (!trialEligible && !activeEligible) {
+      throw new ForbiddenException(
+        'Tenant subscription is suspended, expired, or outside its effective period; capability access is disabled',
+      );
     }
 
-    throw new ForbiddenException(
-      'Tenant subscription is suspended, expired, or outside its effective period; premium AI execution is disabled',
-    );
+    const capabilities = subscription.plan_capabilities ?? {};
+    const capabilityIsListed = Object.prototype.hasOwnProperty.call(capabilities, capabilityCode);
+    if (capabilityIsListed && capabilities[capabilityCode] !== true) {
+      throw new ForbiddenException('The current subscription plan does not entitle capability ' + capabilityCode);
+    }
+    if (
+      enforcementMode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED &&
+      (!capabilityIsListed || capabilities[capabilityCode] !== true)
+    ) {
+      throw new ForbiddenException('The current subscription plan does not explicitly grant capability ' + capabilityCode);
+    }
   }
 
   async getEntitlementEnforcementMode(tenantId: string, actorUserId: string) {
