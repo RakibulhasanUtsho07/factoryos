@@ -135,7 +135,11 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/158_ot_mqtt_modbus_gateway.sql
 
-          echo "Reapplying tenant ownership review after all migrations to include newly created governance relations"
+          echo "Reapplying external erasure propagation migration to verify lifecycle, receipt and finance policy idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/160_saas_external_erasure_propagation_and_finance_retention.sql
+
+          echo "Rechecking all tenant ownership classifications after the newest governance relations were created"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/159_tenant_relation_ownership_reviews.sql
 
