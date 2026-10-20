@@ -6,7 +6,9 @@ BEGIN
     'saas_tenant_data_retention_policies',
     'saas_tenant_data_legal_holds',
     'saas_tenant_data_erasure_requests',
-    'saas_tenant_data_export_preservation_attestations'
+    'saas_tenant_data_export_preservation_attestations',
+    'saas_tenant_data_retention_runs',
+    'saas_tenant_data_erasure_runs'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_class c
@@ -41,5 +43,28 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM permissions WHERE code='saas.data_retention.approve') THEN
     RAISE EXCEPTION 'retention approval permission is missing';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM permissions WHERE code='saas.data_retention.execute') THEN
+    RAISE EXCEPTION 'retention execution permission is missing';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_saas_tenant_erasure_execution_run') THEN
+    RAISE EXCEPTION 'verified erasure must reference a tenant-scoped immutable execution receipt';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_saas_retention_run_policy') THEN
+    RAISE EXCEPTION 'retention runs must snapshot an exact versioned retention policy';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_data_retention_runs_immutable' AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'retention run evidence must be immutable';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='saas_tenant_data_erasure_runs_immutable' AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'erasure execution receipts must be immutable';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='chk_saas_retention_run_mode'
+      AND pg_get_constraintdef(oid) NOT LIKE '%DRY_RUN%'
+  ) THEN
+    RAISE EXCEPTION 'retention run mode contract is incomplete';
+  END IF;
+
 END;
 $$;
