@@ -281,11 +281,31 @@ ALTER TABLE saas_tenant_data_erasure_requests
 ALTER TABLE saas_tenant_data_erasure_requests
   DROP CONSTRAINT IF EXISTS chk_saas_tenant_erasure_status;
 ALTER TABLE saas_tenant_data_erasure_requests
+  DROP CONSTRAINT IF EXISTS chk_saas_tenant_erasure_review;
+
+-- Older releases used VERIFIED for PostgreSQL-only deletion. Demote those rows
+-- before installing the stricter lifecycle constraints; preserve the SQL receipt
+-- and increment row_version so that they cannot masquerade as whole-tenant erasure.
+ALTER TABLE saas_tenant_data_erasure_requests DISABLE TRIGGER USER;
+UPDATE saas_tenant_data_erasure_requests
+SET status='PROPAGATION_PENDING',
+    propagation_run_id=NULL,
+    propagation_manifest_digest=NULL,
+    propagation_verified_at=NULL,
+    row_version=row_version+1,
+    updated_at=clock_timestamp()
+WHERE status='VERIFIED'
+  AND propagation_run_id IS NULL
+  AND propagation_manifest_digest IS NULL
+  AND propagation_verified_at IS NULL
+  AND execution_run_id IS NOT NULL
+  AND execution_manifest_digest ~ '^[a-f0-9]{64}$';
+ALTER TABLE saas_tenant_data_erasure_requests ENABLE TRIGGER USER;
+
+ALTER TABLE saas_tenant_data_erasure_requests
   ADD CONSTRAINT chk_saas_tenant_erasure_status CHECK (status IN (
     'REQUESTED','APPROVED','REJECTED','EXECUTING','PROPAGATION_PENDING','VERIFIED'
   ));
-ALTER TABLE saas_tenant_data_erasure_requests
-  DROP CONSTRAINT IF EXISTS chk_saas_tenant_erasure_review;
 ALTER TABLE saas_tenant_data_erasure_requests
   ADD CONSTRAINT chk_saas_tenant_erasure_review CHECK (
     (status='REQUESTED' AND reviewed_by_user_id IS NULL AND reviewed_at IS NULL AND review_reason IS NULL
@@ -329,6 +349,7 @@ ALTER TABLE saas_tenant_data_erasure_requests
       AND propagation_run_id IS NOT NULL AND propagation_manifest_digest ~ '^[a-f0-9]{64}$'
       AND propagation_verified_at IS NOT NULL)
   );
+
 
 ALTER TABLE saas_tenant_data_erasure_requests
   DROP CONSTRAINT IF EXISTS fk_saas_tenant_erasure_propagation_run;
