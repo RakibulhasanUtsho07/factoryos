@@ -71,14 +71,18 @@ function assertNumber(name: string, value: number): void {
   }
 }
 
-function scaled(value: number): bigint {
-  assertNumber('numeric', value);
-  const decimal = value.toFixed(8);
+function parseScaledDecimal(decimal: string): bigint {
+  if (!/^-?\\d+(?:\\.\\d{1,8})?$/.test(decimal)) throw new Error('FORECAST_DECIMAL_FORMAT_INVALID');
   const negative = decimal.startsWith('-');
   const unsigned = negative ? decimal.slice(1) : decimal;
   const [whole, fraction = ''] = unsigned.split('.');
-  const result = BigInt(whole) * SCALE + BigInt(fraction.padEnd(8, '0').slice(0, 8));
+  const result = BigInt(whole) * SCALE + BigInt(fraction.padEnd(8, '0'));
   return negative ? -result : result;
+}
+
+function scaled(value: number): bigint {
+  assertNumber('numeric', value);
+  return parseScaledDecimal(value.toFixed(8));
 }
 
 function formatScaled(value: bigint): string {
@@ -91,6 +95,7 @@ function formatScaled(value: bigint): string {
 
 function roundRatio(numerator: bigint, denominator: bigint): bigint {
   if (denominator <= 0n) throw new Error('FORECAST_RATIO_DENOMINATOR_INVALID');
+  if (numerator < 0n) return -roundRatio(-numerator, denominator);
   return (numerator + denominator / 2n) / denominator;
 }
 
@@ -172,7 +177,7 @@ export function summarizeGrowthForecastCalibration(
     const [model_version, metric_key, unit, nominal] = JSON.parse(key) as [string, string, string, number | null];
     const count = BigInt(rows.length);
     const sumScaled = (field: 'signed_error' | 'absolute_error' | 'squared_error' | 'symmetric_percentage_error') =>
-      rows.reduce((sum, row) => sum + scaled(Number(row[field])), 0n);
+      rows.reduce((sum, row) => sum + parseScaledDecimal(String(row[field])), 0n);
     const meanError = roundRatio(sumScaled('signed_error'), count);
     const meanAbsoluteError = roundRatio(sumScaled('absolute_error'), count);
     const meanSquaredError = Number(roundRatio(sumScaled('squared_error'), count)) / Number(SCALE);
