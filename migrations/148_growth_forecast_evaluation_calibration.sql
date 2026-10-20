@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   CONSTRAINT fk_growth_forecast_evaluation_actor
     FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_growth_forecast_evaluation_model
-    CHECK (model_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
+    CHECK (model_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
   CONSTRAINT chk_growth_forecast_evaluation_metric
     CHECK (metric_key ~ '^[a-z][a-z0-9_.-]{0,99}$'),
   CONSTRAINT chk_growth_forecast_evaluation_unit
