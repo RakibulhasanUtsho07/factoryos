@@ -99,12 +99,14 @@ try {
 
   const base = 'http://127.0.0.1:' + port + '/api/health';
   const live = await waitForResponse(base + '/live', child);
-  const liveBody = await live.json();
+  const liveEnvelope = await live.json();
+  const liveBody = liveEnvelope?.data ?? liveEnvelope;
   if (liveBody?.status !== 'ok' || liveBody?.service !== 'factoryos-api') {
     throw new Error('candidate API liveness response failed the contract');
   }
   const ready = await waitForResponse(base + '/ready', child);
-  const readyBody = await ready.json();
+  const readyEnvelope = await ready.json();
+  const readyBody = readyEnvelope?.data ?? readyEnvelope;
   if (readyBody?.status !== 'ok' || readyBody?.database !== 'ok' || readyBody?.service !== 'factoryos-api') {
     throw new Error('candidate API readiness did not confirm the restored database is queryable');
   }
