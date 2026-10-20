@@ -617,6 +617,52 @@ describe('GrowthService', () => {
     expect(client.query).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects a reused idempotency key when the frozen forecast fingerprint differs', async () => {
+    const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
+      }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'existing-evaluation', request_hash: 'different-request-hash' }] });
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-01T00:00:00.000Z',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: outcomeId, idempotency_key: 'forecast-eval-key-0005',
+    };
+
+    await expect(service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(client.query.mock.calls[2][0]).toContain('FOR UPDATE');
+  });
+
+  it('returns calibration cohorts scoped to the requested tenant, factory and opportunity', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: Array.from({ length: 10 }, (_, index) => ({
+        model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+        forecast_value: '100.00000000', actual_value: '101.00000000',
+        signed_error: '-1.00000000', absolute_error: '1.00000000',
+        squared_error: '1.00000000', symmetric_percentage_error: '0.99502488',
+        interval_hit: index < 8, nominal_coverage_pct: '90.00',
+        evaluated_at: `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
+        total_count: '10',
+      })),
+    });
+
+    const result = await service.getForecastCalibration(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
+
+    expect(database.query.mock.calls[0][1]).toEqual([TENANT_ID, FACTORY_ID, OPPORTUNITY_ID]);
+    expect(database.query.mock.calls[0][0]).toContain('LIMIT 10000');
+    expect(result.total_observations).toBe(10);
+    expect(result.calibration[0].status).toBe('ASSESSABLE');
+    expect(result.calibration[0].empirical_interval_coverage_pct).toBe(80);
+    expect(result.calibration[0].calibration_gap_pct_points).toBe(-10);
+  });
+
   it('requires the forecast origin to precede the realized outcome timestamp', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
