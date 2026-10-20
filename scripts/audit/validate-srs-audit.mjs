@@ -107,6 +107,7 @@ assert.ok(sourceApproval.includes('BLOCKED — source-owner confirmation and con
 assert.ok(scopeReconciliation.includes('51') && scopeReconciliation.includes('not evidence of 51 missing implementations'), 'Scope ledger must not misclassify the count delta as missing code');
 
 
+const closureRows = closureRegister.rows;
 const matrixEvidenceRows = new Map(extractRequirementEvidenceRows(matrix).map((row) => [row.id, row]));
 const pointerCoverage = {};
 for (const row of closureRows) {
@@ -143,7 +144,6 @@ for (const row of closureRows) {
   pointerCoverage[pointerClass] = (pointerCoverage[pointerClass] ?? 0) + 1;
 }
 
-const closureRows = closureRegister.rows;
 assert.equal(closureRegister.registerId, 'FOS-TRACE-P0P1-01');
 assert.equal(closureRegister.status, 'OPEN_NOT_ACCEPTED');
 assert.equal(closureRows.length, 842, 'Review evidence-closure row population before changing count');
