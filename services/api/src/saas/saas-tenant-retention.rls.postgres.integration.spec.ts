@@ -51,6 +51,7 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
     try {
       if (adminPool && tenantIds.length) {
         await adminPool.query('ALTER TABLE saas_tenant_data_erasure_requests DISABLE TRIGGER saas_tenant_data_erasure_request_guard');
+        await adminPool.query('ALTER TABLE saas_tenant_data_export_preservation_attestations DISABLE TRIGGER saas_export_preservation_attestation_guard');
         await adminPool.query('ALTER TABLE saas_tenant_data_legal_holds DISABLE TRIGGER saas_tenant_data_legal_hold_guard');
         await adminPool.query('ALTER TABLE saas_tenant_data_retention_policies DISABLE TRIGGER saas_retention_policy_immutable');
         await adminPool.query('ALTER TABLE saas_tenant_data_transfers DISABLE TRIGGER saas_tenant_data_transfer_immutable');
@@ -61,6 +62,11 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
           if (policyIds.length) await adminPool.query('DELETE FROM saas_tenant_data_retention_policies WHERE id = ANY($1::uuid[])', [policyIds]);
           if (exportIds.length) {
             for (const entry of exportIds) {
+              await adminPool.query('DELETE FROM saas_tenant_data_export_preservation_attestations WHERE tenant_id=$1 AND transfer_id=$2', [entry.tenantId, entry.transferId]);
+            }
+          }
+          if (exportIds.length) {
+            for (const entry of exportIds) {
               await adminPool.query('DELETE FROM saas_tenant_data_transfers WHERE tenant_id=$1 AND transfer_id=$2', [entry.tenantId, entry.transferId]);
             }
           }
@@ -69,6 +75,7 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
           await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
         } finally {
           await adminPool.query('ALTER TABLE saas_tenant_data_erasure_requests ENABLE TRIGGER saas_tenant_data_erasure_request_guard');
+          await adminPool.query('ALTER TABLE saas_tenant_data_export_preservation_attestations ENABLE TRIGGER saas_export_preservation_attestation_guard');
           await adminPool.query('ALTER TABLE saas_tenant_data_legal_holds ENABLE TRIGGER saas_tenant_data_legal_hold_guard');
           await adminPool.query('ALTER TABLE saas_tenant_data_retention_policies ENABLE TRIGGER saas_retention_policy_immutable');
           await adminPool.query('ALTER TABLE saas_tenant_data_transfers ENABLE TRIGGER saas_tenant_data_transfer_immutable');
@@ -138,6 +145,23 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
       reason: 'RLS fixture export preservation verification',
       idempotency_key: 'rls-export-attest-' + label + '-' + identity.tenantId,
     } as never);
+    // A separate same-tenant principal proves that preservation approval is independent.
+    const preservationVerifierUserId = randomUUID();
+    userIds.push(preservationVerifierUserId);
+    await adminPool.query(
+      'INSERT INTO users (id, external_subject, email, display_name, status) VALUES ($1,$2,$3,$4,\'ACTIVE\')',
+      [preservationVerifierUserId, 'retention-verifier-' + preservationVerifierUserId,
+        'retention-verifier-' + preservationVerifierUserId + '@factoryos.test', 'Retention RLS Preservation Verifier'],
+    );
+    await retention.attestExportPreservation(identity.tenantId, preservationVerifierUserId,
+      createdExport.transfer.transferId, {
+        expected_version: completedExport.transfer.version,
+        bundle_digest: digest,
+        verification_method: 'READ_BACK_HASH',
+        verification_reference: 'rls-preservation-' + label + '-' + identity.tenantId.slice(0, 8),
+        reason: 'Independently verify exported bundle before RLS erasure fixture',
+        idempotency_key: 'rls-preservation-' + label + '-' + identity.tenantId,
+      } as never);
     const category = SaasTransferDatasetCategory.BUSINESS_DATA;
     const erasure = await retention.createErasureRequest(identity.tenantId, identity.userId, {
       categories: [category],
