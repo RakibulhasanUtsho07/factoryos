@@ -46,7 +46,7 @@ The PostgreSQL CI workflow has a separate `IDEMPOTENT_REPLAY` mode that re-appli
 
 ## 3. RPO and RTO are measurements first
 
-The script records source and restored watermarks and the supplied incident/cutoff time. Observed RPO is the difference between the cutoff and the restored durable-write watermark. Observed RTO is elapsed time from restore start through candidate migration recovery and all mandatory smoke checks. A probe query that returns only the wall clock is not an acceptable business watermark.
+The script records source and restored watermarks and the supplied incident/cutoff time. Observed RPO is the difference between the explicit incident/cutoff time and the restored durable-write watermark. Observed RTO is measured from that same incident/cutoff epoch until candidate migrations, failed-transaction recovery, restored-schema/RLS/audit checks, and candidate API readiness have all completed. The helper also reports restore-and-verification-only duration separately. The supplied cutoff must not be in the future. A probe query that returns only the wall clock is not an acceptable business watermark.
 
 The HLD suggestion of **RPO ≤ 300 seconds (5 minutes)** and **RTO ≤ 3,600 seconds (60 minutes)** is an illustrative baseline only. These values are **not contractual** unless the accountable service/data owner explicitly approves the objective for the applicable system and recovery class. Leave target approval disabled unless that written approval exists. When approved targets are supplied, the release-gate script fails if observed values exceed them. Document source backup cadence, WAL/PITR coverage, transaction loss semantics and the exact recovery start/stop events that were used for the measurement.
 
