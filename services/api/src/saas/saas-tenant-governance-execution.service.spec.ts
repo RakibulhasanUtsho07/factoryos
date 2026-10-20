@@ -209,7 +209,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       id: runId,
       tenant_id: tenant,
       run_id: runId,
-      category_code: 'BUSINESS_DATA',
+      category_code: 'EVIDENCE',
       policy_version: 1,
       mode: SaasRetentionRunMode.EXECUTE,
       status: 'BLOCKED',
@@ -220,7 +220,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       held_rows: '0',
       table_manifest: { _blocked: 'DELETE_GUARD_REQUIRES_REVIEWED_ADAPTER' },
       manifest_digest: null,
-      reason: 'Review protected tables before deletion',
+      reason: 'Review a guarded evidence table before deletion',
       idempotency_key: 'guarded-retention-v1',
       request_hash: 'f'.repeat(64),
       initiated_by_user_id: executor,
@@ -235,7 +235,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
         return { rows: [{
           id: runId,
           tenant_id: tenant,
-          category_code: 'BUSINESS_DATA',
+          category_code: 'EVIDENCE',
           version: 1,
           retention_days: 365,
           disposition: 'DELETE',
@@ -253,10 +253,10 @@ describe('SaasTenantGovernanceExecutionService', () => {
       throw new Error('unexpected query: ' + sql);
     });
 
-    const result = await service.runRetentionPolicy(tenant, executor, 'BUSINESS_DATA', {
+    const result = await service.runRetentionPolicy(tenant, executor, 'EVIDENCE', {
       mode: SaasRetentionRunMode.EXECUTE,
       expected_policy_version: 1,
-      reason: 'Review protected tables before deletion',
+      reason: 'Review a guarded evidence table before deletion',
       idempotency_key: 'guarded-retention-v1',
     });
 
