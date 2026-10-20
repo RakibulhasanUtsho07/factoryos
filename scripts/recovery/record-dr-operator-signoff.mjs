@@ -39,10 +39,10 @@ try {
   fail('evidence file is not valid JSON');
 }
 if (evidence.schema !== 'factoryos.disaster-recovery-rehearsal/v1') fail('unsupported evidence schema');
-if (!evidence.databases?.distinctIdentityVerified || !evidence.databases?.targetWasEmptyBeforeRestore) {
-  fail('source/restore identity distinction and empty target must both be proved');
-}
 if (args.decision === 'PASS') {
+  if (!evidence.databases?.distinctIdentityVerified || !evidence.databases?.targetWasEmptyBeforeRestore) {
+    fail('PASS sign-off requires proof of distinct source/restore identity and an empty target');
+  }
   const checks = [
     ['status', evidence.status === 'TECHNICAL_PASS'],
     ['encrypted backup', evidence.backup?.encryption === 'ENCRYPTED_GPG'],
