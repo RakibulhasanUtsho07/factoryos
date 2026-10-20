@@ -321,12 +321,6 @@ describe('SaasTenantGovernanceExecutionService', () => {
   });
 
   it('executes an approved erasure in one tenant-scoped transaction and binds VERIFIED to its immutable receipt', async () => {
-    const verifiedRequest = erasureRow({
-      status: 'VERIFIED',
-      row_version: 4,
-      execution_manifest_digest: manifestDigest,
-      execution_completed_at: '2026-10-19T13:00:00.000Z',
-    });
     clientQuery.mockImplementation(async (...args: unknown[]) => {
       const sql = String(args[0]);
       if (sql.includes('FROM tenants')) return { rows: [{ id: tenant }] };
@@ -344,8 +338,20 @@ describe('SaasTenantGovernanceExecutionService', () => {
       if (sql.includes('SELECT COUNT(*)::text AS count')) return { rows: [{ count: '0' }] };
       if (sql.includes("SET status='EXECUTING'")) return { rows: [erasureRow({ status: 'EXECUTING', row_version: 3 })] };
       if (sql.includes('WITH deleted AS')) return { rows: [{ deleted: '0' }] };
-      if (sql.includes('INSERT INTO saas_tenant_data_erasure_runs')) return { rows: [completedRun()] };
-      if (sql.includes("SET status='VERIFIED'")) return { rows: [verifiedRequest] };
+      if (sql.includes('INSERT INTO saas_tenant_data_erasure_runs')) {
+        const params = args[1] as unknown[];
+        const insertedDigest = String(params[7]);
+        return { rows: [completedRun({ manifest_digest: insertedDigest })] };
+      }
+      if (sql.includes("SET status='VERIFIED'")) {
+        const params = args[1] as unknown[];
+        return { rows: [erasureRow({
+          status: 'VERIFIED',
+          row_version: 4,
+          execution_manifest_digest: String(params[3]),
+          execution_completed_at: '2026-10-19T13:00:00.000Z',
+        })] };
+      }
       throw new Error('unexpected query: ' + sql);
     });
 
@@ -355,9 +361,13 @@ describe('SaasTenantGovernanceExecutionService', () => {
       idempotency_key: 'execute-erasure-v1',
     });
 
+    const receiptInsert = clientQuery.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO saas_tenant_data_erasure_runs')
+    );
+    const persistedDigest = String((receiptInsert?.[1] as unknown[])[7]);
     expect(result).toMatchObject({
-      run: { status: 'COMPLETED', manifestDigest },
-      request: { status: 'VERIFIED', version: 4, executionManifestDigest: manifestDigest },
+      run: { status: 'COMPLETED', manifestDigest: persistedDigest },
+      request: { status: 'VERIFIED', version: 4, executionManifestDigest: persistedDigest },
       replayed: false,
     });
     expect(database.transaction).toHaveBeenCalledWith(
@@ -371,7 +381,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
         action: 'TENANT_ERASURE_VERIFIED',
-        payload: expect.objectContaining({ deletedRows: '0', manifestDigest: result.run.manifestDigest }),
+        payload: expect.objectContaining({ deletedRows: '0', manifestDigest: persistedDigest }),
       }),
     );
   });
