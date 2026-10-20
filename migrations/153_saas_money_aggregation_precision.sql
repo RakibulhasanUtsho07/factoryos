@@ -13,10 +13,10 @@ ALTER TABLE saas_budget_evaluations
 ALTER TABLE saas_budget_evaluations
   ADD CONSTRAINT chk_saas_budget_eval_amounts
   CHECK (
-    usage_cost_minor >= 0
-    AND soft_limit_minor >= 0
-    AND hard_limit_minor >= soft_limit_minor
-    AND anomaly_window_cost_minor >= 0
+    usage_cost_minor BETWEEN 0 AND 999999999999999999999999999999
+    AND soft_limit_minor BETWEEN 0 AND 9000000000000000
+    AND hard_limit_minor BETWEEN soft_limit_minor AND 9000000000000000
+    AND anomaly_window_cost_minor BETWEEN 0 AND 999999999999999999999999999999
     AND anomaly_baseline_hourly_minor >= 0
   );
 
