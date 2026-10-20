@@ -39,6 +39,14 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'fk_growth_forecast_evaluation_source_evidence'
+       AND conrelid = 'public.growth_forecast_evaluations'::regclass
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_FORECAST_EVALUATION_SOURCE_EVIDENCE_FK_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
      WHERE tgrelid = 'public.growth_forecast_evaluations'::regclass
        AND tgname = 'growth_forecast_evaluation_guard'
@@ -50,7 +58,7 @@ BEGIN
   SELECT pg_get_functiondef('public.factoryos_guard_growth_forecast_evaluation()'::regprocedure)
     INTO definition;
   IF definition NOT LIKE '%GROWTH_FORECAST_EVALUATION_ACTUAL_MUST_MATCH_IMMUTABLE_OUTCOME_KPI%'
-     OR definition NOT LIKE '%GROWTH_FORECAST_SOURCE_REFERENCE_NOT_ATTACHED_TO_OPPORTUNITY%'
+     OR definition NOT LIKE '%GROWTH_FORECAST_SOURCE_REFERENCE_NOT_ATTACHED_TO_OPPORTUNITY%'\n     OR definition NOT LIKE '%NEW.forecast_source_evidence_id%'
      OR definition NOT LIKE '%GROWTH_FORECAST_ERROR_METRICS_NOT_DETERMINISTIC%'
      OR definition NOT LIKE '%GROWTH_FORECAST_INTERVAL_METRICS_NOT_DETERMINISTIC%'
      OR definition NOT LIKE '%GROWTH_FORECAST_EVALUATION_APPEND_ONLY%' THEN
