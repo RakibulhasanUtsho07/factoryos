@@ -13,6 +13,8 @@
 
 The repository’s own AI runtime traceability document refers to “FactoryOS AI SRS v2.1 FINAL”, “HLD/LLD v1.0” and “Implementation Blueprint v1.0”, dated 2 October 2026; those source documents were not found in the inspected tree. Other domain documents cite selected FR IDs, but these citations are not a substitute for the approved master requirement baseline, document revision/hash, acceptance criteria and approved deviations.
 
+For a strict one-requirement-ID-per-row index of the FR/NFR IDs cited by the inspected domain documents, see [Requirement Evidence Register](requirement-evidence-register.md). That register intentionally labels IDs and priorities not verifiable against the missing master source; it must be reconciled to the approved SRS before formal sign-off.
+
 ### Verified repository CI evidence
 
 | Workflow | Result | Evidence SHA / report | Interpretation |
