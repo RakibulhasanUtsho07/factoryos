@@ -88,6 +88,23 @@ describe('OtOfflineSpoolStore', () => {
     expect(await replayer.flushOnce(now + 1000)).toMatchObject({ status: 'RETRY_SCHEDULED', count: 1, next_attempt_at_ms: now + 3000 });
   });
 
+  it('blocks after the retry ceiling without dropping data and supports fingerprint-checked operator requeue', async () => {
+    const bounded = new OtOfflineSpoolStore(path, key, () => now, 10, 1024 * 1024, 2);
+    await bounded.enqueue(scope, event());
+    const transport = { deliver: jest.fn(async () => { throw new Error('network unavailable'); }) };
+    const replayer = new OtSpoolReplayer(bounded, transport);
+    expect(await replayer.flushOnce(now)).toMatchObject({ status: 'RETRY_SCHEDULED', count: 1 });
+    expect(await replayer.flushOnce(now + 1000)).toMatchObject({ status: 'BLOCKED', count: 1 });
+    expect(await bounded.pendingCount()).toBe(1);
+    const blocked = await bounded.listBlocked();
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toMatchObject({ source_event_id: 'mqtt:event-1', attempts: 2, failure_code: 'TRANSPORT_OR_ACK_FAILURE' });
+    expect(await bounded.readBatch(20, now + 60_000)).toBeNull();
+    await expect(bounded.requeueBlocked(scope, 'mqtt:event-1', '0'.repeat(64))).rejects.toThrow(/fingerprint/);
+    expect(await bounded.requeueBlocked(scope, 'mqtt:event-1', blocked[0]!.fingerprint)).toBe(true);
+    expect((await bounded.readBatch(20, now))?.items[0]?.attempts).toBe(0);
+  });
+
   it('fails closed on a wrong key or damaged ciphertext', async () => {
     await spool.enqueue(scope, event());
     await expect(new OtOfflineSpoolStore(path, Buffer.alloc(32, 0x24)).pendingCount()).rejects.toThrow(/authentication failed/);
