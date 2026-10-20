@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { isUUID } from 'class-validator';
+import { randomUUID } from 'node:crypto';
 import type { QueryResultRow, PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
@@ -13,8 +14,10 @@ import {
   hashOtValue,
   normalizeOtObject,
   getAllowedOpcUaNodeIds,
+  validateOpcUaNodeId,
 } from './ot-device.contract';
-import type { IngestOtTelemetryBatchDto, OtDeviceTransitionDto, RegisterOtDeviceDto } from './dto/ot-device.dto';
+import type { IngestOtTelemetryBatchDto, OtDeviceTransitionDto, RegisterOtDeviceDto, ReadOpcUaNodesDto } from './dto/ot-device.dto';
+import { OpcUaGatewayClient } from './opcua-gateway.client';
 
 export interface OtRequestScope {
   userId: string;
@@ -63,7 +66,7 @@ const DEVICE_STATUSES: readonly DeviceStatus[] = [
 
 @Injectable()
 export class OtDeviceService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly database: DatabaseService, private readonly opcUaGateway: OpcUaGatewayClient) {}
 
   async register(scope: OtRequestScope, dto: RegisterOtDeviceDto, rawIdempotencyKey?: string) {
     this.validateScope(scope);
@@ -270,6 +273,98 @@ export class OtDeviceService {
       userId: scope.userId,
       advisoryLockKey: `ot-device-transition:${scope.tenantId}:${scope.factoryId}:${deviceId}`,
     });
+  }
+
+  async readOpcUaNodes(scope: OtRequestScope, deviceId: string, dto: ReadOpcUaNodesDto) {
+    this.validateScope(scope);
+    this.validateUuid(deviceId, 'deviceId');
+    if (!Array.isArray(dto.node_ids) || dto.node_ids.length < 1 || dto.node_ids.length > 10) {
+      throw new BadRequestException('OPC UA reads must request between 1 and 10 allowlisted NodeIds');
+    }
+    let nodeIds: string[];
+    try {
+      nodeIds = dto.node_ids.map(validateOpcUaNodeId);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid OPC UA NodeId');
+    }
+    if (new Set(nodeIds).size !== nodeIds.length) {
+      throw new BadRequestException('An OPC UA read cannot repeat a NodeId');
+    }
+
+    const device = await this.getDevice(scope, deviceId);
+    if (device.protocol !== 'OPC_UA') throw new BadRequestException('Only OPC UA devices support this endpoint');
+    if (device.status !== 'ACTIVE') throw new ConflictException('OPC UA reads require an active device');
+    let allowlist: string[];
+    try {
+      allowlist = getAllowedOpcUaNodeIds(device.metadata);
+    } catch {
+      throw new ConflictException('OPC UA device has no valid registered NodeId allowlist');
+    }
+    if (nodeIds.some((nodeId) => !allowlist.includes(nodeId))) {
+      throw new BadRequestException('The request includes a NodeId outside the registered read allowlist');
+    }
+
+    const requestId = randomUUID();
+    try {
+      const read = await this.opcUaGateway.read({
+        requestId, tenantId: scope.tenantId, factoryId: scope.factoryId,
+        deviceId, deviceKey: device.device_key,
+        connectionReference: device.connection_reference, nodeIds,
+      });
+      if (read.request_id !== requestId || read.values.length !== nodeIds.length) {
+        throw new ConflictException('OPC UA gateway response did not match the read request');
+      }
+      await this.recordOpcUaReadHistory(scope, deviceId, device.row_version, 'OPCUA_READ_COMPLETED', {
+        request_id: requestId,
+        node_ids: nodeIds,
+        good_count: read.values.filter((item) => item.status === 'GOOD').length,
+        uncertain_count: read.values.filter((item) => item.status === 'UNCERTAIN').length,
+        bad_count: read.values.filter((item) => item.status === 'BAD').length,
+      }, true);
+      return { device_id: deviceId, request_id: requestId, protocol: 'OPC_UA', read_only: true, values: read.values };
+    } catch (error) {
+      await this.recordOpcUaReadHistory(scope, deviceId, device.row_version, 'OPCUA_READ_FAILED', {
+        request_id: requestId,
+        node_count: nodeIds.length,
+        failure_class: this.opcUaFailureClass(error),
+      }, false);
+      throw error;
+    }
+  }
+
+  private async recordOpcUaReadHistory(
+    scope: OtRequestScope,
+    deviceId: string,
+    expectedVersion: number,
+    action: 'OPCUA_READ_COMPLETED' | 'OPCUA_READ_FAILED',
+    metadata: Record<string, unknown>,
+    requireActiveVersion: boolean,
+  ): Promise<void> {
+    await this.database.transaction(async (client) => {
+      const result = await client.query<OtDeviceRow>(
+        'SELECT ' + DEVICE_SELECT + ' FROM ot_devices WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
+        [deviceId, scope.tenantId, scope.factoryId],
+      );
+      const current = result.rows[0];
+      if (!current) throw new NotFoundException('OT device not found');
+      if (requireActiveVersion && (current.status !== 'ACTIVE' || current.row_version !== expectedVersion)) {
+        throw new ConflictException('OT device status changed during the OPC UA read; values were discarded');
+      }
+      await this.appendHistory(client, scope, current, action, null, metadata);
+    }, {
+      tenantId: scope.tenantId, userId: scope.userId,
+      advisoryLockKey: 'ot-opcua-read:' + scope.tenantId + ':' + scope.factoryId + ':' + deviceId,
+    });
+  }
+
+  private opcUaFailureClass(error: unknown): string {
+    if (typeof error === 'object' && error !== null && 'status' in error) {
+      const status = (error as { status?: unknown }).status;
+      if (status === 504) return 'GATEWAY_TIMEOUT';
+      if (status === 502) return 'GATEWAY_RESPONSE_REJECTED';
+      if (status === 503) return 'GATEWAY_UNAVAILABLE';
+    }
+    return error instanceof ConflictException ? 'DEVICE_STATE_CHANGED' : 'READ_FAILED';
   }
 
   async ingestTelemetry(

@@ -42,6 +42,9 @@ describe('OtDeviceService', () => {
     query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>(),
     transaction: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
   };
+  const opcUaGateway = {
+    read: jest.fn<(...args: unknown[]) => Promise<{ request_id: string; values: Array<Record<string, unknown>> }>>(),
+  };
   let service: OtDeviceService;
 
   beforeEach(() => {
@@ -52,7 +55,7 @@ describe('OtDeviceService', () => {
       if (!callback) throw new Error('test transaction callback is required');
       return callback({ query: clientQuery } as never);
     });
-    service = new OtDeviceService(database as never);
+    service = new OtDeviceService(database as never, opcUaGateway as never);
   });
 
   it('registers a device with a secret-manager reference but never returns the secret reference', async () => {
@@ -144,6 +147,49 @@ describe('OtDeviceService', () => {
       { expected_version: 4, reason: 'scheduled maintenance' } as never,
     )).rejects.toBeInstanceOf(ConflictException);
     expect(clientQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads only registered NodeIds through the gateway and records an audit outcome', async () => {
+    const value = {
+      node_id: 'ns=2;s=Machine01.Temperature', status: 'GOOD', value: 24.5,
+      source_timestamp: '2026-10-20T12:00:00.000Z', server_timestamp: null, source_sequence: 7,
+    };
+    database.query.mockResolvedValueOnce({ rows: [deviceRow()] });
+    opcUaGateway.read.mockImplementationOnce(async (...args: unknown[]) => ({
+      request_id: (args[0] as { requestId: string }).requestId, values: [value],
+    }));
+    clientQuery.mockResolvedValueOnce({ rows: [deviceRow()] }).mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.readOpcUaNodes(
+      { tenantId, factoryId, userId }, deviceId,
+      { node_ids: ['ns=2;s=Machine01.Temperature'] } as never,
+    );
+    expect(result).toMatchObject({ device_id: deviceId, protocol: 'OPC_UA', read_only: true, values: [value] });
+    expect(opcUaGateway.read).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId, factoryId, deviceId, connectionReference: 'config://PLC_A',
+      nodeIds: ['ns=2;s=Machine01.Temperature'],
+    }));
+    expect(String(clientQuery.mock.calls[1]?.[0])).toContain('INSERT INTO ot_device_history');
+    expect(JSON.stringify(clientQuery.mock.calls[1]?.[1])).toContain('OPCUA_READ_COMPLETED');
+  });
+
+  it('rejects unapproved NodeIds before contacting the OT gateway', async () => {
+    database.query.mockResolvedValueOnce({ rows: [deviceRow()] });
+    await expect(service.readOpcUaNodes(
+      { tenantId, factoryId, userId }, deviceId,
+      { node_ids: ['ns=2;s=Machine01.Pressure'] } as never,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(opcUaGateway.read).not.toHaveBeenCalled();
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects reads against paused devices', async () => {
+    database.query.mockResolvedValueOnce({ rows: [deviceRow({ status: 'PAUSED' })] });
+    await expect(service.readOpcUaNodes(
+      { tenantId, factoryId, userId }, deviceId,
+      { node_ids: ['ns=2;s=Machine01.Temperature'] } as never,
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(opcUaGateway.read).not.toHaveBeenCalled();
   });
 
   it('classifies an identical source-event replay without adding a second ledger row', async () => {

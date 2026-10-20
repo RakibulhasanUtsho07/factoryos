@@ -19,6 +19,7 @@ import {
   IngestOtTelemetryBatchDto,
   OtDeviceTransitionDto,
   RegisterOtDeviceDto,
+  ReadOpcUaNodesDto,
 } from './dto/ot-device.dto';
 import { OtDeviceService } from './ot-device.service';
 
@@ -123,6 +124,18 @@ export class OtDeviceController {
     @Body() body: OtDeviceTransitionDto,
   ) {
     return this.service.transition(scope(request), deviceId, 'REVOKE', body);
+  }
+
+  @Post('devices/:deviceId/opcua/read')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ot.opcua.read')
+  @RequireFactoryScope()
+  readOpcUa(
+    @Req() request: AuthenticatedOtRequest,
+    @Param('deviceId', new ParseUUIDPipe()) deviceId: string,
+    @Body() body: ReadOpcUaNodesDto,
+  ) {
+    return this.service.readOpcUaNodes(scope(request), deviceId, body);
   }
 
   @Post('devices/:deviceId/telemetry/batch')
