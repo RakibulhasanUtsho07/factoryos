@@ -26,6 +26,7 @@ const receipt = {
   candidate: {
     commitSha: required('FACTORYOS_CANDIDATE_SHA') ?? required('GITHUB_SHA'),
     migrationManifestPath: candidateManifestPath,
+    migrationManifestMode: required('FACTORYOS_DR_MIGRATION_MANIFEST_MODE') ?? required('FACTORYOS_MIGRATION_MANIFEST_MODE') ?? 'NOT_SET',
     migrationManifestSha256: required('FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256') ?? required('FACTORYOS_CANDIDATE_MANIFEST_SHA256'),
     migrationCount: numberOrNull('FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT') ?? numberOrNull('FACTORYOS_CANDIDATE_MIGRATION_COUNT'),
     migrationStatus: required('FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS') ?? required('FACTORYOS_CANDIDATE_MIGRATION_STATUS') ?? 'NOT_RUN',
