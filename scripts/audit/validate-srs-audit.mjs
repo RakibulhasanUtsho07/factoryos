@@ -52,7 +52,7 @@ function extractEvidencePaths(value) {
   return [...new Set(matches.map((path) => path.replace(/[),.;:`]+$/g, '')))].filter((path) => path.length > 3);
 }
 
-const isTestPointer = (path) => /(\.spec\.[cm]?[jt]sx?|\.test\.[cm]?[jt]sx?|\.sql$|\/test\/|\/tests\/|\.contract\.[cm]?[jt]s$)/i.test(path);
+const isTestPointer = (path) => /(\.spec\.[cm]?[jt]sx?|\.test\.[cm]?[jt]sx?|\/test\/|\/tests\/|\.contract\.[cm]?[jt]s$)/i.test(path);
 const isCodePointer = (path) => (/^services\/api\/src\/|^apps\/web\/src\//.test(path) && !isTestPointer(path));
 const isMigrationPointer = (path) => /^migrations\/\d/.test(path);
 
