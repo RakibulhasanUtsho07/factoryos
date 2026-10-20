@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import type { DistributedTraceContext } from '../common/types/request-context';
 import { HttpMetricsService } from './http-metrics.service';
@@ -12,6 +13,15 @@ export interface HttpServerSpan {
   endTimeUnixNano: string;
   durationMs: number;
   requestId: string;
+}
+
+export interface DatabaseOperationSpan {
+  context: DistributedTraceContext;
+  operation: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'OTHER' | 'TRANSACTION';
+  status: 'success' | 'error';
+  startTimeUnixNano: string;
+  endTimeUnixNano: string;
+  durationMs: number;
 }
 
 interface OtlpAttribute { key: string; value: { stringValue?: string; intValue?: string; boolValue?: boolean; doubleValue?: number } }
@@ -68,6 +78,36 @@ export class OtlpTraceExporter {
       attributes,
       status: input.statusCode >= 500 ? { code: 2, message: 'HTTP server error' } : { code: 1 },
     };
+    this.enqueue(span);
+  }
+
+  exportDatabaseOperation(input: DatabaseOperationSpan): void {
+    if (!this.enabled || !input.context.sampled) return;
+    const spanId = randomBytes(8).toString('hex');
+    const span: OtlpSpan = {
+      traceId: input.context.traceId,
+      spanId,
+      parentSpanId: input.context.spanId,
+      name: 'postgresql ' + input.operation.toLowerCase(),
+      kind: 3,
+      startTimeUnixNano: input.startTimeUnixNano,
+      endTimeUnixNano: input.endTimeUnixNano,
+      attributes: [
+        { key: 'db.system', value: { stringValue: 'postgresql' } },
+        { key: 'db.operation.name', value: { stringValue: input.operation } },
+        { key: 'db.operation.status', value: { stringValue: input.status } },
+        { key: 'db.operation.duration_ms', value: { doubleValue: Number(input.durationMs.toFixed(3)) } },
+      ],
+      status: input.status === 'error' ? { code: 2, message: 'Database operation failed' } : { code: 1 },
+    };
+    this.enqueue(span);
+  }
+
+  private enqueue(span: OtlpSpan): void {
+    if (this.queue.length >= MAX_QUEUE) {
+      this.metrics.recordTraceDropped(1);
+      return;
+    }
     this.queue.push(span);
     this.metrics.setTraceQueueLength(this.queue.length);
     if (this.queue.length >= MAX_BATCH) {

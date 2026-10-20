@@ -38,6 +38,18 @@ describe('HttpMetricsService', () => {
     expect(output).toContain('factoryos_trace_export_queue_length 0');
   });
 
+  it('records database operation latency, errors and connection pool pressure', () => {
+    const metrics = new HttpMetricsService();
+    metrics.recordDatabaseOperation('SELECT', 'success', 0.04, { total: 5, idle: 2, waiting: 1 });
+    metrics.recordDatabaseOperation('TRANSACTION', 'error', 0.5, { total: 6, idle: 1, waiting: 2 });
+    const output = metrics.renderPrometheus();
+    expect(output).toContain('factoryos_db_operations_total{operation="SELECT",status="success"} 1');
+    expect(output).toContain('factoryos_db_operations_total{operation="TRANSACTION",status="error"} 1');
+    expect(output).toContain('factoryos_db_operation_duration_seconds_bucket{operation="SELECT",le="0.05"} 1');
+    expect(output).toContain('factoryos_db_pool_connections{state="total"} 6');
+    expect(output).toContain('factoryos_db_pool_connections{state="waiting"} 2');
+  });
+
   it('normalizes arbitrary path values rather than exposing identifiers as route labels', () => {
     const metrics = new HttpMetricsService();
     metrics.completeRequest(metrics.beginRequest('GET'), 404, 0.01, '/api/orders/123456');

@@ -108,6 +108,37 @@ describe('OtlpTraceExporter', () => {
     expect(counters.recordTraceExportError).toHaveBeenCalledTimes(1);
   });
 
+  it('exports PostgreSQL operations as child client spans without SQL text or parameter values', async () => {
+    const exporter = create({
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://otel-collector.internal/v1/traces',
+      NODE_ENV: 'production',
+    });
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    exporter.exportDatabaseOperation({
+      context,
+      operation: 'SELECT',
+      status: 'success',
+      startTimeUnixNano: context.startTimeUnixNano,
+      endTimeUnixNano: '1760961600010000000',
+      durationMs: 10,
+    });
+    await exporter.flushNow();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as Record<string, any>;
+    const span = body.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(span).toMatchObject({
+      traceId: context.traceId,
+      parentSpanId: context.spanId,
+      name: 'postgresql select',
+      kind: 3,
+      status: { code: 1 },
+    });
+    expect(span.attributes).toContainEqual({ key: 'db.system', value: { stringValue: 'postgresql' } });
+    expect(span.attributes).toContainEqual({ key: 'db.operation.name', value: { stringValue: 'SELECT' } });
+    expect(JSON.stringify(span)).not.toContain('SELECT *');
+    expect(counters.recordTraceExported).toHaveBeenCalledWith(1);
+  });
+
   it('records collector failures while dropping the failed batch instead of retaining an infinite backlog', async () => {
     const exporter = create({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://otel-collector.internal/v1/traces', NODE_ENV: 'production' });
     fetchMock.mockResolvedValueOnce(new Response('rejected', { status: 503 }));
