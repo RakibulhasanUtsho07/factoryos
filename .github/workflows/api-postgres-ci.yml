@@ -270,6 +270,10 @@ jobs:
               -v ON_ERROR_STOP=1 -f "$migration"
           done
 
+          echo "Reapplying forecast evaluation migration to verify idempotent policy and trigger installation"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/151_growth_forecast_evaluation_calibration.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
