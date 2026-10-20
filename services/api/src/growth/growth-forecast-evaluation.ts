@@ -12,7 +12,7 @@ const MAX_ABS_VALUE = 1_000_000_000_000;
 
 export interface GrowthForecastEvaluationInput {
   forecast_value: number;
-  actual_value: number;
+  actual_value: number | string;
   lower_bound?: number | null;
   upper_bound?: number | null;
   nominal_coverage_pct?: number | null;
@@ -85,6 +85,35 @@ function scaled(value: number): bigint {
   return parseScaledDecimal(value.toFixed(8));
 }
 
+function scaledInput(name: string, value: number | string): bigint {
+  if (typeof value === 'number') {
+    assertNumber(name, value);
+    return scaled(value);
+  }
+  if (typeof value !== 'string') throw new Error(`FORECAST_VALUE_INVALID:${name}`);
+  const parsed = parseScaledDecimal(value);
+  const absolute = parsed < 0n ? -parsed : parsed;
+  if (absolute > BigInt(MAX_ABS_VALUE) * SCALE) throw new Error(`FORECAST_VALUE_INVALID:${name}`);
+  return parsed;
+}
+
+function integerSquareRoot(value: bigint): bigint {
+  if (value < 0n) throw new Error('FORECAST_SQUARE_ROOT_NEGATIVE');
+  if (value < 2n) return value;
+  let current = value;
+  let next = (current + 1n) / 2n;
+  while (next < current) {
+    current = next;
+    next = (current + value / current) / 2n;
+  }
+  return current;
+}
+
+function roundedSquareRoot(value: bigint): bigint {
+  const floor = integerSquareRoot(value);
+  return value - floor * floor >= floor + 1n ? floor + 1n : floor;
+}
+
 function formatScaled(value: bigint): string {
   const negative = value < 0n;
   const absolute = negative ? -value : value;
@@ -112,9 +141,8 @@ function normalizePercentage(value: number): string {
 
 export function evaluateGrowthForecast(input: GrowthForecastEvaluationInput): GrowthForecastEvaluationMetrics {
   assertNumber('forecast_value', input.forecast_value);
-  assertNumber('actual_value', input.actual_value);
   const forecast = scaled(input.forecast_value);
-  const actual = scaled(input.actual_value);
+  const actual = scaledInput('actual_value', input.actual_value);
   const error = forecast - actual;
   const absoluteError = error < 0n ? -error : error;
   const forecastAbs = forecast < 0n ? -forecast : forecast;
@@ -180,8 +208,9 @@ export function summarizeGrowthForecastCalibration(
       rows.reduce((sum, row) => sum + parseScaledDecimal(String(row[field])), 0n);
     const meanError = roundRatio(sumScaled('signed_error'), count);
     const meanAbsoluteError = roundRatio(sumScaled('absolute_error'), count);
-    const meanSquaredError = Number(roundRatio(sumScaled('squared_error'), count)) / Number(SCALE);
-    const rmse = Number(Math.sqrt(meanSquaredError).toFixed(8));
+    const meanSquaredError = roundRatio(sumScaled('squared_error'), count);
+    const rmseScaled = roundedSquareRoot(meanSquaredError * SCALE);
+    const rmse = Number(formatScaled(rmseScaled));
     const meanSmape = roundRatio(sumScaled('symmetric_percentage_error'), count);
     const intervalRows = rows.filter(row => row.interval_hit !== null);
     const intervalCount = intervalRows.length;
