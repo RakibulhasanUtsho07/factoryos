@@ -237,14 +237,17 @@ export class SaasTenantGovernanceExecutionService {
         [tenantId],
       );
       const held = holdResult.rows.some((row) => this.parseCategories(row.categories).includes(category));
-      const protectedEligible = mode === SaasRetentionRunMode.EXECUTE && mapped.some((table) => {
-        const entry = manifest[table.table] as { eligible?: string } | undefined;
-        const eligibleCount = BigInt(entry?.eligible ?? '0');
-        if (!FINANCIAL_CONTROL_TABLES.has(table.table) || eligibleCount === 0n) return false;
-        const tableEntry = manifest[table.table] as Record<string, unknown>;
-        tableEntry.retentionDisposition = 'REQUIRES_FINANCE_RETENTION_REVIEW';
-        return true;
-      });
+      let protectedEligible = false;
+      if (mode === SaasRetentionRunMode.EXECUTE) {
+        for (const table of mapped) {
+          const entry = manifest[table.table] as { eligible?: string } | undefined;
+          const eligibleCount = BigInt(entry?.eligible ?? '0');
+          if (!FINANCIAL_CONTROL_TABLES.has(table.table) || eligibleCount === 0n) continue;
+          const tableEntry = manifest[table.table] as Record<string, unknown>;
+          tableEntry.retentionDisposition = 'REQUIRES_FINANCE_RETENTION_REVIEW';
+          protectedEligible = true;
+        }
+      }
       const guardedEligible = mode === SaasRetentionRunMode.EXECUTE && mapped.some((table) => {
         const entry = manifest[table.table] as { eligible?: string } | undefined;
         return table.deletionGuarded && BigInt(entry?.eligible ?? '0') > 0n;
