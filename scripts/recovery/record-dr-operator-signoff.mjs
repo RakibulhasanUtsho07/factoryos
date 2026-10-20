@@ -49,7 +49,7 @@ if (args.decision === 'PASS') {
     ['checksum', evidence.backup?.checksumVerified === true && /^[a-f0-9]{64}$/.test(evidence.backup?.sha256 ?? '')],
     ['archive readability', evidence.backup?.archiveReadability === 'READABLE'],
     ['restore', evidence.verification?.restoreStatus === 'PASS'],
-    ['pending release migrations', evidence.candidate?.migrationManifestMode === 'PENDING' && evidence.candidate?.migrationStatus === 'PASS' && Number(evidence.candidate?.migrationCount) > 0],
+    ['pending release migration manifest', evidence.candidate?.migrationManifestMode === 'PENDING' && evidence.candidate?.migrationStatus === 'PASS' && Number.isSafeInteger(evidence.candidate?.migrationCount) && evidence.candidate.migrationCount >= 0 && /^[a-f0-9]{64}$/.test(evidence.candidate?.migrationManifestSha256 ?? '')],
     ['failed-transaction recovery', evidence.verification?.migrationRecoveryStatus === 'PASS'],
     ['restored schema smoke', evidence.verification?.schemaSmokeStatus === 'PASS'],
     ['running candidate API readiness', evidence.verification?.apiReadinessStatus === 'PASS'],
