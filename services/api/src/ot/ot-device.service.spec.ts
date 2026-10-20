@@ -42,6 +42,9 @@ describe('OtDeviceService', () => {
     query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>(),
     transaction: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
   };
+  const modbusGateway = {
+    read: jest.fn<(...args: unknown[]) => Promise<{ request_id: string; values: Array<Record<string, unknown>> }>>(),
+  };
   const opcUaGateway = {
     read: jest.fn<(...args: unknown[]) => Promise<{ request_id: string; values: Array<Record<string, unknown>> }>>(),
   };
@@ -55,7 +58,7 @@ describe('OtDeviceService', () => {
       if (!callback) throw new Error('test transaction callback is required');
       return callback({ query: clientQuery } as never);
     });
-    service = new OtDeviceService(database as never, opcUaGateway as never);
+    service = new OtDeviceService(database as never, opcUaGateway as never, modbusGateway as never);
   });
 
   it('registers a device with a secret-manager reference but never returns the secret reference', async () => {

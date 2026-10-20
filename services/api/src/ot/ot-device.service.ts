@@ -18,6 +18,8 @@ import {
 } from './ot-device.contract';
 import type { IngestOtTelemetryBatchDto, OtDeviceTransitionDto, RegisterOtDeviceDto, ReadOpcUaNodesDto } from './dto/ot-device.dto';
 import { OpcUaGatewayClient } from './opcua-gateway.client';
+import { ModbusGatewayClient } from './modbus-gateway.client';
+import { getModbusTcpProfile, getMqttProfile, normalizeMqttTelemetryMessage } from './ot-protocol.contract';
 import { getModbusTcpProfile, getMqttProfile } from './ot-protocol.contract';
 
 export interface OtRequestScope {
@@ -67,7 +69,11 @@ const DEVICE_STATUSES: readonly DeviceStatus[] = [
 
 @Injectable()
 export class OtDeviceService {
-  constructor(private readonly database: DatabaseService, private readonly opcUaGateway: OpcUaGatewayClient) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly opcUaGateway: OpcUaGatewayClient,
+    private readonly modbusGateway: ModbusGatewayClient,
+  ) {}
 
   async register(scope: OtRequestScope, dto: RegisterOtDeviceDto, rawIdempotencyKey?: string) {
     this.validateScope(scope);
@@ -366,6 +372,163 @@ export class OtDeviceService {
       if (status === 503) return 'GATEWAY_UNAVAILABLE';
     }
     return error instanceof ConflictException ? 'DEVICE_STATE_CHANGED' : 'READ_FAILED';
+  }
+
+
+  async ingestMqttMessage(
+    scope: OtRequestScope,
+    deviceId: string,
+    dto: { topic: string; message: Record<string, unknown> },
+  ) {
+    this.validateScope(scope);
+    this.validateUuid(deviceId, 'deviceId');
+    const device = await this.getDevice(scope, deviceId);
+    if (device.protocol !== 'MQTT') throw new BadRequestException('Only MQTT devices support this endpoint');
+    if (device.status !== 'ACTIVE') throw new ConflictException('MQTT ingestion requires an active device');
+
+    try {
+      getMqttProfile(device.metadata);
+    } catch {
+      throw new ConflictException('MQTT device has no valid registered topic allowlist');
+    }
+    let event: ReturnType<typeof normalizeMqttTelemetryMessage>;
+    try {
+      const bytes = Buffer.from(JSON.stringify(dto.message), 'utf8');
+      event = normalizeMqttTelemetryMessage(dto.topic, bytes, device.metadata);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'MQTT message failed validation');
+    }
+
+    const result = await this.ingestTelemetry(scope, deviceId, {
+      events: [{
+        source_event_id: event.source_event_id,
+        event_type: event.event_type,
+        stream_key: event.stream_key,
+        ...(event.source_sequence === null ? {} : { source_sequence: event.source_sequence }),
+        observed_at: event.observed_at,
+        payload: event.payload,
+      }],
+    });
+    return {
+      protocol: 'MQTT',
+      accepted_topic: dto.topic,
+      source_event_id: event.source_event_id,
+      ...result,
+    };
+  }
+
+  async readModbusRegisters(scope: OtRequestScope, deviceId: string, dto: { stream_keys: string[] }) {
+    this.validateScope(scope);
+    this.validateUuid(deviceId, 'deviceId');
+    if (!Array.isArray(dto.stream_keys) || dto.stream_keys.length < 1 || dto.stream_keys.length > 10) {
+      throw new BadRequestException('Modbus reads must request between 1 and 10 configured stream keys');
+    }
+    if (new Set(dto.stream_keys).size !== dto.stream_keys.length) {
+      throw new BadRequestException('A Modbus read cannot repeat a stream key');
+    }
+    const device = await this.getDevice(scope, deviceId);
+    if (device.protocol !== 'MODBUS_TCP') throw new BadRequestException('Only Modbus TCP devices support this endpoint');
+    if (device.status !== 'ACTIVE') throw new ConflictException('Modbus reads require an active device');
+
+    let profile: ReturnType<typeof getModbusTcpProfile>;
+    try {
+      profile = getModbusTcpProfile(device.metadata);
+    } catch {
+      throw new ConflictException('Modbus device has no valid registered register map');
+    }
+    const allowed = new Map(profile.register_map.map((item) => [item.stream_key, item]));
+    const registerMap = dto.stream_keys.map((key) => {
+      const definition = allowed.get(key);
+      if (!definition) throw new BadRequestException('A requested stream key is outside the registered Modbus map');
+      return definition;
+    });
+    const requestId = randomUUID();
+    let read: Awaited<ReturnType<ModbusGatewayClient['read']>>;
+    try {
+      read = await this.modbusGateway.read({
+        requestId,
+        tenantId: scope.tenantId,
+        factoryId: scope.factoryId,
+        deviceId,
+        deviceKey: device.device_key,
+        connectionReference: device.connection_reference,
+        unitId: profile.unit_id,
+        registerMap,
+      });
+    } catch (error) {
+      await this.recordProtocolHistory(scope, deviceId, device.row_version, 'MODBUS_READ_FAILED', {
+        request_id: requestId,
+        stream_keys: dto.stream_keys,
+        failure_class: this.modbusFailureClass(error),
+      }, false);
+      throw error;
+    }
+    if (read.request_id !== requestId || read.values.length !== registerMap.length) {
+      await this.recordProtocolHistory(scope, deviceId, device.row_version, 'MODBUS_READ_FAILED', {
+        request_id: requestId, failure_class: 'GATEWAY_RESPONSE_REJECTED',
+      }, false);
+      throw new ConflictException('Modbus read gateway response did not match the read request');
+    }
+
+    const accepted = await this.ingestTelemetry(scope, deviceId, {
+      events: read.values.map((value) => ({
+        source_event_id: requestId + ':' + value.stream_key,
+        event_type: 'MODBUS_REGISTER_SAMPLE',
+        stream_key: value.stream_key,
+        ...(value.source_sequence === null ? {} : { source_sequence: value.source_sequence }),
+        observed_at: value.observed_at,
+        payload: { value: value.value },
+      })),
+    });
+    await this.recordProtocolHistory(scope, deviceId, device.row_version, 'MODBUS_READ_COMPLETED', {
+      request_id: requestId,
+      stream_keys: read.values.map((value) => value.stream_key),
+      accepted: accepted.accepted,
+      duplicate_replays: accepted.duplicate_replays,
+    }, true);
+    return {
+      protocol: 'MODBUS_TCP',
+      read_only: true,
+      request_id: requestId,
+      values: read.values,
+      telemetry: accepted,
+    };
+  }
+
+  private async recordProtocolHistory(
+    scope: OtRequestScope,
+    deviceId: string,
+    expectedVersion: number,
+    action: 'MODBUS_READ_COMPLETED' | 'MODBUS_READ_FAILED',
+    metadata: Record<string, unknown>,
+    requireActiveVersion: boolean,
+  ): Promise<void> {
+    await this.database.transaction(async (client) => {
+      const result = await client.query<OtDeviceRow>(
+        'SELECT ' + DEVICE_SELECT + ' FROM ot_devices WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
+        [deviceId, scope.tenantId, scope.factoryId],
+      );
+      const current = result.rows[0];
+      if (!current) throw new NotFoundException('OT device not found');
+      if (requireActiveVersion && (current.status !== 'ACTIVE' || current.row_version !== expectedVersion)) {
+        throw new ConflictException('OT device status changed during the Modbus read; values were not acknowledged');
+      }
+      await this.appendHistory(client, scope, current, action, null, metadata);
+    }, {
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      advisoryLockKey: 'ot-modbus-read:' + scope.tenantId + ':' + scope.factoryId + ':' + deviceId,
+    });
+  }
+
+  private modbusFailureClass(error: unknown): string {
+    if (typeof error === 'object' && error !== null && 'status' in error) {
+      const status = (error as { status?: unknown }).status;
+      if (status === 504) return 'GATEWAY_TIMEOUT';
+      if (status === 502) return 'GATEWAY_RESPONSE_REJECTED';
+      if (status === 503) return 'GATEWAY_UNAVAILABLE';
+    }
+    return 'READ_FAILED';
   }
 
   async ingestTelemetry(

@@ -17,6 +17,8 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   IngestOtTelemetryBatchDto,
+  IngestMqttMessageDto,
+  ReadModbusRegistersDto,
   OtDeviceTransitionDto,
   RegisterOtDeviceDto,
   ReadOpcUaNodesDto,
@@ -136,6 +138,30 @@ export class OtDeviceController {
     @Body() body: ReadOpcUaNodesDto,
   ) {
     return this.service.readOpcUaNodes(scope(request), deviceId, body);
+  }
+
+  @Post('devices/:deviceId/mqtt/message')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ot.mqtt.ingest')
+  @RequireFactoryScope()
+  ingestMqttMessage(
+    @Req() request: AuthenticatedOtRequest,
+    @Param('deviceId', new ParseUUIDPipe()) deviceId: string,
+    @Body() body: IngestMqttMessageDto,
+  ) {
+    return this.service.ingestMqttMessage(scope(request), deviceId, body);
+  }
+
+  @Post('devices/:deviceId/modbus/read')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ot.modbus.read')
+  @RequireFactoryScope()
+  readModbus(
+    @Req() request: AuthenticatedOtRequest,
+    @Param('deviceId', new ParseUUIDPipe()) deviceId: string,
+    @Body() body: ReadModbusRegistersDto,
+  ) {
+    return this.service.readModbusRegisters(scope(request), deviceId, body);
   }
 
   @Post('devices/:deviceId/telemetry/batch')
