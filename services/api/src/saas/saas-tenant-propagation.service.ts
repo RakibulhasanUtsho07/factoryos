@@ -9,6 +9,8 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import { PropagateSaasTenantErasureDto } from './dto/propagate-saas-tenant-erasure.dto';
+import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-data-target.dto';
+import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
 import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibility-rule.dto';
 import { REQUIRED_EXTERNAL_STORE_KINDS, SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS } from './saas-tenant-propagation.adapters';
 import type {
@@ -25,8 +27,11 @@ type ErasureRequestRow = QueryResultRow & {
 };
 type TransferRow = QueryResultRow & { source_manifest: Record<string, unknown> | string; source_bundle_digest: string; actor_user_id: string };
 type TargetRow = QueryResultRow & {
-  target_id: string; tenant_id: string; store_kind: SaasTenantExternalDataTarget['storeKind'];
-  adapter_key: string; config_reference: string; categories: SaasTransferDatasetCategory[] | string; required: boolean;
+  id: string; target_id: string; tenant_id: string; store_kind: SaasTenantExternalDataTarget['storeKind'];
+  adapter_key: string; config_reference: string; registration_reason: string;
+  categories: SaasTransferDatasetCategory[] | string; required: boolean; status: string;
+  registered_by_user_id: string; reviewed_by_user_id: string | null; reviewed_at: string | null;
+  review_reason: string | null; created_at: string; updated_at: string;
 };
 type PropagationRunRow = QueryResultRow & {
   run_id: string; request_hash: string; status: 'RUNNING' | 'PARTIAL' | 'FAILED' | 'VERIFIED';
@@ -56,6 +61,103 @@ export class SaasTenantPropagationService {
     @Optional() @Inject(SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS)
     private readonly adapters: SaasTenantExternalDataPropagationAdapter[] = [],
   ) {}
+
+  async registerTarget(tenantValue: string, actorValue: string, input: RegisterSaasExternalDataTargetDto) {
+    const tenantId = this.uuid(tenantValue, 'tenantId');
+    const actorUserId = this.uuid(actorValue, 'actorUserId');
+    await this.iamService.authorize(actorUserId, tenantId, 'saas.data_retention.write');
+    const targetId = this.requiredString(input?.target_id, 'target_id', 100, 1);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(targetId)) throw new BadRequestException('target_id has invalid characters');
+    if (!REQUIRED_EXTERNAL_STORE_KINDS.includes(input?.store_kind)) throw new BadRequestException('store_kind is invalid');
+    const adapterKey = this.requiredString(input?.adapter_key, 'adapter_key', 100, 1);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(adapterKey)) throw new BadRequestException('adapter_key has invalid characters');
+    const configReference = this.reference(input?.config_reference, 'config_reference');
+    const categories = this.parseCategories(input?.categories);
+    const required = input?.required !== false;
+    const registrationReason = this.requiredString(input?.registration_reason, 'registration_reason', 1000, 3);
+    const idempotencyKey = this.idempotencyKey(input?.idempotency_key);
+    const requestHash = this.hash({ operation: 'EXTERNAL_TARGET_REGISTER', targetId, storeKind: input.store_kind,
+      adapterKey, configReference, categories: [...categories].sort(), required, registrationReason });
+
+    const result = await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+      const replay = await client.query<TargetRow>(
+        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 AND idempotency_key=$2 FOR UPDATE',
+        [tenantId, idempotencyKey],
+      );
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_hash !== requestHash) throw new ConflictException('Idempotency-Key was used for another target registration');
+        return { row: replay.rows[0], replayed: true };
+      }
+      const inserted = await client.query<TargetRow>(
+        `INSERT INTO saas_tenant_external_data_targets
+         (tenant_id,target_id,store_kind,adapter_key,config_reference,registration_reason,categories,required,
+          registered_by_user_id,idempotency_key,request_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11) RETURNING *`,
+        [tenantId, targetId, input.store_kind, adapterKey, configReference, registrationReason,
+          JSON.stringify([...categories].sort()), required, actorUserId, idempotencyKey, requestHash],
+      );
+      await this.audit(client, tenantId, actorUserId, 'EXTERNAL_PROPAGATION_TARGET_REGISTERED', inserted.rows[0].id, {
+        targetId, storeKind: input.store_kind, adapterKey, categories: [...categories].sort(), required, status: 'PENDING',
+      });
+      return { row: inserted.rows[0], replayed: false };
+    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-target:' + tenantId + ':' + targetId });
+    return { target: this.mapTargetAdmin(result.row), replayed: result.replayed };
+  }
+
+  async reviewTarget(tenantValue: string, actorValue: string, targetValue: string, input: ReviewSaasExternalDataTargetDto) {
+    const tenantId = this.uuid(tenantValue, 'tenantId');
+    const actorUserId = this.uuid(actorValue, 'actorUserId');
+    await this.iamService.authorize(actorUserId, tenantId, 'saas.data_retention.approve');
+    const targetId = this.requiredString(targetValue, 'targetId', 100, 1);
+    const reason = this.requiredString(input?.reason, 'reason', 1000, 3);
+    const expectedStatus = input?.expected_status;
+    const decision = input?.decision;
+    const nextStatus = decision === 'APPROVE' ? 'ACTIVE'
+      : decision === 'REJECT' ? 'REJECTED'
+      : decision === 'PAUSE' ? 'PAUSED'
+      : decision === 'RESUME' ? 'ACTIVE' : null;
+    const validPair = decision === 'APPROVE' && expectedStatus === 'PENDING'
+      || decision === 'REJECT' && expectedStatus === 'PENDING'
+      || decision === 'PAUSE' && expectedStatus === 'ACTIVE'
+      || decision === 'RESUME' && expectedStatus === 'PAUSED';
+    if (!nextStatus || !validPair) throw new BadRequestException('decision and expected_status do not form a supported target lifecycle transition');
+
+    const result = await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+      const found = await client.query<TargetRow>(
+        'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 AND target_id=$2 FOR UPDATE',
+        [tenantId, targetId],
+      );
+      const current = found.rows[0];
+      if (!current) throw new NotFoundException('External data target not found');
+      if (current.status !== expectedStatus) throw new ConflictException('External target status changed; reload before reviewing');
+      if (current.registered_by_user_id === actorUserId) throw new ConflictException('Target registration and review require different actors');
+      const updated = await client.query<TargetRow>(
+        `UPDATE saas_tenant_external_data_targets
+         SET status=$3,reviewed_by_user_id=$4,reviewed_at=clock_timestamp(),review_reason=$5,updated_at=clock_timestamp()
+         WHERE tenant_id=$1 AND target_id=$2 AND status=$6 RETURNING *`,
+        [tenantId, targetId, nextStatus, actorUserId, reason, expectedStatus],
+      );
+      if (!updated.rows[0]) throw new ConflictException('External target changed during review');
+      await this.audit(client, tenantId, actorUserId, 'EXTERNAL_PROPAGATION_TARGET_' + decision, updated.rows[0].id, {
+        targetId, previousStatus: expectedStatus, status: nextStatus, reason,
+      });
+      return updated.rows[0];
+    }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-target-review:' + tenantId + ':' + targetId });
+    return { target: this.mapTargetAdmin(result) };
+  }
+
+  async listTargets(tenantValue: string, actorValue: string) {
+    const tenantId = this.uuid(tenantValue, 'tenantId');
+    const actorUserId = this.uuid(actorValue, 'actorUserId');
+    await this.iamService.authorize(actorUserId, tenantId, 'saas.data_retention.read');
+    const result = await this.database.query<TargetRow>(
+      'SELECT * FROM saas_tenant_external_data_targets WHERE tenant_id=$1 ORDER BY store_kind,target_id',
+      [tenantId], { tenantId, userId: actorUserId },
+    );
+    return { items: result.rows.map((row) => this.mapTargetAdmin(row)), count: result.rows.length };
+  }
 
   async propagateErasure(tenantValue: string, actorValue: string, requestValue: string, input: PropagateSaasTenantErasureDto) {
     const tenantId = this.uuid(tenantValue, 'tenantId');
@@ -447,6 +549,13 @@ export class SaasTenantPropagationService {
   private async lockTenant(client: PoolClient, tenantId: string) {
     const result = await client.query<{ id: string }>('SELECT id::text AS id FROM tenants WHERE id=$1::uuid FOR UPDATE', [tenantId]);
     if (!result.rows[0]) throw new NotFoundException('Tenant not found');
+  }
+  private mapTargetAdmin(row: TargetRow) {
+    return { targetId: row.target_id, storeKind: row.store_kind, adapterKey: row.adapter_key,
+      configReference: row.config_reference, categories: this.parseCategories(row.categories), required: row.required,
+      status: row.status, registeredByUserId: row.registered_by_user_id, reviewedByUserId: row.reviewed_by_user_id,
+      reviewedAt: row.reviewed_at, reviewReason: row.review_reason, registrationReason: row.registration_reason,
+      createdAt: row.created_at, updatedAt: row.updated_at };
   }
   private mapTarget(row: TargetRow): SaasTenantExternalDataTarget {
     return { tenantId: row.tenant_id, targetId: row.target_id, storeKind: row.store_kind, adapterKey: row.adapter_key,
