@@ -190,6 +190,8 @@ export interface AiAgentTaskStep {
   status: AiAgentStepStatus;
 
   retryCount: number;
+  /** Earliest database time a scheduled retry may be claimed; null when unscheduled/due. */
+  nextRetryAt?: string | null;
   authorizationAttempt: number;
 
   actionIntentId: string | null;
