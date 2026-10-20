@@ -27,7 +27,7 @@ describe('HttpMetricsMiddleware', () => {
     listeners.get('finish')?.();
     listeners.get('close')?.();
     expect(metrics.completeRequest).toHaveBeenCalledTimes(1);
-    expect(metrics.completeRequest).toHaveBeenCalledWith('GET', 200, expect.any(Number));
+    expect(metrics.completeRequest).toHaveBeenCalledWith('GET', 200, expect.any(Number), 'unmatched');
   });
 
   it('records a client-aborted response when close happens before finish', () => {
@@ -46,6 +46,6 @@ describe('HttpMetricsMiddleware', () => {
     } as unknown as Response;
     new HttpMetricsMiddleware(metrics, { exportServerSpan: jest.fn() } as unknown as OtlpTraceExporter).use({ method: 'POST' } as Request, res, jest.fn() as unknown as NextFunction);
     listeners.get('close')?.();
-    expect(metrics.completeRequest).toHaveBeenCalledWith('POST', 499, expect.any(Number));
+    expect(metrics.completeRequest).toHaveBeenCalledWith('POST', 499, expect.any(Number), 'unmatched');
   });
 });
