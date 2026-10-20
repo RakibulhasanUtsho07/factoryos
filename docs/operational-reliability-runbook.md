@@ -83,22 +83,13 @@ Before applying a migration to a customer database:
 
 ### PostgreSQL backup/restore rehearsal example
 
-Run these commands only with approved connection identities, a dedicated isolated restore target and secrets supplied out-of-band (for example, a protected service definition or PGPASSFILE). Do not type production passwords into shell history.
+Prefer the encrypted, identity-checked helper in **scripts/recovery/postgres-backup-restore-rehearsal.sh**. Its complete prerequisites, placeholders, operator commands and acceptance limits are documented in [Backup/Restore, Migration Recovery, Load and Security Acceptance](backup-restore-migration-load-security-acceptance.md). Use an approved PGSERVICEFILE/PGPASSFILE, GPG recipient/private key access, restricted output directory, a separately created empty restore database and a reviewed read-only restore smoke SQL file. Do not place database passwords in shell history or commit secrets.
 
-~~~sh
-pg_dump --format=custom --no-owner --no-acl \
-  --file=factoryos-prechange.dump \
-  "$SOURCE_DATABASE_URL"
+The helper streams a custom-format pg_dump archive directly into GPG encryption, writes and verifies a SHA-256 checksum, compares source and restore database identity, rejects targets containing user relations, checks archive readability, restores using a single transaction, and runs the supplied smoke SQL. It deliberately refuses to overwrite an existing artifact and does not automatically drop a failed restore target. Retain the encrypted artifact/checksum, tool versions, release SHA, timestamps, restore duration and operator evidence.
 
-pg_restore --list factoryos-prechange.dump > factoryos-prechange.contents.txt
+For any production release, this rehearsal must run against explicitly approved source and isolated recovery targets. Never run an unreviewed restore against the source or an active customer database. Restore success does not prove point-in-time recovery, off-site replication, RPO/RTO, external adapter recovery or application correctness without the selected smoke checks.
 
-# Create an EMPTY, isolated database through an approved admin connection first.
-pg_restore --exit-on-error --no-owner --no-acl \
-  --dbname="$ISOLATED_RESTORE_DATABASE_URL" \
-  factoryos-prechange.dump
-~~~
-
-These commands illustrate the mechanics, not a complete disaster-recovery plan. Validate extensions, roles, grants, RLS context, object ownership, data checks, restore time and application smoke tests. A successful pg_restore exit code by itself is not proof that the application works. Keep backups encrypted with controlled retention and prove access to decryption material using the organization's recovery process.
+The PostgreSQL CI workflow also runs an intentional transaction-failure probe after creating a table and inserting a row; CI expects the failure and verifies no probe table survives. This tests transactional fail-closed behavior in the disposable CI database only. Review each real migration's transaction boundaries and recovery plan independently.
 
 ## 4. Agent recovery and compensation safety
 
