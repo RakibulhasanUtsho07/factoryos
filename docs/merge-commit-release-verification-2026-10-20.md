@@ -2,44 +2,66 @@
 
 **Evidence record date:** 2026-10-20  
 **Repository:** `RakibulhasanUtsho07/factoryos`  
-**Purpose:** Verify the exact main merge SHA for API, PostgreSQL, production dependency security, web, and traceability CI. This is a repository CI record, not deployment approval.
+**Release-merge SHA verified:** `afeb9cdbe25d1d154ad42a4e6137a18977d33c23`  
+**PR:** [#68 — test(release): verify CI on exact merge commits](https://github.com/RakibulhasanUtsho07/factoryos/pull/68)  
+**Purpose:** Record successful CI evidence against the actual `main` merge commit, not only the pre-merge PR head.
 
-## Pre-change baseline (main before this work)
+## Exact post-merge CI on main
 
-| Item | Exact SHA / run | Finding |
+All five applicable workflows completed with conclusion **SUCCESS** and `head_sha=afeb9cdbe25d1d154ad42a4e6137a18977d33c23`. These are `push` runs on `main`, after PR #68 merged.
+
+| Workflow | Post-merge run | Result and evidence |
 |---|---|---|
-| Main baseline before this task | `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed` | Current `main` SHA at start of work; docs/audit-only merge. |
-| Traceability CI | [Run 39433624232](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39433624232) | **SUCCESS** on exact SHA `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed`. It validates audit-register/manifest consistency only. |
-| API CI | **NOT PRESENT** on baseline SHA | No exact-SHA API build/lint/test pass was present. |
-| API PostgreSQL CI | **NOT PRESENT** on baseline SHA | Ordered migration/integration evidence was not established for this SHA. |
-| Production dependency security | **NOT PRESENT** on baseline SHA | No exact-SHA production dependency audit was present. |
-| Web CI | **NOT PRESENT** on baseline SHA | No exact-SHA web lint/build pass was present. |
+| API CI | [Run 39437359258](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359258) | **SUCCESS**. API lint/build; 115 suites / 1,039 unit tests passed, plus PostgreSQL RLS integration 1 suite / 7 tests passed. Bounded load and backup/restore contract checks also passed. |
+| API PostgreSQL CI | [Run 39437359368](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359368) | **SUCCESS**. Ordered migration apply, manifest inventory/hash verification, selected migration idempotency reruns, rollback/security SQL contracts, API lint/build and full PostgreSQL-backed suite: 151 suites / 1,206 tests passed. |
+| Production Dependency Security | [Run 39437359369](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359369) | **SUCCESS**. Locked install, recovery/load contract checks, `npm audit --omit=dev`. |
+| Web CI | [Run 39437359291](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359291) | **SUCCESS**. Web dependency install, lint and production build. |
+| SRS HLD Blueprint Traceability | [Run 39437359027](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359027) | **SUCCESS**. Audit script syntax and SRS/HLD/Blueprint consistency validator. |
 
-The green API/PostgreSQL/security/web runs on `7b4a28419f6682480d10ee5f64ed5172bf809fad` are historical and are **not** treated as checks on the baseline SHA.
+Each link above opens the post-merge run. Their run metadata identifies the same exact merge SHA shown at the top of this record. PR-head checks also passed, but are additional evidence only; they are not being substituted for these post-merge runs.
 
-## Migration manifest controls
+## Ordered migration manifest verification
 
-The PostgreSQL workflow reads its migration apply sequence from [`scripts/audit/migration-manifest.txt`](../scripts/audit/migration-manifest.txt) and executes [`scripts/audit/verify-migration-manifest.mjs`](../scripts/audit/verify-migration-manifest.mjs) before schema application. The verifier fails closed if any entry is missing, duplicated, malformed, or if any top-level `migrations/*.sql` file is omitted. CI prints the manifest-entry count and SHA-256 over the exact ordered entries (one path per line, newline-terminated).
+The PostgreSQL workflow consumes [`scripts/audit/migration-manifest.txt`](../scripts/audit/migration-manifest.txt) and runs [`scripts/audit/verify-migration-manifest.mjs`](../scripts/audit/verify-migration-manifest.mjs) before executing schema changes.
 
-- The former inline workflow array contains **162 unique SQL files**; the highest numeric migration prefix is **158**. These counts differ because several files reuse prefixes (including 003, 004 and 026).
-- Apply order is dependency-aware and must not be sorted lexically. In particular, `003_outbox_event_envelope.sql` follows `004_orders_outbox.sql` because it alters objects created by the latter.
-- PostgreSQL CI reapplies migrations **151–158** after initial application to exercise their idempotency contracts. This is targeted idempotency evidence, not a claim that every historical migration is universally rerunnable.
-- Existing PostgreSQL checks also include the deliberate transaction-failure rollback probe, tenant/RLS and privacy-inventory checks, SQL contracts, and API integration/full test suites.
+| Verification item | Result on merge SHA |
+|---|---|
+| Manifest entries | **162** |
+| Actual top-level `migrations/*.sql` inventory | **162** |
+| Missing entries | **0** |
+| Extra/nonexistent entries | **0** |
+| Duplicate entries | **0** |
+| Ordered manifest SHA-256 | `55b89db4b58e095c1448465fc880f1ddcf83b8d45a09af6f37ddccfdf1fc086e` |
+| Inventory validator | **PASS** |
+| Explicit, dependency-aware apply order | **PASS** |
+| Applied migrations in log | **162/162** |
+| Final migration | `migrations/158_ot_mqtt_modbus_gateway.sql` |
 
-## Exact post-merge evidence
+The 162-file count is not the same as the highest numeric migration prefix (158), because some migrations share a numeric prefix. The ordering is intentionally not lexical: `003_outbox_event_envelope.sql` follows `004_orders_outbox.sql` because it alters objects created by that migration. Do not sort this manifest without reviewing and testing migration dependencies.
 
-**Status at record creation: PENDING.** No run is marked successful until GitHub Actions reports a completed successful run on the exact merge commit. PR-head checks are not a substitute for post-merge checks.
+### Selected idempotency evidence
 
-This evidence document is a trigger for all five applicable workflows. Changes to this record therefore rerun API CI, API PostgreSQL CI, production dependency security, Web CI and traceability CI; manifest/script changes also trigger PostgreSQL CI.
+The PostgreSQL run reapplied each of the following after the initial ordered application; the step completed successfully within the passing job:
 
-| Workflow | Required exact-SHA evidence | Status |
-|---|---|---|
-| API CI | Run URL, run ID, `head_sha`, lint/build/unit-test result | **PENDING POST-MERGE** |
-| API PostgreSQL CI | Run URL, run ID, `head_sha`, manifest count/hash, migrations applied, idempotency, DB integration-test result | **PENDING POST-MERGE** |
-| Production Dependency Security | Run URL, run ID, `head_sha`, production dependency audit result | **PENDING POST-MERGE** |
-| Web CI | Run URL, run ID, `head_sha`, lint/build result | **PENDING POST-MERGE** |
-| SRS HLD Blueprint Traceability | Run URL, run ID, `head_sha`, audit validator result | **PENDING POST-MERGE** |
+- `151_growth_forecast_evaluation_calibration.sql`
+- `152_ai_agent_retry_backoff.sql`
+- `153_saas_money_aggregation_precision.sql`
+- `154_saas_entitlement_enforcement_modes.sql`
+- `155_saas_retention_execution_and_erasure_receipts.sql`
+- `156_tenant_privacy_inventory_and_rls_guardrails.sql`
+- `157_ot_opcua_read_gateway.sql`
+- `158_ot_mqtt_modbus_gateway.sql`
 
-## Release gate
+This is tested idempotency for those eight migrations and their covered contracts; it is **not** a claim that every historic migration is universally rerunnable. The passing PostgreSQL run also performed the repository's migration inventory guard, transaction-failure rollback probe, tenant/RLS/privacy-inventory controls, SQL contracts and complete API test suite.
 
-Repository CI validates code, SQL migration order, selected migration reruns, dependency audit, web build, and traceability artifacts only for the commit identified by each run. It does not establish production deployment, real customer-data migration, encrypted backup/restore rehearsal, external deletion propagation, staging load test, live provider/OT hardware integration, or source-owner approval. Keep the formal P0 release gate **BLOCKED** if any required exact-SHA run is missing/failing or required operational/source-owner acceptance evidence remains absent.
+## Baseline versus release merge
+
+The prior `main` baseline was `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed`. It had only [traceability run 39433624232](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39433624232) as an exact-SHA CI run; API, PostgreSQL, production security and web were not present on that SHA. Earlier green runs on other SHAs were treated as historical evidence only.
+
+After PR #68 merged, the actual merge SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23` independently passed every applicable workflow linked above. The run set, test totals and migration digest were read from the completed GitHub Actions run metadata/logs.
+
+## Release-gate interpretation
+
+**Repository CI gate for this merge SHA: PASS.** All five required post-merge workflow runs succeeded, and the explicit migration manifest verified and applied successfully in disposable PostgreSQL CI.
+
+**Production release authorization: NOT IMPLIED.** These checks do not establish production deployment, an approved production database migration, actual encrypted backup/restore rehearsal, production RPO/RTO, live external deletion propagation, staged large-tenant load/rollback, live provider or OT hardware integration, or source-owner sign-off for all SRS requirements. Those operational/source-governance gates remain separate and must not be marked PASS from CI alone.
