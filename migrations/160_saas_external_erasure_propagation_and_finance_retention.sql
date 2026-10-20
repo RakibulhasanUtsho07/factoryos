@@ -297,6 +297,10 @@ ALTER TABLE saas_tenant_data_erasure_requests
   ADD COLUMN IF NOT EXISTS propagation_manifest_digest varchar(64),
   ADD COLUMN IF NOT EXISTS propagation_verified_at timestamptz;
 
+-- PROPAGATION_PENDING is longer than legacy lifecycle labels stored in varchar(12).
+ALTER TABLE saas_tenant_data_erasure_requests
+  ALTER COLUMN status TYPE varchar(24);
+
 ALTER TABLE saas_tenant_data_erasure_requests
   DROP CONSTRAINT IF EXISTS chk_saas_tenant_erasure_status;
 ALTER TABLE saas_tenant_data_erasure_requests
