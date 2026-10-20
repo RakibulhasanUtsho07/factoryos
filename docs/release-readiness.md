@@ -53,6 +53,10 @@ The API CI workflow runs deterministic tests of the local load-smoke harness and
 
 The PostgreSQL CI workflow must pass the complete ordered migration manifest, selected idempotency reruns, the intentional migration-failure rollback probe, and tenant governance inventory/RLS contracts. The dependency-security workflow audits production dependencies and executes the load/recovery guard tests on the maintained branch. These checks are repository evidence; they do not substitute for production IAM/network review, secret/key-custody review, external backup/restore rehearsals or owner-approved SLO and RPO/RTO sign-off.
 
+## Final SRS/HLD/Blueprint audit consistency gate
+
+For audit artefacts changed in a release, run `node scripts/audit/validate-srs-audit.mjs` from the repository root. The dedicated [SRS HLD Blueprint Traceability workflow](../.github/workflows/traceability-audit-ci.yml) runs this validator whenever the requirement matrix, AS-132–AS-141 matrix, HLD/Blueprint WP matrix, source manifest, master audit, release-readiness or audit validator changes. It checks the 899 extracted unique ID rows and documented priority buckets, all ten final production acceptance scenarios, WP01–WP12, P0/P1 gap IDs, P2 backlog IDs and three distinct SHA-256 source references. This checks the internal consistency of the evidence set only; it does not mean each requirement/scenario has passed or that formal Product/Architecture/Security/Operations sign-off has been granted.
+
 ## Final SRS v2.1 production-readiness acceptance gates
 
 Treat the final SRS §131 P0 requirements and §135 scenarios AS-132–AS-141 as release gates. The [final audit](final-srs-hld-blueprint-traceability-audit.md) records the scenario-by-scenario closure evidence; the relevant NFRs include:
