@@ -24,6 +24,28 @@ describe('HttpMetricsService', () => {
     expect(output).not.toContain('/tenant/a');
   });
 
+  it('records bounded route counters, process gauges and dependency health', () => {
+    const metrics = new HttpMetricsService();
+    const method = metrics.beginRequest('GET');
+    metrics.completeRequest(method, 200, 0.03, '/api/orders/:orderId');
+    metrics.setDependencyHealth('database', true);
+    const output = metrics.renderPrometheus();
+    expect(output).toContain('factoryos_http_route_requests_total{method="GET",route="/api/orders/:orderId",status_class="2xx"} 1');
+    expect(output).toContain('factoryos_dependency_health{dependency="database"} 1');
+    expect(output).toContain('factoryos_process_memory_bytes{type="rss"} ');
+    expect(output).toContain('factoryos_process_cpu_seconds_total{mode="user"} ');
+    expect(output).toContain('factoryos_nodejs_event_loop_utilization_ratio ');
+    expect(output).toContain('factoryos_trace_export_queue_length 0');
+  });
+
+  it('normalizes arbitrary path values rather than exposing identifiers as route labels', () => {
+    const metrics = new HttpMetricsService();
+    metrics.completeRequest(metrics.beginRequest('GET'), 404, 0.01, '/api/orders/123456');
+    const output = metrics.renderPrometheus();
+    expect(output).toContain('route="/api/orders/:id"');
+    expect(output).not.toContain('route="/api/orders/123456"');
+  });
+
   it('clamps invalid durations and prevents the in-flight gauge from becoming negative', () => {
     const metrics = new HttpMetricsService();
     const method = metrics.beginRequest('POST');

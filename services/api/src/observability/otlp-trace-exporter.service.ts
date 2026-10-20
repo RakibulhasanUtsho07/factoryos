@@ -81,6 +81,14 @@ export class OtlpTraceExporter {
     }
   }
 
+  async flushNow(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    await this.flush();
+  }
+
   private async flush(): Promise<void> {
     if (this.flushing || this.queue.length === 0) return;
     this.flushing = true;
