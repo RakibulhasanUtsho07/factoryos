@@ -19,7 +19,7 @@
 
 ## Requirement-scope snapshot
 
-The source matrix currently reports **899 unique extracted FR/NFR IDs**. SRS §140 reports **950 cumulative design-scope requirements (P0=296, P1=582, P2=72)**. The counts currently use different units and remain un-reconciled to an approved source-occurrence ledger; the arithmetic delta of 51 must not be treated as missing requirements or as duplicate rows without a source-owner decision.
+The source §140 scope arithmetic is reconciled: inherited v2.0 scope 900 + 50 v2.1 additions (32 functional, 18 non-functional) = 950 cumulative requirements, with P0=296, P1=582, P2=72. Separately, the repository's **899 unique textual FR/NFR ID keys** were extracted across the full 103-page PDF, including inherited/historical revision content and cross-reference mentions; that figure is not the current active v2.1 row count. A revision-aware occurrence ledger is still required to reconcile current applicability/canonical IDs and the 37 exceptions. The arithmetic delta of 51 is not a missing-code count or proof of 51 duplicate rows.
 
 | Gate count | Value | Status |
 |---|---:|---|
