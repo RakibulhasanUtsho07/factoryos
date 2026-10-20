@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS factoryos_governance.tenant_relation_inventory (
   classified_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (schema_name, relation_name),
   CONSTRAINT chk_factoryos_privacy_inventory_scope CHECK (
-    scope_model IN ('DIRECT_TENANT_ID', 'DERIVED_TENANT_RELATIONSHIP')
+    scope_model IN ('DIRECT_TENANT_ID', 'DERIVED_TENANT_RELATIONSHIP', 'NO_DIRECT_TENANT_ID')
   ),
   CONSTRAINT chk_factoryos_privacy_inventory_category CHECK (
     data_category IN (
@@ -286,6 +286,50 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- Relations without a direct tenant_id must not disappear from the governance
+-- inventory. Known IAM-derived relations were classified above; everything
+-- else is explicitly excluded from generic tenant export/erasure until a schema
+-- owner documents whether it is global control-plane data or indirect tenant data.
+DO $
+DECLARE
+  item record;
+BEGIN
+  FOR item IN
+    SELECT n.nspname AS schema_name, c.relname AS relation_name
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_attribute a
+        WHERE a.attrelid = c.oid
+          AND a.attname = 'tenant_id'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+      )
+      AND c.relname NOT IN ('user_roles', 'role_permissions')
+    ORDER BY c.relname
+  LOOP
+    INSERT INTO factoryos_governance.tenant_relation_inventory (
+      schema_name, relation_name, scope_model, data_category, export_disposition,
+      erasure_disposition, audit_requirement, rationale
+    ) VALUES (
+      item.schema_name, item.relation_name, 'NO_DIRECT_TENANT_ID', 'UNREVIEWED',
+      'EXCLUDED', 'BLOCKED_UNREVIEWED', 'REVIEW_REQUIRED',
+      'No direct tenant_id exists; document global/control-plane or derived tenant ownership before export, audit coverage, or erasure.'
+    )
+    ON CONFLICT (schema_name, relation_name) DO UPDATE SET
+      scope_model = EXCLUDED.scope_model,
+      data_category = EXCLUDED.data_category,
+      export_disposition = EXCLUDED.export_disposition,
+      erasure_disposition = EXCLUDED.erasure_disposition,
+      audit_requirement = EXCLUDED.audit_requirement,
+      rationale = EXCLUDED.rationale,
+      classified_at = clock_timestamp();
+  END LOOP;
+END;
+$;
 
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('156_tenant_privacy_inventory_and_rls_guardrails', NULL)

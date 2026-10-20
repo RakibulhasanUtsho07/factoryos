@@ -13,15 +13,12 @@ BEGIN
   SELECT count(*) INTO missing_count
   FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace
-  JOIN pg_attribute a ON a.attrelid = c.oid
-    AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped
   LEFT JOIN factoryos_governance.tenant_relation_inventory i
     ON i.schema_name = n.nspname AND i.relation_name = c.relname
-    AND i.scope_model = 'DIRECT_TENANT_ID'
   WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
     AND i.relation_name IS NULL;
   IF missing_count <> 0 THEN
-    RAISE EXCEPTION '% tenant-scoped relation(s) are missing from the privacy inventory', missing_count;
+    RAISE EXCEPTION '% public base/partition relation(s) are missing from the privacy inventory', missing_count;
   END IF;
 
   SELECT count(*) INTO missing_count
@@ -37,6 +34,15 @@ BEGIN
       ))
       OR (i.scope_model = 'DERIVED_TENANT_RELATIONSHIP'
           AND i.relation_name NOT IN ('user_roles','role_permissions'))
+      OR (i.scope_model = 'NO_DIRECT_TENANT_ID' AND EXISTS (
+        SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid
+          AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped
+      ))
+      OR (i.scope_model = 'NO_DIRECT_TENANT_ID' AND (
+        i.export_disposition <> 'EXCLUDED'
+        OR i.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+        OR i.data_category <> 'UNREVIEWED'
+      ))
     );
   IF missing_count <> 0 THEN
     RAISE EXCEPTION '% stale or invalid public relations exist in the tenant privacy inventory', missing_count;
