@@ -245,6 +245,7 @@ jobs:
              migrations/155_saas_retention_execution_and_erasure_receipts.sql
             migrations/156_tenant_privacy_inventory_and_rls_guardrails.sql
             migrations/157_ot_opcua_read_gateway.sql
+            migrations/158_ot_mqtt_modbus_gateway.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -304,6 +305,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/157_ot_opcua_read_gateway.sql
 
+          echo "Reapplying MQTT/Modbus gateway migration to verify permission and audit contract idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/158_ot_mqtt_modbus_gateway.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
@@ -357,9 +362,11 @@ jobs:
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
-          # OPC UA permission assertions run after the development role/permission seed scripts.
+          # OT protocol permission assertions run after development role/permission seeding.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/ot-opcua-read-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/ot-mqtt-modbus-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-management-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/maintenance-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/workforce-management-contract.sql
