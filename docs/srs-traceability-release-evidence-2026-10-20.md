@@ -75,3 +75,22 @@ The source-occurrence exception evidence and validation for the CSV were added i
 The follow-up merge contains traceability documentation, source-occurrence evidence, workflow-path changes, and validator changes. No application API/domain code or SQL migrations were changed by this follow-up. API CI, PostgreSQL CI, and production dependency security were **not run on SHA `ebcc2134b93fbbc5221e8131c4df46b7319de732`**; their earlier results remain associated with the exact older SHAs recorded in the master audit and must not be relabelled as current-SHA results.
 
 The merged follow-up SHA has a successful traceability-consistency run, not a product release approval. The overall P0 source-baseline/traceability gate remains **BLOCKED** because the authoritative DMS/source-owner approvals, numerical occurrence-ledger reconciliation, 37 priority dispositions, direct per-row code/migration/test evidence, named owners/reviewers, and applicable operational evidence are still outstanding.
+
+
+## Active-scope correction and latest audit SHA (2026-10-20)
+
+PR #66 revised the scope accounting after locating the exact §140 scope ledger text on PDF page 103. The change reconciles the arithmetic but deliberately does not claim that the 899-key full-PDF text index is the current active v2.1 requirement set.
+
+| Evidence item | Result |
+|---|---|
+| PR #66 validated head SHA | `49ffa1ec2ce99b25e8f9e7d5519f71047e238369` |
+| Traceability CI on PR #66 head | [Run 39433260522](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39433260522) — **SUCCESS** |
+| PR #66 merged commit / current audit SHA at the time of this snapshot | `bc8e7c6aabfcb6e8c833d5e8b8f5f9c29c00b478` |
+| Traceability CI on that exact merge SHA | [Run 39433420803](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39433420803) — **SUCCESS** |
+| Validated scope arithmetic | 900 inherited v2.0 + 50 v2.1 additions = 950; priority totals P0=296, P1=582, P2=72 |
+| Active v2.1 occurrence ledger | **NOT YET APPROVED / NOT YET RECONCILED** |
+| 842-row closure tracker | All rows remain `NOT_ACCEPTED`, with `UNVERIFIED_ACTIVE_V21_SCOPE` and `EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED` |
+| Product/API test CI on `bc8e7c6aabfcb6e8c833d5e8b8f5f9c29c00b478` | Not run on this documentation/audit-only merge SHA |
+| PostgreSQL CI and production dependency security on that SHA | Not run on this documentation/audit-only merge SHA |
+
+This proves that the *audit consistency validator* accepts the corrected ledger and does not silently promote unverified rows to PASS. It does not prove active v2.1 requirement coverage, source-owner approval, product code acceptance, deployment readiness, or operational/production evidence. The overall P0 release gate remains **BLOCKED** until the active occurrence ledger, 37 source dispositions, direct per-requirement code/migration/test/CI evidence, named owner/reviewer dispositions, and applicable staging evidence are approved.
