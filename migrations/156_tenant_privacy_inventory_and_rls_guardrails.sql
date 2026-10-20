@@ -49,7 +49,8 @@ REVOKE ALL ON TABLE factoryos_governance.tenant_relation_inventory FROM PUBLIC;
 DO $$
 DECLARE
   item record;
-  tenant_predicate text;
+  tenant_using_predicate text;
+  tenant_check_predicate text;
   category text;
   is_export_allowlisted boolean;
   erasure_policy text;
@@ -64,7 +65,8 @@ BEGIN
   -- policy. This protects against an accidentally broad USING (true) policy.
   FOR item IN
     SELECT n.nspname AS schema_name, c.relname AS relation_name,
-           a.atttypid = 'uuid'::regtype AS tenant_id_is_uuid
+           a.atttypid = 'uuid'::regtype AS tenant_id_is_uuid,
+           a.attnotnull AS tenant_id_required
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid
@@ -73,11 +75,19 @@ BEGIN
       AND c.relkind IN ('r', 'p')
     ORDER BY c.relname
   LOOP
-    tenant_predicate := CASE
-      WHEN item.tenant_id_is_uuid
-        THEN 'tenant_id = public.factoryos_current_tenant_id()'
-      ELSE 'tenant_id::text = public.factoryos_current_tenant_id()::text'
-    END;
+    IF item.tenant_id_is_uuid THEN
+      tenant_check_predicate := 'tenant_id = public.factoryos_current_tenant_id()';
+      tenant_using_predicate := CASE
+        WHEN item.tenant_id_required THEN tenant_check_predicate
+        ELSE '(tenant_id IS NULL OR tenant_id = public.factoryos_current_tenant_id())'
+      END;
+    ELSE
+      tenant_check_predicate := 'tenant_id::text = public.factoryos_current_tenant_id()::text';
+      tenant_using_predicate := CASE
+        WHEN item.tenant_id_required THEN tenant_check_predicate
+        ELSE '(tenant_id IS NULL OR tenant_id::text = public.factoryos_current_tenant_id()::text)'
+      END;
+    END IF;
 
     EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', item.schema_name, item.relation_name);
     EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY', item.schema_name, item.relation_name);
@@ -92,7 +102,7 @@ BEGIN
     ) THEN
       EXECUTE format(
         'CREATE POLICY fo_privacy_scope_allow ON %I.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
-        item.schema_name, item.relation_name, tenant_predicate, tenant_predicate
+        item.schema_name, item.relation_name, tenant_using_predicate, tenant_check_predicate
       );
     END IF;
 
