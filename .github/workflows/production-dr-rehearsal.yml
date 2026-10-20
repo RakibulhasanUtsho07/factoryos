@@ -1,0 +1,183 @@
+name: Production Backup Restore and DR Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact 40-character candidate commit SHA (do not use a moving branch name)
+        required: true
+        type: string
+      source_service:
+        description: Preconfigured libpq service name for the approved source snapshot
+        required: true
+        type: string
+      restore_service:
+        description: Preconfigured libpq service name for the disposable isolated restore target
+        required: true
+        type: string
+      backup_output_path:
+        description: Absolute path in approved restricted storage for the encrypted .dump.gpg artifact
+        required: true
+        type: string
+      evidence_output_path:
+        description: Absolute path in approved protected storage for the machine-readable receipt
+        required: true
+        type: string
+      gpg_recipient:
+        description: Approved GPG recipient fingerprint or UID already provisioned on the recovery runner
+        required: true
+        type: string
+      candidate_migration_manifest:
+        description: Repository-relative ordered manifest of migrations pending from this source snapshot
+        required: true
+        type: string
+      watermark_sql:
+        description: Repository-relative reviewed SQL returning the latest durable recoverable UTC write watermark
+        required: true
+        type: string
+      restore_smoke_sql:
+        description: Repository-relative reviewed smoke SQL proving application, tenant isolation and audit continuity
+        required: true
+        type: string
+      simulated_event_time_utc:
+        description: Explicit UTC RFC3339 incident/cutoff time used to measure observed RPO
+        required: true
+        type: string
+      operator:
+        description: Database recovery operator name or approved identity
+        required: true
+        type: string
+      approver:
+        description: Independent release/data owner identity
+        required: true
+        type: string
+      targets_approved:
+        description: Owner has explicitly approved the supplied RPO/RTO values as applicable targets
+        required: true
+        type: boolean
+        default: false
+      rpo_target_seconds:
+        description: Owner-approved RPO in seconds (ignored unless targets_approved is true)
+        required: false
+        type: string
+        default: ''
+      rto_target_seconds:
+        description: Owner-approved RTO in seconds (ignored unless targets_approved is true)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-dr-rehearsal-${{ inputs.restore_service }
+  cancel-in-progress: false
+
+jobs:
+  rehearsal:
+    name: Encrypted backup and isolated restore
+    runs-on: [self-hosted, linux, dr-isolated]
+    environment: production-dr-rehearsal
+    timeout-minutes: 120
+    env:
+      PGSERVICEFILE: ${{ vars.FACTORYOS_DR_PGSERVICEFILE_PATH }
+      PGPASSFILE: ${{ vars.FACTORYOS_DR_PGPASSFILE_PATH }
+      GNUPGHOME: ${{ vars.FACTORYOS_DR_GNUPGHOME_PATH }
+      CANDIDATE_SHA_INPUT: ${{ inputs.candidate_sha }
+      SOURCE_SERVICE_INPUT: ${{ inputs.source_service }
+      RESTORE_SERVICE_INPUT: ${{ inputs.restore_service }
+      BACKUP_OUTPUT_INPUT: ${{ inputs.backup_output_path }
+      EVIDENCE_OUTPUT_INPUT: ${{ inputs.evidence_output_path }
+      GPG_RECIPIENT_INPUT: ${{ inputs.gpg_recipient }
+      CANDIDATE_MANIFEST_INPUT: ${{ inputs.candidate_migration_manifest }
+      WATERMARK_SQL_INPUT: ${{ inputs.watermark_sql }
+      SMOKE_SQL_INPUT: ${{ inputs.restore_smoke_sql }
+      EVENT_TIME_INPUT: ${{ inputs.simulated_event_time_utc }
+      OPERATOR_INPUT: ${{ inputs.operator }
+      APPROVER_INPUT: ${{ inputs.approver }
+      TARGETS_APPROVED_INPUT: ${{ inputs.targets_approved }
+      RPO_TARGET_INPUT: ${{ inputs.rpo_target_seconds }
+      RTO_TARGET_INPUT: ${{ inputs.rto_target_seconds }
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate_sha }
+          persist-credentials: false
+
+      - name: Set up Node for evidence receipt
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Validate protected runner configuration and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA_INPUT" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::candidate_sha must be a full 40-character commit SHA"; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE_SHA_INPUT" ]] || { echo "::error::checkout SHA does not match requested candidate"; exit 1; }
+          [[ -n "$PGSERVICEFILE" && -f "$PGSERVICEFILE" && -r "$PGSERVICEFILE" ]] || { echo "::error::PGSERVICEFILE must point to the protected service file provisioned on this runner"; exit 1; }
+          [[ -n "$PGPASSFILE" && -f "$PGPASSFILE" && -r "$PGPASSFILE" ]] || { echo "::error::PGPASSFILE must point to the protected credential file provisioned on this runner"; exit 1; }
+          [[ "$(stat -c '%a' "$PGSERVICEFILE")" == "600" || "$(stat -c '%a' "$PGSERVICEFILE")" == "400" ]] || { echo "::error::PGSERVICEFILE permissions must be 0600 or 0400"; exit 1; }
+          [[ "$(stat -c '%a' "$PGPASSFILE")" == "600" || "$(stat -c '%a' "$PGPASSFILE")" == "400" ]] || { echo "::error::PGPASSFILE permissions must be 0600 or 0400"; exit 1; }
+          [[ -n "$GNUPGHOME" && -d "$GNUPGHOME" && -r "$GNUPGHOME" ]] || { echo "::error::GNUPGHOME must point to the approved recovery keyring on this runner"; exit 1; }
+          [[ "$SOURCE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ && "$RESTORE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || { echo "::error::service names contain unsupported characters"; exit 1; }
+          [[ "$SOURCE_SERVICE_INPUT" != "$RESTORE_SERVICE_INPUT" ]] || { echo "::error::source and restore service names must differ"; exit 1; }
+          grep -Fxq "[$SOURCE_SERVICE_INPUT]" "$PGSERVICEFILE" || { echo "::error::source service is not configured"; exit 1; }
+          grep -Fxq "[$RESTORE_SERVICE_INPUT]" "$PGSERVICEFILE" || { echo "::error::restore service is not configured"; exit 1; }
+          [[ "$BACKUP_OUTPUT_INPUT" == /* && "$EVIDENCE_OUTPUT_INPUT" == /* ]] || { echo "::error::backup/evidence output paths must be absolute"; exit 1; }
+          [[ -d "$(dirname "$BACKUP_OUTPUT_INPUT")" && -w "$(dirname "$BACKUP_OUTPUT_INPUT")" ]] || { echo "::error::backup directory must exist on approved restricted storage"; exit 1; }
+          [[ -d "$(dirname "$EVIDENCE_OUTPUT_INPUT")" && -w "$(dirname "$EVIDENCE_OUTPUT_INPUT")" ]] || { echo "::error::evidence directory must exist on approved protected storage"; exit 1; }
+          [[ ! -e "$BACKUP_OUTPUT_INPUT" && ! -L "$BACKUP_OUTPUT_INPUT" ]] || { echo "::error::backup output already exists"; exit 1; }
+          [[ ! -e "$BACKUP_OUTPUT_INPUT.sha256" && ! -L "$BACKUP_OUTPUT_INPUT.sha256" ]] || { echo "::error::backup checksum output already exists"; exit 1; }
+          [[ ! -e "$EVIDENCE_OUTPUT_INPUT" && ! -L "$EVIDENCE_OUTPUT_INPUT" ]] || { echo "::error::evidence output already exists"; exit 1; }
+          [[ -f "$CANDIDATE_MANIFEST_INPUT" && -f "$WATERMARK_SQL_INPUT" && -f "$SMOKE_SQL_INPUT" ]] || { echo "::error::candidate manifest, watermark SQL and smoke SQL must exist at the candidate SHA"; exit 1; }
+          [[ "$EVENT_TIME_INPUT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || { echo "::error::event time must be UTC RFC3339 ending in Z"; exit 1; }
+          if [[ "$TARGETS_APPROVED_INPUT" == "true" ]]; then
+            [[ "$RPO_TARGET_INPUT" =~ ^[0-9]+$ && "$RTO_TARGET_INPUT" =~ ^[0-9]+$ ]] || { echo "::error::approved RPO/RTO targets must be provided in seconds"; exit 1; }
+          fi
+          gpg --quiet --list-keys "$GPG_RECIPIENT_INPUT" >/dev/null 2>&1 || { echo "::error::approved GPG recipient key is not present on the recovery runner"; exit 1; }
+          printf 'candidate_sha=%s\n' "$CANDIDATE_SHA_INPUT"
+          printf 'libpq_source_service=CONFIGURED\nlibpq_restore_service=CONFIGURED\nprotected_gpg_recipient=CONFIGURED\n'
+
+      - name: Execute encrypted backup, restore, migration recovery and verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_approval=NO
+          if [[ "$TARGETS_APPROVED_INPUT" == "true" ]]; then target_approval=YES; fi
+          PGSERVICEFILE="$PGSERVICEFILE" \
+          PGPASSFILE="$PGPASSFILE" \
+          GNUPGHOME="$GNUPGHOME" \
+          FACTORYOS_DR_MODE=RELEASE_GATE \
+          FACTORYOS_BACKUP_PGSERVICE="$SOURCE_SERVICE_INPUT" \
+          FACTORYOS_RESTORE_PGSERVICE="$RESTORE_SERVICE_INPUT" \
+          FACTORYOS_BACKUP_OUTPUT="$BACKUP_OUTPUT_INPUT" \
+          FACTORYOS_BACKUP_GPG_RECIPIENT="$GPG_RECIPIENT_INPUT" \
+          FACTORYOS_RESTORE_SMOKE_SQL="$SMOKE_SQL_INPUT" \
+          FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE=I_HAVE_VERIFIED_EMPTY \
+          FACTORYOS_RECOVERY_EVIDENCE_JSON="$EVIDENCE_OUTPUT_INPUT" \
+          FACTORYOS_CANDIDATE_MIGRATION_MANIFEST="$CANDIDATE_MANIFEST_INPUT" \
+          FACTORYOS_RECOVERY_WATERMARK_SQL="$WATERMARK_SQL_INPUT" \
+          FACTORYOS_RECOVERY_EVENT_TIME_UTC="$EVENT_TIME_INPUT" \
+          FACTORYOS_RECOVERY_OPERATOR="$OPERATOR_INPUT" \
+          FACTORYOS_RECOVERY_APPROVER="$APPROVER_INPUT" \
+          FACTORYOS_DR_TARGETS_APPROVED="$target_approval" \
+          FACTORYOS_RECOVERY_RPO_TARGET_SECONDS="$RPO_TARGET_INPUT" \
+          FACTORYOS_RECOVERY_RTO_TARGET_SECONDS="$RTO_TARGET_INPUT" \
+          FACTORYOS_CANDIDATE_SHA="$CANDIDATE_SHA_INPUT" \
+          bash scripts/recovery/postgres-backup-restore-rehearsal.sh
+
+      - name: Print receipt location and checksum without exposing database contents
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$EVIDENCE_OUTPUT_INPUT" ]]; then
+            sha256sum "$EVIDENCE_OUTPUT_INPUT"
+            echo "Rehearsal evidence was written to the protected path configured by the operator."
+          else
+            echo "::warning::No complete evidence receipt was written; inspect the failing step and preserve the encrypted backup."
+          fi
