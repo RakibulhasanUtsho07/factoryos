@@ -151,7 +151,7 @@ export class SaasTenantGovernanceExecutionService {
         if (replay.rows[0].request_hash !== requestHash) {
           throw new ConflictException('Idempotency-Key was used for a different retention run');
         }
-        return { row: replay.rows[0], replayed: true };
+        return { row: replay.rows[0], replayed: true, request: undefined };
       }
 
       const policyResult = await client.query<RetentionPolicyRow>(
@@ -661,8 +661,12 @@ export class SaasTenantGovernanceExecutionService {
   private async orderTablesForDelete(client: PoolClient, tables: string[]): Promise<string[]> {
     const names = [...new Set(tables)];
     const selected = new Set(names);
-    const outgoing = new Map<string, Set<string>>(names.map((name) => [name, new Set<string>()]));
-    const indegree = new Map<string, number>(names.map((name) => [name, 0]));
+    const outgoing = new Map<string, Set<string>>();
+    const indegree = new Map<string, number>();
+    for (const name of names) {
+      outgoing.set(name, new Set<string>());
+      indegree.set(name, 0);
+    }
     const edges = await this.foreignKeysReferencing(client, names);
     for (const edge of edges) {
       if (!selected.has(edge.childTable) || !selected.has(edge.parentTable) || edge.childTable === edge.parentTable) {
