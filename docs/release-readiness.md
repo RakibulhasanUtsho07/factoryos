@@ -10,6 +10,7 @@ This checklist is deliberately separate from deployment. Passing CI does not mea
 - Use the OIDC configuration for production authentication; do not enable development token issuance.
 - Store database credentials, JWT-related secrets, and OIDC configuration in the hosting platform's secret manager, not in Git or `.env.example`.
 - Use a dedicated least-privileged application database role.
+- For the optional OPC UA one-shot read slice, set FACTORYOS_OPCUA_GATEWAY_URL to the fixed HTTPS /api/v1/read endpoint and FACTORYOS_OPCUA_GATEWAY_TOKEN (at least 32 characters) in the deployment secret store. FACTORYOS_OPCUA_GATEWAY_TIMEOUT_MS is optional and must be 100–5000 ms. Production reads fail closed when configuration is absent or the URL is not HTTPS. Provision the OT gateway, target mapping, firewall rules and its own secret-manager access separately; never expose the gateway to an untrusted network.
 
 ## Migration and destructive-change manual release gate
 
@@ -30,7 +31,7 @@ Migrations 149–155 add retention policy/versioning, legal holds, preservation 
 The repository has automated API, PostgreSQL integration, frontend and dependency-security verification workflows. Confirm the exact workflow set that applies to the candidate SHA:
 
 - **API CI** runs API lint, build, and the unit tests that do not require PostgreSQL integration fixtures.
-- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in `.github/workflows/api-postgres-ci.yml` through `migrations/156_tenant_privacy_inventory_and_rls_guardrails.sql`, verifies that no numbered migration is omitted, reapplies migrations 155 and 156 for idempotency, runs retention/isolation/schema-wide privacy inventory SQL contracts, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
+- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in `.github/workflows/api-postgres-ci.yml` through `migrations/157_ot_opcua_read_gateway.sql`, verifies that no numbered migration is omitted, reapplies migrations 155, 156 and 157 for idempotency, runs retention/isolation/schema-wide privacy inventory and OT/OPC UA SQL contracts, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
 - **Web CI** installs the npm workspace dependencies, runs the frontend lint command, and builds the Next.js application.
 
 A green GitHub Actions run verifies only the commit and environment shown in that run. It does not mean the application was deployed, that production configuration was entered in a hosting platform, or that any production migration was applied.
@@ -46,3 +47,7 @@ Before any production database change, follow docs/operational-reliability-runbo
 - Confirm the actual production database target, migration history including migration 156, inventory/RLS contract output, backup and proven restore before scheduling any production migration.
 - Apply production migrations with an operator present and run post-migration API and frontend smoke tests.
 - Record the deployed commit, migration results, verification evidence, and rollback/forward-fix decision.
+
+## OT / OPC UA commissioning gate
+
+Migration 157 and the API read gateway client establish a bounded read-only API contract. Before production use, deploy and review the trusted OT gateway, map each config:// reference to an approved endpoint and secret in the gateway trust zone, restrict outbound routes to explicitly approved controllers, confirm OPC UA security mode/certificate policy at the gateway, and exercise disconnect, timeout, invalid-quality, stale-version, tenant-isolation and gateway-auth failure cases. This repository change does not contain a live OPC UA session driver or certify hardware-in-the-loop behavior; retain commissioning evidence and operator approval before connecting to production equipment.
