@@ -244,6 +244,12 @@ BEGIN
       RAISE EXCEPTION 'requested erasure categories must be present in the preserved export' USING ERRCODE='55000';
     END IF;
     IF EXISTS (
+      SELECT 1 FROM jsonb_array_elements_text(NEW.categories) requested(category)
+      WHERE requested.category NOT IN ('BUSINESS_DATA','EVIDENCE','AI_CONTEXT','LEARNING_EVALUATION')
+    ) THEN
+      RAISE EXCEPTION 'requested erasure category has no reviewed deletion adapter' USING ERRCODE='55000';
+    END IF;
+    IF EXISTS (
       SELECT 1 FROM public.saas_tenant_data_legal_holds h
       CROSS JOIN LATERAL jsonb_array_elements_text(h.categories) held(category)
       CROSS JOIN LATERAL jsonb_array_elements_text(NEW.categories) requested(category)
