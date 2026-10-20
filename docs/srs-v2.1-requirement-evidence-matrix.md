@@ -11,7 +11,7 @@ The final SRS section 140 states the cumulative design scope is **950 requiremen
 
 This register lists each distinct FR/NFR ID detected in the source extract and gives its source priority where it could be resolved plus conservative repo evidence/status. Different SRS revisions within this cumulative SRS reuse IDs, amend wording/priorities and cite IDs in other rows; therefore the distinct-ID row count below is not intended to sum to 950. Any row whose priority is blank, or whose source text is an indirect citation, must be reviewed against the full authoritative table before sign-off. Do not treat “partial” as a formal waiver; each P0/P1 remainder needs either implementation evidence or an approved disposition.
 
-**Extracted distinct requirement IDs:** 899. **Priority parsed from the requirement row:** P0=258, P1=547, P2=57, unresolved row priority=37. The final SRS §140 cumulative count is 950; therefore **51 of the SRS's cumulative scope entries do not appear as distinct FR/NFR IDs in this extract** and must be reconciled against revision history/superseded wording and the final source tables. The 37 unresolved priorities and the 51-count difference are explicit audit gaps, not silently assumed passes. Every extracted ID has a conservative status/evidence boundary; family-level evidence still needs a test pointer for each applicable row. FR-CMP has only an indirect cross-reference in the extracted source context and requires exact normative-row verification.
+**Extracted distinct FR/NFR IDs:** 899. **Priority parsed from an ID's source row:** P0=258, P1=547, P2=57, unresolved row priority=37. The final SRS §140's 950 figure is a cumulative design-scope count across a document that carries forward and revises earlier sections. The cumulative-scope count and distinct-ID extraction are **not directly comparable units**; the arithmetic delta of 51 must not be treated as 51 missing requirements or 51 implementation defects. Product/Architecture must reconcile the final-scope count, repeated/superseded IDs, exact latest requirement text and priority revisions against the authoritative source. The 37 unparsed priorities need manual review. Every extracted ID has a conservative family-level evidence boundary; this still needs a specific code/test/acceptance pointer per applicable P0/P1 ID. FR-CMP appears only as an indirect cross-reference in the extracted source context and requires exact normative-row verification.
 
 ## 2. Evidence and status semantics
 
@@ -21,6 +21,8 @@ This register lists each distinct FR/NFR ID detected in the source extract and g
 - The “repo evidence” column is a starting trace pointer for that family. It does not replace a specific test asserting the individual ID. For release approval, each P0/P1 row still needs one-to-one acceptance scenario/test/run evidence, owner and disposition.
 
 ## 3. Requirement ID register
+
+The per-row table is an ID index, not an assertion that each ID's entire acceptance has passed. Evidence/status are assigned conservatively at requirement-family level until a direct test/acceptance pointer is attached. The final SRS §135 production scenarios AS-132–AS-141 and P0 NFR-PROD-11/12/14/17/18 are mapped with scenario-specific closure criteria in the [master audit](final-srs-hld-blueprint-traceability-audit.md).
 
 | SRS requirement ID | Source priority | Source row wording (trimmed excerpt) | Repository assessment | Repository evidence | Acceptance gap / action |
 |---|---|---|---|---|---|
@@ -961,8 +963,8 @@ Current CI evidence:
 
 ## 6. Primary gap disposition
 
-1. **P0 — master evidence reconciliation:** the source exists in Library but is not committed in repo; link the approved source filenames, revisions, owner and immutable SHA/checksum in release evidence, and prevent confusion between the final v2.1 wording and intermediate revision sections.
-2. **P0 — every requirement must have direct evidence:** the source-ID inventory above is family-mapped conservatively. Close rows that have no specific test/trace evidence before claiming 950/950 implementation; use approved exceptions for scope deliberately deferred.
+1. **P0 — controlled source baseline:** source PDFs are available in the Library and their exact-copy SHA-256 values are in [the source baseline manifest](audit-source-baseline-manifest.md), but controlled approval metadata/source-of-record is not yet recorded in the repository.
+2. **P0 — requirement reconciliation:** the matrix has 899 distinct IDs extracted, 37 source priorities that need manual review and family-level evidence mappings. Reconcile the 950 cumulative scope metric to the source's evolving/reused ID history; do not infer that the arithmetic delta is 51 missing requirements. Attach direct acceptance evidence for every applicable P0/P1 row before making a completeness claim.
 3. **P0 — DR/restore:** perform actual scheduled encrypted backup/restore in an isolated approved database, test tenant isolation and application smoke, record measured RPO/RTO and operator sign-off.
 4. **P0 — security/tenant lifecycle:** validate all P0 authorization, tenant-isolation, privacy, deletion-residual and audit requirements, not only the RLS inventory. External storage, embeddings/caches, backups and providers require receipts or explicit residuals.
 5. **P0/P1 — release gate:** validate migration compatibility, rollback/forward-fix, capacity/performance, SLO/alerting and deployment evidence against the final SRS release gates.
