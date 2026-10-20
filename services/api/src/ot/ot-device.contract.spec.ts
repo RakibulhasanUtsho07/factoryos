@@ -6,8 +6,37 @@ import {
   getAllowedOpcUaNodeIds,
   validateOpcUaNodeId,
 } from './ot-device.contract';
+import { decodeModbusRegisters, getModbusTcpProfile, getMqttProfile, normalizeMqttTelemetryMessage } from './ot-protocol.contract';
 
 describe('OT telemetry contract', () => {
+  it('validates exact MQTT topics and normalized QoS 1 messages', () => {
+    const metadata = { mqtt: { allowed_topics: ['factory/line-1/telemetry'], qos: 1 } };
+    expect(getMqttProfile(metadata)).toEqual({ allowed_topics: ['factory/line-1/telemetry'], qos: 1 });
+    const event = normalizeMqttTelemetryMessage('factory/line-1/telemetry', Buffer.from(JSON.stringify({
+      source_event_id: 'mqtt:event-1', event_type: 'TEMPERATURE', stream_key: 'LINE-1',
+      source_sequence: 1, observed_at: '2026-10-20T10:00:00Z', payload: { temperature: 24.5 },
+    })), metadata, new Date('2026-10-20T10:00:01Z'));
+    expect(event).toMatchObject({ source_event_id: 'mqtt:event-1', event_type: 'TEMPERATURE', payload: { temperature: 24.5 } });
+    expect(() => getMqttProfile({ mqtt: { allowed_topics: ['factory/#'], qos: 1 } })).toThrow(/exact/);
+    expect(() => getMqttProfile({ mqtt: { allowed_topics: ['factory/t'], qos: 0 } })).toThrow(/QoS 1/);
+    expect(() => normalizeMqttTelemetryMessage('factory/foreign', Buffer.from('{}'), metadata)).toThrow(/outside/);
+  });
+
+  it('validates bounded Modbus register maps and decodes signed and floating values', () => {
+    const profile = getModbusTcpProfile({ modbus_tcp: {
+      unit_id: 7,
+      register_map: [
+        { stream_key: 'LINE_TEMPERATURE', function_code: 4, address: 10, quantity: 2, data_type: 'FLOAT32', word_order: 'ABCD' },
+        { stream_key: 'MOTOR_SPEED', function_code: 3, address: 20, quantity: 1, data_type: 'INT16' },
+      ],
+    }});
+    expect(profile.unit_id).toBe(7);
+    expect(decodeModbusRegisters([0x4120, 0], 'FLOAT32')).toBe(10);
+    expect(decodeModbusRegisters([0xffff], 'INT16')).toBe(-1);
+    expect(decodeModbusRegisters([0x1234, 0x5678], 'UINT32', 'CDAB')).toBe(0x56781234);
+    expect(() => getModbusTcpProfile({ modbus_tcp: { unit_id: 0, register_map: [{ stream_key: 'A', function_code: 3, address: 1, quantity: 1, data_type: 'UINT16' }] } })).toThrow(/unit_id/);
+    expect(() => getModbusTcpProfile({ modbus_tcp: { unit_id: 1, register_map: [{ stream_key: 'A', function_code: 6, address: 1, quantity: 1, data_type: 'UINT16' }] } })).toThrow(/Only Modbus/);
+  });
   it('requires a small unique OPC UA NodeId allowlist on registrations', () => {
     expect(getAllowedOpcUaNodeIds({
       opcua: { allowed_node_ids: ['ns=2;s=Machine.Temperature', 'ns=2;i=101'] },

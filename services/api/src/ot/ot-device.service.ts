@@ -18,6 +18,7 @@ import {
 } from './ot-device.contract';
 import type { IngestOtTelemetryBatchDto, OtDeviceTransitionDto, RegisterOtDeviceDto, ReadOpcUaNodesDto } from './dto/ot-device.dto';
 import { OpcUaGatewayClient } from './opcua-gateway.client';
+import { getModbusTcpProfile, getMqttProfile } from './ot-protocol.contract';
 
 export interface OtRequestScope {
   userId: string;
@@ -75,12 +76,12 @@ export class OtDeviceService {
       throw new BadRequestException('A valid Idempotency-Key header of 1 to 200 characters is required');
     }
     const metadata = this.normalizeObject(dto.metadata ?? {}, 'metadata');
-    if (dto.protocol === 'OPC_UA') {
-      try {
-        getAllowedOpcUaNodeIds(metadata);
-      } catch (error) {
-        throw new BadRequestException(error instanceof Error ? error.message : 'Invalid OPC UA read profile');
-      }
+    try {
+      if (dto.protocol === 'OPC_UA') getAllowedOpcUaNodeIds(metadata);
+      if (dto.protocol === 'MQTT') getMqttProfile(metadata);
+      if (dto.protocol === 'MODBUS_TCP') getModbusTcpProfile(metadata);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Invalid OT protocol profile');
     }
     const request = {
       display_name: dto.display_name.trim(),
