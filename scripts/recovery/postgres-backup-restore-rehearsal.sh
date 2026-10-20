@@ -134,6 +134,8 @@ need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
+  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "${FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
+  [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
   need_value FACTORYOS_CANDIDATE_MIGRATION_MANIFEST "$candidate_manifest"
   need_value FACTORYOS_RECOVERY_WATERMARK_SQL "$watermark_sql"
   need_value FACTORYOS_RECOVERY_EVENT_TIME_UTC "$event_time_utc"
