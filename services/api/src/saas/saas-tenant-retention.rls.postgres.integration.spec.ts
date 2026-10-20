@@ -8,6 +8,8 @@ import {
 } from './dto/create-saas-schema-compatibility-rule.dto';
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
 import { SaasTenantRetentionService } from './saas-tenant-retention.service';
+import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-execution.service';
+import { SaasRetentionRunMode } from './dto/run-saas-retention-policy.dto';
 
 const postgresDescribe = process.env.TEST_APP_DATABASE_URL && process.env.TEST_ADMIN_DATABASE_URL
   ? describe
@@ -20,12 +22,15 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
   let database: DatabaseService;
   let transfers: SaasTenantDataTransferService;
   let retention: SaasTenantRetentionService;
+  let governance: SaasTenantGovernanceExecutionService;
   const tenantIds: string[] = [];
   const userIds: string[] = [];
   const exportIds: Array<{ tenantId: string; transferId: string }> = [];
   const policyIds: string[] = [];
   const holdIds: string[] = [];
   const erasureRequestIds: string[] = [];
+  const retentionRunIds: string[] = [];
+  const erasureRunRowIds: string[] = [];
 
   beforeAll(async () => {
     adminPool = new Pool({ connectionString: process.env.TEST_ADMIN_DATABASE_URL });
@@ -45,6 +50,7 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
     transfers = new SaasTenantDataTransferService(database, iam, transferAudit);
     const retentionAudit = { recordWithClient: async () => 'test-audit-id' } as never;
     retention = new SaasTenantRetentionService(database, iam, retentionAudit);
+    governance = new SaasTenantGovernanceExecutionService(database, iam, retentionAudit);
   }, 60000);
 
   afterAll(async () => {
@@ -52,11 +58,15 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
       if (adminPool && tenantIds.length) {
         await adminPool.query('ALTER TABLE saas_tenant_data_erasure_requests DISABLE TRIGGER saas_tenant_data_erasure_request_guard');
         await adminPool.query('ALTER TABLE saas_tenant_data_export_preservation_attestations DISABLE TRIGGER saas_export_preservation_attestation_guard');
+        await adminPool.query('ALTER TABLE saas_tenant_data_retention_runs DISABLE TRIGGER saas_tenant_data_retention_runs_immutable');
+        await adminPool.query('ALTER TABLE saas_tenant_data_erasure_runs DISABLE TRIGGER saas_tenant_data_erasure_runs_immutable');
         await adminPool.query('ALTER TABLE saas_tenant_data_legal_holds DISABLE TRIGGER saas_tenant_data_legal_hold_guard');
         await adminPool.query('ALTER TABLE saas_tenant_data_retention_policies DISABLE TRIGGER saas_retention_policy_immutable');
         await adminPool.query('ALTER TABLE saas_tenant_data_transfers DISABLE TRIGGER saas_tenant_data_transfer_immutable');
         await adminPool.query('ALTER TABLE saas_schema_compatibility_rules DISABLE TRIGGER saas_schema_compatibility_immutable');
         try {
+          if (erasureRunRowIds.length) await adminPool.query('DELETE FROM saas_tenant_data_erasure_runs WHERE id = ANY($1::uuid[])', [erasureRunRowIds]);
+          if (retentionRunIds.length) await adminPool.query('DELETE FROM saas_tenant_data_retention_runs WHERE id = ANY($1::uuid[])', [retentionRunIds]);
           if (erasureRequestIds.length) await adminPool.query('DELETE FROM saas_tenant_data_erasure_requests WHERE id = ANY($1::uuid[])', [erasureRequestIds]);
           if (holdIds.length) await adminPool.query('DELETE FROM saas_tenant_data_legal_holds WHERE id = ANY($1::uuid[])', [holdIds]);
           if (policyIds.length) await adminPool.query('DELETE FROM saas_tenant_data_retention_policies WHERE id = ANY($1::uuid[])', [policyIds]);
@@ -76,6 +86,8 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
         } finally {
           await adminPool.query('ALTER TABLE saas_tenant_data_erasure_requests ENABLE TRIGGER saas_tenant_data_erasure_request_guard');
           await adminPool.query('ALTER TABLE saas_tenant_data_export_preservation_attestations ENABLE TRIGGER saas_export_preservation_attestation_guard');
+          await adminPool.query('ALTER TABLE saas_tenant_data_retention_runs ENABLE TRIGGER saas_tenant_data_retention_runs_immutable');
+          await adminPool.query('ALTER TABLE saas_tenant_data_erasure_runs ENABLE TRIGGER saas_tenant_data_erasure_runs_immutable');
           await adminPool.query('ALTER TABLE saas_tenant_data_legal_holds ENABLE TRIGGER saas_tenant_data_legal_hold_guard');
           await adminPool.query('ALTER TABLE saas_tenant_data_retention_policies ENABLE TRIGGER saas_retention_policy_immutable');
           await adminPool.query('ALTER TABLE saas_tenant_data_transfers ENABLE TRIGGER saas_tenant_data_transfer_immutable');
@@ -153,7 +165,7 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
       [preservationVerifierUserId, 'retention-verifier-' + preservationVerifierUserId,
         'retention-verifier-' + preservationVerifierUserId + '@factoryos.test', 'Retention RLS Preservation Verifier'],
     );
-    await retention.attestExportPreservation(identity.tenantId, preservationVerifierUserId,
+    const preserved = await retention.attestExportPreservation(identity.tenantId, preservationVerifierUserId,
       createdExport.transfer.transferId, {
         expected_version: completedExport.transfer.version,
         bundle_digest: digest,
@@ -163,6 +175,13 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
         idempotency_key: 'rls-preservation-' + label + '-' + identity.tenantId,
       } as never);
     const category = SaasTransferDatasetCategory.BUSINESS_DATA;
+    const retentionRun = await governance.runRetentionPolicy(identity.tenantId, identity.userId, category, {
+      mode: SaasRetentionRunMode.DRY_RUN,
+      expected_policy_version: 1,
+      reason: 'RLS fixture verifies tenant isolation for immutable retention receipts',
+      idempotency_key: 'rls-retention-run-' + label + '-' + identity.tenantId,
+    });
+    retentionRunIds.push(retentionRun.run.id);
     const erasure = await retention.createErasureRequest(identity.tenantId, identity.userId, {
       categories: [category],
       export_transfer_id: createdExport.transfer.transferId,
@@ -172,7 +191,24 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
       idempotency_key: 'rls-erasure-' + label + '-' + identity.tenantId,
     } as never);
     erasureRequestIds.push(erasure.request.id);
-    return { policy, hold, erasure };
+    const erasureRun = await adminPool.query<{ id: string }>(
+      `INSERT INTO saas_tenant_data_erasure_runs
+       (tenant_id, run_id, request_id, request_version, status, categories, deleted_rows,
+        table_manifest, source_export_digest, executor_user_id, failure_code, reason,
+        idempotency_key, request_hash)
+       VALUES ($1,$2,$3,1,'FAILED',$4::jsonb,0,'{"fixture":"RLS isolation"}'::jsonb,$5,$6,
+         'RLS_FIXTURE','RLS fixture failure receipt','rls-erasure-run-' || $7 || '-' || $1,$5)
+       RETURNING id::text AS id`,
+      [identity.tenantId, randomUUID(), erasure.request.requestId, JSON.stringify([category]),
+        digest, identity.userId, label],
+    );
+    erasureRunRowIds.push(erasureRun.rows[0].id);
+    return {
+      policy, hold, erasure,
+      preservationAttestationId: preserved.attestation.id,
+      retentionRunId: retentionRun.run.id,
+      erasureRunRowId: erasureRun.rows[0].id,
+    };
   }
 
   it('isolates retention policies, legal holds and erasure requests at the non-superuser RLS boundary', async () => {
@@ -185,6 +221,9 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
       ['saas_tenant_data_retention_policies', firstRows.policy.policy.id, secondRows.policy.policy.id],
       ['saas_tenant_data_legal_holds', firstRows.hold.hold.id, secondRows.hold.hold.id],
       ['saas_tenant_data_erasure_requests', firstRows.erasure.request.id, secondRows.erasure.request.id],
+      ['saas_tenant_data_export_preservation_attestations', firstRows.preservationAttestationId, secondRows.preservationAttestationId],
+      ['saas_tenant_data_retention_runs', firstRows.retentionRunId, secondRows.retentionRunId],
+      ['saas_tenant_data_erasure_runs', firstRows.erasureRunRowId, secondRows.erasureRunRowId],
     ] as const) {
       const visible = await database.query<{ id: string; tenant_id: string }>(
         `SELECT id::text AS id, tenant_id::text AS tenant_id FROM ${table}
