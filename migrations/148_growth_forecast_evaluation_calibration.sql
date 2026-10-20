@@ -139,6 +139,7 @@ BEGIN
        AND e.factory_id = NEW.factory_id
        AND (btrim(COALESCE(e.reference_ref, '')) = NEW.forecast_source_ref
          OR btrim(COALESCE(e.citation_url, '')) = NEW.forecast_source_ref)
+       AND e.captured_at <= NEW.forecast_origin_at
   ) THEN
     RAISE EXCEPTION 'GROWTH_FORECAST_SOURCE_REFERENCE_NOT_ATTACHED_TO_OPPORTUNITY'
       USING ERRCODE = '23514';
