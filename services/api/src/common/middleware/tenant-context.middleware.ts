@@ -26,6 +26,7 @@ export class TenantContextMiddleware {
     req.factoryos = {
       requestId,
       traceId,
+      traceContext: req.traceContext,
       requestedUserId,
       requestedTenantId,
       requestedFactoryId,
