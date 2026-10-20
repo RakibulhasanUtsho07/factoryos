@@ -65,6 +65,7 @@ describe('OpcUaGatewayClient', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://ot-gateway.internal/api/v1/read');
     expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('error');
     expect(JSON.parse(String(init.body))).toMatchObject({
       schema_version: 1,
       connection_reference: 'config://PLC_A',

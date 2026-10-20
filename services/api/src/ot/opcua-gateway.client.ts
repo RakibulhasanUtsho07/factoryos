@@ -53,6 +53,7 @@ export class OpcUaGatewayClient {
     try {
       response = await fetch(endpoint.toString(), {
         method: 'POST',
+        redirect: 'error',
         headers: {
           authorization: 'Bearer ' + token,
           'content-type': 'application/json',
