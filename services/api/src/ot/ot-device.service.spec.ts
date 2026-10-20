@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { hashOtValue } from './ot-device.contract';
 import { OtDeviceService } from './ot-device.service';
 
@@ -225,7 +225,7 @@ describe('OtDeviceService', () => {
         observed_at: '2026-10-19T10:00:00.000Z',
         payload: { temperature: 24.5 },
       }] } as never,
-    )).rejects.toBeInstanceOf(ConflictException); // no matching active device is exposed to this scope
+    )).rejects.toBeInstanceOf(NotFoundException); // unknown devices are deliberately not disclosed across tenant/factory scopes
     expect(clientQuery).toHaveBeenCalledTimes(1);
   });
 });

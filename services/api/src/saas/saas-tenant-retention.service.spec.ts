@@ -182,6 +182,7 @@ describe('SaasTenantRetentionService', () => {
         version: 1,
         operation_type: 'EXPORT',
         status: 'COMPLETED',
+        source_bundle_reference: 'bundle-export-001',
         preservation_verified: true,
         source_bundle_digest: 'b'.repeat(64),
         required_categories: ['BUSINESS_DATA', 'AUDIT_LOG'],

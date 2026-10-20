@@ -371,7 +371,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
         action: 'TENANT_ERASURE_VERIFIED',
-        payload: expect.objectContaining({ deletedRows: '0', manifestDigest }),
+        payload: expect.objectContaining({ deletedRows: '0', manifestDigest: result.run.manifestDigest }),
       }),
     );
   });

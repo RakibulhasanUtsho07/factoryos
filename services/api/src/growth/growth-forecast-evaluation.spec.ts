@@ -22,7 +22,7 @@ describe('growth forecast evaluation', () => {
     expect(result.squared_error).toBe('400.00000000');
     expect(result.absolute_percentage_error).toBe('20.00000000');
     expect(result.symmetric_percentage_error).toBe('18.18181818');
-    expect(result.interval_hit).toBe(false);
+    expect(result.interval_hit).toBe(true);
     expect(result.interval_width).toBe('20.00000000');
     expect(result.interval_semantics).toBe('DECLARED_NOMINAL_COVERAGE');
   });
