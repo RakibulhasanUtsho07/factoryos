@@ -100,8 +100,8 @@ Priority labels in this table are **provisional** until they are validated again
 
 | ID | Gap | Closure evidence required | Owner class |
 |---|---|---|---|
-| P0-01 | Source baseline exists in the supplied Library but is not versioned alongside the repository evidence | Commit the source PDFs or attach a governed immutable SHA-256 manifest, revision metadata and source approval record | Make the exact source baseline reproducible in release/change records and reconcile it to the requirement matrix | Product + Architecture |
-| P0-02 | Declared cumulative SRS scope and distinct extracted FR/NFR inventory do not reconcile | SRS §140 declares 950 cumulative requirements (P0=296/P1=582/P2=72); extraction finds 899 distinct FR/NFR IDs and 37 row priorities need manual review | Reconcile all 51 entries between cumulative scope and unique IDs, repeated/superseded revision IDs and indirect/missing table rows; attach test, SHA, owner and disposition per ID | Product + Engineering |
+| P0-01 | Source baseline exists in the supplied Library but is not versioned alongside the repository evidence | Commit the source PDFs or attach an immutable SHA-256 manifest, revision metadata and source approval record; reproduce the exact source baseline in release/change records and reconcile it to the requirement matrix | Product + Architecture |
+| P0-02 | Declared cumulative SRS scope and distinct extracted FR/NFR inventory do not reconcile | SRS §140 declares 950 cumulative requirements (P0=296/P1=582/P2=72); extraction finds 899 distinct FR/NFR IDs and 37 row priorities need manual review. Reconcile the 51-count difference, repeated/superseded revision IDs and missing/indirect rows; attach test, SHA, owner and disposition per ID. | Product + Engineering |
 | P0-03 | No formal multidisciplinary sign-off | Signed go/no-go record acknowledging all open P1s, risk acceptance, target release SHA and evidence links | Product + Engineering + Security + Operations |
 
 ### P1 — production acceptance/security/reliability gaps
