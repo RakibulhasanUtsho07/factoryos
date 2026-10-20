@@ -58,7 +58,7 @@ test('backup rehearsal requires explicit empty-target operator confirmation', ()
     writeFileSync(smokeSql, 'SELECT 1;\n', { mode: 0o600 });
     const result = runScript(commonConfig(directory));
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /set FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE=I_HAVE_VERIFIED_EMPTY/);
+    assert.match(result.stderr, /confirm the restore target is disposable and isolated before continuing/);
     assert.equal(result.stderr.includes('could not establish source database identity'), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
