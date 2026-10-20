@@ -138,6 +138,32 @@ export class SaasTenantRetentionController {
     return this.service.attestExportPreservation(context.tenantId, context.userId, transferId, body);
   }
 
+  @Get('runs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  listRetentionRuns(
+    @Req() request: RetentionRequest,
+    @Query('category') category?: string,
+    @Query('status') status?: string,
+    @Query('mode') mode?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const context = this.context(request);
+    return this.execution.listRetentionRuns(context.tenantId, context.userId, { category, status, mode, limit });
+  }
+
+  @Get('erasure-requests/:requestId/runs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  listErasureRuns(
+    @Req() request: RetentionRequest,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const context = this.context(request);
+    return this.execution.listErasureRuns(context.tenantId, context.userId, requestId, limit);
+  }
+
   @Post('policies/:categoryCode/run')
   @UseGuards(PermissionGuard)
   @RequirePermission('saas.data_retention.execute')
