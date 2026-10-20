@@ -57,9 +57,11 @@ jobs:
           node --check scripts/performance/api-load-smoke.mjs
           node --check scripts/performance/api-load-smoke.test.mjs
 
-      - name: Exercise bounded load harness security controls
+      - name: Exercise bounded load and backup/restore security controls
         working-directory: services/api
-        run: npm run test:load-smoke:contract
+        run: |
+          npm run test:load-smoke:contract
+          npm run test:recovery:contract
 
       - name: Audit production dependencies
         run: npm audit --omit=dev
