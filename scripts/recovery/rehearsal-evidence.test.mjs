@@ -27,6 +27,7 @@ function sampleEvidence() {
     candidate: {
       commitSha: 'a'.repeat(40),
       migrationManifestPath: 'scripts/recovery/ci-candidate-migrations.txt',
+      migrationManifestMode: 'PENDING',
       migrationManifestSha256: 'b'.repeat(64),
       migrationCount: 8,
       migrationStatus: 'PASS',
@@ -75,6 +76,7 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_FINISHED_AT_UTC: '2026-10-20T10:02:00Z',
       FACTORYOS_CANDIDATE_SHA: 'a'.repeat(40),
       FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST: 'scripts/recovery/ci-candidate-migrations.txt',
+      FACTORYOS_DR_MIGRATION_MANIFEST_MODE: 'PENDING',
       FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256: 'b'.repeat(64),
       FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT: '8',
       FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS: 'PASS',
@@ -112,6 +114,7 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
     assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
     assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
+    assert.equal(receipt.candidate.migrationManifestMode, 'PENDING');
     assert.equal(receipt.candidate.migrationManifestSha256, 'b'.repeat(64));
     assert.equal(receipt.candidate.migrationCount, 8);
     assert.equal(receipt.candidate.migrationStatus, 'PASS');
