@@ -170,6 +170,9 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ -f "$failure_probe_sql" && -r "$failure_probe_sql" ]] || die "migration failure-recovery probe SQL is missing or unreadable"
   [[ "$event_time_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "event time must be UTC RFC 3339 ending in Z"
   date -u -d "$event_time_utc" +%s >/dev/null 2>&1 || die "event timestamp is invalid"
+  event_epoch_preflight="$(date -u -d "$event_time_utc" +%s)"
+  current_epoch_preflight="$(epoch_now)"
+  (( event_epoch_preflight <= current_epoch_preflight )) || die "event/cutoff timestamp cannot be in the future"
   [[ "$candidate_manifest" != /* && "$candidate_manifest" != *".."* ]] || die "candidate manifest must be a repository-relative path without traversal"
   [[ -f "$repo_root/$candidate_manifest" && -r "$repo_root/$candidate_manifest" ]] || die "candidate migration manifest is missing or unreadable"
   need_command node
@@ -354,6 +357,7 @@ fi
 
 restore_finished_epoch="$(epoch_now)"
 restore_duration_seconds="$(( restore_finished_epoch - restore_started_epoch ))"
+restore_status="PASS"
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   event_epoch="$(date -u -d "$event_time_utc" +%s)"
   observed_rto_seconds="$(( restore_finished_epoch - event_epoch ))"
