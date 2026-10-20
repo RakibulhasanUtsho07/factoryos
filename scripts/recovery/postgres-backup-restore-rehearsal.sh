@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Encrypted, operator-confirmed PostgreSQL backup/restore rehearsal.
-# Credentials belong in protected libpq service/pgpass files, never in this script.
+# Encrypted PostgreSQL backup/restore rehearsal with release-gate evidence.
+# Never store database credentials, key material or customer data in the repository.
 set -Eeuo pipefail
 umask 077
 
-die() { printf 'recovery rehearsal failed: %s\n' "$*" >&2; exit 1; }
+die() { printf 'recovery rehearsal failed at %s: %s\n' "${current_stage:-preflight}" "$*" >&2; exit 1; }
 need_command() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 need_value() {
   local name="$1" value="${2:-}"
   [[ -n "$value" ]] || die "required environment variable is missing: $name"
 }
+utc_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+epoch_now() { date -u '+%s'; }
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source_service="${FACTORYOS_BACKUP_PGSERVICE:-}"
 target_service="${FACTORYOS_RESTORE_PGSERVICE:-}"
 backup_file="${FACTORYOS_BACKUP_OUTPUT:-}"
@@ -19,24 +22,23 @@ smoke_sql="${FACTORYOS_RESTORE_SMOKE_SQL:-}"
 dr_mode="${FACTORYOS_DR_MODE:-BASIC}"
 candidate_manifest="${FACTORYOS_CANDIDATE_MIGRATION_MANIFEST:-}"
 watermark_sql="${FACTORYOS_RECOVERY_WATERMARK_SQL:-}"
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 failure_probe_sql="${FACTORYOS_MIGRATION_FAILURE_PROBE_SQL:-$repo_root/services/api/test/migration-recovery-failure.sql}"
 evidence_file="${FACTORYOS_RECOVERY_EVIDENCE_JSON:-}"
+event_time_utc="${FACTORYOS_RECOVERY_EVENT_TIME_UTC:-}"
+
 current_stage="configuration"
 rehearsal_status="RUNNING"
-started_at_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-started_epoch="$(date -u '+%s')"
-backup_started_epoch=""
-backup_duration_seconds=""
-restore_started_epoch=""
-restore_duration_seconds=""
+started_at_utc="$(utc_now)"
 source_identity=""
 target_identity=""
 source_watermark_utc=""
 restored_watermark_utc=""
-event_time_utc="${FACTORYOS_RECOVERY_EVENT_TIME_UTC:-}"
 observed_rpo_seconds=""
 observed_rto_seconds=""
+backup_started_epoch=""
+backup_duration_seconds=""
+restore_started_epoch=""
+restore_duration_seconds=""
 candidate_manifest_sha256=""
 candidate_migration_count=0
 candidate_migration_status="NOT_RUN"
@@ -62,61 +64,13 @@ targets_approved=false
 tmpdir=""
 partial_file=""
 
-need_value FACTORYOS_BACKUP_PGSERVICE "$source_service"
-need_value FACTORYOS_RESTORE_PGSERVICE "$target_service"
-need_value FACTORYOS_BACKUP_OUTPUT "$backup_file"
-need_value FACTORYOS_BACKUP_GPG_RECIPIENT "$recipient"
-need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
-
-[[ "$source_service" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || die "backup service name contains unsupported characters"
-[[ "$target_service" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || die "restore service name contains unsupported characters"
-[[ "$source_service" != "$target_service" ]] || die "backup and restore service names must differ"
-[[ "$backup_file" == /* ]] || die "FACTORYOS_BACKUP_OUTPUT must be an absolute path"
-[[ "$backup_file" == *.dump.gpg ]] || die "backup output must end in .dump.gpg (encrypted custom-format archive)"
-[[ -d "$(dirname "$backup_file")" ]] || die "backup output directory must already exist on approved restricted storage"
-[[ ! -e "$backup_file" && ! -L "$backup_file" ]] || die "backup output already exists; refusing to overwrite recovery evidence"
-[[ ! -e "${backup_file}.sha256" && ! -L "${backup_file}.sha256" ]] || die "checksum output already exists; refusing to overwrite recovery evidence"
-[[ -f "$smoke_sql" && -r "$smoke_sql" ]] || die "FACTORYOS_RESTORE_SMOKE_SQL must name a readable, reviewed restore-verification SQL file"
-[[ "${FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE:-}" == "I_HAVE_VERIFIED_EMPTY" ]] || die "set FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE=I_HAVE_VERIFIED_EMPTY only after confirming the restore target is disposable and isolated"
-
-[[ "$dr_mode" == "BASIC" || "$dr_mode" == "RELEASE_GATE" ]] || die "FACTORYOS_DR_MODE must be BASIC or RELEASE_GATE"
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
-  need_value FACTORYOS_CANDIDATE_MIGRATION_MANIFEST "$candidate_manifest"
-  need_value FACTORYOS_RECOVERY_WATERMARK_SQL "$watermark_sql"
-  need_value FACTORYOS_RECOVERY_EVENT_TIME_UTC "$event_time_utc"
-  need_value FACTORYOS_RECOVERY_OPERATOR "${FACTORYOS_RECOVERY_OPERATOR:-}"
-  need_value FACTORYOS_RECOVERY_APPROVER "${FACTORYOS_RECOVERY_APPROVER:-}"
-  [[ "$evidence_file" == /* ]] || die "FACTORYOS_RECOVERY_EVIDENCE_JSON must be an absolute path"
-  [[ -d "$(dirname "$evidence_file")" ]] || die "evidence output directory must already exist"
-  [[ ! -e "$evidence_file" && ! -L "$evidence_file" ]] || die "evidence output already exists; refusing to overwrite a receipt"
-  [[ "$FACTORYOS_RECOVERY_OPERATOR" != "$FACTORYOS_RECOVERY_APPROVER" ]] || die "operator and approver must be different people"
-  [[ -f "$watermark_sql" && -r "$watermark_sql" ]] || die "watermark SQL must be a readable, reviewed query file"
-  [[ -f "$failure_probe_sql" && -r "$failure_probe_sql" ]] || die "migration failure-recovery probe SQL is missing or unreadable"
-  [[ "$event_time_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "event time must be an explicit UTC timestamp ending in Z"
-  date -u -d "$event_time_utc" +%s >/dev/null 2>&1 || die "event timestamp is invalid"
-  [[ "$candidate_manifest" != /* && "$candidate_manifest" != *".."* ]] || die "candidate manifest must be a repository-relative path without traversal"
-  [[ -f "$repo_root/$candidate_manifest" && -r "$repo_root/$candidate_manifest" ]] || die "candidate migration manifest is missing or unreadable"
-  need_command node
-  if [[ "${FACTORYOS_DR_TARGETS_APPROVED:-NO}" == "YES" ]]; then
-    targets_approved=true
-    [[ "$rpo_target_seconds" =~ ^[0-9]+$ ]] || die "approved RPO target must be integer seconds"
-    [[ "$rto_target_seconds" =~ ^[0-9]+$ ]] || die "approved RTO target must be integer seconds"
-  else
-    rpo_target_seconds=""
-    rto_target_seconds=""
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-fi
-
-for tool in pg_dump pg_restore psql gpg sha256sum mktemp date; do need_command "$tool"; done
-
 emit_evidence() {
   local exit_code="$1"
   [[ -n "$evidence_file" ]] || return 0
   need_command node
   export FACTORYOS_DR_STATUS="$rehearsal_status" FACTORYOS_DR_STAGE="$current_stage"
   export FACTORYOS_DR_EXIT_CODE="$exit_code" FACTORYOS_DR_STARTED_AT_UTC="$started_at_utc"
+  export FACTORYOS_DR_FINISHED_AT_UTC="$(utc_now)"
   export FACTORYOS_DR_SOURCE_IDENTITY="$source_identity" FACTORYOS_DR_TARGET_IDENTITY="$target_identity"
   export FACTORYOS_DR_DATABASE_IDENTITIES_DISTINCT="$distinct_database_identity" FACTORYOS_DR_TARGET_EMPTY="$target_empty"
   export FACTORYOS_DR_BACKUP_SHA256="$checksum_sha256" FACTORYOS_DR_CHECKSUM_VERIFIED="$checksum_verified"
@@ -131,12 +85,13 @@ emit_evidence() {
   export FACTORYOS_DR_EVENT_TIME_UTC="$event_time_utc" FACTORYOS_DR_OBSERVED_RPO_SECONDS="$observed_rpo_seconds"
   export FACTORYOS_DR_OBSERVED_RTO_SECONDS="$observed_rto_seconds" FACTORYOS_DR_TARGETS_APPROVED="$targets_approved"
   export FACTORYOS_DR_RPO_TARGET_SECONDS="$rpo_target_seconds" FACTORYOS_DR_RTO_TARGET_SECONDS="$rto_target_seconds"
-  export FACTORYOS_DR_TARGET_ASSESSMENT="$target_assessment" FACTORYOS_DR_OPERATOR="${FACTORYOS_RECOVERY_OPERATOR:-}"
-  export FACTORYOS_DR_APPROVER="${FACTORYOS_RECOVERY_APPROVER:-}" FACTORYOS_DR_PG_DUMP_VERSION="$pg_dump_version"
-  export FACTORYOS_DR_PG_RESTORE_VERSION="$pg_restore_version" FACTORYOS_DR_SERVER_VERSION="$server_version"
-  export FACTORYOS_DR_GPG_VERSION="$gpg_version"
+  export FACTORYOS_DR_TARGET_ASSESSMENT="$target_assessment"
+  export FACTORYOS_DR_OPERATOR="${FACTORYOS_RECOVERY_OPERATOR:-}" FACTORYOS_DR_APPROVER="${FACTORYOS_RECOVERY_APPROVER:-}"
+  export FACTORYOS_DR_PG_DUMP_VERSION="$pg_dump_version" FACTORYOS_DR_PG_RESTORE_VERSION="$pg_restore_version"
+  export FACTORYOS_DR_SERVER_VERSION="$server_version" FACTORYOS_DR_GPG_VERSION="$gpg_version"
   node "$repo_root/scripts/recovery/write-rehearsal-evidence.mjs"
 }
+
 cleanup() {
   local exit_code="$?"
   trap - EXIT
@@ -156,23 +111,70 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
-partial_file="${backup_file}.partial.$"
+need_value FACTORYOS_BACKUP_PGSERVICE "$source_service"
+need_value FACTORYOS_RESTORE_PGSERVICE "$target_service"
+need_value FACTORYOS_BACKUP_OUTPUT "$backup_file"
+need_value FACTORYOS_BACKUP_GPG_RECIPIENT "$recipient"
+need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 
-source_identity="$(psql -w "service=$source_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" \
-  || die "could not establish source database identity"
-target_identity="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" \
-  || die "could not establish restore target identity"
-[[ -n "$source_identity" && -n "$target_identity" ]] || die "database identity check returned an empty identity"
-[[ "$source_identity" != "$target_identity" ]] || die "source and restore target resolve to the same database identity"
-distinct_database_identity=true
-server_version="$(psql -w "service=$source_service" -X -qAt -v ON_ERROR_STOP=1 -c "SHOW server_version")" || die "could not read PostgreSQL server version"
+[[ "$dr_mode" == "BASIC" || "$dr_mode" == "RELEASE_GATE" ]] || die "FACTORYOS_DR_MODE must be BASIC or RELEASE_GATE"
+[[ "$source_service" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || die "backup service name contains unsupported characters"
+[[ "$target_service" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || die "restore service name contains unsupported characters"
+[[ "$source_service" != "$target_service" ]] || die "backup and restore service names must differ"
+[[ "$backup_file" == /* ]] || die "FACTORYOS_BACKUP_OUTPUT must be an absolute path"
+[[ "$backup_file" == *.dump.gpg ]] || die "backup output must end in .dump.gpg (encrypted custom-format archive)"
+[[ -d "$(dirname "$backup_file")" ]] || die "backup output directory must already exist on approved restricted storage"
+[[ ! -e "$backup_file" && ! -L "$backup_file" ]] || die "backup output already exists; refusing to overwrite evidence"
+[[ ! -e "${backup_file}.sha256" && ! -L "${backup_file}.sha256" ]] || die "checksum output already exists; refusing to overwrite evidence"
+[[ -f "$smoke_sql" && -r "$smoke_sql" ]] || die "restore verification SQL must be a readable reviewed file"
+[[ "${FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE:-}" == "I_HAVE_VERIFIED_EMPTY" ]] || die "confirm the restore target is disposable and isolated before continuing"
+
+if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
+  need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
+  need_value FACTORYOS_CANDIDATE_MIGRATION_MANIFEST "$candidate_manifest"
+  need_value FACTORYOS_RECOVERY_WATERMARK_SQL "$watermark_sql"
+  need_value FACTORYOS_RECOVERY_EVENT_TIME_UTC "$event_time_utc"
+  need_value FACTORYOS_RECOVERY_OPERATOR "${FACTORYOS_RECOVERY_OPERATOR:-}"
+  need_value FACTORYOS_RECOVERY_APPROVER "${FACTORYOS_RECOVERY_APPROVER:-}"
+  [[ "$evidence_file" == /* ]] || die "evidence output must be an absolute path"
+  [[ -d "$(dirname "$evidence_file")" ]] || die "evidence output directory must already exist"
+  [[ ! -e "$evidence_file" && ! -L "$evidence_file" ]] || die "evidence output already exists; refusing to overwrite a receipt"
+  [[ "$FACTORYOS_RECOVERY_OPERATOR" != "$FACTORYOS_RECOVERY_APPROVER" ]] || die "operator and approver must be different people"
+  [[ -f "$watermark_sql" && -r "$watermark_sql" ]] || die "watermark SQL must be a readable reviewed query"
+  [[ -f "$failure_probe_sql" && -r "$failure_probe_sql" ]] || die "migration failure-recovery probe SQL is missing or unreadable"
+  [[ "$event_time_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$ ]] || die "event time must be UTC RFC 3339 ending in Z"
+  date -u -d "$event_time_utc" +%s >/dev/null 2>&1 || die "event timestamp is invalid"
+  [[ "$candidate_manifest" != /* && "$candidate_manifest" != *".."* ]] || die "candidate manifest must be a repository-relative path without traversal"
+  [[ -f "$repo_root/$candidate_manifest" && -r "$repo_root/$candidate_manifest" ]] || die "candidate migration manifest is missing or unreadable"
+  need_command node
+  if [[ "${FACTORYOS_DR_TARGETS_APPROVED:-NO}" == "YES" ]]; then
+    targets_approved=true
+    [[ "$rpo_target_seconds" =~ ^[0-9]+$ ]] || die "approved RPO target must be integer seconds"
+    [[ "$rto_target_seconds" =~ ^[0-9]+$ ]] || die "approved RTO target must be integer seconds"
+    target_assessment="PENDING_MEASUREMENTS"
+  else
+    rpo_target_seconds=""
+    rto_target_seconds=""
+    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
+  fi
+fi
+
+for tool in pg_dump pg_restore psql gpg sha256sum mktemp date; do need_command "$tool"; done
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factoryos-recovery.XXXXXX")"
+partial_file="${backup_file}.partial.$$"
 pg_dump_version="$(pg_dump --version | head -n 1)"
 pg_restore_version="$(pg_restore --version | head -n 1)"
 gpg_version="$(gpg --version | head -n 1)"
 
-target_relations="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp_' AND c.relkind IN ('r','p','v','m','S','f')")" \
-  || die "could not verify that the restore target is empty"
+current_stage="database_identity"
+source_identity="$(psql -w "service=$source_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" || die "could not establish source database identity"
+target_identity="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" || die "could not establish restore target identity"
+[[ -n "$source_identity" && -n "$target_identity" ]] || die "database identity check returned an empty identity"
+[[ "$source_identity" != "$target_identity" ]] || die "source and restore target resolve to the same database identity"
+distinct_database_identity=true
+server_version="$(psql -w "service=$source_service" -X -qAt -v ON_ERROR_STOP=1 -c "SHOW server_version")" || die "could not read PostgreSQL server version"
+
+target_relations="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp_' AND c.relkind IN ('r','p','v','m','S','f')")" || die "could not verify that the restore target is empty"
 [[ "$target_relations" =~ ^[0-9]+$ ]] || die "restore target emptiness check returned an invalid count"
 [[ "$target_relations" == "0" ]] || die "restore target contains user relations; no data was restored"
 target_empty=true
@@ -185,104 +187,125 @@ run_watermark_query() {
   date -u -d "$result" +%s >/dev/null 2>&1 || die "watermark SQL returned an invalid timestamp"
   printf '%s' "$result"
 }
+
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   current_stage="source_watermark"
   source_watermark_utc="$(run_watermark_query "$source_service" "$watermark_sql")"
   candidate_manifest_sha256="$(sha256sum -- "$repo_root/$candidate_manifest" | awk '{print $1}')"
   seen_migrations=""
   while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" \
-  || die "pg_restore could not read the backup archive"
-
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" >/dev/null
-
-printf 'BACKUP_RESTORE_REHEARSAL=PASS\n'
-printf 'Encrypted artifact: %s\n' "$backup_file"
-printf 'Checksum file: %s.sha256\n' "$backup_file"
-printf 'Restore target database: %s\n' "${target_identity%%|*}"
-printf 'Restore verification SQL: %s\n' "$smoke_sql"
-printf 'The operator must store the candidate SHA, backup timestamp, pg_dump/pg_restore versions, elapsed restore time, RPO/RTO observations and approval in the change record.\n'
-\r'}"
+    migration="${migration%$'\r'}"
     [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
     [[ "$migration" =~ ^migrations/[0-9]{3}_[a-z0-9_]+\.sql$ ]] || die "invalid candidate migration entry: $migration"
     [[ -f "$repo_root/$migration" && -r "$repo_root/$migration" ]] || die "candidate migration does not exist: $migration"
     [[ " $seen_migrations " != *" $migration "* ]] || die "duplicate candidate migration: $migration"
-    seen_migrations+="${migration}"printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" \
-  || die "pg_restore could not read the backup archive"
-
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" >/dev/null
-
-printf 'BACKUP_RESTORE_REHEARSAL=PASS\n'
-printf 'Encrypted artifact: %s\n' "$backup_file"
-printf 'Checksum file: %s.sha256\n' "$backup_file"
-printf 'Restore target database: %s\n' "${target_identity%%|*}"
-printf 'Restore verification SQL: %s\n' "$smoke_sql"
-printf 'The operator must store the candidate SHA, backup timestamp, pg_dump/pg_restore versions, elapsed restore time, RPO/RTO observations and approval in the change record.\n'
-\n'
+    seen_migrations+="${migration}"$'\n'
     candidate_migration_count=$((candidate_migration_count + 1))
   done < "$repo_root/$candidate_manifest"
   [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
 fi
 
+current_stage="encrypted_backup"
+backup_started_epoch="$(epoch_now)"
 printf 'Creating encrypted PostgreSQL custom-format backup...\n'
 pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
   | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-
 [[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
 mv -- "$partial_file" "$backup_file"
+partial_file=""
 sha256sum -- "$backup_file" > "${backup_file}.sha256"
 sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
+checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
+checksum_verified=true
+encryption_status="ENCRYPTED_GPG"
+backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
 
+current_stage="archive_readability"
 printf 'Decrypting to a private temporary directory and checking archive readability...\n'
 gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
 [[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" \
-  || die "pg_restore could not read the backup archive"
+pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
+archive_status="READABLE"
 
+current_stage="restore"
+restore_started_epoch="$(epoch_now)"
 printf 'Restoring into the separately verified empty database...\n'
 pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
   --dbname="service=$target_service" "$tmpdir/verified.dump"
+restore_status="RESTORED"
 
+if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
+  current_stage="candidate_migrations"
+  candidate_migration_status="RUNNING"
+  while IFS= read -r migration || [[ -n "$migration" ]]; do
+    migration="${migration%$'\r'}"
+    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
+    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
+    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
+  done < "$repo_root/$candidate_manifest"
+  candidate_migration_status="PASS"
+
+  current_stage="migration_failure_recovery"
+  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
+  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
+  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
+    die "intentional failed-transaction probe unexpectedly succeeded"
+  fi
+  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
+  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
+  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
+  failure_recovery_status="PASS"
+
+  current_stage="restored_watermark"
+  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
+  event_epoch="$(date -u -d "$event_time_utc" +%s)"
+  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
+  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
+  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
+  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
+  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
+fi
+
+current_stage="application_smoke"
 printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" >/dev/null
+psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
+  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
+cat "$tmpdir/restore-smoke.log"
+if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
+if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
+if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
 
-printf 'BACKUP_RESTORE_REHEARSAL=PASS\n'
-printf 'Encrypted artifact: %s\n' "$backup_file"
-printf 'Checksum file: %s.sha256\n' "$backup_file"
-printf 'Restore target database: %s\n' "${target_identity%%|*}"
-printf 'Restore verification SQL: %s\n' "$smoke_sql"
-printf 'The operator must store the candidate SHA, backup timestamp, pg_dump/pg_restore versions, elapsed restore time, RPO/RTO observations and approval in the change record.\n'
+if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
+  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
+  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
+  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
+  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
+  observed_rto_seconds="$restore_duration_seconds"
+  if [[ "$targets_approved" == true ]]; then
+    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
+      target_assessment="BREACH_OF_APPROVED_TARGET"
+      die "measured recovery exceeds owner-approved RPO/RTO"
+    fi
+    target_assessment="WITHIN_APPROVED_TARGETS"
+  else
+    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
+  fi
+else
+  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
+fi
+
+current_stage="complete"
+rehearsal_status="TECHNICAL_PASS"
+printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
+printf 'Source identity: %s\n' "$source_identity"
+printf 'Restore target identity: %s\n' "$target_identity"
+printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
+printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
+printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
+printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
+printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
+printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
+printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
+printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
+printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
+printf 'Operator sign-off is pending post-run review.\n'
