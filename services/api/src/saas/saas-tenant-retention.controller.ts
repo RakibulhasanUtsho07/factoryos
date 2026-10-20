@@ -23,6 +23,10 @@ import { RunSaasRetentionPolicyDto } from './dto/run-saas-retention-policy.dto';
 import { ExecuteSaasTenantErasureDto } from './dto/execute-saas-tenant-erasure.dto';
 import { SaasTenantRetentionService } from './saas-tenant-retention.service';
 import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-execution.service';
+import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
+import { PropagateSaasTenantErasureDto } from './dto/propagate-saas-tenant-erasure.dto';
+import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-data-target.dto';
+import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
 
 type RetentionRequest = Request & {
   factoryos?: {
@@ -36,6 +40,7 @@ export class SaasTenantRetentionController {
   constructor(
     private readonly service: SaasTenantRetentionService,
     private readonly execution: SaasTenantGovernanceExecutionService,
+    private readonly propagation: SaasTenantPropagationService,
   ) {}
 
   @Post('policies')
@@ -186,6 +191,58 @@ export class SaasTenantRetentionController {
   ) {
     const context = this.context(request);
     return this.execution.executeErasure(context.tenantId, context.userId, requestId, body);
+  }
+
+  @Post('external-targets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.write')
+  registerExternalTarget(@Req() request: RetentionRequest, @Body() body: RegisterSaasExternalDataTargetDto) {
+    const context = this.context(request);
+    return this.propagation.registerTarget(context.tenantId, context.userId, body);
+  }
+
+  @Get('external-targets')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  listExternalTargets(@Req() request: RetentionRequest) {
+    const context = this.context(request);
+    return this.propagation.listTargets(context.tenantId, context.userId);
+  }
+
+  @Post('external-targets/:targetId/review')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.approve')
+  reviewExternalTarget(
+    @Req() request: RetentionRequest,
+    @Param('targetId') targetId: string,
+    @Body() body: ReviewSaasExternalDataTargetDto,
+  ) {
+    const context = this.context(request);
+    return this.propagation.reviewTarget(context.tenantId, context.userId, targetId, body);
+  }
+
+  @Post('erasure-requests/:requestId/propagate')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.propagate')
+  propagateErasure(
+    @Req() request: RetentionRequest,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Body() body: PropagateSaasTenantErasureDto,
+  ) {
+    const context = this.context(request);
+    return this.propagation.propagateErasure(context.tenantId, context.userId, requestId, body);
+  }
+
+  @Get('erasure-requests/:requestId/propagation-runs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  listPropagationRuns(
+    @Req() request: RetentionRequest,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const context = this.context(request);
+    return this.propagation.listPropagationRuns(context.tenantId, context.userId, requestId, limit);
   }
 
   private context(request: RetentionRequest): { tenantId: string; userId: string } {
