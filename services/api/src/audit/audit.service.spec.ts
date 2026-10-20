@@ -49,6 +49,39 @@ describe('AuditService.recordWithClient', () => {
     expect(databaseQuery).not.toHaveBeenCalled();
   });
 
+  it('redacts nested credentials while preserving operational audit evidence', async () => {
+    const payload = {
+      actionId: 'action-123',
+      access_token: 'access-secret-value',
+      apiKey: 'api-secret-value',
+      nested: {
+        password: 'password-secret-value',
+        providerToken: 'provider-secret-value',
+        input_tokens: 42,
+        outcome: 'DENIED',
+      },
+    };
+
+    await service.recordWithClient(client, { ...input, payload });
+
+    const serialized = clientQuery.mock.calls[0]?.[1]?.[10] as string;
+    expect(JSON.parse(serialized)).toEqual({
+      actionId: 'action-123',
+      access_token: '[REDACTED]',
+      apiKey: '[REDACTED]',
+      nested: {
+        password: '[REDACTED]',
+        providerToken: '[REDACTED]',
+        input_tokens: 42,
+        outcome: 'DENIED',
+      },
+    });
+    expect(serialized).not.toContain('access-secret-value');
+    expect(serialized).not.toContain('api-secret-value');
+    expect(serialized).not.toContain('password-secret-value');
+    expect(serialized).not.toContain('provider-secret-value');
+  });
+
   it('rejects an invalid tenant before attempting the audit insert', async () => {
     await expect(service.recordWithClient(client, {
       ...input,
