@@ -239,6 +239,7 @@ jobs:
             migrations/149_saas_data_retention_erasure_governance.sql
             migrations/150_saas_export_preservation_attestation.sql
             migrations/151_growth_forecast_evaluation_calibration.sql
+            migrations/152_ai_agent_retry_backoff.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -273,6 +274,10 @@ jobs:
           echo "Reapplying forecast evaluation migration to verify idempotent policy and trigger installation"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/151_growth_forecast_evaluation_calibration.sql
+
+          echo "Reapplying agent retry migration to verify idempotent trigger and constraint installation"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/152_ai_agent_retry_backoff.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
@@ -349,6 +354,7 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-scenario-sets.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-experiment-outcomes.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-forecast-evaluations.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-agent-retry-scheduling.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ot-device-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-data-retention-contract.sql
