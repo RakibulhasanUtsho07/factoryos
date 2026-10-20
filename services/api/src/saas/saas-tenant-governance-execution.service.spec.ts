@@ -320,6 +320,54 @@ describe('SaasTenantGovernanceExecutionService', () => {
     );
   });
 
+  it('blocks broad BUSINESS_DATA retention while old metering or provider-cost ledgers require finance review', async () => {
+    const blockedRun = {
+      id: runId, tenant_id: tenant, run_id: runId, category_code: 'BUSINESS_DATA',
+      policy_version: 1, mode: SaasRetentionRunMode.EXECUTE, status: 'BLOCKED',
+      cutoff_at: '2026-01-01T00:00:00.000Z', examined_rows: '1', eligible_rows: '1',
+      affected_rows: '0', held_rows: '0', table_manifest: {},
+      manifest_digest: null, reason: 'Review metering and provider cost retention',
+      idempotency_key: 'finance-retention-review-v1', request_hash: 'a'.repeat(64),
+      initiated_by_user_id: executor,
+      created_at: '2026-10-19T13:00:00.000Z', finished_at: '2026-10-19T13:00:00.000Z',
+    };
+    clientQuery.mockImplementation(async (...args: unknown[]) => {
+      const sql = String(args[0]);
+      if (sql.includes('FROM tenants')) return { rows: [{ id: tenant }] };
+      if (sql.includes('FROM saas_tenant_data_retention_runs')) return { rows: [] };
+      if (sql.includes('FROM saas_tenant_data_retention_policies')) return { rows: [{
+        id: runId, tenant_id: tenant, category_code: 'BUSINESS_DATA',
+        version: 1, retention_days: 365, disposition: 'DELETE', created_by_user_id: requester,
+      }] };
+      if (sql.includes('clock_timestamp() -')) return { rows: [{ cutoff_at: '2026-01-01T00:00:00.000Z' }] };
+      if (sql.includes('AS deletion_guarded')) return { rows: [{
+        table_exists: true, has_tenant_id: true, has_id: true,
+        forced_rls: true, has_tenant_policy: true, deletion_guarded: false, time_column: 'created_at',
+      }] };
+      if (sql.includes('COUNT(*)::text AS examined')) return { rows: [{ examined: '1', eligible: '1' }] };
+      if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
+      if (sql.includes('INSERT INTO saas_tenant_data_retention_runs')) {
+        const values = args[1] as unknown[];
+        return { rows: [ { ...blockedRun, table_manifest: JSON.parse(String(values[11])) as Record<string, unknown> } ] };
+      }
+      throw new Error('unexpected query: ' + sql);
+    });
+
+    const result = await service.runRetentionPolicy(tenant, executor, 'BUSINESS_DATA', {
+      mode: SaasRetentionRunMode.EXECUTE,
+      expected_policy_version: 1,
+      reason: 'Review metering and provider cost retention',
+      idempotency_key: 'finance-retention-review-v1',
+    });
+
+    expect(result.run.status).toBe('BLOCKED');
+    expect(result.run.tableManifest).toMatchObject({ _blocked: 'FINANCIAL_RETENTION_REVIEW_REQUIRED' });
+    expect(result.run.tableManifest).toHaveProperty('saas_usage_events');
+    expect((result.run.tableManifest.saas_usage_events as Record<string, unknown>).retentionDisposition)
+      .toBe('REQUIRES_FINANCE_RETENTION_REVIEW');
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('DELETE FROM public.'))).toBe(false);
+  });
+
   it('executes an approved erasure in one tenant-scoped transaction and binds VERIFIED to its immutable receipt', async () => {
     clientQuery.mockImplementation(async (...args: unknown[]) => {
       const sql = String(args[0]);
