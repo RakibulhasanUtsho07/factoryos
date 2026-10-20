@@ -20,6 +20,12 @@ import { CreateGrowthScenarioSetDto } from './dto/create-growth-scenario-set.dto
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
+import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
+import {
+  evaluateGrowthForecast,
+  summarizeGrowthForecastCalibration,
+  type GrowthForecastCalibrationObservation,
+} from './growth-forecast-evaluation';
 import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
 import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
 import { CreateGrowthConstraintDto } from './dto/create-growth-constraint.dto';
@@ -1595,6 +1601,237 @@ export class GrowthService {
       payload: { experimentId, assessment: dto.assessment, stopConditionTriggered: dto.stop_condition_triggered, kpiKeys: kpis.map(item => item.metricKey) },
     });
     return result;
+  }
+
+  async recordForecastEvaluation(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: RecordGrowthForecastEvaluationDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    this.validateUuid(dto.outcome_id, 'outcome_id');
+
+    const modelVersion = typeof dto.model_version === 'string' ? dto.model_version.trim() : '';
+    const metricKey = typeof dto.metric_key === 'string' ? dto.metric_key.trim() : '';
+    const unit = typeof dto.unit === 'string' ? dto.unit.trim() : '';
+    const sourceRef = typeof dto.forecast_source_ref === 'string' ? dto.forecast_source_ref.trim() : '';
+    const idempotencyKey = typeof dto.idempotency_key === 'string' ? dto.idempotency_key.trim() : '';
+    const origin = new Date(dto.forecast_origin_at);
+    if (!modelVersion || modelVersion.length > 128) throw new BadRequestException('model_version is required and must be <= 128 characters');
+    if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey)) throw new BadRequestException('metric_key must be a stable lowercase identifier');
+    if (!unit || unit.length > 40) throw new BadRequestException('unit is required and must be <= 40 characters');
+    if (!sourceRef || sourceRef.length > 2000) throw new BadRequestException('forecast_source_ref must be non-empty');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(idempotencyKey)) throw new BadRequestException('idempotency_key is invalid');
+    if (!Number.isFinite(origin.getTime())) throw new BadRequestException('forecast_origin_at must be a valid timestamp');
+    if (![dto.forecast_value, ...(dto.lower_bound === undefined ? [] : [dto.lower_bound]),
+      ...(dto.upper_bound === undefined ? [] : [dto.upper_bound]),
+      ...(dto.nominal_coverage_pct === undefined ? [] : [dto.nominal_coverage_pct])].every(Number.isFinite)) {
+      throw new BadRequestException('Forecast values must be finite numbers');
+    }
+
+    const transactionResult = await this.database.transaction({ tenantId, userId }, async client => {
+      const source = await client.query<{ id: string }>(
+        `SELECT id::text AS id FROM growth_opportunity_evidence
+         WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
+           AND (btrim(COALESCE(reference_ref, '')) = $4 OR btrim(COALESCE(citation_url, '')) = $4)
+         LIMIT 1`,
+        [opportunityId, tenantId, factoryId, sourceRef],
+      );
+      if (!source.rows[0]) {
+        throw new BadRequestException('forecast_source_ref must match evidence already attached to this opportunity');
+      }
+
+      const actual = await client.query<{
+        id: string; observed_at: string; actual_value: string; unit: string; evidence_ref: string;
+      }>(
+        `SELECT o.id::text AS id, o.observed_at::text AS observed_at,
+            k.actual_value::text AS actual_value, k.unit, k.evidence_ref
+         FROM growth_opportunity_outcomes o
+         JOIN growth_outcome_kpi_measurements k
+           ON k.outcome_id = o.id AND k.tenant_id = o.tenant_id
+          AND k.factory_id = o.factory_id AND k.opportunity_id = o.opportunity_id
+         WHERE o.id = $1 AND o.opportunity_id = $2 AND o.tenant_id = $3 AND o.factory_id = $4
+           AND k.metric_key = $5
+         FOR SHARE OF o, k`,
+        [dto.outcome_id, opportunityId, tenantId, factoryId, metricKey],
+      );
+      const actualRow = actual.rows[0];
+      if (!actualRow) throw new NotFoundException('A matching realized outcome KPI was not found in this opportunity');
+      if (actualRow.unit !== unit) throw new ConflictException('Forecast unit must exactly match the realized KPI unit');
+      const observedAt = new Date(actualRow.observed_at);
+      if (!Number.isFinite(observedAt.getTime()) || origin.getTime() >= observedAt.getTime()) {
+        throw new BadRequestException('A forecast origin must be strictly earlier than its observed outcome');
+      }
+
+      let metrics;
+      try {
+        metrics = evaluateGrowthForecast({
+          forecast_value: dto.forecast_value,
+          actual_value: Number(actualRow.actual_value),
+          lower_bound: dto.lower_bound ?? null,
+          upper_bound: dto.upper_bound ?? null,
+          nominal_coverage_pct: dto.nominal_coverage_pct ?? null,
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'FORECAST_EVALUATION_INVALID';
+        throw new BadRequestException(reason);
+      }
+
+      const snapshot = {
+        schema_version: 1,
+        method_version: metrics.method_version,
+        model_version: modelVersion,
+        metric_key: metricKey,
+        unit,
+        forecast_origin_at: origin.toISOString(),
+        forecast_source_ref: sourceRef,
+        outcome_id: actualRow.id,
+        outcome_observed_at: observedAt.toISOString(),
+        ...metrics,
+      };
+      const requestHash = createHash('sha256')
+        .update(canonicalizeGrowthScenarioInput(snapshot))
+        .digest('hex');
+
+      const prior = await client.query<{ id: string; request_hash: string }>(
+        `SELECT id::text AS id, request_hash FROM growth_forecast_evaluations
+         WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3 AND idempotency_key = $4
+         FOR UPDATE`,
+        [tenantId, factoryId, opportunityId, idempotencyKey],
+      );
+      if (prior.rows[0]) {
+        if (prior.rows[0].request_hash !== requestHash) {
+          throw new ConflictException('Forecast evaluation idempotency key was reused with a different request');
+        }
+        const replay = await client.query(
+          `SELECT id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
+              forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+              actual_value::text AS actual_value, signed_error::text AS signed_error,
+              absolute_error::text AS absolute_error, squared_error::text AS squared_error,
+              absolute_percentage_error::text AS absolute_percentage_error,
+              symmetric_percentage_error::text AS symmetric_percentage_error,
+              lower_bound::text AS lower_bound, upper_bound::text AS upper_bound,
+              nominal_coverage_pct::text AS nominal_coverage_pct, interval_hit, interval_width::text AS interval_width,
+              interval_semantics, method_version, input_hash, idempotency_key, evaluated_at::text AS evaluated_at
+           FROM growth_forecast_evaluations WHERE id = $1 AND tenant_id = $2 AND factory_id = $3`,
+          [prior.rows[0].id, tenantId, factoryId],
+        );
+        if (!replay.rows[0]) throw new ConflictException('The original forecast evaluation is no longer readable in this scope');
+        return { evaluation: replay.rows[0], created: false };
+      }
+
+      const inserted = await client.query(
+        `INSERT INTO growth_forecast_evaluations (
+           tenant_id, factory_id, opportunity_id, outcome_id, model_version, metric_key, unit,
+           forecast_origin_at, forecast_source_ref, forecast_value, actual_value, lower_bound, upper_bound,
+           nominal_coverage_pct, signed_error, absolute_error, squared_error, absolute_percentage_error,
+           symmetric_percentage_error, interval_hit, interval_width, interval_semantics, method_version,
+           input_hash, idempotency_key, recorded_by
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10::numeric, $11::numeric,
+           $12::numeric, $13::numeric, $14::numeric, $15::numeric, $16::numeric, $17::numeric,
+           $18::numeric, $19::numeric, $20, $21::numeric, $22, $23, $24, $25, $26
+         ) ON CONFLICT DO NOTHING
+         RETURNING id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
+           forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+           actual_value::text AS actual_value, signed_error::text AS signed_error,
+           absolute_error::text AS absolute_error, squared_error::text AS squared_error,
+           absolute_percentage_error::text AS absolute_percentage_error,
+           symmetric_percentage_error::text AS symmetric_percentage_error,
+           lower_bound::text AS lower_bound, upper_bound::text AS upper_bound,
+           nominal_coverage_pct::text AS nominal_coverage_pct, interval_hit, interval_width::text AS interval_width,
+           interval_semantics, method_version, input_hash, idempotency_key, evaluated_at::text AS evaluated_at`,
+        [
+          tenantId, factoryId, opportunityId, actualRow.id, modelVersion, metricKey, unit,
+          origin.toISOString(), sourceRef, metrics.forecast_value, metrics.actual_value,
+          metrics.lower_bound, metrics.upper_bound, metrics.nominal_coverage_pct, metrics.signed_error,
+          metrics.absolute_error, metrics.squared_error, metrics.absolute_percentage_error,
+          metrics.symmetric_percentage_error, metrics.interval_hit, metrics.interval_width,
+          metrics.interval_semantics, metrics.method_version, requestHash, idempotencyKey, userId,
+        ],
+      );
+
+      if (!inserted.rows[0]) {
+        const raced = await client.query<{ id: string; request_hash: string }>(
+          `SELECT id::text AS id, request_hash FROM growth_forecast_evaluations
+           WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3 AND idempotency_key = $4`,
+          [tenantId, factoryId, opportunityId, idempotencyKey],
+        );
+        if (raced.rows[0]?.request_hash === requestHash) {
+          const replay = await client.query(
+            `SELECT id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
+                forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+                actual_value::text AS actual_value, signed_error::text AS signed_error,
+                absolute_error::text AS absolute_error, squared_error::text AS squared_error,
+                absolute_percentage_error::text AS absolute_percentage_error,
+                symmetric_percentage_error::text AS symmetric_percentage_error,
+                lower_bound::text AS lower_bound, upper_bound::text AS upper_bound,
+                nominal_coverage_pct::text AS nominal_coverage_pct, interval_hit, interval_width::text AS interval_width,
+                interval_semantics, method_version, input_hash, idempotency_key, evaluated_at::text AS evaluated_at
+             FROM growth_forecast_evaluations WHERE id = $1 AND tenant_id = $2 AND factory_id = $3`,
+            [raced.rows[0].id, tenantId, factoryId],
+          );
+          if (replay.rows[0]) return { evaluation: replay.rows[0], created: false };
+        }
+        throw new ConflictException('A forecast evaluation already exists for this model, metric and outcome');
+      }
+
+      await this.insertOutbox(client, {
+        tenantId, factoryId, userId, aggregateType: 'GROWTH_FORECAST_EVALUATION',
+        aggregateId: inserted.rows[0].id, eventType: 'GROWTH.FORECAST_EVALUATED',
+        correlationId: this.correlationId(requestId, traceId),
+        payload: {
+          forecast_evaluation_id: inserted.rows[0].id, opportunity_id: opportunityId,
+          outcome_id: actualRow.id, model_version: modelVersion, metric_key: metricKey,
+          method_version: metrics.method_version, input_hash: requestHash,
+        },
+      });
+      return { evaluation: inserted.rows[0], created: true };
+    });
+
+    if (transactionResult.created) {
+      await this.auditSafely({
+        tenantId, factoryId, userId, action: 'GROWTH_FORECAST_EVALUATED',
+        resourceId: String(transactionResult.evaluation.id), requestId, traceId,
+        payload: {
+          opportunityId, outcomeId: dto.outcome_id, modelVersion, metricKey,
+          methodVersion: GROWTH_FORECAST_EVALUATION_VERSION,
+          inputHash: transactionResult.evaluation.input_hash,
+        },
+      });
+    }
+    return { ...transactionResult.evaluation, replayed: !transactionResult.created };
+  }
+
+  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    this.validateUuid(opportunityId, 'opportunityId');
+    const result = await this.database.query<GrowthForecastCalibrationObservation & {
+      evaluated_at: string; total_count: string;
+    }>(
+      `SELECT model_version, metric_key, unit, forecast_value::text AS forecast_value,
+          actual_value::text AS actual_value, signed_error::text AS signed_error,
+          absolute_error::text AS absolute_error, squared_error::text AS squared_error,
+          symmetric_percentage_error::text AS symmetric_percentage_error, interval_hit,
+          nominal_coverage_pct::text AS nominal_coverage_pct,
+          evaluated_at::text AS evaluated_at, COUNT(*) OVER ()::text AS total_count
+       FROM growth_forecast_evaluations
+       WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
+       ORDER BY evaluated_at DESC, id DESC LIMIT 10000`,
+      [opportunityId, tenantId, factoryId],
+      { tenantId },
+    );
+    const totalCount = Number(result.rows[0]?.total_count ?? 0);
+    const observations = result.rows.map(({ total_count: _totalCount, evaluated_at: _evaluatedAt, ...row }) => row);
+    return {
+      method_version: GROWTH_FORECAST_EVALUATION_VERSION,
+      minimum_calibration_sample_size: 10,
+      observations_included: observations.length,
+      total_observations: totalCount,
+      sample_window_truncated: totalCount > observations.length,
+      interpretation: 'Observed out-of-sample errors and declared interval coverage only. No model is auto-refit; a heuristic range without nominal coverage is not labelled a calibrated prediction interval.',
+      calibration: summarizeGrowthForecastCalibration(observations),
+    };
   }
 
   async recordOpportunityOutcome(
