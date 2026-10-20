@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { DatabaseService } from '../database/database.service';
@@ -99,6 +100,20 @@ postgresDescribe('SaasTenantDataTransferService PostgreSQL control-plane invaria
     };
     const created = await service.createExport(source.tenantId, source.userId, exportInput);
     expect(created.transfer.status).toBe('REQUESTED');
+
+    // A foreign tenant must not read an export or attach artifacts to its ledger,
+    // even when it knows the otherwise-valid transfer UUID.
+    await expect(service.history(targetTenant.tenantId, targetTenant.userId, created.transfer.transferId))
+      .rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.attestExport(targetTenant.tenantId, targetTenant.userId, created.transfer.transferId, {
+      expected_version: 1,
+      bundle_reference: 'foreign-bundle-' + created.transfer.transferId.slice(0, 8),
+      bundle_digest: digest,
+      dataset_manifest: manifest(12),
+      reason: 'foreign tenant must not attest another tenant export',
+      idempotency_key: 'foreign-attest-' + targetTenant.tenantId,
+    } as AttestSaasTenantExportDto)).rejects.toBeInstanceOf(NotFoundException);
+
     const replay = await service.createExport(source.tenantId, source.userId, exportInput);
     expect(replay.replayed).toBe(true);
     expect(replay.transfer.transferId).toBe(created.transfer.transferId);
@@ -124,6 +139,14 @@ postgresDescribe('SaasTenantDataTransferService PostgreSQL control-plane invaria
     expect(validation.transfer.status).toBe('VALIDATED');
     expect(validation.transfer.compatibilityDecision).toBe('COMPATIBLE');
     expect(validation.transfer.sourceBundleDigest).toBe(digest);
+
+    // Foreign-tenant writes are denied before any migration state transition.
+    await expect(service.transitionMigration(targetTenant.tenantId, targetTenant.userId, validation.transfer.transferId, {
+      action: SaasTenantMigrationAction.START,
+      expected_version: 1,
+      reason: 'foreign tenant must not start another tenant migration',
+      idempotency_key: 'foreign-start-' + targetTenant.tenantId,
+    })).rejects.toBeInstanceOf(NotFoundException);
 
     const started = await service.transitionMigration(source.tenantId, source.userId, validation.transfer.transferId, {
       action: SaasTenantMigrationAction.START,
