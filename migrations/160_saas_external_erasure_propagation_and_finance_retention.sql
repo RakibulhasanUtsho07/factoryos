@@ -160,7 +160,9 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_propagation_runs (
       AND target_count>0 AND verified_targets=target_count AND residual_copies=0
       AND deleted_copies=planned_copies AND failure_code IS NULL)
     OR (status IN ('RUNNING','PARTIAL') AND finished_at IS NULL AND manifest_digest IS NULL)
-    OR (status='FAILED' AND finished_at IS NOT NULL AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z0-9_]{1,64} CHECK (length(btrim(reason)) BETWEEN 3 AND 1000),
+    OR (status='FAILED' AND finished_at IS NOT NULL AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z0-9_]{1,64}$')
+  ),
+  CONSTRAINT chk_saas_external_propagation_reason CHECK (length(btrim(reason)) BETWEEN 3 AND 1000),
   CONSTRAINT chk_saas_external_propagation_key CHECK (idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
   CONSTRAINT chk_saas_external_propagation_hash CHECK (request_hash ~ '^[a-f0-9]{64}$')
 );
@@ -251,7 +253,10 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_propagation_receipts (
       AND deleted_copies=planned_copies AND verification_reference IS NOT NULL
       AND failure_code IS NULL)
     OR (status='RESIDUALS' AND residual_copies>0 AND jsonb_array_length(residual_manifest)>0)
-    OR (status='FAILED' AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z0-9_]{1,64} ENABLE ROW LEVEL SECURITY;
+    OR (status='FAILED' AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z0-9_]{1,64}$')
+  )
+);
+ALTER TABLE saas_tenant_external_propagation_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_external_propagation_receipts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_external_propagation_receipts_tenant_isolation ON saas_tenant_external_propagation_receipts;
 CREATE POLICY saas_tenant_external_propagation_receipts_tenant_isolation
