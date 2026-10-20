@@ -664,6 +664,20 @@ describe('GrowthService', () => {
     expect(result.calibration[0].calibration_gap_pct_points).toBe(-10);
   });
 
+  it('rejects forecast origins without an explicit timezone offset', async () => {
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-01T00:00:00',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: OPPORTUNITY_ID, idempotency_key: 'forecast-eval-key-0006',
+    };
+
+    await expect(service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
   it('requires the forecast origin to precede the realized outcome timestamp', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
