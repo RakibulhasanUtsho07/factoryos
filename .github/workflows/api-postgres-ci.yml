@@ -3,9 +3,11 @@ name: API PostgreSQL CI
 on:
   pull_request:
     paths:
+      - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
       - 'scripts/recovery/**'
+      - 'scripts/audit/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
       - 'scripts/seed-dev-factory-manager.sql'
@@ -16,9 +18,11 @@ on:
   push:
     branches: [main, dev, rakibul-hasan]
     paths:
+      - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
       - 'scripts/recovery/**'
+      - 'scripts/audit/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
       - 'scripts/seed-dev-factory-manager.sql'
@@ -292,3 +296,4 @@ jobs:
       - name: Run full API unit and PostgreSQL integration suite
         working-directory: services/api
         run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand
+
