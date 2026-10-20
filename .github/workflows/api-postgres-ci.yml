@@ -398,6 +398,32 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-isolation-matrix.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-data-governance-inventory.sql
 
+          # Deliberately fail after transactional DDL/DML; psql must leave no partial migration state.
+          recovery_log="$(mktemp)"
+          if psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/migration-recovery-failure.sql >"$recovery_log" 2>&1; then
+            cat "$recovery_log"
+            rm -f "$recovery_log"
+            echo "::error::Intentional failed-migration fixture unexpectedly succeeded"
+            exit 1
+          fi
+          if ! grep -qi "division by zero" "$recovery_log"; then
+            cat "$recovery_log"
+            rm -f "$recovery_log"
+            echo "::error::Migration recovery fixture failed for a reason other than its deliberate error"
+            exit 1
+          fi
+          rm -f "$recovery_log"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $
+          BEGIN
+            IF to_regclass('public.factoryos_migration_recovery_probe') IS NOT NULL THEN
+              RAISE EXCEPTION 'failed migration left partial DDL behind';
+            END IF;
+          END
+          $;
+          SQL
+
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/production-work-order-contract.sql
@@ -432,8 +458,12 @@ jobs:
           OUTBOX_DISPATCHER_ENABLED=false
           EOF
 
+      - name: Validate recovery rehearsal script syntax
+        run: bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
       - name: Validate bounded load-smoke harness syntax
-        run: node --check scripts/performance/api-load-smoke.mjs
+        run: |
+          node --check scripts/performance/api-load-smoke.mjs
+          node --check scripts/performance/api-load-smoke.test.mjs
 
       - name: Lint API
         working-directory: services/api
