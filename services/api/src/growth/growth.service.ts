@@ -23,6 +23,7 @@ import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportuni
 import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
 import {
   evaluateGrowthForecast,
+  GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
   summarizeGrowthForecastCalibration,
   type GrowthForecastCalibrationObservation,
 } from './growth-forecast-evaluation';
@@ -1845,7 +1846,7 @@ export class GrowthService {
     const observations = result.rows.map(({ total_count: _totalCount, evaluated_at: _evaluatedAt, ...row }) => row);
     return {
       method_version: GROWTH_FORECAST_EVALUATION_VERSION,
-      minimum_calibration_sample_size: 10,
+      minimum_calibration_sample_size: GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
       observations_included: observations.length,
       total_observations: totalCount,
       sample_window_truncated: totalCount > observations.length,
