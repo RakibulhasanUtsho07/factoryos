@@ -34,7 +34,7 @@ The above results establish repository-level automated acceptance for the listed
 
 - Existing requirement/design documents under docs/, including AI Runtime, CBB, research/growth, SaaS productization, inventory, purchasing, GRN, UoM, lot/serial genealogy, BOM/routing, production work orders, quality, maintenance, workforce, utility/EHS, finance, ERP file exchange, signed webhook, outbox reliability, OT/OPC UA, OT/MQTT/Modbus, operational event reconciliation, tracing/metrics, recovery, operational runbook and release readiness.
 - Ordered SQL migration manifest in .github/workflows/api-postgres-ci.yml, migrations through 158, related SQL contract fixtures, API unit/Integration specs and CI workflow results listed above.
-- The requirements IDs actually cited by repository domain documents, such as FR-AGT-01, FR-AGT-06, FR-CBB-06/07/10/11/12, FR-FIN-01/02/03/04/08/09, FR-PROD-12/13/14/15/16/27, FR-SAAS2-02/04/05/06/07/08, FR-WMS-02/06/07/09, FR-UFM-* and FR-MDM-02/04/05/06.
+- Authoritative source files inspected from the supplied Library: `FactoryOS_AI_-_SRS_v2_1_FINAL_Product_Ready_Manufacturing_SaaS(8).pdf` (FOS-SRS-001, SRS v2.1 Final Product-Ready, 2026-10-02; 103 pages); `FactoryOS_AI_v2_1_System_Architecture_Technical_Design_HLD_LLD(3).pdf` (HLD/LLD v1.0, 2026-10-02; 25 pages); `FactoryOS_AI_v2_1_Engineering_Implementation_Blueprint_v1_0(8).pdf` (Blueprint v1.0, 2026-10-02; 31 pages). Their latest copies were uploaded to Library on 2026-10-17, but they are not checked into the repository tree.
 - The nine operational objectives supplied for Rounds 35–43.
 
 ### Evidence rules
@@ -43,7 +43,7 @@ The above results establish repository-level automated acceptance for the listed
 2. A test only proves the behavior actually exercised by that test. SQL catalog/RLS checks do not prove every endpoint denies all foreign-tenant misuse; mock transport does not prove a real provider works.
 3. Existing functionality is not counted as newly delivered by this audit.
 4. A “Partial” result records the known boundary rather than hiding it in a general completion percentage.
-5. Priority assignments below are provisional engineering risk classifications. Official P0/P1 labels and acceptance criteria must be reconciled to the signed requirement baseline before final sign-off.
+5. Direct priorities are taken from the final SRS row when confidently parsed. Thirty-seven ID priorities still need manual verification; engineering priority labels in the gap register are provisional risk triage, not a substitute for source priority.
 6. No production database, customer tenant, OT controller, billing provider, ERP/SFTP endpoint or production monitoring system was changed by this audit.
 
 ## 3. Requirement-by-requirement repository evidence register
@@ -100,8 +100,8 @@ Priority labels in this table are **provisional** until they are validated again
 
 | ID | Gap | Closure evidence required | Owner class |
 |---|---|---|---|
-| P0-01 | Source baseline exists in the supplied Library but is not versioned with repository evidence | Commit the source PDFs or attach a governed immutable SHA-256 manifest and source approval record | Make the exact source baseline reproducible in release/change records and reconcile it to the requirement matrix | Product + Architecture |
-| P0-02 | Declared cumulative SRS scope and distinct extracted FR/NFR inventory do not reconcile | SRS §140 declares 950 cumulative requirements (P0=296/P1=582/P2=72); extraction finds 899 distinct FR/NFR IDs and 37 row priorities need review | Reconcile repeated/superseded revision IDs, missing/indirect IDs and exact final priorities; then attach per-ID acceptance test, SHA, owner and disposition | Product + Engineering |
+| P0-01 | Source baseline exists in the supplied Library but is not versioned alongside the repository evidence | Commit the source PDFs or attach a governed immutable SHA-256 manifest, revision metadata and source approval record | Make the exact source baseline reproducible in release/change records and reconcile it to the requirement matrix | Product + Architecture |
+| P0-02 | Declared cumulative SRS scope and distinct extracted FR/NFR inventory do not reconcile | SRS §140 declares 950 cumulative requirements (P0=296/P1=582/P2=72); extraction finds 899 distinct FR/NFR IDs and 37 row priorities need manual review | Reconcile all 51 entries between cumulative scope and unique IDs, repeated/superseded revision IDs and indirect/missing table rows; attach test, SHA, owner and disposition per ID | Product + Engineering |
 | P0-03 | No formal multidisciplinary sign-off | Signed go/no-go record acknowledging all open P1s, risk acceptance, target release SHA and evidence links | Product + Engineering + Security + Operations |
 
 ### P1 — production acceptance/security/reliability gaps
