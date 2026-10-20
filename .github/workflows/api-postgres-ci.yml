@@ -317,6 +317,38 @@ jobs:
           rm -rf "$recovery_home"
           rm -f "$RUNNER_TEMP/factoryos-ci-recovery-key.params" "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
 
+          # A rehearsal cannot pass this step with missing/unbound migration or rollback evidence.
+          receipt_path="$recovery_evidence_dir/ci-restore-receipt.json"
+          test -s "$receipt_path"
+          node --input-type=module - "$receipt_path" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const receipt = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          assert.equal(receipt.schema, 'factoryos.disaster-recovery-rehearsal/v1');
+          assert.equal(receipt.status, 'TECHNICAL_PASS');
+          assert.equal(receipt.databases.distinctIdentityVerified, true);
+          assert.equal(receipt.databases.targetWasEmptyBeforeRestore, true);
+          assert.match(receipt.backup.sha256, /^[a-f0-9]{64}$/);
+          assert.equal(receipt.backup.checksumVerified, true);
+          assert.equal(receipt.backup.encryption, 'ENCRYPTED_GPG');
+          assert.equal(receipt.backup.archiveReadability, 'READABLE');
+          assert.equal(receipt.verification.restoreStatus, 'PASS');
+          assert.equal(receipt.candidate.migrationStatus, 'PASS');
+          assert.equal(receipt.candidate.migrationCount, 8);
+          assert.match(receipt.candidate.migrationManifestSha256, /^[a-f0-9]{64}$/);
+          assert.equal(receipt.candidate.failedTransactionRecoveryStatus, 'PASS');
+          assert.equal(receipt.verification.migrationRecoveryStatus, 'PASS');
+          assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
+          assert.equal(receipt.verification.applicationSmokeStatus, 'PASS');
+          assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
+          assert.equal(receipt.verification.tenantIsolationStatus, 'PASS');
+          assert.equal(receipt.verification.auditContinuityStatus, 'PASS');
+          assert.ok(Number.isSafeInteger(receipt.measured.observedRpoSeconds));
+          assert.ok(Number.isSafeInteger(receipt.measured.observedRtoSeconds));
+          assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
+          console.log('RECOVERY_EVIDENCE_RECEIPT_CONTRACT=PASS');
+          NODE
+
           # Deliberately fail after transactional DDL/DML; psql must leave no partial migration state.
           recovery_log="$(mktemp)"
           if psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
