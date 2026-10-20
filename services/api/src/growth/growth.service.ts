@@ -1617,6 +1617,9 @@ export class GrowthService {
     const sourceRef = typeof dto.forecast_source_ref === 'string' ? dto.forecast_source_ref.trim() : '';
     const idempotencyKey = typeof dto.idempotency_key === 'string' ? dto.idempotency_key.trim() : '';
     const origin = new Date(dto.forecast_origin_at);
+    if (Number.isFinite(origin.getTime()) && origin.getTime() > Date.now()) {
+      throw new BadRequestException('forecast_origin_at cannot be in the future');
+    }
     if (!modelVersion || modelVersion.length > 128) throw new BadRequestException('model_version is required and must be <= 128 characters');
     if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey)) throw new BadRequestException('metric_key must be a stable lowercase identifier');
     if (!unit || unit.length > 40) throw new BadRequestException('unit is required and must be <= 40 characters');
@@ -1818,7 +1821,7 @@ export class GrowthService {
        FROM growth_forecast_evaluations
        WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
        ORDER BY evaluated_at DESC, id DESC LIMIT 10000`,
-      [opportunityId, tenantId, factoryId],
+      [tenantId, factoryId, opportunityId],
       { tenantId },
     );
     const totalCount = Number(result.rows[0]?.total_count ?? 0);
