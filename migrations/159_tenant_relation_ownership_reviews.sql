@@ -251,8 +251,14 @@ BEGIN
         scope_predicate, export_disposition, erasure_disposition, review_status
       ) VALUES (
         item.schema_name, item.relation_name, 'DERIVED_TENANT', 'FOREIGN_KEY_LINEAGE',
-        'Automated PostgreSQL FK-lineage review produced a fail-closed tenant predicate. The relation remains excluded from generic export and blocked from generic erasure until a reviewed adapter is registered.',
-        predicate, 'EXCLUDED', 'BLOCKED_UNREVIEWED', 'VERIFIED'
+        CASE WHEN item.relation_name IN ('user_roles', 'role_permissions')
+          THEN 'FK-derived scope is enforced and the existing logical IAM remapping adapter is explicitly reviewed; it exports stable membership/role/permission codes rather than copying relationship rows.'
+          ELSE 'Automated PostgreSQL FK-lineage review produced a fail-closed tenant predicate. The relation remains excluded from generic export and blocked from generic erasure until a reviewed adapter is registered.'
+        END,
+        predicate,
+        CASE WHEN item.relation_name IN ('user_roles', 'role_permissions') THEN 'ALLOWLISTED' ELSE 'EXCLUDED' END,
+        CASE WHEN item.relation_name IN ('user_roles', 'role_permissions') THEN 'PROTECTED' ELSE 'BLOCKED_UNREVIEWED' END,
+        'VERIFIED'
       )
       ON CONFLICT (schema_name, relation_name) DO UPDATE SET
         ownership_class = EXCLUDED.ownership_class,
