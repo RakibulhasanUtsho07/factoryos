@@ -5,6 +5,7 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateSaasSubscriptionPlanDto } from './dto/create-saas-subscription-plan.dto';
 import { StartSaasTrialDto } from './dto/start-saas-trial.dto';
 import { TransitionSaasSubscriptionDto } from './dto/transition-saas-subscription.dto';
+import { SetSaasEntitlementEnforcementModeDto } from './dto/set-saas-entitlement-enforcement-mode.dto';
 import { SaasSubscriptionService } from './saas-subscription.service';
 
 type SubscriptionRequest = Request & {
@@ -68,6 +69,25 @@ export class SaasSubscriptionController {
   ) {
     const context = this.context(request);
     return this.service.transition(context.tenantId, context.userId, subscriptionId, body);
+  }
+
+  @Get('entitlement-mode')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.entitlement_modes.read')
+  async entitlementMode(@Req() request: SubscriptionRequest) {
+    const context = this.context(request);
+    return this.service.getEntitlementEnforcementMode(context.tenantId, context.userId);
+  }
+
+  @Post('entitlement-mode')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.entitlement_modes.write')
+  async migrateEntitlementMode(
+    @Req() request: SubscriptionRequest,
+    @Body() body: SetSaasEntitlementEnforcementModeDto,
+  ) {
+    const context = this.context(request);
+    return this.service.setEntitlementEnforcementMode(context.tenantId, context.userId, body);
   }
 
   private context(request: SubscriptionRequest): { tenantId: string; userId: string } {
