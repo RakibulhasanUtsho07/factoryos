@@ -184,6 +184,7 @@ BEGIN
       WHEN 'tenants' THEN 'Global tenant registry/control plane; it is not a tenant-owned dataset and is excluded from generic export and erasure.'
       WHEN 'users' THEN 'Shared identity principals may have memberships in several tenants; profile access must be membership-authorized and generic tenant export/erasure is excluded.'
       WHEN 'permissions' THEN 'Global permission-code catalogue referenced by tenant roles; it is excluded from tenant dataset export and generic erasure.'
+      WHEN 'auth_identities' THEN 'Global OIDC issuer/subject-to-user mapping is resolved before tenant context exists; access is limited to the authentication boundary, and export/erasure is handled only by a dedicated identity-governance workflow.'
       WHEN 'schema_migrations' THEN 'Internal schema migration ledger; operational metadata is outside tenant export and erasure.'
       ELSE NULL
     END;
