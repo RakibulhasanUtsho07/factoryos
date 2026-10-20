@@ -119,3 +119,14 @@ Object-store exports, derived indexes, caches, replicas, external providers and 
 ## Requirement traceability
 
 Maps to the tenant-wide portion of `FR-PROD-15`, SaaS export/migration requirements in `docs/saas-productization.md`, and the tenant isolation/privacy principles in the engineering blueprint. The signed SRS/HLD must be present and approved to complete formal requirement-by-requirement sign-off.
+
+
+## External copy propagation and scoped erasure receipts (migration 160)
+
+A successful row deletion from the reviewed PostgreSQL allowlist is recorded with `receipt_scope = POSTGRESQL_ONLY`; its API manifest explicitly says `wholeTenantErasureVerified: false`. The erasure request then moves to `PROPAGATION_PENDING`. Only a second request-bound propagation receipt can move it to `VERIFIED`, and only if every required, independently reviewed target was verified against the exact prepared SHA-256 manifest, deleted copies match planned copies, no residual copy remains, and the stored request version has not changed.
+
+Targets are registered/reviewed separately for object storage/files, caches, search indexes, vector/embedding stores, derived learning artifacts, external providers, replicas and backups. The provider adapter must enumerate the full tenant/category scope, persist a deterministic identity manifest before deletion, use an idempotent provider operation, verify by independent read-back, keep opaque provider receipt and residual references, and recover uncertain operations before retries. Failed or timed-out operations are recorded as failed/residual and remain pending; they are never silently treated as success. Active legal holds are rechecked before propagation starts.
+
+Finance/usage ledger records remain excluded from generic business-data deletion. Their retention is represented by a separate reviewed policy and adapter execution receipt, requires distinct policy creator, reviewer and executor, has its own legal basis/cutoff/count/digest, and remains blocked by applicable legal holds. This separate class does not imply that a live finance provider integration is configured.
+
+Production note: migration 160 and service contracts implement the fail-closed orchestration and immutable evidence schema. Provider-specific integrations are deployment-owned; no live external service has been claimed deleted by CI. In this repository the provider adapter registry starts empty and finance adapter unset, so any erasure with missing target coverage or missing adapter fails closed and cannot be externally verified. Register and smoke-test provider adapters, secret/config references, inventory completeness, replica/version deletion, backup expiry SLAs and recovery behaviour before treating whole-tenant erasure as production-supported.
