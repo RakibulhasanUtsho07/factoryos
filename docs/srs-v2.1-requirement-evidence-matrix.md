@@ -975,6 +975,7 @@ Current CI evidence:
 
 This matrix is intentionally exhaustive at the **distinct FR/NFR ID** level detected in the extracted SRS text, and is linked from:
 - [Final SRS/HLD/Blueprint traceability audit](final-srs-hld-blueprint-traceability-audit.md)
+- [HLD/Blueprint WP01–WP12 evidence matrix](hld-blueprint-work-package-evidence-matrix.md)
 - [Operational Rounds 35–43 traceability](operational-rounds-35-43-traceability.md)
 - [Release readiness checklist](release-readiness.md)
 - [Backup, restore, migration, load and security acceptance](backup-restore-migration-load-security-acceptance.md)
