@@ -92,6 +92,7 @@ interface ErasureRunRow extends QueryResultRow {
 interface TenantTableMetadata {
   table: string;
   safe: boolean;
+  deletionGuarded: boolean;
   timeColumn: string | null;
 }
 
@@ -175,11 +176,14 @@ export class SaasTenantGovernanceExecutionService {
       const mapped = tables.length > 0
         ? await this.inspectTables(client, tables, true)
         : [];
+      const deleteGuarded = mapped.some((item) => item.deletionGuarded);
       const unsupported = tables.length === 0
         ? 'NO_REVIEWED_TABLE_MAPPING'
         : mapped.some((item) => !item.safe || !item.timeColumn)
           ? 'TABLE_ISOLATION_OR_TIME_ANCHOR_UNVERIFIED'
-          : null;
+          : mode === SaasRetentionRunMode.EXECUTE && deleteGuarded
+            ? 'DELETE_GUARD_REQUIRES_REVIEWED_ADAPTER'
+            : null;
       const manifest: Record<string, unknown> = {};
       let examined = 0n;
       let eligible = 0n;
@@ -373,8 +377,8 @@ export class SaasTenantGovernanceExecutionService {
 
         const tables = [...new Set(categories.flatMap((category) => this.resolveTables(category)))].sort();
         const mapped = await this.inspectTables(client, tables, false);
-        if (mapped.some((item) => !item.safe)) {
-          throw new ConflictException('A target table failed the tenant isolation contract; no erasure data was changed');
+        if (mapped.some((item) => !item.safe || item.deletionGuarded)) {
+          throw new ConflictException('A target table failed tenant isolation checks or has an unreviewed DELETE trigger; no erasure data was changed');
         }
         let totalRows = 0n;
         const counts: Record<string, string> = {};
@@ -590,6 +594,7 @@ export class SaasTenantGovernanceExecutionService {
         has_id: boolean;
         forced_rls: boolean;
         has_tenant_policy: boolean;
+        deletion_guarded: boolean;
         time_column: string | null;
       }>(
         `SELECT
@@ -605,6 +610,11 @@ export class SaasTenantGovernanceExecutionService {
                AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%tenant_id%'
                AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
            ) AS has_tenant_policy,
+           EXISTS (
+             SELECT 1 FROM pg_trigger tr
+             WHERE tr.tgrelid=c.oid AND NOT tr.tgisinternal AND tr.tgenabled <> 'D'
+               AND (tr.tgtype::integer & 8) = 8
+           ) AS deletion_guarded,
            (SELECT a.attname::text FROM pg_attribute a
              WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
                AND a.attname=ANY($2::text[])
@@ -616,7 +626,7 @@ export class SaasTenantGovernanceExecutionService {
       );
       const row = meta.rows[0];
       const safe = Boolean(row?.table_exists && row.has_tenant_id && row.has_id && row.forced_rls && row.has_tenant_policy);
-      result.push({ table, safe, timeColumn: requireTimeColumn ? row?.time_column ?? null : null });
+      result.push({ table, safe, deletionGuarded: Boolean(row?.deletion_guarded), timeColumn: requireTimeColumn ? row?.time_column ?? null : null });
     }
     return result;
   }
