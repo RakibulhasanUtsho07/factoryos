@@ -51,10 +51,10 @@ target_identity="$(psql "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c 
 [[ -n "$source_identity" && -n "$target_identity" ]] || die "database identity check returned an empty identity"
 [[ "$source_identity" != "$target_identity" ]] || die "source and restore target resolve to the same database identity"
 
-target_relations="$(psql "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f')")" \
+target_relations="$(psql "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp_' AND c.relkind IN ('r','p','v','m','S','f')")" \
   || die "could not verify that the restore target is empty"
 [[ "$target_relations" =~ ^[0-9]+$ ]] || die "restore target emptiness check returned an invalid count"
-[[ "$target_relations" == "0" ]] || die "restore target public schema is not empty; no data was restored"
+[[ "$target_relations" == "0" ]] || die "restore target contains user relations; no data was restored"
 
 printf 'Creating encrypted PostgreSQL custom-format backup...\n'
 pg_dump --format=custom --no-owner --no-acl --dbname="service=$source_service" \
