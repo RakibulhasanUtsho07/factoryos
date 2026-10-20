@@ -235,7 +235,7 @@ export class SaasSubscriptionService {
         if (currentVersion !== expectedVersion) {
           throw new ConflictException('Entitlement mode version is stale; reload before migrating the tenant');
         }
-        if (currentMode === mode) {
+        if (currentMode === mode && currentVersion > 0) {
           throw new ConflictException('Tenant already uses the requested entitlement enforcement mode');
         }
         if (
