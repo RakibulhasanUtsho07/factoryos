@@ -27,6 +27,10 @@ import { SaasTenantPropagationService } from './saas-tenant-propagation.service'
 import { PropagateSaasTenantErasureDto } from './dto/propagate-saas-tenant-erasure.dto';
 import { RegisterSaasExternalDataTargetDto } from './dto/register-saas-external-data-target.dto';
 import { ReviewSaasExternalDataTargetDto } from './dto/review-saas-external-data-target.dto';
+import { CreateSaasFinanceRetentionPolicyDto } from './dto/create-saas-finance-retention-policy.dto';
+import { ReviewSaasFinanceRetentionPolicyDto } from './dto/review-saas-finance-retention-policy.dto';
+import { RunSaasFinanceRetentionDto } from './dto/run-saas-finance-retention.dto';
+import { SaasTenantFinanceRetentionService } from './saas-tenant-finance-retention.service';
 
 type RetentionRequest = Request & {
   factoryos?: {
@@ -41,6 +45,7 @@ export class SaasTenantRetentionController {
     private readonly service: SaasTenantRetentionService,
     private readonly execution: SaasTenantGovernanceExecutionService,
     private readonly propagation: SaasTenantPropagationService,
+    private readonly financeRetention: SaasTenantFinanceRetentionService,
   ) {}
 
   @Post('policies')
@@ -243,6 +248,54 @@ export class SaasTenantRetentionController {
   ) {
     const context = this.context(request);
     return this.propagation.listPropagationRuns(context.tenantId, context.userId, requestId, limit);
+  }
+
+  @Post('finance-policies')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.write')
+  createFinanceRetentionPolicy(@Req() request: RetentionRequest, @Body() body: CreateSaasFinanceRetentionPolicyDto) {
+    const context = this.context(request);
+    return this.financeRetention.createPolicy(context.tenantId, context.userId, body);
+  }
+
+  @Get('finance-policies')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  listFinanceRetentionPolicies(@Req() request: RetentionRequest) {
+    const context = this.context(request);
+    return this.financeRetention.listPolicies(context.tenantId, context.userId);
+  }
+
+  @Post('finance-policies/:version/review')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.finance_review')
+  reviewFinanceRetentionPolicy(
+    @Req() request: RetentionRequest,
+    @Param('version') version: string,
+    @Body() body: ReviewSaasFinanceRetentionPolicyDto,
+  ) {
+    const context = this.context(request);
+    return this.financeRetention.reviewPolicy(context.tenantId, context.userId, Number(version), body);
+  }
+
+  @Post('finance-policies/:version/run')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.finance_execute')
+  runFinanceRetentionPolicy(
+    @Req() request: RetentionRequest,
+    @Param('version') version: string,
+    @Body() body: RunSaasFinanceRetentionDto,
+  ) {
+    const context = this.context(request);
+    return this.financeRetention.runPolicy(context.tenantId, context.userId, Number(version), body);
+  }
+
+  @Get('finance-runs')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.read')
+  listFinanceRetentionRuns(@Req() request: RetentionRequest, @Query('limit') limit?: string) {
+    const context = this.context(request);
+    return this.financeRetention.listRuns(context.tenantId, context.userId, limit);
   }
 
   private context(request: RetentionRequest): { tenantId: string; userId: string } {
