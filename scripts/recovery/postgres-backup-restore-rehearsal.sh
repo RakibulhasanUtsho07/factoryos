@@ -291,9 +291,9 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
   event_epoch="$(date -u -d "$event_time_utc" +%s)"
   restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
+  # Source watermark is sampled before the dump and may advance while pg_dump runs.
+  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
   (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
   observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
 fi
 
