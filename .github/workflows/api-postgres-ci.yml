@@ -334,6 +334,7 @@ jobs:
           assert.equal(receipt.backup.archiveReadability, 'READABLE');
           assert.equal(receipt.verification.restoreStatus, 'PASS');
           assert.equal(receipt.candidate.migrationStatus, 'PASS');
+          assert.equal(receipt.candidate.migrationManifestMode, 'IDEMPOTENT_REPLAY');
           assert.equal(receipt.candidate.migrationCount, 8);
           assert.match(receipt.candidate.migrationManifestSha256, /^[a-f0-9]{64}$/);
           assert.equal(receipt.candidate.failedTransactionRecoveryStatus, 'PASS');
