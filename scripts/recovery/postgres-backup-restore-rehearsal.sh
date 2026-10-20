@@ -159,6 +159,7 @@ need_value FACTORYOS_RESTORE_SMOKE_SQL "$smoke_sql"
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   need_value FACTORYOS_RECOVERY_EVIDENCE_JSON "$evidence_file"
   need_value FACTORYOS_CANDIDATE_MIGRATION_MANIFEST "$candidate_manifest"
+  [[ "$manifest_mode" == "PENDING" || "$manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "FACTORYOS_MIGRATION_MANIFEST_MODE must be PENDING or IDEMPOTENT_REPLAY"
   need_value FACTORYOS_RECOVERY_WATERMARK_SQL "$watermark_sql"
   need_value FACTORYOS_RECOVERY_EVENT_TIME_UTC "$event_time_utc"
   need_value FACTORYOS_RECOVERY_OPERATOR "${FACTORYOS_RECOVERY_OPERATOR:-}"
@@ -237,7 +238,9 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
     seen_migrations["$migration"]=1
     candidate_migration_count=$((candidate_migration_count + 1))
   done < "$repo_root/$candidate_manifest"
-  [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
+  if [[ "$manifest_mode" == "IDEMPOTENT_REPLAY" && "$candidate_migration_count" -eq 0 ]]; then
+    die "idempotent replay manifest must contain at least one SQL entry"
+  fi
 fi
 
 current_stage="encrypted_backup"
