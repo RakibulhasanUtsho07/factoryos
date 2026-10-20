@@ -11,7 +11,7 @@ The final SRS section 140 states the cumulative design scope is **950 requiremen
 
 This register lists each distinct FR/NFR ID detected in the source extract and gives its source priority where it could be resolved plus conservative repo evidence/status. Different SRS revisions within this cumulative SRS reuse IDs, amend wording/priorities and cite IDs in other rows; therefore the distinct-ID row count below is not intended to sum to 950. Any row whose priority is blank, or whose source text is an indirect citation, must be reviewed against the full authoritative table before sign-off. Do not treat “partial” as a formal waiver; each P0/P1 remainder needs either implementation evidence or an approved disposition.
 
-**Extracted distinct requirement IDs:** 899. **Priority parsed from the requirement row:** P0=258, P1=547, P2=57, unresolved row priority=37. **Requirement families that need additional owner/architecture mapping:** FR-AGO, FR-AIF, FR-AIN, FR-AIX, FR-CMP, FR-COP, FR-EDG, FR-ESG, FR-GOV, FR-KNO, FR-LRN, FR-MMI, FR-PRA, NFR-A11Y, NFR-AI, NFR-AIF2, NFR-AIL, NFR-CBB, NFR-COST, NFR-CYB2, NFR-DPR, NFR-DR, NFR-GR, NFR-LOC, NFR-NGX, NFR-OBS, NFR-OFF, NFR-PROD, NFR-PRV, NFR-REL, NFR-SEC, NFR-UNI, NFR-UPG.
+**Extracted distinct requirement IDs:** 899. **Priority parsed from the requirement row:** P0=258, P1=547, P2=57, unresolved row priority=37. The final SRS §140 cumulative count is 950; therefore **51 of the SRS's cumulative scope entries do not appear as distinct FR/NFR IDs in this extract** and must be reconciled against revision history/superseded wording and the final source tables. The 37 unresolved priorities and the 51-count difference are explicit audit gaps, not silently assumed passes. Every extracted ID has a conservative status/evidence boundary; family-level evidence still needs a test pointer for each applicable row. FR-CMP has only an indirect cross-reference in the extracted source context and requires exact normative-row verification.
 
 ## 2. Evidence and status semantics
 
@@ -929,17 +929,18 @@ This register lists each distinct FR/NFR ID detected in the source extract and g
 The source has acceptance scenarios **AS-18 through AS-141**, across CBB, manufacturing, AI, research/growth, integration, security, tenant lifecycle and production readiness. Scenario identifiers are not automatically passed by the presence of related endpoints. The final SRS v2.1 scenario set, especially AS-132 through AS-141, must be run or dispositioned against a release candidate. Current repository CI verifies many selected domain fixtures; it is not evidence that every AS row was run end-to-end.
 
 Production-readiness cases that are direct release gates:
-- **AS-132** subscription/plan upgrade while preserving existing transaction, tenant identity, permissions and historical audit.
-- **AS-133** tenant data export/delete with scopes covering retrieval stores and residuals.
-- **AS-134** ERP connector unavailability and visible recoverable failure.
-- **AS-135** production rollout/recovery behavior, including reversible/versioned state where specified.
-- **AS-136** access revocation/retention or data lifecycle behavior (verify the precise source text before sign-off).
-- **AS-137** trace/support inspection with permissions, correlation and audit.
-- **AS-138 / AS-139** capacity/noisy-neighbour isolation and AI/research load under peak.
-- **AS-140** migration/restore validation with compatibility and tenant boundaries.
-- **AS-141** disaster recovery restore and integrity/isolation/audit proof.
+- **AS-132** tenant subscription/plan upgrade while preserving existing transactions, tenant IDs, permissions and historical audit data.
+- **AS-133** identity-provider user removal revoking target-tenant scope and active sessions/tokens while following security policy.
+- **AS-134** ERP connector outage produces visible degraded state without a retry storm or validation bypass.
+- **AS-135** invalid master-data migration enters validation failure, produces a reconciliation report and prevents partial corruption.
+- **AS-136** a tenant-cohort deployment failing health checks is halted or rolled back, with evidence in the change record.
+- **AS-137** governed deletion of a personal-data subject propagates to required derived stores and records policy exceptions.
+- **AS-138** support inspection of an AI trace exposes only permitted, masked diagnostics, correlation IDs, policy outcomes and error class.
+- **AS-139** a large tenant's peak AI/research batch is queued/throttled so transactional services remain isolated.
+- **AS-140** breaking API schema/version changes are rejected or migrated through an explicit, testable compatibility path.
+- **AS-141** disaster-recovery restore proves data integrity, tenant isolation, audit continuity and target RTO/RPO evidence before closure.
 
-The exact AS text must be read from the source rows before marking any item PASS; the bullets above summarize the final release-oriented scenario intent only.
+These scenarios are source-derived, but none should be marked PASS unless the exact scenario was exercised and evidence is linked to the release SHA; current CI passing is not proof that all AS-132 through AS-141 ran end-to-end.
 
 ## 5. P0/P1 evidence gates from final SRS/HLD/Blueprint
 
