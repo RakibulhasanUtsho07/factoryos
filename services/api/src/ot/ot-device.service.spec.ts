@@ -73,7 +73,7 @@ describe('OtDeviceService', () => {
   it('rejects Modbus reads for a stream key outside the approved immutable register map', async () => {
     database.query.mockResolvedValueOnce({ rows: [deviceRow({ protocol: 'MODBUS_TCP', metadata: { modbus_tcp: { unit_id: 1, register_map: [
       { stream_key: 'LINE_TEMPERATURE', function_code: 4, address: 10, quantity: 1, data_type: 'UINT16' },
-    ] } })] });
+    ] } } })] });
     await expect(service.readModbusRegisters({ tenantId, factoryId, userId }, deviceId, { stream_keys: ['UNREGISTERED'] }))
       .rejects.toBeInstanceOf(BadRequestException);
     expect(modbusGateway.read).not.toHaveBeenCalled();
