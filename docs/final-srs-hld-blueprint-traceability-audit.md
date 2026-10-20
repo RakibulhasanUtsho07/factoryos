@@ -48,7 +48,7 @@ The above results establish repository-level automated acceptance for the listed
 
 ## 3. Requirement-by-requirement repository evidence register
 
-The exhaustive distinct FR/NFR ID matrix is maintained at [docs/srs-v2.1-requirement-evidence-matrix.md](srs-v2.1-requirement-evidence-matrix.md). Domain rows below summarize end-to-end delivery and production acceptance; they do not replace the one-ID-per-row status and evidence boundary.
+The exhaustive distinct FR/NFR ID matrix is maintained at [docs/srs-v2.1-requirement-evidence-matrix.md](srs-v2.1-requirement-evidence-matrix.md). The [HLD/Blueprint WP01–WP12 matrix](hld-blueprint-work-package-evidence-matrix.md) maps the architecture invariants and Blueprint work-package exit criteria to repository evidence. Domain rows below summarize end-to-end delivery and production acceptance; they do not replace the one-ID-per-row status and evidence boundary.
 
 This is the most complete current register assembled from the supplied final SRS text plus repository evidence: the distinct FR/NFR IDs extracted from the SRS and the domain slices are mapped below. It is **not** proof that every requirement has passed. The source's cumulative-scope count and distinct-ID extraction use different measures and must be reconciled by source owner; no 51-item implementation deficit is inferred from the arithmetic difference alone. Rows without an exact FR ID use the documented work-package/domain contract, not invented SRS IDs.
 
