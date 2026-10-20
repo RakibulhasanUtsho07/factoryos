@@ -200,13 +200,14 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   current_stage="source_watermark"
   source_watermark_utc="$(run_watermark_query "$source_service" "$watermark_sql")"
   candidate_manifest_sha256="$(sha256sum -- "$repo_root/$candidate_manifest" | awk '{print $1}')"
-  seen_migrations=
+  declare -A seen_migrations=()
+  while IFS= read -r migration || [[ -n "$migration" ]]; do
     migration="${migration%$'\r'}"
     [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
     [[ "$migration" =~ ^migrations/[0-9]{3}_[a-z0-9_]+\.sql$ ]] || die "invalid candidate migration entry: $migration"
     [[ -f "$repo_root/$migration" && -r "$repo_root/$migration" ]] || die "candidate migration does not exist: $migration"
-    [[ "$seen_migrations" != *
-    seen_migrations+="${migration}"$'\n'
+    [[ -z "${seen_migrations[$migration]:-}" ]] || die "duplicate candidate migration: $migration"
+    seen_migrations["$migration"]=1
     candidate_migration_count=$((candidate_migration_count + 1))
   done < "$repo_root/$candidate_manifest"
   [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
