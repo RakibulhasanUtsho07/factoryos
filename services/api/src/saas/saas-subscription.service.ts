@@ -132,8 +132,11 @@ export class SaasSubscriptionService {
     );
 
     const subscription = result.rows[0];
-    // PostgreSQL returns one row even when no subscription record exists.
-    if (!subscription) return;
+    // The scoped SELECT has a seed row and must always return a policy decision.
+    // A query/adapter failure is not evidence of legacy compatibility.
+    if (!subscription) {
+      throw new ForbiddenException('Unable to resolve tenant subscription entitlement; capability access is disabled');
+    }
     const enforcementMode = subscription.enforcement_mode ?? SaasEntitlementEnforcementMode.LEGACY_COMPATIBLE;
     if (!subscription.status) {
       if (enforcementMode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED) {
