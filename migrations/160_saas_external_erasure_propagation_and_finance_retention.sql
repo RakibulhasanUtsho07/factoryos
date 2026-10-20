@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_data_targets (
   store_kind varchar(32) NOT NULL,
   adapter_key varchar(100) NOT NULL,
   config_reference varchar(200) NOT NULL,
+  registration_reason varchar(1000) NOT NULL,
   categories jsonb NOT NULL,
   required boolean NOT NULL DEFAULT true,
   status varchar(12) NOT NULL DEFAULT 'PENDING',
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_data_targets (
     AND config_reference !~* '://'
     AND config_reference !~* '(secret|password|credential|access[-_]?key|token)'
   ),
+  CONSTRAINT chk_saas_external_target_registration_reason CHECK (length(btrim(registration_reason)) BETWEEN 3 AND 1000),
   CONSTRAINT chk_saas_external_target_categories CHECK (
     jsonb_typeof(categories)='array' AND jsonb_array_length(categories) BETWEEN 1 AND 10
     AND categories <@ '[ "BUSINESS_DATA", "AUDIT_LOG", "EVIDENCE", "APPROVALS", "EFFECTIVE_DATED_MASTER_DATA", "AI_CONTEXT", "LEARNING_EVALUATION", "INTEGRATION_METADATA", "FILE_REFERENCES", "IAM_ACCESS" ]'::jsonb
@@ -95,10 +97,10 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
-  IF (NEW.tenant_id,NEW.target_id,NEW.store_kind,NEW.adapter_key,NEW.config_reference,
+  IF (NEW.tenant_id,NEW.target_id,NEW.store_kind,NEW.adapter_key,NEW.config_reference,NEW.registration_reason,
       NEW.categories,NEW.required,NEW.registered_by_user_id,NEW.idempotency_key,NEW.request_hash,NEW.created_at)
      IS DISTINCT FROM
-     (OLD.tenant_id,OLD.target_id,OLD.store_kind,OLD.adapter_key,OLD.config_reference,
+     (OLD.tenant_id,OLD.target_id,OLD.store_kind,OLD.adapter_key,OLD.config_reference,OLD.registration_reason,
       OLD.categories,OLD.required,OLD.registered_by_user_id,OLD.idempotency_key,OLD.request_hash,OLD.created_at) THEN
     RAISE EXCEPTION 'external target scope/config reference is immutable; register a new target version' USING ERRCODE='55000';
   END IF;
