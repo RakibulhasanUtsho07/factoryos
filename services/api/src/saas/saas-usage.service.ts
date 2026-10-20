@@ -187,16 +187,21 @@ export class SaasUsageService {
   const adjustment=await this.database.query<QueryResultRow & {adjustment_sum:string}>(
    'SELECT COALESCE(SUM(cost_delta_minor),0)::text AS adjustment_sum FROM saas_usage_adjustments WHERE tenant_id=$1 AND period_start < $3 AND period_end > $2 AND currency=$4 AND ($5::uuid IS NULL OR factory_id=$5)',
    [tenantId,n.period_start,n.period_end,n.currency,factoryId],{tenantId,userId:actorUserId});
-  const eventCount=Number(ledger.rows[0]?.event_count??0),unpriced=Number(ledger.rows[0]?.unpriced_count??0);
-  const ledgerAmount=Number(ledger.rows[0]?.ledger_sum??0),adjustmentAmount=Number(adjustment.rows[0]?.adjustment_sum??0);
+  const eventCountBigInt=BigInt(String(ledger.rows[0]?.event_count??0)),unpriced=Number(ledger.rows[0]?.unpriced_count??0);
+  if(eventCountBigInt>BigInt(Number.MAX_SAFE_INTEGER))throw new BadRequestException('Reconciliation event count exceeds the supported integer range');
+  const eventCount=Number(eventCountBigInt);
+  const ledgerAmount=BigInt(String(ledger.rows[0]?.ledger_sum??0)),adjustmentAmount=BigInt(String(adjustment.rows[0]?.adjustment_sum??0));
+  this.assertMoneyAggregateRange(ledgerAmount,'ledger amount');
+  this.assertMoneyAggregateRange(adjustmentAmount,'adjustment amount');
   const expected=unpriced>0?null:ledgerAmount+adjustmentAmount;
-  if(expected!==null&&(!Number.isSafeInteger(expected)||!Number.isSafeInteger(Number(n.invoiced_amount_minor)-expected)))throw new BadRequestException('Reconciliation amount exceeds the supported integer range');
-  const variance=expected===null?null:Number(n.invoiced_amount_minor)-expected;
-  const status=unpriced>0?'UNPRICED_USAGE':variance===0?'MATCHED':'VARIANCE';
-  const reportHash=this.hash({tenantId,factoryId,periodStart:n.period_start,periodEnd:n.period_end,currency:n.currency,eventCount,unpriced,ledgerAmount:unpriced?null:ledgerAmount,adjustmentAmount,expected,invoice:n.invoiced_amount_minor,status});
+  if(expected!==null)this.assertMoneyAggregateRange(expected,'expected amount');
+  const variance=expected===null?null:BigInt(n.invoiced_amount_minor)-expected;
+  if(variance!==null)this.assertMoneyAggregateRange(variance,'invoice variance');
+  const status=unpriced>0?'UNPRICED_USAGE':variance===0n?'MATCHED':'VARIANCE';
+  const reportHash=this.hash({tenantId,factoryId,periodStart:n.period_start,periodEnd:n.period_end,currency:n.currency,eventCount,unpriced,ledgerAmount:unpriced?null:ledgerAmount.toString(),adjustmentAmount:adjustmentAmount.toString(),expected:expected?.toString()??null,invoice:String(n.invoiced_amount_minor),status});
   const inserted=await this.database.query<ReconciliationRow>(
    'INSERT INTO saas_usage_reconciliations(tenant_id,factory_id,invoice_reference,reconciliation_version,period_start,period_end,currency,event_count,unpriced_event_count,ledger_estimated_amount_minor,adjustment_amount_minor,expected_amount_minor,invoiced_amount_minor,variance_minor,status,report_hash,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT DO NOTHING RETURNING '+RECONCILIATION_COLUMNS,
-   [tenantId,factoryId,n.invoice_reference,n.reconciliation_version,n.period_start,n.period_end,n.currency,eventCount,unpriced,unpriced?null:ledgerAmount,adjustmentAmount,expected,n.invoiced_amount_minor,variance,status,reportHash,hash,key,actorUserId],{tenantId,userId:actorUserId});
+   [tenantId,factoryId,n.invoice_reference,n.reconciliation_version,n.period_start,n.period_end,n.currency,eventCount,unpriced,unpriced?null:ledgerAmount.toString(),adjustmentAmount.toString(),expected?.toString()??null,n.invoiced_amount_minor,variance?.toString()??null,status,reportHash,hash,key,actorUserId],{tenantId,userId:actorUserId});
   let row=inserted.rows[0];
   if(!row){const raced=await this.database.query<ReconciliationRow>('SELECT '+RECONCILIATION_COLUMNS+' FROM saas_usage_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,key],{tenantId,userId:actorUserId});row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Reconciliation version or idempotency key conflicts with an existing snapshot');return {idempotent:true,reconciliation:this.mapReconciliation(row)};}
   await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_RECONCILIATION',action:'RECONCILE_USAGE_TO_INVOICE',resourceType:'SAAS_USAGE_RECONCILIATION',resourceId:row.id,payload:{invoiceReferenceSha256:this.sha(row.invoice_reference),version:row.reconciliation_version,periodStart:row.period_start,periodEnd:row.period_end,currency:row.currency,eventCount,unpricedEventCount:unpriced,ledgerEstimatedAmountMinor:expected===null?null:String(ledgerAmount),adjustmentAmountMinor:String(adjustmentAmount),invoicedAmountMinor:String(row.invoiced_amount_minor),varianceMinor:variance===null?null:String(variance),status,reportHash}});
@@ -481,13 +486,20 @@ export class SaasUsageService {
   const n=this.normalizeProviderReconciliation(input),hash=this.hash({tenantId,factoryId,...n.content});
   const prior=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});
   if(prior.rows[0]) {if(prior.rows[0].request_hash!==hash)throw new ConflictException('Provider reconciliation idempotency key conflicts with different content');return {idempotent:true,reconciliation:this.mapProviderReconciliation(prior.rows[0])};}
-  const totals=await this.database.query<QueryResultRow & {event_count:string|number;ledger_cost_minor:string|number}>('SELECT COUNT(*)::bigint AS event_count,COALESCE(SUM(provider_cost_minor),0)::bigint AS ledger_cost_minor FROM saas_provider_cost_events WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) AND provider_code=$3 AND currency=$4 AND occurred_at >= $5 AND occurred_at < $6 AND provider_invoice_reference=$7',
+  const totals=await this.database.query<QueryResultRow & {event_count:string|number;ledger_cost_minor:string|number}>('SELECT COUNT(*)::text AS event_count,COALESCE(SUM(provider_cost_minor),0)::text AS ledger_cost_minor FROM saas_provider_cost_events WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) AND provider_code=$3 AND currency=$4 AND occurred_at >= $5 AND occurred_at < $6 AND provider_invoice_reference=$7',
    [tenantId,factoryId,n.content.provider_code,n.content.currency,n.content.period_start,n.content.period_end,n.content.invoice_reference],{tenantId,userId:actorUserId});
-  const eventCount=Number(totals.rows[0]?.event_count??0),ledger=Number(totals.rows[0]?.ledger_cost_minor??0),invoice=n.content.invoiced_provider_cost_minor,variance=invoice-ledger,status=eventCount===0?'NO_PROVIDER_DATA':variance===0?'MATCHED':'VARIANCE';
-  const snapshot={tenantId,factoryId,...n.content,eventCount,ledger,variance,status};
+  const eventCountBigInt=BigInt(String(totals.rows[0]?.event_count??0));
+  if(eventCountBigInt>BigInt(Number.MAX_SAFE_INTEGER))throw new BadRequestException('Provider reconciliation event count exceeds the supported integer range');
+  const eventCount=Number(eventCountBigInt),ledger=BigInt(String(totals.rows[0]?.ledger_cost_minor??0)),invoice=BigInt(n.content.invoiced_provider_cost_minor);
+  this.assertMoneyAggregateRange(ledger,'provider ledger cost');
+  const variance=invoice-ledger;
+  this.assertMoneyAggregateRange(variance,'provider invoice variance');
+  const ledgerAmount=ledger.toString(),varianceAmount=variance.toString();
+  const status=eventCount===0?'NO_PROVIDER_DATA':variance===0n?'MATCHED':'VARIANCE';
+  const snapshot={tenantId,factoryId,...n.content,eventCount,ledger:ledgerAmount,variance:varianceAmount,status};
   const reportHash=this.hash(snapshot);
   const r=await this.database.query<ProviderCostReconciliationRow>('INSERT INTO saas_provider_cost_reconciliations(tenant_id,factory_id,provider_code,invoice_reference,reconciliation_version,period_start,period_end,currency,event_count,ledger_provider_cost_minor,invoiced_provider_cost_minor,variance_minor,status,report_hash,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT DO NOTHING RETURNING '+PROVIDER_RECON_COLUMNS,
-   [tenantId,factoryId,n.content.provider_code,n.content.invoice_reference,n.content.reconciliation_version,n.content.period_start,n.content.period_end,n.content.currency,eventCount,ledger,invoice,variance,status,reportHash,hash,n.idempotency_key,actorUserId],{tenantId,userId:actorUserId});
+   [tenantId,factoryId,n.content.provider_code,n.content.invoice_reference,n.content.reconciliation_version,n.content.period_start,n.content.period_end,n.content.currency,eventCount,ledgerAmount,n.content.invoiced_provider_cost_minor,varianceAmount,status,reportHash,hash,n.idempotency_key,actorUserId],{tenantId,userId:actorUserId});
   let row=r.rows[0];
   if(!row) {const raced=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Provider invoice reconciliation conflicts with an existing snapshot');return {idempotent:true,reconciliation:this.mapProviderReconciliation(row)};}
   await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_PROVIDER_COST_RECONCILIATION',action:'RECONCILE_PROVIDER_INVOICE',resourceType:'SAAS_PROVIDER_COST_RECONCILIATION',resourceId:row.id,payload:{providerCode:row.provider_code,invoiceRefSha256:this.sha(row.invoice_reference),reconciliationVersion:row.reconciliation_version,eventCount:Number(row.event_count),ledgerCostMinor:String(row.ledger_provider_cost_minor),invoicedCostMinor:String(row.invoiced_provider_cost_minor),varianceMinor:String(row.variance_minor),status:row.status,reportHash:row.report_hash}});
@@ -500,6 +512,13 @@ export class SaasUsageService {
   return {count:r.rows.length,reconciliations:r.rows.map(x=>this.mapProviderReconciliation(x)),limit,offset};
  }
 
+
+ private assertMoneyAggregateRange(value:bigint,field:string):void {
+  // Aggregate columns are widened in migration 153, but PostgreSQL NUMERIC(30,0)
+  // still has an explicit product limit. Reject rather than hash a rounded value.
+  const max=999_999_999_999_999_999_999_999_999_999n;
+  if(value>max||value< -max)throw new BadRequestException(field+' exceeds the supported 30-digit minor-unit range');
+ }
 
  private async persistBudgetAlert(tenantId:string,factoryId:string|null,budgetId:string,evaluationId:string,status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY',snapshot:Record<string,unknown>,actorUserId:string) {
   const details=status==='WARNING'?{type:'WARNING',severity:'WARNING',title:'SaaS usage budget warning',message:'BUDGET_SOFT_LIMIT'}:status==='HARD_LIMIT'?{type:'HARD_LIMIT',severity:'CRITICAL',title:'SaaS usage budget hard limit reached',message:'BUDGET_HARD_LIMIT'}:status==='ANOMALY'?{type:'ANOMALY',severity:'CRITICAL',title:'Unusual SaaS spend detected',message:'SPEND_ANOMALY'}:{type:'UNPRICED_USAGE',severity:'WARNING',title:'Usage could not be priced',message:'USAGE_UNPRICED'};
