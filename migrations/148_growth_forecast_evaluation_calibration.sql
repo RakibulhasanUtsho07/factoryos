@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
 CREATE INDEX IF NOT EXISTS idx_growth_forecast_evaluations_calibration
   ON growth_forecast_evaluations
     (tenant_id, factory_id, opportunity_id, model_version, metric_key, evaluated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_growth_forecast_evaluations_recent
+  ON growth_forecast_evaluations (tenant_id, factory_id, opportunity_id, evaluated_at DESC, id DESC);
 
 ALTER TABLE growth_forecast_evaluations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE growth_forecast_evaluations FORCE ROW LEVEL SECURITY;
@@ -99,7 +101,7 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
-  IF NEW.forecast_origin_at >= clock_timestamp() + INTERVAL '1 minute' THEN
+  IF NEW.forecast_origin_at > clock_timestamp() THEN
     RAISE EXCEPTION 'GROWTH_FORECAST_ORIGIN_CANNOT_BE_IN_THE_FUTURE'
       USING ERRCODE = '23514';
   END IF;
