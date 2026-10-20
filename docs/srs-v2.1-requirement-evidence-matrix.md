@@ -2,7 +2,7 @@
 
 **Source baseline:** FactoryOS AI SRS v2.1 FINAL Product-Ready Manufacturing SaaS, FOS-SRS-001, version 2.1 Final Product-Ready, dated 2026-10-02 (103 pages; inspected from the user's Library copy uploaded 2026-10-17). Related sources: FactoryOS AI v2.1 System Architecture & Technical Design HLD/LLD v1.0, dated 2026-10-02 (25 pages); FactoryOS AI v2.1 Engineering Implementation Blueprint v1.0, dated 2026-10-02 (31 pages). The source PDFs were inspected from the user's Library and are not committed to the Git repository; source filenames/revisions are listed in the Round 43 master audit.
 **Repository:** `RakibulhasanUtsho07/factoryos`, branch `rakibul-hasan`
-**Tested source baselines:** API CI `1f049828ddad4f5270e6b0e6f92df4bc1631335f`; PostgreSQL CI `07dbe6d54fb741227ffb2cec0ac3dea7b16a82db`; production dependency security `540da01a88d089970b70177572180a0a959f153a`. Audit commits after these baselines are documentation-only.
+**Application test baselines:** API CI `1f049828ddad4f5270e6b0e6f92df4bc1631335f`; PostgreSQL CI `07dbe6d54fb741227ffb2cec0ac3dea7b16a82db`; production dependency security `540da01a88d089970b70177572180a0a959f153a`. The separate traceability-audit CI also validates this matrix, the scenario/WP IDs, gap/backlog IDs and source hash manifest. Audit additions modify documentation and the audit validator/workflow, not application runtime/domain code.
 **Audit class:** Provisional requirement-level evidence mapping, not a signed Product/Architecture/Security/Operations acceptance.
 
 ## 1. Authoritative SRS baseline and caveat
