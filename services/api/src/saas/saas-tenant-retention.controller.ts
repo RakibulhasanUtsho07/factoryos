@@ -18,7 +18,11 @@ import { CreateSaasDataLegalHoldDto } from './dto/create-saas-data-legal-hold.dt
 import { ReleaseSaasDataLegalHoldDto } from './dto/release-saas-data-legal-hold.dto';
 import { CreateSaasTenantErasureRequestDto } from './dto/create-saas-tenant-erasure-request.dto';
 import { ReviewSaasTenantErasureRequestDto } from './dto/review-saas-tenant-erasure-request.dto';
+import { CreateSaasExportPreservationAttestationDto } from './dto/create-saas-export-preservation-attestation.dto';
+import { RunSaasRetentionPolicyDto } from './dto/run-saas-retention-policy.dto';
+import { ExecuteSaasTenantErasureDto } from './dto/execute-saas-tenant-erasure.dto';
 import { SaasTenantRetentionService } from './saas-tenant-retention.service';
+import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-execution.service';
 
 type RetentionRequest = Request & {
   factoryos?: {
@@ -29,7 +33,10 @@ type RetentionRequest = Request & {
 
 @Controller('v2/saas/data-retention')
 export class SaasTenantRetentionController {
-  constructor(private readonly service: SaasTenantRetentionService) {}
+  constructor(
+    private readonly service: SaasTenantRetentionService,
+    private readonly execution: SaasTenantGovernanceExecutionService,
+  ) {}
 
   @Post('policies')
   @UseGuards(PermissionGuard)
@@ -117,6 +124,42 @@ export class SaasTenantRetentionController {
   ) {
     const context = this.context(request);
     return this.service.reviewErasureRequest(context.tenantId, context.userId, requestId, body);
+  }
+
+  @Post('exports/:transferId/preservation-attestation')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.approve')
+  attestExportPreservation(
+    @Req() request: RetentionRequest,
+    @Param('transferId', new ParseUUIDPipe()) transferId: string,
+    @Body() body: CreateSaasExportPreservationAttestationDto,
+  ) {
+    const context = this.context(request);
+    return this.service.attestExportPreservation(context.tenantId, context.userId, transferId, body);
+  }
+
+  @Post('policies/:categoryCode/run')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.execute')
+  runRetentionPolicy(
+    @Req() request: RetentionRequest,
+    @Param('categoryCode') categoryCode: string,
+    @Body() body: RunSaasRetentionPolicyDto,
+  ) {
+    const context = this.context(request);
+    return this.execution.runRetentionPolicy(context.tenantId, context.userId, categoryCode, body);
+  }
+
+  @Post('erasure-requests/:requestId/execute')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('saas.data_retention.execute')
+  executeErasure(
+    @Req() request: RetentionRequest,
+    @Param('requestId', new ParseUUIDPipe()) requestId: string,
+    @Body() body: ExecuteSaasTenantErasureDto,
+  ) {
+    const context = this.context(request);
+    return this.execution.executeErasure(context.tenantId, context.userId, requestId, body);
   }
 
   private context(request: RetentionRequest): { tenantId: string; userId: string } {
