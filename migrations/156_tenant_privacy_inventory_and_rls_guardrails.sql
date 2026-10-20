@@ -207,8 +207,9 @@ $$;
 -- These relationship tables have no tenant_id column. Their scope is derived
 -- from the tenant-owned membership, role and factory relations.
 DO $$
-DECLARE item record;
-DECLARE tenant_predicate text;
+DECLARE
+  item record;
+  tenant_predicate text;
 BEGIN
   FOR item IN
     SELECT relation_name
