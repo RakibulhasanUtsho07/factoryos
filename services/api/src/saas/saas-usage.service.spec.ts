@@ -70,6 +70,62 @@ describe('SaasUsageService',()=>{
  it('rejects unsafe provider invoice costs before touching the database',async()=>{await expect(service.recordProviderCostEvent(tenant,factory,user,{provider_code:'openai',metric_code:'AI_INPUT_TOKEN',workload_class:'PRODUCTION',quantity:1,currency:'USD',provider_cost_minor:9007199254740992,occurred_at:'2026-10-10T12:00:00Z',provider_invoice_reference:'INV-1',source_system:'PROVIDER_EXPORT',source_event_ref:'provider:1',idempotency_key:'provider-unsafe'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
  it('rejects malformed alert identifiers before querying acknowledgement records',async()=>{await expect(service.acknowledgeBudgetAlert(tenant,factory,user,'not-a-uuid',{idempotency_key:'ack-invalid'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
 
+ it('reconciles SaaS usage invoice totals above Number safe-integer precision without rounding',async()=>{
+  const invoiceReference='INV-USAGE-OVER-SAFE';
+  const idempotencyKey='usage-recon-over-safe';
+  db.query
+   .mockResolvedValueOnce({rows:[]})
+   .mockResolvedValueOnce({rows:[{event_count:'1',unpriced_count:'0',ledger_sum:'9007199254740993',other_currency_count:'0'}]})
+   .mockResolvedValueOnce({rows:[{adjustment_sum:'0'}]})
+   .mockResolvedValueOnce({rows:[{
+    id:'usage-reconciliation',tenant_id:tenant,factory_id:factory,invoice_reference:invoiceReference,
+    reconciliation_version:1,period_start:'2026-10-01T00:00:00.000Z',period_end:'2026-10-03T00:00:00.000Z',
+    currency:'BDT',event_count:'1',unpriced_event_count:'0',ledger_estimated_amount_minor:'9007199254740993',
+    adjustment_amount_minor:'0',expected_amount_minor:'9007199254740993',invoiced_amount_minor:'9000000000000000',
+    variance_minor:'-7199254740993',status:'VARIANCE',report_hash:'a'.repeat(64),request_hash:'b'.repeat(64),
+    idempotency_key:idempotencyKey,recorded_by:user,created_at:'2026-10-03T00:00:00.000Z',
+   }]});
+  const result=await service.reconcileInvoice(tenant,factory,user,{
+   invoice_reference:invoiceReference,reconciliation_version:1,
+   period_start:'2026-10-01T00:00:00.000Z',period_end:'2026-10-03T00:00:00.000Z',
+   currency:'BDT',invoiced_amount_minor:9000000000000000,idempotency_key:idempotencyKey,
+  } as never);
+  expect(result.reconciliation.expectedAmountMinor).toBe('9007199254740993');
+  expect(result.reconciliation.varianceMinor).toBe('-7199254740993');
+  expect(db.query.mock.calls[3]?.[1]?.[9]).toBe('9007199254740993');
+  expect(db.query.mock.calls[3]?.[1]?.[11]).toBe('9007199254740993');
+ });
+
+ it('evaluates spend budgets with exact aggregates beyond Number safe-integer precision',async()=>{
+  const cost='9007199254740993';
+  const budgetRow={
+   id:'budget-1',tenant_id:tenant,factory_id:null,budget_code:'AI-MONTHLY',policy_version:1,
+   period_kind:'MONTHLY',metric_code:'AI_INPUT_TOKEN',capability_code:null,workload_class:null,currency:'BDT',
+   soft_limit_minor:'8000000000000000',hard_limit_minor:'9000000000000000',pause_noncritical_on_hard_limit:false,
+   anomaly_multiplier:'2.0000',anomaly_min_events:3,effective_from:'2026-01-01T00:00:00.000Z',
+   effective_to:null,idempotency_key:'budget-idem',request_hash:'c'.repeat(64),created_by:user,created_at:'2026-01-01T00:00:00.000Z',
+  };
+  const evaluationRow={
+   id:'evaluation-1',tenant_id:tenant,factory_id:null,budget_id:'budget-1',
+   period_start:'2026-10-01T00:00:00.000Z',period_end:'2026-11-01T00:00:00.000Z',
+   evaluated_at:'2026-10-20T00:00:00.000Z',event_count:'2',unpriced_event_count:'0',
+   usage_cost_minor:cost,soft_limit_minor:'8000000000000000',hard_limit_minor:'9000000000000000',
+   anomaly_window_cost_minor:'0',anomaly_baseline_hourly_minor:'0.0000',status:'HARD_LIMIT',
+   report_hash:'d'.repeat(64),idempotency_key:'evaluation-idem',request_hash:'e'.repeat(64),
+   evaluated_by:user,created_at:'2026-10-20T00:00:00.000Z',
+  };
+  db.query
+   .mockResolvedValueOnce({rows:[budgetRow]})
+   .mockResolvedValueOnce({rows:[{event_count:'2',unpriced_count:'0',cost_minor:cost}]})
+   .mockResolvedValueOnce({rows:[{recent_count:'0',recent_cost:'0',baseline_count:'0',baseline_cost:'0'}]})
+   .mockResolvedValueOnce({rows:[evaluationRow]})
+   .mockResolvedValueOnce({rows:[]});
+  const results=await (service as any).evaluateBudgetsInternal(tenant,factory,user,'2026-10-20T00:00:00.000Z');
+  expect(results[0].usageCostMinor).toBe(cost);
+  expect(results[0].status).toBe('HARD_LIMIT');
+  expect(db.query.mock.calls[3]?.[1]?.[8]).toBe(cost);
+ });
+
  it('lets a factory-level resume override a tenant-level pause for the same non-critical class',async()=>{
   db.query.mockResolvedValueOnce({rows:[]}).mockResolvedValueOnce({rows:[{control_state:'RESUMED',factory_id:factory},{control_state:'PAUSED',factory_id:null}]});
   await expect(service.assertWorkloadExecutionAllowed(tenant,factory,user,'DEVELOPMENT')).resolves.toBeUndefined();
