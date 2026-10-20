@@ -75,6 +75,42 @@ describe('SaasSubscriptionService', () => {
     await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it('denies an explicitly disabled capability even when the subscription is active', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'LEGACY_COMPATIBLE',
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2099-11-01T00:00:00.000Z',
+      plan_capabilities: { 'ai.runtime': false },
+    }] });
+    await expect(service.assertCapabilityAvailable(tenantId, 'ai.runtime')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('requires an explicit true plan capability after tenant enforcement is enabled', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'SUBSCRIPTION_REQUIRED',
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2099-11-01T00:00:00.000Z',
+      plan_capabilities: { 'research.ingestion': true },
+    }] });
+    await expect(service.assertCapabilityAvailable(tenantId, 'ai.runtime')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('allows a declared capability on an eligible plan in subscription-required mode', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'SUBSCRIPTION_REQUIRED',
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2099-11-01T00:00:00.000Z',
+      plan_capabilities: { 'ai.runtime': true, 'research.ingestion': false },
+    }] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).resolves.toBeUndefined();
+  });
+
   it('reports legacy compatibility as an explicit default before tenant migration', async () => {
     database.query.mockResolvedValueOnce({ rows: [] });
     const result = await service.getEntitlementEnforcementMode(tenantId, actorUserId);
