@@ -279,7 +279,7 @@ export class SaasTenantGovernanceExecutionService {
           JSON.stringify(manifest), digest, reason, idempotencyKey, requestHash, actorUserId],
       );
       await this.audit(client, tenantId, actorUserId,
-        mode === SaasRetentionRunMode.DRY_RUN ? 'RETENTION_DRY_RUN_COMPLETED' : 'RETENTION_EXECUTION_' + status,
+        mode === SaasRetentionRunMode.DRY_RUN ? 'RETENTION_DRY_RUN_' + status : 'RETENTION_EXECUTION_' + status,
         inserted.rows[0].id,
         {
           runId,
