@@ -142,7 +142,7 @@ export class SaasTenantGovernanceExecutionService {
     const idempotencyKey = this.idempotencyKey(input?.idempotency_key);
     const requestHash = this.hash({ operation: 'RETENTION_RUN', category, mode, expectedPolicyVersion, reason });
     const runId = randomUUID();
-    let failureContext: { policyVersion: number; cutoffAt: string } | null = null;
+    const failureContext: { policyVersion?: number; cutoffAt?: string } = {};
 
     try {
     const result = await this.database.transaction(async (client) => {
@@ -174,7 +174,8 @@ export class SaasTenantGovernanceExecutionService {
       );
       const cutoffAt = timeResult.rows[0]?.cutoff_at;
       if (!cutoffAt) throw new ConflictException('Could not determine the retention cutoff');
-      failureContext = { policyVersion: Number(policy.version), cutoffAt };
+      failureContext.policyVersion = Number(policy.version);
+      failureContext.cutoffAt = cutoffAt;
       const tables = this.resolveTables(category);
       const mapped = tables.length > 0
         ? await this.inspectTables(client, tables, true)
@@ -309,10 +310,10 @@ export class SaasTenantGovernanceExecutionService {
 
     return { run: this.mapRetentionRun(result.row), replayed: result.replayed };
     } catch (error) {
-      if (failureContext) {
+      if (failureContext.policyVersion !== undefined && failureContext.cutoffAt !== undefined) {
+        const context = { policyVersion: failureContext.policyVersion, cutoffAt: failureContext.cutoffAt };
         await this.recordFailedRetentionRun({
-          tenantId, actorUserId, runId, category, mode, policyVersion: failureContext.policyVersion,
-          cutoffAt: failureContext.cutoffAt, requestHash, idempotencyKey, reason,
+          tenantId, actorUserId, runId, category, mode, ...context, requestHash, idempotencyKey, reason,
           failureCode: this.failureCode(error),
         }).catch(() => undefined);
       }
@@ -334,11 +335,11 @@ export class SaasTenantGovernanceExecutionService {
     const idempotencyKey = this.idempotencyKey(input?.idempotency_key);
     const requestHash = this.hash({ operation: 'TENANT_ERASURE_EXECUTION', requestId, expectedVersion, reason });
     const runId = randomUUID();
-    let failureContext: {
-      requestVersion: number;
-      categories: SaasTransferDatasetCategory[];
-      sourceDigest: string;
-    } | null = null;
+    const failureContext: {
+      requestVersion?: number;
+      categories?: SaasTransferDatasetCategory[];
+      sourceDigest?: string;
+    } = {};
 
     try {
       const result = await this.database.transaction(async (client) => {
@@ -367,11 +368,9 @@ export class SaasTenantGovernanceExecutionService {
           throw new ConflictException('Erasure execution requires an actor distinct from the requester and reviewer');
         }
         const categories = this.parseCategories(current.categories);
-        failureContext = {
-          requestVersion: Number(current.version),
-          categories,
-          sourceDigest: current.export_bundle_digest,
-        };
+        failureContext.requestVersion = Number(current.version);
+        failureContext.categories = categories;
+        failureContext.sourceDigest = current.export_bundle_digest;
         const unsupported = categories.filter((category) =>
           PRESERVED_CATEGORIES.has(category) || !this.resolveTables(category).length);
         if (unsupported.length) {
@@ -502,15 +501,16 @@ export class SaasTenantGovernanceExecutionService {
         replayed: result.replayed,
       };
     } catch (error) {
-      if (failureContext) {
-        const code = this.failureCode(error);
-        await this.recordFailedErasureRun({
-          tenantId, actorUserId, requestId, runId, requestHash, idempotencyKey,
+      if (failureContext.requestVersion !== undefined && failureContext.categories && failureContext.sourceDigest) {
+        const context = {
           requestVersion: failureContext.requestVersion,
           categories: failureContext.categories,
           sourceDigest: failureContext.sourceDigest,
-          reason,
-          failureCode: code,
+        };
+        const code = this.failureCode(error);
+        await this.recordFailedErasureRun({
+          tenantId, actorUserId, requestId, runId, requestHash, idempotencyKey,
+          ...context, reason, failureCode: code,
         }).catch(() => undefined);
       }
       throw error;
