@@ -34,14 +34,22 @@ Migrations 149–155 add retention policy/versioning, legal holds, preservation 
 The repository has automated API, PostgreSQL integration, frontend and dependency-security verification workflows. Confirm the exact workflow set that applies to the candidate SHA:
 
 - **API CI** runs API lint, build, and the unit tests that do not require PostgreSQL integration fixtures.
-- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in `.github/workflows/api-postgres-ci.yml` through `migrations/157_ot_opcua_read_gateway.sql`, verifies that no numbered migration is omitted, reapplies migrations 155, 156 and 157 for idempotency, runs retention/isolation/schema-wide privacy inventory and OT/OPC UA SQL contracts, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
+- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in `.github/workflows/api-postgres-ci.yml` through `migrations/158_ot_mqtt_modbus_gateway.sql`, verifies that no numbered migration is omitted, reapplies migrations 155, 156 and 157 for idempotency, runs retention/isolation/schema-wide privacy inventory and OT/OPC UA SQL contracts, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
 - **Web CI** installs the npm workspace dependencies, runs the frontend lint command, and builds the Next.js application.
 
 A green GitHub Actions run verifies only the commit and environment shown in that run. It does not mean the application was deployed, that production configuration was entered in a hosting platform, or that any production migration was applied.
 
 ## Backup and restore evidence
 
-Before any production database change, follow docs/operational-reliability-runbook.md to create a restricted backup, restore it into an isolated database, apply the candidate migration sequence there, and run application/tenant-scope smoke tests. Record backup integrity, the restored database identity, candidate SHA, migration results, and operator sign-off.
+Before any production database change, follow [the encrypted backup/restore, migration recovery, load and security acceptance guide](backup-restore-migration-load-security-acceptance.md) and the [operational reliability runbook](operational-reliability-runbook.md). Use **scripts/recovery/postgres-backup-restore-rehearsal.sh** with protected PostgreSQL service/credential files, an approved GPG recipient and a separately created empty restore database. The helper checks that the source and target differ, rejects user relations in the target, encrypts the archive, records/verifies a SHA-256 checksum, restores in a single transaction and executes a reviewed restore smoke SQL file.
+
+Record the encrypted artifact reference and checksum, source/restore database identity, candidate SHA, backup and restore UTC timestamps, client/server versions, observed restore duration, smoke-check results, migration contract output, RPO/RTO observations and operator sign-off. Never add plaintext dumps, customer rows, private keys or credentials to GitHub issues/PRs. A CI transaction-failure probe validates rollback mechanics only; it is not proof that all production migrations are reversible.
+
+## Bounded performance and security verification
+
+The API CI workflow runs deterministic tests of the local load-smoke harness: request caps and latency/status reports, rejection of remote targets by default, URL credential rejection and the configured 5xx threshold. Run **npm --workspace services/api run test:load-smoke:contract** locally before release. A real load or capacity test requires a separately approved isolated environment, representative workloads, rate/stop limits and recorded database/pool observations; do not treat a short smoke test as a capacity guarantee.
+
+The PostgreSQL CI workflow must pass the complete ordered migration manifest, selected idempotency reruns, the intentional migration-failure rollback probe, and tenant governance inventory/RLS contracts. The dependency-security workflow audits production dependencies and executes the load/recovery guard tests on the maintained branch. These checks are repository evidence; they do not substitute for production IAM/network review, secret/key-custody review, external backup/restore rehearsals or owner-approved SLO and RPO/RTO sign-off.
 
 ## Release completion criteria
 
