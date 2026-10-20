@@ -65,14 +65,14 @@ Example Modbus device profile:
 
 ## Offline spool format and replay invariants
 
-The reusable edge-side local store lives in services/api/src/ot/ot-edge-spool.store.ts:
+The reusable edge-side local store lives in services/api/src/ot/ot-edge-spool.store.ts, and ot-edge-replay.transport.ts is the concrete HTTPS sender to the FactoryOS telemetry batch endpoint:
 
 - AES-256-GCM authenticated encryption with a fresh random 96-bit IV and an injected 32-byte key. The key must be mounted from an OS/deployment secret store and must never be written beside the spool.
 - Durable atomic file replacement using a restrictive 0700 directory and 0600 data/temp-file permissions, file sync and directory sync. A corrupted, truncated or wrong-key file fails closed; it is not reset to an empty queue.
 - Bounded defaults: 10,000 events, 64 MiB plaintext and event payload limit of 4 KiB. Queue-full returns an error instead of dropping the oldest data; an edge MQTT subscriber must stop acknowledging broker messages at this boundary and raise an operational alarm.
 - Per-device FIFO queue selection avoids an offline device blocking another device's backlog. Replay batches are capped at 20 events; retry delay doubles from 1 second to 60 seconds maximum. After 12 consecutive transport/ack failures, the entry is marked blocked rather than removed, and the device FIFO remains blocked while other devices continue. A successful API response must confirm every queued source ID, including DUPLICATE_REPLAY, before the spool entry is removed. Partial, malformed or unrelated acknowledgements retain the batch.
 - Same source ID plus identical fingerprint is deduplicated; a different body with the same ID is rejected. Persisted records are re-validated on recovery. The implementation expects one writer process per file; use separate spool files for separate gateway processes.
-- OtSpoolReplayer.flushOnce performs one bounded attempt. A supervising edge process should invoke it on reconnect with bounded worker concurrency and health/queue-age alarms, monitor listBlocked(), and only requeue a blocked record after an operator has inspected it and provides the exact fingerprint to requeueBlocked(). It intentionally does not own a permanent broker loop or retry forever inside a request thread.
+- OtSpoolReplayer.flushOnce performs one bounded attempt. The concrete replay transport requires FACTORYOS_OT_API_URL (fixed HTTPS origin) and FACTORYOS_OT_API_TOKEN (at least 32 characters) unless a rotating workload-identity token provider is injected. The API token must map to an authorized service identity with tenant/factory scope and ot.telemetry.ingest permission. A supervising edge process should invoke flushOnce() on reconnect with bounded concurrency and health/queue-age alarms, monitor listBlocked(), and only requeue a blocked record after an operator has inspected it and provides the exact fingerprint to requeueBlocked(). This library does not own a permanent broker loop or retry forever inside an API request thread.
 
 ## Reconnect/recovery sequence
 
