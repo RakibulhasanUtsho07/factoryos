@@ -11,6 +11,10 @@ The current branch contains engineering documents such as docs/ai-runtime-agent-
 
 The repository already implements several of these domains. This audit does not count an existing foundation as newly implemented merely because it is mapped here. Code and CI prove only the cases exercised by those sources and tests; they do not prove a production deployment, real infrastructure adapters, customer-data erasure, OT hardware behavior or disaster-recovery objectives.
 
+## Data governance, retention, erasure and cross-tenant isolation
+
+The dedicated governance matrix is `docs/tenant-data-governance-and-isolation.md`. It defines the retention-policy registry fields, export acceptance contract, required erasure state machine, audit coverage matrix, cross-tenant threat matrix and release gates. Existing export uses a tenant-scoped read-only repeatable-read snapshot, a reviewed allowlist and encrypted bundle attestation; these mechanisms are not proof of complete table coverage or tenant erasure. Retention durations remain unapproved policy inputs, and a production erasure executor/object-store purge/backup expiry must not be claimed until implemented and tested.
+
 ## 2. Requirement/evidence matrix
 
 | Round / requirement theme | Repository evidence | Status | Remaining acceptance gate |
