@@ -44,6 +44,8 @@ candidate_migration_count=0
 candidate_migration_status="NOT_RUN"
 failure_recovery_status="NOT_RUN"
 application_smoke_status="NOT_REPORTED"
+schema_smoke_status="NOT_REPORTED"
+api_readiness_status="NOT_REPORTED"
 tenant_isolation_status="NOT_REPORTED"
 audit_continuity_status="NOT_REPORTED"
 checksum_sha256=""
@@ -76,6 +78,7 @@ emit_evidence() {
   export FACTORYOS_DR_BACKUP_SHA256="$checksum_sha256" FACTORYOS_DR_CHECKSUM_VERIFIED="$checksum_verified"
   export FACTORYOS_DR_ENCRYPTION_STATUS="$encryption_status" FACTORYOS_DR_ARCHIVE_STATUS="$archive_status"
   export FACTORYOS_DR_RESTORE_STATUS="$restore_status" FACTORYOS_DR_APPLICATION_SMOKE_STATUS="$application_smoke_status"
+  export FACTORYOS_DR_SCHEMA_SMOKE_STATUS="$schema_smoke_status" FACTORYOS_DR_API_READINESS_STATUS="$api_readiness_status"
   export FACTORYOS_DR_TENANT_ISOLATION_STATUS="$tenant_isolation_status" FACTORYOS_DR_AUDIT_CONTINUITY_STATUS="$audit_continuity_status"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest" FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT="$candidate_migration_count" FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS="$candidate_migration_status"
@@ -298,14 +301,27 @@ psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpd
   || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
 cat "$tmpdir/restore-smoke.log"
 restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
+if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
 if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
 if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
 
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
+  [[ "$schema_smoke_status" == "PASS" ]] || die "smoke SQL did not prove restored application schema/data"
   [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
   [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
+
+  current_stage="api_application_smoke"
+  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
+  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
+    FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
+    node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
+    || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
+  cat "$tmpdir/api-restore-smoke.log"
+  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
+  grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
+  api_readiness_status="PASS"
+  application_smoke_status="PASS"
+
   restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
   observed_rto_seconds="$restore_duration_seconds"
   if [[ "$targets_approved" == true ]]; then
@@ -333,7 +349,7 @@ printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
 printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
 printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
 printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
+printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
 printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
 printf 'Operator sign-off is pending post-run review.\n'
 \r'}"
