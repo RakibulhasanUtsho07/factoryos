@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Optional,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
@@ -14,6 +15,10 @@ import {
   QueryResult,
   QueryResultRow,
 } from 'pg';
+import { performance } from 'node:perf_hooks';
+import { currentTraceContext } from '../common/trace-context.store';
+import { HttpMetricsService } from '../observability/http-metrics.service';
+import { OtlpTraceExporter } from '../observability/otlp-trace-exporter.service';
 
 /**
  * Transaction-local database context.
@@ -60,8 +65,9 @@ export class DatabaseService
   private readonly pool: Pool;
 
   constructor(
-    private readonly configService:
-      ConfigService,
+    private readonly configService: ConfigService,
+    @Optional() private readonly metrics?: HttpMetricsService,
+    @Optional() private readonly traceExporter?: OtlpTraceExporter,
   ) {
     const connectionString =
       this.configService.get<string>(
@@ -148,10 +154,16 @@ export class DatabaseService
      * --------------------------------------------------------
      */
     if (!hasContext) {
-      return this.pool.query<T>(
-        text,
-        values,
-      );
+      const startedAt = performance.now();
+      const startedAtUnixNano = (BigInt(Date.now()) * 1_000_000n).toString();
+      try {
+        const result = await this.pool.query<T>(text, values);
+        this.recordDatabaseOperation(this.classifySqlOperation(text), 'success', startedAt, startedAtUnixNano);
+        return result;
+      } catch (error) {
+        this.recordDatabaseOperation(this.classifySqlOperation(text), 'error', startedAt, startedAtUnixNano);
+        throw error;
+      }
     }
 
     /*
@@ -200,6 +212,36 @@ export class DatabaseService
     return this.pool.connect();
   }
 
+  private classifySqlOperation(statement: string): 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'OTHER' {
+    const leading = statement.trimStart().match(/^([A-Za-z]+)/)?.[1]?.toUpperCase();
+    if (leading === 'SELECT' || leading === 'INSERT' || leading === 'UPDATE' || leading === 'DELETE') return leading;
+    return 'OTHER';
+  }
+
+  private recordDatabaseOperation(
+    operation: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'OTHER' | 'TRANSACTION',
+    status: 'success' | 'error',
+    startedAt: number,
+    startTimeUnixNano: string,
+  ): void {
+    const durationSeconds = Math.max(0, (performance.now() - startedAt) / 1000);
+    this.metrics?.recordDatabaseOperation(operation, status, durationSeconds, {
+      total: this.pool.totalCount,
+      idle: this.pool.idleCount,
+      waiting: this.pool.waitingCount,
+    });
+    const context = currentTraceContext();
+    if (!context) return;
+    this.traceExporter?.exportDatabaseOperation({
+      context,
+      operation,
+      status,
+      startTimeUnixNano,
+      endTimeUnixNano: (BigInt(Date.now()) * 1_000_000n).toString(),
+      durationMs: durationSeconds * 1000,
+    });
+  }
+
   // ==========================================================
   // TRANSACTION OVERLOADS
   // ==========================================================
@@ -246,13 +288,24 @@ export class DatabaseService
   // ==========================================================
 
   async transaction<T>(
-    first:
-      | TransactionCallback<T>
-      | DatabaseContext,
+    first: TransactionCallback<T> | DatabaseContext,
+    second?: TransactionCallback<T> | DatabaseContext,
+  ): Promise<T> {
+    const startedAt = performance.now();
+    const startedAtUnixNano = (BigInt(Date.now()) * 1_000_000n).toString();
+    try {
+      const result = await this.executeTransaction(first, second);
+      this.recordDatabaseOperation('TRANSACTION', 'success', startedAt, startedAtUnixNano);
+      return result;
+    } catch (error) {
+      this.recordDatabaseOperation('TRANSACTION', 'error', startedAt, startedAtUnixNano);
+      throw error;
+    }
+  }
 
-    second?:
-      | TransactionCallback<T>
-      | DatabaseContext,
+  private async executeTransaction<T>(
+    first: TransactionCallback<T> | DatabaseContext,
+    second?: TransactionCallback<T> | DatabaseContext,
   ): Promise<T> {
     let callback:
       | TransactionCallback<T>

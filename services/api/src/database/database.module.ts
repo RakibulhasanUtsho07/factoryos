@@ -1,9 +1,11 @@
 import { Global, Module } from '@nestjs/common';
 
 import { DatabaseService } from './database.service';
+import { ObservabilityModule } from '../observability/observability.module';
 
 @Global()
 @Module({
+  imports: [ObservabilityModule],
   providers: [DatabaseService],
   exports: [DatabaseService],
 })

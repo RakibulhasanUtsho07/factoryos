@@ -5,6 +5,9 @@ type HttpMethodLabel = (typeof HTTP_METHODS)[number];
 const STATUS_CLASSES = ['1xx', '2xx', '3xx', '4xx', '5xx', 'other'] as const;
 const BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5] as const;
 type DependencyName = 'database';
+type DatabaseOperationLabel = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'OTHER' | 'TRANSACTION';
+type DatabaseOperationStatus = 'success' | 'error';
+interface DatabaseDurationAggregate { bucketCounts: number[]; count: number; sum: number; }
 
 interface DurationAggregate { bucketCounts: number[]; count: number; sum: number; }
 
@@ -32,6 +35,9 @@ export class HttpMetricsService {
   private readonly inFlight = new Map<HttpMethodLabel, number>();
   private readonly durations = new Map<HttpMethodLabel, DurationAggregate>();
   private readonly dependencyHealth = new Map<DependencyName, number>([['database', -1]]);
+  private readonly databaseOperationCounts = new Map<string, number>();
+  private readonly databaseDurations = new Map<DatabaseOperationLabel, DatabaseDurationAggregate>();
+  private databasePool = { total: 0, idle: 0, waiting: 0 };
   private traceSpansExported = 0;
   private traceSpansDropped = 0;
   private traceExportErrors = 0;
@@ -62,6 +68,32 @@ export class HttpMetricsService {
     });
     aggregate.count += 1;
     aggregate.sum += duration;
+  }
+
+  recordDatabaseOperation(
+    operation: DatabaseOperationLabel,
+    status: DatabaseOperationStatus,
+    durationSeconds: number,
+    pool?: { total: number; idle: number; waiting: number },
+  ): void {
+    const key = operation + '\u0000' + status;
+    this.databaseOperationCounts.set(key, (this.databaseOperationCounts.get(key) ?? 0) + 1);
+    const duration = Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0;
+    let aggregate = this.databaseDurations.get(operation);
+    if (!aggregate) {
+      aggregate = { bucketCounts: BUCKETS_SECONDS.map(() => 0), count: 0, sum: 0 };
+      this.databaseDurations.set(operation, aggregate);
+    }
+    BUCKETS_SECONDS.forEach((bound, index) => { if (duration <= bound) aggregate!.bucketCounts[index] += 1; });
+    aggregate.count += 1;
+    aggregate.sum += duration;
+    if (pool) {
+      this.databasePool = {
+        total: Math.max(0, Math.floor(pool.total)),
+        idle: Math.max(0, Math.floor(pool.idle)),
+        waiting: Math.max(0, Math.floor(pool.waiting)),
+      };
+    }
   }
 
   setDependencyHealth(dependency: DependencyName, healthy: boolean): void {
@@ -115,6 +147,37 @@ export class HttpMetricsService {
       lines.push('factoryos_http_request_duration_seconds_sum{method="' + method + '"} ' + aggregate.sum.toFixed(6));
       lines.push('factoryos_http_request_duration_seconds_count{method="' + method + '"} ' + aggregate.count);
     }
+
+    lines.push(
+      '# HELP factoryos_db_operations_total PostgreSQL operations executed by bounded operation and result.',
+      '# TYPE factoryos_db_operations_total counter',
+    );
+    for (const operation of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'OTHER', 'TRANSACTION'] as const) {
+      for (const status of ['success', 'error'] as const) {
+        lines.push('factoryos_db_operations_total{operation="' + operation + '",status="' + status + '"} '
+          + (this.databaseOperationCounts.get(operation + '\u0000' + status) ?? 0));
+      }
+    }
+    lines.push(
+      '# HELP factoryos_db_operation_duration_seconds PostgreSQL query/transaction duration in seconds.',
+      '# TYPE factoryos_db_operation_duration_seconds histogram',
+    );
+    for (const operation of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'OTHER', 'TRANSACTION'] as const) {
+      const aggregate = this.databaseDurations.get(operation) ?? { bucketCounts: BUCKETS_SECONDS.map(() => 0), count: 0, sum: 0 };
+      BUCKETS_SECONDS.forEach((bound, index) => {
+        lines.push('factoryos_db_operation_duration_seconds_bucket{operation="' + operation + '",le="' + bound + '"} ' + aggregate.bucketCounts[index]);
+      });
+      lines.push('factoryos_db_operation_duration_seconds_bucket{operation="' + operation + '",le="+Inf"} ' + aggregate.count);
+      lines.push('factoryos_db_operation_duration_seconds_sum{operation="' + operation + '"} ' + aggregate.sum.toFixed(6));
+      lines.push('factoryos_db_operation_duration_seconds_count{operation="' + operation + '"} ' + aggregate.count);
+    }
+    lines.push(
+      '# HELP factoryos_db_pool_connections PostgreSQL connection pool counts by state.',
+      '# TYPE factoryos_db_pool_connections gauge',
+      'factoryos_db_pool_connections{state="total"} ' + this.databasePool.total,
+      'factoryos_db_pool_connections{state="idle"} ' + this.databasePool.idle,
+      'factoryos_db_pool_connections{state="waiting"} ' + this.databasePool.waiting,
+    );
 
     const memory = process.memoryUsage();
     lines.push('# HELP factoryos_process_memory_bytes Node.js process memory in bytes.', '# TYPE factoryos_process_memory_bytes gauge');
