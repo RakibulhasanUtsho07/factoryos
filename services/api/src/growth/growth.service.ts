@@ -1620,7 +1620,7 @@ export class GrowthService {
     if (Number.isFinite(origin.getTime()) && origin.getTime() > Date.now()) {
       throw new BadRequestException('forecast_origin_at cannot be in the future');
     }
-    if (!modelVersion || modelVersion.length > 128) throw new BadRequestException('model_version is required and must be <= 128 characters');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(modelVersion)) throw new BadRequestException('model_version must be a stable identifier of at most 128 characters');
     if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(metricKey)) throw new BadRequestException('metric_key must be a stable lowercase identifier');
     if (!unit || unit.length > 40) throw new BadRequestException('unit is required and must be <= 40 characters');
     if (!sourceRef || sourceRef.length > 2000) throw new BadRequestException('forecast_source_ref must be non-empty');
@@ -1642,7 +1642,7 @@ export class GrowthService {
         [opportunityId, tenantId, factoryId, sourceRef, origin.toISOString()],
       );
       if (!source.rows[0]) {
-        throw new BadRequestException('forecast_source_ref must match evidence already attached to this opportunity');
+        throw new BadRequestException('forecast_source_ref must match evidence attached to this opportunity no later than forecast_origin_at');
       }
 
       const actual = await client.query<{
@@ -1671,7 +1671,7 @@ export class GrowthService {
       try {
         metrics = evaluateGrowthForecast({
           forecast_value: dto.forecast_value,
-          actual_value: Number(actualRow.actual_value),
+          actual_value: actualRow.actual_value,
           lower_bound: dto.lower_bound ?? null,
           upper_bound: dto.upper_bound ?? null,
           nominal_coverage_pct: dto.nominal_coverage_pct ?? null,
