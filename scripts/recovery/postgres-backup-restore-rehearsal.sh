@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Encrypted PostgreSQL backup/restore rehearsal with release-gate evidence.
-# Never store database credentials, key material or customer data in the repository.
+# Encrypted PostgreSQL backup/restore rehearsal with a release-gate evidence contract.
+# Credentials belong in protected libpq service/pass files and an approved GPG keyring.
 set -Eeuo pipefail
 umask 077
 
@@ -20,31 +20,34 @@ backup_file="${FACTORYOS_BACKUP_OUTPUT:-}"
 recipient="${FACTORYOS_BACKUP_GPG_RECIPIENT:-}"
 smoke_sql="${FACTORYOS_RESTORE_SMOKE_SQL:-}"
 dr_mode="${FACTORYOS_DR_MODE:-BASIC}"
+manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
 candidate_manifest="${FACTORYOS_CANDIDATE_MIGRATION_MANIFEST:-}"
 watermark_sql="${FACTORYOS_RECOVERY_WATERMARK_SQL:-}"
 failure_probe_sql="${FACTORYOS_MIGRATION_FAILURE_PROBE_SQL:-$repo_root/services/api/test/migration-recovery-failure.sql}"
 evidence_file="${FACTORYOS_RECOVERY_EVIDENCE_JSON:-}"
 event_time_utc="${FACTORYOS_RECOVERY_EVENT_TIME_UTC:-}"
+app_database_url="${FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
 
 current_stage="configuration"
 rehearsal_status="RUNNING"
 started_at_utc="$(utc_now)"
+started_epoch="$(epoch_now)"
+backup_started_epoch=""
+backup_duration_seconds=""
+restore_started_epoch=""
+restore_duration_seconds=""
 source_identity=""
 target_identity=""
 source_watermark_utc=""
 restored_watermark_utc=""
 observed_rpo_seconds=""
 observed_rto_seconds=""
-backup_started_epoch=""
-backup_duration_seconds=""
-restore_started_epoch=""
-restore_duration_seconds=""
 candidate_manifest_sha256=""
 candidate_migration_count=0
 candidate_migration_status="NOT_RUN"
 failure_recovery_status="NOT_RUN"
-application_smoke_status="NOT_REPORTED"
 schema_smoke_status="NOT_REPORTED"
+application_smoke_status="NOT_REPORTED"
 api_readiness_status="NOT_REPORTED"
 tenant_isolation_status="NOT_REPORTED"
 audit_continuity_status="NOT_REPORTED"
@@ -70,28 +73,47 @@ emit_evidence() {
   local exit_code="$1"
   [[ -n "$evidence_file" ]] || return 0
   need_command node
-  export FACTORYOS_DR_STATUS="$rehearsal_status" FACTORYOS_DR_STAGE="$current_stage"
-  export FACTORYOS_DR_EXIT_CODE="$exit_code" FACTORYOS_DR_STARTED_AT_UTC="$started_at_utc"
+  export FACTORYOS_DR_STATUS="$rehearsal_status"
+  export FACTORYOS_DR_STAGE="$current_stage"
+  export FACTORYOS_DR_EXIT_CODE="$exit_code"
+  export FACTORYOS_DR_STARTED_AT_UTC="$started_at_utc"
   export FACTORYOS_DR_FINISHED_AT_UTC="$(utc_now)"
-  export FACTORYOS_DR_SOURCE_IDENTITY="$source_identity" FACTORYOS_DR_TARGET_IDENTITY="$target_identity"
-  export FACTORYOS_DR_DATABASE_IDENTITIES_DISTINCT="$distinct_database_identity" FACTORYOS_DR_TARGET_EMPTY="$target_empty"
-  export FACTORYOS_DR_BACKUP_SHA256="$checksum_sha256" FACTORYOS_DR_CHECKSUM_VERIFIED="$checksum_verified"
-  export FACTORYOS_DR_ENCRYPTION_STATUS="$encryption_status" FACTORYOS_DR_ARCHIVE_STATUS="$archive_status"
-  export FACTORYOS_DR_RESTORE_STATUS="$restore_status" FACTORYOS_DR_APPLICATION_SMOKE_STATUS="$application_smoke_status"
-  export FACTORYOS_DR_SCHEMA_SMOKE_STATUS="$schema_smoke_status" FACTORYOS_DR_API_READINESS_STATUS="$api_readiness_status"
-  export FACTORYOS_DR_TENANT_ISOLATION_STATUS="$tenant_isolation_status" FACTORYOS_DR_AUDIT_CONTINUITY_STATUS="$audit_continuity_status"
-  export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest" FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
-  export FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT="$candidate_migration_count" FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS="$candidate_migration_status"
+  export FACTORYOS_DR_SOURCE_IDENTITY="$source_identity"
+  export FACTORYOS_DR_TARGET_IDENTITY="$target_identity"
+  export FACTORYOS_DR_DATABASE_IDENTITIES_DISTINCT="$distinct_database_identity"
+  export FACTORYOS_DR_TARGET_EMPTY="$target_empty"
+  export FACTORYOS_DR_BACKUP_SHA256="$checksum_sha256"
+  export FACTORYOS_DR_CHECKSUM_VERIFIED="$checksum_verified"
+  export FACTORYOS_DR_ENCRYPTION_STATUS="$encryption_status"
+  export FACTORYOS_DR_ARCHIVE_STATUS="$archive_status"
+  export FACTORYOS_DR_RESTORE_STATUS="$restore_status"
+  export FACTORYOS_DR_SCHEMA_SMOKE_STATUS="$schema_smoke_status"
+  export FACTORYOS_DR_APPLICATION_SMOKE_STATUS="$application_smoke_status"
+  export FACTORYOS_DR_API_READINESS_STATUS="$api_readiness_status"
+  export FACTORYOS_DR_TENANT_ISOLATION_STATUS="$tenant_isolation_status"
+  export FACTORYOS_DR_AUDIT_CONTINUITY_STATUS="$audit_continuity_status"
+  export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest"
+  export FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
+  export FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT="$candidate_migration_count"
+  export FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS="$candidate_migration_status"
   export FACTORYOS_DR_FAILURE_RECOVERY_STATUS="$failure_recovery_status"
-  export FACTORYOS_DR_BACKUP_DURATION_SECONDS="$backup_duration_seconds" FACTORYOS_DR_RESTORE_DURATION_SECONDS="$restore_duration_seconds"
-  export FACTORYOS_DR_SOURCE_WATERMARK_UTC="$source_watermark_utc" FACTORYOS_DR_RESTORED_WATERMARK_UTC="$restored_watermark_utc"
-  export FACTORYOS_DR_EVENT_TIME_UTC="$event_time_utc" FACTORYOS_DR_OBSERVED_RPO_SECONDS="$observed_rpo_seconds"
-  export FACTORYOS_DR_OBSERVED_RTO_SECONDS="$observed_rto_seconds" FACTORYOS_DR_TARGETS_APPROVED="$targets_approved"
-  export FACTORYOS_DR_RPO_TARGET_SECONDS="$rpo_target_seconds" FACTORYOS_DR_RTO_TARGET_SECONDS="$rto_target_seconds"
+  export FACTORYOS_DR_BACKUP_DURATION_SECONDS="$backup_duration_seconds"
+  export FACTORYOS_DR_RESTORE_DURATION_SECONDS="$restore_duration_seconds"
+  export FACTORYOS_DR_SOURCE_WATERMARK_UTC="$source_watermark_utc"
+  export FACTORYOS_DR_RESTORED_WATERMARK_UTC="$restored_watermark_utc"
+  export FACTORYOS_DR_EVENT_TIME_UTC="$event_time_utc"
+  export FACTORYOS_DR_OBSERVED_RPO_SECONDS="$observed_rpo_seconds"
+  export FACTORYOS_DR_OBSERVED_RTO_SECONDS="$observed_rto_seconds"
+  export FACTORYOS_DR_TARGETS_APPROVED="$targets_approved"
+  export FACTORYOS_DR_RPO_TARGET_SECONDS="$rpo_target_seconds"
+  export FACTORYOS_DR_RTO_TARGET_SECONDS="$rto_target_seconds"
   export FACTORYOS_DR_TARGET_ASSESSMENT="$target_assessment"
-  export FACTORYOS_DR_OPERATOR="${FACTORYOS_RECOVERY_OPERATOR:-}" FACTORYOS_DR_APPROVER="${FACTORYOS_RECOVERY_APPROVER:-}"
-  export FACTORYOS_DR_PG_DUMP_VERSION="$pg_dump_version" FACTORYOS_DR_PG_RESTORE_VERSION="$pg_restore_version"
-  export FACTORYOS_DR_SERVER_VERSION="$server_version" FACTORYOS_DR_GPG_VERSION="$gpg_version"
+  export FACTORYOS_DR_OPERATOR="${FACTORYOS_RECOVERY_OPERATOR:-}"
+  export FACTORYOS_DR_APPROVER="${FACTORYOS_RECOVERY_APPROVER:-}"
+  export FACTORYOS_DR_PG_DUMP_VERSION="$pg_dump_version"
+  export FACTORYOS_DR_PG_RESTORE_VERSION="$pg_restore_version"
+  export FACTORYOS_DR_SERVER_VERSION="$server_version"
+  export FACTORYOS_DR_GPG_VERSION="$gpg_version"
   node "$repo_root/scripts/recovery/write-rehearsal-evidence.mjs"
 }
 
@@ -114,6 +136,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+# Guard checks intentionally happen before any database client is invoked.
 need_value FACTORYOS_BACKUP_PGSERVICE "$source_service"
 need_value FACTORYOS_RESTORE_PGSERVICE "$target_service"
 need_value FACTORYOS_BACKUP_OUTPUT "$backup_file"
@@ -163,7 +186,7 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
     rto_target_seconds=""
     target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
   fi
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "${FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
+  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "$app_database_url"
   [[ -f "$repo_root/services/api/dist/main.js" ]] || die "candidate API build is missing; build the exact candidate before backup/restore"
 fi
 
@@ -244,16 +267,13 @@ restore_status="RESTORED"
 
 if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   current_stage="candidate_migrations"
-  candidate_migration_status="RUNNING"
-  migration_manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
-  [[ "$migration_manifest_mode" == "PENDING" || "$migration_manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "migration manifest mode must be PENDING or IDEMPOTENT_REPLAY"
-  [[ -f "$repo_root/scripts/audit/migration-manifest.txt" ]] || die "canonical migration manifest is missing"
   psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
-    -c "SELECT version FROM schema_migrations ORDER BY applied_at, version" > "$tmpdir/applied-migrations.txt" \
-    || die "could not read restored schema_migrations for candidate preflight"
+    -c "SELECT version FROM schema_migrations" > "$tmpdir/applied-migrations.txt" \
+    || die "could not read restored schema_migrations"
   sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/scripts/audit/migration-manifest.txt" | tr -d '\r' > "$tmpdir/canonical-migrations.txt"
   sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/$candidate_manifest" | tr -d '\r' > "$tmpdir/requested-migrations.txt"
-  if [[ "$migration_manifest_mode" == "PENDING" ]]; then
+
+  if [[ "$manifest_mode" == "PENDING" ]]; then
     : > "$tmpdir/expected-pending-migrations.txt"
     while IFS= read -r canonical_migration || [[ -n "$canonical_migration" ]]; do
       canonical_base="${canonical_migration##*/}"
@@ -264,251 +284,27 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
     done < "$tmpdir/canonical-migrations.txt"
     if ! cmp -s "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt"; then
       diff -u "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt" >&2 || true
-      die "candidate migration manifest is not the exact ordered set pending from the restored source snapshot"
+      die "candidate manifest is not the exact ordered set pending from the restored source snapshot"
     fi
-  else
+  elif [[ "$manifest_mode" == "IDEMPOTENT_REPLAY" ]]; then
     while IFS= read -r replay_migration || [[ -n "$replay_migration" ]]; do
-      replay_migration="${replay_migration%
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  # Source watermark is sampled before the dump and may advance while pg_dump runs.
-  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$schema_smoke_status" == "PASS" ]] || die "smoke SQL did not prove restored application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-
-  current_stage="api_application_smoke"
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
-  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
-    FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
-    node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
-    || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
-  cat "$tmpdir/api-restore-smoke.log"
-  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
-  grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
-  api_readiness_status="PASS"
-  application_smoke_status="PASS"
-
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\r'}"
+      replay_migration="${replay_migration%$'\r'}"
       [[ -z "$replay_migration" ]] && continue
       replay_base="${replay_migration##*/}"
       replay_version="${replay_base%.sql}"
-      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "idempotent replay entry is not in the canonical manifest: $replay_migration"
-      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "idempotent replay entry is not already recorded as applied: $replay_migration"
+      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "replay entry is not in the canonical migration manifest: $replay_migration"
+      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "replay entry is not already recorded as applied: $replay_migration"
     done < "$tmpdir/requested-migrations.txt"
-  fi
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
   else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
+    die "FACTORYOS_MIGRATION_MANIFEST_MODE must be PENDING or IDEMPOTENT_REPLAY"
   fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
 
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\n'
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    [[ "$migration" =~ ^migrations/[0-9]{3}_[a-z0-9_]+\.sql$ ]] || die "invalid candidate migration entry: $migration"
-    [[ -f "$repo_root/$migration" && -r "$repo_root/$migration" ]] || die "candidate migration does not exist: $migration"
-    [[ " $seen_migrations " != *" $migration "* ]] || die "duplicate candidate migration: $migration"
-    seen_migrations+="${migration}"$'\n'
-    candidate_migration_count=$((candidate_migration_count + 1))
-  done < "$repo_root/$candidate_manifest"
-  [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
-fi
-
-current_stage="encrypted_backup"
-backup_started_epoch="$(epoch_now)"
-printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-partial_file=""
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
-checksum_verified=true
-encryption_status="ENCRYPTED_GPG"
-backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
-
-current_stage="archive_readability"
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
-archive_status="READABLE"
-
-current_stage="restore"
-restore_started_epoch="$(epoch_now)"
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-restore_status="RESTORED"
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  current_stage="candidate_migrations"
   candidate_migration_status="RUNNING"
-  migration_manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
-  [[ "$migration_manifest_mode" == "PENDING" || "$migration_manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "migration manifest mode must be PENDING or IDEMPOTENT_REPLAY"
-  [[ -f "$repo_root/scripts/audit/migration-manifest.txt" ]] || die "canonical migration manifest is missing"
-  psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
-    -c "SELECT version FROM schema_migrations ORDER BY applied_at, version" > "$tmpdir/applied-migrations.txt" \
-    || die "could not read restored schema_migrations for candidate preflight"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/scripts/audit/migration-manifest.txt" | tr -d '\r' > "$tmpdir/canonical-migrations.txt"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/$candidate_manifest" | tr -d '\r' > "$tmpdir/requested-migrations.txt"
-  if [[ "$migration_manifest_mode" == "PENDING" ]]; then
-    : > "$tmpdir/expected-pending-migrations.txt"
-    while IFS= read -r canonical_migration || [[ -n "$canonical_migration" ]]; do
-      canonical_base="${canonical_migration##*/}"
-      canonical_version="${canonical_base%.sql}"
-      if ! grep -Fxq -- "$canonical_version" "$tmpdir/applied-migrations.txt"; then
-        printf '%s\n' "$canonical_migration" >> "$tmpdir/expected-pending-migrations.txt"
-      fi
-    done < "$tmpdir/canonical-migrations.txt"
-    if ! cmp -s "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt"; then
-      diff -u "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt" >&2 || true
-      die "candidate migration manifest is not the exact ordered set pending from the restored source snapshot"
-    fi
-  else
-    while IFS= read -r replay_migration || [[ -n "$replay_migration" ]]; do
-      replay_migration="${replay_migration%
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
+  while IFS= read -r migration || [[ -n "$migration" ]]; do
+    [[ -z "$migration" ]] && continue
     printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
     psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
+  done < "$tmpdir/requested-migrations.txt"
   candidate_migration_status="PASS"
 
   current_stage="migration_failure_recovery"
@@ -526,18 +322,15 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
   event_epoch="$(date -u -d "$event_time_utc" +%s)"
   restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  # Source watermark is sampled before the dump and may advance while pg_dump runs.
-  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
+  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes the restored durable-write watermark"
   observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
 fi
 
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
+current_stage="schema_smoke"
+printf 'Running the reviewed restored-schema, tenant-isolation and audit smoke SQL...\n'
 psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
+  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification SQL failed"; }
 cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
 if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
 if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
 if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
@@ -548,100 +341,22 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
 
   current_stage="api_application_smoke"
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
-  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
+  FACTORYOS_DR_APPLICATION_DATABASE_URL="$app_database_url" \
     FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
     node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
     || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
   cat "$tmpdir/api-restore-smoke.log"
-  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
+  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API readiness marker is missing"
   grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
   api_readiness_status="PASS"
   application_smoke_status="PASS"
-
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
 fi
 
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\r'}"
-      [[ -z "$replay_migration" ]] && continue
-      replay_base="${replay_migration##*/}"
-      replay_version="${replay_base%.sql}"
-      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "idempotent replay entry is not in the canonical manifest: $replay_migration"
-      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "idempotent replay entry is not already recorded as applied: $replay_migration"
-    done < "$tmpdir/requested-migrations.txt"
-  fi
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
+restore_finished_epoch="$(epoch_now)"
+restore_duration_seconds="$(( restore_finished_epoch - restore_started_epoch ))"
+if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
+  observed_rto_seconds="$(( restore_finished_epoch - event_epoch ))"
   if [[ "$targets_approved" == true ]]; then
     if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
       target_assessment="BREACH_OF_APPROVED_TARGET"
@@ -651,8 +366,6 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   else
     target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
   fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
 fi
 
 current_stage="complete"
@@ -661,940 +374,12 @@ printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
 printf 'Source identity: %s\n' "$source_identity"
 printf 'Restore target identity: %s\n' "$target_identity"
 printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
+printf 'Backup duration seconds: %s\n' "$backup_duration_seconds"
+printf 'Restore and verification duration seconds: %s\n' "$restore_duration_seconds"
 printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
 printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
+printf 'Candidate migrations: %s (%s entries, mode %s)\n' "$candidate_migration_status" "$candidate_migration_count" "$manifest_mode"
 printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\n'"$migration"
-    seen_migrations+="${migration}"$'\n'
-    candidate_migration_count=$((candidate_migration_count + 1))
-  done < "$repo_root/$candidate_manifest"
-  [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
-fi
-
-current_stage="encrypted_backup"
-backup_started_epoch="$(epoch_now)"
-printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-partial_file=""
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
-checksum_verified=true
-encryption_status="ENCRYPTED_GPG"
-backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
-
-current_stage="archive_readability"
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
-archive_status="READABLE"
-
-current_stage="restore"
-restore_started_epoch="$(epoch_now)"
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-restore_status="RESTORED"
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  current_stage="candidate_migrations"
-  candidate_migration_status="RUNNING"
-  migration_manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
-  [[ "$migration_manifest_mode" == "PENDING" || "$migration_manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "migration manifest mode must be PENDING or IDEMPOTENT_REPLAY"
-  [[ -f "$repo_root/scripts/audit/migration-manifest.txt" ]] || die "canonical migration manifest is missing"
-  psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
-    -c "SELECT version FROM schema_migrations ORDER BY applied_at, version" > "$tmpdir/applied-migrations.txt" \
-    || die "could not read restored schema_migrations for candidate preflight"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/scripts/audit/migration-manifest.txt" | tr -d '\r' > "$tmpdir/canonical-migrations.txt"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/$candidate_manifest" | tr -d '\r' > "$tmpdir/requested-migrations.txt"
-  if [[ "$migration_manifest_mode" == "PENDING" ]]; then
-    : > "$tmpdir/expected-pending-migrations.txt"
-    while IFS= read -r canonical_migration || [[ -n "$canonical_migration" ]]; do
-      canonical_base="${canonical_migration##*/}"
-      canonical_version="${canonical_base%.sql}"
-      if ! grep -Fxq -- "$canonical_version" "$tmpdir/applied-migrations.txt"; then
-        printf '%s\n' "$canonical_migration" >> "$tmpdir/expected-pending-migrations.txt"
-      fi
-    done < "$tmpdir/canonical-migrations.txt"
-    if ! cmp -s "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt"; then
-      diff -u "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt" >&2 || true
-      die "candidate migration manifest is not the exact ordered set pending from the restored source snapshot"
-    fi
-  else
-    while IFS= read -r replay_migration || [[ -n "$replay_migration" ]]; do
-      replay_migration="${replay_migration%
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  # Source watermark is sampled before the dump and may advance while pg_dump runs.
-  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$schema_smoke_status" == "PASS" ]] || die "smoke SQL did not prove restored application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-
-  current_stage="api_application_smoke"
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
-  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
-    FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
-    node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
-    || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
-  cat "$tmpdir/api-restore-smoke.log"
-  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
-  grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
-  api_readiness_status="PASS"
-  application_smoke_status="PASS"
-
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\r'}"
-      [[ -z "$replay_migration" ]] && continue
-      replay_base="${replay_migration##*/}"
-      replay_version="${replay_base%.sql}"
-      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "idempotent replay entry is not in the canonical manifest: $replay_migration"
-      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "idempotent replay entry is not already recorded as applied: $replay_migration"
-    done < "$tmpdir/requested-migrations.txt"
-  fi
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\n'
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    [[ "$migration" =~ ^migrations/[0-9]{3}_[a-z0-9_]+\.sql$ ]] || die "invalid candidate migration entry: $migration"
-    [[ -f "$repo_root/$migration" && -r "$repo_root/$migration" ]] || die "candidate migration does not exist: $migration"
-    [[ " $seen_migrations " != *" $migration "* ]] || die "duplicate candidate migration: $migration"
-    seen_migrations+="${migration}"$'\n'
-    candidate_migration_count=$((candidate_migration_count + 1))
-  done < "$repo_root/$candidate_manifest"
-  [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
-fi
-
-current_stage="encrypted_backup"
-backup_started_epoch="$(epoch_now)"
-printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-partial_file=""
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
-checksum_verified=true
-encryption_status="ENCRYPTED_GPG"
-backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
-
-current_stage="archive_readability"
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
-archive_status="READABLE"
-
-current_stage="restore"
-restore_started_epoch="$(epoch_now)"
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-restore_status="RESTORED"
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  current_stage="candidate_migrations"
-  candidate_migration_status="RUNNING"
-  migration_manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
-  [[ "$migration_manifest_mode" == "PENDING" || "$migration_manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "migration manifest mode must be PENDING or IDEMPOTENT_REPLAY"
-  [[ -f "$repo_root/scripts/audit/migration-manifest.txt" ]] || die "canonical migration manifest is missing"
-  psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
-    -c "SELECT version FROM schema_migrations ORDER BY applied_at, version" > "$tmpdir/applied-migrations.txt" \
-    || die "could not read restored schema_migrations for candidate preflight"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/scripts/audit/migration-manifest.txt" | tr -d '\r' > "$tmpdir/canonical-migrations.txt"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/$candidate_manifest" | tr -d '\r' > "$tmpdir/requested-migrations.txt"
-  if [[ "$migration_manifest_mode" == "PENDING" ]]; then
-    : > "$tmpdir/expected-pending-migrations.txt"
-    while IFS= read -r canonical_migration || [[ -n "$canonical_migration" ]]; do
-      canonical_base="${canonical_migration##*/}"
-      canonical_version="${canonical_base%.sql}"
-      if ! grep -Fxq -- "$canonical_version" "$tmpdir/applied-migrations.txt"; then
-        printf '%s\n' "$canonical_migration" >> "$tmpdir/expected-pending-migrations.txt"
-      fi
-    done < "$tmpdir/canonical-migrations.txt"
-    if ! cmp -s "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt"; then
-      diff -u "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt" >&2 || true
-      die "candidate migration manifest is not the exact ordered set pending from the restored source snapshot"
-    fi
-  else
-    while IFS= read -r replay_migration || [[ -n "$replay_migration" ]]; do
-      replay_migration="${replay_migration%
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  # Source watermark is sampled before the dump and may advance while pg_dump runs.
-  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$schema_smoke_status" == "PASS" ]] || die "smoke SQL did not prove restored application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-
-  current_stage="api_application_smoke"
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
-  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
-    FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
-    node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
-    || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
-  cat "$tmpdir/api-restore-smoke.log"
-  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
-  grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
-  api_readiness_status="PASS"
-  application_smoke_status="PASS"
-
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\r'}"
-      [[ -z "$replay_migration" ]] && continue
-      replay_base="${replay_migration##*/}"
-      replay_version="${replay_base%.sql}"
-      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "idempotent replay entry is not in the canonical manifest: $replay_migration"
-      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "idempotent replay entry is not already recorded as applied: $replay_migration"
-    done < "$tmpdir/requested-migrations.txt"
-  fi
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\n'* ]] || die "duplicate candidate migration: $migration"
-    seen_migrations+="${migration}"$'\n'
-    candidate_migration_count=$((candidate_migration_count + 1))
-  done < "$repo_root/$candidate_manifest"
-  [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
-fi
-
-current_stage="encrypted_backup"
-backup_started_epoch="$(epoch_now)"
-printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-partial_file=""
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
-checksum_verified=true
-encryption_status="ENCRYPTED_GPG"
-backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
-
-current_stage="archive_readability"
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
-archive_status="READABLE"
-
-current_stage="restore"
-restore_started_epoch="$(epoch_now)"
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-restore_status="RESTORED"
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  current_stage="candidate_migrations"
-  candidate_migration_status="RUNNING"
-  migration_manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
-  [[ "$migration_manifest_mode" == "PENDING" || "$migration_manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "migration manifest mode must be PENDING or IDEMPOTENT_REPLAY"
-  [[ -f "$repo_root/scripts/audit/migration-manifest.txt" ]] || die "canonical migration manifest is missing"
-  psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
-    -c "SELECT version FROM schema_migrations ORDER BY applied_at, version" > "$tmpdir/applied-migrations.txt" \
-    || die "could not read restored schema_migrations for candidate preflight"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/scripts/audit/migration-manifest.txt" | tr -d '\r' > "$tmpdir/canonical-migrations.txt"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/$candidate_manifest" | tr -d '\r' > "$tmpdir/requested-migrations.txt"
-  if [[ "$migration_manifest_mode" == "PENDING" ]]; then
-    : > "$tmpdir/expected-pending-migrations.txt"
-    while IFS= read -r canonical_migration || [[ -n "$canonical_migration" ]]; do
-      canonical_base="${canonical_migration##*/}"
-      canonical_version="${canonical_base%.sql}"
-      if ! grep -Fxq -- "$canonical_version" "$tmpdir/applied-migrations.txt"; then
-        printf '%s\n' "$canonical_migration" >> "$tmpdir/expected-pending-migrations.txt"
-      fi
-    done < "$tmpdir/canonical-migrations.txt"
-    if ! cmp -s "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt"; then
-      diff -u "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt" >&2 || true
-      die "candidate migration manifest is not the exact ordered set pending from the restored source snapshot"
-    fi
-  else
-    while IFS= read -r replay_migration || [[ -n "$replay_migration" ]]; do
-      replay_migration="${replay_migration%
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  # Source watermark is sampled before the dump and may advance while pg_dump runs.
-  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$schema_smoke_status" == "PASS" ]] || die "smoke SQL did not prove restored application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-
-  current_stage="api_application_smoke"
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
-  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
-    FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
-    node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
-    || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
-  cat "$tmpdir/api-restore-smoke.log"
-  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
-  grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
-  api_readiness_status="PASS"
-  application_smoke_status="PASS"
-
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\r'}"
-      [[ -z "$replay_migration" ]] && continue
-      replay_base="${replay_migration##*/}"
-      replay_version="${replay_base%.sql}"
-      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "idempotent replay entry is not in the canonical manifest: $replay_migration"
-      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "idempotent replay entry is not already recorded as applied: $replay_migration"
-    done < "$tmpdir/requested-migrations.txt"
-  fi
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\n'
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    [[ "$migration" =~ ^migrations/[0-9]{3}_[a-z0-9_]+\.sql$ ]] || die "invalid candidate migration entry: $migration"
-    [[ -f "$repo_root/$migration" && -r "$repo_root/$migration" ]] || die "candidate migration does not exist: $migration"
-    [[ " $seen_migrations " != *" $migration "* ]] || die "duplicate candidate migration: $migration"
-    seen_migrations+="${migration}"$'\n'
-    candidate_migration_count=$((candidate_migration_count + 1))
-  done < "$repo_root/$candidate_manifest"
-  [[ "$candidate_migration_count" -gt 0 ]] || die "candidate migration manifest contains no SQL entries"
-fi
-
-current_stage="encrypted_backup"
-backup_started_epoch="$(epoch_now)"
-printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
-  | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
-[[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
-mv -- "$partial_file" "$backup_file"
-partial_file=""
-sha256sum -- "$backup_file" > "${backup_file}.sha256"
-sha256sum --check "${backup_file}.sha256" >/dev/null || die "encrypted backup checksum verification failed"
-checksum_sha256="$(sha256sum -- "$backup_file" | awk '{print $1}')"
-checksum_verified=true
-encryption_status="ENCRYPTED_GPG"
-backup_duration_seconds="$(( $(epoch_now) - backup_started_epoch ))"
-
-current_stage="archive_readability"
-printf 'Decrypting to a private temporary directory and checking archive readability...\n'
-gpg --batch --decrypt --output "$tmpdir/verified.dump" "$backup_file"
-[[ -s "$tmpdir/verified.dump" ]] || die "decrypted database archive is empty"
-pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" || die "pg_restore could not read the backup archive"
-archive_status="READABLE"
-
-current_stage="restore"
-restore_started_epoch="$(epoch_now)"
-printf 'Restoring into the separately verified empty database...\n'
-pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
-  --dbname="service=$target_service" "$tmpdir/verified.dump"
-restore_status="RESTORED"
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  current_stage="candidate_migrations"
-  candidate_migration_status="RUNNING"
-  migration_manifest_mode="${FACTORYOS_MIGRATION_MANIFEST_MODE:-PENDING}"
-  [[ "$migration_manifest_mode" == "PENDING" || "$migration_manifest_mode" == "IDEMPOTENT_REPLAY" ]] || die "migration manifest mode must be PENDING or IDEMPOTENT_REPLAY"
-  [[ -f "$repo_root/scripts/audit/migration-manifest.txt" ]] || die "canonical migration manifest is missing"
-  psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 \
-    -c "SELECT version FROM schema_migrations ORDER BY applied_at, version" > "$tmpdir/applied-migrations.txt" \
-    || die "could not read restored schema_migrations for candidate preflight"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/scripts/audit/migration-manifest.txt" | tr -d '\r' > "$tmpdir/canonical-migrations.txt"
-  sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$repo_root/$candidate_manifest" | tr -d '\r' > "$tmpdir/requested-migrations.txt"
-  if [[ "$migration_manifest_mode" == "PENDING" ]]; then
-    : > "$tmpdir/expected-pending-migrations.txt"
-    while IFS= read -r canonical_migration || [[ -n "$canonical_migration" ]]; do
-      canonical_base="${canonical_migration##*/}"
-      canonical_version="${canonical_base%.sql}"
-      if ! grep -Fxq -- "$canonical_version" "$tmpdir/applied-migrations.txt"; then
-        printf '%s\n' "$canonical_migration" >> "$tmpdir/expected-pending-migrations.txt"
-      fi
-    done < "$tmpdir/canonical-migrations.txt"
-    if ! cmp -s "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt"; then
-      diff -u "$tmpdir/expected-pending-migrations.txt" "$tmpdir/requested-migrations.txt" >&2 || true
-      die "candidate migration manifest is not the exact ordered set pending from the restored source snapshot"
-    fi
-  else
-    while IFS= read -r replay_migration || [[ -n "$replay_migration" ]]; do
-      replay_migration="${replay_migration%
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  # Source watermark is sampled before the dump and may advance while pg_dump runs.
-  # Only the restored durable-write watermark is compared to the explicit incident cutoff.
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_SCHEMA_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then schema_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$schema_smoke_status" == "PASS" ]] || die "smoke SQL did not prove restored application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-
-  current_stage="api_application_smoke"
-  need_value FACTORYOS_DR_APPLICATION_DATABASE_URL "§{FACTORYOS_DR_APPLICATION_DATABASE_URL:-}"
-  FACTORYOS_DR_APPLICATION_DATABASE_URL="$FACTORYOS_DR_APPLICATION_DATABASE_URL" \
-    FACTORYOS_DR_EXPECTED_DATABASE_IDENTITY="$target_identity" \
-    node "$repo_root/scripts/recovery/application-restore-smoke.mjs" > "$tmpdir/api-restore-smoke.log" 2>&1 \
-    || { cat "$tmpdir/api-restore-smoke.log" >&2; die "candidate API failed against the restored application database"; }
-  cat "$tmpdir/api-restore-smoke.log"
-  grep -q 'RECOVERY_API_READINESS=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API did not prove its readiness endpoint against the restored database"
-  grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/api-restore-smoke.log" || die "candidate API application smoke marker is missing"
-  api_readiness_status="PASS"
-  application_smoke_status="PASS"
-
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; schema smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$schema_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
-printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
-printf 'Operator sign-off is pending post-run review.\n'
-\r'}"
-      [[ -z "$replay_migration" ]] && continue
-      replay_base="${replay_migration##*/}"
-      replay_version="${replay_base%.sql}"
-      grep -Fxq -- "$replay_migration" "$tmpdir/canonical-migrations.txt" || die "idempotent replay entry is not in the canonical manifest: $replay_migration"
-      grep -Fxq -- "$replay_version" "$tmpdir/applied-migrations.txt" || die "idempotent replay entry is not already recorded as applied: $replay_migration"
-    done < "$tmpdir/requested-migrations.txt"
-  fi
-  while IFS= read -r migration || [[ -n "$migration" ]]; do
-    migration="${migration%$'\r'}"
-    [[ -z "$migration" || "$migration" =~ ^[[:space:]]*# ]] && continue
-    printf 'Applying candidate migration to isolated restore: %s\n' "$migration"
-    psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$repo_root/$migration" 2>&1 | tee -a "$tmpdir/candidate-migrations.log"
-  done < "$repo_root/$candidate_manifest"
-  candidate_migration_status="PASS"
-
-  current_stage="migration_failure_recovery"
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "recovery probe relation exists before rollback check"
-  if psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$failure_probe_sql" > "$tmpdir/migration-failure-probe.log" 2>&1; then
-    die "intentional failed-transaction probe unexpectedly succeeded"
-  fi
-  grep -qi "division by zero" "$tmpdir/migration-failure-probe.log" || { cat "$tmpdir/migration-failure-probe.log" >&2; die "failure-recovery probe returned an unexpected error"; }
-  probe_relation="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
-  [[ "$probe_relation" == "absent" ]] || die "failed migration left probe DDL in the restore target"
-  failure_recovery_status="PASS"
-
-  current_stage="restored_watermark"
-  restored_watermark_utc="$(run_watermark_query "$target_service" "$watermark_sql")"
-  event_epoch="$(date -u -d "$event_time_utc" +%s)"
-  restored_watermark_epoch="$(date -u -d "$restored_watermark_utc" +%s)"
-  source_watermark_epoch="$(date -u -d "$source_watermark_utc" +%s)"
-  (( restored_watermark_epoch <= event_epoch )) || die "event cutoff precedes restored data watermark"
-  (( restored_watermark_epoch <= source_watermark_epoch )) || die "restored watermark is newer than pre-backup source watermark"
-  observed_rpo_seconds="$(( event_epoch - restored_watermark_epoch ))"
-fi
-
-current_stage="application_smoke"
-printf 'Running the reviewed restore-verification SQL...\n'
-psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
-  || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
-cat "$tmpdir/restore-smoke.log"
-restore_status="PASS"
-if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
-if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
-if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
-
-if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
-  [[ "$application_smoke_status" == "PASS" ]] || die "smoke SQL did not prove application schema/data"
-  [[ "$tenant_isolation_status" == "PASS" ]] || die "smoke SQL did not prove tenant isolation"
-  [[ "$audit_continuity_status" == "PASS" ]] || die "smoke SQL did not prove audit continuity"
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-  observed_rto_seconds="$restore_duration_seconds"
-  if [[ "$targets_approved" == true ]]; then
-    if (( observed_rpo_seconds > rpo_target_seconds || observed_rto_seconds > rto_target_seconds )); then
-      target_assessment="BREACH_OF_APPROVED_TARGET"
-      die "measured recovery exceeds owner-approved RPO/RTO"
-    fi
-    target_assessment="WITHIN_APPROVED_TARGETS"
-  else
-    target_assessment="NOT_APPROVED_NOT_CONTRACTUAL"
-  fi
-else
-  restore_duration_seconds="$(( $(epoch_now) - restore_started_epoch ))"
-fi
-
-current_stage="complete"
-rehearsal_status="TECHNICAL_PASS"
-printf 'BACKUP_RESTORE_REHEARSAL=TECHNICAL_PASS\n'
-printf 'Source identity: %s\n' "$source_identity"
-printf 'Restore target identity: %s\n' "$target_identity"
-printf 'Encrypted backup SHA-256: %s\n' "$checksum_sha256"
-printf 'Backup duration seconds: %s\n' "${backup_duration_seconds:-NOT_MEASURED}"
-printf 'Restore and verification duration seconds: %s\n' "${restore_duration_seconds:-NOT_MEASURED}"
-printf 'Observed RPO seconds: %s\n' "${observed_rpo_seconds:-NOT_MEASURED}"
-printf 'Observed RTO seconds: %s\n' "${observed_rto_seconds:-NOT_MEASURED}"
-printf 'Candidate migrations: %s (%s entries)\n' "$candidate_migration_status" "$candidate_migration_count"
-printf 'Failure-recovery probe: %s\n' "$failure_recovery_status"
-printf 'Application smoke: %s; tenant isolation: %s; audit continuity: %s\n' "$application_smoke_status" "$tenant_isolation_status" "$audit_continuity_status"
+printf 'Schema smoke: %s; API smoke: %s; API readiness: %s; tenant isolation: %s; audit continuity: %s\n' "$schema_smoke_status" "$application_smoke_status" "$api_readiness_status" "$tenant_isolation_status" "$audit_continuity_status"
 printf 'RPO/RTO target assessment: %s\n' "$target_assessment"
 printf 'Operator sign-off is pending post-run review.\n'
