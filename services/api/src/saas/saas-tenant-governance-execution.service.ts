@@ -112,6 +112,24 @@ const PRESERVED_CATEGORIES = new Set<SaasTransferDatasetCategory>([
   SaasTransferDatasetCategory.EFFECTIVE_DATED_MASTER_DATA,
   SaasTransferDatasetCategory.IAM_ACCESS,
 ]);
+
+// These ledgers support usage billing, provider-cost reconciliation, budget
+// enforcement and finance/audit disputes. They are exported for portability,
+// but are never silently erased by a broad BUSINESS_DATA privacy request.
+const FINANCIAL_CONTROL_TABLES = new Set<string>([
+  'saas_usage_events',
+  'saas_usage_adjustments',
+  'saas_usage_reconciliations',
+  'saas_budget_evaluations',
+  'saas_workload_control_events',
+  'saas_budget_alerts',
+  'saas_budget_alert_acknowledgements',
+  'saas_provider_cost_events',
+  'saas_provider_cost_reconciliations',
+  'saas_usage_rate_cards',
+  'saas_usage_budgets',
+]);
+
 const MAX_ROWS_PER_SYNC_RUN = 100_000;
 const POLICY_TIME_COLUMNS = ['occurred_at', 'event_at', 'recorded_at', 'created_at', 'received_at'] as const;
 const TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
@@ -219,12 +237,21 @@ export class SaasTenantGovernanceExecutionService {
         [tenantId],
       );
       const held = holdResult.rows.some((row) => this.parseCategories(row.categories).includes(category));
+      const protectedEligible = mode === SaasRetentionRunMode.EXECUTE && mapped.some((table) => {
+        const entry = manifest[table.table] as { eligible?: string } | undefined;
+        const eligibleCount = BigInt(entry?.eligible ?? '0');
+        if (!FINANCIAL_CONTROL_TABLES.has(table.table) || eligibleCount === 0n) return false;
+        const tableEntry = manifest[table.table] as Record<string, unknown>;
+        tableEntry.retentionDisposition = 'REQUIRES_FINANCE_RETENTION_REVIEW';
+        return true;
+      });
       const guardedEligible = mode === SaasRetentionRunMode.EXECUTE && mapped.some((table) => {
         const entry = manifest[table.table] as { eligible?: string } | undefined;
         return table.deletionGuarded && BigInt(entry?.eligible ?? '0') > 0n;
       });
       const blockReason = unsupported
         ?? (held && mode === SaasRetentionRunMode.EXECUTE ? 'ACTIVE_LEGAL_HOLD' : null)
+        ?? (protectedEligible ? 'FINANCIAL_RETENTION_REVIEW_REQUIRED' : null)
         ?? (guardedEligible ? 'DELETE_GUARD_REQUIRES_REVIEWED_ADAPTER' : null)
         ?? (mode === SaasRetentionRunMode.EXECUTE && policy.created_by_user_id === actorUserId ? 'POLICY_MAKER_CANNOT_EXECUTE' : null)
       ?? (mode === SaasRetentionRunMode.EXECUTE && policy.disposition !== 'DELETE'
@@ -394,13 +421,18 @@ export class SaasTenantGovernanceExecutionService {
           throw new ConflictException('An active legal hold blocks execution for one or more categories');
         }
 
-        const tables = [...new Set(categories.flatMap((category) => this.resolveTables(category)))].sort();
-        const mapped = await this.inspectTables(client, tables, false);
-        if (mapped.some((item) => !item.safe)) {
+        const categoryTables = [...new Set(categories.flatMap((category) => this.resolveTables(category)))].sort();
+        const inspected = await this.inspectTables(client, categoryTables, false);
+        if (inspected.some((item) => !item.safe)) {
           throw new ConflictException('A target table failed the forced-RLS tenant isolation contract; no erasure data was changed');
         }
+        const retainedTables = inspected.filter((item) => FINANCIAL_CONTROL_TABLES.has(item.table));
+        const mapped = inspected.filter((item) => !FINANCIAL_CONTROL_TABLES.has(item.table));
+        const tables = mapped.map((item) => item.table);
         let totalRows = 0n;
+        let retainedRows = 0n;
         const counts: Record<string, string> = {};
+        const retainedCounts: Record<string, string> = {};
         for (const table of mapped) {
           const resultCount = await client.query<{ count: string }>(
             `SELECT COUNT(*)::text AS count FROM public.${this.quoteIdentifier(table.table)} WHERE tenant_id=$1::uuid`,
@@ -409,6 +441,15 @@ export class SaasTenantGovernanceExecutionService {
           const count = BigInt(resultCount.rows[0]?.count ?? '0');
           totalRows += count;
           counts[table.table] = count.toString();
+        }
+        for (const table of retainedTables) {
+          const resultCount = await client.query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count FROM public.${this.quoteIdentifier(table.table)} WHERE tenant_id=$1::uuid`,
+            [tenantId],
+          );
+          const count = BigInt(resultCount.rows[0]?.count ?? '0');
+          retainedRows += count;
+          retainedCounts[table.table] = count.toString();
         }
         if (mapped.some((item) => item.deletionGuarded && BigInt(counts[item.table] ?? '0') > 0n)) {
           throw new ConflictException('An erasure table has existing rows protected by an unreviewed DELETE trigger; no rows were deleted');
@@ -454,6 +495,14 @@ export class SaasTenantGovernanceExecutionService {
           sourceExportDigest: current.export_bundle_digest,
           tables: deletedCounts,
           deletedRows: deletedRows.toString(),
+          retainedTables: retainedCounts,
+          retainedRows: retainedRows.toString(),
+          exclusions: retainedTables.map((table) => ({
+            table: table.table,
+            reason: 'FINANCIAL_CONTROL_RECORDS_REQUIRE_SEPARATE_RETENTION_REVIEW',
+            rowCount: retainedCounts[table.table] ?? '0',
+          })),
+          scope: 'REVIEWED_TENANT_TABLE_ALLOWLIST_ONLY',
           verifiedAt: new Date().toISOString(),
         };
         const digest = this.hash(manifest);
@@ -482,7 +531,9 @@ export class SaasTenantGovernanceExecutionService {
           runId,
           categories: [...categories].sort(),
           deletedRows: deletedRows.toString(),
+          retainedRows: retainedRows.toString(),
           tables: deletedCounts,
+          retainedTables: retainedCounts,
           sourceExportDigest: current.export_bundle_digest,
           manifestDigest: digest,
         });
