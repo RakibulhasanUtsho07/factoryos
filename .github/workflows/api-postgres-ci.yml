@@ -5,6 +5,7 @@ on:
     paths:
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/recovery/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
       - 'scripts/seed-dev-factory-manager.sql'
@@ -17,6 +18,7 @@ on:
     paths:
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/recovery/**'
       - 'migrations/**'
       - 'scripts/seed-dev-iam.sql'
       - 'scripts/seed-dev-factory-manager.sql'
