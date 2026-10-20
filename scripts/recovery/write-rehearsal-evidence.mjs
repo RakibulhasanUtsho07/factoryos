@@ -61,6 +61,8 @@ const receipt = {
   verification: {
     restoreStatus: required('FACTORYOS_DR_RESTORE_STATUS') ?? 'NOT_RUN',
     applicationSmokeStatus: required('FACTORYOS_DR_APPLICATION_SMOKE_STATUS') ?? 'NOT_REPORTED',
+    schemaSmokeStatus: required('FACTORYOS_DR_SCHEMA_SMOKE_STATUS') ?? 'NOT_REPORTED',
+    apiReadinessStatus: required('FACTORYOS_DR_API_READINESS_STATUS') ?? 'NOT_REPORTED',
     tenantIsolationStatus: required('FACTORYOS_DR_TENANT_ISOLATION_STATUS') ?? 'NOT_REPORTED',
     auditContinuityStatus: required('FACTORYOS_DR_AUDIT_CONTINUITY_STATUS') ?? 'NOT_REPORTED',
     migrationRecoveryStatus: required('FACTORYOS_FAILURE_RECOVERY_STATUS') ?? 'NOT_RUN',
