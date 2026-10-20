@@ -293,6 +293,7 @@ jobs:
           PGSERVICEFILE="$RUNNER_TEMP/factoryos-recovery.pg_service.conf" \
           GNUPGHOME="$GNUPGHOME" \
           FACTORYOS_DR_MODE=RELEASE_GATE \
+          FACTORYOS_MIGRATION_MANIFEST_MODE=IDEMPOTENT_REPLAY \
           FACTORYOS_BACKUP_PGSERVICE=factoryos-ci-source \
           FACTORYOS_RESTORE_PGSERVICE=factoryos-ci-restore \
           FACTORYOS_BACKUP_OUTPUT="$recovery_backup_dir/factoryos-ci-recovery.dump.gpg" \
