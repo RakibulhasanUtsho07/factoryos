@@ -414,15 +414,11 @@ jobs:
             exit 1
           fi
           rm -f "$recovery_log"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 <<'SQL'
-          DO $
-          BEGIN
-            IF to_regclass('public.factoryos_migration_recovery_probe') IS NOT NULL THEN
-              RAISE EXCEPTION 'failed migration left partial DDL behind';
-            END IF;
-          END
-          $;
-          SQL
+          probe_relation="$(psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT CASE WHEN to_regclass('public.factoryos_migration_recovery_probe') IS NULL THEN 'absent' ELSE 'present' END")"
+          if [[ "$probe_relation" != "absent" ]]; then
+            echo "::error::Failed migration left partial DDL behind (probe relation: $probe_relation)"
+            exit 1
+          fi
 
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
