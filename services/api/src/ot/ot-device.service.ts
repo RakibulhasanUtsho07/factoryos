@@ -12,6 +12,7 @@ import {
   classifyOtSequence,
   hashOtValue,
   normalizeOtObject,
+  getAllowedOpcUaNodeIds,
 } from './ot-device.contract';
 import type { IngestOtTelemetryBatchDto, OtDeviceTransitionDto, RegisterOtDeviceDto } from './dto/ot-device.dto';
 
@@ -71,6 +72,13 @@ export class OtDeviceService {
       throw new BadRequestException('A valid Idempotency-Key header of 1 to 200 characters is required');
     }
     const metadata = this.normalizeObject(dto.metadata ?? {}, 'metadata');
+    if (dto.protocol === 'OPC_UA') {
+      try {
+        getAllowedOpcUaNodeIds(metadata);
+      } catch (error) {
+        throw new BadRequestException(error instanceof Error ? error.message : 'Invalid OPC UA read profile');
+      }
+    }
     const request = {
       display_name: dto.display_name.trim(),
       device_key: dto.device_key.trim(),

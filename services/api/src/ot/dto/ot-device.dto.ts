@@ -15,6 +15,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { OPC_UA_NODE_ID_PATTERN } from '../ot-device.contract';
 
 export const OT_PROTOCOLS = ['OPC_UA', 'MQTT', 'MODBUS_TCP'] as const;
 export type OtProtocol = (typeof OT_PROTOCOLS)[number];
@@ -43,6 +44,15 @@ export class RegisterOtDeviceDto {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;
+}
+
+export class ReadOpcUaNodesDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  @Matches(OPC_UA_NODE_ID_PATTERN, { each: true })
+  node_ids!: string[];
 }
 
 export class OtDeviceTransitionDto {

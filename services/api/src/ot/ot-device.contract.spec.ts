@@ -3,9 +3,24 @@ import {
   classifyOtSequence,
   hashOtValue,
   normalizeOtObject,
+  getAllowedOpcUaNodeIds,
+  validateOpcUaNodeId,
 } from './ot-device.contract';
 
 describe('OT telemetry contract', () => {
+  it('requires a small unique OPC UA NodeId allowlist on registrations', () => {
+    expect(getAllowedOpcUaNodeIds({
+      opcua: { allowed_node_ids: ['ns=2;s=Machine.Temperature', 'ns=2;i=101'] },
+    })).toEqual(['ns=2;s=Machine.Temperature', 'ns=2;i=101']);
+    expect(() => getAllowedOpcUaNodeIds({})).toThrow(/allowed_node_ids/);
+    expect(() => getAllowedOpcUaNodeIds({ opcua: { allowed_node_ids: [] } })).toThrow(/between 1 and 20/);
+    expect(() => getAllowedOpcUaNodeIds({ opcua: { allowed_node_ids: ['ns=2;s=ok', 'ns=2;s=ok'] } })).toThrow(/duplicate/);
+  });
+
+  it.each(['opc.tcp://host:4840', 'ns=1;s=bad;write', 'ns=50000;i=2', 'ns=1;i=-1'])(
+    'rejects an unsupported OPC UA NodeId form: %s',
+    (value) => expect(() => validateOpcUaNodeId(value)).toThrow(/NodeId/),
+  );
   it('creates stable fingerprints regardless of object key order', () => {
     expect(canonicalOtJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
     expect(hashOtValue({ b: 2, a: 1 })).toBe(hashOtValue({ a: 1, b: 2 }));

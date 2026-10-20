@@ -14,7 +14,7 @@ const registerInput = () => ({
   protocol: 'OPC_UA',
   connection_reference: 'config://PLC_A',
   secret_reference: 'env://OT_SECRET_PLC_A',
-  metadata: {},
+  metadata: { opcua: { allowed_node_ids: ['ns=2;s=Machine01.Temperature'] } },
 });
 
 const deviceRow = (overrides: Record<string, unknown> = {}) => ({
@@ -25,7 +25,7 @@ const deviceRow = (overrides: Record<string, unknown> = {}) => ({
   device_key: 'MACHINE-01',
   protocol: 'OPC_UA',
   connection_reference: 'config://PLC_A',
-  metadata: {},
+  metadata: { opcua: { allowed_node_ids: ['ns=2;s=Machine01.Temperature'] } },
   status: 'ACTIVE',
   row_version: 4,
   created_at: '2026-10-19T10:00:00.000Z',
@@ -92,7 +92,7 @@ describe('OtDeviceService', () => {
       protocol: 'OPC_UA',
       connection_reference: 'config://PLC_A',
       secret_reference: 'env://OT_SECRET_PLC_A',
-      metadata: Object.create(null),
+      metadata: normalizeOtObject(input.metadata),
     });
     clientQuery.mockResolvedValueOnce({ rows: [deviceRow({
       status: 'PENDING_REVIEW',

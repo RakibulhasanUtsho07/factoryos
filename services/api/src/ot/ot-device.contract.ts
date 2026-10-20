@@ -2,10 +2,38 @@ import { createHash } from 'node:crypto';
 
 export type OtDeliveryStatus = 'ON_TIME' | 'LATE' | 'SEQUENCE_GAP';
 
+// This deliberately accepts only a small, auditable OPC UA NodeId grammar.
+// It is not intended to model every escaped-string form supported by the OPC UA spec.
+export const OPC_UA_NODE_ID_PATTERN =
+  /^(?:ns=(?:0|[1-9]\\d{0,3});)?(?:i=(?:0|[1-9]\\d{0,9})|s=[A-Za-z0-9_.:\\/-]{1,256}|g=[0-9a-fA-F-]{36}|b=[A-Za-z0-9+/]{1,256}={0,2})$/;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+export function validateOpcUaNodeId(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 300 || !OPC_UA_NODE_ID_PATTERN.test(value)) {
+    throw new Error('OPC UA NodeId is not in the approved bounded format');
+  }
+  return value;
+}
+
+export function getAllowedOpcUaNodeIds(metadata: Record<string, unknown>): string[] {
+  const profile = metadata['opcua'];
+  if (!isRecord(profile)) {
+    throw new Error('OPC UA devices must define metadata.opcua.allowed_node_ids');
+  }
+  const nodes = profile['allowed_node_ids'];
+  if (!Array.isArray(nodes) || nodes.length < 1 || nodes.length > 20) {
+    throw new Error('metadata.opcua.allowed_node_ids must contain between 1 and 20 NodeIds');
+  }
+  const normalized = nodes.map(validateOpcUaNodeId);
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error('metadata.opcua.allowed_node_ids must not contain duplicate NodeIds');
+  }
+  return normalized;
 }
 
 /** Canonical JSON is used for replay fingerprints; object key order is not significant. */
