@@ -16,7 +16,7 @@ The register is intentionally initialized with `disposition: OPEN` and `acceptan
 | Field | Closure requirement |
 |---|---|
 | `requirementId` / `sourcePriority` | Must match the exact row in the evidence matrix. `REVIEW SOURCE` is not an approved priority. |
-| `matrixAssessment`, `matrixEvidenceText`, `acceptanceGap` | Preserve the current repository assessment and its limitations; these are not direct acceptance proof. |
+| `matrixAssessment`, `requirementMatrixPath` | Preserve the current repository assessment and point to the source matrix row for full evidence-pointer and acceptance-gap text. The status is not direct acceptance proof. |
 | `provisionalOwnerRole` | Suggested accountability group inferred from the requirement family. It is triage only, not an assignment. |
 | `namedOwner`, `reviewer` | Must be filled with accountable people/roles under the project's approval process; self-review is not sufficient where maker-checker separation applies. |
 | `directCodeReferences` | Exact repository paths and preferably line/range or symbol for behavior supporting this requirement. |
