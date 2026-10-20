@@ -1650,9 +1650,9 @@ export class GrowthService {
       }
 
       const actual = await client.query<{
-        id: string; observed_at: string; actual_value: string; unit: string; evidence_ref: string;
+        id: string; measurement_id: string; observed_at: string; actual_value: string; unit: string; evidence_ref: string;
       }>(
-        `SELECT o.id::text AS id, o.observed_at::text AS observed_at,
+        `SELECT o.id::text AS id, k.id::text AS measurement_id, o.observed_at::text AS observed_at,
             k.actual_value::text AS actual_value, k.unit, k.evidence_ref
          FROM growth_opportunity_outcomes o
          JOIN growth_outcome_kpi_measurements k
@@ -1695,6 +1695,8 @@ export class GrowthService {
         forecast_source_ref: sourceRef,
         forecast_source_evidence_id: source.rows[0].id,
         outcome_id: actualRow.id,
+        outcome_kpi_measurement_id: actualRow.measurement_id,
+        actual_evidence_ref: actualRow.evidence_ref,
         outcome_observed_at: observedAt.toISOString(),
         recorded_by: userId,
         ...metrics,
@@ -1716,7 +1718,8 @@ export class GrowthService {
         const replay = await client.query(
           `SELECT id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
               forecast_source_ref, forecast_source_evidence_id::text AS forecast_source_evidence_id,
-           outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+           outcome_id::text AS outcome_id, outcome_kpi_measurement_id::text AS outcome_kpi_measurement_id,
+           actual_evidence_ref, forecast_value::text AS forecast_value,
               actual_value::text AS actual_value, signed_error::text AS signed_error,
               absolute_error::text AS absolute_error, squared_error::text AS squared_error,
               absolute_percentage_error::text AS absolute_percentage_error,
@@ -1733,19 +1736,21 @@ export class GrowthService {
 
       const inserted = await client.query(
         `INSERT INTO growth_forecast_evaluations (
-           tenant_id, factory_id, opportunity_id, outcome_id, model_version, metric_key, unit,
-           forecast_origin_at, forecast_source_ref, forecast_source_evidence_id, forecast_value, actual_value, lower_bound, upper_bound,
+           tenant_id, factory_id, opportunity_id, outcome_id, outcome_kpi_measurement_id, model_version, metric_key, unit,
+           forecast_origin_at, forecast_source_ref, forecast_source_evidence_id,
+           forecast_value, actual_value, actual_evidence_ref, lower_bound, upper_bound,
            nominal_coverage_pct, signed_error, absolute_error, squared_error, absolute_percentage_error,
            symmetric_percentage_error, interval_hit, interval_width, interval_semantics, method_version,
            input_hash, idempotency_key, recorded_by
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10, $11::numeric,
-           $12::numeric, $13::numeric, $14::numeric, $15::numeric, $16::numeric, $17::numeric,
-           $18::numeric, $19::numeric, $20, $21, $22::numeric, $23, $24, $25, $26, $27
+           $1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10, $11, $12::numeric,
+           $13::numeric, $14, $15::numeric, $16::numeric, $17::numeric, $18::numeric,
+           $19::numeric, $20::numeric, $21, $22, $23::numeric, $24, $25, $26, $27, $28, $29
          ) ON CONFLICT DO NOTHING
          RETURNING id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
            forecast_source_ref, forecast_source_evidence_id::text AS forecast_source_evidence_id,
-           outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+           outcome_id::text AS outcome_id, outcome_kpi_measurement_id::text AS outcome_kpi_measurement_id,
+           actual_evidence_ref, forecast_value::text AS forecast_value,
            actual_value::text AS actual_value, signed_error::text AS signed_error,
            absolute_error::text AS absolute_error, squared_error::text AS squared_error,
            absolute_percentage_error::text AS absolute_percentage_error,
@@ -1754,10 +1759,10 @@ export class GrowthService {
            nominal_coverage_pct::text AS nominal_coverage_pct, interval_hit, interval_width::text AS interval_width,
            interval_semantics, method_version, input_hash, idempotency_key, evaluated_at::text AS evaluated_at`,
         [
-          tenantId, factoryId, opportunityId, actualRow.id, modelVersion, metricKey, unit,
+          tenantId, factoryId, opportunityId, actualRow.id, actualRow.measurement_id, modelVersion, metricKey, unit,
           origin.toISOString(), sourceRef, source.rows[0].id, metrics.forecast_value, metrics.actual_value,
-          metrics.lower_bound, metrics.upper_bound, metrics.nominal_coverage_pct, metrics.signed_error,
-          metrics.absolute_error, metrics.squared_error, metrics.absolute_percentage_error,
+          actualRow.evidence_ref, metrics.lower_bound, metrics.upper_bound, metrics.nominal_coverage_pct,
+          metrics.signed_error, metrics.absolute_error, metrics.squared_error, metrics.absolute_percentage_error,
           metrics.symmetric_percentage_error, metrics.interval_hit, metrics.interval_width,
           metrics.interval_semantics, metrics.method_version, requestHash, idempotencyKey, userId,
         ],
@@ -1773,7 +1778,8 @@ export class GrowthService {
           const replay = await client.query(
             `SELECT id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
                 forecast_source_ref, forecast_source_evidence_id::text AS forecast_source_evidence_id,
-           outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+           outcome_id::text AS outcome_id, outcome_kpi_measurement_id::text AS outcome_kpi_measurement_id,
+           actual_evidence_ref, forecast_value::text AS forecast_value,
                 actual_value::text AS actual_value, signed_error::text AS signed_error,
                 absolute_error::text AS absolute_error, squared_error::text AS squared_error,
                 absolute_percentage_error::text AS absolute_percentage_error,
@@ -1795,8 +1801,9 @@ export class GrowthService {
         correlationId: this.correlationId(requestId, traceId),
         payload: {
           forecast_evaluation_id: inserted.rows[0].id, opportunity_id: opportunityId,
-          outcome_id: actualRow.id, model_version: modelVersion, metric_key: metricKey,
-          method_version: metrics.method_version, input_hash: requestHash,
+          outcome_id: actualRow.id, outcome_kpi_measurement_id: actualRow.measurement_id,
+          forecast_source_evidence_id: source.rows[0].id, model_version: modelVersion,
+          metric_key: metricKey, method_version: metrics.method_version, input_hash: requestHash,
         },
       });
       return { evaluation: inserted.rows[0], created: true };
