@@ -130,12 +130,11 @@ export class SaasUsageService {
   if(existing.rows[0]) {if(existing.rows[0].request_hash!==hash)throw new ConflictException('Usage idempotency key or source event reference was reused for different content');await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,existing.rows[0].occurred_at);return {idempotent:true,event:this.mapUsage(existing.rows[0])};}
   const effectiveRate=await this.database.query<RateRow>('SELECT '+RATE_COLUMNS+' FROM saas_usage_rate_cards WHERE tenant_id=$1 AND metric_code=$2 AND effective_from <= $3 ORDER BY effective_from DESC,rate_version DESC LIMIT 1',[tenantId,n.content.metric_code,n.content.occurred_at],{tenantId,userId:actorUserId});
   const rate=effectiveRate.rows[0]??null;
-  let rateId:string|null=null, rateVersion:number|null=null, rateAmount:number|null=null, rateBlock:number|null=null, currency:string|null=null, cost:number|null=null;
+  let rateId:string|null=null, rateVersion:number|null=null, rateAmount:string|null=null, rateBlock:string|null=null, currency:string|null=null, cost:number|null=null;
   if(rate) {
    if(UNITS[rate.metric_code]!==UNITS[n.content.metric_code])throw new ConflictException('Effective rate card unit does not match the meter contract');
-   rateId=rate.id;rateVersion=Number(rate.rate_version);rateAmount=Number(rate.rate_minor_per_block);rateBlock=Number(rate.block_quantity);currency=rate.currency;
-   cost=Math.round(Number(n.content.quantity)/rateBlock*rateAmount);
-   if(!Number.isSafeInteger(cost)||cost<0)throw new BadRequestException('Estimated usage cost exceeds the supported integer range');
+   rateId=rate.id;rateVersion=Number(rate.rate_version);rateAmount=String(rate.rate_minor_per_block);rateBlock=String(rate.block_quantity);currency=rate.currency;
+   cost=this.calculateUsageCostMinor(n.content.quantity,rateBlock,rateAmount);
   }
   const inserted=await this.database.query<UsageRow>(
    'INSERT INTO saas_usage_events(tenant_id,factory_id,metric_code,capability_code,workload_class,quantity,occurred_at,source_system,source_event_ref,rate_card_id,rate_version_snapshot,rate_minor_per_block_snapshot,rate_block_quantity_snapshot,currency,estimated_cost_minor,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT DO NOTHING RETURNING '+USAGE_COLUMNS,
@@ -513,8 +512,10 @@ export class SaasUsageService {
   const model_code=input.model_code==null?null:this.pattern(input.model_code,'model_code',/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/);
   const metric_code=this.enum(input.metric_code,new Set(['AI_INPUT_TOKEN','AI_OUTPUT_TOKEN','AI_TOOL_CALL','PREMIUM_WORKLOAD','EDGE_INFERENCE','INTEGRATION_CALL']),'metric_code') as SaasMeterMetric;
   const workload_class=this.enum(input.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass;
-  const quantity=this.num(input.quantity,'quantity');
-  if(quantity<=0||quantity>1000000000000)throw new BadRequestException('quantity must be positive and within the supported range');
+  const parsedQuantity=this.decimalUnits(input.quantity,'quantity');
+  const quantityUnits=parsedQuantity.units;
+  if(quantityUnits<=0n||quantityUnits>1_000_000_000_000_000_000n)throw new BadRequestException('quantity must be positive and within the supported range');
+  const quantity=parsedQuantity.value;
   const currency=this.pattern(input.currency,'currency',/^[A-Z]{3}$/);
   const provider_cost_minor=this.num(input.provider_cost_minor,'provider_cost_minor');
   if(!Number.isSafeInteger(provider_cost_minor)||provider_cost_minor<0||provider_cost_minor>9000000000000000)throw new BadRequestException('provider_cost_minor must be a supported non-negative minor-unit integer');
@@ -541,27 +542,76 @@ export class SaasUsageService {
  private mapProviderCost(r:ProviderCostRow) {return {id:r.id,factoryId:r.factory_id,providerCode:r.provider_code,modelCode:r.model_code,metricCode:r.metric_code,workloadClass:r.workload_class,quantity:String(r.quantity),currency:r.currency,providerCostMinor:String(r.provider_cost_minor),occurredAt:r.occurred_at,providerInvoiceReference:r.provider_invoice_reference,sourceSystem:r.source_system,sourceRefHash:this.sha(r.source_event_ref),recordedBy:r.recorded_by,createdAt:r.created_at};}
  private mapProviderReconciliation(r:ProviderCostReconciliationRow) {return {id:r.id,factoryId:r.factory_id,providerCode:r.provider_code,invoiceReference:r.invoice_reference,reconciliationVersion:Number(r.reconciliation_version),periodStart:r.period_start,periodEnd:r.period_end,currency:r.currency,eventCount:Number(r.event_count),ledgerProviderCostMinor:String(r.ledger_provider_cost_minor),invoicedProviderCostMinor:String(r.invoiced_provider_cost_minor),varianceMinor:String(r.variance_minor),status:r.status,reportHash:r.report_hash,recordedBy:r.recorded_by,createdAt:r.created_at};}
 
+ private decimalUnits(value:unknown,field:string):{units:bigint;value:string} {
+  // NUMERIC(24,6) is the storage contract. Parse the submitted decimal spelling,
+  // not its binary floating-point representation, and reject excess precision.
+  const raw=typeof value==='number'&&Number.isFinite(value)?String(value):typeof value==='string'?value.trim():'';
+  const match=/^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(raw);
+  if(!match)throw new BadRequestException(field+' must be a valid decimal number');
+  const sign=match[1]==='-'?-1n:1n;
+  const whole=match[2]??'0';
+  const fraction=match[3]??match[4]??'';
+  const exponent=match[5]===undefined?0:Number(match[5]);
+  if(!Number.isInteger(exponent)||Math.abs(exponent)>30)throw new BadRequestException(field+' exponent is outside the supported range');
+  const digits=whole+fraction;
+  const decimalPoint=whole.length+exponent;
+  let integerPart:string;
+  let fractionPart:string;
+  if(decimalPoint<=0){integerPart='0';fractionPart='0'.repeat(-decimalPoint)+digits;}
+  else if(decimalPoint>=digits.length){integerPart=digits+'0'.repeat(decimalPoint-digits.length);fractionPart='';}
+  else{integerPart=digits.slice(0,decimalPoint);fractionPart=digits.slice(decimalPoint);}
+  integerPart=integerPart.replace(/^0+(?=\d)/,'')||'0';
+  fractionPart=fractionPart.replace(/0+$/,'');
+  if(fractionPart.length>6)throw new BadRequestException(field+' supports at most 6 decimal places');
+  const scaledFraction=fractionPart.padEnd(6,'0');
+  let units=(BigInt(integerPart)*1_000_000n)+BigInt(scaledFraction||'0');
+  if(units!==0n)units*=sign;
+  const canonicalSign=units<0n?'-':'';
+  const magnitude=units<0n?-units:units;
+  const canonicalInteger=(magnitude/1_000_000n).toString();
+  const canonicalFraction=(magnitude%1_000_000n).toString().padStart(6,'0');
+  return {units,value:canonicalSign+canonicalInteger+'.'+canonicalFraction};
+ }
+
+ private calculateUsageCostMinor(quantity:unknown,blockQuantity:unknown,rateMinorPerBlock:unknown):number {
+  const q=this.decimalUnits(quantity,'quantity').units;
+  const block=this.decimalUnits(blockQuantity,'block_quantity').units;
+  const rate=typeof rateMinorPerBlock==='bigint'?rateMinorPerBlock:BigInt(String(rateMinorPerBlock));
+  if(q<0n||block<=0n||rate<0n)throw new BadRequestException('Usage pricing inputs are outside the supported range');
+  // Quantity and block share a six-decimal scale, so the scale cancels.
+  // Integer half-up rounding prevents binary-float drift in minor currency units.
+  const cost=(q*rate+(block/2n))/block;
+  if(cost<0n||cost>9_000_000_000_000_000n)throw new BadRequestException('Estimated usage cost exceeds the supported integer range');
+  return Number(cost);
+ }
+
  private normalizeRate(input:CreateSaasMeterRateDto) {
   const metric=this.enum(input?.metric_code,METRICS,'metric_code') as SaasMeterMetric;
   const version=this.num(input?.rate_version,'rate_version');if(!Number.isInteger(version)||version<1||version>1000000)throw new BadRequestException('rate_version must be an integer between 1 and 1000000');
   const rate=this.num(input?.rate_minor_per_block,'rate_minor_per_block');if(!Number.isSafeInteger(rate)||rate<0||rate>9000000000000000)throw new BadRequestException('rate_minor_per_block must be a supported non-negative integer');
-  const block=this.num(input?.block_quantity,'block_quantity');if(block<0.000001||block>1e12)throw new BadRequestException('block_quantity is outside supported range');
+  const parsedBlock=this.decimalUnits(input?.block_quantity,'block_quantity');
+  if(parsedBlock.units<1n||parsedBlock.units>1_000_000_000_000_000_000n)throw new BadRequestException('block_quantity is outside supported range');
+  const block=parsedBlock.value;
   const currency=this.pattern(input?.currency,'currency',/^[A-Z]{3}$/),effective=this.timestamp(input?.effective_from,'effective_from'),key=this.idem(input?.idempotency_key);
   return {metric_code:metric,rate_version:version,rate_minor_per_block:rate,block_quantity:block,currency,effective_from:effective,idempotency_key:key,unit:UNITS[metric]};
  }
  private normalizeEvent(input:RecordSaasUsageEventDto) {
   const metric=this.enum(input?.metric_code,METRICS,'metric_code') as SaasMeterMetric,cap=this.pattern(input?.capability_code,'capability_code',/^[a-z][a-z0-9._:-]{0,99}$/);
-  const workload=this.enum(input?.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass,quantity=this.num(input?.quantity,'quantity');
-  if(quantity<=0||quantity>1e12)throw new BadRequestException('quantity must be greater than zero and within the supported range');
+  const workload=this.enum(input?.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass;
+  const parsedQuantity=this.decimalUnits(input?.quantity,'quantity');
+  if(parsedQuantity.units<=0n||parsedQuantity.units>1_000_000_000_000_000_000n)throw new BadRequestException('quantity must be greater than zero and within the supported range');
+  const quantity=parsedQuantity.value;
   const occurred=this.timestamp(input?.occurred_at,'occurred_at'),source=this.enum(input?.source_system,SOURCES,'source_system') as SaasUsageSourceSystem;
   const ref=this.str(input?.source_event_ref,'source_event_ref',255),key=this.idem(input?.idempotency_key);
   return {idempotency_key:key,content:{metric_code:metric,capability_code:cap,workload_class:workload,quantity,occurred_at:occurred,source_system:source,source_event_ref:ref,unit:UNITS[metric]}};
  }
  private normalizeAdjustment(input:CreateSaasUsageAdjustmentDto) {
   const period=this.normalizePeriod(input?.period_start,input?.period_end,366),metric=input?.metric_code===undefined?null:this.enum(input.metric_code,METRICS,'metric_code') as SaasMeterMetric;
-  const quantity=this.num(input?.quantity_delta,'quantity_delta');if(Math.abs(quantity)>1e12)throw new BadRequestException('quantity_delta is outside the supported range');
+  const parsedQuantity=this.decimalUnits(input?.quantity_delta,'quantity_delta');
+  if(parsedQuantity.units>1_000_000_000_000_000_000n||parsedQuantity.units< -1_000_000_000_000_000_000n)throw new BadRequestException('quantity_delta is outside the supported range');
+  const quantity=parsedQuantity.value;
   const cost=this.num(input?.cost_delta_minor,'cost_delta_minor');if(!Number.isSafeInteger(cost)||Math.abs(cost)>9000000000000000)throw new BadRequestException('cost_delta_minor must be a supported integer');
-  if(quantity===0&&cost===0)throw new BadRequestException('An adjustment must change quantity or cost');
+  if(parsedQuantity.units===0n&&cost===0)throw new BadRequestException('An adjustment must change quantity or cost');
   const currency=this.pattern(input?.currency,'currency',/^[A-Z]{3}$/),reasonCode=this.enum(input?.reason_code,REASONS,'reason_code') as SaasAdjustmentReasonCode;
   const reason=this.str(input?.reason,'reason',2000),ref=input?.reference_ref===undefined?null:this.str(input.reference_ref,'reference_ref',255),key=this.idem(input?.idempotency_key);
   return {idempotency_key:key,content:{period_start:period.start,period_end:period.end,metric_code:metric,quantity_delta:quantity,cost_delta_minor:cost,currency,reason_code:reasonCode,reason,reference_ref:ref}};
