@@ -74,11 +74,11 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_STARTED_AT_UTC: '2026-10-20T10:00:00Z',
       FACTORYOS_DR_FINISHED_AT_UTC: '2026-10-20T10:02:00Z',
       FACTORYOS_CANDIDATE_SHA: 'a'.repeat(40),
-      FACTORYOS_CANDIDATE_MIGRATION_MANIFEST: 'scripts/recovery/ci-candidate-migrations.txt',
-      FACTORYOS_CANDIDATE_MANIFEST_SHA256: 'b'.repeat(64),
-      FACTORYOS_CANDIDATE_MIGRATION_COUNT: '8',
-      FACTORYOS_CANDIDATE_MIGRATION_STATUS: 'PASS',
-      FACTORYOS_FAILURE_RECOVERY_STATUS: 'PASS',
+      FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST: 'scripts/recovery/ci-candidate-migrations.txt',
+      FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256: 'b'.repeat(64),
+      FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT: '8',
+      FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS: 'PASS',
+      FACTORYOS_DR_FAILURE_RECOVERY_STATUS: 'PASS',
       FACTORYOS_DR_SOURCE_IDENTITY: 'source|10.0.0.1|5432',
       FACTORYOS_DR_TARGET_IDENTITY: 'restore|10.0.0.2|5432',
       FACTORYOS_DR_DATABASE_IDENTITIES_DISTINCT: 'true',
@@ -112,6 +112,11 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
     assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
     assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
+    assert.equal(receipt.candidate.migrationManifestSha256, 'b'.repeat(64));
+    assert.equal(receipt.candidate.migrationCount, 8);
+    assert.equal(receipt.candidate.migrationStatus, 'PASS');
+    assert.equal(receipt.candidate.failedTransactionRecoveryStatus, 'PASS');
+    assert.equal(receipt.verification.migrationRecoveryStatus, 'PASS');
     assert.equal(receipt.databases.distinctIdentityVerified, true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
