@@ -27,6 +27,35 @@ function extractRequirementRows(markdown) {
   }).filter(Boolean);
 }
 
+
+function extractRequirementEvidenceRows(markdown) {
+  const start = markdown.indexOf('## 3. Requirement ID register');
+  const end = markdown.indexOf('## 4. Final SRS acceptance scenarios', start + 1);
+  assert.notEqual(start, -1, 'Requirement matrix section 3 is missing');
+  assert.notEqual(end, -1, 'Requirement matrix section 4 is missing');
+  return markdown.slice(start, end).split('\n').flatMap((line) => {
+    if (!/^\| (?:FR|NFR)-[A-Z0-9]+-\d{2} \|/.test(line)) return [];
+    const cells = line.slice(1, -1).split('|').map((cell) => cell.trim());
+    return [{
+      id: cells[0],
+      priority: cells[1],
+      wording: cells[2] ?? '',
+      assessment: cells[3] ?? '',
+      evidence: cells[4] ?? '',
+      gap: cells[5] ?? '',
+    }];
+  });
+}
+
+function extractEvidencePaths(value) {
+  const matches = value.match(/(?:docs|services|scripts|migrations|\.github)\/[A-Za-z0-9_.*\/-]+/g) ?? [];
+  return [...new Set(matches.map((path) => path.replace(/[),.;:`]+$/g, '')))].filter((path) => path.length > 3);
+}
+
+const isTestPointer = (path) => /(\.spec\.[cm]?[jt]sx?|\.test\.[cm]?[jt]sx?|\.sql$|\/test\/|\/tests\/|\.contract\.[cm]?[jt]s$)/i.test(path);
+const isCodePointer = (path) => (/^services\/api\/src\/|^apps\/web\/src\//.test(path) && !isTestPointer(path));
+const isMigrationPointer = (path) => /^migrations\/\d/.test(path);
+
 const requirementRows = extractRequirementRows(matrix);
 const uniqueIds = new Set(requirementRows.map((row) => row.id));
 assert.equal(requirementRows.length, 899, 'Review the source matrix diff before changing the extracted-ID count');
@@ -76,6 +105,43 @@ assert.ok(audit.includes('srs-p0-p1-evidence-closure-register.md'), 'Master audi
 assert.ok(audit.includes('srs-p0-p1-evidence-closure-register.json'), 'Master audit must link machine-readable P0/P1 closure rows');
 assert.ok(sourceApproval.includes('BLOCKED — source-owner confirmation and controlled approval evidence pending'), 'Source-owner approval must remain visibly blocked until evidenced');
 assert.ok(scopeReconciliation.includes('51') && scopeReconciliation.includes('not evidence of 51 missing implementations'), 'Scope ledger must not misclassify the count delta as missing code');
+
+
+const matrixEvidenceRows = new Map(extractRequirementEvidenceRows(matrix).map((row) => [row.id, row]));
+const pointerCoverage = {};
+for (const row of closureRows) {
+  const source = matrixEvidenceRows.get(row.requirementId);
+  assert.ok(source, 'Closure register row is missing from matrix: ' + row.requirementId);
+  assert.equal(row.sourcePriority, source.priority, 'Priority differs from matrix for ' + row.requirementId);
+  assert.equal(row.matrixAssessment, source.assessment, 'Assessment differs from matrix for ' + row.requirementId);
+  assert.equal(row.sourceWordingExcerpt, source.wording, 'Source wording excerpt differs from matrix for ' + row.requirementId);
+  assert.equal(row.repositoryEvidenceText, source.evidence, 'Repository-evidence cell differs from matrix for ' + row.requirementId);
+  assert.equal(row.acceptanceGapText, source.gap, 'Acceptance-gap text differs from matrix for ' + row.requirementId);
+
+  const pointers = extractEvidencePaths(source.evidence);
+  const codePointers = pointers.filter(isCodePointer);
+  const testPointers = pointers.filter(isTestPointer);
+  const migrationPointers = pointers.filter(isMigrationPointer);
+  const pointerClass = codePointers.length && testPointers.length
+    ? 'CODE_AND_TEST_POINTERS_PRESENT'
+    : testPointers.length
+      ? 'TEST_POINTER_PRESENT'
+      : codePointers.length
+        ? 'CODE_POINTER_PRESENT'
+        : pointers.length
+          ? 'DOC_OR_FAMILY_POINTER_ONLY'
+          : 'NO_REPOSITORY_POINTER';
+  assert.deepEqual(row.repositoryEvidencePointerPaths, pointers, 'Repository path pointers differ from matrix for ' + row.requirementId);
+  assert.deepEqual(row.exactCodePointersFromMatrix, codePointers, 'Code pointers differ from matrix for ' + row.requirementId);
+  assert.deepEqual(row.exactTestPointersFromMatrix, testPointers, 'Test pointers differ from matrix for ' + row.requirementId);
+  assert.deepEqual(row.exactMigrationPointersFromMatrix, migrationPointers, 'Migration pointers differ from matrix for ' + row.requirementId);
+  assert.equal(row.evidencePointerClass, pointerClass, 'Evidence pointer class differs from matrix for ' + row.requirementId);
+  assert.equal(row.evidenceStatus, 'MATRIX_POINTERS_ATTACHED_DIRECT_ACCEPTANCE_STILL_OPEN', 'Matrix pointers must not become implicit acceptance for ' + row.requirementId);
+  assert.equal(row.acceptanceResult, 'NOT_ACCEPTED', 'All rows remain open until individually accepted: ' + row.requirementId);
+  assert.ok(row.evidenceClosureNeeds.includes('CURRENT_CANDIDATE_CI_RUN'), 'Missing exact-SHA CI closure need for ' + row.requirementId);
+  assert.ok(row.evidenceClosureNeeds.includes('NAMED_OWNER_AND_INDEPENDENT_REVIEWER'), 'Missing owner/reviewer closure need for ' + row.requirementId);
+  pointerCoverage[pointerClass] = (pointerCoverage[pointerClass] ?? 0) + 1;
+}
 
 const closureRows = closureRegister.rows;
 assert.equal(closureRegister.registerId, 'FOS-TRACE-P0P1-01');
@@ -131,6 +197,7 @@ for (const row of closureRows) {
 }
 
 console.log('SRS/HLD/Blueprint audit consistency passed');
+console.log('Matrix evidence pointers: ' + JSON.stringify(pointerCoverage));
 console.log('P0/P1 closure tracker: ' + closureRows.length + ' rows (P0=' + closurePriorities.P0 + ', P1=' + closurePriorities.P1 + ', unresolved priority=' + closurePriorities['REVIEW SOURCE'] + ')');
 console.log('Requirement IDs: ' + requirementRows.length + ' unique; priorities: P0=' + priorities.P0 + ', P1=' + priorities.P1 + ', P2=' + priorities.P2 + ', review=' + priorities.review);
 console.log('Acceptance scenarios: AS-132–AS-141 present');
