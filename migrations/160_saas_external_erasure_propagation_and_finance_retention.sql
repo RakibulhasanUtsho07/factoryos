@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_propagation_runs (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   finished_at timestamptz,
   CONSTRAINT uq_saas_external_propagation_run_scope UNIQUE (tenant_id,request_id,request_version,run_id),
+  CONSTRAINT uq_saas_external_propagation_run_id UNIQUE (tenant_id,request_id,run_id),
   CONSTRAINT uq_saas_external_propagation_idempotency UNIQUE (tenant_id,request_id,idempotency_key),
   CONSTRAINT fk_saas_external_propagation_request FOREIGN KEY (tenant_id,request_id,request_version)
     REFERENCES saas_tenant_data_erasure_requests(tenant_id,request_id,version) ON DELETE RESTRICT,
