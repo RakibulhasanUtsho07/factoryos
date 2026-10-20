@@ -142,7 +142,9 @@ export class SaasTenantGovernanceExecutionService {
     const idempotencyKey = this.idempotencyKey(input?.idempotency_key);
     const requestHash = this.hash({ operation: 'RETENTION_RUN', category, mode, expectedPolicyVersion, reason });
     const runId = randomUUID();
+    let failureContext: { policyVersion: number; cutoffAt: string } | null = null;
 
+    try {
     const result = await this.database.transaction(async (client) => {
       await this.lockTenant(client, tenantId);
       const replay = await client.query<RetentionRunRow>(
@@ -172,6 +174,7 @@ export class SaasTenantGovernanceExecutionService {
       );
       const cutoffAt = timeResult.rows[0]?.cutoff_at;
       if (!cutoffAt) throw new ConflictException('Could not determine the retention cutoff');
+      failureContext = { policyVersion: Number(policy.version), cutoffAt };
       const tables = this.resolveTables(category);
       const mapped = tables.length > 0
         ? await this.inspectTables(client, tables, true)
@@ -303,6 +306,16 @@ export class SaasTenantGovernanceExecutionService {
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-retention-run:' + tenantId + ':' + category });
 
     return { run: this.mapRetentionRun(result.row), replayed: result.replayed };
+    } catch (error) {
+      if (failureContext) {
+        await this.recordFailedRetentionRun({
+          tenantId, actorUserId, runId, category, mode, policyVersion: failureContext.policyVersion,
+          cutoffAt: failureContext.cutoffAt, requestHash, idempotencyKey, reason,
+          failureCode: this.failureCode(error),
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   async executeErasure(
@@ -541,6 +554,51 @@ export class SaasTenantGovernanceExecutionService {
       { tenantId, userId: actorUserId },
     );
     return { items: result.rows.map((row) => this.mapErasureRun(row)), count: result.rows.length, limit };
+  }
+
+  private async recordFailedRetentionRun(input: {
+    tenantId: string;
+    actorUserId: string;
+    runId: string;
+    category: SaasTransferDatasetCategory;
+    mode: SaasRetentionRunMode;
+    policyVersion: number;
+    cutoffAt: string;
+    requestHash: string;
+    idempotencyKey: string;
+    reason: string;
+    failureCode: string;
+  }) {
+    await this.database.transaction(async (client) => {
+      await this.lockTenant(client, input.tenantId);
+      const existing = await client.query<{ id: string }>(
+        'SELECT id::text AS id FROM saas_tenant_data_retention_runs WHERE tenant_id=$1 AND idempotency_key=$2 FOR UPDATE',
+        [input.tenantId, input.idempotencyKey],
+      );
+      if (existing.rows[0]) return;
+      const manifest = {
+        version: 1,
+        category: input.category,
+        policyVersion: input.policyVersion,
+        failureCode: input.failureCode,
+        affectedRows: '0',
+      };
+      const inserted = await client.query<RetentionRunRow>(
+        `INSERT INTO saas_tenant_data_retention_runs
+         (tenant_id, run_id, category_code, policy_version, mode, status, cutoff_at,
+          examined_rows, eligible_rows, affected_rows, held_rows, table_manifest,
+          manifest_digest, reason, idempotency_key, request_hash, initiated_by_user_id)
+         VALUES ($1,$2,$3,$4,$5,'FAILED',$6,0,0,0,0,$7::jsonb,NULL,$8,$9,$10,$11)
+         RETURNING *`,
+        [input.tenantId, input.runId, input.category, input.policyVersion, input.mode, input.cutoffAt,
+          JSON.stringify(manifest), input.reason, input.idempotencyKey, input.requestHash, input.actorUserId],
+      );
+      await this.audit(client, input.tenantId, input.actorUserId,
+        input.mode === SaasRetentionRunMode.DRY_RUN ? 'RETENTION_DRY_RUN_FAILED' : 'RETENTION_EXECUTION_FAILED',
+        inserted.rows[0].id,
+        { runId: input.runId, category: input.category, policyVersion: input.policyVersion,
+          mode: input.mode, failureCode: input.failureCode, affectedRows: '0' });
+    }, { tenantId: input.tenantId, userId: input.actorUserId, advisoryLockKey: 'saas-retention-failure:' + input.tenantId + ':' + input.category });
   }
 
   private async recordFailedErasureRun(input: {
