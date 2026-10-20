@@ -71,7 +71,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-dr-rehearsal-${{ inputs.restore_service }
+  group: production-dr-rehearsal-${{ inputs.restore_service }}
   cancel-in-progress: false
 
 jobs:
@@ -81,30 +81,30 @@ jobs:
     environment: production-dr-rehearsal
     timeout-minutes: 120
     env:
-      PGSERVICEFILE: ${{ vars.FACTORYOS_DR_PGSERVICEFILE_PATH }
-      PGPASSFILE: ${{ vars.FACTORYOS_DR_PGPASSFILE_PATH }
-      GNUPGHOME: ${{ vars.FACTORYOS_DR_GNUPGHOME_PATH }
-      CANDIDATE_SHA_INPUT: ${{ inputs.candidate_sha }
-      SOURCE_SERVICE_INPUT: ${{ inputs.source_service }
-      RESTORE_SERVICE_INPUT: ${{ inputs.restore_service }
-      BACKUP_OUTPUT_INPUT: ${{ inputs.backup_output_path }
-      EVIDENCE_OUTPUT_INPUT: ${{ inputs.evidence_output_path }
-      GPG_RECIPIENT_INPUT: ${{ inputs.gpg_recipient }
-      CANDIDATE_MANIFEST_INPUT: ${{ inputs.candidate_migration_manifest }
-      WATERMARK_SQL_INPUT: ${{ inputs.watermark_sql }
-      SMOKE_SQL_INPUT: ${{ inputs.restore_smoke_sql }
-      EVENT_TIME_INPUT: ${{ inputs.simulated_event_time_utc }
-      OPERATOR_INPUT: ${{ inputs.operator }
-      APPROVER_INPUT: ${{ inputs.approver }
-      TARGETS_APPROVED_INPUT: ${{ inputs.targets_approved }
-      RPO_TARGET_INPUT: ${{ inputs.rpo_target_seconds }
-      RTO_TARGET_INPUT: ${{ inputs.rto_target_seconds }
+      PGSERVICEFILE: ${{ vars.FACTORYOS_DR_PGSERVICEFILE_PATH }}
+      PGPASSFILE: ${{ vars.FACTORYOS_DR_PGPASSFILE_PATH }}
+      GNUPGHOME: ${{ vars.FACTORYOS_DR_GNUPGHOME_PATH }}
+      CANDIDATE_SHA_INPUT: ${{ inputs.candidate_sha }}
+      SOURCE_SERVICE_INPUT: ${{ inputs.source_service }}
+      RESTORE_SERVICE_INPUT: ${{ inputs.restore_service }}
+      BACKUP_OUTPUT_INPUT: ${{ inputs.backup_output_path }}
+      EVIDENCE_OUTPUT_INPUT: ${{ inputs.evidence_output_path }}
+      GPG_RECIPIENT_INPUT: ${{ inputs.gpg_recipient }}
+      CANDIDATE_MANIFEST_INPUT: ${{ inputs.candidate_migration_manifest }}
+      WATERMARK_SQL_INPUT: ${{ inputs.watermark_sql }}
+      SMOKE_SQL_INPUT: ${{ inputs.restore_smoke_sql }}
+      EVENT_TIME_INPUT: ${{ inputs.simulated_event_time_utc }}
+      OPERATOR_INPUT: ${{ inputs.operator }}
+      APPROVER_INPUT: ${{ inputs.approver }}
+      TARGETS_APPROVED_INPUT: ${{ inputs.targets_approved }}
+      RPO_TARGET_INPUT: ${{ inputs.rpo_target_seconds }}
+      RTO_TARGET_INPUT: ${{ inputs.rto_target_seconds }}
 
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.candidate_sha }
+          ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
 
       - name: Set up Node for evidence receipt
