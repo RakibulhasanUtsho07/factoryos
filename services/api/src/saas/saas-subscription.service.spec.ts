@@ -28,10 +28,22 @@ describe('SaasSubscriptionService', () => {
   });
 
   it('allows a tenant with no subscription record in documented legacy compatibility mode', async () => {
-    database.query.mockResolvedValueOnce({ rows: [] });
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'LEGACY_COMPATIBLE',
+      status: null,
+      trial_ends_at: null,
+      current_period_start: null,
+      current_period_end: null,
+      plan_capabilities: null,
+    }] });
     await expect(service.assertAiCapabilityAvailable(tenantId)).resolves.toBeUndefined();
     expect(database.query).toHaveBeenCalledTimes(1);
     expect(database.query.mock.calls[0]?.[1]).toEqual([tenantId]);
+  });
+
+  it('fails closed when entitlement resolution returns no row at all', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('fails closed for a suspended subscription at the runtime AI boundary', async () => {
