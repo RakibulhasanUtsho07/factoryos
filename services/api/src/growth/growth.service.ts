@@ -1637,8 +1637,9 @@ export class GrowthService {
         `SELECT id::text AS id FROM growth_opportunity_evidence
          WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
            AND (btrim(COALESCE(reference_ref, '')) = $4 OR btrim(COALESCE(citation_url, '')) = $4)
+           AND captured_at <= $5::timestamptz
          LIMIT 1`,
-        [opportunityId, tenantId, factoryId, sourceRef],
+        [opportunityId, tenantId, factoryId, sourceRef, origin.toISOString()],
       );
       if (!source.rows[0]) {
         throw new BadRequestException('forecast_source_ref must match evidence already attached to this opportunity');
