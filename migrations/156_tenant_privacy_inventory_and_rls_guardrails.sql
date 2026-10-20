@@ -154,14 +154,14 @@ BEGIN
     END;
 
     erasure_policy := CASE
-      WHEN category IN ('AUDIT_LOG', 'APPROVALS', 'EFFECTIVE_DATED_MASTER_DATA', 'IAM_ACCESS')
-        THEN 'PROTECTED'
       WHEN item.relation_name IN (
         'saas_usage_events', 'saas_usage_adjustments', 'saas_usage_reconciliations',
         'saas_usage_rate_cards', 'saas_usage_budgets', 'saas_budget_evaluations',
         'saas_workload_control_events', 'saas_budget_alerts', 'saas_budget_alert_acknowledgements',
         'saas_provider_cost_events', 'saas_provider_cost_reconciliations'
       ) THEN 'BLOCKED_FINANCE_REVIEW'
+      WHEN category IN ('AUDIT_LOG', 'APPROVALS', 'EFFECTIVE_DATED_MASTER_DATA', 'IAM_ACCESS')
+        THEN 'PROTECTED'
       WHEN is_export_allowlisted AND category <> 'UNREVIEWED' THEN 'BOUNDED_ADAPTER'
       ELSE 'BLOCKED_UNREVIEWED'
     END;
