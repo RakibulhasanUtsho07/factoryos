@@ -6,7 +6,7 @@ BEGIN;
 ALTER TABLE saas_budget_evaluations
   ALTER COLUMN usage_cost_minor TYPE NUMERIC(30,0) USING usage_cost_minor::NUMERIC,
   ALTER COLUMN anomaly_window_cost_minor TYPE NUMERIC(30,0) USING anomaly_window_cost_minor::NUMERIC,
-  ALTER COLUMN anomaly_baseline_hourly_minor TYPE NUMERIC(30,4) USING anomaly_baseline_hourly_minor::NUMERIC;
+  ALTER COLUMN anomaly_baseline_hourly_minor TYPE NUMERIC(34,4) USING anomaly_baseline_hourly_minor::NUMERIC;
 
 ALTER TABLE saas_budget_evaluations
   DROP CONSTRAINT IF EXISTS chk_saas_budget_eval_amounts;
