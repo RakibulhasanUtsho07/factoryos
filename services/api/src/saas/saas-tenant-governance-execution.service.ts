@@ -367,6 +367,11 @@ export class SaasTenantGovernanceExecutionService {
           throw new ConflictException('Erasure execution requires an actor distinct from the requester and reviewer');
         }
         const categories = this.parseCategories(current.categories);
+        failureContext = {
+          requestVersion: Number(current.version),
+          categories,
+          sourceDigest: current.export_bundle_digest,
+        };
         const unsupported = categories.filter((category) =>
           PRESERVED_CATEGORIES.has(category) || !this.resolveTables(category).length);
         if (unsupported.length) {
@@ -415,12 +420,6 @@ export class SaasTenantGovernanceExecutionService {
         const dependencyProblem = await this.findDependencyBlock(client, tenantId, mapped, null);
         if (dependencyProblem) throw new ConflictException(dependencyProblem);
         const orderedTables = await this.orderTablesForDelete(client, tables);
-        failureContext = {
-          requestVersion: Number(current.version),
-          categories,
-          sourceDigest: current.export_bundle_digest,
-        };
-
         const executing = await client.query<ErasureRequestRow>(
           `UPDATE saas_tenant_data_erasure_requests
            SET status='EXECUTING', execution_started_by_user_id=$3, execution_started_at=clock_timestamp(),
