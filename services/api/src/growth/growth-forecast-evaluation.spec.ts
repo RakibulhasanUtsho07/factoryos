@@ -27,6 +27,20 @@ describe('growth forecast evaluation', () => {
     expect(result.interval_semantics).toBe('DECLARED_NOMINAL_COVERAGE');
   });
 
+  it('returns byte-identical metrics for the same versioned input', () => {
+    const input = {
+      forecast_value: 1234.56789012,
+      actual_value: '1230.00000000',
+      lower_bound: 1200,
+      upper_bound: 1260,
+      nominal_coverage_pct: 90,
+    };
+    const first = evaluateGrowthForecast(input);
+    const second = evaluateGrowthForecast({ ...input });
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    expect(first.method_version).toBe(second.method_version);
+  });
+
   it('handles zero actuals without emitting an infinite percentage error', () => {
     const result = evaluateGrowthForecast({ forecast_value: 0, actual_value: 0 });
     expect(result.signed_error).toBe('0.00000000');
@@ -117,6 +131,24 @@ describe('growth forecast evaluation', () => {
 
     const rows = Array.from({ length: 10 }, () => ({ ...row }));
     expect(summarizeGrowthForecastCalibration(rows)[0].status).toBe('NO_NOMINAL_COVERAGE');
+  });
+
+  it('aggregates calibration cohorts independently of observation input order', () => {
+    const rows: GrowthForecastCalibrationObservation[] = Array.from({ length: 12 }, (_, index) => ({
+      model_version: 'ops-v1',
+      metric_key: 'daily_output',
+      unit: 'units',
+      forecast_value: '100.00000000',
+      actual_value: index % 3 === 0 ? '103.00000000' : '99.00000000',
+      signed_error: index % 3 === 0 ? '-3.00000000' : '1.00000000',
+      absolute_error: index % 3 === 0 ? '3.00000000' : '1.00000000',
+      squared_error: index % 3 === 0 ? '9.00000000' : '1.00000000',
+      symmetric_percentage_error: index % 3 === 0 ? '2.95566502' : '1.00502513',
+      interval_hit: index % 4 !== 0,
+      nominal_coverage_pct: '90.00',
+    }));
+    expect(summarizeGrowthForecastCalibration(rows))
+      .toEqual(summarizeGrowthForecastCalibration([...rows].reverse()));
   });
 
   it('groups metrics by model version, unit and declared coverage rather than mixing incompatible cohorts', () => {
