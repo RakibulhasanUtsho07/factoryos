@@ -1,6 +1,6 @@
 # FactoryOS release-readiness checklist
 
-**Final traceability gate:** Review the [Final SRS/HLD/Blueprint Traceability Audit](final-srs-hld-blueprint-traceability-audit.md), [SRS v2.1 requirement-by-requirement matrix](srs-v2.1-requirement-evidence-matrix.md), and [Round 35–43 domain matrix](operational-rounds-35-43-traceability.md). The SRS v2.1 FINAL / FOS-SRS-001, HLD/LLD v1.0 and Blueprint v1.0 were found in the supplied Library (all dated 2026-10-02) but are not committed to the repository. The final SRS declares 950 cumulative design-scope requirements; the extracted ID matrix has 899 distinct FR/NFR IDs and 37 priorities requiring manual review. Formal sign-off remains blocked until the 51-entry scope reconciliation and per-ID acceptance evidence are approved.
+**Final traceability gate:** Review the [Final SRS/HLD/Blueprint Traceability Audit](final-srs-hld-blueprint-traceability-audit.md), [SRS v2.1 requirement-by-requirement matrix](srs-v2.1-requirement-evidence-matrix.md), and [Round 35–43 domain matrix](operational-rounds-35-43-traceability.md). The SRS v2.1 FINAL / FOS-SRS-001, HLD/LLD v1.0 and Blueprint v1.0 were found in the supplied Library (all dated 2026-10-02) but are not committed to the repository. The final SRS §140 declares 950 cumulative design-scope requirements; the matrix contains 899 distinct extracted FR/NFR IDs and 37 priorities that require manual review. These counts are not directly comparable units: do not infer 51 missing requirements from the arithmetic difference. Formal sign-off remains blocked until source owners reconcile the revision/scope accounting and every applicable P0/P1 row has direct acceptance evidence.
 
 This checklist is deliberately separate from deployment. Passing CI does not mean production has been deployed or a production migration has been applied.
 
@@ -52,6 +52,15 @@ Record the encrypted artifact reference and checksum, source/restore database id
 The API CI workflow runs deterministic tests of the local load-smoke harness and backup helper preconditions: request caps and latency/status reports, rejection of remote targets by default, URL credential rejection, the configured 5xx threshold, required backup configuration, encrypted-artifact naming, distinct source/restore identities and explicit empty-target confirmation. Run **npm --workspace services/api run test:load-smoke:contract** and **npm --workspace services/api run test:recovery:contract** locally before release. A real load or capacity test requires a separately approved isolated environment, representative workloads, rate/stop limits and recorded database/pool observations; do not treat a short smoke test as a capacity guarantee.
 
 The PostgreSQL CI workflow must pass the complete ordered migration manifest, selected idempotency reruns, the intentional migration-failure rollback probe, and tenant governance inventory/RLS contracts. The dependency-security workflow audits production dependencies and executes the load/recovery guard tests on the maintained branch. These checks are repository evidence; they do not substitute for production IAM/network review, secret/key-custody review, external backup/restore rehearsals or owner-approved SLO and RPO/RTO sign-off.
+
+## Final SRS v2.1 production-readiness acceptance gates
+
+Treat the final SRS §131 P0 requirements and §135 scenarios AS-132–AS-141 as release gates. The [final audit](final-srs-hld-blueprint-traceability-audit.md) records the scenario-by-scenario closure evidence; the relevant NFRs include:
+
+- **NFR-PROD-11 / NFR-PROD-12 (P0):** prove an integrity-checked backup can be restored; record approved service-class RTO/RPO and an actual DR exercise. HLD/LLD §23's critical OLTP RPO ≤5 min/RTO ≤60 min and important-domain RPO ≤1 hour/RTO ≤4 hours are proposed baselines, not approved deployment targets until Operations signs them.
+- **NFR-PROD-14 (P0):** prove governed export/deletion through relevant vectors, caches, indexes, derived stores and model-adaptation artifacts; attach completion receipts or explicit residual exceptions.
+- **NFR-PROD-17 / NFR-PROD-18 (P0):** retain security, compatibility, performance, rollback and audit evidence for the exact candidate SHA.
+- **AS-132–AS-141:** do not mark a scenario PASS from a unit test or endpoint alone where the source scenario requires staging, tenant isolation, provider outage, failed rollout, peak-load throttling or a real restore. Record environment, report, outcome, owner and candidate SHA.
 
 ## Release completion criteria
 
