@@ -457,7 +457,9 @@ jobs:
           EOF
 
       - name: Validate recovery rehearsal script syntax
-        run: bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+        run: |
+          bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+          node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
       - name: Validate bounded load-smoke harness syntax
         run: |
           node --check scripts/performance/api-load-smoke.mjs
