@@ -1741,7 +1741,8 @@ export class GrowthService {
            $18::numeric, $19::numeric, $20, $21, $22::numeric, $23, $24, $25, $26, $27
          ) ON CONFLICT DO NOTHING
          RETURNING id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
-           forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+           forecast_source_ref, forecast_source_evidence_id::text AS forecast_source_evidence_id,
+           outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
            actual_value::text AS actual_value, signed_error::text AS signed_error,
            absolute_error::text AS absolute_error, squared_error::text AS squared_error,
            absolute_percentage_error::text AS absolute_percentage_error,
@@ -1768,7 +1769,8 @@ export class GrowthService {
         if (raced.rows[0]?.request_hash === requestHash) {
           const replay = await client.query(
             `SELECT id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
-                forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+                forecast_source_ref, forecast_source_evidence_id::text AS forecast_source_evidence_id,
+           outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
                 actual_value::text AS actual_value, signed_error::text AS signed_error,
                 absolute_error::text AS absolute_error, squared_error::text AS squared_error,
                 absolute_percentage_error::text AS absolute_percentage_error,
