@@ -219,3 +219,26 @@ test('FAIL sign-off can record an early failure before source/restore identity w
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test('PASS sign-off rejects an idempotent CI replay receipt as a production migration receipt', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-ci-replay-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.candidate.migrationManifestMode = 'IDEMPOTENT_REPLAY';
+    writeFileSync(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'Attempted to use idempotent replay evidence for a production release.',
+      '--reference', 'CHG-DR-2026-108',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /pending release migration manifest/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
