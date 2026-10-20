@@ -3,7 +3,7 @@
 **Purpose:** Domain-priority companion index for the Round 43 audit. The exhaustive distinct FR/NFR ID list and source excerpts live in [SRS v2.1 Requirement-by-Requirement Evidence Matrix](srs-v2.1-requirement-evidence-matrix.md); this file highlights key IDs and high-risk domain boundaries rather than claiming its shorter table is exhaustive.  
 **Source baseline:** SRS v2.1 FINAL / FOS-SRS-001, HLD/LLD v1.0 and Blueprint v1.0, each dated 2026-10-02, were found in the supplied Library, but not checked into the repo.  
 **Audit baseline:** Branch rakibul-hasan; tested application evidence is linked by its exact CI SHA.  
-**Important limitation:** The SRS final scope ledger declares 950 cumulative design-scope requirements; 899 distinct FR/NFR IDs were extracted, and 37 priority cells need manual review. These are different counting measures, so the 51 arithmetic difference must not be treated as 51 missing requirements. This file and the exhaustive matrix remain provisional until revision/count accounting and per-ID acceptance evidence are reconciled.
+**Important limitation:** SRS §140 arithmetic is reconciled as 900 inherited v2.0 requirements + 50 v2.1 additions = 950 cumulative requirements (P0=296/P1=582/P2=72). The 899 distinct IDs are an index across the full 103-page PDF, including inherited/historical content and cross-references, not a verified active v2.1 requirement count. The 37 priority/source-row exceptions and revision-aware active-scope ledger still require Product/Requirements and Architecture review. Do not interpret 950-899 as missing code or duplicate rows. This register is provisional until direct per-requirement acceptance evidence and owner disposition are linked.
 
 ## Item 01 closure tracking
 
@@ -11,9 +11,9 @@ The 37 extracted priority exceptions now have a [source-occurrence/page evidence
 
 
 
-The [source-of-record/approval register](srs-source-of-record-and-approval-register.md) and [scope reconciliation ledger](srs-requirement-scope-reconciliation.md) define the source approval gate and the 950-cumulative-versus-899-distinct-ID reconciliation. All 37 extracted rows with unresolved source wording/priority are listed in that ledger.
+The [source-of-record/approval register](srs-source-of-record-and-approval-register.md) and [scope reconciliation ledger](srs-requirement-scope-reconciliation.md) define the source approval gate and the reconciled §140 arithmetic (900+50=950), while explicitly leaving the full-PDF 899-ID index-to-active-scope relationship open. All 37 extracted rows with unresolved source wording/priority are listed in that ledger.
 
-The [row-level evidence/gap export](srs-p0-p1-evidence-closure.csv) and machine-readable [P0/P1 evidence closure register](srs-p0-p1-evidence-closure-register.json) tracks 842 rows: 805 rows with parsed P0/P1 priority plus all 37 unresolved-priority candidates until source review completes. These rows are open by default. “Implemented (bounded)” in this curated register is not equivalent to requirement-level PASS; exact candidate SHA, named owner, reviewer, direct implementation/migration/test/CI references and required staging evidence belong in the closure register. The validator enforces its row coverage and prevents unsupported PASS entries.
+The [row-level evidence/gap export](srs-p0-p1-evidence-closure.csv) and machine-readable [P0/P1 evidence closure register](srs-p0-p1-evidence-closure-register.json) tracks 842 provisional full-PDF-index rows: 805 rows whose extracted priority is P0/P1 plus 37 unresolved source-row candidates. Each row is now marked `UNVERIFIED_ACTIVE_V21_SCOPE`; this is not a certified active v2.1 P0/P1 population. Rows are open by default. “Implemented (bounded)” in this curated register is not equivalent to requirement-level PASS; exact candidate SHA, named owner, reviewer, direct implementation/migration/test/CI references and required staging evidence belong in the closure register. The validator enforces its row coverage and prevents unsupported PASS entries.
 
 ## Status key
 
