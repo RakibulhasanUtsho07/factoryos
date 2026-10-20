@@ -14,6 +14,7 @@ const manifest = read('docs/audit-source-baseline-manifest.md');
 const scopeReconciliation = read('docs/srs-requirement-scope-reconciliation.md');
 const sourceApproval = read('docs/srs-source-of-record-and-approval-register.md');
 const closureRegister = JSON.parse(read('docs/srs-p0-p1-evidence-closure-register.json'));
+const closureCsv = read('docs/srs-p0-p1-evidence-closure.csv');
 
 function extractRequirementRows(markdown) {
   const start = markdown.indexOf('## 3. Requirement ID register');
@@ -25,6 +26,64 @@ function extractRequirementRows(markdown) {
     const match = line.match(/^\| ((?:FR|NFR)-[A-Z0-9]+-\d{2}) \| (P0|P1|P2|REVIEW SOURCE) \|/);
     return match ? { id: match[1], priority: match[2] } : null;
   }).filter(Boolean);
+}
+
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        field += char;
+      }
+    } else if (char === '"' && field.length === 0) {
+      quoted = true;
+    } else if (char === ',') {
+      row.push(field);
+      field = '';
+    } else if (char === '\n') {
+      row.push(field.replace(/\r$/, ''));
+      if (!(row.length === 1 && row[0] === '')) rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += char;
+    }
+  }
+  assert.equal(quoted, false, 'Evidence closure CSV contains an unterminated quoted field');
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function extractRequirementEvidenceRows(markdown) {
+  const start = markdown.indexOf('## 3. Requirement ID register');
+  const end = markdown.indexOf('## 4. Final SRS acceptance scenarios', start + 1);
+  assert.notEqual(start, -1, 'Requirement matrix section 3 is missing');
+  assert.notEqual(end, -1, 'Requirement matrix section 4 is missing');
+  return markdown.slice(start, end).split('\n').flatMap((line) => {
+    if (!line.startsWith('| FR-') && !line.startsWith('| NFR-')) return [];
+    const cells = line.slice(1, -1).split('|').map((cell) => cell.trim());
+    return [{
+      id: cells[0],
+      priority: cells[1] ?? '',
+      wording: cells[2] ?? '',
+      assessment: cells[3] ?? '',
+      evidence: cells[4] ?? '',
+      gap: cells[5] ?? '',
+    }];
+  });
 }
 
 const requirementRows = extractRequirementRows(matrix);
@@ -98,6 +157,45 @@ const scopeReviewIds = scopeReviewRows.map((line) => line.split('|')[1].trim()).
 assert.equal(scopeReviewIds.length, 37, 'Scope ledger must list each of the 37 priority/wording exceptions exactly once');
 assert.deepEqual(scopeReviewIds, unresolvedMatrixIds, 'Scope ledger exceptions must exactly match REVIEW SOURCE rows');
 
+
+const closureCsvRows = parseCsv(closureCsv);
+assert.equal(closureCsvRows.length, 843, 'Evidence closure CSV must contain a header plus 842 gate rows');
+const csvHeader = closureCsvRows[0];
+assert.deepEqual(csvHeader, [
+  'requirementId', 'sourcePriority', 'sourceWordingExcerpt', 'repositoryAssessment',
+  'repositoryEvidenceText', 'acceptanceGapText', 'provisionalOwnerRole',
+  'literalRepositoryPaths', 'literalCodePaths', 'literalMigrationPaths',
+  'literalTestPaths', 'evidencePointerClass', 'sourcePriorityReview',
+  'disposition', 'acceptanceResult', 'directEvidenceClosureRequirement',
+], 'Evidence closure CSV columns changed; update the audit validator deliberately');
+
+const sourceEvidenceById = new Map(extractRequirementEvidenceRows(matrix).map((row) => [row.id, row]));
+const csvRowsById = new Map();
+for (const cells of closureCsvRows.slice(1)) {
+  assert.equal(cells.length, csvHeader.length, 'Malformed CSV column count for ' + cells[0]);
+  const row = Object.fromEntries(csvHeader.map((key, index) => [key, cells[index]]));
+  assert.ok(!csvRowsById.has(row.requirementId), 'Duplicate CSV row ' + row.requirementId);
+  csvRowsById.set(row.requirementId, row);
+  const source = sourceEvidenceById.get(row.requirementId);
+  assert.ok(source, 'CSV requirement is missing from the SRS evidence matrix: ' + row.requirementId);
+  assert.equal(row.sourcePriority, source.priority, 'CSV priority differs from source matrix for ' + row.requirementId);
+  assert.equal(row.sourceWordingExcerpt, source.wording, 'CSV wording excerpt differs from source matrix for ' + row.requirementId);
+  assert.equal(row.repositoryAssessment, source.assessment, 'CSV assessment differs from source matrix for ' + row.requirementId);
+  assert.equal(row.repositoryEvidenceText, source.evidence, 'CSV evidence pointer cell differs from source matrix for ' + row.requirementId);
+  assert.equal(row.acceptanceGapText, source.gap, 'CSV acceptance gap differs from source matrix for ' + row.requirementId);
+  assert.equal(row.disposition, 'OPEN', 'Evidence pointer export may not change disposition: ' + row.requirementId);
+  assert.equal(row.acceptanceResult, 'NOT_ACCEPTED', 'Missing acceptance evidence may not be exported as PASS: ' + row.requirementId);
+  for (const required of ['DIRECT_CODE_PATH_REQUIRED', 'EXACT_MIGRATION_PATH_OR_APPROVED_NA_REQUIRED', 'DIRECT_TEST_PATH_REQUIRED', 'EXACT_CANDIDATE_SHA_AND_CI_RUN_REQUIRED', 'NAMED_OWNER_AND_INDEPENDENT_REVIEWER_REQUIRED']) {
+    assert.ok(row.directEvidenceClosureRequirement.includes(required) ||
+      (required === 'DIRECT_CODE_PATH_REQUIRED' && row.directEvidenceClosureRequirement.includes('CODE_PATH_PRESENT_IN_MATRIX')) ||
+      (required === 'EXACT_MIGRATION_PATH_OR_APPROVED_NA_REQUIRED' && row.directEvidenceClosureRequirement.includes('MIGRATION_PATH_PRESENT_IN_MATRIX')) ||
+      (required === 'DIRECT_TEST_PATH_REQUIRED' && row.directEvidenceClosureRequirement.includes('TEST_PATH_PRESENT_IN_MATRIX')),
+      'CSV must record direct-evidence closure requirement ' + required + ' for ' + row.requirementId);
+  }
+}
+assert.deepEqual([...csvRowsById.keys()].sort(), expectedGateIds, 'CSV must have exactly the P0/P1 plus unresolved-priority candidate rows');
+
+
 const resultStates = new Set(['NOT_ACCEPTED', 'PASS', 'PASS_WITH_APPROVED_EXCEPTION', 'NOT_APPLICABLE_APPROVED']);
 const dispositions = new Set(['OPEN', 'ACCEPTED', 'APPROVED_EXCEPTION', 'NOT_APPLICABLE_APPROVED']);
 for (const row of closureRows) {
@@ -131,6 +229,7 @@ for (const row of closureRows) {
 }
 
 console.log('SRS/HLD/Blueprint audit consistency passed');
+console.log('Evidence closure CSV: ' + csvRowsById.size + ' source-row-aligned records; all remain OPEN / NOT_ACCEPTED');
 console.log('P0/P1 closure tracker: ' + closureRows.length + ' rows (P0=' + closurePriorities.P0 + ', P1=' + closurePriorities.P1 + ', unresolved priority=' + closurePriorities['REVIEW SOURCE'] + ')');
 console.log('Requirement IDs: ' + requirementRows.length + ' unique; priorities: P0=' + priorities.P0 + ', P1=' + priorities.P1 + ', P2=' + priorities.P2 + ', review=' + priorities.review);
 console.log('Acceptance scenarios: AS-132–AS-141 present');
