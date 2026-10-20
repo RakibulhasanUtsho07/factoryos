@@ -25,6 +25,7 @@ export class RecordGrowthForecastEvaluationDto {
   unit!: string;
 
   @IsDateString()
+  @Matches(/(?:Z|[+-]\d{2}:\d{2})$/i)
   forecast_origin_at!: string;
 
   @IsString()
