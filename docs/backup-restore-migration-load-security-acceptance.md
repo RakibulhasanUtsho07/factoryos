@@ -6,7 +6,7 @@
 
 | Area | Automated repository evidence | Operator / environment evidence still required |
 |---|---|---|
-| Encrypted backup and restore | **scripts/recovery/postgres-backup-restore-rehearsal.sh** validates distinct source/target identity, archive readability, checksum, empty isolated target, single-transaction restore and reviewed smoke SQL. CI validates shell syntax. | Run against an approved source and disposable restore database; verify keys, restricted storage, actual duration, integrity, application smoke queries, RPO/RTO and operator sign-off. |
+| Encrypted backup and restore | **scripts/recovery/postgres-backup-restore-rehearsal.sh** validates distinct source/target identity, archive readability, checksum, empty isolated target, single-transaction restore and reviewed smoke SQL. CI validates shell syntax and a precondition contract test proves missing config, plaintext output, identical service names and absent empty-target confirmation fail closed. | Run against an approved source and disposable restore database; verify keys, restricted storage, actual duration, integrity, application smoke queries, RPO/RTO and operator sign-off. |
 | Migration failure / recovery | PostgreSQL CI applies the complete explicit migration manifest and reruns designated migrations for idempotency. A deliberate failure after DDL/DML must fail and must leave no probe table behind. Existing migration/inventory SQL contracts remain release gates. | Test every candidate migration in a fresh restore; review lock behavior, irreversible data changes and forward-fix/rollback decisions. Never infer production safety from the deliberate transaction probe alone. |
 | Bounded load / performance | **npm --workspace services/api run test:load-smoke:contract** exercises success metrics, request caps, the 5xx acceptance gate, remote-target opt-in, credential-URL rejection and path validation against a local synthetic HTTP server. | Run representative read/write mixes, DB pool and lock pressure, saturation, soak, recovery and capacity tests only in a scheduled isolated environment with approved synthetic data and traffic budgets. A 15-second smoke test is not capacity certification. |
 | Security / isolation | API unit tests, PostgreSQL integration tests, the schema-wide tenant governance inventory, forced-RLS/tenant-isolation matrix, least-privilege DB-role checks already in the CI schema setup, and production dependency auditing. | Review live IAM, secrets, network boundaries, backup access, GPG key custody, alert delivery and deployed configuration. Run a staging cross-tenant abuse test under an approved security plan. |
@@ -68,13 +68,14 @@ npm --workspace services/api run test:load-smoke
 
 The harness reports status counts, network and HTTP 5xx errors, requests per second and p50/p95/p99/max latency. FACTORYOS_LOAD_MAX_ERROR_RATE defaults to 1%. Set FACTORYOS_LOAD_MAX_P95_MS only where a route-specific threshold has been approved. A bearer token is supported only for an approved read-only target, is never placed in the URL, and is not printed in the report.
 
-Run deterministic safety tests with:
+Run deterministic guardrail tests with:
 
 ~~~sh
 npm --workspace services/api run test:load-smoke:contract
+npm --workspace services/api run test:recovery:contract
 ~~~
 
-Those tests use a local synthetic HTTP server only and make no requests to public or production endpoints. For real performance characterization, separately define an approved environment, traffic mix, workload ramp, rate limit, observation window, database/connection-pool monitoring, success/error budget, stop conditions, and a cleanup plan. Do not turn this script into an unbounded or production-directed stress test.
+The load tests use a local synthetic HTTP server only; the recovery tests exercise configuration rejection before database clients are called. Neither test suite makes requests to production or requires database credentials. For real performance characterization, separately define an approved environment, traffic mix, workload ramp, rate limit, observation window, database/connection-pool monitoring, success/error budget, stop conditions, and a cleanup plan. Do not turn this script into an unbounded or production-directed stress test.
 
 ## 4. Security and tenant isolation checks
 
@@ -95,7 +96,7 @@ Do not store bearer tokens in URLs or metrics labels; do not log request bodies,
 Complete this record on the exact candidate SHA:
 
 - [ ] API CI, API PostgreSQL CI, Web CI and dependency-security workflow applicable to the SHA passed.
-- [ ] Backup artifact created in approved encrypted storage; checksum passes; isolated restore and reviewed SQL smoke check pass.
+- [ ] Backup helper precondition contract passes; backup artifact is created in approved encrypted storage; checksum passes; isolated restore and reviewed SQL smoke check pass.
 - [ ] Ordered candidate migration sequence applied successfully to the restore; inventory/RLS and domain SQL contracts pass.
 - [ ] Failed-transaction recovery probe verifies no partial DDL remains.
 - [ ] Load-smoke contract tests pass; any real load test has owner approval and a sanitized result linked to the SHA.
