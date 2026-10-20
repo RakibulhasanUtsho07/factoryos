@@ -247,6 +247,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
         table_exists: true, has_tenant_id: true, has_id: true,
         forced_rls: true, has_tenant_policy: true, deletion_guarded: true, time_column: 'created_at',
       }] };
+      if (sql.includes('COUNT(*)::text AS examined')) return { rows: [{ examined: '1', eligible: '1' }] };
       if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
       if (sql.includes('INSERT INTO saas_tenant_data_retention_runs')) return { rows: [blockedRun] };
       throw new Error('unexpected query: ' + sql);
