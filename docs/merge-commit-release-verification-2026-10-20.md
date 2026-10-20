@@ -4,42 +4,46 @@
 **Repository:** `RakibulhasanUtsho07/factoryos`  
 **Purpose:** Verify the exact main merge SHA for API, PostgreSQL, production dependency security, web, and traceability CI. This is a repository CI record, not deployment approval.
 
-## Pre-change baseline (main before this work)
+## Baseline before this task
 
 | Item | Exact SHA / run | Finding |
 |---|---|---|
-| Main baseline before this task | `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed` | Current `main` SHA at start of work; docs/audit-only merge. |
-| Traceability CI | [Run 39433624232](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39433624232) | **SUCCESS** on exact SHA `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed`. It validates audit-register/manifest consistency only. |
-| API CI | **NOT PRESENT** on baseline SHA | No exact-SHA API build/lint/test pass was present. |
-| API PostgreSQL CI | **NOT PRESENT** on baseline SHA | Ordered migration/integration evidence was not established for this SHA. |
-| Production dependency security | **NOT PRESENT** on baseline SHA | No exact-SHA production dependency audit was present. |
-| Web CI | **NOT PRESENT** on baseline SHA | No exact-SHA web lint/build pass was present. |
+| Main baseline before this task | `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed` | Documentation/audit-only merge SHA, before the release verification changes. |
+| Traceability CI | [Run 39433624232](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39433624232) | **SUCCESS** on exact baseline SHA `ceea82c85d2ebd8fd7e0b55abf01c419eab281ed`. This validated audit-register consistency only. |
+| API / PostgreSQL / security / web on baseline | **NOT PRESENT** | No runs were present for these gates on the baseline SHA. Older green runs on `7b4a28419f6682480d10ee5f64ed5172bf809fad` are historical evidence and are not substituted. |
 
-The green API/PostgreSQL/security/web runs on `7b4a28419f6682480d10ee5f64ed5172bf809fad` are historical and are **not** treated as checks on the baseline SHA.
+## Candidate main merge commit and exact-SHA results
 
-## Migration manifest controls
+**Candidate SHA:** `afeb9cdbe25d1d154ad42a4e6137a18977d33c23`  
+**PR:** [#68 — test(release): verify CI on exact merge commits](https://github.com/RakibulhasanUtsho07/factoryos/pull/68)  
+All five run records below are GitHub Actions `push` runs whose `head_sha` was independently checked to equal the candidate SHA above. These are post-merge results, not PR-head checks.
 
-The PostgreSQL workflow reads its migration apply sequence from [`scripts/audit/migration-manifest.txt`](../scripts/audit/migration-manifest.txt) and executes [`scripts/audit/verify-migration-manifest.mjs`](../scripts/audit/verify-migration-manifest.mjs) before schema application. The verifier fails closed if any entry is missing, duplicated, malformed, or if any top-level `migrations/*.sql` file is omitted. CI prints the manifest-entry count and SHA-256 over the exact ordered entries (one path per line, newline-terminated).
-
-- The former inline workflow array contains **162 unique SQL files**; the highest numeric migration prefix is **158**. These counts differ because several files reuse prefixes (including 003, 004 and 026).
-- Apply order is dependency-aware and must not be sorted lexically. In particular, `003_outbox_event_envelope.sql` follows `004_orders_outbox.sql` because it alters objects created by the latter.
-- PostgreSQL CI reapplies migrations **151–158** after initial application to exercise their idempotency contracts. This is targeted idempotency evidence, not a claim that every historical migration is universally rerunnable.
-- Existing PostgreSQL checks also include the deliberate transaction-failure rollback probe, tenant/RLS and privacy-inventory checks, SQL contracts, and API integration/full test suites.
-
-## Exact post-merge evidence
-
-**Status at record creation: PENDING.** No run is marked successful until GitHub Actions reports a completed successful run on the exact merge commit. PR-head checks are not a substitute for post-merge checks.
-
-This evidence document is a trigger for all five applicable workflows. Changes to this record therefore rerun API CI, API PostgreSQL CI, production dependency security, Web CI and traceability CI; manifest/script changes also trigger PostgreSQL CI.
-
-| Workflow | Required exact-SHA evidence | Status |
+| Required workflow | Exact run evidence | Result |
 |---|---|---|
-| API CI | Run URL, run ID, `head_sha`, lint/build/unit-test result | **PENDING POST-MERGE** |
-| API PostgreSQL CI | Run URL, run ID, `head_sha`, manifest count/hash, migrations applied, idempotency, DB integration-test result | **PENDING POST-MERGE** |
-| Production Dependency Security | Run URL, run ID, `head_sha`, production dependency audit result | **PENDING POST-MERGE** |
-| Web CI | Run URL, run ID, `head_sha`, lint/build result | **PENDING POST-MERGE** |
-| SRS HLD Blueprint Traceability | Run URL, run ID, `head_sha`, audit validator result | **PENDING POST-MERGE** |
+| API CI | [Run 39437359258](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359258) — SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23` | **SUCCESS** — API lint/build, load/recovery contract tests, 115 suites / 1,039 unit tests passed; AI Tool Registry PostgreSQL RLS integration: 1 suite / 7 tests passed. |
+| API PostgreSQL CI | [Run 39437359368](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359368) — SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23` | **SUCCESS** — 162/162 ordered migration files validated and applied; designated idempotency reruns passed; rollback-recovery, privacy/RLS and SQL contract checks ran; full suite: 151 suites / 1,206 tests passed. |
+| Production Dependency Security | [Run 39437359369](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359369) — SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23` | **SUCCESS** — locked install, recovery/load security contracts, and `npm audit --omit=dev` passed. |
+| Web CI | [Run 39437359291](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359291) — SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23` | **SUCCESS** — workspace install, web lint and web build passed. |
+| SRS/HLD/Blueprint Traceability | [Run 39437359027](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39437359027) — SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23` | **SUCCESS** — audit validator syntax and audit consistency validator passed. This does not amount to Product/Architecture source-owner sign-off. |
 
-## Release gate
+## Ordered migration manifest and idempotency evidence
 
-Repository CI validates code, SQL migration order, selected migration reruns, dependency audit, web build, and traceability artifacts only for the commit identified by each run. It does not establish production deployment, real customer-data migration, encrypted backup/restore rehearsal, external deletion propagation, staging load test, live provider/OT hardware integration, or source-owner approval. Keep the formal P0 release gate **BLOCKED** if any required exact-SHA run is missing/failing or required operational/source-owner acceptance evidence remains absent.
+The source-of-truth apply sequence is [`scripts/audit/migration-manifest.txt`](../scripts/audit/migration-manifest.txt), verified by [`scripts/audit/verify-migration-manifest.mjs`](../scripts/audit/verify-migration-manifest.mjs) before any SQL is applied by PostgreSQL CI.
+
+| Check | Exact evidence on candidate SHA `afeb9cd...` |
+|---|---|
+| Manifest path count | `migration_manifest_entry_count=162` |
+| SQL-file inventory count | `migration_files_inventory_count=162` |
+| Ordered entries SHA-256 | `55b89db4b58e095c1448465fc880f1ddcf83b8d45a09af6f37ddccfdf1fc086e` |
+| Inventory consistency | `migration_manifest_inventory=PASS` |
+| Apply order | `explicit; dependency-aware, not lexical` |
+| Coverage | 162 manifest entries / 162 SQL files; no duplicates, missing entries, or extras in the manifest comparison. |
+| Idempotency | PostgreSQL CI reapplied migrations 151–158 after the ordered initial apply; the job passed. This is targeted rerun evidence, not a claim that every historical migration is universally rerunnable. |
+
+The workflow intentionally places `003_outbox_event_envelope.sql` after `004_orders_outbox.sql`, because the former alters objects created by the latter. The largest numeric prefix is 158, while the number of files is 162 because some migration prefixes are reused. Do not sort this manifest lexically or equate highest prefix with file count.
+
+## Release gate conclusion for this verification item
+
+**Merge-commit CI acceptance: PASS on candidate SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33c23`.** All five required post-merge runs are completed and successful on that exact SHA. The run URLs, terminal outcomes, test summaries, manifest inventory, order and digest above were read from GitHub Actions.
+
+**This is not overall FactoryOS production release approval.** CI does not establish production deployment, application of migrations to a live/customer database, an encrypted production backup/restore rehearsal, external deletion propagation, staged load/capacity acceptance, live provider/OT hardware integration, or authoritative SRS/HLD/Blueprint approval. The separate formal SRS traceability P0 gate remains blocked until its documented source-owner, active-scope reconciliation, per-row acceptance and operational evidence gaps are closed.
