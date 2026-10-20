@@ -313,26 +313,37 @@ export class SaasUsageService {
    const usage=await this.database.query<QueryResultRow & {event_count:string|number;unpriced_count:string|number;cost_minor:string|number}>(
     `SELECT COUNT(*) FILTER(WHERE currency=$8 OR estimated_cost_minor IS NULL)::bigint AS event_count,
        COUNT(*) FILTER(WHERE estimated_cost_minor IS NULL)::bigint AS unpriced_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE currency=$8),0)::bigint AS cost_minor
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE currency=$8),0)::text AS cost_minor
      FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2 AND occurred_at < $3
        AND ($4::uuid IS NULL OR factory_id=$4) AND ($5::varchar IS NULL OR metric_code=$5)
        AND ($6::varchar IS NULL OR capability_code=$6) AND ($7::varchar IS NULL OR workload_class=$7)`,
     scoped,{tenantId,userId:actorUserId});
    const recent=await this.database.query<QueryResultRow & {recent_count:string|number;recent_cost:string|number;baseline_count:string|number;baseline_cost:string|number}>(
     `SELECT COUNT(*) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS recent_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS recent_cost,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::text AS recent_cost,
        COUNT(*) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS baseline_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS baseline_cost
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::text AS baseline_cost
      FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2::timestamptz - INTERVAL '24 hours' AND occurred_at < $2
        AND ($3::uuid IS NULL OR factory_id=$3) AND ($4::varchar IS NULL OR metric_code=$4)
        AND ($5::varchar IS NULL OR capability_code=$5) AND ($6::varchar IS NULL OR workload_class=$6)`,
     [tenantId,asOf,factoryScope,budget.metric_code,budget.capability_code,budget.workload_class,budget.currency],{tenantId,userId:actorUserId});
-   const eventCount=Number(usage.rows[0]?.event_count??0),unpriced=Number(usage.rows[0]?.unpriced_count??0),cost=Number(usage.rows[0]?.cost_minor??0);
-   const recentCount=Number(recent.rows[0]?.recent_count??0),recentCost=Number(recent.rows[0]?.recent_cost??0),baselineCount=Number(recent.rows[0]?.baseline_count??0),baselineCost=Number(recent.rows[0]?.baseline_cost??0);
-   const baselineHourly=baselineCost/23;
-   const anomaly=recentCount>=Number(budget.anomaly_min_events)&&baselineCount>=Number(budget.anomaly_min_events)&&baselineHourly>0&&recentCost>baselineHourly*Number(budget.anomaly_multiplier);
-   const soft=Number(budget.soft_limit_minor),hard=Number(budget.hard_limit_minor);
-   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=cost>=hard&&(hard>0||cost>0)?'HARD_LIMIT':unpriced>0?'UNPRICED_USAGE':anomaly?'ANOMALY':soft>0&&cost>=soft?'WARNING':'SAFE';
+   const eventCountBigInt=BigInt(String(usage.rows[0]?.event_count??0)),unpricedBigInt=BigInt(String(usage.rows[0]?.unpriced_count??0));
+   const recentCountBigInt=BigInt(String(recent.rows[0]?.recent_count??0)),baselineCountBigInt=BigInt(String(recent.rows[0]?.baseline_count??0));
+   const safeCount=BigInt(Number.MAX_SAFE_INTEGER);
+   if(eventCountBigInt>safeCount||unpricedBigInt>safeCount||recentCountBigInt>safeCount||baselineCountBigInt>safeCount)throw new BadRequestException('Budget evaluation event count exceeds the supported integer range');
+   const eventCount=Number(eventCountBigInt),unpriced=Number(unpricedBigInt),recentCount=Number(recentCountBigInt),baselineCount=Number(baselineCountBigInt);
+   const costBigInt=BigInt(String(usage.rows[0]?.cost_minor??0)),recentCostBigInt=BigInt(String(recent.rows[0]?.recent_cost??0)),baselineCostBigInt=BigInt(String(recent.rows[0]?.baseline_cost??0));
+   this.assertMoneyAggregateRange(costBigInt,'budget-period usage cost');
+   this.assertMoneyAggregateRange(recentCostBigInt,'recent spend');
+   this.assertMoneyAggregateRange(baselineCostBigInt,'baseline spend');
+   const cost=costBigInt.toString(),recentCost=recentCostBigInt.toString();
+   const baselineHourlyScaled4=(baselineCostBigInt*10_000n+11n)/23n;
+   const baselineHourly=(baselineHourlyScaled4/10_000n).toString()+'.'+(baselineHourlyScaled4%10_000n).toString().padStart(4,'0');
+   const anomalyMultiplierUnits=this.decimalUnits(String(budget.anomaly_multiplier),'anomaly_multiplier').units;
+   const anomaly=recentCount>=Number(budget.anomaly_min_events)&&baselineCount>=Number(budget.anomaly_min_events)&&baselineCostBigInt>0n&&recentCostBigInt*23n*1_000_000n>baselineCostBigInt*anomalyMultiplierUnits;
+   const softBigInt=BigInt(String(budget.soft_limit_minor)),hardBigInt=BigInt(String(budget.hard_limit_minor));
+   const soft=softBigInt.toString(),hard=hardBigInt.toString();
+   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=costBigInt>=hardBigInt&&(hardBigInt>0n||costBigInt>0n)?'HARD_LIMIT':unpriced>0?'UNPRICED_USAGE':anomaly?'ANOMALY':softBigInt>0n&&costBigInt>=softBigInt?'WARNING':'SAFE';
    const snapshot={budgetId:budget.id,tenantId,factoryId:factoryScope,periodStart:period.start,periodEnd:period.end,eventCount,unpriced,usageCostMinor:cost,soft,hard,recentCost,baselineHourly,status};
    const reportHash=this.hash(snapshot);
    const key=this.idem('ev:'+budget.id+':'+this.hash(snapshot));
