@@ -27,6 +27,14 @@ BEGIN
     RAISE EXCEPTION 'SaaS money precision: provider ledger aggregate must be NUMERIC(30,0)';
   END IF;
 
+  SELECT data_type,numeric_precision,numeric_scale INTO t
+    FROM information_schema.columns
+   WHERE table_schema=current_schema() AND table_name='saas_budget_evaluations'
+     AND column_name='anomaly_baseline_hourly_minor';
+  IF NOT FOUND OR t.data_type <> 'numeric' OR t.numeric_precision <> 34 OR t.numeric_scale <> 4 THEN
+    RAISE EXCEPTION 'SaaS money precision: hourly anomaly baseline must be NUMERIC(34,4)';
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conrelid='saas_budget_evaluations'::regclass
