@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   CONSTRAINT uq_growth_forecast_evaluation_idempotency
     UNIQUE (tenant_id, factory_id, opportunity_id, idempotency_key),
   CONSTRAINT uq_growth_forecast_evaluation_observation
-    UNIQUE (tenant_id, factory_id, opportunity_id, outcome_id, model_version, metric_key, forecast_origin_at),
+    UNIQUE (tenant_id, factory_id, opportunity_id, outcome_id, model_version, metric_key),
   CONSTRAINT fk_growth_forecast_evaluation_opportunity
     FOREIGN KEY (opportunity_id, tenant_id, factory_id)
     REFERENCES growth_opportunities(id, tenant_id, factory_id) ON DELETE RESTRICT,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   CONSTRAINT chk_growth_forecast_evaluation_source
     CHECK (length(btrim(forecast_source_ref)) BETWEEN 1 AND 2000),
   CONSTRAINT chk_growth_forecast_evaluation_values
-    CHECK (abs(forecast_value) <= 1000000000000 AND abs(actual_value) <= 1000000000000),
+    CHECK (abs(forecast_value) <= 1000000000000 AND abs(actual_value) <= 1000000000000\n      AND (lower_bound IS NULL OR (abs(lower_bound) <= 1000000000000 AND abs(upper_bound) <= 1000000000000))),
   CONSTRAINT chk_growth_forecast_evaluation_hash
     CHECK (input_hash ~ '^[0-9a-f]{64}$'),
   CONSTRAINT chk_growth_forecast_evaluation_idempotency
