@@ -47,6 +47,8 @@ function sampleEvidence() {
     verification: {
       restoreStatus: 'PASS',
       applicationSmokeStatus: 'PASS',
+      schemaSmokeStatus: 'PASS',
+      apiReadinessStatus: 'PASS',
       tenantIsolationStatus: 'PASS',
       auditContinuityStatus: 'PASS',
       migrationRecoveryStatus: 'PASS',
@@ -87,6 +89,8 @@ test('evidence writer records measured outcomes without claiming operator sign-o
       FACTORYOS_DR_ARCHIVE_STATUS: 'READABLE',
       FACTORYOS_DR_RESTORE_STATUS: 'PASS',
       FACTORYOS_DR_APPLICATION_SMOKE_STATUS: 'PASS',
+      FACTORYOS_DR_SCHEMA_SMOKE_STATUS: 'PASS',
+      FACTORYOS_DR_API_READINESS_STATUS: 'PASS',
       FACTORYOS_DR_TENANT_ISOLATION_STATUS: 'PASS',
       FACTORYOS_DR_AUDIT_CONTINUITY_STATUS: 'PASS',
       FACTORYOS_DR_BACKUP_DURATION_SECONDS: '45',
@@ -106,6 +110,8 @@ test('evidence writer records measured outcomes without claiming operator sign-o
     assert.equal(receipt.measured.observedRpoSeconds, 35);
     assert.equal(receipt.measured.observedRtoSeconds, 120);
     assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
+    assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
+    assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
     assert.equal(receipt.databases.distinctIdentityVerified, true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
