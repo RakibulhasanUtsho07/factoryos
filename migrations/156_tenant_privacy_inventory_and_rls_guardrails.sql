@@ -82,11 +82,19 @@ BEGIN
     EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', item.schema_name, item.relation_name);
     EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY', item.schema_name, item.relation_name);
 
+    -- Preserve any existing permissive policy: adding another permissive rule
+    -- would OR with it and could weaken a narrower in-tenant access policy.
     EXECUTE format('DROP POLICY IF EXISTS fo_privacy_scope_allow ON %I.%I', item.schema_name, item.relation_name);
-    EXECUTE format(
-      'CREATE POLICY fo_privacy_scope_allow ON %I.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
-      item.schema_name, item.relation_name, tenant_predicate, tenant_predicate
-    );
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_policy p
+      WHERE p.polrelid = to_regclass(format('%I.%I', item.schema_name, item.relation_name))
+        AND p.polpermissive
+    ) THEN
+      EXECUTE format(
+        'CREATE POLICY fo_privacy_scope_allow ON %I.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
+        item.schema_name, item.relation_name, tenant_predicate, tenant_predicate
+      );
+    END IF;
 
     EXECUTE format('DROP POLICY IF EXISTS fo_privacy_scope_enforce ON %I.%I', item.schema_name, item.relation_name);
     EXECUTE format(
@@ -228,11 +236,19 @@ BEGIN
         || ' AND (public.user_roles.factory_id IS NULL OR EXISTS (SELECT 1 FROM public.factories f WHERE f.id = public.user_roles.factory_id AND f.tenant_id = public.factoryos_current_tenant_id()))';
     END IF;
 
+    -- Keep the pre-existing membership/role policy if present; only seed a
+    -- tenant-scoped permissive fallback when the table otherwise has no access policy.
     EXECUTE format('DROP POLICY IF EXISTS fo_privacy_scope_allow ON public.%I', item.relation_name);
-    EXECUTE format(
-      'CREATE POLICY fo_privacy_scope_allow ON public.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
-      item.relation_name, tenant_predicate, tenant_predicate
-    );
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_policy p
+      WHERE p.polrelid = to_regclass('public.' || item.relation_name)
+        AND p.polpermissive
+    ) THEN
+      EXECUTE format(
+        'CREATE POLICY fo_privacy_scope_allow ON public.%I AS PERMISSIVE FOR ALL USING (%s) WITH CHECK (%s)',
+        item.relation_name, tenant_predicate, tenant_predicate
+      );
+    END IF;
     EXECUTE format('DROP POLICY IF EXISTS fo_privacy_scope_enforce ON public.%I', item.relation_name);
     EXECUTE format(
       'CREATE POLICY fo_privacy_scope_enforce ON public.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',

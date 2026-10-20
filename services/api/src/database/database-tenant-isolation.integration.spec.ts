@@ -260,7 +260,7 @@ describe(
             relname: string;
             relrowsecurity: boolean;
             relforcerowsecurity: boolean;
-            has_allow_policy: boolean;
+            has_permissive_policy: boolean;
             has_restrictive_policy: boolean;
           }>(
             `
@@ -272,13 +272,8 @@ describe(
                 SELECT 1
                 FROM pg_policy p
                 WHERE p.polrelid = c.oid
-                  AND p.polname = 'fo_privacy_scope_allow'
                   AND p.polpermissive
-                  AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
-                  AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
-                  AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%tenant_id%'
-                  AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%tenant_id%'
-              ) AS has_allow_policy,
+              ) AS has_permissive_policy,
               EXISTS (
                 SELECT 1
                 FROM pg_policy p
@@ -311,7 +306,7 @@ describe(
         for (const row of result.rows) {
           expect(row.relrowsecurity).toBe(true);
           expect(row.relforcerowsecurity).toBe(true);
-          expect(row.has_allow_policy).toBe(true);
+          expect(row.has_permissive_policy).toBe(true);
           expect(row.has_restrictive_policy).toBe(true);
         }
       },

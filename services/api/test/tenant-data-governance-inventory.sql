@@ -57,14 +57,9 @@ BEGIN
 
     IF NOT EXISTS (
       SELECT 1 FROM pg_policy p
-      WHERE p.polrelid = relation.oid AND p.polname = 'fo_privacy_scope_allow'
-        AND p.polpermissive
-        AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
-        AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
-        AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%tenant_id%'
-        AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%tenant_id%'
+      WHERE p.polrelid = relation.oid AND p.polpermissive
     ) THEN
-      RAISE EXCEPTION 'Tenant-bound permissive USING/WITH CHECK policy missing for public.%', relation.relname;
+      RAISE EXCEPTION 'No permissive policy exists for public.%', relation.relname;
     END IF;
 
     IF NOT EXISTS (
@@ -126,15 +121,25 @@ BEGIN
       OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity
       OR NOT EXISTS (
         SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid
-          AND p.polname='fo_privacy_scope_allow' AND p.polpermissive
-          AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
-          AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+          AND p.polpermissive
       )
       OR NOT EXISTS (
         SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid
           AND p.polname='fo_privacy_scope_enforce' AND NOT p.polpermissive
           AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
           AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+          AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%tenant_id%'
+          AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%tenant_id%'
+          AND CASE WHEN x.relation_name='user_roles'
+            THEN COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%tenant_memberships%'
+              AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%roles%'
+              AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factories%'
+              AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%tenant_memberships%'
+              AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%roles%'
+              AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factories%'
+            ELSE COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%roles%'
+              AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%roles%'
+          END
       )
   ) THEN
     RAISE EXCEPTION 'IAM relationship tables require derived tenant scope, forced RLS and restrictive tenant fences';
