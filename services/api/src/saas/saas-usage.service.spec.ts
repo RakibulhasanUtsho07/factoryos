@@ -60,6 +60,29 @@ describe('SaasUsageService',()=>{
   expect(db.query.mock.calls[2]?.[1]?.[11]).toBe('-7199254740993');
  });
 
+ it('evaluates current budget time when a historical usage event arrives',async()=>{
+  const historicalEvent=event({occurred_at:'2020-01-01T00:00:00.000Z'});
+  const evaluated=jest.spyOn(service as any,'evaluateBudgetsInternal').mockResolvedValue([]);
+  const before=Date.now();
+  db.query
+   .mockResolvedValueOnce({rows:[]})
+   .mockResolvedValueOnce({rows:[]})
+   .mockResolvedValueOnce({rows:[{
+    id:'historical-event',tenant_id:tenant,factory_id:factory,metric_code:'AI_INPUT_TOKEN',
+    capability_code:'ai.runtime.inference',workload_class:'PRODUCTION',quantity:'1250.000000',
+    occurred_at:'2020-01-01T00:00:00.000Z',source_system:'AI_GATEWAY',source_event_ref:'ai:request:historical',
+    rate_card_id:null,rate_version_snapshot:null,rate_minor_per_block_snapshot:null,
+    rate_block_quantity_snapshot:null,currency:null,estimated_cost_minor:null,
+    request_hash:'a'.repeat(64),idempotency_key:'historical-event',recorded_by:user,
+    created_at:'2026-10-20T00:00:00.000Z',
+   }]});
+  await service.recordUsageEvent(tenant,factory,user,historicalEvent as never);
+  const evaluatedAt=Date.parse(String(evaluated.mock.calls[0]?.[3]));
+  expect(evaluated).toHaveBeenCalledTimes(1);
+  expect(evaluatedAt).toBeGreaterThanOrEqual(before);
+  expect(evaluatedAt).not.toBe(Date.parse('2020-01-01T00:00:00.000Z'));
+ });
+
  it('rejects adjustments that do not change quantity or cost before any database call',async()=>{await expect(service.createAdjustment(tenant,factory,user,{period_start:'2026-10-01T00:00:00Z',period_end:'2026-10-31T00:00:00Z',quantity_delta:0,cost_delta_minor:0,currency:'BDT',reason_code:'OTHER',reason:'No-op',idempotency_key:'adjustment-noop'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
  it('requires a bounded reconciliation period',async()=>{await expect(service.reconcileInvoice(tenant,factory,user,{invoice_reference:'INV-1',reconciliation_version:1,period_start:'2026-01-01T00:00:00Z',period_end:'2026-03-01T00:00:00Z',currency:'BDT',invoiced_amount_minor:100,idempotency_key:'recon-too-long'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
  it('rejects invalid budget limits before database access',async()=>{await expect(service.createBudget(tenant,null,user,{budget_code:'ai-monthly',policy_version:1,period_kind:'MONTHLY',scope_level:'TENANT',currency:'BDT',soft_limit_minor:500,hard_limit_minor:100,effective_from:'2026-10-01T00:00:00Z',idempotency_key:'budget-invalid'} as never)).rejects.toBeInstanceOf(BadRequestException);expect(db.query).not.toHaveBeenCalled();});
