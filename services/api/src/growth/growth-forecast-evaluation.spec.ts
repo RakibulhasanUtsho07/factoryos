@@ -43,6 +43,16 @@ describe('growth forecast evaluation', () => {
     expect(result.signed_error).toBe('-0.12345679');
   });
 
+  it('preserves PostgreSQL decimal strings that cannot be represented at eight-place precision by Number', () => {
+    const result = evaluateGrowthForecast({
+      forecast_value: 1000000000000,
+      actual_value: '999999999999.99999999',
+    });
+    expect(result.actual_value).toBe('999999999999.99999999');
+    expect(result.signed_error).toBe('0.00000001');
+    expect(result.absolute_percentage_error).toBe('0.00000000');
+  });
+
   it('rejects non-finite or out-of-domain numeric inputs', () => {
     expect(() => evaluateGrowthForecast({ forecast_value: Number.NaN, actual_value: 1 }))
       .toThrow('FORECAST_VALUE_INVALID:forecast_value');
