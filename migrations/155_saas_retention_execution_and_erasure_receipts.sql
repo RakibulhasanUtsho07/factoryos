@@ -146,7 +146,8 @@ ALTER TABLE saas_tenant_data_erasure_requests
       AND execution_started_by_user_id<>reviewed_by_user_id
       AND execution_started_at IS NOT NULL AND execution_completed_at IS NOT NULL
       AND execution_run_id IS NOT NULL AND execution_manifest_digest IS NOT NULL
-      AND execution_manifest_digest ~ '^[a-f0-9]{64}
+      AND execution_run_id IS NOT NULL AND execution_manifest_digest IS NOT NULL
+      AND execution_manifest_digest ~ '^[a-f0-9]{64}$')
   );
 
 CREATE TABLE IF NOT EXISTS saas_tenant_data_erasure_runs (
@@ -180,7 +181,7 @@ CREATE TABLE IF NOT EXISTS saas_tenant_data_erasure_runs (
   CONSTRAINT chk_saas_erasure_run_source_digest CHECK (source_export_digest ~ '^[a-f0-9]{64}$'),
   CONSTRAINT chk_saas_erasure_run_failure CHECK (
     (status='COMPLETED' AND manifest_digest IS NOT NULL AND failure_code IS NULL)
-    OR (status='FAILED' AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z0-9_]{1,64}
+    OR (status='FAILED' AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z0-9_]{1,64}$')
   ),
   CONSTRAINT chk_saas_erasure_run_reason CHECK (length(btrim(reason)) BETWEEN 3 AND 1000),
   CONSTRAINT chk_saas_erasure_run_key CHECK (idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
