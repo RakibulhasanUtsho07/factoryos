@@ -197,7 +197,7 @@ postgresDescribe('SaaS tenant retention RLS (PostgreSQL integration)', () => {
         table_manifest, source_export_digest, executor_user_id, failure_code, reason,
         idempotency_key, request_hash)
        VALUES ($1,$2,$3,1,'FAILED',$4::jsonb,0,'{"fixture":"RLS isolation"}'::jsonb,$5,$6,
-         'RLS_FIXTURE','RLS fixture failure receipt','rls-erasure-run-' || $7 || '-' || $1::text,$5)
+         'RLS_FIXTURE','RLS fixture failure receipt','rls-erasure-run-' || $7 || '-' || $1::uuid::text,$5)
        RETURNING id::text AS id`,
       [identity.tenantId, randomUUID(), erasure.request.requestId, JSON.stringify([category]),
         digest, identity.userId, label],
