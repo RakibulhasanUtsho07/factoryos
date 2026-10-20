@@ -48,10 +48,6 @@ on:
         description: Explicit UTC RFC3339 incident/cutoff time used to measure observed RPO
         required: true
         type: string
-      operator:
-        description: Database recovery operator name or approved identity
-        required: true
-        type: string
       approver:
         description: Independent release/data owner identity
         required: true
@@ -100,7 +96,7 @@ jobs:
       WATERMARK_SQL_INPUT: ${{ inputs.watermark_sql }}
       SMOKE_SQL_INPUT: ${{ inputs.restore_smoke_sql }}
       EVENT_TIME_INPUT: ${{ inputs.simulated_event_time_utc }}
-      OPERATOR_INPUT: ${{ inputs.operator }}
+      OPERATOR_INPUT: ${{ github.actor }}
       APPROVER_INPUT: ${{ inputs.approver }}
       TARGETS_APPROVED_INPUT: ${{ inputs.targets_approved }}
       RPO_TARGET_INPUT: ${{ inputs.rpo_target_seconds }}
