@@ -540,7 +540,7 @@ export class SaasTenantGovernanceExecutionService {
     for (const table of [...new Set(tables)].sort()) {
       if (!TABLE_NAME.test(table)) throw new ConflictException('An unsafe table identifier was rejected');
       const meta = await client.query<{
-        exists: boolean;
+        table_exists: boolean;
         has_tenant_id: boolean;
         has_id: boolean;
         forced_rls: boolean;
@@ -548,7 +548,7 @@ export class SaasTenantGovernanceExecutionService {
         time_column: string | null;
       }>(
         `SELECT
-           (c.oid IS NOT NULL) AS exists,
+           (c.oid IS NOT NULL) AS table_exists,
            EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attname='tenant_id' AND a.attnum>0 AND NOT a.attisdropped) AS has_tenant_id,
            EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attname='id' AND a.attnum>0 AND NOT a.attisdropped) AS has_id,
            COALESCE(c.relrowsecurity AND c.relforcerowsecurity, false) AS forced_rls,
@@ -570,7 +570,7 @@ export class SaasTenantGovernanceExecutionService {
         [table, [...POLICY_TIME_COLUMNS]],
       );
       const row = meta.rows[0];
-      const safe = Boolean(row?.exists && row.has_tenant_id && row.has_id && row.forced_rls && row.has_tenant_policy);
+      const safe = Boolean(row?.table_exists && row.has_tenant_id && row.has_id && row.forced_rls && row.has_tenant_policy);
       result.push({ table, safe, timeColumn: requireTimeColumn ? row?.time_column ?? null : null });
     }
     return result;
