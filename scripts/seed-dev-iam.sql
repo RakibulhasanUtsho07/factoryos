@@ -219,7 +219,7 @@ WHERE r.code = 'ORG_ADMIN'
     'ot.devices.approve',
     'ot.telemetry.ingest',
     'ot.telemetry.read',
-    'ot.opcua.read',
+    'ot.opcua.read'
   );
 
 COMMIT;
