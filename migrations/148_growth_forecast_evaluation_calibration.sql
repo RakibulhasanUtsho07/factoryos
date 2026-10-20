@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   unit VARCHAR(40) NOT NULL,
   forecast_origin_at TIMESTAMPTZ NOT NULL,
   forecast_source_ref TEXT NOT NULL,
+  forecast_source_evidence_id UUID NOT NULL,
   forecast_value NUMERIC(24,8) NOT NULL,
   actual_value NUMERIC(24,8) NOT NULL,
   lower_bound NUMERIC(24,8),
@@ -41,6 +42,8 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
     REFERENCES growth_opportunity_outcomes(id, tenant_id, factory_id, opportunity_id) ON DELETE RESTRICT,
   CONSTRAINT fk_growth_forecast_evaluation_actor
     FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_growth_forecast_evaluation_source_evidence
+    FOREIGN KEY (forecast_source_evidence_id) REFERENCES growth_opportunity_evidence(id) ON DELETE RESTRICT,
   CONSTRAINT chk_growth_forecast_evaluation_model
     CHECK (model_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
   CONSTRAINT chk_growth_forecast_evaluation_metric
@@ -137,7 +140,8 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM growth_opportunity_evidence e
-     WHERE e.opportunity_id = NEW.opportunity_id
+     WHERE e.id = NEW.forecast_source_evidence_id
+       AND e.opportunity_id = NEW.opportunity_id
        AND e.tenant_id = NEW.tenant_id
        AND e.factory_id = NEW.factory_id
        AND (btrim(COALESCE(e.reference_ref, '')) = NEW.forecast_source_ref
