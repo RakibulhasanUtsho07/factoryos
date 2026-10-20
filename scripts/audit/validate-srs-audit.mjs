@@ -182,8 +182,8 @@ for (const cells of exceptionRows.slice(1)) {
   assert.ok(row.sourceOwnerDecisionRef === 'PENDING' && row.reviewer === 'PENDING' && row.reviewDate === 'PENDING', 'Owner approval must remain pending until recorded: ' + row.requirementId);
 }
 assert.equal(new Set(exceptionIds).size, 37, 'Priority exception IDs must be unique');
-const unresolvedMatrixIds = requirementRows.filter((row) => row.priority === 'REVIEW SOURCE').map((row) => row.id).sort();
-assert.deepEqual([...exceptionIds].sort(), unresolvedMatrixIds, 'Priority exception source CSV must match all 37 REVIEW SOURCE rows');
+const sourceExceptionMatrixIds = requirementRows.filter((row) => row.priority === 'REVIEW SOURCE').map((row) => row.id).sort();
+assert.deepEqual([...exceptionIds].sort(), sourceExceptionMatrixIds, 'Priority exception source CSV must match all 37 REVIEW SOURCE rows');
 assert.ok(releaseSnapshot.includes('0f577f2ee5bbb6605011b221f1e65a1b5a6d548b'), 'Release snapshot must identify the exact audited merge SHA');
 assert.ok(releaseSnapshot.includes('39429731792'), 'Release snapshot must link exact-SHA traceability CI');
 assert.ok(releaseSnapshot.includes('NOT READY FOR FORMAL TRACEABILITY SIGN-OFF'), 'Release snapshot must keep overall release gate explicit while approvals/evidence are missing');
