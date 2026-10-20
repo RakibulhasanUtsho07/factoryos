@@ -213,7 +213,13 @@ WHERE r.code = 'ORG_ADMIN'
     'ehs.incidents.read',
     'ehs.incidents.report',
     'ehs.incidents.manage',
-    'ehs.corrective_actions.verify'
+    'ehs.corrective_actions.verify',
+    'ot.devices.read',
+    'ot.devices.write',
+    'ot.devices.approve',
+    'ot.telemetry.ingest',
+    'ot.telemetry.read',
+    'ot.opcua.read',
   );
 
 COMMIT;
