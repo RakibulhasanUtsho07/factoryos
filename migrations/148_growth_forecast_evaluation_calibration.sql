@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   signed_error NUMERIC(32,8) NOT NULL,
   absolute_error NUMERIC(32,8) NOT NULL,
   squared_error NUMERIC(40,8) NOT NULL,
-  absolute_percentage_error NUMERIC(24,8),
+  absolute_percentage_error NUMERIC(40,8),
   symmetric_percentage_error NUMERIC(12,8) NOT NULL,
   interval_hit BOOLEAN,
   interval_width NUMERIC(32,8),
