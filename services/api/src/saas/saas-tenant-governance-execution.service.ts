@@ -179,14 +179,11 @@ export class SaasTenantGovernanceExecutionService {
       const mapped = tables.length > 0
         ? await this.inspectTables(client, tables, true)
         : [];
-      const deleteGuarded = mapped.some((item) => item.deletionGuarded);
       const unsupported = tables.length === 0
         ? 'NO_REVIEWED_TABLE_MAPPING'
         : mapped.some((item) => !item.safe || !item.timeColumn)
           ? 'TABLE_ISOLATION_OR_TIME_ANCHOR_UNVERIFIED'
-          : mode === SaasRetentionRunMode.EXECUTE && deleteGuarded
-            ? 'DELETE_GUARD_REQUIRES_REVIEWED_ADAPTER'
-            : null;
+          : null;
       const manifest: Record<string, unknown> = {};
       let examined = 0n;
       let eligible = 0n;
@@ -221,8 +218,13 @@ export class SaasTenantGovernanceExecutionService {
         [tenantId],
       );
       const held = holdResult.rows.some((row) => this.parseCategories(row.categories).includes(category));
+      const guardedEligible = mode === SaasRetentionRunMode.EXECUTE && mapped.some((table) => {
+        const entry = manifest[table.table] as { eligible?: string } | undefined;
+        return table.deletionGuarded && BigInt(entry?.eligible ?? '0') > 0n;
+      });
       const blockReason = unsupported
         ?? (held && mode === SaasRetentionRunMode.EXECUTE ? 'ACTIVE_LEGAL_HOLD' : null)
+        ?? (guardedEligible ? 'DELETE_GUARD_REQUIRES_REVIEWED_ADAPTER' : null)
         ?? (mode === SaasRetentionRunMode.EXECUTE && policy.created_by_user_id === actorUserId ? 'POLICY_MAKER_CANNOT_EXECUTE' : null)
       ?? (mode === SaasRetentionRunMode.EXECUTE && policy.disposition !== 'DELETE'
           ? policy.disposition === 'ANONYMIZE' ? 'ANONYMIZATION_ADAPTER_NOT_REGISTERED' : 'POLICY_REQUIRES_MANUAL_REVIEW'
@@ -390,8 +392,8 @@ export class SaasTenantGovernanceExecutionService {
 
         const tables = [...new Set(categories.flatMap((category) => this.resolveTables(category)))].sort();
         const mapped = await this.inspectTables(client, tables, false);
-        if (mapped.some((item) => !item.safe || item.deletionGuarded)) {
-          throw new ConflictException('A target table failed tenant isolation checks or has an unreviewed DELETE trigger; no erasure data was changed');
+        if (mapped.some((item) => !item.safe)) {
+          throw new ConflictException('A target table failed the forced-RLS tenant isolation contract; no erasure data was changed');
         }
         let totalRows = 0n;
         const counts: Record<string, string> = {};
@@ -403,6 +405,9 @@ export class SaasTenantGovernanceExecutionService {
           const count = BigInt(resultCount.rows[0]?.count ?? '0');
           totalRows += count;
           counts[table.table] = count.toString();
+        }
+        if (mapped.some((item) => item.deletionGuarded && BigInt(counts[item.table] ?? '0') > 0n)) {
+          throw new ConflictException('An erasure table has existing rows protected by an unreviewed DELETE trigger; no rows were deleted');
         }
         if (totalRows > BigInt(MAX_ROWS_PER_SYNC_RUN)) {
           throw new ConflictException('Erasure exceeds the bounded synchronous execution limit; no rows were deleted');
