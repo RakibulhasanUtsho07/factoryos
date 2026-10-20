@@ -23,14 +23,14 @@ Do not apply a production migration until all of the following are verified:
 6. Agree on a rollback/forward-fix plan. Do not assume destructive schema rollback is safe after application writes begin.
 7. Schedule production execution with an operator present, capture migration output, and run post-migration smoke tests.
 
-Migration 149 creates retention-policy, legal-hold and erasure-review control-plane records; it does not delete tenant data. Any subsequent physical purge must be gated by approved per-category storage mappings, legal-hold checks and audited deletion verification. Migration 028's execution-claim reconciliation has additional manual recovery risk: preserve a fresh backup, confirm the isolated restore, inspect claim/execution evidence, and obtain operator review before any production reconciliation action. A CI application of migration 028 is not authorization to run it against production.
+Migrations 149–155 add retention policy/versioning, legal holds, preservation attestations and bounded execution receipts. They do not by themselves make every copy of a tenant erasable. Migration 156 adds a catalog-backed inventory for public tables with direct `tenant_id`, forced RLS and a restrictive tenant-scope fence; `user_roles` and `role_permissions` are registered as derived-scope IAM relations. Only reviewed dataset adapters are exportable, unknown direct tenant tables default to excluded, and external object storage, caches/indexes, replicas, providers and backups still need separately configured adapters and verified deletion receipts. Retention periods/legal bases require policy-owner approval; do not advertise whole-tenant erasure until indirect ownership coverage and all required external adapters have passed acceptance. Migration 028's execution-claim reconciliation has additional manual recovery risk: preserve a fresh backup, confirm the isolated restore, inspect claim/execution evidence, and obtain operator review before any production reconciliation action. A CI application of migration 028 is not authorization to run it against production.
 
 ## CI scope
 
 The repository has automated API, PostgreSQL integration, frontend and dependency-security verification workflows. Confirm the exact workflow set that applies to the candidate SHA:
 
 - **API CI** runs API lint, build, and the unit tests that do not require PostgreSQL integration fixtures.
-- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in .github/workflows/api-postgres-ci.yml through migrations/149_saas_data_retention_erasure_governance.sql at this baseline, verifies that no numbered migration is omitted, runs SQL contract suites, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
+- **API PostgreSQL CI** provisions a disposable PostgreSQL 16 service, applies the ordered migration manifest in `.github/workflows/api-postgres-ci.yml` through `migrations/156_tenant_privacy_inventory_and_rls_guardrails.sql`, verifies that no numbered migration is omitted, reapplies migrations 155 and 156 for idempotency, runs retention/isolation/schema-wide privacy inventory SQL contracts, then runs the full API Jest suite serially. Migration 028 is applied only to this disposable CI database.
 - **Web CI** installs the npm workspace dependencies, runs the frontend lint command, and builds the Next.js application.
 
 A green GitHub Actions run verifies only the commit and environment shown in that run. It does not mean the application was deployed, that production configuration was entered in a hosting platform, or that any production migration was applied.
@@ -43,6 +43,6 @@ Before any production database change, follow docs/operational-reliability-runbo
 
 - Confirm the API CI, API PostgreSQL CI, and Web CI runs succeeded for the exact commit being released.
 - Confirm the production API environment has exact HTTPS values for `CORS_ORIGINS`, `NODE_ENV=production`, `SWAGGER_ENABLED=false`, and validated OIDC settings.
-- Confirm the actual production database target, migration history, backup and proven restore before scheduling any production migration.
+- Confirm the actual production database target, migration history including migration 156, inventory/RLS contract output, backup and proven restore before scheduling any production migration.
 - Apply production migrations with an operator present and run post-migration API and frontend smoke tests.
 - Record the deployed commit, migration results, verification evidence, and rollback/forward-fix decision.

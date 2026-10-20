@@ -2,14 +2,14 @@
 
 **Status:** implementation/acceptance matrix; policy owners must approve durations before production enforcement.
 **Scope:** tenant export and migration, deletion/erasure requests, retention controls, audit coverage, and cross-tenant isolation.
-**Related implementation:** `saas-tenant-data-transfer.service.ts`, `saas-tenant-data-transfer.worker.ts`, `saas-tenant-postgres-dataset-source.ts`, `saas-tenant-postgres-migration-target.adapter.ts`, `audit/audit.service.ts`, migrations 045–155, especially 149–155.
+**Related implementation:** `saas-tenant-data-transfer.service.ts`, `saas-tenant-data-transfer.worker.ts`, `saas-tenant-postgres-dataset-source.ts`, `saas-tenant-postgres-migration-target.adapter.ts`, `audit/audit.service.ts`, migrations 045–156, especially 149–156.
 
 ## Security invariants
 
 1. Every tenant-owned query must use a verified tenant context and tenant predicate; RLS is defense in depth, not a replacement for authorization.
 2. An export is complete only when its required category manifest, row counts, hashes, encrypted artifact receipt and final attestation agree. Failed/incomplete bundles must be removed best-effort and never presented as completed.
 3. Cross-tenant export and deletion requests are denied before reading or mutating data. Object-store references are opaque; no raw credentials, secrets, access tokens or encryption keys belong in export payloads.
-4. Audit events are tenant-scoped, actor-attributed where available, data-classified and free of secret payloads. Audit evidence must not be silently deleted by routine business-data erasure.
+4. Audit events are tenant-scoped, actor-attributed where available, and data-classified. AuditService recursively redacts common credential/secret and token fields by key before JSON payload persistence; this is a safety net, not a substitute for callers minimizing payloads or reviewing unusual secret-field names. Audit evidence must not be silently deleted by routine business-data erasure.
 5. Deletion is a governed lifecycle, not an unscoped SQL DELETE. A request must be authorized, reasoned, idempotent, versioned, reviewable and independently verifiable.
 6. Legal holds, unresolved financial obligations, statutory records and append-only audit/security evidence can delay or narrow erasure. The policy owner must define applicable law and exceptions; software must not invent a universal retention duration.
 7. A failed audit write, failed tenant-context setup, ambiguous tenant scope, or unrecognized table/category must fail closed.
@@ -28,6 +28,16 @@ Minimum classes to govern:
 - User-linked personal data and derived/cache/search data.
 
 Until a policy is approved, no retention run can execute. The run engine fails closed for categories without a reviewed table mapping, without a timestamp anchor, without forced RLS/tenant policy, with a legal hold, with recent dependent rows, or above its 100,000-row synchronous bound. `ANONYMIZE` is blocked until a field-level anonymization adapter is reviewed. The current executor is for reviewed PostgreSQL tables only; object-store, cache, replica and backup expiry still require deployment-specific adapters and retention settings.
+
+## Schema-wide tenant relation inventory and isolation fence
+
+Migration `156_tenant_privacy_inventory_and_rls_guardrails.sql` adds a database inventory for every public base/partition relation that directly exposes `tenant_id`. Each entry records the data category, export disposition, erasure disposition, audit requirement and reason. An unknown relation is classified as `UNREVIEWED`, excluded from generic export, and blocked from generic erasure until an adapter is reviewed.
+
+For every direct `tenant_id` relation the migration enables and forces row-level security and installs two tenant predicates: a permissive policy used by normal tenant queries and an additional **restrictive** policy that ANDs the current verified transaction tenant into all operations. The second policy is a defense-in-depth fence against a later permissive `USING (true)` policy. `user_roles` and `role_permissions`, which do not have a direct `tenant_id` column, receive derived-scope policies through membership/role/factory ownership and are inventoried separately.
+
+The inventory deliberately does not automatically make new tables exportable. Export authorization remains tied to the reviewed source/target allowlists in `SAAS_TENANT_DATASET_TABLES` and the special logical IAM transfer adapter. The PostgreSQL CI suite now applies and reapplies migration 156, then executes `services/api/test/tenant-data-governance-inventory.sql`; the tenant-isolation integration test also discovers all public tables with `tenant_id` from PostgreSQL catalogs instead of relying on a fixed hand-maintained table list.
+
+**Coverage boundary:** catalog enumeration covers direct `tenant_id` relations plus the two known IAM-derived relations. Any additional table whose tenant ownership is expressed only through foreign keys or another indirect relationship must be added to the reviewed derived-scope inventory and tests before it is considered covered. This is not proof that every external copy or every tenant-owned business relation has a usable export/erasure adapter.
 
 ## Export acceptance contract
 
@@ -61,7 +71,7 @@ Object-store exports, derived indexes, caches, replicas, external providers and 
 | Tenant migration/import | source/target tenant IDs, transfer ID, target receipt/digest, excluded categories | exact-schema target adapter and transfer receipt | Prove no existing rows overwritten; target isolation tested |
 | Retention policy changes/runs | policy category/version, actor, mode, cutoff, examined/eligible/affected counts, legal holds, table manifest digest and outcome | `saas-tenant-retention.service.ts`; `saas-tenant-governance-execution.service.ts`; migration 155; retention run ledger | Unit/contract tests committed; policy durations and external-store expiry still need owner approval |
 | Erasure request/approval/execution | request/version, requester/reviewer/executor, legal hold, preserved export digest, deleted-row counts, manifest digest and immutable outcome receipt | `saas-tenant-retention.service.ts`; `saas-tenant-governance-execution.service.ts`; migration 155; erasure execution ledger | Bounded database scope is implemented; whole-tenant inventory plus object-store/backup purge is still partial |
-| IAM/permission and tenant-scope denial | actor, requested tenant/resource, decision, correlation ID | PermissionGuard/IAM and AuditService | Verify denial events are emitted without leaking resource data |
+| IAM/permission and tenant-scope denial | actor, requested tenant/resource, decision, correlation ID | PermissionGuard/IAM, tenant-scope checks, and AuditService; recursive key-based payload redaction plus unit coverage | Exercise denial paths on PostgreSQL and review field names that may encode secrets under nonstandard keys |
 | Usage, budget, subscription | actor/source event, idempotency, policy decision, state transition | SaaS usage/subscription ledgers and audit | Confirm all mutation paths and transaction-failure behavior |
 | AI tool/execution/compensation | tool/action IDs, authorization, claim, outcome, compensation receipt | AI execution traceability docs and event ledgers | Verify all paths emit correlated audit events |
 | File/evidence access and external adapters | opaque resource ID, tenant, actor, action, result | category/adapter-specific evidence must be checked | Adapter-specific acceptance pending |
@@ -84,9 +94,9 @@ Object-store exports, derived indexes, caches, replicas, external providers and 
 
 ## Release gates
 
-- Add schema-wide inventory query/check so every tenant-owned table is either assigned a documented category or explicitly excluded with rationale.
-- Add RLS + forced-RLS verification for every tenant-owned table and policies that bind the active tenant context.
-- Add two-tenant PostgreSQL tests for read/write/delete, joins, foreign keys, RLS bypass assumptions, export, migration and audit.
+- Keep migration 156 and `services/api/test/tenant-data-governance-inventory.sql` as the automated inventory/RLS gate for every public base or partition table with a direct `tenant_id`; every such relation must have forced RLS and both current-tenant policy fences.
+- Extend the derived-scope inventory for any tenant-owned relation without a direct `tenant_id` beyond the currently registered `user_roles` and `role_permissions`; use explicit ownership joins and two-tenant tests before considering those relations covered.
+- Retain two-tenant PostgreSQL tests for tenant read/write denial, RLS boundaries, retention/legal-hold/erasure ledgers, export/migration manifests and audit access; catalog checks do not replace endpoint-level failure, replay, or rollback tests.
 - Approve retention durations/legal basis before execution; verify dry-run, held data, recent foreign-key dependents, partial failure, idempotent retry and immutable receipts.
 - Extend the reviewed table/category inventory to all tenant-owned relations and implement/configure object-store, index/cache, replica and backup expiry adapters before advertising whole-tenant deletion as supported.
 - Run API build/lint/unit tests and PostgreSQL CI on the exact commit; this document alone is not runtime proof.
