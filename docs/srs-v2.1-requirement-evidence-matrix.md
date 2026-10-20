@@ -22,7 +22,7 @@ This register lists each distinct FR/NFR ID detected in the source extract and g
 
 ## 3. Requirement ID register
 
-The per-row table is an ID index, not an assertion that each ID's entire acceptance has passed. Evidence/status are assigned conservatively at requirement-family level until a direct test/acceptance pointer is attached. The final SRS §135 production scenarios AS-132–AS-141 and P0 NFR-PROD-11/12/14/17/18 are mapped with scenario-specific closure criteria in the [master audit](final-srs-hld-blueprint-traceability-audit.md).
+The per-row table is an ID index, not an assertion that each ID's entire acceptance has passed. Evidence/status are assigned conservatively at requirement-family level until a direct test/acceptance pointer is attached. The final SRS §135 production scenarios AS-132–AS-141 are mapped to concrete repository test files, the actual test boundary, and required closure evidence in the [dedicated AS-132–AS-141 acceptance matrix](srs-v2.1-as-132-141-acceptance-matrix.md). Their concise closure summary and the P0 NFR-PROD-11/12/14/17/18 gates are also captured in the [master audit](final-srs-hld-blueprint-traceability-audit.md).
 
 | SRS requirement ID | Source priority | Source row wording (trimmed excerpt) | Repository assessment | Repository evidence | Acceptance gap / action |
 |---|---|---|---|---|---|
