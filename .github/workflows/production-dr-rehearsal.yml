@@ -105,6 +105,7 @@ jobs:
       TARGETS_APPROVED_INPUT: ${{ inputs.targets_approved }}
       RPO_TARGET_INPUT: ${{ inputs.rpo_target_seconds }}
       RTO_TARGET_INPUT: ${{ inputs.rto_target_seconds }}
+      RESTORE_APPLICATION_DATABASE_URL: ${{ secrets.FACTORYOS_DR_APPLICATION_DATABASE_URL }}
 
     steps:
       - name: Checkout exact candidate
@@ -117,6 +118,12 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: npm
+
+      - name: Install and build exact candidate API
+        run: |
+          npm ci
+          npm --workspace services/api run build
 
       - name: Validate protected runner configuration and candidate
         shell: bash
@@ -129,6 +136,7 @@ jobs:
           [[ "$(stat -c '%a' "$PGSERVICEFILE")" == "600" || "$(stat -c '%a' "$PGSERVICEFILE")" == "400" ]] || { echo "::error::PGSERVICEFILE permissions must be 0600 or 0400"; exit 1; }
           [[ "$(stat -c '%a' "$PGPASSFILE")" == "600" || "$(stat -c '%a' "$PGPASSFILE")" == "400" ]] || { echo "::error::PGPASSFILE permissions must be 0600 or 0400"; exit 1; }
           [[ -n "$GNUPGHOME" && -d "$GNUPGHOME" && -r "$GNUPGHOME" ]] || { echo "::error::GNUPGHOME must point to the approved recovery keyring on this runner"; exit 1; }
+          [[ -n "$RESTORE_APPLICATION_DATABASE_URL" ]] || { echo "::error::configure the protected FACTORYOS_DR_APPLICATION_DATABASE_URL environment secret for the restored target application role"; exit 1; }
           [[ "$SOURCE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ && "$RESTORE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || { echo "::error::service names contain unsupported characters"; exit 1; }
           [[ "$SOURCE_SERVICE_INPUT" != "$RESTORE_SERVICE_INPUT" ]] || { echo "::error::source and restore service names must differ"; exit 1; }
           [[ "$EMPTY_TARGET_CONFIRMED_INPUT" == "true" ]] || { echo "::error::operator must explicitly confirm that restore target is isolated, disposable and empty"; exit 1; }
@@ -171,6 +179,7 @@ jobs:
           FACTORYOS_RECOVERY_EVENT_TIME_UTC="$EVENT_TIME_INPUT" \
           FACTORYOS_RECOVERY_OPERATOR="$OPERATOR_INPUT" \
           FACTORYOS_RECOVERY_APPROVER="$APPROVER_INPUT" \
+          FACTORYOS_DR_APPLICATION_DATABASE_URL="$RESTORE_APPLICATION_DATABASE_URL" \
           FACTORYOS_DR_TARGETS_APPROVED="$target_approval" \
           FACTORYOS_RECOVERY_RPO_TARGET_SECONDS="$RPO_TARGET_INPUT" \
           FACTORYOS_RECOVERY_RTO_TARGET_SECONDS="$RTO_TARGET_INPUT" \
