@@ -55,6 +55,26 @@ export class ReadOpcUaNodesDto {
   node_ids!: string[];
 }
 
+export class IngestMqttMessageDto {
+  @IsString()
+  @Length(1, 256)
+  @Matches(/^[A-Za-z0-9_./:-]+$/)
+  topic!: string;
+
+  @IsObject()
+  message!: Record<string, unknown>;
+}
+
+export class ReadModbusRegistersDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(10)
+  @IsString({ each: true })
+  @Length(1, 160, { each: true })
+  @Matches(/^[A-Z][A-Z0-9_.-]{0,159}$/, { each: true })
+  stream_keys!: string[];
+}
+
 export class OtDeviceTransitionDto {
   @IsInt()
   @Min(1)
