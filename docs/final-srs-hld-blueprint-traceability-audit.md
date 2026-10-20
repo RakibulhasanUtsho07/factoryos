@@ -183,3 +183,18 @@ The following rules apply when the master SRS is imported:
 The repository is **implementation-rich but not formally SRS-sign-off-complete**. API CI, PostgreSQL CI and production dependency-security workflows passed on the exact code/configuration SHAs shown above; the present audit also identifies bounded acceptance gaps rather than treating a successful test run as universal acceptance.
 
 The next mandatory step for Round 43 is to record controlled source-of-record/approval metadata, reconcile every extracted ID and the 37 priority exceptions against the exact final SRS tables, attach direct acceptance evidence for every in-scope P0/P1 ID and each AS-132–AS-141 scenario, close or formally accept P0/P1 gaps, and obtain named Product/Architecture/Security/Operations sign-off. The source documents are identified and hash-pinned, but their source-owner approval and direct acceptance evidence remain unresolved. Until those gates are closed, label this document “Provisional SRS/HLD/Blueprint evidence audit”, not “full SRS completed”.
+
+
+## 9. Addendum — source/scope/evidence closure baseline (2026-10-20)
+
+This addendum records the Item 01 artifacts created against the merged repository baseline `7b4a28419f6682480d10ee5f64ed5172bf809fad`. That SHA is the repository baseline for this register, **not** a declaration of production release acceptance.
+
+- [Source-of-record and approval register](srs-source-of-record-and-approval-register.md) identifies the three inspected SHA-256-pinned PDFs and makes the missing controlled DMS references and Product/Architecture approval explicit. They remain `BLOCKED` until evidence is provided by those owners.
+- [Scope-reconciliation ledger](srs-requirement-scope-reconciliation.md) separates the §140 cumulative total of 950 from the index of 899 distinct IDs, records the matrix priority distribution, and enumerates all 37 unresolved priority/source-row exceptions. It states that 51 is an arithmetic delta, not a demonstrated set of missing requirements or duplicates.
+- [Machine-readable P0/P1 closure register](srs-p0-p1-evidence-closure-register.json) contains 842 unique gate candidates: 259 parsed P0, 546 parsed P1, and all 37 `REVIEW SOURCE` rows. The remaining priorities are kept in scope until source review. Named owner, reviewer, direct code/migration/test/CI references, accepted candidate SHA, and any required staging evidence are unfilled and the current acceptance result is `NOT_ACCEPTED`.
+- [Closure-register operating rules](srs-p0-p1-evidence-closure-register.md) defines acceptable row dispositions and evidence requirements.
+- `scripts/audit/validate-srs-audit.mjs` now checks that the closure register exactly matches P0/P1 plus unresolved-priority matrix rows and rejects a `PASS` row missing owner/reviewer, candidate SHA, direct implementation/test evidence, migration evidence or an approved not-applicable rationale, and exact CI run links. It also verifies that the 37 listed exceptions match the matrix.
+
+The new validator and its PR workflow provide structural consistency checks only; they cannot authenticate source-owner approvals or independently judge whether evidence truly satisfies a normative requirement. The source/priority reconciliation and formal sign-off remain **OPEN/BLOCKED**. A green traceability workflow is not a product-completion verdict.
+
+CI history must remain SHA-specific. The previously recorded pre-merge checks validate the PR head that they tested; no post-merge status was available for merge SHA `7b4a28419f6682480d10ee5f64ed5172bf809fad` at the time this addendum was authored. The release gate must be refreshed on the exact release candidate.
