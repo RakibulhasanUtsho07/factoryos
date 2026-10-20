@@ -164,7 +164,7 @@ export class SaasSubscriptionService {
       );
     }
 
-    const capabilities = subscription.plan_capabilities ?? {};
+    const capabilities: Record<string, unknown> = subscription.plan_capabilities ?? {};
     const capabilityIsListed = Object.prototype.hasOwnProperty.call(capabilities, capabilityCode);
     if (capabilityIsListed && capabilities[capabilityCode] !== true) {
       throw new ForbiddenException('The current subscription plan does not entitle capability ' + capabilityCode);
