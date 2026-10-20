@@ -60,7 +60,7 @@ Treat the final SRS §131 P0 requirements and §135 scenarios AS-132–AS-141 as
 - **NFR-PROD-11 / NFR-PROD-12 (P0):** prove an integrity-checked backup can be restored; record approved service-class RTO/RPO and an actual DR exercise. HLD/LLD §23's critical OLTP RPO ≤5 min/RTO ≤60 min and important-domain RPO ≤1 hour/RTO ≤4 hours are proposed baselines, not approved deployment targets until Operations signs them.
 - **NFR-PROD-14 (P0):** prove governed export/deletion through relevant vectors, caches, indexes, derived stores and model-adaptation artifacts; attach completion receipts or explicit residual exceptions.
 - **NFR-PROD-17 / NFR-PROD-18 (P0):** retain security, compatibility, performance, rollback and audit evidence for the exact candidate SHA.
-- **AS-132–AS-141:** do not mark a scenario PASS from a unit test or endpoint alone where the source scenario requires staging, tenant isolation, provider outage, failed rollout, peak-load throttling or a real restore. Record environment, report, outcome, owner and candidate SHA.
+- **AS-132–AS-141:** use the [scenario-by-scenario acceptance matrix](srs-v2.1-as-132-141-acceptance-matrix.md) for the exact contract tests and required closure evidence. Do not mark a scenario PASS from a unit test or endpoint alone where the source scenario requires staging, tenant isolation, provider outage, failed rollout, peak-load throttling or a real restore. Record environment, report, outcome, owner and candidate SHA.
 
 ## Release completion criteria
 
