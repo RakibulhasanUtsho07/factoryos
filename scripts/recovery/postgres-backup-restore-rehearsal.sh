@@ -271,6 +271,7 @@ printf 'Running the reviewed restore-verification SQL...\n'
 psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" > "$tmpdir/restore-smoke.log" 2>&1 \
   || { cat "$tmpdir/restore-smoke.log" >&2; die "reviewed restore verification failed"; }
 cat "$tmpdir/restore-smoke.log"
+restore_status="PASS"
 if grep -q 'RECOVERY_APPLICATION_SMOKE=PASS' "$tmpdir/restore-smoke.log"; then application_smoke_status="PASS"; fi
 if grep -q 'RECOVERY_TENANT_ISOLATION=PASS' "$tmpdir/restore-smoke.log"; then tenant_isolation_status="PASS"; fi
 if grep -q 'RECOVERY_AUDIT_CONTINUITY=PASS' "$tmpdir/restore-smoke.log"; then audit_continuity_status="PASS"; fi
