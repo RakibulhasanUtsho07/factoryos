@@ -61,6 +61,24 @@ describe('OtDeviceService', () => {
     service = new OtDeviceService(database as never, opcUaGateway as never, modbusGateway as never);
   });
 
+  it('rejects MQTT topics that are not registered on the device before writing telemetry', async () => {
+    database.query.mockResolvedValueOnce({ rows: [deviceRow({ protocol: 'MQTT', metadata: { mqtt: { allowed_topics: ['factory/line-1/telemetry'], qos: 1 } } })] });
+    await expect(service.ingestMqttMessage({ tenantId, factoryId, userId }, deviceId, {
+      topic: 'factory/other/telemetry',
+      message: { source_event_id: 'mqtt:event-1', event_type: 'TEMPERATURE', stream_key: 'LINE-1', observed_at: '2026-10-20T10:00:00Z', payload: { value: 1 } },
+    })).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects Modbus reads for a stream key outside the approved immutable register map', async () => {
+    database.query.mockResolvedValueOnce({ rows: [deviceRow({ protocol: 'MODBUS_TCP', metadata: { modbus_tcp: { unit_id: 1, register_map: [
+      { stream_key: 'LINE_TEMPERATURE', function_code: 4, address: 10, quantity: 1, data_type: 'UINT16' },
+    ] } })] });
+    await expect(service.readModbusRegisters({ tenantId, factoryId, userId }, deviceId, { stream_keys: ['UNREGISTERED'] }))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(modbusGateway.read).not.toHaveBeenCalled();
+  });
+
   it('registers a device with a secret-manager reference but never returns the secret reference', async () => {
     const request = registerInput();
     clientQuery
