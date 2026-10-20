@@ -1,8 +1,8 @@
 # SaaS Productization — WP10 Backend Slice
 
 **Requirements traceability:** SRS v2.1 FR-SAAS2-02 (P0), FR-SAAS2-06 (P1), FR-SAAS2-07 (P1), FR-SAAS2-08 (P1), FR-PROD-04 (P0), FR-PROD-05 (P0), and the tenant-wide portion of FR-PROD-15 (P0).  
-**Core control-plane migrations:** 045–053; precision hardening: 153; explicit subscription-enforcement migration: 154. Other WP10 infrastructure/governance slices are indexed by the migration manifest and are not limited to the core range.  
-**API bases:** /v2/saas/usage, /v2/saas/subscriptions, /v2/saas/sandboxes, /v2/saas/releases, /v2/saas/deployment-profiles, and /v2/saas/data-transfers.
+**Core control-plane migrations:** 045–053; retention/legal-hold/erasure prerequisites: 149–150; precision hardening: 153; explicit subscription-enforcement mode: 154; bounded retention execution and erasure receipts: 155. Other WP10 infrastructure/governance slices are indexed by the migration manifest and are not limited to the core range.  
+**API bases:** /v2/saas/usage, /v2/saas/subscriptions, /v2/saas/sandboxes, /v2/saas/releases, /v2/saas/deployment-profiles, and /v2/saas/data-transfers, /v2/saas/data-retention.
 
 ## Delivered in this slice
 
@@ -17,6 +17,9 @@
 - Versioned, tenant-scoped subscription plans use an explicitly configured tier_rank so the service can validate upgrade/downgrade direction without inventing plan prices. Deployment profile is recorded as control-plane metadata; billing remains external.
 - Subscription state is guarded by a database transition trigger and an immutable event ledger. A deferred constraint trigger prevents state/version updates from committing unless a matching lifecycle event is written in the same transaction. Terminal subscriptions cannot be reactivated; a new subscription can be started after termination/expiry.
 - Lifecycle operations use optimistic expected_version checks, tenant-row locking, idempotency request hashes, IAM authorization in both the controller and service, and best-effort audit records after the state/event transaction.
+- Versioned retention policies, tenant-scoped legal holds, independent export-preservation attestations, dual-control erasure approvals and immutable retention/erasure execution receipts use forced RLS, expected versions, idempotency keys and transactional audit evidence. Migration 155 expands the erasure state machine to APPROVED → EXECUTING → VERIFIED only when the exact successful receipt and manifest digest are committed with the data changes.
+- Retention DRY_RUN / EXECUTE operations validate the exact policy version, tenant RLS policy, relation scope, timestamp anchor, legal holds, dependency graph and per-run row bound before deletion. Unknown categories, missing adapters, protected classes, anonymization without a dedicated adapter, unreviewed DELETE triggers and dependent rows fail closed with BLOCKED evidence rather than an unrestricted table delete.
+- The PostgreSQL acceptance workflow now reapplies migration 155 for idempotency validation and executes saas-data-retention-contract.sql plus saas-tenant-isolation-matrix.sql. Tests are authored in the branch but still require a green run on the exact commit before automated acceptance can be claimed.
 
 ## API surface
 
@@ -35,6 +38,29 @@ All routes require a verified request identity and the corresponding IAM permiss
 | GET /alerts and POST /alerts/:alertId/acknowledgements | saas.alerts.read / saas.alerts.ack | List and acknowledge durable alerts |
 | POST /provider-costs/events and POST /provider-costs/reconciliations | saas.provider_costs.write / saas.provider_costs.reconcile | Record and reconcile provider-reported cost |
 
+## Tenant data governance, retention and erasure
+
+All routes use the authenticated request tenant/user, not tenant or actor IDs supplied in the request body.
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /v2/saas/data-retention/policies | saas.data_retention.write | Create an immutable, versioned retention policy for a category |
+| GET /v2/saas/data-retention/policies and /policies/history | saas.data_retention.read | Read the current policy version and prior versions |
+| POST /v2/saas/data-retention/legal-holds | saas.data_retention.write | Place category-scoped legal hold evidence |
+| POST /v2/saas/data-retention/legal-holds/:holdId/release | saas.data_retention.approve | Release a hold with distinct reviewer and reason |
+| POST /v2/saas/data-retention/exports/:transferId/preservation-attestation | saas.data_retention.approve | Bind independent preservation evidence to an exact completed export and digest |
+| POST /v2/saas/data-retention/erasure-requests | saas.data_retention.write | Request erasure only for categories present in a matching preserved export and not held |
+| POST /v2/saas/data-retention/erasure-requests/:requestId/review | saas.data_retention.approve | Approve/reject with optimistic version and requester/reviewer separation |
+| POST /v2/saas/data-retention/policies/:categoryCode/run | saas.data_retention.execute | Run DRY_RUN or bounded, guarded retention execution |
+| POST /v2/saas/data-retention/erasure-requests/:requestId/execute | saas.data_retention.execute | Execute an approved, eligible erasure request with separate executor |
+| GET /v2/saas/data-retention/runs | saas.data_retention.read | List tenant-scoped retention run receipts |
+| GET /v2/saas/data-retention/erasure-requests/:requestId/runs | saas.data_retention.read | List immutable erasure execution receipts |
+
+The database run ledger stores category/policy version, mode, cutoff, examined/eligible/deleted counts, a per-table manifest and digest. An erasure request is VERIFIED only when its exact tenant/request/version has a committed COMPLETED receipt with the same manifest digest. Requester, reviewer, and executor are three different actors. The executor rechecks the preservation attestation and active legal holds in its transaction and uses RLS plus explicit tenant predicates, table metadata checks, foreign-key dependency ordering and exact preflight-versus-delete counts.
+
+**Erasure is bounded, not synonymous with wiping every copy.** Only reviewed PostgreSQL table mappings in BUSINESS_DATA, EVIDENCE, AI_CONTEXT, and LEARNING_EVALUATION are eligible; tables with an unreviewed DELETE trigger, incomplete RLS/time anchor, unresolved foreign-key dependencies, protected disposition, or too-large scope are blocked. Immutable audit, approval, effective-dated and IAM access records are protected. Object storage, caches/search indexes, replicas, external providers and backups require separate adapters/configuration; successful SQL erasure receipts do not prove those copies are purged. Retention durations and legal basis must be approved by the relevant policy owner.
+
+See docs/tenant-data-governance-and-isolation.md for the control matrix and release gates.
 ## Subscription lifecycle API
 
 All endpoints require verified tenant/user context and the listed IAM permission.
