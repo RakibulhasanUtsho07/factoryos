@@ -23,6 +23,7 @@ import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportuni
 import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
 import {
   evaluateGrowthForecast,
+  GROWTH_FORECAST_EVALUATION_VERSION,
   GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
   summarizeGrowthForecastCalibration,
   type GrowthForecastCalibrationObservation,
@@ -1690,7 +1691,6 @@ export class GrowthService {
       const snapshot = {
         schema_version: 1,
         canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
-        method_version: metrics.method_version,
         model_version: modelVersion,
         metric_key: metricKey,
         unit,
