@@ -210,9 +210,6 @@ CREATE TRIGGER growth_forecast_evaluation_guard
   BEFORE INSERT OR UPDATE OR DELETE ON growth_forecast_evaluations
   FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_forecast_evaluation();
 
-INSERT INTO schema_migrations(version, checksum)
-VALUES ('148_growth_forecast_evaluation_calibration', NULL)
-ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('151_growth_forecast_evaluation_calibration', NULL)
