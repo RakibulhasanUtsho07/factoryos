@@ -587,6 +587,33 @@ describe(
       expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
+    it('atomically rechecks retry eligibility in PostgreSQL after the application-level due-time check', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({
+        status: 'PENDING',
+        next_retry_at: new Date(Date.now() - 1_000).toISOString(),
+      });
+      (service as any).requireTask = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(task);
+      (service as any).requireStep = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(database.query).toHaveBeenCalledTimes(1);
+      const sql = String(database.query.mock.calls[0]?.[0] ?? '');
+      expect(sql).toContain('next_retry_at = NULL');
+      expect(sql).toContain('(next_retry_at IS NULL OR next_retry_at <= NOW())');
+      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+    });
+
     it('stops a cancelled task before Tool Gateway execution', async () => {
       const task = taskRow({
         state: 'CANCELLED',
@@ -1112,6 +1139,14 @@ describe(
       expect(result.step.status).toBe(
         'SUCCEEDED',
       );
+    });
+
+    it('exposes the persisted retry eligibility timestamp on the public step record', () => {
+      const nextRetryAt = '2026-10-20T10:00:02.000Z';
+      const mapped = (service as any).mapStep(
+        stepRow({ next_retry_at: nextRetryAt }),
+      );
+      expect(mapped.nextRetryAt).toBe(nextRetryAt);
     });
 
     it('uses deterministic exponential backoff with a hard maximum delay', () => {
