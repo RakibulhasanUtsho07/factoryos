@@ -93,6 +93,7 @@ emit_evidence() {
   export FACTORYOS_DR_TENANT_ISOLATION_STATUS="$tenant_isolation_status"
   export FACTORYOS_DR_AUDIT_CONTINUITY_STATUS="$audit_continuity_status"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST="$candidate_manifest"
+  export FACTORYOS_DR_MIGRATION_MANIFEST_MODE="$manifest_mode"
   export FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256="$candidate_manifest_sha256"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT="$candidate_migration_count"
   export FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS="$candidate_migration_status"
