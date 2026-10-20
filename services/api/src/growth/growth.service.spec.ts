@@ -6,6 +6,7 @@ import { DatabaseService } from '../database/database.service';
 import { CreateGrowthOpportunityDto } from './dto/create-growth-opportunity.dto';
 import { CreateGrowthScenarioDto } from './dto/create-growth-scenario.dto';
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
+import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
 import { GrowthService } from './growth.service';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -536,5 +537,105 @@ describe('GrowthService', () => {
     expect(result.scenarios.every(s => s.impact_rank === null)).toBe(true);
   });
 
+
+  it('fails closed when the forecast source is not attached to the opportunity', async () => {
+    client.query.mockResolvedValueOnce({ rows: [] });
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-01T00:00:00.000Z',
+      forecast_source_ref: 'unregistered-forecast-report', forecast_value: 100,
+      outcome_id: OPPORTUNITY_ID, idempotency_key: 'forecast-eval-key-0001',
+    };
+
+    await expect(service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(client.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists deterministic point errors against the exact observed KPI and emits audit/outbox evidence', async () => {
+    const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
+    const idempotencyKey = 'forecast-eval-key-0002';
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
+      }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        id: 'forecast-evaluation-id', model_version: 'ops-v1', metric_key: 'daily_output',
+        unit: 'pieces', forecast_origin_at: '2026-10-01T00:00:00.000Z',
+        forecast_source_ref: 'forecast-report:2026-10', outcome_id: outcomeId,
+        forecast_value: '100.00000000', actual_value: '90.00000000',
+        signed_error: '10.00000000', absolute_error: '10.00000000', squared_error: '100.00000000',
+        absolute_percentage_error: '11.11111111', symmetric_percentage_error: '10.52631579',
+        lower_bound: null, upper_bound: null, nominal_coverage_pct: null, interval_hit: null,
+        interval_width: null, interval_semantics: 'NONE',
+        method_version: 'factoryos.growth.forecast-evaluation.v1',
+        input_hash: 'a'.repeat(64), idempotency_key: idempotencyKey,
+        evaluated_at: '2026-10-06T00:00:00.000Z',
+      }] });
+
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-01T00:00:00.000Z',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: outcomeId, idempotency_key: idempotencyKey,
+    };
+    const result = await service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+
+    expect(result.signed_error).toBe('10.00000000');
+    expect(result.replayed).toBe(false);
+    expect(client.query.mock.calls[3][0]).toContain('ON CONFLICT DO NOTHING');
+    expect(client.query.mock.calls[4][0]).toContain('INSERT INTO outbox_events');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'GROWTH_FORECAST_EVALUATED',
+    }));
+  });
+
+  it('rejects forecast evaluation when its unit differs from the observed KPI unit', async () => {
+    const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
+      }] });
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'boxes',
+      forecast_origin_at: '2026-10-01T00:00:00.000Z',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: outcomeId, idempotency_key: 'forecast-eval-key-0003',
+    };
+
+    await expect(service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires the forecast origin to precede the realized outcome timestamp', async () => {
+    const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
+    client.query
+      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
+      }] });
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-06T00:00:00.000Z',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: outcomeId, idempotency_key: 'forecast-eval-key-0004',
+    };
+
+    await expect(service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(client.query).toHaveBeenCalledTimes(2);
+  });
 
 });
