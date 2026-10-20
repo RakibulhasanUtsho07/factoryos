@@ -22,7 +22,7 @@ BEGIN
   IF fixture_tenants <> 2 OR fixture_factories <> 2 THEN
     RAISE EXCEPTION 'application fixture data was not fully restored (tenants %, factories %)', fixture_tenants, fixture_factories;
   END IF;
-  RAISE NOTICE 'RECOVERY_APPLICATION_SMOKE=PASS';
+  RAISE NOTICE 'RECOVERY_SCHEMA_SMOKE=PASS';
 END $$;
 
 DO $$
