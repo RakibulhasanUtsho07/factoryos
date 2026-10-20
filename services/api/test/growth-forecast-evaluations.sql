@@ -27,6 +27,13 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+     WHERE version = '151_growth_forecast_evaluation_calibration'
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_FORECAST_EVALUATION_MIGRATION_NOT_REGISTERED';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'uq_growth_forecast_evaluation_idempotency'
        AND conrelid = 'public.growth_forecast_evaluations'::regclass
