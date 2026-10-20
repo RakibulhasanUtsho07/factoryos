@@ -1691,6 +1691,7 @@ export class GrowthService {
         forecast_source_ref: sourceRef,
         outcome_id: actualRow.id,
         outcome_observed_at: observedAt.toISOString(),
+        recorded_by: userId,
         ...metrics,
       };
       const requestHash = createHash('sha256')
