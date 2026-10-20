@@ -99,8 +99,8 @@ const priorities = requirementRows.reduce((counts, row) => {
 }, {});
 assert.deepEqual(priorities, { P0: 259, P1: 546, P2: 57, review: 37 }, 'Priority totals differ from the source matrix; reconcile before changing expected counts');
 assert.match(matrix, /Full-PDF distinct textual FR\/NFR ID keys:\*\* 899/);
-assert.match(matrix, /P0=259, P1=546, P2=57, priority requiring manual review=37/);
-assert.match(matrix, /51 arithmetic delta is not a missing-implementation count/i);
+assert.match(matrix, /P0=259, P1=546, P2=57, source-row\/priority review=37/);
+assert.ok(matrix.includes('not a confirmed current v2.1 active requirement tally'), 'Matrix must not treat the full-PDF ID index as the current active scope');
 
 for (let n = 132; n <= 141; n += 1) {
   const id = 'AS-' + n;
