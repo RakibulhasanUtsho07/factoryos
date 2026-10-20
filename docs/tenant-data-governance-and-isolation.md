@@ -2,7 +2,7 @@
 
 **Status:** implementation/acceptance matrix; policy owners must approve durations before production enforcement.
 **Scope:** tenant export and migration, deletion/erasure requests, retention controls, audit coverage, and cross-tenant isolation.
-**Related implementation:** `saas-tenant-data-transfer.service.ts`, `saas-tenant-data-transfer.worker.ts`, `saas-tenant-postgres-dataset-source.ts`, `saas-tenant-postgres-migration-target.adapter.ts`, `audit/audit.service.ts`, migrations 045–154.
+**Related implementation:** `saas-tenant-data-transfer.service.ts`, `saas-tenant-data-transfer.worker.ts`, `saas-tenant-postgres-dataset-source.ts`, `saas-tenant-postgres-migration-target.adapter.ts`, `audit/audit.service.ts`, migrations 045–155, especially 149–155.
 
 ## Security invariants
 
@@ -16,7 +16,7 @@
 
 ## Retention policy registry
 
-Retention periods are intentionally not hard-coded until legal/compliance owners approve the duration and jurisdiction. Every production policy needs a stable policy key/version, data class, scope, retention duration, trigger (creation/event/termination), legal basis, legal-hold behavior, action (delete/anonymize/archive), approval owner, and testable evidence of execution. Policy changes are versioned; a new version does not retroactively rewrite completed retention runs.
+Retention periods are not hard-coded: legal/compliance owners must approve the duration and jurisdiction before production policy is configured. Each version records the category, duration, disposition, legal basis, reason, actor and idempotency fingerprint. A run uses an expected policy version and produces an immutable, tenant-scoped manifest/count/digest receipt; dry-run and execute modes are explicit. A policy change never rewrites completed runs. Destructive execution requires a dedicated permission and a different actor from the policy maker.
 
 Minimum classes to govern:
 - Operational/business records and evidence.
@@ -27,7 +27,7 @@ Minimum classes to govern:
 - Backups, snapshots, replicas and disaster-recovery copies.
 - User-linked personal data and derived/cache/search data.
 
-Until a policy is approved, the service must report the class as **retention policy unresolved** and must not claim automated deletion compliance. Temporary export artifacts should have a short, explicitly configured expiry, encrypted storage, least-privilege access, and verifiable cleanup; the expiry duration must be approved in deployment configuration.
+Until a policy is approved, no retention run can execute. The run engine fails closed for categories without a reviewed table mapping, without a timestamp anchor, without forced RLS/tenant policy, with a legal hold, with recent dependent rows, or above its 100,000-row synchronous bound. `ANONYMIZE` is blocked until a field-level anonymization adapter is reviewed. The current executor is for reviewed PostgreSQL tables only; object-store, cache, replica and backup expiry still require deployment-specific adapters and retention settings.
 
 ## Export acceptance contract
 
@@ -44,17 +44,12 @@ The current allowlist is a reviewed subset, not proof of every tenant-owned tabl
 
 ## Deletion/erasure lifecycle
 
-Required state machine for a production erasure workflow:
-`REQUESTED → UNDER_REVIEW → APPROVED → EXECUTING → VERIFIED`, with terminal `REJECTED` or `BLOCKED_LEGAL_HOLD` states. Every transition needs expected version, actor, reason, idempotency key and audit record. Execution must:
-1. resolve and lock the exact tenant; verify permission and separation of duties;
-2. evaluate legal holds, retention obligations, billing/subscription and data-transfer dependencies;
-3. enumerate the tenant's reviewed data inventory and classify each item as erase, anonymize, retain, or external-adapter pending;
-4. delete/anonymize in bounded, retry-safe batches with progress/checkpoints and no cross-tenant predicates;
-5. purge derived indexes, object-store exports, caches and eligible replicas through registered adapters;
-6. report backup expiry separately; deletion from a live database does not prove immediate removal from immutable backups;
-7. verify residual counts and emit a signed/audited completion manifest with explicit exclusions.
+Implemented database lifecycle:
+`REQUESTED → APPROVED|REJECTED`; an approved request can enter `EXECUTING → VERIFIED` only inside the same database transaction that deletes the reviewed table scope and inserts a matching immutable execution receipt. Review requires a different actor than the requester; execution requires a third actor distinct from requester and reviewer. The executor requires the independent preservation attestation, rechecks active legal holds, checks the expected row version, uses tenant-scoped SQL plus forced RLS/tenant policies, builds a foreign-key dependency order, refuses external or recent dependent rows, compares preflight counts with deleted counts, hashes a manifest and writes audit evidence in the same transaction. Failed destructive transactions roll back and are represented by an immutable failed-run receipt where the database is available; retry requires a new idempotency key. A repeated request key never repeats a successful deletion.
 
-**Important current boundary:** the tenant export/migration backend does not by itself prove that a complete tenant-erasure workflow, object-store purge, external provider purge, or backup expiry is implemented. Do not use migration or export endpoints as deletion endpoints. A production deletion API must be separately reviewed and tested before claiming FR-PROD-15 erasure acceptance.
+The execution adapter is deliberately bounded and **not a claim of whole-tenant erasure**. It accepts only the reviewed categories `BUSINESS_DATA`, `EVIDENCE`, `AI_CONTEXT`, and `LEARNING_EVALUATION` where all mapped tables pass the isolation/dependency checks and the synchronous run is at most 100,000 rows. Audit logs, approvals, effective-dated master data and IAM access evidence are retained as protected classes. The export allowlist does not yet prove coverage of every tenant-owned relation.
+
+Object-store exports, derived indexes, caches, replicas, external providers and immutable backups are not purged by this PostgreSQL adapter. The export bundle must be treated as a sensitive recovery artifact and its expiry/secure deletion must be implemented and configured in the bundle-store adapter. A verified receipt covers only the named table/category manifest and must not be represented as proof that every external copy or every tenant-owned table has been erased.
 
 ## Audit coverage matrix
 
@@ -62,8 +57,8 @@ Required state machine for a production erasure workflow:
 |---|---|---|---|
 | Export request, attest, validate, cancel | tenant, actor, transfer ID/version, category manifest digest, reason, outcome | SaaS data-transfer service and audit service | Exercise success, denial, replay and partial failure |
 | Tenant migration/import | source/target tenant IDs, transfer ID, target receipt/digest, excluded categories | exact-schema target adapter and transfer receipt | Prove no existing rows overwritten; target isolation tested |
-| Retention policy changes/runs | policy key/version, scope, due counts, deleted/anonymized counts, errors, legal holds | policy registry/run evidence must be confirmed before acceptance | Pending if no executor and durable run ledger |
-| Erasure request/approval/execution | request/version, requester/approver, legal hold, scope manifest, residual report | no claim made by export implementation | Separate approved erasure lifecycle required |
+| Retention policy changes/runs | policy category/version, actor, mode, cutoff, examined/eligible/affected counts, legal holds, table manifest digest and outcome | `saas-tenant-retention.service.ts`; `saas-tenant-governance-execution.service.ts`; migration 155; retention run ledger | Unit/contract tests committed; policy durations and external-store expiry still need owner approval |
+| Erasure request/approval/execution | request/version, requester/reviewer/executor, legal hold, preserved export digest, deleted-row counts, manifest digest and immutable outcome receipt | `saas-tenant-retention.service.ts`; `saas-tenant-governance-execution.service.ts`; migration 155; erasure execution ledger | Bounded database scope is implemented; whole-tenant inventory plus object-store/backup purge is still partial |
 | IAM/permission and tenant-scope denial | actor, requested tenant/resource, decision, correlation ID | PermissionGuard/IAM and AuditService | Verify denial events are emitted without leaking resource data |
 | Usage, budget, subscription | actor/source event, idempotency, policy decision, state transition | SaaS usage/subscription ledgers and audit | Confirm all mutation paths and transaction-failure behavior |
 | AI tool/execution/compensation | tool/action IDs, authorization, claim, outcome, compensation receipt | AI execution traceability docs and event ledgers | Verify all paths emit correlated audit events |
@@ -90,8 +85,8 @@ Required state machine for a production erasure workflow:
 - Add schema-wide inventory query/check so every tenant-owned table is either assigned a documented category or explicitly excluded with rationale.
 - Add RLS + forced-RLS verification for every tenant-owned table and policies that bind the active tenant context.
 - Add two-tenant PostgreSQL tests for read/write/delete, joins, foreign keys, RLS bypass assumptions, export, migration and audit.
-- Add retention policy and execution ledger only after approved durations/legal holds are supplied; test dry-run, partial failure, retries, and immutable audit.
-- Add separately authorized erasure state machine and external-store adapters before advertising tenant deletion as supported.
+- Approve retention durations/legal basis before execution; verify dry-run, held data, recent foreign-key dependents, partial failure, idempotent retry and immutable receipts.
+- Extend the reviewed table/category inventory to all tenant-owned relations and implement/configure object-store, index/cache, replica and backup expiry adapters before advertising whole-tenant deletion as supported.
 - Run API build/lint/unit tests and PostgreSQL CI on the exact commit; this document alone is not runtime proof.
 
 ## Requirement traceability
