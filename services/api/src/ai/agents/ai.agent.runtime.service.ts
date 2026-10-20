@@ -1874,6 +1874,7 @@ export class AiAgentRuntimeService {
     const retryDelaySeconds = this.retryDelaySeconds(newRetryCount);
     const now = Date.now();
     const canRetry =
+      this.isRetryableFailure(error) &&
       step.retry_count < step.retry_limit &&
       task.retry_count < task.max_retries &&
       !task.cancel_requested_at &&
@@ -2001,15 +2002,28 @@ export class AiAgentRuntimeService {
       }
     }
 
+    const terminalFailureCode = this.isRetryableFailure(error)
+      ? 'AI_AGENT_RETRY_LIMIT_EXCEEDED'
+      : 'AI_AGENT_NON_RETRYABLE_FAILURE';
+
     return this.failTask(
       tenantId,
       factoryId,
       actorUserId,
       task.id,
-      'AI_AGENT_RETRY_LIMIT_EXCEEDED',
+      terminalFailureCode,
       this.errorMessageFromRecord(error),
       step.id,
       executionEvidence,
+    );
+  }
+
+  private isRetryableFailure(error: Record<string, unknown>): boolean {
+    // Retry only when the registered executor explicitly guarantees that no
+    // side effect was committed. Unknown/permanent/ambiguous outcomes fail closed.
+    return (
+      error.retryable === true &&
+      error.sideEffectStatus === 'NOT_COMMITTED'
     );
   }
 
