@@ -4,6 +4,7 @@ declare global {
   namespace Express {
     interface Request {
       factoryos?: RequestContext;
+      traceContext?: import('./request-context').DistributedTraceContext;
     }
   }
 }

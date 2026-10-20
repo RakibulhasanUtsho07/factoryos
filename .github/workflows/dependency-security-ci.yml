@@ -8,14 +8,24 @@ on:
       - 'apps/**/package.json'
       - 'services/**/package.json'
       - '.github/workflows/dependency-security-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/api-postgres-ci.yml'
+      - 'scripts/recovery/**'
+      - 'scripts/performance/**'
+      - 'services/api/test/**'
   push:
-    branches: [main, dev]
+    branches: [main, dev, rakibul-hasan]
     paths:
       - 'package.json'
       - 'package-lock.json'
       - 'apps/**/package.json'
       - 'services/**/package.json'
       - '.github/workflows/dependency-security-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/api-postgres-ci.yml'
+      - 'scripts/recovery/**'
+      - 'scripts/performance/**'
+      - 'services/api/test/**'
 
 permissions:
   contents: read
@@ -40,6 +50,18 @@ jobs:
 
       - name: Install locked workspace dependencies
         run: npm ci
+
+      - name: Validate security-sensitive recovery and load harness syntax
+        run: |
+          bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+          node --check scripts/performance/api-load-smoke.mjs
+          node --check scripts/performance/api-load-smoke.test.mjs
+
+      - name: Exercise bounded load and backup/restore security controls
+        working-directory: services/api
+        run: |
+          npm run test:load-smoke:contract
+          npm run test:recovery:contract
 
       - name: Audit production dependencies
         run: npm audit --omit=dev

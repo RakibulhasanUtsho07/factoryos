@@ -35,6 +35,7 @@ import { ShouldCostModule } from './should-cost/should-cost.module';
 import { FinanceModule } from './finance/finance.module';
 import { WorkforceModule } from './workforce/workforce.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { OtDeviceModule } from './ot/ot-device.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
@@ -43,6 +44,8 @@ import { AiModule } from './ai/ai.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
 import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
+import { HttpMetricsMiddleware } from './observability/http-metrics.middleware';
+import { ObservabilityModule } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -128,6 +131,9 @@ import { TraceIdMiddleware } from './common/middleware/trace-id.middleware';
 
     OutboxModule,
     IntegrationsModule,
+
+    OtDeviceModule,
+    ObservabilityModule,
   ],
 
   controllers: [
@@ -149,6 +155,7 @@ export class AppModule
         RequestIdMiddleware,
         TraceIdMiddleware,
         TenantContextMiddleware,
+        HttpMetricsMiddleware,
       )
       .forRoutes({
         path: '*path',

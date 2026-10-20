@@ -14,9 +14,23 @@ import { IamService } from '../iam/iam.service';
 import { CreateSaasSubscriptionPlanDto, SaasDeploymentProfile, SaasSubscriptionPlanStatus } from './dto/create-saas-subscription-plan.dto';
 import { StartSaasTrialDto } from './dto/start-saas-trial.dto';
 import { SaasSubscriptionTransitionAction, TransitionSaasSubscriptionDto } from './dto/transition-saas-subscription.dto';
+import { SaasEntitlementEnforcementMode, SetSaasEntitlementEnforcementModeDto } from './dto/set-saas-entitlement-enforcement-mode.dto';
 
 type SubscriptionStatus = 'TRIAL' | 'ACTIVE' | 'SUSPENDED' | 'TERMINATED' | 'EXPIRED';
 type SubscriptionEventType = 'TRIAL_STARTED' | 'ACTIVATED' | 'SUSPENDED' | 'RESUMED' | 'UPGRADED' | 'DOWNGRADED' | 'RENEWED' | 'TERMINATED' | 'EXPIRED';
+
+type EntitlementModeRow = QueryResultRow & {
+  id: string;
+  tenant_id: string;
+  version: number | string;
+  mode: SaasEntitlementEnforcementMode;
+  reason: string;
+  effective_at: string;
+  idempotency_key: string;
+  request_hash: string;
+  changed_by: string;
+  created_at: string;
+};
 
 type PlanRow = QueryResultRow & {
   id: string; tenant_id: string; plan_code: string; version: number | string; display_name: string;
@@ -57,49 +71,265 @@ export class SaasSubscriptionService {
    * window are enforced on every tool execution (no stale cache).
    */
   async assertAiCapabilityAvailable(tenantId: string): Promise<void> {
+    return this.assertCapabilityAvailable(tenantId, 'ai.runtime');
+  }
+
+  /**
+   * Resolve a plan feature from its canonical dotted key (for example,
+   * "ai.runtime" or "research.ingestion"). Subscription status and feature
+   * entitlement are separate gates: being paid/active is not itself a grant
+   * for every capability.
+   *
+   * A listed capability must be exactly true. During legacy compatibility,
+   * an absent key preserves established behavior; after explicit subscription
+   * enforcement is enabled, an absent key is denied (fail closed).
+   */
+  async assertCapabilityAvailable(tenantId: string, capabilityCode: string): Promise<void> {
     this.assertUuid(tenantId, 'tenantId');
+    if (
+      typeof capabilityCode !== 'string' ||
+      !/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/.test(capabilityCode) ||
+      capabilityCode.length > 120
+    ) {
+      throw new BadRequestException('capabilityCode must be a canonical lower-case capability key');
+    }
+
     const result = await this.database.query<{
-      status: SubscriptionStatus;
+      enforcement_mode: SaasEntitlementEnforcementMode;
+      status: SubscriptionStatus | null;
       trial_ends_at: string | null;
       current_period_start: string | null;
       current_period_end: string | null;
+      plan_capabilities: Record<string, unknown> | null;
     }>(
-      `SELECT status, trial_ends_at::text AS trial_ends_at,
-              current_period_start::text AS current_period_start,
-              current_period_end::text AS current_period_end
-       FROM saas_subscriptions
-       WHERE tenant_id = $1
-       ORDER BY created_at DESC, id DESC
-       LIMIT 1`,
+      `SELECT
+         COALESCE((
+           SELECT m.mode
+           FROM saas_entitlement_enforcement_modes m
+           WHERE m.tenant_id = scope.tenant_id
+           ORDER BY m.version DESC
+           LIMIT 1
+         ), 'LEGACY_COMPATIBLE') AS enforcement_mode,
+         subscription.status,
+         subscription.trial_ends_at::text AS trial_ends_at,
+         subscription.current_period_start::text AS current_period_start,
+         subscription.current_period_end::text AS current_period_end,
+         subscription.capabilities AS plan_capabilities
+       FROM (SELECT $1::uuid AS tenant_id) scope
+       LEFT JOIN LATERAL (
+         SELECT s.status, s.trial_ends_at, s.current_period_start, s.current_period_end, p.capabilities
+         FROM saas_subscriptions s
+         JOIN saas_subscription_plans p
+           ON p.tenant_id = s.tenant_id
+          AND p.plan_code = s.plan_code
+          AND p.version = s.plan_version
+         WHERE s.tenant_id = scope.tenant_id
+         ORDER BY s.created_at DESC, s.id DESC
+         LIMIT 1
+       ) subscription ON TRUE`,
       [tenantId],
       { tenantId },
     );
 
     const subscription = result.rows[0];
-    if (!subscription) return; // Legacy compatibility; see method contract above.
-
-    const now = Date.now();
-    if (
-      subscription.status === 'TRIAL' &&
-      subscription.trial_ends_at !== null &&
-      new Date(subscription.trial_ends_at).getTime() > now
-    ) {
+    // The scoped SELECT has a seed row and must always return a policy decision.
+    // A query/adapter failure is not evidence of legacy compatibility.
+    if (!subscription) {
+      throw new ForbiddenException('Unable to resolve tenant subscription entitlement; capability access is disabled');
+    }
+    const enforcementMode = subscription.enforcement_mode ?? SaasEntitlementEnforcementMode.LEGACY_COMPATIBLE;
+    if (!subscription.status) {
+      if (enforcementMode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED) {
+        throw new ForbiddenException(
+          'This tenant requires an eligible subscription before capability access',
+        );
+      }
       return;
     }
 
-    if (
+    const now = Date.now();
+    const trialEligible =
+      subscription.status === 'TRIAL' &&
+      subscription.trial_ends_at !== null &&
+      new Date(subscription.trial_ends_at).getTime() > now;
+    const activeEligible =
       subscription.status === 'ACTIVE' &&
       subscription.current_period_start !== null &&
       subscription.current_period_end !== null &&
       new Date(subscription.current_period_start).getTime() <= now &&
-      new Date(subscription.current_period_end).getTime() > now
-    ) {
-      return;
+      new Date(subscription.current_period_end).getTime() > now;
+    if (!trialEligible && !activeEligible) {
+      throw new ForbiddenException(
+        'Tenant subscription is suspended, expired, or outside its effective period; capability access is disabled',
+      );
     }
 
-    throw new ForbiddenException(
-      'Tenant subscription is suspended, expired, or outside its effective period; premium AI execution is disabled',
+    const capabilities: Record<string, unknown> = subscription.plan_capabilities ?? {};
+    const capabilityIsListed = Object.prototype.hasOwnProperty.call(capabilities, capabilityCode);
+    if (capabilityIsListed && capabilities[capabilityCode] !== true) {
+      throw new ForbiddenException('The current subscription plan does not entitle capability ' + capabilityCode);
+    }
+    if (
+      enforcementMode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED &&
+      (!capabilityIsListed || capabilities[capabilityCode] !== true)
+    ) {
+      throw new ForbiddenException('The current subscription plan does not explicitly grant capability ' + capabilityCode);
+    }
+  }
+
+  async getEntitlementEnforcementMode(tenantId: string, actorUserId: string) {
+    this.scope(tenantId, actorUserId);
+    await this.authorize(actorUserId, tenantId, 'saas.entitlement_modes.read');
+    const result = await this.database.query<EntitlementModeRow>(
+      `SELECT id::text AS id, tenant_id::text AS tenant_id, version, mode, reason,
+              effective_at::text AS effective_at, idempotency_key, request_hash,
+              changed_by::text AS changed_by, created_at::text AS created_at
+       FROM saas_entitlement_enforcement_modes
+       WHERE tenant_id = $1
+       ORDER BY version DESC
+       LIMIT 1`,
+      [tenantId],
+      { tenantId, userId: actorUserId },
     );
+    const row = result.rows[0];
+    if (!row) {
+      return {
+        tenantId,
+        mode: SaasEntitlementEnforcementMode.LEGACY_COMPATIBLE,
+        version: 0,
+        reason: null,
+        effectiveAt: null,
+        changedBy: null,
+        createdAt: null,
+        source: 'IMPLICIT_LEGACY_DEFAULT',
+        requiresSubscription: false,
+      };
+    }
+    return this.mapEntitlementMode(row);
+  }
+
+  async setEntitlementEnforcementMode(
+    tenantId: string,
+    actorUserId: string,
+    input: SetSaasEntitlementEnforcementModeDto,
+  ) {
+    this.scope(tenantId, actorUserId);
+    await this.authorize(actorUserId, tenantId, 'saas.entitlement_modes.write');
+
+    const mode = input?.mode;
+    if (!Object.values(SaasEntitlementEnforcementMode).includes(mode)) {
+      throw new BadRequestException('Entitlement enforcement mode is invalid');
+    }
+    const expectedVersion = input?.expected_version;
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 0 || expectedVersion > 1_000_000) {
+      throw new BadRequestException('expected_version must be an integer from 0 to 1000000');
+    }
+    const reason = this.requiredString(input?.reason, 'reason', 2000);
+    const idempotencyKey = this.requiredIdempotencyKey(input?.idempotency_key);
+    const requestHash = this.hash({
+      operation: 'SET_ENTITLEMENT_ENFORCEMENT_MODE',
+      tenantId,
+      mode,
+      expectedVersion,
+      reason,
+    });
+
+    const outcome = await this.database.transaction(
+      { tenantId, userId: actorUserId },
+      async (client) => {
+        // Serializes concurrent first-write migrations even when no mode row exists yet.
+        await this.lockTenant(client, tenantId);
+        const replay = await client.query<EntitlementModeRow>(
+          `SELECT id::text AS id, tenant_id::text AS tenant_id, version, mode, reason,
+                  effective_at::text AS effective_at, idempotency_key, request_hash,
+                  changed_by::text AS changed_by, created_at::text AS created_at
+           FROM saas_entitlement_enforcement_modes
+           WHERE tenant_id = $1 AND idempotency_key = $2
+           LIMIT 1`,
+          [tenantId, idempotencyKey],
+        );
+        if (replay.rows[0]) {
+          if (replay.rows[0].request_hash !== requestHash) {
+            throw new ConflictException('Idempotency key was already used for a different entitlement migration');
+          }
+          return { row: replay.rows[0], replayed: true };
+        }
+
+        const latest = await client.query<EntitlementModeRow>(
+          `SELECT id::text AS id, tenant_id::text AS tenant_id, version, mode, reason,
+                  effective_at::text AS effective_at, idempotency_key, request_hash,
+                  changed_by::text AS changed_by, created_at::text AS created_at
+           FROM saas_entitlement_enforcement_modes
+           WHERE tenant_id = $1
+           ORDER BY version DESC
+           LIMIT 1
+           FOR UPDATE`,
+          [tenantId],
+        );
+        const current = latest.rows[0] ?? null;
+        const currentVersion = current ? Number(current.version) : 0;
+        const currentMode = current?.mode ?? SaasEntitlementEnforcementMode.LEGACY_COMPATIBLE;
+        if (currentVersion !== expectedVersion) {
+          throw new ConflictException('Entitlement mode version is stale; reload before migrating the tenant');
+        }
+        if (currentMode === mode && currentVersion > 0) {
+          throw new ConflictException('Tenant already uses the requested entitlement enforcement mode');
+        }
+        if (
+          currentMode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED &&
+          mode === SaasEntitlementEnforcementMode.LEGACY_COMPATIBLE
+        ) {
+          throw new ConflictException('Subscription-required enforcement cannot be downgraded to legacy compatibility');
+        }
+        if (currentVersion >= 1_000_000) {
+          throw new ConflictException('Entitlement mode version limit has been reached');
+        }
+
+        if (mode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED) {
+          const eligible = await client.query<{ id: string }>(
+            `SELECT id::text AS id
+             FROM saas_subscriptions
+             WHERE tenant_id = $1
+               AND (
+                 (status = 'TRIAL' AND trial_ends_at > clock_timestamp())
+                 OR
+                 (status = 'ACTIVE'
+                  AND current_period_start <= clock_timestamp()
+                  AND current_period_end > clock_timestamp())
+               )
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+             FOR UPDATE`,
+            [tenantId],
+          );
+          if (!eligible.rows[0]) {
+            throw new ConflictException('Migrate this tenant only after it has an active subscription or an unexpired trial');
+          }
+        }
+
+        const inserted = await client.query<EntitlementModeRow>(
+          `INSERT INTO saas_entitlement_enforcement_modes
+             (tenant_id, version, mode, reason, idempotency_key, request_hash, changed_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id::text AS id, tenant_id::text AS tenant_id, version, mode, reason,
+                     effective_at::text AS effective_at, idempotency_key, request_hash,
+                     changed_by::text AS changed_by, created_at::text AS created_at`,
+          [tenantId, currentVersion + 1, mode, reason, idempotencyKey, requestHash, actorUserId],
+        );
+        if (!inserted.rows[0]) throw new Error('SAAS_ENTITLEMENT_MODE_INSERT_FAILED');
+        return { row: inserted.rows[0], replayed: false };
+      },
+    );
+
+    if (!outcome.replayed) {
+      await this.audit(actorUserId, tenantId, 'ENTITLEMENT_ENFORCEMENT_MODE_CHANGED', outcome.row.id, {
+        mode: outcome.row.mode,
+        version: Number(outcome.row.version),
+        reason,
+        requestHash,
+      });
+    }
+    return { ...this.mapEntitlementMode(outcome.row), replayed: outcome.replayed };
   }
 
   async createPlan(tenantId: string, actorUserId: string, input: CreateSaasSubscriptionPlanDto) {
@@ -431,6 +661,21 @@ export class SaasSubscriptionService {
       subscription: this.mapSubscription(outcome.subscription),
       event: this.mapEvent(outcome.event),
       replayed: outcome.replayed,
+    };
+  }
+
+  private mapEntitlementMode(row: EntitlementModeRow) {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      mode: row.mode,
+      version: Number(row.version),
+      reason: row.reason,
+      effectiveAt: row.effective_at,
+      changedBy: row.changed_by,
+      createdAt: row.created_at,
+      source: 'EXPLICIT',
+      requiresSubscription: row.mode === SaasEntitlementEnforcementMode.SUBSCRIPTION_REQUIRED,
     };
   }
 

@@ -10,6 +10,27 @@ import {
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
 
+const SENSITIVE_AUDIT_FIELD =
+  /(?:password|secret|credential|authorization|cookie|privatekey|apikey|connectionstring|encryptionkey|bearer|^dsn$)/;
+
+function sanitizeAuditPayload(value: unknown, depth = 0): unknown {
+  if (depth > 12) return '[REDACTED:MAX_DEPTH]';
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((item) => sanitizeAuditPayload(item, depth + 1));
+  if (value === null || typeof value !== 'object') return value;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const isTokenSecret = normalizedKey.includes('token')
+      && !/(count|input|output|total|usage|budget|meter)/.test(normalizedKey);
+    result[key] = SENSITIVE_AUDIT_FIELD.test(normalizedKey) || isTokenSecret
+      ? '[REDACTED]'
+      : sanitizeAuditPayload(nested, depth + 1);
+  }
+  return result;
+}
+
 export interface AuditEventInput {
   tenantId: string;
 
@@ -103,8 +124,7 @@ export class AuditService {
           input.dataClass ??
             'INTERNAL',
           JSON.stringify(
-            input.payload ??
-              {},
+            sanitizeAuditPayload(input.payload ?? {}),
           ),
         ],
         {
@@ -149,7 +169,7 @@ export class AuditService {
         input.tenantId, input.factoryId ?? null, input.actorUserId ?? null,
         input.eventType, input.action, input.resourceType ?? null,
         input.resourceId ?? null, input.correlationId ?? null, input.requestId ?? null,
-        input.dataClass ?? 'INTERNAL', JSON.stringify(input.payload ?? {}),
+        input.dataClass ?? 'INTERNAL', JSON.stringify(sanitizeAuditPayload(input.payload ?? {})),
       ],
     );
 

@@ -114,6 +114,7 @@ interface AgentTaskStepRow extends QueryResultRow {
   depends_on: unknown[];
   status: AiAgentTaskStep['status'];
   retry_count: number;
+  next_retry_at: string | null;
   authorization_attempt: number;
   action_intent_id: string | null;
   approval_id: string | null;
@@ -630,6 +631,17 @@ export class AiAgentRuntimeService {
       };
     }
 
+    // A scheduled retry is not executable before its persisted eligibility time.
+    // Treat an invalid persisted timestamp as blocked rather than guessing.
+    if (step.status === 'PENDING' && step.next_retry_at) {
+      const retryEligibleAt = Date.parse(step.next_retry_at);
+      if (!Number.isFinite(retryEligibleAt) || retryEligibleAt > Date.now()) {
+        throw new ConflictException(
+          'AI agent step retry is not yet eligible; wait until nextRetryAt',
+        );
+      }
+    }
+
     this.assertExecutable(task, step);
     await this.assertDependencies(tenantId, factoryId, task, step);
 
@@ -665,6 +677,7 @@ export class AiAgentRuntimeService {
       UPDATE agent_task_steps
       SET
         authorization_attempt = $4,
+        next_retry_at = NULL,
         version = version + 1
       WHERE
         id = $1
@@ -672,6 +685,7 @@ export class AiAgentRuntimeService {
         AND factory_id = $3
         AND status = $5
         AND version = $6
+        AND (next_retry_at IS NULL OR next_retry_at <= NOW())
       `,
       [
         step.id,
@@ -1856,21 +1870,26 @@ export class AiAgentRuntimeService {
     executionEvidence?: AiAgentExecutionEvidence,
   ): Promise<AiAgentStepExecutionResult> {
     const deadlineAt = Date.parse(task.deadline_at);
+    const newRetryCount = step.retry_count + 1;
+    const retryDelaySeconds = this.retryDelaySeconds(newRetryCount);
+    const now = Date.now();
     const canRetry =
+      this.isRetryableFailure(error) &&
       step.retry_count < step.retry_limit &&
       task.retry_count < task.max_retries &&
       !task.cancel_requested_at &&
       Number.isFinite(deadlineAt) &&
-      deadlineAt > Date.now();
+      // Do not queue a retry that cannot become eligible before the task deadline.
+      deadlineAt > now + retryDelaySeconds * 1000;
 
     if (canRetry) {
-      const newRetryCount = step.retry_count + 1;
       const retryStepClaim = await this.database.query(
         `
         UPDATE agent_task_steps
         SET
           status = 'PENDING',
           retry_count = $4,
+          next_retry_at = NOW() + ($8::int * INTERVAL '1 second'),
           execution_record_id = COALESCE($5, execution_record_id),
           error = $6::jsonb,
           execution_evidence = COALESCE($7::jsonb, execution_evidence),
@@ -1889,7 +1908,7 @@ export class AiAgentRuntimeService {
               AND parent_task.factory_id = $3
               AND parent_task.state IN ('EXECUTING', 'AWAITING_AUTH')
               AND parent_task.cancel_requested_at IS NULL
-              AND parent_task.deadline_at > NOW()
+              AND parent_task.deadline_at > NOW() + ($8::int * INTERVAL '1 second')
               AND parent_task.retry_count < parent_task.max_retries
           )
         RETURNING id
@@ -1902,6 +1921,7 @@ export class AiAgentRuntimeService {
           executionRecordId ?? null,
           JSON.stringify(error),
           executionEvidence ? JSON.stringify(executionEvidence) : null,
+          retryDelaySeconds,
         ],
         {
           tenantId,
@@ -1982,15 +2002,28 @@ export class AiAgentRuntimeService {
       }
     }
 
+    const terminalFailureCode = this.isRetryableFailure(error)
+      ? 'AI_AGENT_RETRY_LIMIT_EXCEEDED'
+      : 'AI_AGENT_NON_RETRYABLE_FAILURE';
+
     return this.failTask(
       tenantId,
       factoryId,
       actorUserId,
       task.id,
-      'AI_AGENT_RETRY_LIMIT_EXCEEDED',
+      terminalFailureCode,
       this.errorMessageFromRecord(error),
       step.id,
       executionEvidence,
+    );
+  }
+
+  private isRetryableFailure(error: Record<string, unknown>): boolean {
+    // Retry only when the registered executor explicitly guarantees that no
+    // side effect was committed. Unknown/permanent/ambiguous outcomes fail closed.
+    return (
+      error.retryable === true &&
+      error.sideEffectStatus === 'NOT_COMMITTED'
     );
   }
 
@@ -2883,6 +2916,12 @@ export class AiAgentRuntimeService {
     }
   }
 
+  private retryDelaySeconds(retryCount: number): number {
+    // Deterministic exponential backoff: 2, 4, 8, 16, 32 seconds, capped at 60.
+    const exponent = Math.max(1, Math.min(6, Math.floor(retryCount)));
+    return Math.min(60, 2 ** exponent);
+  }
+
   private assertNotCancelled(task: AiAgentTask): void {
     if (task.cancelRequestedAt || task.state === 'CANCELLED') {
       throw new ConflictException('AI agent task is cancelled');
@@ -3492,6 +3531,7 @@ export class AiAgentRuntimeService {
       dependsOn: row.depends_on.map(String),
       status: row.status,
       retryCount: row.retry_count,
+      nextRetryAt: row.next_retry_at ?? null,
       authorizationAttempt: row.authorization_attempt,
       actionIntentId: row.action_intent_id,
       approvalId: row.approval_id,
@@ -3591,6 +3631,7 @@ export class AiAgentRuntimeService {
       depends_on,
       status,
       retry_count,
+      next_retry_at::text AS next_retry_at,
       authorization_attempt,
       action_intent_id::text AS action_intent_id,
       approval_id::text AS approval_id,

@@ -1,0 +1,50 @@
+name: SRS HLD Blueprint Traceability
+
+on:
+  pull_request:
+    paths:
+      - 'docs/final-srs-hld-blueprint-traceability-audit.md'
+      - 'docs/srs-v2.1-requirement-evidence-matrix.md'
+      - 'docs/srs-v2.1-as-132-141-acceptance-matrix.md'
+      - 'docs/hld-blueprint-work-package-evidence-matrix.md'
+      - 'docs/audit-source-baseline-manifest.md'
+      - 'docs/requirement-evidence-register.md'
+      - 'docs/operational-rounds-35-43-traceability.md'
+      - 'docs/release-readiness.md'
+      - 'scripts/audit/**'
+      - '.github/workflows/traceability-audit-ci.yml'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - 'docs/final-srs-hld-blueprint-traceability-audit.md'
+      - 'docs/srs-v2.1-requirement-evidence-matrix.md'
+      - 'docs/srs-v2.1-as-132-141-acceptance-matrix.md'
+      - 'docs/hld-blueprint-work-package-evidence-matrix.md'
+      - 'docs/audit-source-baseline-manifest.md'
+      - 'docs/requirement-evidence-register.md'
+      - 'docs/operational-rounds-35-43-traceability.md'
+      - 'docs/release-readiness.md'
+      - 'scripts/audit/**'
+      - '.github/workflows/traceability-audit-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: traceability-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-audit:
+    name: Validate SRS/HLD/Blueprint audit consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Check audit script syntax
+        run: node --check scripts/audit/validate-srs-audit.mjs
+      - name: Validate source IDs, priorities, acceptance scenarios and manifest
+        run: node scripts/audit/validate-srs-audit.mjs

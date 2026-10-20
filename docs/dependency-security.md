@@ -27,7 +27,13 @@ References:
 - Re-run full `npm audit`, production `npm audit --omit=dev`, all lint/build jobs, and the PostgreSQL-backed API suite after every dependency update.
 
 
-### Latest audit results — 2026-10-10
+### Latest verified production security workflow — 2026-10-20
+
+The Production Dependency Security workflow passed on tested configuration/code SHA [540da01a88d089970b70177572180a0a959f153a](https://github.com/RakibulhasanUtsho07/factoryos/commit/540da01a88d089970b70177572180a0a959f153a), run [39412702649](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39412702649). That workflow completed locked dependency installation, recovery/load harness syntax checks, bounded load safety contract tests, backup/restore precondition contract tests, and `npm audit --omit=dev`.
+
+This run does **not** perform a fresh full-development-tree `npm audit`. The development-tool advisory recorded in the older full-audit notes below must not be marked resolved based only on a passing production-only audit. Re-run the full audit when preparing the next dependency/security review and update this section with the exact lockfile SHA and result.
+
+## Latest audit results — 2026-10-10
 
 After installing the updated workspace lockfile and rerunning the dependency audits:
 

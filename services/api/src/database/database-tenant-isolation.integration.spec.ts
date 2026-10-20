@@ -253,68 +253,76 @@ describe(
     );
 
     it(
-      'has FORCE RLS enabled on tenant tables',
+      'enforces FORCE RLS and tenant-bound policies on every public table with tenant_id',
       async () => {
-        const tables = [
-          'legal_entities',
-          'factories',
-          'tenant_memberships',
-          'roles',
-          'role_permissions',
-          'user_roles',
-          'audit_events',
-          'orders',
-          'order_lines',
-          'outbox_events',
-          'inbox_events',
-          'order_event_projections',
-          'order_idempotency_keys',
-          'inventory_items',
-          'inventory_stock_balances',
-          'inventory_movements',
-        ];
-
         const result =
           await database.query<{
             relname: string;
             relrowsecurity: boolean;
             relforcerowsecurity: boolean;
+            has_permissive_policy: boolean;
+            has_restrictive_policy: boolean;
           }>(
             `
             SELECT
               c.relname,
               c.relrowsecurity,
-              c.relforcerowsecurity
-
+              c.relforcerowsecurity,
+              EXISTS (
+                SELECT 1
+                FROM pg_policy p
+                WHERE p.polrelid = c.oid
+                  AND p.polpermissive
+              ) AS has_permissive_policy,
+              (
+                EXISTS (
+                  SELECT 1
+                  FROM pg_policy p
+                  WHERE p.polrelid = c.oid
+                    AND p.polname = 'fo_privacy_scope_enforce'
+                    AND NOT p.polpermissive
+                    AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                    AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                    AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%tenant_id%'
+                    AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%tenant_id%'
+                )
+                OR (
+                  c.relname = 'ai_tool_registry'
+                  AND EXISTS (
+                    SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+                      AND p.polname = 'ai_tool_registry_select_scope' AND p.polcmd = 'r'
+                      AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+                      AND p.polname = 'ai_tool_registry_insert_tenant_scope' AND p.polcmd = 'a'
+                      AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                  )
+                )
+              ) AS has_restrictive_policy
             FROM pg_class c
-
-            INNER JOIN pg_namespace n
-              ON n.oid = c.relnamespace
-
+            INNER JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = 'public'
-              AND c.relname = ANY($1::text[])
-
+              AND c.relkind IN ('r', 'p')
+              AND EXISTS (
+                SELECT 1
+                FROM pg_attribute a
+                WHERE a.attrelid = c.oid
+                  AND a.attname = 'tenant_id'
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+              )
             ORDER BY c.relname
             `,
-            [tables],
           );
 
-        expect(
-          result.rows,
-        ).toHaveLength(
-          tables.length,
-        );
+        expect(result.rows.length).toBeGreaterThan(0);
 
-        for (
-          const row of result.rows
-        ) {
-          expect(
-            row.relrowsecurity,
-          ).toBe(true);
-
-          expect(
-            row.relforcerowsecurity,
-          ).toBe(true);
+        for (const row of result.rows) {
+          expect(row.relrowsecurity).toBe(true);
+          expect(row.relforcerowsecurity).toBe(true);
+          expect(row.has_permissive_policy).toBe(true);
+          expect(row.has_restrictive_policy).toBe(true);
         }
       },
     );

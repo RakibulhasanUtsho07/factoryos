@@ -17,6 +17,7 @@ import { CreateGrowthScenarioSetDto } from './dto/create-growth-scenario-set.dto
 import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
+import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
 import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
 import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
 import { CreateGrowthConstraintDto } from './dto/create-growth-constraint.dto';
@@ -349,6 +350,33 @@ export class GrowthController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.recordOpportunityOutcome(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
+  }
+
+  @Post('opportunities/:opportunityId/forecast-evaluations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  recordForecastEvaluation(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: RecordGrowthForecastEvaluationDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.recordForecastEvaluation(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Get('opportunities/:opportunityId/forecast-evaluations/calibration')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  getForecastCalibration(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growth.getForecastCalibration(c.tenantId, c.factoryId, opportunityId);
   }
 
   private context(req: FactoryOsRequest) {

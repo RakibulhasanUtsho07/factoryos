@@ -28,10 +28,22 @@ describe('SaasSubscriptionService', () => {
   });
 
   it('allows a tenant with no subscription record in documented legacy compatibility mode', async () => {
-    database.query.mockResolvedValueOnce({ rows: [] });
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'LEGACY_COMPATIBLE',
+      status: null,
+      trial_ends_at: null,
+      current_period_start: null,
+      current_period_end: null,
+      plan_capabilities: null,
+    }] });
     await expect(service.assertAiCapabilityAvailable(tenantId)).resolves.toBeUndefined();
     expect(database.query).toHaveBeenCalledTimes(1);
     expect(database.query.mock.calls[0]?.[1]).toEqual([tenantId]);
+  });
+
+  it('fails closed when entitlement resolution returns no row at all', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('fails closed for a suspended subscription at the runtime AI boundary', async () => {
@@ -62,6 +74,172 @@ describe('SaasSubscriptionService', () => {
       current_period_end: '2020-02-01T00:00:00.000Z',
     }] });
     await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('blocks premium AI execution when explicit subscription-required mode has no subscription', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'SUBSCRIPTION_REQUIRED',
+      status: null,
+      trial_ends_at: null,
+      current_period_start: null,
+      current_period_end: null,
+    }] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('denies an explicitly disabled capability even when the subscription is active', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'LEGACY_COMPATIBLE',
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2099-11-01T00:00:00.000Z',
+      plan_capabilities: { 'ai.runtime': false },
+    }] });
+    await expect(service.assertCapabilityAvailable(tenantId, 'ai.runtime')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('requires an explicit true plan capability after tenant enforcement is enabled', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'SUBSCRIPTION_REQUIRED',
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2099-11-01T00:00:00.000Z',
+      plan_capabilities: { 'research.ingestion': true },
+    }] });
+    await expect(service.assertCapabilityAvailable(tenantId, 'ai.runtime')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('allows a declared capability on an eligible plan in subscription-required mode', async () => {
+    database.query.mockResolvedValueOnce({ rows: [{
+      enforcement_mode: 'SUBSCRIPTION_REQUIRED',
+      status: 'ACTIVE',
+      trial_ends_at: null,
+      current_period_start: '2026-10-01T00:00:00.000Z',
+      current_period_end: '2099-11-01T00:00:00.000Z',
+      plan_capabilities: { 'ai.runtime': true, 'research.ingestion': false },
+    }] });
+    await expect(service.assertAiCapabilityAvailable(tenantId)).resolves.toBeUndefined();
+  });
+
+  it('reports legacy compatibility as an explicit default before tenant migration', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] });
+    const result = await service.getEntitlementEnforcementMode(tenantId, actorUserId);
+    expect(result).toMatchObject({
+      tenantId,
+      mode: 'LEGACY_COMPATIBLE',
+      version: 0,
+      source: 'IMPLICIT_LEGACY_DEFAULT',
+      requiresSubscription: false,
+    });
+    expect(iam.authorize).toHaveBeenCalledWith(actorUserId, tenantId, 'saas.entitlement_modes.read');
+  });
+
+  it('allows an administrator to explicitly record the legacy mode without blocking the tenant', async () => {
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenantId }] }) // tenant row lock
+      .mockResolvedValueOnce({ rows: [] }) // idempotency replay
+      .mockResolvedValueOnce({ rows: [] }) // no prior mode
+      .mockResolvedValueOnce({ rows: [{
+        id: 'mode-legacy-1', tenant_id: tenantId, version: '1',
+        mode: 'LEGACY_COMPATIBLE', reason: 'Customer onboarding is not yet complete',
+        effective_at: '2026-10-20T08:00:00.000Z',
+        idempotency_key: 'record-legacy-mode',
+        request_hash: 'a'.repeat(64), changed_by: actorUserId,
+        created_at: '2026-10-20T08:00:00.000Z',
+      }] });
+    const result = await service.setEntitlementEnforcementMode(tenantId, actorUserId, {
+      mode: 'LEGACY_COMPATIBLE',
+      expected_version: 0,
+      reason: 'Customer onboarding is not yet complete',
+      idempotency_key: 'record-legacy-mode',
+    } as never);
+    expect(result).toMatchObject({
+      tenantId,
+      mode: 'LEGACY_COMPATIBLE',
+      version: 1,
+      source: 'EXPLICIT',
+      requiresSubscription: false,
+    });
+    expect(clientQuery).toHaveBeenCalledTimes(4);
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ENTITLEMENT_ENFORCEMENT_MODE_CHANGED',
+      resourceId: 'mode-legacy-1',
+    }));
+  });
+
+  it('requires an active subscription or unexpired trial before migrating a tenant to subscription-required mode', async () => {
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenantId }] }) // tenant row lock
+      .mockResolvedValueOnce({ rows: [] }) // idempotency replay
+      .mockResolvedValueOnce({ rows: [] }) // no explicit mode yet
+      .mockResolvedValueOnce({ rows: [] }); // no eligible subscription
+    await expect(service.setEntitlementEnforcementMode(tenantId, actorUserId, {
+      mode: 'SUBSCRIPTION_REQUIRED',
+      expected_version: 0,
+      reason: 'Migrate tenant after subscription onboarding',
+      idempotency_key: 'require-subscription-no-plan',
+    } as never)).rejects.toBeInstanceOf(ConflictException);
+    expect(clientQuery).toHaveBeenCalledTimes(4);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('records an immutable versioned mode migration after verifying subscription eligibility', async () => {
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenantId }] }) // tenant row lock
+      .mockResolvedValueOnce({ rows: [] }) // idempotency replay
+      .mockResolvedValueOnce({ rows: [] }) // no prior mode
+      .mockResolvedValueOnce({ rows: [{ id: subscriptionId }] }) // eligible active subscription
+      .mockResolvedValueOnce({ rows: [{
+        id: 'mode-row-1', tenant_id: tenantId, version: '1',
+        mode: 'SUBSCRIPTION_REQUIRED', reason: 'Onboarding completed',
+        effective_at: '2026-10-20T08:00:00.000Z',
+        idempotency_key: 'require-subscription-ready',
+        request_hash: 'a'.repeat(64), changed_by: actorUserId,
+        created_at: '2026-10-20T08:00:00.000Z',
+      }] });
+    const result = await service.setEntitlementEnforcementMode(tenantId, actorUserId, {
+      mode: 'SUBSCRIPTION_REQUIRED',
+      expected_version: 0,
+      reason: 'Onboarding completed',
+      idempotency_key: 'require-subscription-ready',
+    } as never);
+    expect(result).toMatchObject({
+      tenantId,
+      mode: 'SUBSCRIPTION_REQUIRED',
+      version: 1,
+      source: 'EXPLICIT',
+      requiresSubscription: true,
+      replayed: false,
+    });
+    expect(clientQuery).toHaveBeenCalledTimes(5);
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ENTITLEMENT_ENFORCEMENT_MODE_CHANGED',
+      resourceId: 'mode-row-1',
+    }));
+  });
+
+  it('refuses to downgrade a tenant after subscription enforcement is enabled', async () => {
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenantId }] }) // tenant row lock
+      .mockResolvedValueOnce({ rows: [] }) // idempotency replay
+      .mockResolvedValueOnce({ rows: [{
+        id: 'mode-row-1', tenant_id: tenantId, version: '1',
+        mode: 'SUBSCRIPTION_REQUIRED', reason: 'Migrate',
+        effective_at: '2026-10-20T08:00:00.000Z',
+        idempotency_key: 'require-subscription-ready',
+        request_hash: 'a'.repeat(64), changed_by: actorUserId,
+        created_at: '2026-10-20T08:00:00.000Z',
+      }] });
+    await expect(service.setEntitlementEnforcementMode(tenantId, actorUserId, {
+      mode: 'LEGACY_COMPATIBLE',
+      expected_version: 1,
+      reason: 'Undo migration',
+      idempotency_key: 'undo-entitlement-migration',
+    } as never)).rejects.toBeInstanceOf(ConflictException);
+    expect(clientQuery).toHaveBeenCalledTimes(3);
+    expect(audit.record).not.toHaveBeenCalled();
   });
 
   it('requires a non-empty verified tenant and actor UUID before touching IAM or storage', async () => {

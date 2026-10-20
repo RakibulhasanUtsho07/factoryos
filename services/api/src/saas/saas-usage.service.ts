@@ -127,15 +127,20 @@ export class SaasUsageService {
   this.scope(tenantId,actorUserId,...(factoryId?[factoryId]:[]));await this.authorize(actorUserId,tenantId,'saas.usage.write');
   const n=this.normalizeEvent(input), hash=this.hash({tenantId,factoryId,...n.content});
   const existing=await this.database.query<UsageRow>('SELECT '+USAGE_COLUMNS+' FROM saas_usage_events WHERE tenant_id=$1 AND (idempotency_key=$2 OR (source_system=$3 AND source_event_ref=$4)) LIMIT 1',[tenantId,n.idempotency_key,n.content.source_system,n.content.source_event_ref],{tenantId,userId:actorUserId});
-  if(existing.rows[0]) {if(existing.rows[0].request_hash!==hash)throw new ConflictException('Usage idempotency key or source event reference was reused for different content');await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,existing.rows[0].occurred_at);return {idempotent:true,event:this.mapUsage(existing.rows[0])};}
+  if(existing.rows[0]) {
+   if(existing.rows[0].request_hash!==hash)throw new ConflictException('Usage idempotency key or source event reference was reused for different content');
+   // Idempotent ingestion still refreshes current enforcement; historical event time
+   // must not move a hard-limit check backwards in time.
+   await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,new Date().toISOString());
+   return {idempotent:true,event:this.mapUsage(existing.rows[0])};
+  }
   const effectiveRate=await this.database.query<RateRow>('SELECT '+RATE_COLUMNS+' FROM saas_usage_rate_cards WHERE tenant_id=$1 AND metric_code=$2 AND effective_from <= $3 ORDER BY effective_from DESC,rate_version DESC LIMIT 1',[tenantId,n.content.metric_code,n.content.occurred_at],{tenantId,userId:actorUserId});
   const rate=effectiveRate.rows[0]??null;
-  let rateId:string|null=null, rateVersion:number|null=null, rateAmount:number|null=null, rateBlock:number|null=null, currency:string|null=null, cost:number|null=null;
+  let rateId:string|null=null, rateVersion:number|null=null, rateAmount:string|null=null, rateBlock:string|null=null, currency:string|null=null, cost:number|null=null;
   if(rate) {
    if(UNITS[rate.metric_code]!==UNITS[n.content.metric_code])throw new ConflictException('Effective rate card unit does not match the meter contract');
-   rateId=rate.id;rateVersion=Number(rate.rate_version);rateAmount=Number(rate.rate_minor_per_block);rateBlock=Number(rate.block_quantity);currency=rate.currency;
-   cost=Math.round(Number(n.content.quantity)/rateBlock*rateAmount);
-   if(!Number.isSafeInteger(cost)||cost<0)throw new BadRequestException('Estimated usage cost exceeds the supported integer range');
+   rateId=rate.id;rateVersion=Number(rate.rate_version);rateAmount=String(rate.rate_minor_per_block);rateBlock=String(rate.block_quantity);currency=rate.currency;
+   cost=this.calculateUsageCostMinor(n.content.quantity,rateBlock,rateAmount);
   }
   const inserted=await this.database.query<UsageRow>(
    'INSERT INTO saas_usage_events(tenant_id,factory_id,metric_code,capability_code,workload_class,quantity,occurred_at,source_system,source_event_ref,rate_card_id,rate_version_snapshot,rate_minor_per_block_snapshot,rate_block_quantity_snapshot,currency,estimated_cost_minor,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT DO NOTHING RETURNING '+USAGE_COLUMNS,
@@ -145,8 +150,10 @@ export class SaasUsageService {
    const raced=await this.database.query<UsageRow>('SELECT '+USAGE_COLUMNS+' FROM saas_usage_events WHERE tenant_id=$1 AND (idempotency_key=$2 OR (source_system=$3 AND source_event_ref=$4)) LIMIT 1',[tenantId,n.idempotency_key,n.content.source_system,n.content.source_event_ref],{tenantId,userId:actorUserId});
    row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Usage event was concurrently recorded with conflicting content');return {idempotent:true,event:this.mapUsage(row)};
   }
-  await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_EVENT',action:'RECORD_USAGE_EVENT',resourceType:'SAAS_USAGE_EVENT',resourceId:row.id,payload:{metricCode:row.metric_code,capabilityCode:row.capability_code,workloadClass:row.workload_class,quantity:Number(row.quantity),currency:row.currency,estimatedCostMinor:row.estimated_cost_minor===null?null:String(row.estimated_cost_minor),sourceRefSha256:this.sha(row.source_event_ref),requestHash:hash}});
-  await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,row.occurred_at);
+  await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_EVENT',action:'RECORD_USAGE_EVENT',resourceType:'SAAS_USAGE_EVENT',resourceId:row.id,payload:{metricCode:row.metric_code,capabilityCode:row.capability_code,workloadClass:row.workload_class,quantity:String(row.quantity),currency:row.currency,estimatedCostMinor:row.estimated_cost_minor===null?null:String(row.estimated_cost_minor),sourceRefSha256:this.sha(row.source_event_ref),requestHash:hash}});
+  // Keep event-time pricing/history, but evaluate budgets as of processing time so
+  // late/out-of-order usage cannot leave the current hard-limit decision stale.
+  await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,new Date().toISOString());
   return {idempotent:false,event:this.mapUsage(row)};
  }
 
@@ -188,16 +195,21 @@ export class SaasUsageService {
   const adjustment=await this.database.query<QueryResultRow & {adjustment_sum:string}>(
    'SELECT COALESCE(SUM(cost_delta_minor),0)::text AS adjustment_sum FROM saas_usage_adjustments WHERE tenant_id=$1 AND period_start < $3 AND period_end > $2 AND currency=$4 AND ($5::uuid IS NULL OR factory_id=$5)',
    [tenantId,n.period_start,n.period_end,n.currency,factoryId],{tenantId,userId:actorUserId});
-  const eventCount=Number(ledger.rows[0]?.event_count??0),unpriced=Number(ledger.rows[0]?.unpriced_count??0);
-  const ledgerAmount=Number(ledger.rows[0]?.ledger_sum??0),adjustmentAmount=Number(adjustment.rows[0]?.adjustment_sum??0);
+  const eventCountBigInt=BigInt(String(ledger.rows[0]?.event_count??0)),unpriced=Number(ledger.rows[0]?.unpriced_count??0);
+  if(eventCountBigInt>BigInt(Number.MAX_SAFE_INTEGER))throw new BadRequestException('Reconciliation event count exceeds the supported integer range');
+  const eventCount=Number(eventCountBigInt);
+  const ledgerAmount=BigInt(String(ledger.rows[0]?.ledger_sum??0)),adjustmentAmount=BigInt(String(adjustment.rows[0]?.adjustment_sum??0));
+  this.assertMoneyAggregateRange(ledgerAmount,'ledger amount');
+  this.assertMoneyAggregateRange(adjustmentAmount,'adjustment amount');
   const expected=unpriced>0?null:ledgerAmount+adjustmentAmount;
-  if(expected!==null&&(!Number.isSafeInteger(expected)||!Number.isSafeInteger(Number(n.invoiced_amount_minor)-expected)))throw new BadRequestException('Reconciliation amount exceeds the supported integer range');
-  const variance=expected===null?null:Number(n.invoiced_amount_minor)-expected;
-  const status=unpriced>0?'UNPRICED_USAGE':variance===0?'MATCHED':'VARIANCE';
-  const reportHash=this.hash({tenantId,factoryId,periodStart:n.period_start,periodEnd:n.period_end,currency:n.currency,eventCount,unpriced,ledgerAmount:unpriced?null:ledgerAmount,adjustmentAmount,expected,invoice:n.invoiced_amount_minor,status});
+  if(expected!==null)this.assertMoneyAggregateRange(expected,'expected amount');
+  const variance=expected===null?null:BigInt(n.invoiced_amount_minor)-expected;
+  if(variance!==null)this.assertMoneyAggregateRange(variance,'invoice variance');
+  const status=unpriced>0?'UNPRICED_USAGE':variance===0n?'MATCHED':'VARIANCE';
+  const reportHash=this.hash({tenantId,factoryId,periodStart:n.period_start,periodEnd:n.period_end,currency:n.currency,eventCount,unpriced,ledgerAmount:unpriced?null:ledgerAmount.toString(),adjustmentAmount:adjustmentAmount.toString(),expected:expected?.toString()??null,invoice:String(n.invoiced_amount_minor),status});
   const inserted=await this.database.query<ReconciliationRow>(
    'INSERT INTO saas_usage_reconciliations(tenant_id,factory_id,invoice_reference,reconciliation_version,period_start,period_end,currency,event_count,unpriced_event_count,ledger_estimated_amount_minor,adjustment_amount_minor,expected_amount_minor,invoiced_amount_minor,variance_minor,status,report_hash,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT DO NOTHING RETURNING '+RECONCILIATION_COLUMNS,
-   [tenantId,factoryId,n.invoice_reference,n.reconciliation_version,n.period_start,n.period_end,n.currency,eventCount,unpriced,unpriced?null:ledgerAmount,adjustmentAmount,expected,n.invoiced_amount_minor,variance,status,reportHash,hash,key,actorUserId],{tenantId,userId:actorUserId});
+   [tenantId,factoryId,n.invoice_reference,n.reconciliation_version,n.period_start,n.period_end,n.currency,eventCount,unpriced,unpriced?null:ledgerAmount.toString(),adjustmentAmount.toString(),expected?.toString()??null,n.invoiced_amount_minor,variance?.toString()??null,status,reportHash,hash,key,actorUserId],{tenantId,userId:actorUserId});
   let row=inserted.rows[0];
   if(!row){const raced=await this.database.query<ReconciliationRow>('SELECT '+RECONCILIATION_COLUMNS+' FROM saas_usage_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,key],{tenantId,userId:actorUserId});row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Reconciliation version or idempotency key conflicts with an existing snapshot');return {idempotent:true,reconciliation:this.mapReconciliation(row)};}
   await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_RECONCILIATION',action:'RECONCILE_USAGE_TO_INVOICE',resourceType:'SAAS_USAGE_RECONCILIATION',resourceId:row.id,payload:{invoiceReferenceSha256:this.sha(row.invoice_reference),version:row.reconciliation_version,periodStart:row.period_start,periodEnd:row.period_end,currency:row.currency,eventCount,unpricedEventCount:unpriced,ledgerEstimatedAmountMinor:expected===null?null:String(ledgerAmount),adjustmentAmountMinor:String(adjustmentAmount),invoicedAmountMinor:String(row.invoiced_amount_minor),varianceMinor:variance===null?null:String(variance),status,reportHash}});
@@ -309,26 +321,37 @@ export class SaasUsageService {
    const usage=await this.database.query<QueryResultRow & {event_count:string|number;unpriced_count:string|number;cost_minor:string|number}>(
     `SELECT COUNT(*) FILTER(WHERE currency=$8 OR estimated_cost_minor IS NULL)::bigint AS event_count,
        COUNT(*) FILTER(WHERE estimated_cost_minor IS NULL)::bigint AS unpriced_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE currency=$8),0)::bigint AS cost_minor
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE currency=$8),0)::text AS cost_minor
      FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2 AND occurred_at < $3
        AND ($4::uuid IS NULL OR factory_id=$4) AND ($5::varchar IS NULL OR metric_code=$5)
        AND ($6::varchar IS NULL OR capability_code=$6) AND ($7::varchar IS NULL OR workload_class=$7)`,
     scoped,{tenantId,userId:actorUserId});
    const recent=await this.database.query<QueryResultRow & {recent_count:string|number;recent_cost:string|number;baseline_count:string|number;baseline_cost:string|number}>(
     `SELECT COUNT(*) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS recent_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS recent_cost,
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at >= $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::text AS recent_cost,
        COUNT(*) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND estimated_cost_minor IS NOT NULL AND currency=$7)::bigint AS baseline_count,
-       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::bigint AS baseline_cost
+       COALESCE(SUM(estimated_cost_minor) FILTER(WHERE occurred_at < $2::timestamptz - INTERVAL '1 hour' AND currency=$7),0)::text AS baseline_cost
      FROM saas_usage_events WHERE tenant_id=$1 AND occurred_at >= $2::timestamptz - INTERVAL '24 hours' AND occurred_at < $2
        AND ($3::uuid IS NULL OR factory_id=$3) AND ($4::varchar IS NULL OR metric_code=$4)
        AND ($5::varchar IS NULL OR capability_code=$5) AND ($6::varchar IS NULL OR workload_class=$6)`,
     [tenantId,asOf,factoryScope,budget.metric_code,budget.capability_code,budget.workload_class,budget.currency],{tenantId,userId:actorUserId});
-   const eventCount=Number(usage.rows[0]?.event_count??0),unpriced=Number(usage.rows[0]?.unpriced_count??0),cost=Number(usage.rows[0]?.cost_minor??0);
-   const recentCount=Number(recent.rows[0]?.recent_count??0),recentCost=Number(recent.rows[0]?.recent_cost??0),baselineCount=Number(recent.rows[0]?.baseline_count??0),baselineCost=Number(recent.rows[0]?.baseline_cost??0);
-   const baselineHourly=baselineCost/23;
-   const anomaly=recentCount>=Number(budget.anomaly_min_events)&&baselineCount>=Number(budget.anomaly_min_events)&&baselineHourly>0&&recentCost>baselineHourly*Number(budget.anomaly_multiplier);
-   const soft=Number(budget.soft_limit_minor),hard=Number(budget.hard_limit_minor);
-   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=cost>=hard&&(hard>0||cost>0)?'HARD_LIMIT':unpriced>0?'UNPRICED_USAGE':anomaly?'ANOMALY':soft>0&&cost>=soft?'WARNING':'SAFE';
+   const eventCountBigInt=BigInt(String(usage.rows[0]?.event_count??0)),unpricedBigInt=BigInt(String(usage.rows[0]?.unpriced_count??0));
+   const recentCountBigInt=BigInt(String(recent.rows[0]?.recent_count??0)),baselineCountBigInt=BigInt(String(recent.rows[0]?.baseline_count??0));
+   const safeCount=BigInt(Number.MAX_SAFE_INTEGER);
+   if(eventCountBigInt>safeCount||unpricedBigInt>safeCount||recentCountBigInt>safeCount||baselineCountBigInt>safeCount)throw new BadRequestException('Budget evaluation event count exceeds the supported integer range');
+   const eventCount=Number(eventCountBigInt),unpriced=Number(unpricedBigInt),recentCount=Number(recentCountBigInt),baselineCount=Number(baselineCountBigInt);
+   const costBigInt=BigInt(String(usage.rows[0]?.cost_minor??0)),recentCostBigInt=BigInt(String(recent.rows[0]?.recent_cost??0)),baselineCostBigInt=BigInt(String(recent.rows[0]?.baseline_cost??0));
+   this.assertMoneyAggregateRange(costBigInt,'budget-period usage cost');
+   this.assertMoneyAggregateRange(recentCostBigInt,'recent spend');
+   this.assertMoneyAggregateRange(baselineCostBigInt,'baseline spend');
+   const cost=costBigInt.toString(),recentCost=recentCostBigInt.toString();
+   const baselineHourlyScaled4=(baselineCostBigInt*10_000n+11n)/23n;
+   const baselineHourly=(baselineHourlyScaled4/10_000n).toString()+'.'+(baselineHourlyScaled4%10_000n).toString().padStart(4,'0');
+   const anomalyMultiplierUnits=this.decimalUnits(String(budget.anomaly_multiplier),'anomaly_multiplier').units;
+   const anomaly=recentCount>=Number(budget.anomaly_min_events)&&baselineCount>=Number(budget.anomaly_min_events)&&baselineCostBigInt>0n&&recentCostBigInt*23n*1_000_000n>baselineCostBigInt*anomalyMultiplierUnits;
+   const softBigInt=BigInt(String(budget.soft_limit_minor)),hardBigInt=BigInt(String(budget.hard_limit_minor));
+   const soft=softBigInt.toString(),hard=hardBigInt.toString();
+   const status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY'=costBigInt>=hardBigInt&&(hardBigInt>0n||costBigInt>0n)?'HARD_LIMIT':unpriced>0?'UNPRICED_USAGE':anomaly?'ANOMALY':softBigInt>0n&&costBigInt>=softBigInt?'WARNING':'SAFE';
    const snapshot={budgetId:budget.id,tenantId,factoryId:factoryScope,periodStart:period.start,periodEnd:period.end,eventCount,unpriced,usageCostMinor:cost,soft,hard,recentCost,baselineHourly,status};
    const reportHash=this.hash(snapshot);
    const key=this.idem('ev:'+budget.id+':'+this.hash(snapshot));
@@ -482,13 +505,20 @@ export class SaasUsageService {
   const n=this.normalizeProviderReconciliation(input),hash=this.hash({tenantId,factoryId,...n.content});
   const prior=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});
   if(prior.rows[0]) {if(prior.rows[0].request_hash!==hash)throw new ConflictException('Provider reconciliation idempotency key conflicts with different content');return {idempotent:true,reconciliation:this.mapProviderReconciliation(prior.rows[0])};}
-  const totals=await this.database.query<QueryResultRow & {event_count:string|number;ledger_cost_minor:string|number}>('SELECT COUNT(*)::bigint AS event_count,COALESCE(SUM(provider_cost_minor),0)::bigint AS ledger_cost_minor FROM saas_provider_cost_events WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) AND provider_code=$3 AND currency=$4 AND occurred_at >= $5 AND occurred_at < $6 AND provider_invoice_reference=$7',
+  const totals=await this.database.query<QueryResultRow & {event_count:string|number;ledger_cost_minor:string|number}>('SELECT COUNT(*)::text AS event_count,COALESCE(SUM(provider_cost_minor),0)::text AS ledger_cost_minor FROM saas_provider_cost_events WHERE tenant_id=$1 AND ($2::uuid IS NULL OR factory_id=$2) AND provider_code=$3 AND currency=$4 AND occurred_at >= $5 AND occurred_at < $6 AND provider_invoice_reference=$7',
    [tenantId,factoryId,n.content.provider_code,n.content.currency,n.content.period_start,n.content.period_end,n.content.invoice_reference],{tenantId,userId:actorUserId});
-  const eventCount=Number(totals.rows[0]?.event_count??0),ledger=Number(totals.rows[0]?.ledger_cost_minor??0),invoice=n.content.invoiced_provider_cost_minor,variance=invoice-ledger,status=eventCount===0?'NO_PROVIDER_DATA':variance===0?'MATCHED':'VARIANCE';
-  const snapshot={tenantId,factoryId,...n.content,eventCount,ledger,variance,status};
+  const eventCountBigInt=BigInt(String(totals.rows[0]?.event_count??0));
+  if(eventCountBigInt>BigInt(Number.MAX_SAFE_INTEGER))throw new BadRequestException('Provider reconciliation event count exceeds the supported integer range');
+  const eventCount=Number(eventCountBigInt),ledger=BigInt(String(totals.rows[0]?.ledger_cost_minor??0)),invoice=BigInt(n.content.invoiced_provider_cost_minor);
+  this.assertMoneyAggregateRange(ledger,'provider ledger cost');
+  const variance=invoice-ledger;
+  this.assertMoneyAggregateRange(variance,'provider invoice variance');
+  const ledgerAmount=ledger.toString(),varianceAmount=variance.toString();
+  const status=eventCount===0?'NO_PROVIDER_DATA':variance===0n?'MATCHED':'VARIANCE';
+  const snapshot={tenantId,factoryId,...n.content,eventCount,ledger:ledgerAmount,variance:varianceAmount,status};
   const reportHash=this.hash(snapshot);
   const r=await this.database.query<ProviderCostReconciliationRow>('INSERT INTO saas_provider_cost_reconciliations(tenant_id,factory_id,provider_code,invoice_reference,reconciliation_version,period_start,period_end,currency,event_count,ledger_provider_cost_minor,invoiced_provider_cost_minor,variance_minor,status,report_hash,request_hash,idempotency_key,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT DO NOTHING RETURNING '+PROVIDER_RECON_COLUMNS,
-   [tenantId,factoryId,n.content.provider_code,n.content.invoice_reference,n.content.reconciliation_version,n.content.period_start,n.content.period_end,n.content.currency,eventCount,ledger,invoice,variance,status,reportHash,hash,n.idempotency_key,actorUserId],{tenantId,userId:actorUserId});
+   [tenantId,factoryId,n.content.provider_code,n.content.invoice_reference,n.content.reconciliation_version,n.content.period_start,n.content.period_end,n.content.currency,eventCount,ledgerAmount,n.content.invoiced_provider_cost_minor,varianceAmount,status,reportHash,hash,n.idempotency_key,actorUserId],{tenantId,userId:actorUserId});
   let row=r.rows[0];
   if(!row) {const raced=await this.database.query<ProviderCostReconciliationRow>('SELECT '+PROVIDER_RECON_COLUMNS+' FROM saas_provider_cost_reconciliations WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',[tenantId,n.idempotency_key],{tenantId,userId:actorUserId});row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Provider invoice reconciliation conflicts with an existing snapshot');return {idempotent:true,reconciliation:this.mapProviderReconciliation(row)};}
   await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_PROVIDER_COST_RECONCILIATION',action:'RECONCILE_PROVIDER_INVOICE',resourceType:'SAAS_PROVIDER_COST_RECONCILIATION',resourceId:row.id,payload:{providerCode:row.provider_code,invoiceRefSha256:this.sha(row.invoice_reference),reconciliationVersion:row.reconciliation_version,eventCount:Number(row.event_count),ledgerCostMinor:String(row.ledger_provider_cost_minor),invoicedCostMinor:String(row.invoiced_provider_cost_minor),varianceMinor:String(row.variance_minor),status:row.status,reportHash:row.report_hash}});
@@ -502,6 +532,13 @@ export class SaasUsageService {
  }
 
 
+ private assertMoneyAggregateRange(value:bigint,field:string):void {
+  // Aggregate columns are widened in migration 153, but PostgreSQL NUMERIC(30,0)
+  // still has an explicit product limit. Reject rather than hash a rounded value.
+  const max=999_999_999_999_999_999_999_999_999_999n;
+  if(value>max||value< -max)throw new BadRequestException(field+' exceeds the supported 30-digit minor-unit range');
+ }
+
  private async persistBudgetAlert(tenantId:string,factoryId:string|null,budgetId:string,evaluationId:string,status:'SAFE'|'WARNING'|'HARD_LIMIT'|'UNPRICED_USAGE'|'ANOMALY',snapshot:Record<string,unknown>,actorUserId:string) {
   const details=status==='WARNING'?{type:'WARNING',severity:'WARNING',title:'SaaS usage budget warning',message:'BUDGET_SOFT_LIMIT'}:status==='HARD_LIMIT'?{type:'HARD_LIMIT',severity:'CRITICAL',title:'SaaS usage budget hard limit reached',message:'BUDGET_HARD_LIMIT'}:status==='ANOMALY'?{type:'ANOMALY',severity:'CRITICAL',title:'Unusual SaaS spend detected',message:'SPEND_ANOMALY'}:{type:'UNPRICED_USAGE',severity:'WARNING',title:'Usage could not be priced',message:'USAGE_UNPRICED'};
   const payload={status,periodStart:snapshot['periodStart']??null,periodEnd:snapshot['periodEnd']??null,eventCount:snapshot['eventCount']??0,unpricedEventCount:snapshot['unpriced']??0,usageCostMinor:snapshot['usageCostMinor']??0,softLimitMinor:snapshot['soft']??0,hardLimitMinor:snapshot['hard']??0,anomalyWindowCostMinor:snapshot['recentCost']??0,reportHash:this.hash(snapshot)};
@@ -513,8 +550,10 @@ export class SaasUsageService {
   const model_code=input.model_code==null?null:this.pattern(input.model_code,'model_code',/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/);
   const metric_code=this.enum(input.metric_code,new Set(['AI_INPUT_TOKEN','AI_OUTPUT_TOKEN','AI_TOOL_CALL','PREMIUM_WORKLOAD','EDGE_INFERENCE','INTEGRATION_CALL']),'metric_code') as SaasMeterMetric;
   const workload_class=this.enum(input.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass;
-  const quantity=this.num(input.quantity,'quantity');
-  if(quantity<=0||quantity>1000000000000)throw new BadRequestException('quantity must be positive and within the supported range');
+  const parsedQuantity=this.decimalUnits(input.quantity,'quantity');
+  const quantityUnits=parsedQuantity.units;
+  if(quantityUnits<=0n||quantityUnits>1_000_000_000_000_000_000n)throw new BadRequestException('quantity must be positive and within the supported range');
+  const quantity=parsedQuantity.value;
   const currency=this.pattern(input.currency,'currency',/^[A-Z]{3}$/);
   const provider_cost_minor=this.num(input.provider_cost_minor,'provider_cost_minor');
   if(!Number.isSafeInteger(provider_cost_minor)||provider_cost_minor<0||provider_cost_minor>9000000000000000)throw new BadRequestException('provider_cost_minor must be a supported non-negative minor-unit integer');
@@ -541,27 +580,76 @@ export class SaasUsageService {
  private mapProviderCost(r:ProviderCostRow) {return {id:r.id,factoryId:r.factory_id,providerCode:r.provider_code,modelCode:r.model_code,metricCode:r.metric_code,workloadClass:r.workload_class,quantity:String(r.quantity),currency:r.currency,providerCostMinor:String(r.provider_cost_minor),occurredAt:r.occurred_at,providerInvoiceReference:r.provider_invoice_reference,sourceSystem:r.source_system,sourceRefHash:this.sha(r.source_event_ref),recordedBy:r.recorded_by,createdAt:r.created_at};}
  private mapProviderReconciliation(r:ProviderCostReconciliationRow) {return {id:r.id,factoryId:r.factory_id,providerCode:r.provider_code,invoiceReference:r.invoice_reference,reconciliationVersion:Number(r.reconciliation_version),periodStart:r.period_start,periodEnd:r.period_end,currency:r.currency,eventCount:Number(r.event_count),ledgerProviderCostMinor:String(r.ledger_provider_cost_minor),invoicedProviderCostMinor:String(r.invoiced_provider_cost_minor),varianceMinor:String(r.variance_minor),status:r.status,reportHash:r.report_hash,recordedBy:r.recorded_by,createdAt:r.created_at};}
 
+ private decimalUnits(value:unknown,field:string):{units:bigint;value:string} {
+  // NUMERIC(24,6) is the storage contract. Parse the submitted decimal spelling,
+  // not its binary floating-point representation, and reject excess precision.
+  const raw=typeof value==='number'&&Number.isFinite(value)?String(value):typeof value==='string'?value.trim():'';
+  const match=/^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(raw);
+  if(!match)throw new BadRequestException(field+' must be a valid decimal number');
+  const sign=match[1]==='-'?-1n:1n;
+  const whole=match[2]??'0';
+  const fraction=match[3]??match[4]??'';
+  const exponent=match[5]===undefined?0:Number(match[5]);
+  if(!Number.isInteger(exponent)||Math.abs(exponent)>30)throw new BadRequestException(field+' exponent is outside the supported range');
+  const digits=whole+fraction;
+  const decimalPoint=whole.length+exponent;
+  let integerPart:string;
+  let fractionPart:string;
+  if(decimalPoint<=0){integerPart='0';fractionPart='0'.repeat(-decimalPoint)+digits;}
+  else if(decimalPoint>=digits.length){integerPart=digits+'0'.repeat(decimalPoint-digits.length);fractionPart='';}
+  else{integerPart=digits.slice(0,decimalPoint);fractionPart=digits.slice(decimalPoint);}
+  integerPart=integerPart.replace(/^0+(?=\d)/,'')||'0';
+  fractionPart=fractionPart.replace(/0+$/,'');
+  if(fractionPart.length>6)throw new BadRequestException(field+' supports at most 6 decimal places');
+  const scaledFraction=fractionPart.padEnd(6,'0');
+  let units=(BigInt(integerPart)*1_000_000n)+BigInt(scaledFraction||'0');
+  if(units!==0n)units*=sign;
+  const canonicalSign=units<0n?'-':'';
+  const magnitude=units<0n?-units:units;
+  const canonicalInteger=(magnitude/1_000_000n).toString();
+  const canonicalFraction=(magnitude%1_000_000n).toString().padStart(6,'0');
+  return {units,value:canonicalSign+canonicalInteger+'.'+canonicalFraction};
+ }
+
+ private calculateUsageCostMinor(quantity:unknown,blockQuantity:unknown,rateMinorPerBlock:unknown):number {
+  const q=this.decimalUnits(quantity,'quantity').units;
+  const block=this.decimalUnits(blockQuantity,'block_quantity').units;
+  const rate=typeof rateMinorPerBlock==='bigint'?rateMinorPerBlock:BigInt(String(rateMinorPerBlock));
+  if(q<0n||block<=0n||rate<0n)throw new BadRequestException('Usage pricing inputs are outside the supported range');
+  // Quantity and block share a six-decimal scale, so the scale cancels.
+  // Integer half-up rounding prevents binary-float drift in minor currency units.
+  const cost=(q*rate+(block/2n))/block;
+  if(cost<0n||cost>9_000_000_000_000_000n)throw new BadRequestException('Estimated usage cost exceeds the supported integer range');
+  return Number(cost);
+ }
+
  private normalizeRate(input:CreateSaasMeterRateDto) {
   const metric=this.enum(input?.metric_code,METRICS,'metric_code') as SaasMeterMetric;
   const version=this.num(input?.rate_version,'rate_version');if(!Number.isInteger(version)||version<1||version>1000000)throw new BadRequestException('rate_version must be an integer between 1 and 1000000');
   const rate=this.num(input?.rate_minor_per_block,'rate_minor_per_block');if(!Number.isSafeInteger(rate)||rate<0||rate>9000000000000000)throw new BadRequestException('rate_minor_per_block must be a supported non-negative integer');
-  const block=this.num(input?.block_quantity,'block_quantity');if(block<0.000001||block>1e12)throw new BadRequestException('block_quantity is outside supported range');
+  const parsedBlock=this.decimalUnits(input?.block_quantity,'block_quantity');
+  if(parsedBlock.units<1n||parsedBlock.units>1_000_000_000_000_000_000n)throw new BadRequestException('block_quantity is outside supported range');
+  const block=parsedBlock.value;
   const currency=this.pattern(input?.currency,'currency',/^[A-Z]{3}$/),effective=this.timestamp(input?.effective_from,'effective_from'),key=this.idem(input?.idempotency_key);
   return {metric_code:metric,rate_version:version,rate_minor_per_block:rate,block_quantity:block,currency,effective_from:effective,idempotency_key:key,unit:UNITS[metric]};
  }
  private normalizeEvent(input:RecordSaasUsageEventDto) {
   const metric=this.enum(input?.metric_code,METRICS,'metric_code') as SaasMeterMetric,cap=this.pattern(input?.capability_code,'capability_code',/^[a-z][a-z0-9._:-]{0,99}$/);
-  const workload=this.enum(input?.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass,quantity=this.num(input?.quantity,'quantity');
-  if(quantity<=0||quantity>1e12)throw new BadRequestException('quantity must be greater than zero and within the supported range');
+  const workload=this.enum(input?.workload_class,WORKLOADS,'workload_class') as SaasWorkloadClass;
+  const parsedQuantity=this.decimalUnits(input?.quantity,'quantity');
+  if(parsedQuantity.units<=0n||parsedQuantity.units>1_000_000_000_000_000_000n)throw new BadRequestException('quantity must be greater than zero and within the supported range');
+  const quantity=parsedQuantity.value;
   const occurred=this.timestamp(input?.occurred_at,'occurred_at'),source=this.enum(input?.source_system,SOURCES,'source_system') as SaasUsageSourceSystem;
   const ref=this.str(input?.source_event_ref,'source_event_ref',255),key=this.idem(input?.idempotency_key);
   return {idempotency_key:key,content:{metric_code:metric,capability_code:cap,workload_class:workload,quantity,occurred_at:occurred,source_system:source,source_event_ref:ref,unit:UNITS[metric]}};
  }
  private normalizeAdjustment(input:CreateSaasUsageAdjustmentDto) {
   const period=this.normalizePeriod(input?.period_start,input?.period_end,366),metric=input?.metric_code===undefined?null:this.enum(input.metric_code,METRICS,'metric_code') as SaasMeterMetric;
-  const quantity=this.num(input?.quantity_delta,'quantity_delta');if(Math.abs(quantity)>1e12)throw new BadRequestException('quantity_delta is outside the supported range');
+  const parsedQuantity=this.decimalUnits(input?.quantity_delta,'quantity_delta');
+  if(parsedQuantity.units>1_000_000_000_000_000_000n||parsedQuantity.units< -1_000_000_000_000_000_000n)throw new BadRequestException('quantity_delta is outside the supported range');
+  const quantity=parsedQuantity.value;
   const cost=this.num(input?.cost_delta_minor,'cost_delta_minor');if(!Number.isSafeInteger(cost)||Math.abs(cost)>9000000000000000)throw new BadRequestException('cost_delta_minor must be a supported integer');
-  if(quantity===0&&cost===0)throw new BadRequestException('An adjustment must change quantity or cost');
+  if(parsedQuantity.units===0n&&cost===0)throw new BadRequestException('An adjustment must change quantity or cost');
   const currency=this.pattern(input?.currency,'currency',/^[A-Z]{3}$/),reasonCode=this.enum(input?.reason_code,REASONS,'reason_code') as SaasAdjustmentReasonCode;
   const reason=this.str(input?.reason,'reason',2000),ref=input?.reference_ref===undefined?null:this.str(input.reference_ref,'reference_ref',255),key=this.idem(input?.idempotency_key);
   return {idempotency_key:key,content:{period_start:period.start,period_end:period.end,metric_code:metric,quantity_delta:quantity,cost_delta_minor:cost,currency,reason_code:reasonCode,reason,reference_ref:ref}};

@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'services/api/**'
+      - 'scripts/performance/**'
+      - 'scripts/recovery/**'
       - 'migrations/**'
       - 'package.json'
       - 'package-lock.json'
@@ -12,6 +14,8 @@ on:
     branches: [main, dev, rakibul-hasan]
     paths:
       - 'services/api/**'
+      - 'scripts/performance/**'
+      - 'scripts/recovery/**'
       - 'migrations/**'
       - 'package.json'
       - 'package-lock.json'
@@ -77,6 +81,16 @@ jobs:
           AUTH_MODE=dev
           DEV_AUTH_ENABLED=false
           EOF
+      - name: Validate bounded load and recovery harnesses
+        run: |
+          node --check scripts/performance/api-load-smoke.mjs
+          node --check scripts/performance/api-load-smoke.test.mjs
+          bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+      - name: Test bounded load and backup/restore safety contracts
+        working-directory: services/api
+        run: |
+          npm run test:load-smoke:contract
+          npm run test:recovery:contract
       - name: Lint API
         working-directory: services/api
         run: npm run lint

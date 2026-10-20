@@ -640,6 +640,10 @@ export interface AiToolExecutionOutcome {
 
   /**
    * Structured execution error.
+   *
+   * Agent retry is permitted only when a registered executor explicitly emits
+   * `retryable: true` and `sideEffectStatus: 'NOT_COMMITTED'`. Missing,
+   * unknown, committed, or ambiguous side-effect status must fail closed.
    */
   error:
     Record<string, unknown>;
