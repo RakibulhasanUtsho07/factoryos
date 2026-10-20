@@ -2,32 +2,40 @@
 
 **Ledger ID:** FOS-TRACE-SCOPE-01  
 **Prepared:** 2026-10-20  
-**Status:** `OPEN — technical extraction reconciled; authoritative scope/sign-off reconciliation pending Product/Architecture`  
+**Status:** `PARTIAL — §140 scope arithmetic reconciled; active requirement occurrence ledger and source-owner sign-off pending Product/Architecture`  
 **Source:** SRS v2.1 Final / FOS-SRS-001, §140 and the requirement-by-requirement matrix derived from the inspected 2026-10-02 source copy.  
 **Related register:** [Source-of-record and approval register](srs-source-of-record-and-approval-register.md).
 
 ## 1. Reconciliation result — what is and is not established
 
-The current audit has established two different measures:
+The source itself gives a **scope-ledger arithmetic that can be reconciled**. SRS §140 says the inherited v2.0 design scope is 900 requirements; v2.1 adds 50 productization/production-readiness requirements (32 functional and 18 non-functional); the consolidated scope is 950. The same source states the added priority counts are P0=35, P1=15, P2=0. Its inherited cumulative priorities are P0=261, P1=567, P2=72, producing final cumulative priorities of P0=296, P1=582, P2=72.
 
-1. **950 cumulative design-scope requirements** reported by SRS §140 (P0=296, P1=582, P2=72).
-2. **899 distinct FR/NFR IDs** extracted into `docs/srs-v2.1-requirement-evidence-matrix.md`: 259 parsed as P0, 546 parsed as P1, 57 parsed as P2, and 37 whose source priority/wording could not be reliably assigned from the extracted text.
+That arithmetic reconciles exactly:
+- Scope: 900 + 50 = 950.
+- P0: 261 + 35 = 296.
+- P1: 567 + 15 = 582.
+- P2: 72 + 0 = 72.
 
-These values are **not currently a like-for-like denominator**. A cumulative design-scope count can count source-revision occurrences or design-scope entries; a distinct-ID index deduplicates by ID and can hide reused IDs with changed wording or priority. Consequently:
+The repository's **899 distinct FR/NFR ID figure is a different, provisional measure**: it was extracted from the *full 103-page PDF text*, which contains the final v2.1 document plus inherited/historical revision content and cross-reference mentions. It is not a confirmed count of unique active requirement rows in the current v2.1 scope. Therefore:
+- The arithmetic difference (950 - 899 = 51) is **not evidence of 51 missing implementations**, and neither is it proof of 51 duplicates.
+- The priority buckets (P0=259, P1=546, P2=57, review=37) belong to this full-PDF distinct-ID index, not a source-owner-approved current active v2.1 requirement occurrence ledger. They must not be subtracted from §140's cumulative categories.
+- The 37 IDs with unresolved source-row/priority extraction are currently a separate exception set. Literal source searches often return references from other requirement rows, metrics, scope/history or scenarios; a one-line table-row search is only an extraction diagnostic. Their canonical IDs, active applicability and priority require Product/Requirements source-owner disposition.
+- The 842-row JSON/CSV is a **provisional closure tracker population** (805 source-index rows parsed as P0/P1 plus 37 review candidates). It is not proven to be exactly the active v2.1 P0/P1 set and is not an implementation-gap count. Keep its entries OPEN until the active source occurrence ledger is reconciled.
 
-- The arithmetic difference (950 - 899 = 51) is **not evidence of 51 missing implementations**.
-- The difference is not yet proved to be exactly 51 duplicated/superseded rows either. That requires comparing source occurrences and ID revisions.
-- The category differences (296 vs 259, 582 vs 546, 72 vs 57) cannot be interpreted as missing requirements: the 37 unknown-priority IDs and the different counting bases invalidate category-by-category subtraction.
-- The matrix currently has 862 rows with parsed priorities (259 + 546 + 57) and 37 explicit `REVIEW SOURCE` rows. Total: 899 unique ID rows. A separate closure register includes all 805 known P0/P1 rows plus all 37 unresolved-priority rows as a **conservative gate set of 842 rows** until their priorities are approved. This is a tracker population, not a claim that all 37 unknowns are P0/P1.
+**Current decision:** the arithmetic within §140 is reconciled; the difference between the §140 active cumulative scope and the 899-key full-PDF text index remains **not numerically reconciled**. The missing deliverable is a revision-aware occurrence ledger separating active inherited v2.0 requirements, v2.1 delta requirements, changed/superseded wording, and cross-reference-only mentions. Product/Requirements + Architecture must approve that ledger before the release gate may be closed.
 
 | Metric | SRS §140 | Repository extraction | Current interpretation | Closure action |
 |---|---:|---:|---|---|
-| Cumulative scope / distinct-ID index | 950 cumulative | 899 distinct FR/NFR IDs | Different counting units; not reconciled to a common basis | Product + Requirements Lead must define what the §140 count includes and approve a canonical row/occurrence ledger |
-| P0 | 296 cumulative | 259 parsed distinct IDs | Not comparable by subtraction | Re-read each normative row and classify source occurrence and current priority |
-| P1 | 582 cumulative | 546 parsed distinct IDs | Not comparable by subtraction | Same |
-| P2 | 72 cumulative | 57 parsed distinct IDs | Not comparable by subtraction | Same |
+| §140 cumulative arithmetic vs full-PDF distinct-ID index | 900 + 50 = 950 cumulative | 899 distinct textual ID keys across all 103 PDF pages | §140 arithmetic reconciled; 899-key index includes historical text/cross-references and is not active v2.1 scope | Product + Requirements + Architecture approve the 950-row active occurrence/canonical-ID ledger and 899-key crosswalk |
+| P0 | 296 cumulative | 259 parsed P0 IDs in full-PDF text index | Different population; not comparable by subtraction | Reconcile all active v2.0 P0 rows plus v2.1 delta and cross-reference/supersession cases |
+| P1 | 582 cumulative | 546 parsed P1 IDs in full-PDF text index | Different population; not comparable by subtraction | Same, with source page and canonical ID for every active row |
+| P2 | 72 cumulative | 57 parsed P2 IDs in full-PDF text index | Different population; not comparable by subtraction | Same, including all current P2 active rows and cross-references |
 | Priority/wording review | Not stated as a separate cumulative measure | 37 distinct IDs marked `REVIEW SOURCE` | Known extraction exceptions; source text needs manual review | Resolve every ID below against the exact source PDF table and record reviewer/evidence |
 | Arithmetic (950 - 899) | 950 | 899 | 51 difference only; **not a missing-code count** | Do not close until source occurrences/revision semantics explain the relationship |
+
+## 1A. Scope arithmetic evidence from SRS §140
+
+The exact inspected source text on **PDF page 103 / printed §140** says: “The inherited v2.0 design-scope is 900 requirements”; “v2.1 adds 50 productization and production-readiness requirements: 32 functional and 18 non-functional”; “New v2.1 priority additions are P0=35, P1=15 and P2=0”; and “The consolidated design-scope becomes 950 requirements: cumulative P0=296, P1=582 and P2=72.” The inherited v2.0 priority baseline is P0=261, P1=567 and P2=72 (sum 900). This confirms the arithmetic above but does **not** enumerate all 950 current active requirement occurrences or explain which of the 899 full-document distinct IDs are still active.
 
 ## 2. Source-occurrence reconciliation method
 

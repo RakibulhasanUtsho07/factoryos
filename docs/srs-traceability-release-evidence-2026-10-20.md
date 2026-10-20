@@ -19,21 +19,21 @@
 
 ## Requirement-scope snapshot
 
-The source matrix currently reports **899 unique extracted FR/NFR IDs**. SRS §140 reports **950 cumulative design-scope requirements (P0=296, P1=582, P2=72)**. The counts currently use different units and remain un-reconciled to an approved source-occurrence ledger; the arithmetic delta of 51 must not be treated as missing requirements or as duplicate rows without a source-owner decision.
+The source §140 scope arithmetic is reconciled: inherited v2.0 scope 900 + 50 v2.1 additions (32 functional, 18 non-functional) = 950 cumulative requirements, with P0=296, P1=582, P2=72. Separately, the repository's **899 unique textual FR/NFR ID keys** were extracted across the full 103-page PDF, including inherited/historical revision content and cross-reference mentions; that figure is not the current active v2.1 row count. A revision-aware occurrence ledger is still required to reconcile current applicability/canonical IDs and the 37 exceptions. The arithmetic delta of 51 is not a missing-code count or proof of 51 duplicate rows.
 
 | Gate count | Value | Status |
 |---|---:|---|
 | Parsed P0 IDs in current matrix | 259 | Source priority extracted, not source-owner-attested |
 | Parsed P1 IDs in current matrix | 546 | Source priority extracted, not source-owner-attested |
-| P0/P1 rows with parsed priority | 805 | Gate candidate set, not 805 accepted requirements |
+| P0/P1 rows with parsed priority in full-PDF ID index | 805 | Provisional tracker only; active v2.1 applicability is unconfirmed |
 | Unresolved source-priority / wording IDs | 37 | `OPEN_SOURCE_OWNER_REVIEW`; retained conservatively in release gate |
-| P0/P1 plus unresolved-priority closure tracker | 842 | `OPEN_NOT_ACCEPTED` |
+| Full-PDF-index closure tracker plus unresolved-priority rows | 842 | `OPEN_NOT_ACCEPTED`; not confirmed active v2.1 requirement set |
 | Requirement rows marked accepted in closure tracker | 0 | No row is implicitly passed by this audit |
 | Source-owner-approved SRS/HLD/Blueprint baseline | 0 of 3 evidenced in repo | `BLOCKED`; approval register fields remain pending |
 
 ## Evidence ledger coverage as measured from matrix pointers
 
-The row-level [P0/P1 evidence and gap ledger](srs-p0-p1-evidence-closure.csv) contains 842 records copied from the source matrix. Its literal-path scan classifies the matrix's evidence cells as follows:
+The row-level [P0/P1 evidence and gap ledger](srs-p0-p1-evidence-closure.csv) contains 842 provisional records copied from the full-PDF ID index. Every row records `UNVERIFIED_ACTIVE_V21_SCOPE` and `EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED`. Its literal-path scan classifies the matrix's evidence cells as follows:
 
 - 802 rows have documentation/family-level pointers only.
 - 12 rows contain a literal code path but no direct test path in that matrix cell.
@@ -57,3 +57,21 @@ The exact merge SHA has a successful traceability consistency run. That establis
 6. Applicable staging/operational evidence required by AS-132–AS-141 and production NFR gates (for example real restore, large-tenant load, health-triggered rollout rollback and external deletion propagation) remains unverified.
 
 Do not promote this snapshot to PASS until a new exact candidate SHA is tested and the closure register has truthful, reviewed evidence/disposition for each applicable row. Follow-up code/doc changes require a refreshed run against their own tested SHA.
+
+
+## Follow-up audit merge — exact SHA evidence (2026-10-20)
+
+The source-occurrence exception evidence and validation for the CSV were added in a follow-up documentation/audit-only change. Keep this separate from the prior snapshot above.
+
+| Evidence item | Result |
+|---|---|
+| Follow-up PR | [PR #65](https://github.com/RakibulhasanUtsho07/factoryos/pull/65) — merged |
+| PR head SHA tested | `2490769ad03b898161183e66502532ec22991af4` |
+| Traceability CI on PR head | [Run 39431854145](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39431854145) — **SUCCESS** |
+| Follow-up merge SHA on `main` | `ebcc2134b93fbbc5221e8131c4df46b7319de732` |
+| Traceability CI on exact follow-up merge SHA | [Run 39431916800](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39431916800) — **SUCCESS** |
+| Additional artifact | `docs/srs-priority-exception-source-review.csv` has 37 source exception rows and explicit pending owner disposition. |
+
+The follow-up merge contains traceability documentation, source-occurrence evidence, workflow-path changes, and validator changes. No application API/domain code or SQL migrations were changed by this follow-up. API CI, PostgreSQL CI, and production dependency security were **not run on SHA `ebcc2134b93fbbc5221e8131c4df46b7319de732`**; their earlier results remain associated with the exact older SHAs recorded in the master audit and must not be relabelled as current-SHA results.
+
+The merged follow-up SHA has a successful traceability-consistency run, not a product release approval. The overall P0 source-baseline/traceability gate remains **BLOCKED** because the authoritative DMS/source-owner approvals, numerical occurrence-ledger reconciliation, 37 priority dispositions, direct per-row code/migration/test evidence, named owners/reviewers, and applicable operational evidence are still outstanding.

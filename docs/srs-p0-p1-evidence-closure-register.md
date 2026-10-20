@@ -7,7 +7,7 @@
 
 ## Purpose
 
-`srs-p0-p1-evidence-closure-register.json` is the machine-readable closure tracker for every matrix row whose extracted priority is P0 or P1, plus every row whose priority still says `REVIEW SOURCE`. It currently contains **842 unique rows**: 259 parsed P0 IDs, 546 parsed P1 IDs, and 37 unresolved-priority IDs. The 37 unknowns are kept in the gate set conservatively; their actual priority must be determined from the authoritative SRS. They must not silently disappear from release review.
+`srs-p0-p1-evidence-closure-register.json` is the machine-readable closure tracker for every matrix row whose extracted priority is P0 or P1, plus every row whose priority still says `REVIEW SOURCE`. It currently contains **842 unique provisional tracker rows**: 259 IDs parsed as P0, 546 parsed as P1, and 37 unresolved source-row/priority IDs. These priority classifications come from the full-PDF text index (which includes inherited/historical material and cross-references), so this is not yet proven to be the exact active v2.1 P0/P1 requirement set. Keep the rows open conservatively until a revision-aware occurrence ledger and source-owner approval confirm active scope, canonical IDs and priorities. They must not silently disappear from release review, but must not be reported as 842 confirmed active release requirements either.
 
 The register is intentionally initialized with `disposition: OPEN` and `acceptanceResult: NOT_ACCEPTED`. The matrix may describe a bounded feature as “Implemented”; that is a repository assessment, not a source-owner-approved requirement acceptance.
 
@@ -45,8 +45,8 @@ The [P0/P1 evidence closure CSV](srs-p0-p1-evidence-closure.csv) contains one al
 ## What this register does not prove
 
 - It is not a signed source-owner or release approval.
-- 842 is the **conservative evidence-closure tracker population**, not the number of missing implementations or an assertion that every row is P0/P1.
-- The 950 cumulative design-scope count versus 899 distinct extracted IDs remains open until source occurrences and revision semantics are reconciled in [the scope reconciliation ledger](srs-requirement-scope-reconciliation.md).
+- 842 is the **provisional full-PDF-index evidence-closure tracker population**, not the number of missing implementations and not a confirmed count of active v2.1 P0/P1 requirements. Each row explicitly remains `UNVERIFIED_ACTIVE_V21_SCOPE`.
+- The §140 arithmetic (900 inherited v2.0 + 50 v2.1 additions = 950) is reconciled. The relation between that cumulative scope and 899 distinct IDs extracted across the full multi-version PDF remains open until a revision-aware occurrence ledger confirms active v2.1 rows, canonical IDs and cross-reference/supersession classifications in [the scope reconciliation ledger](srs-requirement-scope-reconciliation.md).
 - CI consistency is not production deployment, penetration-test certification, live adapter evidence, or an actual restore rehearsal.
 
 ## Release gate
