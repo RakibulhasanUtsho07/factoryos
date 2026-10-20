@@ -5,7 +5,7 @@ export type OtDeliveryStatus = 'ON_TIME' | 'LATE' | 'SEQUENCE_GAP';
 // This deliberately accepts only a small, auditable OPC UA NodeId grammar.
 // It is not intended to model every escaped-string form supported by the OPC UA spec.
 export const OPC_UA_NODE_ID_PATTERN =
-  /^(?:ns=(?:0|[1-9]\\d{0,3});)?(?:i=(?:0|[1-9]\\d{0,9})|s=[A-Za-z0-9_.:\\/-]{1,256}|g=[0-9a-fA-F-]{36}|b=[A-Za-z0-9+/]{1,256}={0,2})$/;
+  /^(?:ns=(?:0|[1-9]\d{0,3});)?(?:i=(?:0|[1-9]\d{0,9})|s=[A-Za-z0-9_.:\/-]{1,256}|g=[0-9a-fA-F-]{36}|b=[A-Za-z0-9+/]{1,256}={0,2})$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;

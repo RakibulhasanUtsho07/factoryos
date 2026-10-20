@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { hashOtValue } from './ot-device.contract';
+import { hashOtValue, normalizeOtObject } from './ot-device.contract';
 import { OtDeviceService } from './ot-device.service';
 
 const tenantId = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
