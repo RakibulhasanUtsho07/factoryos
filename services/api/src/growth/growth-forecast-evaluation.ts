@@ -72,7 +72,7 @@ function assertNumber(name: string, value: number): void {
 }
 
 function parseScaledDecimal(decimal: string): bigint {
-  if (!/^-?\\d+(?:\\.\\d{1,8})?$/.test(decimal)) throw new Error('FORECAST_DECIMAL_FORMAT_INVALID');
+  if (!/^-?\d+(?:\.\d{1,8})?$/.test(decimal)) throw new Error('FORECAST_DECIMAL_FORMAT_INVALID');
   const negative = decimal.startsWith('-');
   const unsigned = negative ? decimal.slice(1) : decimal;
   const [whole, fraction = ''] = unsigned.split('.');
