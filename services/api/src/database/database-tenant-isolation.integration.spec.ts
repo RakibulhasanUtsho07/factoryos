@@ -274,16 +274,31 @@ describe(
                 WHERE p.polrelid = c.oid
                   AND p.polpermissive
               ) AS has_permissive_policy,
-              EXISTS (
-                SELECT 1
-                FROM pg_policy p
-                WHERE p.polrelid = c.oid
-                  AND p.polname = 'fo_privacy_scope_enforce'
-                  AND NOT p.polpermissive
-                  AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
-                  AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
-                  AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%tenant_id%'
-                  AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%tenant_id%'
+              (
+                EXISTS (
+                  SELECT 1
+                  FROM pg_policy p
+                  WHERE p.polrelid = c.oid
+                    AND p.polname = 'fo_privacy_scope_enforce'
+                    AND NOT p.polpermissive
+                    AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                    AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                    AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%tenant_id%'
+                    AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%tenant_id%'
+                )
+                OR (
+                  c.relname = 'ai_tool_registry'
+                  AND EXISTS (
+                    SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+                      AND p.polname = 'ai_tool_registry_select_scope' AND p.polcmd = 'r'
+                      AND COALESCE(pg_get_expr(p.polqual, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+                      AND p.polname = 'ai_tool_registry_insert_tenant_scope' AND p.polcmd = 'a'
+                      AND COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), '') ILIKE '%factoryos_current_tenant_id%'
+                  )
+                )
               ) AS has_restrictive_policy
             FROM pg_class c
             INNER JOIN pg_namespace n ON n.oid = c.relnamespace

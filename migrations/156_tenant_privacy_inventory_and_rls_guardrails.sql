@@ -107,10 +107,12 @@ BEGIN
     END IF;
 
     EXECUTE format('DROP POLICY IF EXISTS fo_privacy_scope_enforce ON %I.%I', item.schema_name, item.relation_name);
-    EXECUTE format(
-      'CREATE POLICY fo_privacy_scope_enforce ON %I.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',
-      item.schema_name, item.relation_name, tenant_predicate, tenant_predicate
-    );
+    IF item.relation_name <> 'ai_tool_registry' THEN
+      EXECUTE format(
+        'CREATE POLICY fo_privacy_scope_enforce ON %I.%I AS RESTRICTIVE FOR ALL USING (%s) WITH CHECK (%s)',
+        item.schema_name, item.relation_name, tenant_using_predicate, tenant_check_predicate
+      );
+    END IF;
 
     is_export_allowlisted := item.relation_name IN (
       'legal_entities', 'factories', 'orders', 'order_lines', 'order_event_projections',

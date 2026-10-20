@@ -62,7 +62,25 @@ BEGIN
       RAISE EXCEPTION 'No permissive policy exists for public.%', relation.relname;
     END IF;
 
-    IF NOT EXISTS (
+    IF relation.relname = 'ai_tool_registry' THEN
+      -- Preserve the explicit SELECT-only global visibility and tenant-only
+      -- INSERT contract; no generic FOR ALL policy may enable UPDATE/DELETE.
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_policy p
+        WHERE p.polrelid = relation.oid AND p.polname = 'ai_tool_registry_select_scope'
+          AND p.polcmd = 'r' AND p.polpermissive
+          AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%tenant_id IS NULL%'
+          AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy p
+        WHERE p.polrelid = relation.oid AND p.polname = 'ai_tool_registry_insert_tenant_scope'
+          AND p.polcmd = 'a' AND p.polpermissive
+          AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+          AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%tenant_id%'
+      ) THEN
+        RAISE EXCEPTION 'AI tool registry must preserve global SELECT and tenant-only INSERT policies';
+      END IF;
+    ELSIF NOT EXISTS (
       SELECT 1 FROM pg_policy p
       WHERE p.polrelid = relation.oid AND p.polname = 'fo_privacy_scope_enforce'
         AND NOT p.polpermissive
