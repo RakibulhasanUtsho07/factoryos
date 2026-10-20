@@ -16,7 +16,7 @@ const numberOrNull = (name) => {
   return value !== undefined && /^\d+$/.test(value) ? Number(value) : null;
 };
 const status = required('FACTORYOS_DR_STATUS') ?? 'TECHNICAL_FAIL';
-const candidateManifestPath = required('FACTORYOS_CANDIDATE_MIGRATION_MANIFEST');
+const candidateManifestPath = required('FACTORYOS_DR_CANDIDATE_MIGRATION_MANIFEST') ?? required('FACTORYOS_CANDIDATE_MIGRATION_MANIFEST');
 const artifactPath = required('FACTORYOS_BACKUP_OUTPUT');
 const checksumPath = artifactPath ? artifactPath + '.sha256' : null;
 
@@ -26,10 +26,10 @@ const receipt = {
   candidate: {
     commitSha: required('FACTORYOS_CANDIDATE_SHA') ?? required('GITHUB_SHA'),
     migrationManifestPath: candidateManifestPath,
-    migrationManifestSha256: required('FACTORYOS_CANDIDATE_MANIFEST_SHA256'),
-    migrationCount: numberOrNull('FACTORYOS_CANDIDATE_MIGRATION_COUNT'),
-    migrationStatus: required('FACTORYOS_CANDIDATE_MIGRATION_STATUS') ?? 'NOT_RUN',
-    failedTransactionRecoveryStatus: required('FACTORYOS_FAILURE_RECOVERY_STATUS') ?? 'NOT_RUN',
+    migrationManifestSha256: required('FACTORYOS_DR_CANDIDATE_MANIFEST_SHA256') ?? required('FACTORYOS_CANDIDATE_MANIFEST_SHA256'),
+    migrationCount: numberOrNull('FACTORYOS_DR_CANDIDATE_MIGRATION_COUNT') ?? numberOrNull('FACTORYOS_CANDIDATE_MIGRATION_COUNT'),
+    migrationStatus: required('FACTORYOS_DR_CANDIDATE_MIGRATION_STATUS') ?? required('FACTORYOS_CANDIDATE_MIGRATION_STATUS') ?? 'NOT_RUN',
+    failedTransactionRecoveryStatus: required('FACTORYOS_DR_FAILURE_RECOVERY_STATUS') ?? required('FACTORYOS_FAILURE_RECOVERY_STATUS') ?? 'NOT_RUN',
   },
   status,
   failedStage: status === 'TECHNICAL_PASS' ? null : required('FACTORYOS_DR_STAGE'),
@@ -65,7 +65,7 @@ const receipt = {
     apiReadinessStatus: required('FACTORYOS_DR_API_READINESS_STATUS') ?? 'NOT_REPORTED',
     tenantIsolationStatus: required('FACTORYOS_DR_TENANT_ISOLATION_STATUS') ?? 'NOT_REPORTED',
     auditContinuityStatus: required('FACTORYOS_DR_AUDIT_CONTINUITY_STATUS') ?? 'NOT_REPORTED',
-    migrationRecoveryStatus: required('FACTORYOS_FAILURE_RECOVERY_STATUS') ?? 'NOT_RUN',
+    migrationRecoveryStatus: required('FACTORYOS_DR_FAILURE_RECOVERY_STATUS') ?? required('FACTORYOS_FAILURE_RECOVERY_STATUS') ?? 'NOT_RUN',
   },
   measured: {
     backupDurationSeconds: numberOrNull('FACTORYOS_DR_BACKUP_DURATION_SECONDS'),
