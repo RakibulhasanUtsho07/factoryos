@@ -51,6 +51,8 @@ if (args.decision === 'PASS') {
     ['restore', evidence.verification?.restoreStatus === 'PASS'],
     ['candidate migrations', evidence.candidate?.migrationStatus === 'PASS' && Number(evidence.candidate?.migrationCount) > 0],
     ['failed-transaction recovery', evidence.verification?.migrationRecoveryStatus === 'PASS'],
+    ['restored schema smoke', evidence.verification?.schemaSmokeStatus === 'PASS'],
+    ['running candidate API readiness', evidence.verification?.apiReadinessStatus === 'PASS'],
     ['application smoke', evidence.verification?.applicationSmokeStatus === 'PASS'],
     ['tenant isolation', evidence.verification?.tenantIsolationStatus === 'PASS'],
     ['audit continuity', evidence.verification?.auditContinuityStatus === 'PASS'],
