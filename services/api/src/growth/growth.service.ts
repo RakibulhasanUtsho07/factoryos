@@ -1698,7 +1698,7 @@ export class GrowthService {
         .digest('hex');
 
       const prior = await client.query<{ id: string; request_hash: string }>(
-        `SELECT id::text AS id, request_hash FROM growth_forecast_evaluations
+        `SELECT id::text AS id, input_hash AS request_hash FROM growth_forecast_evaluations
          WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3 AND idempotency_key = $4
          FOR UPDATE`,
         [tenantId, factoryId, opportunityId, idempotencyKey],
@@ -1757,7 +1757,7 @@ export class GrowthService {
 
       if (!inserted.rows[0]) {
         const raced = await client.query<{ id: string; request_hash: string }>(
-          `SELECT id::text AS id, request_hash FROM growth_forecast_evaluations
+          `SELECT id::text AS id, input_hash AS request_hash FROM growth_forecast_evaluations
            WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3 AND idempotency_key = $4`,
           [tenantId, factoryId, opportunityId, idempotencyKey],
         );
