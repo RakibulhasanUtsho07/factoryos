@@ -37,7 +37,21 @@ For every direct `tenant_id` relation the migration enables and forces row-level
 
 The inventory deliberately does not automatically make new tables exportable. Export authorization remains tied to the reviewed source/target allowlists in `SAAS_TENANT_DATASET_TABLES` and the special logical IAM transfer adapter. The PostgreSQL CI suite now applies and reapplies migration 156, then executes `services/api/test/tenant-data-governance-inventory.sql`; the tenant-isolation integration test also discovers all public tables with `tenant_id` from PostgreSQL catalogs instead of relying on a fixed hand-maintained table list.
 
-**Coverage boundary:** catalog enumeration now records all public base/partition relations, but a row classified `NO_DIRECT_TENANT_ID` is inventory visibility, not proof of correct tenant semantics. Review those exclusions to identify globally shared tables and every additional indirect-ownership relation; only after documenting the scope model and adding join/foreign-key tests should a relation be promoted to a derived-scope category. The inventory still does not prove external copies are purged or that every tenant-owned relation has a usable export/erasure adapter.
+**Coverage boundary:** migration 156's `tenant_relation_inventory` remains the fail-closed direct-column/export inventory; `NO_DIRECT_TENANT_ID` in that table does not, by itself, claim that the relation is global or tenant-safe. Migration 159 adds the separate `factoryos_governance.tenant_relation_ownership_reviews` ledger for every public base/partition relation. It records `DIRECT_TENANT`, `DERIVED_TENANT`, `GLOBAL_SHARED`, or `UNRESOLVED`, the evidence basis, exact generated FK-derived scope predicate, export/erasure disposition, and review status.
+
+For no-direct-column tables, migration 159 recursively traverses declared foreign keys to find tenant-owned parents. A derived-scope policy ANDs every ownership-bearing FK path and enforces the predicate in restrictive `USING` and `WITH CHECK` policies with FORCE RLS. Nullable FK groups may be absent, but populated relationships must resolve inside the active tenant. This covers ordinary linked relations plus `user_roles` and `role_permissions`; the latter retain their derived membership/role/factory semantics. Linkage discovery does **not** make a relation exportable or erasable: generic export remains excluded and generic erasure blocked until a category-specific adapter is explicitly reviewed.
+
+The only initial `GLOBAL_SHARED` entries are explicit repository-policy decisions for the tenant registry, shared user identity principals, global permission catalogue and schema migration ledger. They remain excluded from generic tenant export and protected from generic erasure. A table with neither direct `tenant_id`, a declared FK path to tenant-owned data, nor an explicit global-scope entry is recorded as `UNRESOLVED`, receives a deny-all restrictive policy, and fails the PostgreSQL ownership-review gate. Missing FK constraints are not silently treated as proof of global ownership.
+
+The automated FK review is a database-evidence classification, not a substitute for a data owner approving legal retention durations or a new transfer adapter. The inventory still does not prove external copies are purged or that every tenant-owned relation has a usable export/erasure adapter.
+
+## Ownership review and derived-scope closure (migration 159)
+
+The ownership review gate is `services/api/test/tenant-ownership-review.sql`, run after migration 159 and the migration-156 inventory contract in PostgreSQL CI. It checks that every public base/partition relation has an ownership record, no unresolved relation remains, global-scope records stay excluded/protected, and each FK-derived relation has FORCE RLS plus a restrictive tenant policy. Its adversarial fixture exercises cross-tenant reads and attempted writes through `user_roles` and `role_permissions`, including an intentionally inconsistent legacy assignment that must remain hidden from both tenants.
+
+API-level negative coverage is in `saas-tenant-data-transfer.postgres.integration.spec.ts`: tenant B cannot read tenant A's transfer history, attest tenant A's export, or start tenant A's migration by supplying a known transfer UUID. The earlier direct SQL query also asserts that the foreign tenant sees zero transfer rows. These tests complement (rather than replace) the schema-wide RLS/catalog checks.
+
+This closure intentionally does not expand the reviewed dataset export allowlist: only the existing direct-table allowlist and the dedicated logical IAM remapping adapter may be transferred. New FK-derived tables remain excluded until a specific data category/source adapter and its manifest/erasure behavior are reviewed.
 
 ## Export acceptance contract
 
@@ -82,6 +96,7 @@ Object-store exports, derived indexes, caches, replicas, external providers and 
 |---|---|---|---|
 | Read/list/get | A | B row/ID | deny or indistinguishable not-found; zero row data |
 | Create/update/delete | A | B foreign key/resource | reject; no partial mutation |
+| SaaS transfer history / export attestation / migration transition | A | B transfer UUID | service returns not-found; no version/state mutation |
 | Export request/worker | A | B transfer ID/bundle | reject before snapshot/storage access |
 | Export source SQL | A RLS context | B tenant rows | zero rows; explicit tenant predicate and RLS both active |
 | Migration target | A transfer | B pre-existing target rows | reject; never overwrite or import into another tenant |
@@ -95,7 +110,7 @@ Object-store exports, derived indexes, caches, replicas, external providers and 
 ## Release gates
 
 - Keep migration 156 and `services/api/test/tenant-data-governance-inventory.sql` as the automated inventory gate for every public base/partition relation. Direct `tenant_id` relations must have forced RLS and a restrictive current-tenant fence, except explicitly contracted global registries such as `ai_tool_registry` whose command-specific policies are independently asserted.
-- Review every `NO_DIRECT_TENANT_ID` exclusion and classify it as global/control-plane or tenant-derived. Any tenant-derived relation beyond `user_roles` and `role_permissions` must receive explicit ownership joins and two-tenant tests before being considered covered.
+- Require migration 159's ownership-review ledger to cover every public base/partition relation with no `UNRESOLVED` entries; FK-derived rows must have FORCE RLS and restrictive tenant `USING`/`WITH CHECK` predicates. A new global/shared table needs an explicit rationale/registry entry, and remains excluded from generic export/erasure.
 - Retain two-tenant PostgreSQL tests for tenant read/write denial, RLS boundaries, retention/legal-hold/erasure ledgers, export/migration manifests and audit access; catalog checks do not replace endpoint-level failure, replay, or rollback tests.
 - Approve retention durations/legal basis before execution; verify dry-run, held data, recent foreign-key dependents, partial failure, idempotent retry and immutable receipts.
 - Extend the reviewed table/category inventory to all tenant-owned relations and implement/configure object-store, index/cache, replica and backup expiry adapters before advertising whole-tenant deletion as supported.
