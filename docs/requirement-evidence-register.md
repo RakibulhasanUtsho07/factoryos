@@ -1,8 +1,9 @@
 # FactoryOS Requirement Evidence Register
 
-**Purpose:** One-ID-per-row index of every SRS requirement ID explicitly cited in the inspected repository engineering documents for the Round 43 provisional audit.  
-**Audit baseline:** Branch rakibul-hasan; repository inspection baseline 1374e6eb595db054b5ac1a9e07786fe1e10d56f5. Current supporting audit and release links may be documentation-only commits ahead of that baseline.  
-**Important limitation:** This is not the master SRS requirement list. The signed authoritative SRS/HLD/Blueprint files were not present in the inspected repository tree, so this register cannot prove completeness or establish official requirement priority. Do not treat inferred or domain-document citations as replacement requirements.
+**Purpose:** Domain-priority companion index for the Round 43 audit. The exhaustive distinct FR/NFR ID list and source excerpts live in [SRS v2.1 Requirement-by-Requirement Evidence Matrix](srs-v2.1-requirement-evidence-matrix.md); this file highlights key IDs and high-risk domain boundaries rather than claiming its shorter table is exhaustive.  
+**Source baseline:** SRS v2.1 FINAL / FOS-SRS-001, HLD/LLD v1.0 and Blueprint v1.0, each dated 2026-10-02, were found in the supplied Library, but not checked into the repo.  
+**Audit baseline:** Branch rakibul-hasan; tested application evidence is linked by its exact CI SHA.  
+**Important limitation:** The SRS final scope ledger declares 950 cumulative requirements; 899 distinct FR/NFR IDs were extracted, with a 51-entry reconciliation delta and 37 priorities needing manual review. This file and the exhaustive matrix remain provisional until that source discrepancy and each row's acceptance evidence are reconciled.
 
 ## Status key
 
@@ -13,9 +14,11 @@
 
 ## Requirement-ID register
 
+For all extracted source FR/NFR IDs, see [the exhaustive requirement matrix](srs-v2.1-requirement-evidence-matrix.md). The shorter table below remains a curated risk/domain index.
+
 | Requirement ID / contract | Priority cited by repository docs | Evidence | Status | Acceptance boundary / next action |
 |---|---|---|---|---|
-| Master SRS/HLD/Blueprint source baseline | P0 for formal sign-off (provisional) | docs/ai-runtime-agent-execution-traceability.md references SRS v2.1 FINAL, HLD/LLD v1.0 and Blueprint v1.0; files not found in the inspected tree | FORMAL AUDIT BLOCKED | Add approved immutable revisions/hashes and import the complete requirement list before declaring full traceability. |
+| Master SRS/HLD/Blueprint source baseline | P0 for formal sign-off (provisional) | Library copies identify SRS v2.1 FINAL, HLD/LLD v1.0 and Blueprint v1.0, all dated 2026-10-02; artifacts not yet in repository | PARTIAL / sign-off blocked | Commit or hash-pin the source artifacts and reconcile 950 cumulative scope vs 899 distinct extracted IDs; verify all 37 priority cells requiring manual review. |
 | WP02 inventory core domain | Not independently verified in master SRS | docs/inventory-stock-ledger.md; migrations 038 and 058–088; inventory API and SQL contracts | PARTIAL | RFID/offline workflow, costing/valuation, complete lot-aware allocation and full cycle-count maker-checker remain open. |
 | FR-AGT-01 | P0 | docs/ai-runtime-agent-execution-traceability.md; agent catalogue/runtime; migrations 029–030 and related specs | PARTIAL | Enable/pause/restrict controls and scope enforcement exist; historic null ownership, complete canonical-flow acceptance and language/owner end-to-end proof remain. |
 | FR-AGT-06 | P1 | docs/ai-runtime-agent-execution-traceability.md; evaluation services/cases; migrations 031–032 and specs | PARTIAL | Caller-provided plans and synthetic results do not prove actual planner/policy decisions or Control Center frontend integration. |
