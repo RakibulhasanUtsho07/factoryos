@@ -589,6 +589,7 @@ describe('GrowthService', () => {
 
     expect(result.signed_error).toBe('10.00000000');
     expect(result.replayed).toBe(false);
+    expect(client.query.mock.calls[2][0]).toContain('input_hash AS request_hash');
     expect(client.query.mock.calls[3][0]).toContain('ON CONFLICT DO NOTHING');
     expect(client.query.mock.calls[4][0]).toContain('INSERT INTO outbox_events');
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
