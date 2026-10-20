@@ -9,7 +9,7 @@
 
 The [source-of-record/approval register](srs-source-of-record-and-approval-register.md) and [scope reconciliation ledger](srs-requirement-scope-reconciliation.md) define the source approval gate and the 950-cumulative-versus-899-distinct-ID reconciliation. All 37 extracted rows with unresolved source wording/priority are listed in that ledger.
 
-The machine-readable [P0/P1 evidence closure register](srs-p0-p1-evidence-closure-register.json) tracks 842 rows: 805 rows with parsed P0/P1 priority plus all 37 unresolved-priority candidates until source review completes. These rows are open by default. “Implemented (bounded)” in this curated register is not equivalent to requirement-level PASS; exact candidate SHA, named owner, reviewer, direct implementation/migration/test/CI references and required staging evidence belong in the closure register. The validator enforces its row coverage and prevents unsupported PASS entries.
+The [row-level evidence/gap export](srs-p0-p1-evidence-closure.csv) and machine-readable [P0/P1 evidence closure register](srs-p0-p1-evidence-closure-register.json) tracks 842 rows: 805 rows with parsed P0/P1 priority plus all 37 unresolved-priority candidates until source review completes. These rows are open by default. “Implemented (bounded)” in this curated register is not equivalent to requirement-level PASS; exact candidate SHA, named owner, reviewer, direct implementation/migration/test/CI references and required staging evidence belong in the closure register. The validator enforces its row coverage and prevents unsupported PASS entries.
 
 ## Status key
 

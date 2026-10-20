@@ -29,6 +29,10 @@ The register is intentionally initialized with `disposition: OPEN` and `acceptan
 
 Empty evidence arrays and null approval fields are deliberate. The register does not fabricate per-ID tests or source-owner sign-off where the repository matrix only carries family-level pointers.
 
+## Row-level source/evidence export
+
+The [P0/P1 evidence closure CSV](srs-p0-p1-evidence-closure.csv) contains one aligned record for every gate row, copied directly from the source matrix: requirement wording excerpt, repository assessment, evidence cell, acceptance gap, literal repository-path scan and current open disposition. The export is validated against the matrix on every traceability workflow run. It intentionally records when direct code/test/migration paths are not supplied in the evidence cell rather than pretending those references exist. The JSON closure register remains the approval/state tracker with named owner, reviewer, exact candidate SHA, CI links and staging evidence fields.
+
 ## Safe editing workflow
 
 1. Resolve the source row/priority first. For a `REVIEW SOURCE` row, attach the exact SRS page/table and source-owner decision in the scope reconciliation ledger before changing its priority.
