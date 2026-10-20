@@ -7,6 +7,10 @@
 
 ## Item 01 closure tracking
 
+The 37 extracted priority exceptions now have a [source-occurrence/page evidence register](srs-priority-exception-source-review.md); none is marked source-owner-resolved until the canonical normative row/priority and decision reference are approved. Exact-SHA traceability results are recorded separately in [the release evidence snapshot](srs-traceability-release-evidence-2026-10-20.md).
+
+
+
 The [source-of-record/approval register](srs-source-of-record-and-approval-register.md) and [scope reconciliation ledger](srs-requirement-scope-reconciliation.md) define the source approval gate and the 950-cumulative-versus-899-distinct-ID reconciliation. All 37 extracted rows with unresolved source wording/priority are listed in that ledger.
 
 The [row-level evidence/gap export](srs-p0-p1-evidence-closure.csv) and machine-readable [P0/P1 evidence closure register](srs-p0-p1-evidence-closure-register.json) tracks 842 rows: 805 rows with parsed P0/P1 priority plus all 37 unresolved-priority candidates until source review completes. These rows are open by default. “Implemented (bounded)” in this curated register is not equivalent to requirement-level PASS; exact candidate SHA, named owner, reviewer, direct implementation/migration/test/CI references and required staging evidence belong in the closure register. The validator enforces its row coverage and prevents unsupported PASS entries.

@@ -63,6 +63,9 @@ Required occurrence ledger columns:
 
 ## 3. The 37 priority/wording exceptions
 
+Literal source-occurrence counts/page locations and the row-search diagnostic for this 37-ID set are preserved in [the source-review evidence note](srs-priority-exception-source-review.md) and [the machine-readable exception CSV](srs-priority-exception-source-review.csv). The search is a text-extraction aid, not a signed source disposition; each exception remains open until its canonical normative row, source priority and Product/Requirements decision reference are supplied.
+
+
 All of the following currently appear as `REVIEW SOURCE` in the matrix. Each remains unresolved until a reviewer records the exact authoritative source page/table, literal wording and priority. Domain hints below are triage aids only, not replacement wording.
 
 | Requirement ID | Triage domain | Required source review | Current disposition |

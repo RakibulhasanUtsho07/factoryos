@@ -45,6 +45,10 @@ No entries below are signed approvals. The role-based owners must enter their id
 
 ## Release SHA and evidence binding
 
+The audited merge SHA and its exact traceability workflow result are captured in [the release-SHA evidence snapshot](srs-traceability-release-evidence-2026-10-20.md). That snapshot records only the CI actually observed on that SHA, and explicitly leaves API/PostgreSQL/security results and production acceptance unasserted where no run/evidence was found.
+
+
+
 A passing CI run is valid only for the exact commit SHA shown by that run. A prior branch/PR SHA is not automatically evidence for the merge commit or any later candidate.
 
 For each release candidate, record:

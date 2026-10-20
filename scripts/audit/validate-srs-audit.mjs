@@ -15,6 +15,8 @@ const scopeReconciliation = read('docs/srs-requirement-scope-reconciliation.md')
 const sourceApproval = read('docs/srs-source-of-record-and-approval-register.md');
 const closureRegister = JSON.parse(read('docs/srs-p0-p1-evidence-closure-register.json'));
 const closureCsv = read('docs/srs-p0-p1-evidence-closure.csv');
+const exceptionSourceCsv = read('docs/srs-priority-exception-source-review.csv');
+const releaseSnapshot = read('docs/srs-traceability-release-evidence-2026-10-20.md');
 
 function extractRequirementRows(markdown) {
   const start = markdown.indexOf('## 3. Requirement ID register');
@@ -158,6 +160,35 @@ assert.equal(scopeReviewIds.length, 37, 'Scope ledger must list each of the 37 p
 assert.deepEqual(scopeReviewIds, unresolvedMatrixIds, 'Scope ledger exceptions must exactly match REVIEW SOURCE rows');
 
 
+
+const exceptionRows = parseCsv(exceptionSourceCsv);
+assert.equal(exceptionRows.length, 38, 'Priority-exception source CSV must contain a header plus 37 rows');
+const exceptionHeader = exceptionRows[0];
+assert.deepEqual(exceptionHeader, [
+  'requirementId', 'literalFindCount', 'sourcePagesWithLiteralOccurrence',
+  'observedReferenceContext', 'oneLineNormativeRowSearchMatches',
+  'sourceOwnerDisposition', 'sourceOwnerDecisionRef', 'reviewer', 'reviewDate',
+], 'Priority exception source CSV columns changed; update validator deliberately');
+const exceptionIds = [];
+for (const cells of exceptionRows.slice(1)) {
+  assert.equal(cells.length, exceptionHeader.length, 'Malformed exception CSV row for ' + cells[0]);
+  const row = Object.fromEntries(exceptionHeader.map((key, index) => [key, cells[index]]));
+  exceptionIds.push(row.requirementId);
+  assert.match(row.requirementId, /^(FR|NFR)-[A-Z0-9]+-\d{2}$/);
+  assert.ok(Number(row.literalFindCount) > 0, 'Source exception needs literal occurrence search result: ' + row.requirementId);
+  assert.ok(row.sourcePagesWithLiteralOccurrence.trim(), 'Source exception needs source page locations: ' + row.requirementId);
+  assert.equal(row.oneLineNormativeRowSearchMatches, '0', 'One-line source-row diagnostic changed for ' + row.requirementId);
+  assert.equal(row.sourceOwnerDisposition, 'OPEN_SOURCE_OWNER_REVIEW', 'No source owner disposition may be inferred for ' + row.requirementId);
+  assert.ok(row.sourceOwnerDecisionRef === 'PENDING' && row.reviewer === 'PENDING' && row.reviewDate === 'PENDING', 'Owner approval must remain pending until recorded: ' + row.requirementId);
+}
+assert.equal(new Set(exceptionIds).size, 37, 'Priority exception IDs must be unique');
+const sourceExceptionMatrixIds = requirementRows.filter((row) => row.priority === 'REVIEW SOURCE').map((row) => row.id).sort();
+assert.deepEqual([...exceptionIds].sort(), sourceExceptionMatrixIds, 'Priority exception source CSV must match all 37 REVIEW SOURCE rows');
+assert.ok(releaseSnapshot.includes('0f577f2ee5bbb6605011b221f1e65a1b5a6d548b'), 'Release snapshot must identify the exact audited merge SHA');
+assert.ok(releaseSnapshot.includes('39429731792'), 'Release snapshot must link exact-SHA traceability CI');
+assert.ok(releaseSnapshot.includes('NOT READY FOR FORMAL TRACEABILITY SIGN-OFF'), 'Release snapshot must keep overall release gate explicit while approvals/evidence are missing');
+
+
 const closureCsvRows = parseCsv(closureCsv);
 assert.equal(closureCsvRows.length, 843, 'Evidence closure CSV must contain a header plus 842 gate rows');
 const csvHeader = closureCsvRows[0];
@@ -230,6 +261,7 @@ for (const row of closureRows) {
 
 console.log('SRS/HLD/Blueprint audit consistency passed');
 console.log('Evidence closure CSV: ' + csvRowsById.size + ' source-row-aligned records; all remain OPEN / NOT_ACCEPTED');
+console.log('Priority source exceptions: ' + (exceptionRows.length - 1) + ' unique rows; owner disposition pending');
 console.log('P0/P1 closure tracker: ' + closureRows.length + ' rows (P0=' + closurePriorities.P0 + ', P1=' + closurePriorities.P1 + ', unresolved priority=' + closurePriorities['REVIEW SOURCE'] + ')');
 console.log('Requirement IDs: ' + requirementRows.length + ' unique; priorities: P0=' + priorities.P0 + ', P1=' + priorities.P1 + ', P2=' + priorities.P2 + ', review=' + priorities.review);
 console.log('Acceptance scenarios: AS-132–AS-141 present');
