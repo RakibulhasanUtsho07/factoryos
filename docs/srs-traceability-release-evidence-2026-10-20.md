@@ -25,15 +25,15 @@ The source §140 scope arithmetic is reconciled: inherited v2.0 scope 900 + 50 v
 |---|---:|---|
 | Parsed P0 IDs in current matrix | 259 | Source priority extracted, not source-owner-attested |
 | Parsed P1 IDs in current matrix | 546 | Source priority extracted, not source-owner-attested |
-| P0/P1 rows with parsed priority | 805 | Gate candidate set, not 805 accepted requirements |
+| P0/P1 rows with parsed priority in full-PDF ID index | 805 | Provisional tracker only; active v2.1 applicability is unconfirmed |
 | Unresolved source-priority / wording IDs | 37 | `OPEN_SOURCE_OWNER_REVIEW`; retained conservatively in release gate |
-| P0/P1 plus unresolved-priority closure tracker | 842 | `OPEN_NOT_ACCEPTED` |
+| Full-PDF-index closure tracker plus unresolved-priority rows | 842 | `OPEN_NOT_ACCEPTED`; not confirmed active v2.1 requirement set |
 | Requirement rows marked accepted in closure tracker | 0 | No row is implicitly passed by this audit |
 | Source-owner-approved SRS/HLD/Blueprint baseline | 0 of 3 evidenced in repo | `BLOCKED`; approval register fields remain pending |
 
 ## Evidence ledger coverage as measured from matrix pointers
 
-The row-level [P0/P1 evidence and gap ledger](srs-p0-p1-evidence-closure.csv) contains 842 records copied from the source matrix. Its literal-path scan classifies the matrix's evidence cells as follows:
+The row-level [P0/P1 evidence and gap ledger](srs-p0-p1-evidence-closure.csv) contains 842 provisional records copied from the full-PDF ID index. Every row records `UNVERIFIED_ACTIVE_V21_SCOPE` and `EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED`. Its literal-path scan classifies the matrix's evidence cells as follows:
 
 - 802 rows have documentation/family-level pointers only.
 - 12 rows contain a literal code path but no direct test path in that matrix cell.
