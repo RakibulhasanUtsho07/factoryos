@@ -291,7 +291,7 @@ $$;
 -- inventory. Known IAM-derived relations were classified above; everything
 -- else is explicitly excluded from generic tenant export/erasure until a schema
 -- owner documents whether it is global control-plane data or indirect tenant data.
-DO $
+DO $$
 DECLARE
   item record;
 BEGIN
@@ -329,7 +329,7 @@ BEGIN
       classified_at = clock_timestamp();
   END LOOP;
 END;
-$;
+$$;
 
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('156_tenant_privacy_inventory_and_rls_guardrails', NULL)
