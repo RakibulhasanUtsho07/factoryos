@@ -22,7 +22,7 @@ The SRS final scope ledger (§140) states 950 cumulative design-scope requiremen
 | API CI | PASS | 1f049828ddad4f5270e6b0e6f92df4bc1631335f; 115 suites / 1,039 tests passed plus a separate 7-test RLS suite | API install, harness syntax, load/recovery contract tests, lint, build and unit/integration steps in this workflow passed. Lint emitted 23 warnings and 0 errors. |
 | API PostgreSQL CI | PASS | 07dbe6d54fb741227ffb2cec0ac3dea7b16a82db; 151 suites / 1,206 tests passed | Ordered migration application through 158, designated idempotency re-runs, schema contracts, migration-failure rollback probe, API build and full PostgreSQL-backed suite passed. |
 | Production Dependency Security | PASS | 540da01a88d089970b70177572180a0a959f153a | Production-only npm audit, recovery/load harness validation and guard contract tests passed. This is not a claim that the full development dependency tree has zero advisories. |
-| Final branch HEAD | Documentation-only after the tested code/configuration SHAs above | 1374e6eb595db054b5ac1a9e07786fe1e10d56f5 | Subsequent commits for this audit stage update documentation only. The workflow result must always be interpreted against the exact SHA shown by GitHub Actions. |
+| Code/test inspection anchor | Code and tests inspected before the Round 43 documentation series | 1374e6eb595db054b5ac1a9e07786fe1e10d56f5 | This is the code/test audit anchor, not the current branch HEAD. Round 43 commits are documentation-only; use GitHub's branch page for current HEAD and treat CI evidence as tied only to each run's exact SHA. |
 
 Links: [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39412676965), [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39412690324), [Production Dependency Security](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39412702649).
 
@@ -94,7 +94,7 @@ This is the most complete current register assembled from the supplied final SRS
 
 ## 4. Final SRS acceptance scenarios AS-132–AS-141
 
-The source SRS v2.1 final §135 defines these production-readiness scenarios. Source scenario wording remains authoritative. Repository evidence covers selected slices; none is marked end-to-end PASS without a complete test/report tied to a release SHA and environment.
+The source SRS v2.1 final §135 defines these production-readiness scenarios. A dedicated [AS-132–AS-141 acceptance evidence matrix](srs-v2.1-as-132-141-acceptance-matrix.md) records the concrete spec/SQL files, what they actually prove, the current status and the minimum evidence needed for closure. The compact summary below is not a substitute for that detailed matrix. None is marked end-to-end PASS without the required scenario evidence tied to a release SHA and environment.
 
 | Scenario | Required behavior (source-faithful summary) | Repository evidence | Status | Closure evidence |
 |---|---|---|---|---|
@@ -181,4 +181,4 @@ The following rules apply when the master SRS is imported:
 
 The repository is **implementation-rich but not formally SRS-sign-off-complete**. API CI, PostgreSQL CI and production dependency-security workflows passed on the exact code/configuration SHAs shown above; the present audit also identifies bounded acceptance gaps rather than treating a successful test run as universal acceptance.
 
-The next mandatory step for Round 43 is to record the controlled source-of-record/approval metadata, reconcile all extracted IDs and priorities against the exact final SRS tables, attach direct acceptance evidence for every in-scope P0/P1 ID and AS-132–AS-141, close or formally accept P0/P1 gaps, and obtain named sign-off. Until then, label this document “Provisional SRS/HLD/Blueprint evidence audit” rather than “full SRS completed”.
+The next mandatory step for Round 43 is to record controlled source-of-record/approval metadata, reconcile every extracted ID and the 37 priority exceptions against the exact final SRS tables, attach direct acceptance evidence for every in-scope P0/P1 ID and each AS-132–AS-141 scenario, close or formally accept P0/P1 gaps, and obtain named Product/Architecture/Security/Operations sign-off. The source documents are identified and hash-pinned, but their source-owner approval and direct acceptance evidence remain unresolved. Until those gates are closed, label this document “Provisional SRS/HLD/Blueprint evidence audit”, not “full SRS completed”.
