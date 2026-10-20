@@ -26,6 +26,7 @@ import {
   GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
   summarizeGrowthForecastCalibration,
   type GrowthForecastCalibrationObservation,
+  type GrowthForecastEvaluationMetrics,
 } from './growth-forecast-evaluation';
 import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
 import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
@@ -1672,7 +1673,7 @@ export class GrowthService {
         throw new BadRequestException('A forecast origin must be strictly earlier than its observed outcome');
       }
 
-      let metrics;
+      let metrics: GrowthForecastEvaluationMetrics;
       try {
         metrics = evaluateGrowthForecast({
           forecast_value: dto.forecast_value,
