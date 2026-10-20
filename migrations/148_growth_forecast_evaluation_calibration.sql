@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   factory_id UUID NOT NULL,
   opportunity_id UUID NOT NULL,
   outcome_id UUID NOT NULL,
+  outcome_kpi_measurement_id UUID NOT NULL,
   model_version VARCHAR(128) NOT NULL,
   metric_key VARCHAR(100) NOT NULL,
   unit VARCHAR(40) NOT NULL,
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   forecast_source_evidence_id UUID NOT NULL,
   forecast_value NUMERIC(24,8) NOT NULL,
   actual_value NUMERIC(24,8) NOT NULL,
+  actual_evidence_ref TEXT NOT NULL,
   lower_bound NUMERIC(24,8),
   upper_bound NUMERIC(24,8),
   nominal_coverage_pct NUMERIC(5,2),
@@ -40,6 +42,8 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
   CONSTRAINT fk_growth_forecast_evaluation_outcome_scope
     FOREIGN KEY (outcome_id, tenant_id, factory_id, opportunity_id)
     REFERENCES growth_opportunity_outcomes(id, tenant_id, factory_id, opportunity_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_growth_forecast_evaluation_outcome_kpi
+    FOREIGN KEY (outcome_kpi_measurement_id) REFERENCES growth_outcome_kpi_measurements(id) ON DELETE RESTRICT,
   CONSTRAINT fk_growth_forecast_evaluation_actor
     FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_growth_forecast_evaluation_source_evidence
@@ -52,6 +56,8 @@ CREATE TABLE IF NOT EXISTS growth_forecast_evaluations (
     CHECK (length(btrim(unit)) BETWEEN 1 AND 40),
   CONSTRAINT chk_growth_forecast_evaluation_source
     CHECK (length(btrim(forecast_source_ref)) BETWEEN 1 AND 2000),
+  CONSTRAINT chk_growth_forecast_evaluation_actual_evidence
+    CHECK (length(btrim(actual_evidence_ref)) BETWEEN 1 AND 2000),
   CONSTRAINT chk_growth_forecast_evaluation_values
     CHECK (abs(forecast_value) <= 1000000000000 AND abs(actual_value) <= 1000000000000
       AND (lower_bound IS NULL OR (abs(lower_bound) <= 1000000000000 AND abs(upper_bound) <= 1000000000000))),
@@ -98,6 +104,8 @@ AS $$
 DECLARE
   saved_actual NUMERIC;
   saved_unit TEXT;
+  saved_kpi_id UUID;
+  saved_evidence_ref TEXT;
   outcome_observed_at TIMESTAMPTZ;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
@@ -110,8 +118,8 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  SELECT o.observed_at, k.actual_value, k.unit
-    INTO outcome_observed_at, saved_actual, saved_unit
+  SELECT o.observed_at, k.actual_value, k.unit, k.id, k.evidence_ref
+    INTO outcome_observed_at, saved_actual, saved_unit, saved_kpi_id, saved_evidence_ref
     FROM growth_opportunity_outcomes o
     JOIN growth_outcome_kpi_measurements k
       ON k.outcome_id = o.id
@@ -123,6 +131,7 @@ BEGIN
      AND o.tenant_id = NEW.tenant_id
      AND o.factory_id = NEW.factory_id
      AND k.metric_key = NEW.metric_key
+     AND k.id = NEW.outcome_kpi_measurement_id
    FOR KEY SHARE OF o, k;
 
   IF NOT FOUND THEN
@@ -131,6 +140,10 @@ BEGIN
   END IF;
   IF NEW.unit IS DISTINCT FROM saved_unit OR NEW.actual_value IS DISTINCT FROM saved_actual THEN
     RAISE EXCEPTION 'GROWTH_FORECAST_EVALUATION_ACTUAL_MUST_MATCH_IMMUTABLE_OUTCOME_KPI'
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.actual_evidence_ref IS DISTINCT FROM saved_evidence_ref THEN
+    RAISE EXCEPTION 'GROWTH_FORECAST_EVALUATION_ACTUAL_EVIDENCE_REF_MISMATCH'
       USING ERRCODE = '23514';
   END IF;
   IF NEW.forecast_origin_at >= outcome_observed_at THEN
