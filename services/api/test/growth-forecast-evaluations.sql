@@ -40,6 +40,14 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
+     WHERE conname = 'fk_growth_forecast_evaluation_outcome_kpi'
+       AND conrelid = 'public.growth_forecast_evaluations'::regclass
+  ) THEN
+    RAISE EXCEPTION 'GROWTH_FORECAST_EVALUATION_OUTCOME_KPI_FK_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
      WHERE conname = 'fk_growth_forecast_evaluation_source_evidence'
        AND conrelid = 'public.growth_forecast_evaluations'::regclass
   ) THEN
@@ -60,6 +68,9 @@ BEGIN
   IF definition NOT LIKE '%GROWTH_FORECAST_EVALUATION_ACTUAL_MUST_MATCH_IMMUTABLE_OUTCOME_KPI%'
      OR definition NOT LIKE '%GROWTH_FORECAST_SOURCE_REFERENCE_NOT_ATTACHED_TO_OPPORTUNITY%'
      OR definition NOT LIKE '%NEW.forecast_source_evidence_id%'
+     OR definition NOT LIKE '%NEW.outcome_kpi_measurement_id%'
+     OR definition NOT LIKE '%NEW.actual_evidence_ref IS DISTINCT FROM saved_evidence_ref%'
+     OR definition NOT LIKE '%GROWTH_FORECAST_EVALUATION_ACTUAL_EVIDENCE_REF_MISMATCH%'
      OR definition NOT LIKE '%GROWTH_FORECAST_ERROR_METRICS_NOT_DETERMINISTIC%'
      OR definition NOT LIKE '%GROWTH_FORECAST_INTERVAL_METRICS_NOT_DETERMINISTIC%'
      OR definition NOT LIKE '%GROWTH_FORECAST_EVALUATION_APPEND_ONLY%' THEN
