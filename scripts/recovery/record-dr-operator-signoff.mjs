@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { resolve } from 'node:path';
 
 function fail(message) {
   console.error('DR operator sign-off rejected: ' + message);
