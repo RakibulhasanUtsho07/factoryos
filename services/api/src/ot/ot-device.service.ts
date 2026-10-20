@@ -20,7 +20,6 @@ import type { IngestOtTelemetryBatchDto, OtDeviceTransitionDto, RegisterOtDevice
 import { OpcUaGatewayClient } from './opcua-gateway.client';
 import { ModbusGatewayClient } from './modbus-gateway.client';
 import { getModbusTcpProfile, getMqttProfile, normalizeMqttTelemetryMessage } from './ot-protocol.contract';
-import { getModbusTcpProfile, getMqttProfile } from './ot-protocol.contract';
 
 export interface OtRequestScope {
   userId: string;
