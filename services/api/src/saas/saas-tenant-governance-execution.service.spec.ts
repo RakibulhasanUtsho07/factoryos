@@ -18,7 +18,7 @@ const erasureRow = (extra: Record<string, unknown> = {}) => ({
   request_id: erasureRequestId,
   version: 1,
   status: 'APPROVED',
-  categories: ['EVIDENCE'],
+  categories: ['BUSINESS_DATA'],
   export_transfer_id: 'e0000000-0000-4000-8000-000000000001',
   export_transfer_version: 1,
   export_bundle_digest: sourceDigest,
@@ -383,13 +383,17 @@ describe('SaasTenantGovernanceExecutionService', () => {
         }] };
       }
       if (sql.includes('SELECT c.oid::text AS')) return { rows: [] };
-      if (sql.includes('SELECT COUNT(*)::text AS count')) return { rows: [{ count: '0' }] };
+      if (sql.includes('SELECT COUNT(*)::text AS count')) {
+        return { rows: [{ count: sql.includes('saas_usage_events') ? '7' : '0' }] };
+      }
       if (sql.includes("SET status='EXECUTING'")) return { rows: [erasureRow({ status: 'EXECUTING', row_version: 3 })] };
       if (sql.includes('WITH deleted AS')) return { rows: [{ deleted: '0' }] };
       if (sql.includes('INSERT INTO saas_tenant_data_erasure_runs')) {
         const params = args[1] as unknown[];
         const insertedDigest = String(params[7]);
-        return { rows: [completedRun({ manifest_digest: insertedDigest })] };
+        const receiptCategories = JSON.parse(String(params[4])) as string[];
+        return { rows: [completedRun({ manifest_digest: insertedDigest, categories: receiptCategories,
+          table_manifest: JSON.parse(String(params[6])) as Record<string, unknown>, deleted_rows: String(params[5]) })] };
       }
       if (sql.includes("SET status='VERIFIED'")) {
         const params = args[1] as unknown[];
@@ -412,11 +416,22 @@ describe('SaasTenantGovernanceExecutionService', () => {
     const receiptInsert = clientQuery.mock.calls.find((call) =>
       String(call[0]).includes('INSERT INTO saas_tenant_data_erasure_runs')
     );
-    const persistedDigest = String((receiptInsert?.[1] as unknown[])[7]);
+    const receiptValues = receiptInsert?.[1] as unknown[];
+    const persistedDigest = String(receiptValues[7]);
     expect(result).toMatchObject({
-      run: { status: 'COMPLETED', manifestDigest: persistedDigest },
+      run: { status: 'COMPLETED', manifestDigest: persistedDigest, deletedRows: '0' },
       request: { status: 'VERIFIED', version: 4, executionManifestDigest: persistedDigest },
       replayed: false,
+    });
+    expect(result.run.tableManifest).toMatchObject({
+      retainedTables: { saas_usage_events: '7' },
+      retainedRows: '7',
+      exclusions: [{
+        table: 'saas_usage_events',
+        reason: 'FINANCIAL_CONTROL_RECORDS_REQUIRE_SEPARATE_RETENTION_REVIEW',
+        rowCount: '7',
+      }],
+      scope: 'REVIEWED_TENANT_TABLE_ALLOWLIST_ONLY',
     });
     expect(database.transaction).toHaveBeenCalledWith(
       expect.any(Function),
@@ -429,7 +444,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
         action: 'TENANT_ERASURE_VERIFIED',
-        payload: expect.objectContaining({ deletedRows: '0', manifestDigest: persistedDigest }),
+        payload: expect.objectContaining({ deletedRows: '0', retainedRows: '7', retainedTables: expect.objectContaining({ saas_usage_events: '7' }), manifestDigest: persistedDigest }),
       }),
     );
   });
