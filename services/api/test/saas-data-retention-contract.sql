@@ -65,6 +65,20 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'retention run mode contract is incomplete';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc p
+    WHERE p.proname='factoryos_guard_saas_retention_policy_version'
+      AND p.prosrc ILIKE '%protected retention category requires REVIEW disposition%'
+  ) THEN
+    RAISE EXCEPTION 'protected audit, approval, effective-dated and IAM categories must require REVIEW disposition';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc p
+    WHERE p.proname='factoryos_guard_saas_tenant_data_erasure_request'
+      AND p.prosrc ILIKE '%requested erasure category has no reviewed deletion adapter%'
+  ) THEN
+    RAISE EXCEPTION 'database must reject erasure categories without an approved deletion adapter';
+  END IF;
 
 END;
 $$;
