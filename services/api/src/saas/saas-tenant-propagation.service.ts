@@ -366,13 +366,24 @@ export class SaasTenantPropagationService {
         const verified = verifiedDigest === plan.manifestDigest && deletedCopies === plannedCopies
           && residualCopies === '0' && residualManifest.length === 0;
         receiptStatus = verified ? 'VERIFIED' : 'RESIDUALS';
-        if (!verified) failureCode = 'EXTERNAL_RESIDUALS_REMAIN';
+        if (!verified) {
+          failureCode = 'EXTERNAL_RESIDUALS_REMAIN';
+          if (residualCopies !== '0' && residualManifest.length === 0) {
+            residualManifest = ['residual-count:' + residualCopies];
+          }
+        }
       } catch (error) {
         failureCode = this.failureCode(error);
         if (plan) {
-          plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
-          planDigest = plan.manifestDigest;
-          residualCopies = plannedCopies === '0' ? '1' : plannedCopies;
+          try {
+            plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
+            planDigest = this.digestOrNull(plan.manifestDigest) ?? planDigest;
+            residualCopies = plannedCopies === '0' ? '1' : plannedCopies;
+          } catch {
+            plannedCopies = '0';
+            deletedCopies = '0';
+            residualCopies = '1';
+          }
         } else residualCopies = '1';
         residualManifest = ['unverified-scope:' + target.targetId];
         receiptStatus = 'FAILED';
@@ -439,7 +450,7 @@ export class SaasTenantPropagationService {
              planned_copies=$9,deleted_copies=$10,residual_copies=$11,failure_code=$12,
              finished_at=CASE WHEN $4='VERIFIED' THEN clock_timestamp() ELSE NULL END
          WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 RETURNING *`,
-        [tenantId, requestId, prepared.run.run_id, status, JSON.stringify(wholeManifest),
+        [tenantId, requestId, prepared.run.run_id, status, JSON.stringify({ ...currentManifest, result: wholeManifest }),
           allVerified ? manifestDigest : null, prepared.targets.length, verifiedTargets.length,
           planned.toString(), deleted.toString(), residual.toString(), failureCode],
       );
