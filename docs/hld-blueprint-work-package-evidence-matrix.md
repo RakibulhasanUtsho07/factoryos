@@ -4,6 +4,7 @@
 **Repository branch:** rakibul-hasan
 **Tested application baselines:** API CI SHA 1f049828ddad4f5270e6b0e6f92df4bc1631335f; PostgreSQL CI SHA 07dbe6d54fb741227ffb2cec0ac3dea7b16a82db; Production Dependency Security SHA 540da01a88d089970b70177572180a0a959f153a.
 **Audit status:** Provisional. This maps Blueprint WP01–WP12 and key HLD invariants to repository evidence; it is not a claim that each whole work package is accepted for production.
+**Traceability self-check:** `node scripts/audit/validate-srs-audit.mjs`; the dedicated `SRS HLD Blueprint Traceability` workflow runs it for changes to this evidence set. The validator checks ID/priority counts, AS-132–AS-141, WP01–WP12, gap/backlog references and source hashes; it does not perform product acceptance.
 
 ## 1. Decision rule
 
@@ -40,7 +41,7 @@ The HLD defines logical planes/deployment profiles and cross-cutting invariants 
 | Asynchronous work, bounded retry and degraded modes | Outbox/inbox, AI retry scheduling, OT spool/replay, bounded load harness, operational runbook | **Partial.** External bus/edge drivers, queue visibility, provider outage and live degradation acceptance remain. |
 | Observability is part of correctness | W3C Trace Context, sampled OTLP HTTP/DB spans, process/database metrics and health probes | **Repository implementation present; production acceptance partial.** Central collector/backend, dashboards, alert delivery, retention and owner-approved SLO are external. |
 | Cloud SaaS, dedicated/VPC and approved private/edge topologies preserve security contracts | SaaS deployment-profile/control-plane and OT/edge configuration contracts | **Not fully proven across topology variants.** Run per-tier isolation, residency, operational and migration tests before claiming parity. |
-| Backup/DR and recovery are tested rather than inferred | Encrypted backup/restore helper contract, ordered migration/failure CI, load harness contract | **Harness automation only until an actual rehearsal is recorded.** HLD §23 numbers are proposed baselines and require service-owner approval. |
+| Backup/DR and recovery are tested rather than inferred | Encrypted backup/restore helper contract, ordered migration/failure CI, load harness contract; [AS-132–AS-141 acceptance matrix](srs-v2.1-as-132-141-acceptance-matrix.md); HLD §23 | **Harness automation only until an actual rehearsal is recorded.** HLD §23 numbers are proposed baselines and require service-owner approval. AS-141 still requires measured RTO/RPO and restore evidence. |
 
 ## 4. CI evidence and exact-SHA interpretation
 
