@@ -1638,6 +1638,7 @@ export class GrowthService {
          WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3
            AND (btrim(COALESCE(reference_ref, '')) = $4 OR btrim(COALESCE(citation_url, '')) = $4)
            AND captured_at <= $5::timestamptz
+         ORDER BY captured_at DESC, id DESC
          LIMIT 1`,
         [opportunityId, tenantId, factoryId, sourceRef, origin.toISOString()],
       );
@@ -1689,6 +1690,7 @@ export class GrowthService {
         unit,
         forecast_origin_at: origin.toISOString(),
         forecast_source_ref: sourceRef,
+        forecast_source_evidence_id: source.rows[0].id,
         outcome_id: actualRow.id,
         outcome_observed_at: observedAt.toISOString(),
         recorded_by: userId,
@@ -1710,7 +1712,8 @@ export class GrowthService {
         }
         const replay = await client.query(
           `SELECT id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
-              forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
+              forecast_source_ref, forecast_source_evidence_id::text AS forecast_source_evidence_id,
+           outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
               actual_value::text AS actual_value, signed_error::text AS signed_error,
               absolute_error::text AS absolute_error, squared_error::text AS squared_error,
               absolute_percentage_error::text AS absolute_percentage_error,
@@ -1728,14 +1731,14 @@ export class GrowthService {
       const inserted = await client.query(
         `INSERT INTO growth_forecast_evaluations (
            tenant_id, factory_id, opportunity_id, outcome_id, model_version, metric_key, unit,
-           forecast_origin_at, forecast_source_ref, forecast_value, actual_value, lower_bound, upper_bound,
+           forecast_origin_at, forecast_source_ref, forecast_source_evidence_id, forecast_value, actual_value, lower_bound, upper_bound,
            nominal_coverage_pct, signed_error, absolute_error, squared_error, absolute_percentage_error,
            symmetric_percentage_error, interval_hit, interval_width, interval_semantics, method_version,
            input_hash, idempotency_key, recorded_by
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10::numeric, $11::numeric,
+           $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9, $10, $11::numeric,
            $12::numeric, $13::numeric, $14::numeric, $15::numeric, $16::numeric, $17::numeric,
-           $18::numeric, $19::numeric, $20, $21::numeric, $22, $23, $24, $25, $26
+           $18::numeric, $19::numeric, $20, $21, $22::numeric, $23, $24, $25, $26, $27
          ) ON CONFLICT DO NOTHING
          RETURNING id::text AS id, model_version, metric_key, unit, forecast_origin_at::text AS forecast_origin_at,
            forecast_source_ref, outcome_id::text AS outcome_id, forecast_value::text AS forecast_value,
@@ -1748,7 +1751,7 @@ export class GrowthService {
            interval_semantics, method_version, input_hash, idempotency_key, evaluated_at::text AS evaluated_at`,
         [
           tenantId, factoryId, opportunityId, actualRow.id, modelVersion, metricKey, unit,
-          origin.toISOString(), sourceRef, metrics.forecast_value, metrics.actual_value,
+          origin.toISOString(), sourceRef, source.rows[0].id, metrics.forecast_value, metrics.actual_value,
           metrics.lower_bound, metrics.upper_bound, metrics.nominal_coverage_pct, metrics.signed_error,
           metrics.absolute_error, metrics.squared_error, metrics.absolute_percentage_error,
           metrics.symmetric_percentage_error, metrics.interval_hit, metrics.interval_width,
