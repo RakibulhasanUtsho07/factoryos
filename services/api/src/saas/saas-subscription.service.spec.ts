@@ -88,6 +88,39 @@ describe('SaasSubscriptionService', () => {
     expect(iam.authorize).toHaveBeenCalledWith(actorUserId, tenantId, 'saas.entitlement_modes.read');
   });
 
+  it('allows an administrator to explicitly record the legacy mode without blocking the tenant', async () => {
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: tenantId }] }) // tenant row lock
+      .mockResolvedValueOnce({ rows: [] }) // idempotency replay
+      .mockResolvedValueOnce({ rows: [] }) // no prior mode
+      .mockResolvedValueOnce({ rows: [{
+        id: 'mode-legacy-1', tenant_id: tenantId, version: '1',
+        mode: 'LEGACY_COMPATIBLE', reason: 'Customer onboarding is not yet complete',
+        effective_at: '2026-10-20T08:00:00.000Z',
+        idempotency_key: 'record-legacy-mode',
+        request_hash: 'a'.repeat(64), changed_by: actorUserId,
+        created_at: '2026-10-20T08:00:00.000Z',
+      }] });
+    const result = await service.setEntitlementEnforcementMode(tenantId, actorUserId, {
+      mode: 'LEGACY_COMPATIBLE',
+      expected_version: 0,
+      reason: 'Customer onboarding is not yet complete',
+      idempotency_key: 'record-legacy-mode',
+    } as never);
+    expect(result).toMatchObject({
+      tenantId,
+      mode: 'LEGACY_COMPATIBLE',
+      version: 1,
+      source: 'EXPLICIT',
+      requiresSubscription: false,
+    });
+    expect(clientQuery).toHaveBeenCalledTimes(4);
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ENTITLEMENT_ENFORCEMENT_MODE_CHANGED',
+      resourceId: 'mode-legacy-1',
+    }));
+  });
+
   it('requires an active subscription or unexpired trial before migrating a tenant to subscription-required mode', async () => {
     clientQuery
       .mockResolvedValueOnce({ rows: [{ id: tenantId }] }) // tenant row lock
