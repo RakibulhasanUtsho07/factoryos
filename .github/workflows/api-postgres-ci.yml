@@ -386,6 +386,7 @@ jobs:
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
+          node --check scripts/recovery/application-restore-smoke.mjs
           node --check scripts/recovery/write-rehearsal-evidence.mjs
           node --check scripts/recovery/record-dr-operator-signoff.mjs
           node --check scripts/recovery/rehearsal-evidence.test.mjs
