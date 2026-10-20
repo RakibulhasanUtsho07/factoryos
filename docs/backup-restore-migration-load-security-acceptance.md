@@ -2,6 +2,8 @@
 
 **Status:** bounded repository-level verification and operator runbook. Passing these checks is not a production disaster-recovery certification. RPO/RTO, retention durations, load targets and production change authority must be approved by their owners.
 
+The production rehearsal entrypoint and immutable receipt/sign-off contract are detailed in [`docs/production-disaster-recovery-rehearsal.md`](production-disaster-recovery-rehearsal.md). Its manual workflow requires an approved isolated runner, protected libpq/GPG configuration, a manifest exactly matching pending migrations for the restored snapshot, reviewed watermark/smoke SQL, and independently recorded operator approval. CI uses disposable synthetic data and is not itself production DR sign-off.
+
 ## Scope and requirement evidence
 
 | Area | Automated repository evidence | Operator / environment evidence still required |
@@ -101,6 +103,8 @@ Complete this record on the exact candidate SHA:
 - [ ] Failed-transaction recovery probe verifies no partial DDL remains.
 - [ ] Load-smoke contract tests pass; any real load test has owner approval and a sanitized result linked to the SHA.
 - [ ] Tenant isolation and authorization-denial checks pass; application role and production secret/network configuration reviewed.
+- [ ] Production DR rehearsal evidence receipt binds the exact candidate SHA, encrypted backup checksum, distinct source/target identities, pending migration manifest digest, migration/failure recovery result, smoke/isolation/audit results and measured recovery durations.
+- [ ] Independent operator sign-off is recorded against the evidence SHA-256 and linked to the approved change/environment approval event; CI-only rehearsal is not substituted for production evidence.
 - [ ] RPO/RTO, retention, load target, rollback/forward-fix decision, operator, approver and unresolved risks are recorded.
 
 A box may be checked only with evidence from the relevant environment. Green CI alone does not prove production backup freshness, successful restore, service deployment, actual alert delivery or approved business SLOs.
