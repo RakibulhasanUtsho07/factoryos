@@ -98,7 +98,7 @@ const priorities = requirementRows.reduce((counts, row) => {
   return counts;
 }, {});
 assert.deepEqual(priorities, { P0: 259, P1: 546, P2: 57, review: 37 }, 'Priority totals differ from the source matrix; reconcile before changing expected counts');
-assert.match(matrix, /Extracted distinct FR\/NFR IDs:\*\* 899/);
+assert.match(matrix, /Full-PDF distinct textual FR\/NFR ID keys:\*\* 899/);
 assert.match(matrix, /P0=259, P1=546, P2=57, priority requiring manual review=37/);
 assert.match(matrix, /51 arithmetic delta is not a missing-implementation count/i);
 
@@ -137,6 +137,16 @@ assert.ok(audit.includes('srs-p0-p1-evidence-closure-register.md'), 'Master audi
 assert.ok(audit.includes('srs-p0-p1-evidence-closure-register.json'), 'Master audit must link machine-readable P0/P1 closure rows');
 assert.ok(sourceApproval.includes('BLOCKED — source-owner confirmation and controlled approval evidence pending'), 'Source-owner approval must remain visibly blocked until evidenced');
 assert.ok(scopeReconciliation.includes('51') && scopeReconciliation.includes('not evidence of 51 missing implementations'), 'Scope ledger must not misclassify the count delta as missing code');
+assert.ok(scopeReconciliation.includes('900 + 50 = 950'), 'Scope ledger must reconcile inherited v2.0 and v2.1 additions');
+assert.ok(scopeReconciliation.includes('261 + 35 = 296'), 'Scope ledger must reconcile cumulative P0 count');
+assert.ok(scopeReconciliation.includes('567 + 15 = 582'), 'Scope ledger must reconcile cumulative P1 count');
+assert.ok(scopeReconciliation.includes('72 + 0 = 72'), 'Scope ledger must reconcile cumulative P2 count');
+assert.ok(scopeReconciliation.includes('not a confirmed count of unique active requirement rows'), 'Scope ledger must distinguish full-PDF ID index from active v2.1 scope');
+assert.equal(closureRegister.activeV21ScopeConfirmed, false, 'Active v2.1 requirement scope must remain explicitly unconfirmed');
+assert.equal(closureRegister.scopeReconciliation.cumulativeRequirements, 950, 'Register must carry SRS §140 cumulative scope');
+assert.equal(closureRegister.scopeReconciliation.arithmeticReconciled, true, 'SRS §140 scope arithmetic should be recorded as reconciled');
+assert.equal(closureRegister.scopeReconciliation.relationshipTo899DistinctFullPdfIds, 'NOT_RECONCILED_TO_ACTIVE_V21_OCCURRENCES', 'Do not claim active-scope reconciliation before the occurrence ledger is approved');
+
 
 const closureRows = closureRegister.rows;
 assert.equal(closureRegister.registerId, 'FOS-TRACE-P0P1-01');
@@ -198,6 +208,7 @@ assert.deepEqual(csvHeader, [
   'literalRepositoryPaths', 'literalCodePaths', 'literalMigrationPaths',
   'literalTestPaths', 'evidencePointerClass', 'sourcePriorityReview',
   'disposition', 'acceptanceResult', 'directEvidenceClosureRequirement',
+  'activeScopeStatus', 'priorityProvenance',
 ], 'Evidence closure CSV columns changed; update the audit validator deliberately');
 
 const sourceEvidenceById = new Map(extractRequirementEvidenceRows(matrix).map((row) => [row.id, row]));
@@ -216,6 +227,8 @@ for (const cells of closureCsvRows.slice(1)) {
   assert.equal(row.acceptanceGapText, source.gap, 'CSV acceptance gap differs from source matrix for ' + row.requirementId);
   assert.equal(row.disposition, 'OPEN', 'Evidence pointer export may not change disposition: ' + row.requirementId);
   assert.equal(row.acceptanceResult, 'NOT_ACCEPTED', 'Missing acceptance evidence may not be exported as PASS: ' + row.requirementId);
+  assert.equal(row.activeScopeStatus, 'UNVERIFIED_ACTIVE_V21_SCOPE', 'CSV row must not imply active v2.1 scope: ' + row.requirementId);
+  assert.equal(row.priorityProvenance, 'EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED', 'CSV row must identify provisional priority provenance: ' + row.requirementId);
   for (const required of ['DIRECT_CODE_PATH_REQUIRED', 'EXACT_MIGRATION_PATH_OR_APPROVED_NA_REQUIRED', 'DIRECT_TEST_PATH_REQUIRED', 'EXACT_CANDIDATE_SHA_AND_CI_RUN_REQUIRED', 'NAMED_OWNER_AND_INDEPENDENT_REVIEWER_REQUIRED']) {
     assert.ok(row.directEvidenceClosureRequirement.includes(required) ||
       (required === 'DIRECT_CODE_PATH_REQUIRED' && row.directEvidenceClosureRequirement.includes('CODE_PATH_PRESENT_IN_MATRIX')) ||
@@ -230,6 +243,8 @@ assert.deepEqual([...csvRowsById.keys()].sort(), expectedGateIds, 'CSV must have
 const resultStates = new Set(['NOT_ACCEPTED', 'PASS', 'PASS_WITH_APPROVED_EXCEPTION', 'NOT_APPLICABLE_APPROVED']);
 const dispositions = new Set(['OPEN', 'ACCEPTED', 'APPROVED_EXCEPTION', 'NOT_APPLICABLE_APPROVED']);
 for (const row of closureRows) {
+  assert.equal(row.activeScopeStatus, 'UNVERIFIED_ACTIVE_V21_SCOPE', 'JSON row must not imply active v2.1 scope: ' + row.requirementId);
+  assert.equal(row.priorityProvenance, 'EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED', 'JSON row must identify provisional priority provenance: ' + row.requirementId);
   assert.ok(resultStates.has(row.acceptanceResult), 'Invalid acceptanceResult for ' + row.requirementId);
   assert.ok(dispositions.has(row.disposition), 'Invalid disposition for ' + row.requirementId);
   for (const field of ['directCodeReferences', 'migrationReferences', 'automatedTestReferences', 'ciRunUrls', 'stagingOperationalEvidence']) {
