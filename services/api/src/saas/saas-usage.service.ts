@@ -150,7 +150,7 @@ export class SaasUsageService {
    const raced=await this.database.query<UsageRow>('SELECT '+USAGE_COLUMNS+' FROM saas_usage_events WHERE tenant_id=$1 AND (idempotency_key=$2 OR (source_system=$3 AND source_event_ref=$4)) LIMIT 1',[tenantId,n.idempotency_key,n.content.source_system,n.content.source_event_ref],{tenantId,userId:actorUserId});
    row=raced.rows[0];if(!row||row.request_hash!==hash)throw new ConflictException('Usage event was concurrently recorded with conflicting content');return {idempotent:true,event:this.mapUsage(row)};
   }
-  await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_EVENT',action:'RECORD_USAGE_EVENT',resourceType:'SAAS_USAGE_EVENT',resourceId:row.id,payload:{metricCode:row.metric_code,capabilityCode:row.capability_code,workloadClass:row.workload_class,quantity:Number(row.quantity),currency:row.currency,estimatedCostMinor:row.estimated_cost_minor===null?null:String(row.estimated_cost_minor),sourceRefSha256:this.sha(row.source_event_ref),requestHash:hash}});
+  await this.auditSafely({tenantId,factoryId,actorUserId,eventType:'SAAS_USAGE_EVENT',action:'RECORD_USAGE_EVENT',resourceType:'SAAS_USAGE_EVENT',resourceId:row.id,payload:{metricCode:row.metric_code,capabilityCode:row.capability_code,workloadClass:row.workload_class,quantity:String(row.quantity),currency:row.currency,estimatedCostMinor:row.estimated_cost_minor===null?null:String(row.estimated_cost_minor),sourceRefSha256:this.sha(row.source_event_ref),requestHash:hash}});
   // Keep event-time pricing/history, but evaluate budgets as of processing time so
   // late/out-of-order usage cannot leave the current hard-limit decision stale.
   await this.evaluateBudgetsInternal(tenantId,factoryId,actorUserId,new Date().toISOString());
