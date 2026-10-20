@@ -21,3 +21,7 @@ The SRS v2.1 final scope ledger (§140) declares 950 cumulative requirements (P0
 **Source approval caveat:** This manifest records the title/version metadata and bytes inspected; it does not invent a digital signature, approval identity or controlled-document repository attestation that was not present in the Library metadata. Product/Architecture must confirm source approval and record the official document-management-system reference before formal sign-off.
 
 **Closure register:** Source approval fields and required signatories are tracked in [docs/srs-source-of-record-and-approval-register.md](srs-source-of-record-and-approval-register.md). The approval state remains BLOCKED until Product/Document Control and Architecture provide auditable source-of-record and revision-approval references. The [scope reconciliation ledger](srs-requirement-scope-reconciliation.md) separately tracks the 950 cumulative scope / 899 distinct-ID discrepancy and 37 source-priority exceptions.
+
+## Requirement closure evidence
+
+The [P0/P1 row-level evidence and gap ledger](srs-p0-p1-evidence-closure.csv) and [machine-readable closure-state register](srs-p0-p1-evidence-closure-register.json) bind source rows to repository-level evidence pointers and unresolved acceptance needs. They are generated/audited against this hash-pinned source baseline; neither substitutes for source-owner approval or release acceptance.
