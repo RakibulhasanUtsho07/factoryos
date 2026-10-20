@@ -5,6 +5,12 @@
 **Audit baseline:** Branch rakibul-hasan; tested application evidence is linked by its exact CI SHA.  
 **Important limitation:** The SRS final scope ledger declares 950 cumulative design-scope requirements; 899 distinct FR/NFR IDs were extracted, and 37 priority cells need manual review. These are different counting measures, so the 51 arithmetic difference must not be treated as 51 missing requirements. This file and the exhaustive matrix remain provisional until revision/count accounting and per-ID acceptance evidence are reconciled.
 
+## Item 01 closure tracking
+
+The [source-of-record/approval register](srs-source-of-record-and-approval-register.md) and [scope reconciliation ledger](srs-requirement-scope-reconciliation.md) define the source approval gate and the 950-cumulative-versus-899-distinct-ID reconciliation. All 37 extracted rows with unresolved source wording/priority are listed in that ledger.
+
+The machine-readable [P0/P1 evidence closure register](srs-p0-p1-evidence-closure-register.json) tracks 842 rows: 805 rows with parsed P0/P1 priority plus all 37 unresolved-priority candidates until source review completes. These rows are open by default. “Implemented (bounded)” in this curated register is not equivalent to requirement-level PASS; exact candidate SHA, named owner, reviewer, direct implementation/migration/test/CI references and required staging evidence belong in the closure register. The validator enforces its row coverage and prevents unsupported PASS entries.
+
 ## Status key
 
 - **Implemented (bounded):** documented backend contract and relevant automated evidence exist for the explicitly stated scope.
