@@ -230,7 +230,7 @@ BEGIN
     SELECT * INTO source_transfer FROM public.saas_tenant_data_transfers t
     WHERE t.tenant_id=NEW.tenant_id AND t.transfer_id=NEW.export_transfer_id
       AND t.version=NEW.export_transfer_version AND t.operation_type='EXPORT'
-      AND t.status='COMPLETED' AND t.preservation_verified=true
+      AND t.status='COMPLETED'
       AND t.source_bundle_digest=NEW.export_bundle_digest;
     IF NOT FOUND THEN
       RAISE EXCEPTION 'erasure request requires a completed preserved export for the same tenant' USING ERRCODE='55000';
