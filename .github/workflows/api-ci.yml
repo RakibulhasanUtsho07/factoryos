@@ -79,8 +79,14 @@ jobs:
           AUTH_MODE=dev
           DEV_AUTH_ENABLED=false
           EOF
-      - name: Validate bounded load-smoke harness syntax
-        run: node --check scripts/performance/api-load-smoke.mjs
+      - name: Validate bounded load and recovery harnesses
+        run: |
+          node --check scripts/performance/api-load-smoke.mjs
+          node --check scripts/performance/api-load-smoke.test.mjs
+          bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+      - name: Test bounded load-smoke safety and acceptance contract
+        working-directory: services/api
+        run: npm run test:load-smoke:contract
       - name: Lint API
         working-directory: services/api
         run: npm run lint
