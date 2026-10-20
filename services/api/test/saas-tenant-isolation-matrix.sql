@@ -70,7 +70,7 @@ BEGIN
       SELECT 1 FROM pg_index i
       WHERE i.indrelid='public.saas_tenant_data_transfers'::regclass AND i.indisunique
         AND (
-          SELECT COUNT(*) FROM unnest(i.indkey) k(attnum)
+          SELECT COUNT(*) FROM unnest(i.indkey::smallint[]) k(attnum)
           JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum
           WHERE a.attname IN ('tenant_id','transfer_id','version')
         )=3
