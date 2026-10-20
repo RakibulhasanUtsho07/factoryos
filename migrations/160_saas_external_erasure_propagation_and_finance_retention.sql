@@ -79,8 +79,12 @@ CREATE INDEX IF NOT EXISTS idx_saas_external_targets_required
 ALTER TABLE saas_tenant_external_data_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_external_data_targets FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_external_data_targets_tenant_isolation ON saas_tenant_external_data_targets;
-CREATE POLICY saas_tenant_external_data_targets_tenant_isolation
-  ON saas_tenant_external_data_targets
+CREATE POLICY saas_tenant_external_data_targets_tenant_allow
+  ON saas_tenant_external_data_targets AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_external_data_targets_tenant_enforce
+  ON saas_tenant_external_data_targets AS RESTRICTIVE FOR ALL
   USING (tenant_id=factoryos_current_tenant_id())
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
@@ -172,8 +176,12 @@ CREATE INDEX IF NOT EXISTS idx_saas_external_propagation_request
 ALTER TABLE saas_tenant_external_propagation_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_external_propagation_runs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_external_propagation_runs_tenant_isolation ON saas_tenant_external_propagation_runs;
-CREATE POLICY saas_tenant_external_propagation_runs_tenant_isolation
-  ON saas_tenant_external_propagation_runs
+CREATE POLICY saas_tenant_external_propagation_runs_tenant_allow
+  ON saas_tenant_external_propagation_runs AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_external_propagation_runs_tenant_enforce
+  ON saas_tenant_external_propagation_runs AS RESTRICTIVE FOR ALL
   USING (tenant_id=factoryos_current_tenant_id())
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
@@ -260,8 +268,12 @@ CREATE TABLE IF NOT EXISTS saas_tenant_external_propagation_receipts (
 ALTER TABLE saas_tenant_external_propagation_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_external_propagation_receipts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_external_propagation_receipts_tenant_isolation ON saas_tenant_external_propagation_receipts;
-CREATE POLICY saas_tenant_external_propagation_receipts_tenant_isolation
-  ON saas_tenant_external_propagation_receipts
+CREATE POLICY saas_tenant_external_propagation_receipts_tenant_allow
+  ON saas_tenant_external_propagation_receipts AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_external_propagation_receipts_tenant_enforce
+  ON saas_tenant_external_propagation_receipts AS RESTRICTIVE FOR ALL
   USING (tenant_id=factoryos_current_tenant_id())
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 CREATE OR REPLACE FUNCTION factoryos_reject_saas_external_receipt_mutation()
@@ -517,8 +529,12 @@ CREATE TABLE IF NOT EXISTS saas_tenant_finance_retention_policies (
 ALTER TABLE saas_tenant_finance_retention_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_finance_retention_policies FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_finance_retention_policies_tenant_isolation ON saas_tenant_finance_retention_policies;
-CREATE POLICY saas_tenant_finance_retention_policies_tenant_isolation
-  ON saas_tenant_finance_retention_policies
+CREATE POLICY saas_tenant_finance_retention_policies_tenant_allow
+  ON saas_tenant_finance_retention_policies AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_finance_retention_policies_tenant_enforce
+  ON saas_tenant_finance_retention_policies AS RESTRICTIVE FOR ALL
   USING (tenant_id=factoryos_current_tenant_id())
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
@@ -603,8 +619,12 @@ CREATE INDEX IF NOT EXISTS idx_saas_finance_retention_runs_tenant
 ALTER TABLE saas_tenant_finance_retention_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_finance_retention_runs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saas_tenant_finance_retention_runs_tenant_isolation ON saas_tenant_finance_retention_runs;
-CREATE POLICY saas_tenant_finance_retention_runs_tenant_isolation
-  ON saas_tenant_finance_retention_runs
+CREATE POLICY saas_tenant_finance_retention_runs_tenant_allow
+  ON saas_tenant_finance_retention_runs AS PERMISSIVE FOR ALL
+  USING (tenant_id=factoryos_current_tenant_id())
+  WITH CHECK (tenant_id=factoryos_current_tenant_id());
+CREATE POLICY saas_tenant_finance_retention_runs_tenant_enforce
+  ON saas_tenant_finance_retention_runs AS RESTRICTIVE FOR ALL
   USING (tenant_id=factoryos_current_tenant_id())
   WITH CHECK (tenant_id=factoryos_current_tenant_id());
 CREATE OR REPLACE FUNCTION factoryos_reject_saas_finance_retention_run_mutation()
