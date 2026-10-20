@@ -2,6 +2,7 @@ import { Injectable, NestMiddleware } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { DistributedTraceContext } from '../types/request-context';
+import { runWithTraceContext } from '../trace-context.store';
 
 const TRACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TRACEPARENT_V00_PATTERN = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
@@ -69,6 +70,6 @@ export class TraceIdMiddleware implements NestMiddleware {
     } else {
       delete req.headers.tracestate;
     }
-    next();
+    runWithTraceContext(traceContext, () => next());
   }
 }

@@ -1,6 +1,7 @@
 import { BadGatewayException, ServiceUnavailableException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 import { OpcUaGatewayClient } from './opcua-gateway.client';
+import { runWithTraceContext } from '../common/trace-context.store';
 
 const request = {
   requestId: 'aaaaab63-c447-46ce-950d-deebdd7f5f33',
@@ -73,6 +74,36 @@ describe('OpcUaGatewayClient', () => {
     });
     expect(String(init.body)).not.toContain('test-gateway-token-with-more-than-32-chars');
     expect(String(init.body)).not.toContain('secret_reference');
+  });
+
+  it('propagates the current W3C server span to the trusted OT gateway', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      schema_version: 1,
+      request_id: request.requestId,
+      results: [{
+        node_id: 'ns=2;s=Machine01.Temperature',
+        status: 'GOOD',
+        value: 24.5,
+        source_timestamp: null,
+        server_timestamp: null,
+        source_sequence: null,
+      }],
+    }), { status: 200 }));
+    const trace = {
+      traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+      spanId: '00f067aa0ba902b7',
+      parentSpanId: null,
+      traceFlags: '01',
+      sampled: true,
+      traceState: 'vendor=value',
+      startTimeUnixNano: '1760961600000000000',
+    };
+    await runWithTraceContext(trace, () => client.read(request));
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new Headers(init.headers).get('traceparent')).toBe(
+      '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    );
+    expect(new Headers(init.headers).get('tracestate')).toBe('vendor=value');
   });
 
   it('fails closed when the gateway or service credential is not configured', async () => {

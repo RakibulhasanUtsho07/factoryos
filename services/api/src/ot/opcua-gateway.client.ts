@@ -1,3 +1,4 @@
+import { currentTracePropagationHeaders } from '../common/trace-context.store';
 import {
   BadGatewayException,
   GatewayTimeoutException,
@@ -55,6 +56,7 @@ export class OpcUaGatewayClient {
         method: 'POST',
         redirect: 'error',
         headers: {
+          ...currentTracePropagationHeaders(),
           authorization: 'Bearer ' + token,
           'content-type': 'application/json',
           accept: 'application/json',

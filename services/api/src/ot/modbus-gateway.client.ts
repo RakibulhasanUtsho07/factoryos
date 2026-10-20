@@ -5,6 +5,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { decodeModbusRegisters, type ModbusRegisterDefinition } from './ot-protocol.contract';
+import { currentTracePropagationHeaders } from '../common/trace-context.store';
 
 export interface ModbusGatewayReadInput {
   requestId: string;
@@ -43,6 +44,7 @@ export class ModbusGatewayClient {
         method: 'POST',
         redirect: 'error',
         headers: {
+          ...currentTracePropagationHeaders(),
           authorization: 'Bearer ' + token,
           'content-type': 'application/json',
           accept: 'application/json',
