@@ -2,7 +2,7 @@
 
 **Ledger ID:** FOS-TRACE-SCOPE-01  
 **Prepared:** 2026-10-20  
-**Status:** `OPEN — technical extraction reconciled; authoritative scope/sign-off reconciliation pending Product/Architecture`  
+**Status:** `PARTIAL — §140 scope arithmetic reconciled; active requirement occurrence ledger and source-owner sign-off pending Product/Architecture`  
 **Source:** SRS v2.1 Final / FOS-SRS-001, §140 and the requirement-by-requirement matrix derived from the inspected 2026-10-02 source copy.  
 **Related register:** [Source-of-record and approval register](srs-source-of-record-and-approval-register.md).
 
@@ -26,10 +26,10 @@ The repository's **899 distinct FR/NFR ID figure is a different, provisional mea
 
 | Metric | SRS §140 | Repository extraction | Current interpretation | Closure action |
 |---|---:|---:|---|---|
-| Cumulative scope / distinct-ID index | 950 cumulative | 899 distinct FR/NFR IDs | Different counting units; not reconciled to a common basis | Product + Requirements Lead must define what the §140 count includes and approve a canonical row/occurrence ledger |
-| P0 | 296 cumulative | 259 parsed distinct IDs | Not comparable by subtraction | Re-read each normative row and classify source occurrence and current priority |
-| P1 | 582 cumulative | 546 parsed distinct IDs | Not comparable by subtraction | Same |
-| P2 | 72 cumulative | 57 parsed distinct IDs | Not comparable by subtraction | Same |
+| §140 cumulative arithmetic vs full-PDF distinct-ID index | 900 + 50 = 950 cumulative | 899 distinct textual ID keys across all 103 PDF pages | §140 arithmetic reconciled; 899-key index includes historical text/cross-references and is not active v2.1 scope | Product + Requirements + Architecture approve the 950-row active occurrence/canonical-ID ledger and 899-key crosswalk |
+| P0 | 296 cumulative | 259 parsed P0 IDs in full-PDF text index | Different population; not comparable by subtraction | Reconcile all active v2.0 P0 rows plus v2.1 delta and cross-reference/supersession cases |
+| P1 | 582 cumulative | 546 parsed P1 IDs in full-PDF text index | Different population; not comparable by subtraction | Same, with source page and canonical ID for every active row |
+| P2 | 72 cumulative | 57 parsed P2 IDs in full-PDF text index | Different population; not comparable by subtraction | Same, including all current P2 active rows and cross-references |
 | Priority/wording review | Not stated as a separate cumulative measure | 37 distinct IDs marked `REVIEW SOURCE` | Known extraction exceptions; source text needs manual review | Resolve every ID below against the exact source PDF table and record reviewer/evidence |
 | Arithmetic (950 - 899) | 950 | 899 | 51 difference only; **not a missing-code count** | Do not close until source occurrences/revision semantics explain the relationship |
 
