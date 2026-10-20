@@ -1617,6 +1617,9 @@ export class GrowthService {
     const sourceRef = typeof dto.forecast_source_ref === 'string' ? dto.forecast_source_ref.trim() : '';
     const idempotencyKey = typeof dto.idempotency_key === 'string' ? dto.idempotency_key.trim() : '';
     const origin = new Date(dto.forecast_origin_at);
+    if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(dto.forecast_origin_at)) {
+      throw new BadRequestException('forecast_origin_at must include an explicit time zone offset');
+    }
     if (Number.isFinite(origin.getTime()) && origin.getTime() > Date.now()) {
       throw new BadRequestException('forecast_origin_at cannot be in the future');
     }
