@@ -557,17 +557,18 @@ describe('GrowthService', () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     const idempotencyKey = 'forecast-eval-key-0002';
     client.query
-      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{ id: '8f8fba80-9438-481d-9fa9-f20eece93a0c' }] })
       .mockResolvedValueOnce({ rows: [{
-        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        id: outcomeId, measurement_id: '1e84d4ea-4c73-4a78-8818-59ef865adb22', observed_at: '2026-10-05T00:00:00.000Z',
         actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
       }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{
         id: 'forecast-evaluation-id', model_version: 'ops-v1', metric_key: 'daily_output',
         unit: 'pieces', forecast_origin_at: '2026-10-01T00:00:00.000Z',
-        forecast_source_ref: 'forecast-report:2026-10', outcome_id: outcomeId,
-        forecast_value: '100.00000000', actual_value: '90.00000000',
+        forecast_source_ref: 'forecast-report:2026-10', forecast_source_evidence_id: '8f8fba80-9438-481d-9fa9-f20eece93a0c',
+        outcome_id: outcomeId, outcome_kpi_measurement_id: '1e84d4ea-4c73-4a78-8818-59ef865adb22',
+        actual_evidence_ref: 'actual-report:2026-10', forecast_value: '100.00000000', actual_value: '90.00000000',
         signed_error: '10.00000000', absolute_error: '10.00000000', squared_error: '100.00000000',
         absolute_percentage_error: '11.11111111', symmetric_percentage_error: '10.52631579',
         lower_bound: null, upper_bound: null, nominal_coverage_pct: null, interval_hit: null,
@@ -590,6 +591,10 @@ describe('GrowthService', () => {
     expect(result.signed_error).toBe('10.00000000');
     expect(result.replayed).toBe(false);
     expect(client.query.mock.calls[2][0]).toContain('input_hash AS request_hash');
+    expect(client.query.mock.calls[3][0]).toContain('outcome_kpi_measurement_id');
+    expect(client.query.mock.calls[3][0]).toContain('actual_evidence_ref');
+    expect(client.query.mock.calls[3][1]).toContain('1e84d4ea-4c73-4a78-8818-59ef865adb22');
+    expect(client.query.mock.calls[3][1]).toContain('actual-report:2026-10');
     expect(client.query.mock.calls[3][0]).toContain('ON CONFLICT DO NOTHING');
     expect(client.query.mock.calls[4][0]).toContain('INSERT INTO outbox_events');
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
@@ -600,9 +605,9 @@ describe('GrowthService', () => {
   it('rejects forecast evaluation when its unit differs from the observed KPI unit', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
-      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{ id: '8f8fba80-9438-481d-9fa9-f20eece93a0c' }] })
       .mockResolvedValueOnce({ rows: [{
-        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        id: outcomeId, measurement_id: '1e84d4ea-4c73-4a78-8818-59ef865adb22', observed_at: '2026-10-05T00:00:00.000Z',
         actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
       }] });
     const dto: RecordGrowthForecastEvaluationDto = {
@@ -621,9 +626,9 @@ describe('GrowthService', () => {
   it('rejects a reused idempotency key when the frozen forecast fingerprint differs', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
-      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{ id: '8f8fba80-9438-481d-9fa9-f20eece93a0c' }] })
       .mockResolvedValueOnce({ rows: [{
-        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        id: outcomeId, measurement_id: '1e84d4ea-4c73-4a78-8818-59ef865adb22', observed_at: '2026-10-05T00:00:00.000Z',
         actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
       }] })
       .mockResolvedValueOnce({ rows: [{ id: 'existing-evaluation', request_hash: 'different-request-hash' }] });
@@ -681,9 +686,9 @@ describe('GrowthService', () => {
   it('requires the forecast origin to precede the realized outcome timestamp', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
-      .mockResolvedValueOnce({ rows: [{ id: 'evidence-id' }] })
+      .mockResolvedValueOnce({ rows: [{ id: '8f8fba80-9438-481d-9fa9-f20eece93a0c' }] })
       .mockResolvedValueOnce({ rows: [{
-        id: outcomeId, observed_at: '2026-10-05T00:00:00.000Z',
+        id: outcomeId, measurement_id: '1e84d4ea-4c73-4a78-8818-59ef865adb22', observed_at: '2026-10-05T00:00:00.000Z',
         actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
       }] });
     const dto: RecordGrowthForecastEvaluationDto = {
