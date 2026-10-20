@@ -146,7 +146,6 @@ ALTER TABLE saas_tenant_data_erasure_requests
       AND execution_started_by_user_id<>reviewed_by_user_id
       AND execution_started_at IS NOT NULL AND execution_completed_at IS NOT NULL
       AND execution_run_id IS NOT NULL AND execution_manifest_digest IS NOT NULL
-      AND execution_run_id IS NOT NULL AND execution_manifest_digest IS NOT NULL
       AND execution_manifest_digest ~ '^[a-f0-9]{64}$')
   );
 
