@@ -2,7 +2,7 @@
 
 ## Delivery scope
 
-This repository slice adds W3C Trace Context propagation, sampled HTTP server spans, optional OTLP/HTTP export, privacy-safe structured request-span logs, Prometheus-compatible HTTP/process/dependency/exporter metrics and separate liveness/readiness probes. The signed authoritative SRS/HLD/Blueprint are not present in this repository snapshot, so this is mapped to existing operational reliability/release documents and is not signed SRS acceptance.
+This repository slice adds W3C Trace Context propagation through async work and outbound OT gateway requests, sampled HTTP server and PostgreSQL client spans, optional OTLP/HTTP export, privacy-safe structured request-span logs, Prometheus-compatible HTTP/database/process/dependency/exporter metrics and separate liveness/readiness probes. The signed authoritative SRS/HLD/Blueprint are not present in this repository snapshot, so this is mapped to existing operational reliability/release documents and is not signed SRS acceptance.
 
 ## Trace propagation contract
 
@@ -18,7 +18,7 @@ Use these settings:
 - OTEL_SERVICE_NAME: resource attribute; defaults to factoryos-api.
 - TRACE_SAMPLE_RATIO: root trace sampling rate.
 
-The exporter batches up to 128 spans in a bounded 2,048-span process-local queue and flushes asynchronously; a collector timeout is capped at 1.5 seconds. Request handling does not await collector delivery. Failed export batches are dropped, counted and not automatically retried; metrics show export errors, queue size and dropped spans. No endpoint means export disabled. A central collector/backend is still needed for long-term storage, cross-service views and alerting. No third-party npm telemetry SDK is required for this OTLP/HTTP JSON contract.
+The exporter batches up to 128 spans in a bounded 2,048-span process-local queue and flushes asynchronously; a collector timeout is capped at 1.5 seconds. AsyncLocalStorage keeps the active span across asynchronous work; the reusable currentTracePropagationHeaders helper adds traceparent/tracestate to outbound requests, and the OPC UA/Modbus gateway clients use it. PostgreSQL transactions and direct non-tenant queries create database client spans with a new child span ID. Only bounded operation name/system/status/duration attributes are sent; query statement text, parameters and tenant/user IDs are omitted. Request handling does not await collector delivery. Failed export batches are dropped, counted and not automatically retried; metrics show export errors, queue size and dropped spans. No endpoint means export disabled. A central collector/backend is still needed for long-term storage, cross-service views and alerting. No third-party npm telemetry SDK is required for this OTLP/HTTP JSON contract.
 
 ## HTTP logs and privacy
 
@@ -30,7 +30,7 @@ Route metrics use a low-cardinality route template (Express route metadata, with
 
 GET /api/internal/metrics is Prometheus text format and is disabled unless METRICS_SCRAPE_TOKEN has at least 32 characters. The collector must use a bearer header and the endpoint should be available only to the monitoring plane. Tokens are not put in query strings or source control.
 
-Metric groups: request counters by method/status; route-template counters by method/route/status; in-flight requests; request-duration histogram; process memory/CPU/uptime/event-loop utilization; last observed database readiness; and trace export success/drop/error/queue metrics. Values are process-local and reset on restart; scrape every replica.
+Metric groups: request counters by method/status; route-template counters by method/route/status; in-flight requests; request-duration histogram; PostgreSQL operation counters/latency histograms and total/idle/waiting connection-pool gauges; process memory/CPU/uptime/event-loop utilization; last observed database readiness; and trace export success/drop/error/queue metrics. Values are process-local and reset on restart; scrape every replica.
 
 GET /api/health/live is dependency-free liveness. GET /api/health/ready checks DB readiness and updates the database dependency-health metric. The backward-compatible GET /api/health is still a readiness check.
 

@@ -12,7 +12,7 @@ Root traces are sampled using TRACE_SAMPLE_RATIO (default 0.1, valid range 0–1
 
 ### OTLP/HTTP trace export
 
-The optional OtlpTraceExporter emits OpenTelemetry-compatible OTLP/HTTP JSON spans to OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (fixed URL ending in /v1/traces). Remote endpoints must use HTTPS; loopback HTTP is allowed only outside production. OTEL_SERVICE_NAME defaults to factoryos-api; OTEL_EXPORTER_OTLP_TRACES_TOKEN is an optional collector bearer token and must be kept in the deployment secret manager.
+The optional OtlpTraceExporter emits OpenTelemetry-compatible OTLP/HTTP JSON HTTP server spans and PostgreSQL client spans to OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (fixed URL ending in /v1/traces). Remote endpoints must use HTTPS; loopback HTTP is allowed only outside production. OTEL_SERVICE_NAME defaults to factoryos-api; OTEL_EXPORTER_OTLP_TRACES_TOKEN is an optional collector bearer token and must be kept in the deployment secret manager.
 
 Export is non-blocking with a bounded in-memory queue (2,048 spans), batches of at most 128 and a 1.5-second collector timeout. Collector errors drop the failed batch rather than blocking or retaining an infinite backlog; these losses are exposed in exporter metrics. If no endpoint is configured, trace export is disabled while request correlation headers continue to work. Use a central OpenTelemetry Collector/backend for persistence, cross-service search, retention and alerting; process-local buffering is not durable.
 
@@ -26,6 +26,7 @@ The exported metric families include:
 - factoryos_http_route_requests_total by bounded route template, method and status class. Raw URLs, query strings and customer IDs are never labels; unmatched/dynamic unsafe paths are grouped as unmatched or a sanitized :id template.
 - factoryos_http_requests_in_flight and factoryos_http_request_duration_seconds histogram.
 - factoryos_process_memory_bytes, factoryos_process_cpu_seconds_total, factoryos_nodejs_event_loop_utilization_ratio and factoryos_process_uptime_seconds.
+- factoryos_db_operations_total, factoryos_db_operation_duration_seconds and factoryos_db_pool_connections: bounded SQL-operation success/error counts, query/transaction latency histograms, and total/idle/waiting pool connections. SQL statement text and bind values are not exported.
 - factoryos_dependency_health{dependency="database"}: 1 healthy, 0 unhealthy, -1 not yet checked by a readiness probe.
 - factoryos_trace_spans_exported_total, factoryos_trace_spans_dropped_total, factoryos_trace_export_errors_total and factoryos_trace_export_queue_length.
 
@@ -66,7 +67,7 @@ histogram_quantile(
 )
 ~~~
 
-The request metrics do not measure end-user availability, business success, queue age, DB pool utilization or OT protocol health. For route-level failures, inspect factoryos_http_route_requests_total grouped by route/status_class; for exporter loss, alert on rate(factoryos_trace_export_errors_total[5m]) and factoryos_trace_export_queue_length. Add those signals to the selected monitoring backend before accepting a production SLO. Do not infer durable alerting from the presence of metrics alone.
+The request metrics do not measure end-user availability, business success, queue age or OT protocol health. PostgreSQL client spans now mark whole transactions plus direct non-tenant queries; contextual query calls are observed as transactions, and SQL text/bind values are deliberately omitted. For DB saturation, inspect factoryos_db_pool_connections{state="waiting"} with transaction duration and host CPU/memory. For route-level failures, inspect factoryos_http_route_requests_total grouped by route/status_class; for exporter loss, alert on rate(factoryos_trace_export_errors_total[5m]) and factoryos_trace_export_queue_length. Add those signals to the selected monitoring backend before accepting a production SLO. Do not infer durable alerting from the presence of metrics alone.
 
 ## 3. Migration release gate
 
