@@ -86,9 +86,11 @@ jobs:
           node --check scripts/performance/api-load-smoke.mjs
           node --check scripts/performance/api-load-smoke.test.mjs
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
-      - name: Test bounded load-smoke safety and acceptance contract
+      - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
-        run: npm run test:load-smoke:contract
+        run: |
+          npm run test:load-smoke:contract
+          npm run test:recovery:contract
       - name: Lint API
         working-directory: services/api
         run: npm run lint
