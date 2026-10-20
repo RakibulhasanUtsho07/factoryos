@@ -44,8 +44,11 @@ export class TraceIdMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction): void {
     const inbound = parseTraceParent(req.header('traceparent'));
     const candidate = req.header('x-trace-id')?.trim();
-    const legacyTraceId = inbound ? inbound.traceId : candidate && TRACE_ID_PATTERN.test(candidate) ? candidate : randomUUID();
-    const traceId = inbound?.traceId ?? randomHex(16);
+    const validLegacyCandidate = candidate && TRACE_ID_PATTERN.test(candidate) ? candidate : null;
+    const candidateW3cTraceId = validLegacyCandidate && /^[0-9a-f]{32}$/i.test(validLegacyCandidate)
+      && !/^0+$/.test(validLegacyCandidate) ? validLegacyCandidate.toLowerCase() : null;
+    const traceId = inbound?.traceId ?? candidateW3cTraceId ?? randomHex(16);
+    const legacyTraceId = inbound ? inbound.traceId : validLegacyCandidate ?? traceId;
     const spanId = randomHex(8);
     const sampled = inbound ? inbound.sampled : Math.random() < samplingRatio();
     const traceFlags = inbound ? inbound.traceFlags : sampled ? '01' : '00';
