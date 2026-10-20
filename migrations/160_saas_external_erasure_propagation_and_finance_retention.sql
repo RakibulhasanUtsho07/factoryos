@@ -195,7 +195,7 @@ BEGIN
     RAISE EXCEPTION 'external propagation run identity is immutable' USING ERRCODE='55000';
   END IF;
   IF OLD.status='VERIFIED' OR NOT (
-       OLD.status='RUNNING' AND NEW.status IN ('PARTIAL','FAILED','VERIFIED')
+       OLD.status='RUNNING' AND NEW.status IN ('RUNNING','PARTIAL','FAILED','VERIFIED')
        OR OLD.status='PARTIAL' AND NEW.status IN ('RUNNING','FAILED','VERIFIED')
        OR OLD.status='FAILED' AND NEW.status='RUNNING'
      ) THEN
@@ -590,6 +590,22 @@ DROP TRIGGER IF EXISTS saas_tenant_finance_retention_run_immutable ON saas_tenan
 CREATE TRIGGER saas_tenant_finance_retention_run_immutable
   BEFORE UPDATE OR DELETE ON saas_tenant_finance_retention_runs
   FOR EACH ROW EXECUTE FUNCTION factoryos_reject_saas_finance_retention_run_mutation();
+
+-- These control-plane receipts/configuration are not generic tenant export data and
+-- are not eligible for business-data erasure.
+INSERT INTO factoryos_governance.tenant_relation_inventory
+  (schema_name,relation_name,scope_model,data_category,export_disposition,erasure_disposition,audit_requirement,rationale)
+VALUES
+  ('public','saas_tenant_external_data_targets','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Tenant-scoped provider target configuration and independent review evidence.'),
+  ('public','saas_tenant_external_propagation_runs','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','External propagation lifecycle with exact copy-count, manifest and recovery evidence.'),
+  ('public','saas_tenant_external_propagation_receipts','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Immutable per-adapter deletion and residual-verification receipt.'),
+  ('public','saas_tenant_finance_retention_policies','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Separately approved finance/usage ledger retention policy; not part of generic business erasure.'),
+  ('public','saas_tenant_finance_retention_runs','DIRECT_TENANT_ID','SAAS_CONTROL_PLANE','EXCLUDED','PROTECTED','APPEND_ONLY_AUDIT','Immutable result from the separately approved finance retention adapter.')
+ON CONFLICT(schema_name,relation_name) DO UPDATE SET
+  scope_model=EXCLUDED.scope_model,data_category=EXCLUDED.data_category,
+  export_disposition=EXCLUDED.export_disposition,erasure_disposition=EXCLUDED.erasure_disposition,
+  audit_requirement=EXCLUDED.audit_requirement,rationale=EXCLUDED.rationale,
+  classified_at=clock_timestamp();
 
 INSERT INTO schema_migrations(version,checksum)
 VALUES ('160_saas_external_erasure_propagation_and_finance_retention',NULL)
