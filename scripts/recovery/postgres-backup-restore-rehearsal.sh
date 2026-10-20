@@ -44,20 +44,20 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-source_identity="$(psql "service=$source_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" \
+source_identity="$(psql -w "service=$source_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" \
   || die "could not establish source database identity"
-target_identity="$(psql "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" \
+target_identity="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT current_database() || '|' || COALESCE(inet_server_addr()::text, 'local') || '|' || COALESCE(inet_server_port()::text, 'local')")" \
   || die "could not establish restore target identity"
 [[ -n "$source_identity" && -n "$target_identity" ]] || die "database identity check returned an empty identity"
 [[ "$source_identity" != "$target_identity" ]] || die "source and restore target resolve to the same database identity"
 
-target_relations="$(psql "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp_' AND c.relkind IN ('r','p','v','m','S','f')")" \
+target_relations="$(psql -w "service=$target_service" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp_' AND c.relkind IN ('r','p','v','m','S','f')")" \
   || die "could not verify that the restore target is empty"
 [[ "$target_relations" =~ ^[0-9]+$ ]] || die "restore target emptiness check returned an invalid count"
 [[ "$target_relations" == "0" ]] || die "restore target contains user relations; no data was restored"
 
 printf 'Creating encrypted PostgreSQL custom-format backup...\n'
-pg_dump --format=custom --no-owner --no-acl --dbname="service=$source_service" \
+pg_dump --no-password --format=custom --no-owner --no-acl --dbname="service=$source_service" \
   | gpg --batch --yes --encrypt --recipient "$recipient" --output "$partial_file"
 
 [[ -s "$partial_file" ]] || die "encrypted backup artifact is empty"
@@ -72,11 +72,11 @@ pg_restore --list "$tmpdir/verified.dump" > "$tmpdir/archive-contents.txt" \
   || die "pg_restore could not read the backup archive"
 
 printf 'Restoring into the separately verified empty database...\n'
-pg_restore --exit-on-error --single-transaction --no-owner --no-acl \
+pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl \
   --dbname="service=$target_service" "$tmpdir/verified.dump"
 
 printf 'Running the reviewed restore-verification SQL...\n'
-psql "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" >/dev/null
+psql -w "service=$target_service" -X -v ON_ERROR_STOP=1 -f "$smoke_sql" >/dev/null
 
 printf 'BACKUP_RESTORE_REHEARSAL=PASS\n'
 printf 'Encrypted artifact: %s\n' "$backup_file"
