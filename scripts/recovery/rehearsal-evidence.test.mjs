@@ -177,3 +177,31 @@ test('PASS sign-off cannot promote a failed technical rehearsal', () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test('FAIL sign-off can record an early failure before source/restore identity was established', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-early-failure-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.status = 'TECHNICAL_FAIL';
+    evidence.databases.distinctIdentityVerified = false;
+    evidence.databases.targetWasEmptyBeforeRestore = false;
+    evidence.failure = { exitCode: 1, stage: 'database_identity' };
+    writeFileSync(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'FAIL',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'Rehearsal stopped before database identity could be verified.',
+      '--reference', 'CHG-DR-2026-107',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const signed = JSON.parse(readFileSync(evidencePath + '.signoff.json', 'utf8'));
+    assert.equal(signed.decision, 'FAIL');
+    assert.equal(signed.evidenceSha256.length, 64);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
