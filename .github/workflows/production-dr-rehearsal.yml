@@ -15,6 +15,11 @@ on:
         description: Preconfigured libpq service name for the disposable isolated restore target
         required: true
         type: string
+      confirm_empty_restore_target:
+        description: Explicitly attest that the selected target is isolated, disposable and empty
+        required: true
+        type: boolean
+        default: false
       backup_output_path:
         description: Absolute path in approved restricted storage for the encrypted .dump.gpg artifact
         required: true
@@ -87,6 +92,7 @@ jobs:
       CANDIDATE_SHA_INPUT: ${{ inputs.candidate_sha }}
       SOURCE_SERVICE_INPUT: ${{ inputs.source_service }}
       RESTORE_SERVICE_INPUT: ${{ inputs.restore_service }}
+      EMPTY_TARGET_CONFIRMED_INPUT: ${{ inputs.confirm_empty_restore_target }}
       BACKUP_OUTPUT_INPUT: ${{ inputs.backup_output_path }}
       EVIDENCE_OUTPUT_INPUT: ${{ inputs.evidence_output_path }}
       GPG_RECIPIENT_INPUT: ${{ inputs.gpg_recipient }}
@@ -125,6 +131,7 @@ jobs:
           [[ -n "$GNUPGHOME" && -d "$GNUPGHOME" && -r "$GNUPGHOME" ]] || { echo "::error::GNUPGHOME must point to the approved recovery keyring on this runner"; exit 1; }
           [[ "$SOURCE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ && "$RESTORE_SERVICE_INPUT" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || { echo "::error::service names contain unsupported characters"; exit 1; }
           [[ "$SOURCE_SERVICE_INPUT" != "$RESTORE_SERVICE_INPUT" ]] || { echo "::error::source and restore service names must differ"; exit 1; }
+          [[ "$EMPTY_TARGET_CONFIRMED_INPUT" == "true" ]] || { echo "::error::operator must explicitly confirm that restore target is isolated, disposable and empty"; exit 1; }
           grep -Fxq "[$SOURCE_SERVICE_INPUT]" "$PGSERVICEFILE" || { echo "::error::source service is not configured"; exit 1; }
           grep -Fxq "[$RESTORE_SERVICE_INPUT]" "$PGSERVICEFILE" || { echo "::error::restore service is not configured"; exit 1; }
           [[ "$BACKUP_OUTPUT_INPUT" == /* && "$EVIDENCE_OUTPUT_INPUT" == /* ]] || { echo "::error::backup/evidence output paths must be absolute"; exit 1; }
