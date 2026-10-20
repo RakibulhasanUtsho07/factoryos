@@ -3,7 +3,7 @@
 **Audit identifier:** AUD-43-FINAL  
 **Repository:** RakibulhasanUtsho07/factoryos  
 **Audited branch:** rakibul-hasan  
-**Repository head at audit authoring:** 1374e6eb595db054b5ac1a9e07786fe1e10d56f5  
+**Code/test inspection baseline before the Round 43 documentation commits:** 1374e6eb595db054b5ac1a9e07786fe1e10d56f5. All later commits in this audit series are documentation-only.  
 **Audit type:** Repository-evidence and release-readiness audit; provisional, not a signed product acceptance report  
 **Status vocabulary:** Implemented = backend/frontend code and relevant automated evidence are present for the bounded scope; Partial = a code slice exists but defined product, integration, policy or environment acceptance remains; Not verified = this checkout does not contain enough evidence to assert the requirement; Blocked = an authoritative source, safety decision or external prerequisite is missing.
 
