@@ -123,6 +123,7 @@ function stepRow(
     depends_on: [],
     status: 'PENDING',
     retry_count: 0,
+    next_retry_at: null,
     authorization_attempt: 0,
     action_intent_id: null,
     approval_id: null,
@@ -561,6 +562,28 @@ describe(
       );
 
       expect(result.idempotent).toBe(true);
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+    });
+
+    it('does not execute a scheduled retry before its persisted due time', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow({
+        status: 'PENDING',
+        next_retry_at: new Date(Date.now() + 60_000).toISOString(),
+      });
+      (service as any).requireTask = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(task);
+      (service as any).requireStep = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue(step);
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(database.query).not.toHaveBeenCalled();
+      expect(aiRuntimeService.authorizeAction).not.toHaveBeenCalled();
       expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
     });
 
@@ -1091,6 +1114,42 @@ describe(
       );
     });
 
+    it('uses deterministic exponential backoff with a hard maximum delay', () => {
+      expect((service as any).retryDelaySeconds(1)).toBe(2);
+      expect((service as any).retryDelaySeconds(2)).toBe(4);
+      expect((service as any).retryDelaySeconds(3)).toBe(8);
+      expect((service as any).retryDelaySeconds(5)).toBe(32);
+      expect((service as any).retryDelaySeconds(6)).toBe(60);
+      expect((service as any).retryDelaySeconds(20)).toBe(60);
+    });
+
+    it('does not schedule a retry if backoff would outlive the task deadline', async () => {
+      const task = taskRow({
+        state: 'EXECUTING',
+        deadline_at: new Date(Date.now() + 1_000).toISOString(),
+      });
+      const step = stepRow({
+        status: 'RUNNING',
+        retry_count: 0,
+        retry_limit: 1,
+      });
+      (service as any).failTask = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValue({});
+
+      await (service as any).applyFailure(
+        tenantId,
+        factoryId,
+        userId,
+        task,
+        step,
+        { code: 'TRANSIENT', message: 'execution failed' },
+      );
+
+      expect(database.query).not.toHaveBeenCalled();
+      expect((service as any).failTask).toHaveBeenCalledTimes(1);
+    });
+
     it('does not requeue a failed step when its atomic retry claim loses a cancellation race', async () => {
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow({ status: 'RUNNING', retry_count: 0, retry_limit: 1 });
@@ -1114,7 +1173,9 @@ describe(
       expect(sql).toContain("AND status = 'RUNNING'");
       expect(sql).toContain('FROM agent_tasks parent_task');
       expect(sql).toContain('parent_task.cancel_requested_at IS NULL');
-      expect(sql).toContain('parent_task.deadline_at > NOW()');
+      expect(sql).toContain('parent_task.deadline_at > NOW() + ($8::int * INTERVAL');
+      expect(sql).toContain("next_retry_at = NOW() + ($8::int * INTERVAL '1 second')");
+      expect((queryCalls[0]?.[1] as unknown[])[7]).toBe(2);
       expect((service as any).failTask).toHaveBeenCalledTimes(1);
     });
 
