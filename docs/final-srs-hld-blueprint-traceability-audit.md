@@ -187,6 +187,8 @@ The next mandatory step for Round 43 is to record controlled source-of-record/ap
 
 ## 9. Addendum — source/scope/evidence closure baseline (2026-10-20)
 
+The [37-priority-exception source-review ledger](srs-priority-exception-source-review.md) records literal SRS occurrence counts/pages and the conservative row-search diagnostic. The [release-SHA evidence snapshot](srs-traceability-release-evidence-2026-10-20.md) records the exact merge SHA and traceability run while distinguishing absent application/operational runs.
+
 The [row-level evidence and gap ledger](srs-p0-p1-evidence-closure.csv) exports source-matrix wording, current repository evidence text, acceptance gap, literal file-path pointers, and explicit missing evidence requirements for all 842 P0/P1 plus unresolved-priority rows. The validator checks its row-by-row alignment against the source matrix. These evidence pointers remain provisional and do not substitute for direct test, candidate-SHA CI, owner, review or staging evidence.
 
 This addendum records the Item 01 artifacts created against the merged repository baseline `7b4a28419f6682480d10ee5f64ed5172bf809fad`. That SHA is the repository baseline for this register, **not** a declaration of production release acceptance.
