@@ -1,5 +1,7 @@
 # FactoryOS release-readiness checklist
 
+**Final traceability gate:** Review [docs/final-srs-hld-blueprint-traceability-audit.md](final-srs-hld-blueprint-traceability-audit.md) and its [Round 35–43 evidence matrix](operational-rounds-35-43-traceability.md) for repository implementation status, exact CI evidence, provisional P0/P1 gaps and P2/sector-pack backlog. The inspected repository snapshot does not contain the authoritative signed SRS/HLD/Blueprint source files, so these records are provisional engineering traceability, not formal source-based acceptance. Before formal sign-off, attach the approved source revisions/hashes and reconcile every requirement ID, priority and acceptance criterion.
+
 This checklist is deliberately separate from deployment. Passing CI does not mean production has been deployed or a production migration has been applied.
 
 ## API configuration
@@ -53,7 +55,8 @@ The PostgreSQL CI workflow must pass the complete ordered migration manifest, se
 
 ## Release completion criteria
 
-- Confirm the API CI, API PostgreSQL CI, and Web CI runs succeeded for the exact commit being released.
+- Review the final SRS/HLD/Blueprint traceability audit on the exact candidate SHA; do not approve formal sign-off until the authoritative source revisions are attached and all P0 gaps are closed or dispositioned by an authorized owner.
+- Confirm the API CI, API PostgreSQL CI, Web CI, and dependency-security run applicable to the exact commit being released.
 - Confirm the production API environment has exact HTTPS values for `CORS_ORIGINS`, `NODE_ENV=production`, `SWAGGER_ENABLED=false`, and validated OIDC settings.
 - Confirm the actual production database target, migration history including migrations 156–158, inventory/RLS/OT protocol contract output, backup and proven restore before scheduling any production migration.
 - Apply production migrations with an operator present and run post-migration API and frontend smoke tests.
