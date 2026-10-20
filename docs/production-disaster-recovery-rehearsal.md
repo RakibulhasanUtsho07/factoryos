@@ -1,0 +1,82 @@
+# Production Backup, Restore and Disaster-Recovery Rehearsal
+
+**Classification:** P0 release gate  
+**Status:** repository workflow and isolated CI rehearsal are implemented; a production rehearsal remains an operator-run activity against explicitly approved infrastructure.
+
+This runbook does not certify production DR by itself. A green CI run proves the tested workflow and synthetic PostgreSQL fixtures operated in an ephemeral environment; it does not prove the freshness of a real production backup, production storage/key custody, actual service recovery, or an owner-approved service objective.
+
+## Release gate evidence
+
+The rehearsal must preserve evidence for the exact candidate commit SHA:
+
+- encrypted custom-format backup artifact location, SHA-256 checksum result and GPG encryption/readability checks;
+- source and restore database identities and explicit confirmation that the restore target was empty before restore;
+- PostgreSQL server, \`pg_dump\`, \`pg_restore\`, and GPG versions;
+- backup and restore/smoke durations, source and restored durable-write watermarks, event/cutoff time, and observed RPO/RTO;
+- exact ordered candidate migration manifest and SHA-256, number of migrations applied, migration output, and deliberate failed-transaction recovery result;
+- application smoke, tenant-isolation negative test, and audit-continuity result;
+- separate operator and approver identities, approval/change reference, decision, notes, and a digest of the immutable technical receipt.
+
+Never put a backup archive, customer rows, database passwords, PGPASSFILE, private key or raw sensitive logs into a Git commit, PR comment or general CI artifact. Keep the encrypted artifact and authoritative evidence in approved restricted storage with access logs. The JSON technical receipt intentionally records a path and evidence digests, not database contents; it is not a replacement for the controlled change record.
+
+## 1. Required recovery runner configuration
+
+The manual workflow is \`.github/workflows/production-dr-rehearsal.yml\`. It is deliberately limited to a self-hosted Linux runner with labels \`self-hosted\`, \`linux\`, and \`dr-isolated\`, plus the GitHub environment \`production-dr-rehearsal\`.
+
+Before enabling the workflow:
+
+1. Provision an isolated recovery runner with PostgreSQL client tools, GnuPG, Bash, Node.js 24, core shell utilities, network routes limited to the approved source and disposable restore database, and access to approved restricted backup/evidence storage.
+2. Configure protected runner variables \`FACTORYOS_DR_PGSERVICEFILE_PATH\`, \`FACTORYOS_DR_PGPASSFILE_PATH\`, and \`FACTORYOS_DR_GNUPGHOME_PATH\`. The service and pass files must be runner-local, readable only by the runner identity (mode \`0600\` or \`0400\`); the GPG keyring must contain the approved recovery recipient/key. Do not commit their contents.
+3. Configure the \`production-dr-rehearsal\` GitHub Environment with required reviewers/approval rules and restrict who may start the workflow. The manually entered approver name must match the independently recorded environment/change approval; the environment approval audit event is the authoritative approval record.
+4. Create separate libpq source and restore service entries. Verify the restore entry points to a disposable isolated database, not production and not another tenant/customer. The workflow requires a separate service name; the script independently compares database name, server address and port, and refuses a non-empty user schema. A different service label alone is not proof of isolation.
+5. Use a reviewed read-only smoke SQL file that checks schema readiness and representative application state; proves tenant-specific reads and a denied cross-tenant write using the application role/RLS; and verifies that audit events created before backup remain after restore. Use a reviewed durable-write watermark query that returns exactly one UTC RFC 3339 timestamp. Do not use \`NOW()\` alone as a watermark—it measures the query time, not the last durable business write.
+
+## 2. Run the production workflow
+
+Dispatch \`Production Backup Restore and DR Rehearsal\` for a **full 40-character candidate SHA**. Supply preconfigured source and isolated restore service names, absolute encrypted-backup and evidence paths on the approved runner, the approved GPG recipient, the candidate's ordered pending migration-manifest path, reviewed watermark SQL and smoke SQL paths, and a UTC incident/cutoff timestamp. Explicitly confirm the restore target is isolated, disposable and empty.
+
+The script rejects missing configuration, identical source/target identities, non-empty targets, plaintext-style output extensions, overwritten backup/evidence paths, malformed or duplicate migration entries, and invalid timestamps. It creates a mode-restricted temporary directory, encrypts a custom-format \`pg_dump\` through GPG, computes and verifies the SHA-256 checksum, decrypts the archive only into the private temporary directory to check archive readability, restores using \`--exit-on-error --single-transaction\`, and retains logs while removing temporary plaintext on exit. It does not drop/clean an unsuccessful target automatically; quarantine it and follow the incident plan.
+
+### Candidate migration validation
+
+The production workflow uses \`FACTORYOS_MIGRATION_MANIFEST_MODE=PENDING\`. After restoring the source snapshot, the script reads \`schema_migrations\`, derives the exact pending list from \`scripts/audit/migration-manifest.txt\` in the checked-out candidate, and compares that ordered list byte-for-byte (ignoring blank/comment lines) with the operator-supplied candidate manifest. A missing, extra, already-applied, reordered or duplicated candidate entry fails closed. The canonical inventory verifier must also pass. The candidates are applied only to the isolated restore, before the smoke tests.
+
+The PostgreSQL CI workflow has a separate \`IDEMPOTENT_REPLAY\` mode that re-applies only the repository's explicitly listed late migrations already recorded in \`schema_migrations\`. This is an idempotency check for CI, not an acceptable production pending-migration manifest and not proof that every migration is safe to replay. The script's deliberate division-by-zero probe demonstrates transactional rollback of the fixture DDL/DML only; inspect each real migration's locking, transactionality, irreversible changes and external effects, and pre-approve its forward-fix/restore decision.
+
+## 3. RPO and RTO are measurements first
+
+The script records source and restored watermarks and the supplied incident/cutoff time. Observed RPO is the difference between the cutoff and the restored durable-write watermark. Observed RTO is elapsed time from restore start through candidate migration recovery and all mandatory smoke checks. A probe query that returns only the wall clock is not an acceptable business watermark.
+
+The HLD suggestion of **RPO ≤ 300 seconds (5 minutes)** and **RTO ≤ 3,600 seconds (60 minutes)** is an illustrative baseline only. These values are **not contractual** unless the accountable service/data owner explicitly approves the objective for the applicable system and recovery class. Leave target approval disabled unless that written approval exists. When approved targets are supplied, the release-gate script fails if observed values exceed them. Document source backup cadence, WAL/PITR coverage, transaction loss semantics and the exact recovery start/stop events that were used for the measurement.
+
+## 4. Evidence receipt and operator sign-off
+
+In \`RELEASE_GATE\` mode, the helper writes a create-only JSON technical receipt at \`FACTORYOS_RECOVERY_EVIDENCE_JSON\` on both success and failure when the destination is available. The receipt binds the candidate SHA, migration-manifest digest/count/status, source/restore identities, encrypted archive checksum, test statuses, timestamps, measured RPO/RTO and target assessment. Existing receipts are never overwritten. A technically failed or interrupted run must stay \`TECHNICAL_FAIL\`; do not convert it to success manually.
+
+After reviewing the evidence and environment approval, create a separate sign-off record. From the candidate checkout, run:
+
+~~~sh
+node scripts/recovery/record-dr-operator-signoff.mjs \
+  --evidence /secure/restricted/dr-evidence/rehearsal-receipt.json \
+  --decision PASS \
+  --operator "operator identity" \
+  --approver "independent approver identity" \
+  --notes "Restore, migration, smoke, isolation, audit and recovery metrics reviewed." \
+  --reference "approved change/incident reference"
+~~~
+
+Use \`--decision FAIL\` for a failed attempt and preserve the failure evidence. A \`PASS\` decision is rejected unless encryption, checksum, archive readability, restoration, candidate migration, failed-transaction recovery, application smoke, tenant isolation, audit continuity and numeric RPO/RTO evidence all pass. The sign-off file is create-only, records the evidence SHA-256 and must be retained alongside the environment approval event. Do not use the rehearsal's automatically populated placeholder identities as human approval.
+
+## 5. Acceptance decision
+
+The release owner must leave the gate blocked until:
+
+- the exact candidate SHA's applicable API, PostgreSQL, web and dependency-security checks are green;
+- a backup was made on approved restricted storage and its checksum/decryption/archive checks pass;
+- the target was independently confirmed isolated/empty, and restore completed;
+- candidate migration and failure-recovery checks pass on that restored snapshot;
+- application smoke, real application-role tenant-isolation checks and audit continuity pass;
+- source/restore identities, the exact migration-manifest digest, measured durations, RPO/RTO and unresolved exceptions are recorded;
+- an independent operator sign-off is attached to the evidence digest.
+
+CI's ephemeral self-contained GPG + PostgreSQL rehearsal validates the automation with synthetic records. It is additional evidence, not a substitute for the manual workflow against approved recovery infrastructure or for accountable owner sign-off.
