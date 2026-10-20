@@ -4,11 +4,12 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 import { OtDeviceController } from './ot-device.controller';
 import { OtDeviceService } from './ot-device.service';
+import { OpcUaGatewayClient } from './opcua-gateway.client';
 
 @Module({
   imports: [DatabaseModule, IamModule, AuditModule],
   controllers: [OtDeviceController],
-  providers: [OtDeviceService],
+  providers: [OtDeviceService, OpcUaGatewayClient],
   exports: [OtDeviceService],
 })
 export class OtDeviceModule {}
