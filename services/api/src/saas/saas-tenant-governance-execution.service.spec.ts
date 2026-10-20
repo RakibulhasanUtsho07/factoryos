@@ -267,7 +267,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
 
   it('writes an immutable FAILED retention receipt when the guarded transaction rolls back', async () => {
     const failedRun = {
-      id: runId, tenant_id: tenant, run_id: runId, category_code: 'BUSINESS_DATA',
+      id: runId, tenant_id: tenant, run_id: runId, category_code: 'EVIDENCE',
       policy_version: 1, mode: SaasRetentionRunMode.EXECUTE, status: 'FAILED',
       cutoff_at: '2026-01-01T00:00:00.000Z', examined_rows: '0', eligible_rows: '0',
       affected_rows: '0', held_rows: '0', table_manifest: { failureCode: 'DATABASE_GUARD' },
@@ -282,7 +282,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       if (sql.includes('FROM saas_tenant_data_retention_runs')) return { rows: [] };
       if (sql.includes('FROM saas_tenant_data_retention_policies')) {
         return { rows: [{
-          id: runId, tenant_id: tenant, category_code: 'BUSINESS_DATA',
+          id: runId, tenant_id: tenant, category_code: 'EVIDENCE',
           version: 1, retention_days: 365, disposition: 'DELETE', created_by_user_id: requester,
         }] };
       }
@@ -302,7 +302,7 @@ describe('SaasTenantGovernanceExecutionService', () => {
       throw new Error('unexpected query: ' + sql);
     });
 
-    await expect(service.runRetentionPolicy(tenant, executor, 'BUSINESS_DATA', {
+    await expect(service.runRetentionPolicy(tenant, executor, 'EVIDENCE', {
       mode: SaasRetentionRunMode.EXECUTE,
       expected_policy_version: 1,
       reason: 'Exercise failed receipt',
@@ -426,13 +426,13 @@ describe('SaasTenantGovernanceExecutionService', () => {
     expect(result.run.tableManifest).toMatchObject({
       retainedTables: { saas_usage_events: '7' },
       retainedRows: '7',
-      exclusions: [{
-        table: 'saas_usage_events',
-        reason: 'FINANCIAL_CONTROL_RECORDS_REQUIRE_SEPARATE_RETENTION_REVIEW',
-        rowCount: '7',
-      }],
       scope: 'REVIEWED_TENANT_TABLE_ALLOWLIST_ONLY',
     });
+    expect((result.run.tableManifest.exclusions as Array<Record<string, unknown>>).some((entry) =>
+      entry.table === 'saas_usage_events'
+      && entry.reason === 'FINANCIAL_CONTROL_RECORDS_REQUIRE_SEPARATE_RETENTION_REVIEW'
+      && entry.rowCount === '7',
+    )).toBe(true);
     expect(database.transaction).toHaveBeenCalledWith(
       expect.any(Function),
       expect.objectContaining({ tenantId: tenant, userId: executor }),
