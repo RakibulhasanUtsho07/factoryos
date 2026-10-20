@@ -18,8 +18,11 @@ BEGIN
     IF NOT EXISTS (
       SELECT 1 FROM pg_policy p
       WHERE p.polrelid = format('public.%I', table_name)::regclass
-        AND p.polname = table_name || '_tenant_isolation'
-    ) THEN RAISE EXCEPTION 'tenant isolation policy is missing for %', table_name; END IF;
+        AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%tenant_id%'
+        AND COALESCE(pg_get_expr(p.polqual,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+        AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%tenant_id%'
+        AND COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') ILIKE '%factoryos_current_tenant_id%'
+    ) THEN RAISE EXCEPTION 'tenant isolation policy is missing or not tenant-bound for %', table_name; END IF;
   END LOOP;
 
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='saas_retention_policy_immutable' AND NOT tgisinternal) THEN
