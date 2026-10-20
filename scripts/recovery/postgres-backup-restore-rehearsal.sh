@@ -147,6 +147,9 @@ if [[ "$dr_mode" == "RELEASE_GATE" ]]; then
   [[ "$candidate_manifest" != /* && "$candidate_manifest" != *".."* ]] || die "candidate manifest must be a repository-relative path without traversal"
   [[ -f "$repo_root/$candidate_manifest" && -r "$repo_root/$candidate_manifest" ]] || die "candidate migration manifest is missing or unreadable"
   need_command node
+  if ! (cd "$repo_root" && node scripts/audit/verify-migration-manifest.mjs); then
+    die "canonical ordered migration manifest failed inventory verification"
+  fi
   if [[ "${FACTORYOS_DR_TARGETS_APPROVED:-NO}" == "YES" ]]; then
     targets_approved=true
     [[ "$rpo_target_seconds" =~ ^[0-9]+$ ]] || die "approved RPO target must be integer seconds"
