@@ -25,6 +25,7 @@ interface RetentionPolicyRow extends QueryResultRow {
   version: string | number;
   retention_days: string | number;
   disposition: RetentionDisposition;
+  created_by_user_id?: string;
 }
 
 interface RetentionRunRow extends QueryResultRow {
@@ -215,7 +216,8 @@ export class SaasTenantGovernanceExecutionService {
       const held = holdResult.rows.some((row) => this.parseCategories(row.categories).includes(category));
       const blockReason = unsupported
         ?? (held && mode === SaasRetentionRunMode.EXECUTE ? 'ACTIVE_LEGAL_HOLD' : null)
-        ?? (mode === SaasRetentionRunMode.EXECUTE && policy.disposition !== 'DELETE'
+        ?? (mode === SaasRetentionRunMode.EXECUTE && policy.created_by_user_id === actorUserId ? 'POLICY_MAKER_CANNOT_EXECUTE' : null)
+      ?? (mode === SaasRetentionRunMode.EXECUTE && policy.disposition !== 'DELETE'
           ? policy.disposition === 'ANONYMIZE' ? 'ANONYMIZATION_ADAPTER_NOT_REGISTERED' : 'POLICY_REQUIRES_MANUAL_REVIEW'
           : null)
         ?? (mode === SaasRetentionRunMode.EXECUTE && PRESERVED_CATEGORIES.has(category) ? 'PROTECTED_EVIDENCE_CATEGORY' : null);
@@ -492,6 +494,49 @@ export class SaasTenantGovernanceExecutionService {
       }
       throw error;
     }
+  }
+
+  async listRetentionRuns(
+    tenantId: string,
+    actorUserId: string,
+    filters: { category?: string; status?: string; mode?: string; limit?: string } = {},
+  ) {
+    this.identity(tenantId, actorUserId);
+    await this.authorize(actorUserId, tenantId, 'saas.data_retention.read');
+    const category = filters.category ? this.category(filters.category) : null;
+    const status = filters.status ? filters.status.trim().toUpperCase() : null;
+    const mode = filters.mode ? filters.mode.trim().toUpperCase() : null;
+    if (status && !['COMPLETED', 'BLOCKED', 'FAILED'].includes(status)) {
+      throw new BadRequestException('status must be COMPLETED, BLOCKED or FAILED');
+    }
+    if (mode && !['DRY_RUN', 'EXECUTE'].includes(mode)) {
+      throw new BadRequestException('mode must be DRY_RUN or EXECUTE');
+    }
+    const limit = this.queryLimit(filters.limit, 200);
+    const result = await this.database.query<RetentionRunRow>(
+      `SELECT * FROM saas_tenant_data_retention_runs
+       WHERE tenant_id=$1 AND ($2::text IS NULL OR category_code=$2)
+         AND ($3::text IS NULL OR status=$3) AND ($4::text IS NULL OR mode=$4)
+       ORDER BY created_at DESC, id DESC LIMIT $5`,
+      [tenantId, category, status, mode, limit],
+      { tenantId, userId: actorUserId },
+    );
+    return { items: result.rows.map((row) => this.mapRetentionRun(row)), count: result.rows.length, limit };
+  }
+
+  async listErasureRuns(tenantId: string, actorUserId: string, requestIdValue: string, rawLimit?: string) {
+    this.identity(tenantId, actorUserId);
+    const requestId = this.uuid(requestIdValue, 'requestId');
+    await this.authorize(actorUserId, tenantId, 'saas.data_retention.read');
+    const limit = this.queryLimit(rawLimit, 100);
+    const result = await this.database.query<ErasureRunRow>(
+      `SELECT * FROM saas_tenant_data_erasure_runs
+       WHERE tenant_id=$1 AND request_id=$2
+       ORDER BY created_at DESC, id DESC LIMIT $3`,
+      [tenantId, requestId, limit],
+      { tenantId, userId: actorUserId },
+    );
+    return { items: result.rows.map((row) => this.mapErasureRun(row)), count: result.rows.length, limit };
   }
 
   private async recordFailedErasureRun(input: {
@@ -788,6 +833,15 @@ export class SaasTenantGovernanceExecutionService {
       throw new BadRequestException('idempotency_key contains unsupported characters');
     }
     return key;
+  }
+
+  private queryLimit(raw: string | undefined, max: number): number {
+    if (raw === undefined || raw.trim() === '') return max;
+    const limit = Number(raw);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > max) {
+      throw new BadRequestException('limit must be a safe integer between 1 and ' + max);
+    }
+    return limit;
   }
 
   private quoteIdentifier(value: string): string {
