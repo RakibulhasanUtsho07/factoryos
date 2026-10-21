@@ -7,6 +7,7 @@ import { CreateInventoryReservationDto } from './dto/create-inventory-reservatio
 import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
 import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
+import { TraceabilityService } from './traceability.service';
 
 describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () => {
   const TEST_USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
@@ -15,6 +16,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   let appPool!: Pool;
   let service!: InventoryReservationService;
   let locationService!: InventoryLocationService;
+  let traceabilityService!: TraceabilityService;
   let integrationDatabase!: ReturnType<typeof createIntegrationDatabase>;
   let tenantId!: string;
   let factoryId!: string;
@@ -79,6 +81,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const audit = { record: async () => undefined } as unknown as AuditService;
     service = new InventoryReservationService(integrationDatabase as never, audit);
     locationService = new InventoryLocationService(integrationDatabase as never, audit);
+    traceabilityService = new TraceabilityService(integrationDatabase as never);
   });
 
   afterAll(async () => {
@@ -92,6 +95,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           'inventory_reservations',
           'inventory_location_transfers',
           'inventory_traceability_location_balances',
+          'traceability_unit_status_events',
           'traceability_units',
           'inventory_material_allocation_policies',
           'inventory_movements',
@@ -110,6 +114,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
                OR aggregate_id IN (
                  SELECT id FROM inventory_reservations WHERE item_id = ANY($1::uuid[])
                  UNION SELECT id FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])
+                 UNION SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])
                )
             `,
             [itemIds],
@@ -124,6 +129,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           await adminPool.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_reservations WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query(
+            'DELETE FROM traceability_unit_status_events WHERE unit_id IN (SELECT id FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[]))',
+            [itemIds],
+          );
           await adminPool.query('DELETE FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_material_allocation_policies WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
@@ -206,7 +215,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       quantity: string,
       expiry: string,
       key: string,
-      options: { status?: 'ACTIVE' | 'QUARANTINED'; attributes?: Record<string, unknown> } = {},
+      options: { attributes?: Record<string, unknown> } = {},
     ) => {
       const inserted = await adminPool.query<{ id: string }>(
         `
@@ -215,11 +224,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           inventory_item_id, quantity, unit, external_reference, expires_at, status, attributes,
           idempotency_key, request_hash, created_by_user_id, correlation_id
         )
-        VALUES ($1,$2,'LOT','MATERIAL',$3,$4,$5,$6::numeric,'PCS',$7,$8::date,$9,$10::jsonb,$11,$12,$13,$14::uuid)
+        VALUES ($1,$2,'LOT','MATERIAL',$3,$4,$5,$6::numeric,'PCS',$7,$8::date,'ACTIVE',$9::jsonb,$10,$11,$12,$13::uuid)
         RETURNING id::text AS id
         `,
         [tenantId, factoryId, code, 'BAR-' + code, itemId, quantity, 'SUPPLIER-' + code,
-          expiry, options.status ?? 'ACTIVE', JSON.stringify(options.attributes ?? {}),
+          expiry, JSON.stringify(options.attributes ?? {}),
           key, 'a'.repeat(64), TEST_USER_ID, randomUUID()],
       );
       const id = inserted.rows[0]?.id;
@@ -237,9 +246,15 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       attributes: { held: true, condition: 'HELD' },
     });
     const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-quarantine-' + randomUUID(), {
-      status: 'QUARANTINED',
       attributes: { quarantined: true, condition: 'QUARANTINED' },
     });
+    // New traceability identities must begin ACTIVE. Exercise quarantine through
+    // the audited lifecycle so the candidate query excludes a real quarantined unit.
+    await traceabilityService.changeUnitStatus(
+      TEST_USER_ID, tenantId, factoryId, quarantinedLotId,
+      { target_status: 'QUARANTINED', reason: 'WMS FEFO exclusion integration fixture' } as never,
+      'wms-fefo-quarantine-status-' + randomUUID(), randomUUID(), randomUUID(),
+    );
 
     await adminPool.query(
       `
