@@ -594,6 +594,9 @@ export class InventoryStockReconciliationService {
             if (!applied.rows[0]) {
               throw new ConflictException('Cycle-count approval lost its pending state');
             }
+            if (!cycleCountSnapshot) {
+              throw new ConflictException('Cycle-count approval snapshot is missing');
+            }
             await this.insertCycleCountApprovedEvent(client, {
               tenantId,
               factoryId,
