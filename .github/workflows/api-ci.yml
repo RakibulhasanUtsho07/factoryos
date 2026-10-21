@@ -91,6 +91,10 @@ jobs:
         run: |
           npm run test:load-smoke:contract
           npm run test:recovery:contract
+      - name: Verify fail-closed production authentication configuration
+        working-directory: services/api
+        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand src/config/runtime-config.spec.ts src/auth/auth.service.spec.ts
+
       - name: Lint API
         working-directory: services/api
         run: npm run lint
