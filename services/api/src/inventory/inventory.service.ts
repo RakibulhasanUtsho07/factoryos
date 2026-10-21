@@ -266,6 +266,10 @@ export class InventoryService {
 
     const locationId = dto.location_id?.trim().toLowerCase() || null;
     if (locationId) this.validateUuid(locationId, 'location_id');
+    const expectedBalanceVersion = dto.expected_balance_version?.trim() || null;
+    if (expectedBalanceVersion && !/^\\d{1,19}$/.test(expectedBalanceVersion)) {
+      throw new BadRequestException('expected_balance_version must be an unsigned integer string of at most 19 digits');
+    }
     const referenceType = dto.reference_type?.trim().toUpperCase() || null;
     const referenceId = dto.reference_id?.toLowerCase() || null;
     if (referenceId) this.validateUuid(referenceId, 'reference_id');
@@ -281,6 +285,7 @@ export class InventoryService {
       notes,
     };
     if (inputUnitCode) hashInput.inputUnitCode = inputUnitCode;
+    if (expectedBalanceVersion !== null) hashInput.expectedBalanceVersion = expectedBalanceVersion;
     const requestHash = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex');
 
     let result: InventoryMovementResult;
@@ -316,6 +321,28 @@ export class InventoryService {
             client, tenantId, factoryId, idempotencyKey,
           );
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
+
+          // An offline transaction is valid only against the stock snapshot the
+          // device observed. Check the version while holding the item/balance locks
+          // so a stale offline issue cannot silently apply after reconnect.
+          if (expectedBalanceVersion !== null) {
+            const versionResult = await client.query<{ version: string }>(
+              `SELECT version::text AS version
+               FROM inventory_stock_balances
+               WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+               FOR UPDATE`,
+              [tenantId, factoryId, itemId],
+            );
+            const currentVersion = versionResult.rows[0]?.version;
+            if (currentVersion === undefined) {
+              throw new ConflictException('Inventory balance is unavailable for offline version check');
+            }
+            if (currentVersion !== expectedBalanceVersion) {
+              throw new ConflictException(
+                `Inventory balance version changed; expected ${expectedBalanceVersion}, current ${currentVersion}`,
+              );
+            }
+          }
 
           if (locationId) {
             const locationResult = await client.query<{
