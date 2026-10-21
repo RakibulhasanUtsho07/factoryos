@@ -6,6 +6,8 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'deploy/observability/**'
+      - 'docs/central-observability-slo-capacity.md'
       - 'scripts/recovery/**'
       - 'scripts/audit/**'
       - 'migrations/**'
@@ -21,6 +23,8 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'deploy/observability/**'
+      - 'docs/central-observability-slo-capacity.md'
       - 'scripts/recovery/**'
       - 'scripts/audit/**'
       - 'migrations/**'
@@ -280,10 +284,14 @@ jobs:
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
-      - name: Validate bounded load-smoke harness syntax
+      - name: Validate observability and performance contracts
         run: |
           node --check scripts/performance/api-load-smoke.mjs
           node --check scripts/performance/api-load-smoke.test.mjs
+          node --check scripts/performance/api-soak-test.mjs
+          node --check scripts/performance/api-soak-test.test.mjs
+          node --check scripts/performance/observability-config.test.mjs
+          node --test scripts/performance/api-load-smoke.test.mjs scripts/performance/api-soak-test.test.mjs scripts/performance/observability-config.test.mjs
 
       - name: Lint API
         working-directory: services/api
