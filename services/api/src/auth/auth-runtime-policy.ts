@@ -83,7 +83,7 @@ export function resolveAuthRuntimePolicy(config: AuthRuntimeConfiguration): Auth
     requireHttpsUrl(config.oidcIssuer, 'OIDC_ISSUER');
     requireHttpsUrl(config.oidcJwksUri, 'OIDC_JWKS_URI');
     if (config.oidcRequireMfa?.trim().toLowerCase() !== 'true') {
-      throw new Error('OIDC_REQUIRE_MFA=true is required in production unless a reviewed release exception is approved');
+      throw new Error('OIDC_REQUIRE_MFA=true is required in production');
     }
   }
 
