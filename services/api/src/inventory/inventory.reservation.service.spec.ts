@@ -115,7 +115,11 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([]))
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
       .mockResolvedValueOnce(queryRows([]))
-      .mockResolvedValueOnce(queryRows([]));
+      .mockResolvedValueOnce(queryRows([{
+        allocation_policy: 'FIFO', require_traceability: false,
+        has_lot: false, has_serial: false, has_identity: false,
+      }]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '2.0000' }]));
 
     await expect(service.createReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID,
@@ -638,7 +642,11 @@ describe('InventoryReservationService', () => {
     });
 
     expect(result.reservations_created).toBe(2);
-    expect(client.query.mock.calls[6]?.[1]).toContain('5.0000');
+    const aggregateReservationUpdate = client.query.mock.calls.find(
+      (call) => String(call[0]).includes('UPDATE inventory_stock_balances')
+        && String(call[0]).includes('quantity_reserved = quantity_reserved +'),
+    );
+    expect(aggregateReservationUpdate?.[1]).toContain('5.0000');
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toHaveLength(2);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('UPDATE inventory_location_balances'))).toHaveLength(2);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO outbox_events'))).toHaveLength(2);
