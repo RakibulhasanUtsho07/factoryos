@@ -594,6 +594,36 @@ export class InventoryLocationService {
         if (!item) throw new NotFoundException('Inventory item not found in this factory');
         if (item.status !== 'ACTIVE') throw new ConflictException('Disabled items cannot be transferred');
 
+        const traceabilityPolicy = await client.query<{
+          allocation_policy: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+          has_material_identity: boolean;
+        }>(
+          `
+          SELECT COALESCE(
+              (SELECT p.allocation_policy FROM inventory_item_allocation_policies p
+               WHERE p.tenant_id = $1 AND p.factory_id = $2 AND p.item_id = $3),
+              (SELECT ts.allocation_policy FROM traceability_settings ts
+               WHERE ts.tenant_id = $1 AND ts.factory_id = $2),
+              'FIFO'
+            ) AS allocation_policy,
+            EXISTS (
+              SELECT 1 FROM traceability_units tu
+              WHERE tu.tenant_id = $1 AND tu.factory_id = $2 AND tu.inventory_item_id = $3
+                AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+            ) AS has_material_identity
+          FROM inventory_items i
+          WHERE i.id = $3 AND i.tenant_id = $1 AND i.factory_id = $2
+          `,
+          [tenantId, factoryId, itemId],
+        );
+        const traceabilityRule = traceabilityPolicy.rows[0];
+        if (!traceabilityUnitId && traceabilityRule
+          && (traceabilityRule.allocation_policy === 'LOT'
+            || traceabilityRule.allocation_policy === 'SERIAL'
+            || traceabilityRule.has_material_identity)) {
+          throw new ConflictException('This material requires an explicit lot/serial identity for put-away, picking or transfer');
+        }
+
         const locationResult = await client.query<InventoryLocationRow>(
           `
           SELECT ${LOCATION_COLUMNS}
