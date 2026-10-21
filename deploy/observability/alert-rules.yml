@@ -104,7 +104,7 @@ groups:
           description: "Review dispatch health, retry/lease state, delivery outcomes, and downstream availability."
 
       - alert: FactoryOSOutboxStalePublication
-        expr: factoryos_outbox_freshness_seconds_since_last_publish > 300
+        expr: factoryos_outbox_freshness_seconds_since_last_publish == -1 or factoryos_outbox_freshness_seconds_since_last_publish > 300
         for: 5m
         labels:
           severity: warning
