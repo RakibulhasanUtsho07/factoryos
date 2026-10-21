@@ -119,7 +119,7 @@ describe('InventoryReservationService', () => {
         allocation_policy: 'FIFO', require_traceability: false,
         has_lot: false, has_serial: false, has_identity: false,
       }]))
-      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '2.0000' }]));
+      .mockResolvedValueOnce(queryRows([]));
 
     await expect(service.createReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID,
