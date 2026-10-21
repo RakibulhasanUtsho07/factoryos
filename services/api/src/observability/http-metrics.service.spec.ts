@@ -50,6 +50,29 @@ describe('HttpMetricsService', () => {
     expect(output).toContain('factoryos_db_pool_connections{state="waiting"} 2');
   });
 
+  it('exports aggregate outbox freshness and explicitly marks a failed tenant-scoped snapshot stale', () => {
+    const metrics = new HttpMetricsService();
+    metrics.recordOutboxQueueSnapshot([
+      { status: 'PENDING', count: 3, oldestAgeSeconds: 45 },
+      { status: 'FAILED', count: 1, oldestAgeSeconds: 120 },
+    ], 12);
+
+    let output = metrics.renderPrometheus();
+    expect(output).toContain('factoryos_outbox_events{status="PENDING"} 3');
+    expect(output).toContain('factoryos_outbox_events{status="FAILED"} 1');
+    expect(output).toContain('factoryos_outbox_events{status="PROCESSING"} 0');
+    expect(output).toContain('factoryos_outbox_oldest_age_seconds{status="FAILED"} 120');
+    expect(output).toContain('factoryos_outbox_freshness_seconds_since_last_publish 12');
+    expect(output).toContain('factoryos_outbox_metrics_collection_success 1');
+    expect(output).toContain('factoryos_outbox_metrics_snapshot_age_seconds ');
+
+    metrics.recordOutboxQueueSnapshotFailure();
+    output = metrics.renderPrometheus();
+    expect(output).toContain('factoryos_outbox_metrics_collection_success 0');
+    expect(output).toContain('factoryos_outbox_metrics_collection_errors_total 1');
+    expect(output).not.toContain('factoryos_outbox_events{status="PENDING"} 0');
+  });
+
   it('normalizes arbitrary path values rather than exposing identifiers as route labels', () => {
     const metrics = new HttpMetricsService();
     metrics.completeRequest(metrics.beginRequest('GET'), 404, 0.01, '/api/orders/123456');
