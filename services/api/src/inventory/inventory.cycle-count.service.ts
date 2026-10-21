@@ -576,6 +576,10 @@ export class InventoryCycleCountService {
               cycle_count: {
                 id: reviewed.id,
                 item_id: reviewed.item_id,
+                counted_quantity: reviewed.counted_quantity,
+                location_id: reviewed.location_id,
+                location_quantity_at_count: reviewed.location_quantity_at_count,
+                variance_reason_code: reviewed.variance_reason_code,
                 status: reviewed.status,
                 review_note: reviewNote,
               },
@@ -614,7 +618,15 @@ export class InventoryCycleCountService {
         tenantId, factoryId, userId,
         requestId, traceId, resourceId: result.id,
         action: 'CYCLE_COUNT_REJECT',
-        payload: { item_id: itemId, review_note: reviewNote, status: result.status },
+        payload: {
+          item_id: itemId,
+          counted_quantity: result.counted_quantity,
+          location_id: result.location_id,
+          location_quantity_at_count: result.location_quantity_at_count,
+          variance_reason_code: result.variance_reason_code,
+          review_note: reviewNote,
+          status: result.status,
+        },
       });
     }
     return result;
