@@ -11,12 +11,12 @@ async function read(path) {
 test('production security evidence remains explicitly unapproved until operator attestation', async () => {
   const baseline = await read('deploy/security/production-security-baseline.yml');
   assert.match(baseline, /^status: NOT_ATTESTED/m);
-  assert.match(baseline, /^auth_mode: oidc/m);
-  assert.match(baseline, /^dev_auth_enabled: false/m);
-  assert.match(baseline, /^require_mfa: true/m);
-  assert.match(baseline, /^applicability: OWNER_DECISION_REQUIRED/m);
-  assert.match(baseline, /^release_approved: false/m);
-  assert.match(baseline, /^all_high_critical_findings_closed: false/m);
+  assert.match(baseline, /^\s*auth_mode: oidc$/m);
+  assert.match(baseline, /^\s*dev_auth_enabled: false$/m);
+  assert.match(baseline, /^\s*require_mfa: true$/m);
+  assert.match(baseline, /^\s*applicability: OWNER_DECISION_REQUIRED$/m);
+  assert.match(baseline, /^\s*release_approved: false$/m);
+  assert.match(baseline, /^\s*all_high_critical_findings_closed: false$/m);
 });
 
 test('network policy proposes default-deny and forbids public paths to database, telemetry and OT networks', async () => {
