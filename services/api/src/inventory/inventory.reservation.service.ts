@@ -2371,7 +2371,7 @@ export class InventoryReservationService {
   }
 
   private decimalToUnits(value: string): bigint {
-    const match = /^(\\d+)(?:\\.(\\d{1,4}))?$/.exec(String(value).trim());
+    const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
     if (!match) throw new ConflictException('Inventory quantity is not a valid four-decimal value');
     return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
   }
