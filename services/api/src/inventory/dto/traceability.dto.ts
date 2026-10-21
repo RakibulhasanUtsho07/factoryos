@@ -1,6 +1,6 @@
 import {
   ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
-  IsString, IsUUID, Max, MaxLength, Min,
+  IsString, IsUUID, Matches, Max, MaxLength, Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -30,6 +30,11 @@ export class CreateTraceabilityUnitDto {
   @IsString()
   @MaxLength(255)
   barcode_value?: string;
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Z0-9._:-]{1,128}$/i)
+  @MaxLength(128)
+  rfid_epc?: string;
   @IsOptional()
   @IsUUID()
   inventory_item_id?: string;
@@ -140,4 +145,25 @@ export class UpdateInventoryItemAllocationPolicyDto {
 
   @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
   allocation_policy!: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+}
+
+export class IssueTraceabilityLabelDto {
+  @IsUUID()
+  unit_id!: string;
+
+  @IsUUID()
+  template_id!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  copy_count?: number;
+}
+
+export class ResolveTraceabilityLabelDto {
+  @IsString()
+  @MaxLength(255)
+  code!: string;
 }
