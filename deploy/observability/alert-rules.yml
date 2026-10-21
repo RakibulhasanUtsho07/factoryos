@@ -113,6 +113,26 @@ groups:
           summary: "No successful outbox publication within the proposed freshness window"
           description: "A value of -1 means there has never been a successful publication; investigate before declaring recovery."
 
+      - alert: FactoryOSOutboxMetricsSnapshotStale
+        expr: factoryos_outbox_metrics_collection_success != 1 or factoryos_outbox_metrics_snapshot_age_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS outbox metrics are missing, stale, or failed"
+          description: "Check dispatcher startup, tenant-scoped RLS queries, DB readiness and per-instance snapshot age before interpreting queue levels."
+
+      - alert: FactoryOSOutboxMetricsCollectionErrors
+        expr: increase(factoryos_outbox_metrics_collection_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS failed to collect tenant-scoped outbox queue metrics"
+          description: "Investigate database availability or tenant-scoped query failures; partial aggregate snapshots are intentionally not published."
+
       - alert: FactoryOSOtlpExporterErrors
         expr: increase(factoryos_trace_export_errors_total[5m]) > 0
         for: 1m
