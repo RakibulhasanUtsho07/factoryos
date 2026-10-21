@@ -29,6 +29,17 @@ describe('production authentication runtime policy', () => {
     })).toThrow('Development authentication is forbidden in production');
   });
 
+  it('requires DEV_AUTH_ENABLED to be explicitly false in production', () => {
+    expect(() => resolveAuthRuntimePolicy({
+      ...productionOidc,
+      devAuthEnabled: undefined,
+    })).toThrow('DEV_AUTH_ENABLED=false must be explicitly configured in production');
+    expect(() => resolveAuthRuntimePolicy({
+      ...productionOidc,
+      devAuthEnabled: 'true',
+    })).toThrow('DEV_AUTH_ENABLED=false must be explicitly configured in production');
+  });
+
   it('requires OIDC endpoints over HTTPS and rejects credential-bearing URLs', () => {
     expect(() => resolveAuthRuntimePolicy({
       ...productionOidc,
