@@ -23,28 +23,30 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       inject: [ConfigService],
 
       useFactory: (configService: ConfigService) => {
-        const secret = configService.get<string>('JWT_SECRET');
+        const authMode = configService.get<string>('AUTH_MODE') || 'dev';
+        const signOptions = {
+          expiresIn: '15m',
+          issuer:
+            configService.get<string>('JWT_ISSUER') ||
+            'factoryos-api',
+          audience:
+            configService.get<string>('JWT_AUDIENCE') ||
+            'factoryos-web',
+        };
 
-        if (!secret) {
-          throw new Error(
-            'JWT_SECRET is required in services/api/.env',
-          );
+        // OIDC validates external RS256 tokens. A local HS256 signing secret is
+        // neither needed nor desirable in that mode; dev-token issuance remains
+        // blocked by AuthService outside NODE_ENV=development.
+        if (authMode === 'oidc') {
+          return { signOptions };
         }
 
-        return {
-          secret,
+        const secret = configService.get<string>('JWT_SECRET');
+        if (!secret) {
+          throw new Error('JWT_SECRET is required when AUTH_MODE=dev');
+        }
 
-          signOptions: {
-            expiresIn: '15m',
-            issuer:
-              configService.get<string>('JWT_ISSUER') ||
-              'factoryos-api',
-
-            audience:
-              configService.get<string>('JWT_AUDIENCE') ||
-              'factoryos-web',
-          },
-        };
+        return { secret, signOptions };
       },
     }),
   ],
