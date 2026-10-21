@@ -28,11 +28,13 @@ export class AuthService {
     userId: string,
     tenantId: string,
   ) {
+    const authMode = (process.env.AUTH_MODE || 'dev').trim().toLowerCase();
     if (
       process.env.NODE_ENV !==
         'development' ||
       process.env.DEV_AUTH_ENABLED !==
-        'true'
+        'true' ||
+      authMode !== 'dev'
     ) {
       throw new NotFoundException();
     }
