@@ -778,6 +778,8 @@ DECLARE
   v_unit_status VARCHAR(16);
   v_expiry DATE;
   v_unit_quantity NUMERIC(18,4);
+  v_consumed_quantity NUMERIC(18,4);
+  v_existing_total NUMERIC(18,4);
   v_item_id UUID;
 BEGIN
   IF TG_OP = 'DELETE' THEN
@@ -792,7 +794,8 @@ BEGIN
     AND inventory_item_id = NEW.item_id
   FOR SHARE;
 
-  IF NOT FOUND OR v_item_id IS NULL OR NEW.quantity_on_hand > v_unit_quantity THEN
+  IF NOT FOUND OR v_item_id IS NULL OR NEW.quantity_on_hand < 0
+     OR NEW.quantity_on_hand > v_unit_quantity THEN
     RAISE EXCEPTION 'traceability location balance exceeds or mismatches its registered material identity'
       USING ERRCODE = '23514';
   END IF;
@@ -802,6 +805,27 @@ BEGIN
          ROW(OLD.id, OLD.tenant_id, OLD.factory_id, OLD.item_id, OLD.traceability_unit_id, OLD.location_id) THEN
     RAISE EXCEPTION 'traceability location balance identity is immutable'
       USING ERRCODE = '55000';
+  END IF;
+
+  SELECT COALESCE(SUM(g.quantity), 0)
+    INTO v_consumed_quantity
+  FROM product_genealogy_events g
+  WHERE g.tenant_id = NEW.tenant_id AND g.factory_id = NEW.factory_id
+    AND g.source_unit_id = NEW.traceability_unit_id
+    AND g.relationship_type IN ('CONSUMED_INTO', 'PROCESSED_INTO');
+
+  SELECT COALESCE(SUM(tlb.quantity_on_hand), 0)
+    INTO v_existing_total
+  FROM inventory_traceability_location_balances tlb
+  WHERE tlb.tenant_id = NEW.tenant_id AND tlb.factory_id = NEW.factory_id
+    AND tlb.item_id = NEW.item_id AND tlb.traceability_unit_id = NEW.traceability_unit_id
+    AND tlb.id <> NEW.id;
+
+  IF v_existing_total + NEW.quantity_on_hand > GREATEST(v_unit_quantity - v_consumed_quantity, 0) THEN
+    RAISE EXCEPTION
+      'total tracked lot/serial quantity (%) cannot exceed registered unconsumed quantity (%)',
+      v_existing_total + NEW.quantity_on_hand, GREATEST(v_unit_quantity - v_consumed_quantity, 0)
+      USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
 END;
