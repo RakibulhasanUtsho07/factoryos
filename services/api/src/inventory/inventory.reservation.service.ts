@@ -2372,6 +2372,156 @@ export class InventoryReservationService {
     return result;
   }
 
+  async updateAllocationPolicy(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    input: { scope: 'MATERIAL'; itemId: string } | { scope: 'SECTOR'; sectorCode: string },
+    dto: import('./dto/update-inventory-allocation-policy.dto').UpdateInventoryAllocationPolicyDto,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    if (!Number.isInteger(dto.expected_version) || dto.expected_version < 0) {
+      throw new BadRequestException('expected_version must be a non-negative integer');
+    }
+    const policy = String(dto.allocation_policy ?? '').trim().toUpperCase();
+    if (!['FIFO', 'FEFO', 'LOT', 'SERIAL'].includes(policy)) {
+      throw new BadRequestException('allocation_policy must be FIFO, FEFO, LOT or SERIAL');
+    }
+
+    const scope = input.scope;
+    let itemId: string | null = null;
+    let sectorCode: string | null = null;
+    if (scope === 'MATERIAL') {
+      itemId = input.itemId.trim().toLowerCase();
+      this.validateUuid(itemId, 'itemId');
+    } else {
+      sectorCode = input.sectorCode.trim().toUpperCase();
+      if (!sectorCode || sectorCode.length > 64) {
+        throw new BadRequestException('sectorCode must contain 1 to 64 characters');
+      }
+    }
+    const requestUuid = requestId && isUUID(requestId) ? requestId : null;
+    const traceUuid = traceId && isUUID(traceId) ? traceId : null;
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+    let policyRow: {
+      policy_scope: 'MATERIAL' | 'SECTOR';
+      sector_code: string | null;
+      inventory_item_id: string | null;
+      allocation_policy: string;
+      require_traceability: boolean;
+      version: number;
+      updated_at: string;
+    } | undefined;
+
+    try {
+      policyRow = await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          if (scope === 'MATERIAL') {
+            const item = await client.query<{ id: string; sector_code: string | null }>(
+              `SELECT id::text AS id, sector_code FROM inventory_items
+               WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,
+              [itemId, tenantId, factoryId],
+            );
+            if (!item.rows[0]) throw new NotFoundException('Inventory material was not found in this factory');
+          }
+
+          const values = [
+            tenantId, factoryId, scope, sectorCode, itemId, policy,
+            dto.require_traceability ?? null, userId, dto.expected_version,
+          ];
+          const result = dto.expected_version === 0
+            ? await client.query<{
+                policy_scope: 'MATERIAL' | 'SECTOR'; sector_code: string | null;
+                inventory_item_id: string | null; allocation_policy: string;
+                require_traceability: boolean; version: number; updated_at: string;
+              }>(
+                `
+                INSERT INTO inventory_material_allocation_policies (
+                  tenant_id, factory_id, policy_scope, sector_code, inventory_item_id,
+                  allocation_policy, require_traceability, created_by_user_id, updated_by_user_id
+                )
+                VALUES ($1,$2,$3,$4,$5::uuid,$6,COALESCE($7::boolean, TRUE),$8,$8)
+                ON CONFLICT DO NOTHING
+                RETURNING policy_scope, sector_code, inventory_item_id::text AS inventory_item_id,
+                          allocation_policy, require_traceability, version, updated_at::text AS updated_at
+                `,
+                values.slice(0, 8),
+              )
+            : await client.query<{
+                policy_scope: 'MATERIAL' | 'SECTOR'; sector_code: string | null;
+                inventory_item_id: string | null; allocation_policy: string;
+                require_traceability: boolean; version: number; updated_at: string;
+              }>(
+                `
+                UPDATE inventory_material_allocation_policies
+                SET allocation_policy=$6,
+                    require_traceability=COALESCE($7::boolean, require_traceability),
+                    updated_by_user_id=$8,
+                    version=version+1,
+                    updated_at=clock_timestamp()
+                WHERE tenant_id=$1 AND factory_id=$2 AND policy_scope=$3
+                  AND (($3='MATERIAL' AND inventory_item_id=$5::uuid)
+                    OR ($3='SECTOR' AND lower(sector_code)=lower($4)))
+                  AND version=$9
+                RETURNING policy_scope, sector_code, inventory_item_id::text AS inventory_item_id,
+                          allocation_policy, require_traceability, version, updated_at::text AS updated_at
+                `,
+                values,
+              );
+          const saved = result.rows[0];
+          if (!saved) {
+            throw new ConflictException(
+              dto.expected_version === 0
+                ? 'An allocation policy already exists; reload it and submit its current version'
+                : 'Allocation policy version is stale or the policy does not exist',
+            );
+          }
+
+          await this.insertOutboxEvent(client, {
+            tenantId, factoryId,
+            aggregateId: itemId ?? factoryId,
+            eventType: 'INVENTORY.ALLOCATION_POLICY_UPDATED',
+            correlationId, userId,
+            payload: {
+              policy_scope: scope,
+              sector_code: sectorCode,
+              inventory_item_id: itemId,
+              allocation_policy: saved.allocation_policy,
+              require_traceability: saved.require_traceability,
+              version: saved.version,
+            },
+          });
+          return saved;
+        },
+      );
+    } catch (error) {
+      if (this.errorCode(error) === '23505') {
+        throw new ConflictException('An allocation policy already exists for this material or sector');
+      }
+      throw error;
+    }
+
+    await this.recordAuditSafely({
+      tenantId, factoryId, userId,
+      action: 'ALLOCATION_POLICY_UPDATE',
+      resourceType: 'INVENTORY_ALLOCATION_POLICY',
+      resourceId: policyRow.inventory_item_id ?? factoryId,
+      requestId, traceId,
+      payload: {
+        policyScope: policyRow.policy_scope,
+        sectorCode: policyRow.sector_code,
+        itemId: policyRow.inventory_item_id,
+        allocationPolicy: policyRow.allocation_policy,
+        requireTraceability: policyRow.require_traceability,
+        version: policyRow.version,
+      },
+    });
+    return policyRow;
+  }
+
   private decimalToUnits(value: string): bigint {
     const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
     if (!match) throw new ConflictException('Inventory quantity is not a valid four-decimal value');
