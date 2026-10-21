@@ -131,6 +131,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/158_ot_mqtt_modbus_gateway.sql
 
+          echo "Reapplying WMS FEFO/lot allocation migration to verify allocation and partial-issue DDL idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/160_wms_fefo_lot_serial_partial_issue.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
