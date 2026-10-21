@@ -272,9 +272,11 @@ describe(
             currentEventId: string,
             currentTenantId: string,
           ) => {
-            if (injectedFailure) {
-              injectedFailure =
-                false;
+            if (
+              injectedFailure &&
+              currentEventId === eventId
+            ) {
+              injectedFailure = false;
 
               throw new Error(
                 'TEST_CRASH_BEFORE_MARK_PUBLISHED',
@@ -298,17 +300,12 @@ describe(
         const firstResult =
           await dispatcher.dispatchOnce();
 
-        expect(
-          firstResult.claimed,
-        ).toBe(1);
-
-        expect(
-          firstResult.published,
-        ).toBe(0);
-
-        expect(
-          firstResult.failed,
-        ).toBe(1);
+        // Other integration suites can add legitimate outbox work to the
+        // shared PostgreSQL database concurrently. Assert the dispatcher count
+        // contract globally, while the assertions below scope the crash to eventId.
+        expect(firstResult.claimed).toBeGreaterThanOrEqual(1);
+        expect(firstResult.claimed).toBe(firstResult.published + firstResult.failed);
+        expect(firstResult.failed).toBeGreaterThanOrEqual(1);
 
         const firstOutboxResult =
           await pool.query(
@@ -431,17 +428,11 @@ describe(
         const secondResult =
           await dispatcher.dispatchOnce();
 
-        expect(
-          secondResult.claimed,
-        ).toBe(1);
-
-        expect(
-          secondResult.published,
-        ).toBe(1);
-
-        expect(
-          secondResult.failed,
-        ).toBe(0);
+        // A retry runs against a shared outbox; other tenants/events may be
+        // published in the same cycle, so assert the event state below instead
+        // of assuming global counters contain only this fixture.
+        expect(secondResult.claimed).toBeGreaterThanOrEqual(1);
+        expect(secondResult.claimed).toBe(secondResult.published + secondResult.failed);
 
         const secondOutboxResult =
           await pool.query(

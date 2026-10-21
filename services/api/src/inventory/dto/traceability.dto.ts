@@ -1,6 +1,6 @@
 import {
   ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
-  IsString, IsUUID, Max, MaxLength, Min,
+  IsString, IsUUID, Matches, Max, MaxLength, Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -9,6 +9,9 @@ export const TRACEABILITY_UNIT_TYPES = [
 ] as const;
 export const TRACEABILITY_PRODUCT_ROLES = [
   'MATERIAL', 'FINISHED_GOOD', 'PACKAGING', 'SHIPMENT', 'OTHER',
+] as const;
+export const TRACEABILITY_LABEL_TARGET_TYPES = [
+  ...TRACEABILITY_UNIT_TYPES, 'MATERIAL',
 ] as const;
 export const TRACEABILITY_STATUSES = [
   'ACTIVE', 'QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED',
@@ -30,6 +33,11 @@ export class CreateTraceabilityUnitDto {
   @IsString()
   @MaxLength(255)
   barcode_value?: string;
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Z0-9._:-]{1,128}$/i)
+  @MaxLength(128)
+  rfid_epc?: string;
   @IsOptional()
   @IsUUID()
   inventory_item_id?: string;
@@ -109,8 +117,8 @@ export class CreateTraceabilityLabelTemplateDto {
   symbology!: 'QR' | 'CODE128' | 'DATAMATRIX' | 'GS1_128';
   @IsArray()
   @ArrayUnique()
-  @IsIn([...TRACEABILITY_UNIT_TYPES], { each: true })
-  supported_unit_types!: Array<(typeof TRACEABILITY_UNIT_TYPES)[number]>;
+  @IsIn([...TRACEABILITY_LABEL_TARGET_TYPES], { each: true })
+  supported_unit_types!: Array<(typeof TRACEABILITY_LABEL_TARGET_TYPES)[number]>;
   @IsOptional()
   @IsObject()
   label_layout?: Record<string, unknown>;
@@ -140,4 +148,30 @@ export class UpdateInventoryItemAllocationPolicyDto {
 
   @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
   allocation_policy!: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+}
+
+export class IssueTraceabilityLabelDto {
+  @IsOptional()
+  @IsUUID()
+  unit_id?: string;
+
+  @IsOptional()
+  @IsUUID()
+  item_id?: string;
+
+  @IsUUID()
+  template_id!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  copy_count?: number;
+}
+
+export class ResolveTraceabilityLabelDto {
+  @IsString()
+  @MaxLength(255)
+  code!: string;
 }
