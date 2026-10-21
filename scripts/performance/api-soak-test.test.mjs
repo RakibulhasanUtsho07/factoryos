@@ -143,6 +143,21 @@ test('soak fails when non-2xx error rate exceeds the selected guardrail', async 
   assert.equal(report.saturationRecovery.recovered, false);
 });
 
+test('soak enforces an owner-selected minimum throughput', async () => {
+  const result = await runHarness({
+    FACTORYOS_SOAK_MAX_REQUESTS: '4',
+    FACTORYOS_SOAK_CONCURRENCY: '2',
+    FACTORYOS_SOAK_MIN_RPS: '1000000',
+    FACTORYOS_SOAK_RECOVERY_SECONDS: '1',
+    FACTORYOS_SOAK_MAX_RECOVERY_SECONDS: '1',
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Observed throughput was below FACTORYOS_SOAK_MIN_RPS/);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.configured.minRps, 1000000);
+  assert.ok(report.load.requestsPerSecond < 1000000);
+});
+
 test('soak refuses invalid or external scenario paths before issuing traffic', async () => {
   await writeFile(join(tempDir, 'invalid-scenarios.json'), JSON.stringify([
     { name: 'escape', path: '//example.invalid/', weight: 1 },
