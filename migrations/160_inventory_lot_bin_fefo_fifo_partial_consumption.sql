@@ -807,7 +807,7 @@ COMMENT ON TABLE inventory_reservation_consumptions IS
 CREATE OR REPLACE FUNCTION factoryos_validate_inventory_location_transfer_lot()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_status VARCHAR(16);
   v_unit_type VARCHAR(24);
@@ -875,7 +875,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TRIGGER inventory_location_transfer_lot_policy_guard
 BEFORE INSERT ON inventory_location_transfers
@@ -884,7 +884,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_validate_inventory_location_transfer_lot
 CREATE OR REPLACE FUNCTION factoryos_apply_inventory_location_transfer_lot()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   IF NEW.traceability_unit_id IS NULL THEN
     RETURN NEW;
@@ -915,7 +915,7 @@ BEGIN
     updated_at = clock_timestamp();
   RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TRIGGER inventory_location_transfer_apply_lot_balance
 AFTER INSERT ON inventory_location_transfers
