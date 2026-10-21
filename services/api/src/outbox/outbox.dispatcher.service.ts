@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
+import { HttpMetricsService } from '../observability/http-metrics.service';
 
 import {
   OutboxPublisher,
@@ -130,6 +131,16 @@ interface TenantRow {
   id: string;
 }
 
+interface OutboxMetricsRow {
+  status: string | null;
+  event_count: string | number;
+  oldest_age_seconds: string | number;
+  seconds_since_last_publish: string | number;
+}
+
+const OUTBOX_METRICS_INTERVAL_MS = 60_000;
+const OUTBOX_METRIC_STATUSES = ['PENDING', 'FAILED', 'PROCESSING', 'QUARANTINED'] as const;
+
 @Injectable()
 export class OutboxDispatcherService
   implements
@@ -164,6 +175,10 @@ export class OutboxDispatcherService
   private readonly maxAttempts =
     10;
 
+  private lastQueueMetricsCollectionAtMs = 0;
+
+  private queueMetricsCollectionRunning = false;
+
   constructor(
     private readonly database:
       DatabaseService,
@@ -177,6 +192,9 @@ export class OutboxDispatcherService
     @Optional()
     private readonly auditService?:
       AuditService,
+
+    @Optional()
+    private readonly metrics?: HttpMetricsService,
   ) {}
 
   // ============================================================
@@ -257,6 +275,8 @@ export class OutboxDispatcherService
           id
         `,
       );
+
+    await this.collectQueueMetricsIfDue(tenants.rows);
 
     let claimed =
       0;
@@ -416,6 +436,88 @@ export class OutboxDispatcherService
 
       failed,
     };
+  }
+
+  private async collectQueueMetricsIfDue(tenants: TenantRow[]): Promise<void> {
+    if (!this.metrics || this.queueMetricsCollectionRunning
+      || Date.now() - this.lastQueueMetricsCollectionAtMs < OUTBOX_METRICS_INTERVAL_MS) {
+      return;
+    }
+
+    this.queueMetricsCollectionRunning = true;
+    this.lastQueueMetricsCollectionAtMs = Date.now();
+    const counts = new Map<string, number>(OUTBOX_METRIC_STATUSES.map((status) => [status, 0]));
+    const oldestAges = new Map<string, number>(OUTBOX_METRIC_STATUSES.map((status) => [status, 0]));
+    let secondsSinceLastPublish: number | null = null;
+
+    try {
+      // outbox_events FORCE ROW LEVEL SECURITY is intentionally preserved.
+      // Each aggregate is computed in a transaction scoped to one tenant; only
+      // bounded state/count/age values are combined, never IDs or event payloads.
+      for (const tenant of tenants) {
+        const result = await this.database.query<OutboxMetricsRow>(
+          `
+          WITH queue_state AS (
+            SELECT
+              status,
+              COUNT(*)::bigint AS event_count,
+              GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at))), 0)::double precision
+                AS oldest_age_seconds
+            FROM outbox_events
+            WHERE status IN ('PENDING', 'FAILED', 'PROCESSING', 'QUARANTINED')
+            GROUP BY status
+          ),
+          publication AS (
+            SELECT COALESCE(
+              EXTRACT(EPOCH FROM (clock_timestamp() - MAX(published_at))),
+              -1
+            )::double precision AS seconds_since_last_publish
+            FROM outbox_events
+          )
+          SELECT
+            queue_state.status,
+            COALESCE(queue_state.event_count, 0)::bigint AS event_count,
+            COALESCE(queue_state.oldest_age_seconds, 0)::double precision AS oldest_age_seconds,
+            publication.seconds_since_last_publish
+          FROM publication
+          LEFT JOIN queue_state ON TRUE
+          `,
+          [],
+          { tenantId: tenant.id },
+        );
+
+        for (const row of result.rows) {
+          if (row.status && (OUTBOX_METRIC_STATUSES as readonly string[]).includes(row.status)) {
+            const count = Math.max(0, Number(row.event_count) || 0);
+            const age = Math.max(0, Number(row.oldest_age_seconds) || 0);
+            counts.set(row.status, (counts.get(row.status) ?? 0) + count);
+            oldestAges.set(row.status, Math.max(oldestAges.get(row.status) ?? 0, age));
+          }
+          const publicationAge = Number(row.seconds_since_last_publish);
+          if (Number.isFinite(publicationAge) && publicationAge >= 0) {
+            secondsSinceLastPublish = secondsSinceLastPublish === null
+              ? publicationAge : Math.min(secondsSinceLastPublish, publicationAge);
+          }
+        }
+      }
+
+      this.metrics.recordOutboxQueueSnapshot(
+        OUTBOX_METRIC_STATUSES.map((status) => ({
+          status,
+          count: counts.get(status) ?? 0,
+          oldestAgeSeconds: oldestAges.get(status) ?? 0,
+        })),
+        secondsSinceLastPublish ?? -1,
+      );
+    } catch {
+      // Do not expose tenant identifiers/DB errors and do not replace a valid
+      // snapshot with partial values. The snapshot age and health gauges alert
+      // operators if a subsequent collection cannot complete.
+      this.metrics.recordOutboxQueueSnapshotFailure();
+      this.logger.warn('Outbox queue metrics collection failed; previous aggregate snapshot retained');
+    } finally {
+      this.queueMetricsCollectionRunning = false;
+    }
   }
 
   // ============================================================
