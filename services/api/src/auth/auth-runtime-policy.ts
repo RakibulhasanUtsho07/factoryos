@@ -60,8 +60,8 @@ export function resolveAuthRuntimePolicy(config: AuthRuntimeConfiguration): Auth
     throw new Error('Development authentication is forbidden in production');
   }
 
-  if (production && config.devAuthEnabled?.trim().toLowerCase() === 'true') {
-    throw new Error('DEV_AUTH_ENABLED must not be true in production');
+  if (production && config.devAuthEnabled?.trim().toLowerCase() !== 'false') {
+    throw new Error('DEV_AUTH_ENABLED=false must be explicitly configured in production');
   }
 
   if (authMode === 'dev') {
