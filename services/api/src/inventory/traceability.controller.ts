@@ -9,7 +9,7 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto,
-  CreateTraceabilityUnitDto, UpdateTraceabilitySettingsDto,
+  CreateTraceabilityUnitDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 
@@ -146,6 +146,42 @@ export class TraceabilityController {
       c.userId, c.tenantId, c.factoryId,
       rawActiveOnly === undefined ? true : rawActiveOnly.toLowerCase() !== 'false',
     );
+  }
+
+  @Post('labels/issue')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async issueLabel(
+    @Req() request: TraceabilityRequest,
+    @Body() body: IssueTraceabilityLabelDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.issueLabel(
+      c.userId, c.tenantId, c.factoryId, body, idempotencyKey ?? null, c.requestId, c.traceId,
+    );
+  }
+
+  @Get('labels/resolve')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async resolveLabel(@Req() request: TraceabilityRequest, @Query('code') code?: string) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.resolveLabel(c.userId, c.tenantId, c.factoryId, code ?? '');
+  }
+
+  @Get('units/:unitId/label-history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async labelHistory(
+    @Req() request: TraceabilityRequest,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.listLabelIssuesForUnit(c.userId, c.tenantId, c.factoryId, unitId);
   }
 
   @Get('settings')
