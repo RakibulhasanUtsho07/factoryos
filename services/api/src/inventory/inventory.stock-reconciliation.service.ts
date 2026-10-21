@@ -25,6 +25,7 @@ interface ReconciliationRow extends QueryResultRow {
   quantity_delta: string;
   quantity_after: string;
   reason_code: StockReconciliationReasonCode;
+  variance_reason_code: string | null;
   idempotency_key: string;
   request_hash: string;
   adjustment_movement_id: string | null;
@@ -70,6 +71,7 @@ const RECONCILIATION_COLUMNS = `
   quantity_delta::text AS quantity_delta,
   quantity_after::text AS quantity_after,
   reason_code,
+  variance_reason_code,
   idempotency_key,
   request_hash,
   adjustment_movement_id::text AS adjustment_movement_id,
@@ -104,6 +106,7 @@ export class InventoryStockReconciliationService {
       decisionIdempotencyKey: string;
       reviewRequestHash: string;
       reviewNote: string | null;
+      varianceReasonCode: string | null;
     },
   ): Promise<InventoryStockReconciliationResult> {
     this.validateScope(userId, tenantId, factoryId);
@@ -151,6 +154,7 @@ export class InventoryStockReconciliationService {
         countedQuantity,
         reasonCode,
         notes,
+        varianceReasonCode: cycleCountReview?.varianceReasonCode ?? null,
       }))
       .digest('hex');
 
@@ -313,6 +317,16 @@ export class InventoryStockReconciliationService {
               'Physical count cannot be lower than the quantity reserved for open work',
             );
           }
+          if (cycleCountReview && balance.hasVariance && !cycleCountReview.varianceReasonCode) {
+            throw new BadRequestException(
+              'variance_reason_code is required when an approved cycle count changes stock',
+            );
+          }
+          if (cycleCountReview && !balance.hasVariance && cycleCountReview.varianceReasonCode) {
+            throw new BadRequestException(
+              'variance_reason_code must be omitted when the cycle count has zero variance',
+            );
+          }
 
           const reconciliationId = randomUUID();
           const correlationId = this.correlationId(requestId, traceId);
@@ -390,13 +404,13 @@ export class InventoryStockReconciliationService {
             INSERT INTO inventory_stock_reconciliations (
               id, tenant_id, factory_id, item_id, quantity_before,
               counted_quantity, quantity_delta, quantity_after, reason_code,
-              idempotency_key, request_hash, adjustment_movement_id, notes,
+              variance_reason_code, idempotency_key, request_hash, adjustment_movement_id, notes,
               created_by_user_id, correlation_id
             )
             VALUES (
               $1::uuid, $2, $3, $4, $5::numeric, $6::numeric,
-              $7::numeric, $6::numeric, $8, $9, $10, $11::uuid,
-              $12, $13, $14::uuid
+              $7::numeric, $6::numeric, $8, $9, $10, $11, $12::uuid,
+              $13, $14, $15::uuid
             )
             RETURNING ${RECONCILIATION_COLUMNS}
             `,
@@ -409,6 +423,7 @@ export class InventoryStockReconciliationService {
               countedQuantity,
               balance.quantity_delta,
               reasonCode,
+              cycleCountReview?.varianceReasonCode ?? null,
               idempotencyKey,
               requestHash,
               movementId,
@@ -437,6 +452,7 @@ export class InventoryStockReconciliationService {
                 quantity_delta: reconciliation.quantity_delta,
                 quantity_after: reconciliation.quantity_after,
                 reason_code: reconciliation.reason_code,
+                variance_reason_code: reconciliation.variance_reason_code,
                 adjustment_movement_id: reconciliation.adjustment_movement_id,
               },
             },
@@ -453,7 +469,8 @@ export class InventoryStockReconciliationService {
                   review_idempotency_key = $2,
                   review_request_hash = $3,
                   review_note = $4,
-                  reconciliation_id = $5::uuid
+                  reconciliation_id = $5::uuid,
+                  variance_reason_code = $10
               WHERE id = $6
                 AND tenant_id = $7
                 AND factory_id = $8
@@ -472,6 +489,8 @@ export class InventoryStockReconciliationService {
                 tenantId,
                 factoryId,
                 normalizedItemId,
+                null,
+                cycleCountReview.varianceReasonCode,
               ],
             );
             if (!applied.rows[0]) {

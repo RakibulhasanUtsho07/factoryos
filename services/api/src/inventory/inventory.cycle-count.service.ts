@@ -9,6 +9,10 @@ import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
 
 import { AuditService } from '../audit/audit.service';
+import {
+  CYCLE_COUNT_VARIANCE_REASON_CODES,
+  type CycleCountVarianceReasonCode,
+} from './dto/review-inventory-cycle-count.dto';
 import { DatabaseService } from '../database/database.service';
 import {
   InventoryStockReconciliationService,
@@ -37,6 +41,7 @@ interface CycleCountProposalRow extends QueryResultRow {
   review_idempotency_key: string | null;
   review_request_hash: string | null;
   review_note: string | null;
+  variance_reason_code: CycleCountVarianceReasonCode | null;
   reconciliation_id: string | null;
 }
 
@@ -73,6 +78,7 @@ const CYCLE_COUNT_COLUMNS = `
   review_idempotency_key,
   review_request_hash,
   review_note,
+  variance_reason_code,
   reconciliation_id::text AS reconciliation_id
 `;
 
@@ -282,7 +288,7 @@ export class InventoryCycleCountService {
     factoryId: string,
     itemId: string,
     proposalId: string,
-    dto: { review_note?: string },
+    dto: { review_note?: string; variance_reason_code?: CycleCountVarianceReasonCode },
     rawIdempotencyKey: string | null,
     requestId: string | null,
     traceId: string | null,
@@ -292,10 +298,18 @@ export class InventoryCycleCountService {
     this.validateUuid(proposalId, 'proposalId');
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const reviewNote = dto.review_note?.trim() || null;
+    const varianceReasonCode = dto.variance_reason_code ?? null;
+    if (
+      varianceReasonCode !== null
+      && !CYCLE_COUNT_VARIANCE_REASON_CODES.includes(varianceReasonCode)
+    ) {
+      throw new BadRequestException('variance_reason_code is invalid');
+    }
     const reviewRequestHash = this.hash({
       proposalId: proposalId.toLowerCase(),
       decision: 'APPROVE',
       reviewNote,
+      varianceReasonCode,
     });
 
     const proposal = await this.getProposal(
@@ -325,6 +339,7 @@ export class InventoryCycleCountService {
           decisionIdempotencyKey: idempotencyKey,
           reviewRequestHash,
           reviewNote,
+          varianceReasonCode,
         },
       );
     }
@@ -356,6 +371,7 @@ export class InventoryCycleCountService {
           reconciliation_id: result.id,
           counted_quantity: result.counted_quantity,
           quantity_delta: result.quantity_delta,
+          variance_reason_code: result.variance_reason_code,
           review_note: reviewNote,
         },
       });

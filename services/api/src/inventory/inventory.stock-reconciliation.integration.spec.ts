@@ -391,16 +391,17 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const approvalKey = 'cycle-count-approve-' + randomUUID();
     const first = await cycleCountService.approveCycleCount(
       reviewerUserId, tenantId, factoryId, itemId, proposal.id,
-      { review_note: 'Physical count evidence checked' },
+      { review_note: 'Physical count evidence checked', variance_reason_code: 'LOSS' },
       approvalKey, randomUUID(), randomUUID(),
     );
     const replay = await cycleCountService.approveCycleCount(
       reviewerUserId, tenantId, factoryId, itemId, proposal.id,
-      { review_note: 'Physical count evidence checked' },
+      { review_note: 'Physical count evidence checked', variance_reason_code: 'LOSS' },
       approvalKey, randomUUID(), randomUUID(),
     );
     expect(first.replayed).toBe(false);
     expect(first.reason_code).toBe('CYCLE_COUNT');
+    expect(first.variance_reason_code).toBe('LOSS');
     expect(first.quantity_delta).toBe('-3.0000');
     expect(replay.replayed).toBe(true);
     expect(replay.id).toBe(first.id);
@@ -415,10 +416,11 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       status: string;
       reviewed_by_user_id: string;
       reconciliation_id: string;
+      variance_reason_code: string | null;
     }>(
       `
       SELECT status, reviewed_by_user_id::text AS reviewed_by_user_id,
-             reconciliation_id::text AS reconciliation_id
+             reconciliation_id::text AS reconciliation_id, variance_reason_code
       FROM inventory_cycle_count_proposals WHERE id = $1
       `,
       [proposal.id],
@@ -427,6 +429,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       status: 'APPLIED',
       reviewed_by_user_id: reviewerUserId,
       reconciliation_id: first.id,
+      variance_reason_code: 'LOSS',
     });
 
     const issueCount = await adminPool.query<{ count: string }>(
@@ -509,6 +512,94 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       [itemId],
     );
     expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
+  });
+
+  it('serializes competing cycle-count approvals and commits only one stock adjustment', async () => {
+    const itemId = await createItem('12.0000', '2.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 9, notes: 'Count independently verified by two reviewers' },
+      'cycle-count-concurrent-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    const attempts = await Promise.allSettled([
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'First reviewer', variance_reason_code: 'LOSS' },
+        'cycle-count-concurrent-review-a-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Competing reviewer decision', variance_reason_code: 'DAMAGE' },
+        'cycle-count-concurrent-review-b-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ]);
+
+    const succeeded = attempts.filter((attempt) => attempt.status === 'fulfilled');
+    const failed = attempts.filter((attempt) => attempt.status === 'rejected');
+    expect(succeeded).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('9.0000');
+
+    const evidence = await adminPool.query<{ count: string; reason: string }>(
+      `
+      SELECT COUNT(*)::text AS count, MIN(variance_reason_code) AS reason
+      FROM inventory_stock_reconciliations
+      WHERE item_id = $1 AND reason_code = 'CYCLE_COUNT'
+      `,
+      [itemId],
+    );
+    expect(evidence.rows[0]).toMatchObject({ count: '1' });
+    expect(['LOSS', 'DAMAGE']).toContain(evidence.rows[0]?.reason);
+  });
+
+  it('requires and preserves a variance reason, but permits a reasonless zero-variance approval', async () => {
+    const varianceItem = await createItem('8.0000', '0.0000');
+    const varianceProposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, varianceItem,
+      { counted_quantity: 7, notes: 'Count differs from snapshot' },
+      'cycle-count-reason-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    await expect(cycleCountService.approveCycleCount(
+      reviewerUserId, tenantId, factoryId, varianceItem, varianceProposal.id,
+      { review_note: 'Reviewed without a variance reason' },
+      'cycle-count-reason-missing-' + randomUUID(), randomUUID(), randomUUID(),
+    )).rejects.toThrow(/variance_reason_code is required/);
+
+    const afterRejectedAttempt = await adminPool.query<{ status: string; quantity_on_hand: string }>(
+      `
+      SELECT p.status, b.quantity_on_hand::text AS quantity_on_hand
+      FROM inventory_cycle_count_proposals p
+      JOIN inventory_stock_balances b ON b.item_id = p.item_id
+      WHERE p.id = $1
+      `,
+      [varianceProposal.id],
+    );
+    expect(afterRejectedAttempt.rows[0]).toMatchObject({
+      status: 'PENDING_REVIEW',
+      quantity_on_hand: '8.0000',
+    });
+
+    const zeroItem = await createItem('4.0000', '0.0000');
+    const zeroProposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, zeroItem,
+      { counted_quantity: 4 },
+      'cycle-count-zero-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+    const zero = await cycleCountService.approveCycleCount(
+      reviewerUserId, tenantId, factoryId, zeroItem, zeroProposal.id,
+      { review_note: 'Zero variance confirmed' },
+      'cycle-count-zero-approve-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+    expect(zero.quantity_delta).toBe('0.0000');
+    expect(zero.variance_reason_code).toBeNull();
+    expect(zero.adjustment_movement_id).toBeNull();
   });
 
   it('records zero variance without creating a no-op movement', async () => {
