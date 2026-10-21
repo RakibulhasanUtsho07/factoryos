@@ -18,19 +18,23 @@ test('Prometheus scrapes every declared API instance with a bearer token and rel
   assert.match(config, /postgres-exporter:9187/);
 });
 
-test('PostgreSQL monitoring queries cover bounded queue-age and lock signals without tenant labels', async () => {
+test('PostgreSQL monitoring queries cover bounded lock signals without attempting to bypass outbox RLS', async () => {
   const config = await read('deploy/observability/postgres-queries.yml');
   for (const name of [
-    'factoryos_outbox:',
-    'factoryos_outbox_oldest:',
-    'factoryos_outbox_freshness:',
     'factoryos_pg_blocking_sessions:',
     'factoryos_pg_lock_wait:',
     'factoryos_pg_long_transactions:',
   ]) assert.ok(config.includes(name), 'missing custom query ' + name);
   assert.match(config, /pg_blocking_pids/);
-  assert.match(config, /seconds_since_last_publish/);
   assert.match(config, /Never attach tenant IDs, event IDs, SQL, or payload values as metric labels/);
+  assert.match(config, /FORCE ROW LEVEL SECURITY/);
+  assert.doesNotMatch(config, /FROM outbox_events/i);
+  const metrics = await read('services/api/src/observability/http-metrics.service.ts');
+  assert.match(metrics, /factoryos_outbox_freshness_seconds_since_last_publish/);
+  assert.match(metrics, /factoryos_outbox_oldest_age_seconds/);
+  const dispatcher = await read('services/api/src/outbox/outbox.dispatcher.service.ts');
+  assert.match(dispatcher, /\{ tenantId: tenant\.id \}/);
+  assert.match(dispatcher, /recordOutboxQueueSnapshotFailure/);
 });
 
 test('collector receiver uses TLS and exporter buffering stays bounded', async () => {
