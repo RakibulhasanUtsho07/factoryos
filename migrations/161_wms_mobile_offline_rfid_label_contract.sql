@@ -8,8 +8,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_traceability_rfid_epc_ci
   WHERE rfid_epc IS NOT NULL;
 ALTER TABLE traceability_units
   ADD CONSTRAINT chk_traceability_rfid_epc
-  CHECK (rfid_epc IS NULL OR (length(btrim(rfid_epc)) BETWEEN 1 AND 128
-    AND rfid_epc ~ '^[A-Za-z0-9._:-]+-- A print/issue is immutable evidence linked to both a concrete identity and an
+  CHECK (
+    rfid_epc IS NULL OR (
+      length(btrim(rfid_epc)) BETWEEN 1 AND 128
+      AND rfid_epc ~ '^[A-Za-z0-9._:-]+$'
+    )
+  );
+
+-- Material master labels are not stock genealogy units. Permit a MATERIAL
+-- template target while keeping actual traceability_units constrained to
+-- physical lot/serial/container/finished-good identities.
+ALTER TABLE traceability_label_templates
+  DROP CONSTRAINT IF EXISTS chk_traceability_label_template_unit_types;
+ALTER TABLE traceability_label_templates
+  ADD CONSTRAINT chk_traceability_label_template_unit_types
+  CHECK (
+    cardinality(supported_unit_types) > 0
+    AND supported_unit_types <@ ARRAY[
+      'MATERIAL', 'LOT', 'SERIAL', 'PALLET', 'CARTON', 'BUNDLE', 'FINISHED_GOOD', 'SHIPMENT'
+    ]::text[]
+  );
+
+-- A print/issue is immutable evidence linked to both a concrete identity and an
 -- immutable template snapshot. Rendering is performed by the web/mobile client.
 CREATE TABLE traceability_label_issues (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
