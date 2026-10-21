@@ -699,14 +699,25 @@ export class TraceabilityService {
     requestId: string | null, traceId: string | null,
   ) {
     this.validateScope(userId, tenantId, factoryId);
-    const unitId = this.requiredUuid(dto.unit_id, 'unit_id');
+    const rawUnitId = dto.unit_id?.trim() || null;
+    const rawItemId = dto.item_id?.trim() || null;
+    if ((rawUnitId === null) === (rawItemId === null)) {
+      throw new BadRequestException('Exactly one of unit_id or item_id must be provided for a label issue');
+    }
+    const unitId = rawUnitId ? this.requiredUuid(rawUnitId, 'unit_id') : null;
+    const itemId = rawItemId ? this.requiredUuid(rawItemId, 'item_id') : null;
     const templateId = this.requiredUuid(dto.template_id, 'template_id');
     const copyCount = dto.copy_count ?? 1;
     if (!Number.isInteger(copyCount) || copyCount < 1 || copyCount > 100) {
       throw new BadRequestException('copy_count must be an integer between 1 and 100');
     }
     const idempotencyKey = this.requiredKey(rawIdempotencyKey);
-    const requestHash = this.hash({ unit_id: unitId, template_id: templateId, copy_count: copyCount });
+    const requestHash = this.hash({
+      unit_id: unitId,
+      item_id: itemId,
+      template_id: templateId,
+      copy_count: copyCount,
+    });
     const requestUuid = this.uuidOrNull(requestId);
     const traceUuid = this.uuidOrNull(traceId);
     const correlationId = traceUuid ?? requestUuid ?? randomUUID();
@@ -735,20 +746,69 @@ export class TraceabilityService {
             return { issue: prior, replayed: true };
           }
 
-          const unitResult = await client.query<{
-            id: string; unit_code: string; barcode_value: string; rfid_epc: string | null;
-            unit_type: string; product_role: string; inventory_item_id: string | null;
-            quantity: string; unit: string; expires_at: string | null; status: string; attributes: Record<string, unknown>;
-          }>(`
-            SELECT id::text AS id, unit_code, barcode_value, rfid_epc, unit_type, product_role,
-              inventory_item_id::text AS inventory_item_id, quantity::text AS quantity, unit,
-              expires_at::text AS expires_at, status, attributes
-            FROM traceability_units
-            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-            FOR SHARE
-          `, [unitId, tenantId, factoryId]);
-          const unit = unitResult.rows[0];
-          if (!unit) throw new NotFoundException('Traceability identity not found in this factory');
+          let unitCode: string;
+          let barcodeValue: string;
+          let identityPayload: Record<string, unknown>;
+          let supportedTemplateType: string;
+          if (unitId) {
+            const unitResult = await client.query<{
+              id: string; unit_code: string; barcode_value: string; rfid_epc: string | null;
+              unit_type: string; product_role: string; inventory_item_id: string | null;
+              quantity: string; unit: string; expires_at: string | null; status: string;
+              attributes: Record<string, unknown>;
+            }>(`
+              SELECT id::text AS id, unit_code, barcode_value, rfid_epc, unit_type, product_role,
+                inventory_item_id::text AS inventory_item_id, quantity::text AS quantity, unit,
+                expires_at::text AS expires_at, status, attributes
+              FROM traceability_units
+              WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+              FOR SHARE
+            `, [unitId, tenantId, factoryId]);
+            const unit = unitResult.rows[0];
+            if (!unit) throw new NotFoundException('Traceability identity not found in this factory');
+            unitCode = unit.unit_code;
+            barcodeValue = unit.barcode_value;
+            supportedTemplateType = unit.unit_type;
+            identityPayload = {
+              schema: 'factoryos.traceability-label/v1',
+              identity_type: 'TRACEABILITY_UNIT',
+              unit_id: unit.id,
+              unit_code: unit.unit_code,
+              barcode_value: unit.barcode_value,
+              rfid_epc: unit.rfid_epc,
+              unit_type: unit.unit_type,
+              product_role: unit.product_role,
+              inventory_item_id: unit.inventory_item_id,
+              quantity: unit.quantity,
+              unit: unit.unit,
+              expires_at: unit.expires_at,
+            };
+          } else {
+            const itemResult = await client.query<{
+              id: string; sku: string; name: string; unit: string;
+              sector_code: string | null; status: string;
+            }>(`
+              SELECT id::text AS id, sku, name, unit, sector_code, status
+              FROM inventory_items
+              WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+              FOR SHARE
+            `, [itemId, tenantId, factoryId]);
+            const item = itemResult.rows[0];
+            if (!item) throw new NotFoundException('Inventory material not found in this factory');
+            if (item.status !== 'ACTIVE') throw new ConflictException('Disabled inventory materials cannot receive new labels');
+            unitCode = item.sku;
+            barcodeValue = item.sku;
+            supportedTemplateType = 'MATERIAL';
+            identityPayload = {
+              schema: 'factoryos.item-label/v1',
+              identity_type: 'MATERIAL',
+              inventory_item_id: item.id,
+              sku: item.sku,
+              name: item.name,
+              unit: item.unit,
+              sector_code: item.sector_code,
+            };
+          }
 
           const templateResult = await client.query<{
             id: string; template_code: string; symbology: string; supported_unit_types: string[];
@@ -763,47 +823,36 @@ export class TraceabilityService {
           if (!template || !template.is_active) {
             throw new NotFoundException('Active label template not found in this factory');
           }
-          if (!template.supported_unit_types.includes(unit.unit_type)) {
-            throw new BadRequestException('Selected label template does not support this traceability unit type');
+          if (!template.supported_unit_types.includes(supportedTemplateType)) {
+            throw new BadRequestException('Selected label template does not support this identity type');
           }
 
-          const payload = {
-            schema: 'factoryos.traceability-label/v1',
-            unit_id: unit.id,
-            unit_code: unit.unit_code,
-            barcode_value: unit.barcode_value,
-            rfid_epc: unit.rfid_epc,
-            unit_type: unit.unit_type,
-            product_role: unit.product_role,
-            inventory_item_id: unit.inventory_item_id,
-            quantity: unit.quantity,
-            unit: unit.unit,
-            expires_at: unit.expires_at,
-          };
           const inserted = await client.query<QueryResultRow & {
-            id: string; tenant_id: string; factory_id: string; unit_id: string; template_id: string;
-            template_code: string; unit_code: string; barcode_value: string; symbology: string;
+            id: string; tenant_id: string; factory_id: string; unit_id: string | null;
+            inventory_item_id: string | null; template_id: string; template_code: string;
+            unit_code: string; barcode_value: string; symbology: string;
             encoded_payload: Record<string, unknown>; label_layout: Record<string, unknown>;
             copy_count: number; created_by_user_id: string; correlation_id: string; created_at: string;
           }>(`
             INSERT INTO traceability_label_issues (
-              tenant_id, factory_id, unit_id, template_id, template_code_snapshot,
+              tenant_id, factory_id, unit_id, inventory_item_id, template_id, template_code_snapshot,
               unit_code_snapshot, barcode_value_snapshot, symbology, encoded_payload,
               label_layout_snapshot, copy_count, idempotency_key, request_hash,
               created_by_user_id, correlation_id
             ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12, $13, $14, $15
+              $1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10::jsonb,
+              $11::jsonb, $12, $13, $14, $15, $16::uuid
             )
             RETURNING id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id,
-              unit_id::text AS unit_id, template_id::text AS template_id,
-              template_code_snapshot AS template_code, unit_code_snapshot AS unit_code,
-              barcode_value_snapshot AS barcode_value, symbology, encoded_payload,
-              label_layout_snapshot AS label_layout, copy_count,
+              unit_id::text AS unit_id, inventory_item_id::text AS inventory_item_id,
+              template_id::text AS template_id, template_code_snapshot AS template_code,
+              unit_code_snapshot AS unit_code, barcode_value_snapshot AS barcode_value,
+              symbology, encoded_payload, label_layout_snapshot AS label_layout, copy_count,
               created_by_user_id::text AS created_by_user_id,
               correlation_id::text AS correlation_id, created_at::text AS created_at
           `, [
-            tenantId, factoryId, unitId, templateId, template.template_code, unit.unit_code,
-            unit.barcode_value, template.symbology, JSON.stringify(payload),
+            tenantId, factoryId, unitId, itemId, templateId, template.template_code,
+            unitCode, barcodeValue, template.symbology, JSON.stringify(identityPayload),
             JSON.stringify(template.label_layout), copyCount, idempotencyKey,
             requestHash, userId, correlationId,
           ]);
@@ -815,13 +864,16 @@ export class TraceabilityService {
               tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
             ) VALUES ($1, $2, 'TRACEABILITY_LABEL_ISSUE', $3, 'TRACEABILITY.LABEL_ISSUED', $4::jsonb)
           `, [tenantId, factoryId, issue.id, JSON.stringify({
-            label_issue_id: issue.id, unit_id: unitId, template_id: templateId,
-            symbology: template.symbology, copy_count: copyCount,
+            label_issue_id: issue.id, unit_id: unitId, inventory_item_id: itemId,
+            template_id: templateId, symbology: template.symbology, copy_count: copyCount,
           })]);
           await this.insertAudit(client, {
             tenantId, factoryId, userId, resourceType: 'TRACEABILITY_LABEL_ISSUE', resourceId: issue.id,
             action: 'ISSUED', correlationId, requestId: requestUuid,
-            payload: { unit_id: unitId, template_id: templateId, copy_count: copyCount, symbology: template.symbology },
+            payload: {
+              unit_id: unitId, inventory_item_id: itemId,
+              template_id: templateId, copy_count: copyCount, symbology: template.symbology,
+            },
           });
           return { issue, replayed: false };
         },
@@ -835,28 +887,38 @@ export class TraceabilityService {
   async resolveLabel(userId: string, tenantId: string, factoryId: string, rawCode: string) {
     this.validateScope(userId, tenantId, factoryId);
     const code = this.requiredText(rawCode, 'code', 255).toUpperCase();
-    const result = await this.database.query(`
-      SELECT ${UNIT_SELECT}
-      WHERE u.tenant_id = $1 AND u.factory_id = $2
-        AND (upper(u.barcode_value) = $3 OR upper(u.unit_code) = $3 OR upper(COALESCE(u.rfid_epc, '')) = $3)
-      ORDER BY u.created_at DESC, u.id
-      LIMIT 2
-    `, [tenantId, factoryId, code], { tenantId, userId });
-    if (result.rows.length > 1) {
-      throw new ConflictException('Label code is ambiguous in this factory; use the canonical barcode value');
+    const [units, items] = await Promise.all([
+      this.database.query(`
+        SELECT ${UNIT_SELECT}
+        WHERE u.tenant_id = $1 AND u.factory_id = $2
+          AND (upper(u.barcode_value) = $3 OR upper(u.unit_code) = $3 OR upper(COALESCE(u.rfid_epc, '')) = $3)
+        ORDER BY u.created_at DESC, u.id
+        LIMIT 2
+      `, [tenantId, factoryId, code], { tenantId, userId }),
+      this.database.query(`
+        SELECT id::text AS id, sku, name, unit, sector_code, status,
+          tenant_id::text AS tenant_id, factory_id::text AS factory_id
+        FROM inventory_items
+        WHERE tenant_id = $1 AND factory_id = $2 AND upper(sku) = $3
+        LIMIT 2
+      `, [tenantId, factoryId, code], { tenantId, userId }),
+    ]);
+    if (units.rows.length + items.rows.length > 1) {
+      throw new ConflictException('Label code is ambiguous in this factory; use a unique canonical code');
     }
-    if (!result.rows[0]) throw new NotFoundException('Label or RFID identity not found in this factory');
-    return { identity: result.rows[0] };
+    if (units.rows[0]) return { identity_type: 'TRACEABILITY_UNIT', identity: units.rows[0] };
+    if (items.rows[0]) return { identity_type: 'MATERIAL', identity: items.rows[0] };
+    throw new NotFoundException('Label, material or RFID identity not found in this factory');
   }
 
   async listLabelIssuesForUnit(userId: string, tenantId: string, factoryId: string, unitId: string) {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(unitId, 'unitId');
     const result = await this.database.query(`
-      SELECT id::text AS id, unit_id::text AS unit_id, template_id::text AS template_id,
-        template_code_snapshot AS template_code, unit_code_snapshot AS unit_code,
-        barcode_value_snapshot AS barcode_value, symbology, encoded_payload,
-        label_layout_snapshot AS label_layout, copy_count,
+      SELECT id::text AS id, unit_id::text AS unit_id, inventory_item_id::text AS inventory_item_id,
+        template_id::text AS template_id, template_code_snapshot AS template_code,
+        unit_code_snapshot AS unit_code, barcode_value_snapshot AS barcode_value, symbology,
+        encoded_payload, label_layout_snapshot AS label_layout, copy_count,
         created_by_user_id::text AS created_by_user_id,
         correlation_id::text AS correlation_id, created_at::text AS created_at
       FROM traceability_label_issues
@@ -867,11 +929,29 @@ export class TraceabilityService {
     return { issues: result.rows };
   }
 
+  async listLabelIssuesForItem(userId: string, tenantId: string, factoryId: string, itemId: string) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(itemId, 'itemId');
+    const result = await this.database.query(`
+      SELECT id::text AS id, unit_id::text AS unit_id, inventory_item_id::text AS inventory_item_id,
+        template_id::text AS template_id, template_code_snapshot AS template_code,
+        unit_code_snapshot AS unit_code, barcode_value_snapshot AS barcode_value, symbology,
+        encoded_payload, label_layout_snapshot AS label_layout, copy_count,
+        created_by_user_id::text AS created_by_user_id,
+        correlation_id::text AS correlation_id, created_at::text AS created_at
+      FROM traceability_label_issues
+      WHERE tenant_id = $1 AND factory_id = $2 AND inventory_item_id = $3
+      ORDER BY created_at DESC, id DESC
+      LIMIT 100
+    `, [tenantId, factoryId, itemId], { tenantId, userId });
+    return { issues: result.rows };
+  }
+
   private async getLabelIssueRow(client: PoolClient, tenantId: string, factoryId: string, issueId: string) {
     const result = await client.query<QueryResultRow & Record<string, unknown>>( `
       SELECT id::text AS id, tenant_id::text AS tenant_id, factory_id::text AS factory_id,
-        unit_id::text AS unit_id, template_id::text AS template_id,
-        template_code_snapshot AS template_code, unit_code_snapshot AS unit_code,
+        unit_id::text AS unit_id, inventory_item_id::text AS inventory_item_id,
+        template_id::text AS template_id, template_code_snapshot AS template_code, unit_code_snapshot AS unit_code,
         barcode_value_snapshot AS barcode_value, symbology, encoded_payload,
         label_layout_snapshot AS label_layout, copy_count,
         created_by_user_id::text AS created_by_user_id,
