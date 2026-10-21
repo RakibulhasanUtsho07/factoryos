@@ -598,10 +598,12 @@ BEGIN
   IF TG_OP = 'UPDATE' THEN
     IF ROW(
       NEW.id, NEW.tenant_id, NEW.factory_id, NEW.reservation_id, NEW.item_id,
-      NEW.traceability_unit_id, NEW.location_id, NEW.allocated_quantity, NEW.created_at
+      NEW.traceability_unit_id, NEW.location_id, NEW.allocation_sequence,
+      NEW.allocated_quantity, NEW.created_at
     ) IS DISTINCT FROM ROW(
       OLD.id, OLD.tenant_id, OLD.factory_id, OLD.reservation_id, OLD.item_id,
-      OLD.traceability_unit_id, OLD.location_id, OLD.allocated_quantity, OLD.created_at
+      OLD.traceability_unit_id, OLD.location_id, OLD.allocation_sequence,
+      OLD.allocated_quantity, OLD.created_at
     ) OR NEW.consumed_quantity < OLD.consumed_quantity
       OR NEW.released_quantity < OLD.released_quantity
       OR NEW.consumed_quantity + NEW.released_quantity > NEW.allocated_quantity THEN
