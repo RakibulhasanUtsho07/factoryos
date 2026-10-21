@@ -213,6 +213,7 @@ export class InventoryReservationService {
           const lotPolicyResult = await client.query<{ require_lot_tracking: boolean; has_lot_balance: boolean }>(
             `
             SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+              COALESCE(ts.allocation_policy, 'FIFO') AS allocation_policy,
               EXISTS (
                 SELECT 1 FROM inventory_lot_location_balances lb
                 WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
@@ -224,7 +225,9 @@ export class InventoryReservationService {
             `,
             [tenantId, factoryId, itemId],
           );
-          if (!traceabilityUnitId && (lotPolicyResult.rows[0]?.require_lot_tracking || lotPolicyResult.rows[0]?.has_lot_balance)) {
+          if (!traceabilityUnitId && (lotPolicyResult.rows[0]?.require_lot_tracking
+            || ['LOT', 'SERIAL'].includes((lotPolicyResult.rows[0]?.allocation_policy ?? '').toUpperCase())
+            || lotPolicyResult.rows[0]?.has_lot_balance)) {
             throw new ConflictException('This item requires a lot/serial identity for reservation; allocate from an eligible lot/bin');
           }
 
@@ -2233,7 +2236,7 @@ export class InventoryReservationService {
           const balance = balanceResult.rows[0];
           if (!balance) throw new ConflictException('Aggregate stock/reservation balance is inconsistent; consumption was not applied');
 
-          const movementKey = 'reservation-consumption:' + idempotencyKey;
+          const movementKey = 'reservation-consume-' + this.hash({ tenantId, factoryId, reservationId, idempotencyKey }).slice(0, 48);
           const movementResult = await client.query<MovementRow>(
             `
             INSERT INTO inventory_movements (
