@@ -955,8 +955,14 @@ export class InventoryReservationService {
       if (aggregateAvailable < requiredUnits) {
         throw new ConflictException(`Insufficient available stock for order line ${line.line_number}`);
       }
+      const traceabilityPlan = await this.planTraceabilityAllocations(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        itemId: line.item_id,
+        quantity,
+      });
 
-      // Physical bins first, deterministic code order; UNASSIGNED is compatibility fallback.
+      // Physical bins first for untracked material; tracked lots/serials control the split when policy is enabled.
       const locationsResult = await client.query<{
         location_id: string; location_code: string; is_default: boolean; location_type: string;
         quantity_on_hand: string; quantity_reserved: string;
@@ -984,17 +990,25 @@ export class InventoryReservationService {
       );
 
       let remainingUnits = requiredUnits;
-      const allocations: Array<{ locationId: string; quantity: string }> = [];
-      for (const location of locationsResult.rows) {
-        if (remainingUnits === 0n) break;
-        const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
-        if (availableUnits <= 0n) continue;
-        const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
-        allocations.push({ locationId: location.location_id.toLowerCase(), quantity: fromUnits(allocated) });
-        remainingUnits -= allocated;
-      }
-      if (remainingUnits !== 0n) {
-        throw new ConflictException(`Insufficient stock in active bins to allocate order line ${line.line_number}; no partial reservation was committed`);
+      let allocations: Array<{ locationId: string; quantity: string }> = [];
+      if (traceabilityPlan.enforced) {
+        allocations = this.groupTraceabilityAllocationsByLocation(traceabilityPlan);
+        const allocatedUnits = allocations.reduce((sum, allocation) => sum + toUnits(allocation.quantity), 0n);
+        if (allocatedUnits !== requiredUnits) {
+          throw new ConflictException(`Eligible lot/serial quantities do not cover order line ${line.line_number}`);
+        }
+      } else {
+        for (const location of locationsResult.rows) {
+          if (remainingUnits === 0n) break;
+          const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
+          if (availableUnits <= 0n) continue;
+          const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
+          allocations.push({ locationId: location.location_id.toLowerCase(), quantity: fromUnits(allocated) });
+          remainingUnits -= allocated;
+        }
+        if (remainingUnits !== 0n) {
+          throw new ConflictException(`Insufficient stock in active bins to allocate order line ${line.line_number}; no partial reservation was committed`);
+        }
       }
 
       // One aggregate reservation increment per line; location balances and child rows are atomic with it.
@@ -1052,6 +1066,15 @@ export class InventoryReservationService {
         );
         const reservation = inserted.rows[0];
         if (!reservation) throw new Error('ORDER_INVENTORY_BIN_RESERVATION_INSERT_FAILED');
+        if (traceabilityPlan.enforced) {
+          await this.persistTraceabilityAllocations(client, {
+            tenantId: input.tenantId,
+            factoryId: input.factoryId,
+            itemId: line.item_id,
+            reservationId: reservation.id,
+            allocations: traceabilityPlan.allocations.filter((entry) => entry.locationId === allocation.locationId),
+          });
+        }
 
         await this.insertOutboxEvent(client, {
           tenantId: input.tenantId, factoryId: input.factoryId, aggregateId: line.item_id,
