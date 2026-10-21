@@ -170,3 +170,4 @@ migrations/159_inventory_location_cycle_count_workflow.sql
 migrations/160_wms_fefo_lot_serial_partial_issue.sql
 migrations/161_wms_mobile_offline_rfid_label_contract.sql
 migrations/162_product_eco_effective_date_change_orders.sql
+migrations/163_mrp_finite_capacity_scenarios.sql
