@@ -454,15 +454,41 @@ DECLARE
   v_available NUMERIC(18,4);
   v_reserved_issue NUMERIC(18,4) := 0;
 BEGIN
+  -- An item-level stock reconciliation has no lot/bin count detail. Do not let
+  -- its aggregate receipt/issue mutate the physical total behind live lot balances.
+  IF NEW.reference_type = 'STOCK_RECONCILIATION'
+     AND (
+       EXISTS (
+         SELECT 1 FROM inventory_lot_location_balances lb
+         WHERE lb.tenant_id = NEW.tenant_id AND lb.factory_id = NEW.factory_id
+           AND lb.item_id = NEW.item_id AND lb.quantity_on_hand > 0
+       )
+       OR EXISTS (
+         SELECT 1 FROM traceability_settings ts
+         WHERE ts.tenant_id = NEW.tenant_id AND ts.factory_id = NEW.factory_id
+           AND ts.require_lot_tracking = TRUE
+       )
+     ) THEN
+    RAISE EXCEPTION 'aggregate stock reconciliation is not permitted for lot-tracked items; a lot/bin count is required'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF NEW.traceability_unit_id IS NULL THEN
     -- Once an item has tracked lot balances, an unlabelled issue could drain
     -- stock that is physically held in an identified lot. Fail closed.
-    IF NEW.movement_type = 'ISSUE' AND EXISTS (
-      SELECT 1 FROM inventory_lot_location_balances lb
-      WHERE lb.tenant_id = NEW.tenant_id AND lb.factory_id = NEW.factory_id
-        AND lb.item_id = NEW.item_id AND lb.quantity_on_hand > 0
+    IF NEW.movement_type IN ('ISSUE', 'RECEIPT') AND (
+      EXISTS (
+        SELECT 1 FROM inventory_lot_location_balances lb
+        WHERE lb.tenant_id = NEW.tenant_id AND lb.factory_id = NEW.factory_id
+          AND lb.item_id = NEW.item_id AND lb.quantity_on_hand > 0
+      )
+      OR EXISTS (
+        SELECT 1 FROM traceability_settings ts
+        WHERE ts.tenant_id = NEW.tenant_id AND ts.factory_id = NEW.factory_id
+          AND ts.require_lot_tracking = TRUE
+      )
     ) THEN
-      RAISE EXCEPTION 'unlabelled stock issues are not permitted while this item has lot-tracked stock'
+      RAISE EXCEPTION 'unlabelled stock receipt or issue is not permitted while this item is lot-tracked'
         USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
