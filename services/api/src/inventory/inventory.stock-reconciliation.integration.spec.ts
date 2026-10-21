@@ -66,9 +66,11 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const warehouse = await adminPool.query<{ id: string }>(
       `
       INSERT INTO inventory_locations (
-        tenant_id, factory_id, location_code, name, location_type, created_by_user_id
+        tenant_id, factory_id, location_code, name, location_type,
+        putaway_enabled, picking_enabled, putaway_priority, picking_priority,
+        created_by_user_id
       )
-      VALUES ($1, $2, $3, 'Cycle-count fixture warehouse', 'WAREHOUSE', $4)
+      VALUES ($1, $2, $3, 'Cycle-count fixture warehouse', 'WAREHOUSE', FALSE, FALSE, 100, 100, $4)
       RETURNING id::text AS id
       `,
       [tenantId, factoryId, 'CC-WH-' + randomUUID(), TEST_USER_ID],
