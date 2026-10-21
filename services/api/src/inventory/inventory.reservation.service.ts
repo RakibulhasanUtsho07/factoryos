@@ -2395,8 +2395,20 @@ export class InventoryReservationService {
       SELECT
         COALESCE(
           (SELECT p.allocation_policy
-           FROM inventory_item_allocation_policies p
-           WHERE p.tenant_id = $1 AND p.factory_id = $2 AND p.item_id = $3),
+           FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = $1 AND p.factory_id = $2
+             AND p.policy_scope = 'MATERIAL' AND p.inventory_item_id = $3),
+          (SELECT p.allocation_policy
+           FROM inventory_material_allocation_policies p
+           JOIN inventory_items selected_item
+             ON selected_item.id = $3 AND selected_item.tenant_id = p.tenant_id
+            AND selected_item.factory_id = p.factory_id
+           WHERE p.tenant_id = $1 AND p.factory_id = $2
+             AND p.policy_scope = 'SECTOR'
+             AND lower(p.sector_code) = lower(selected_item.sector_code)),
+          (SELECT p.allocation_policy
+           FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = $1 AND p.factory_id = $2 AND p.policy_scope = 'FACTORY'),
           (SELECT ts.allocation_policy
            FROM traceability_settings ts
            WHERE ts.tenant_id = $1 AND ts.factory_id = $2),
@@ -2479,7 +2491,7 @@ export class InventoryReservationService {
       `,
       [input.tenantId, input.factoryId, input.itemId, input.locationId ?? null, unitType, policy],
     );
-    let remaining = requestedUnits;
+    let remaining = this.decimalToUnits(input.quantity);
     const allocations: TraceabilityAllocation[] = [];
     for (const candidate of candidates.rows) {
       if (remaining === 0n) break;
