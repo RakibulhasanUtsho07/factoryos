@@ -50,7 +50,7 @@ describe(
         collectQueueMetrics: (tenants: { id: string }[]) => Promise<void>;
       };
 
-      await internal.collectQueueMetricsIfDue([{ id: firstTenant }, { id: secondTenant }]);
+      await internal.collectQueueMetrics([{ id: firstTenant }, { id: secondTenant }]);
 
       expect(contexts).toEqual([{ tenantId: firstTenant }, { tenantId: secondTenant }]);
       const output = metrics.renderPrometheus();
@@ -80,7 +80,7 @@ describe(
         collectQueueMetrics: (tenants: { id: string }[]) => Promise<void>;
       };
 
-      await internal.collectQueueMetricsIfDue([{ id: tenantId }]);
+      await internal.collectQueueMetrics([{ id: tenantId }]);
 
       const output = metrics.renderPrometheus();
       expect(output).toContain('factoryos_outbox_metrics_collection_success 0');
