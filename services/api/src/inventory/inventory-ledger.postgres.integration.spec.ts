@@ -209,7 +209,7 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
       );
 
       await client.query('SAVEPOINT protect_reservation_balance_consistency');
-      await expect(client.query(
+      await client.query(
         `
         UPDATE inventory_reservations
         SET status = 'RELEASED',
@@ -221,6 +221,12 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         WHERE id = $3
         `,
         ['release-invalid-' + randomUUID(), 'b'.repeat(64), reservationId],
+      );
+      // The balance-consistency guard is deferred so valid multi-row transactions
+      // can update the reservation and stock balance together. Force evaluation
+      // here to prove that releasing a reservation alone cannot commit.
+      await expect(client.query(
+        'SET CONSTRAINTS ctr_inventory_reservation_balance_consistency IMMEDIATE',
       )).rejects.toMatchObject({ code: '23514' });
       await client.query('ROLLBACK TO SAVEPOINT protect_reservation_balance_consistency');
       await client.query('SET CONSTRAINTS ctr_inventory_reservation_balance_consistency DEFERRED');
