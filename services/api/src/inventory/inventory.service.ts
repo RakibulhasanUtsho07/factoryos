@@ -267,7 +267,7 @@ export class InventoryService {
     const locationId = dto.location_id?.trim().toLowerCase() || null;
     if (locationId) this.validateUuid(locationId, 'location_id');
     const expectedBalanceVersion = dto.expected_balance_version?.trim() || null;
-    if (expectedBalanceVersion && !/^\\d{1,19}$/.test(expectedBalanceVersion)) {
+    if (expectedBalanceVersion && !/^\d{1,19}$/.test(expectedBalanceVersion)) {
       throw new BadRequestException('expected_balance_version must be an unsigned integer string of at most 19 digits');
     }
     const referenceType = dto.reference_type?.trim().toUpperCase() || null;
