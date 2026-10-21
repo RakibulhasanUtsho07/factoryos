@@ -45,8 +45,9 @@ interface LocationTransferRow extends QueryResultRow {
   tenant_id: string;
   factory_id: string;
   item_id: string;
+  traceability_unit_id: string | null;
   source_location_id: string;
-  destination_location_id: string;
+  destination_location_id:
   movement_purpose: 'TRANSFER' | 'PUT_AWAY' | 'PICK';
   quantity: string;
   source_quantity_before: string;
@@ -78,6 +79,7 @@ const TRANSFER_COLUMNS = `
   tenant_id::text AS tenant_id,
   factory_id::text AS factory_id,
   item_id::text AS item_id,
+  traceability_unit_id::text AS traceability_unit_id,
   source_location_id::text AS source_location_id,
   destination_location_id::text AS destination_location_id,
   movement_purpose,
@@ -529,6 +531,8 @@ export class InventoryLocationService {
     this.validateUuid(itemId, 'itemId');
     const sourceId = dto.source_location_id.toLowerCase();
     const destinationId = dto.destination_location_id.toLowerCase();
+    const traceabilityUnitId = dto.traceability_unit_id?.trim().toLowerCase() || null;
+    if (traceabilityUnitId) this.validateUuid(traceabilityUnitId, 'traceability_unit_id');
     this.validateUuid(sourceId, 'source_location_id');
     this.validateUuid(destinationId, 'destination_location_id');
     if (sourceId === destinationId) {
@@ -564,6 +568,7 @@ export class InventoryLocationService {
       notes,
     };
     if (movementPurpose !== 'TRANSFER') requestIdentity.movementPurpose = movementPurpose;
+    if (traceabilityUnitId) requestIdentity.traceabilityUnitId = traceabilityUnitId;
     const requestHash = this.hash(requestIdentity);
 
     const result = await this.database.transaction(
@@ -615,6 +620,61 @@ export class InventoryLocationService {
         if (!destinationLocation.putaway_enabled) {
           throw new ConflictException('Destination location policy does not allow put-away or receipts');
         }
+        const lotPolicyResult = await client.query<{
+          require_lot_tracking: boolean;
+          has_lot_balance: boolean;
+        }>(
+          `
+          SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+            EXISTS (
+              SELECT 1 FROM inventory_lot_location_balances lb
+              WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+                AND lb.quantity_on_hand > 0
+            ) AS has_lot_balance
+          FROM (SELECT 1) singleton
+          LEFT JOIN traceability_settings ts
+            ON ts.tenant_id = $1 AND ts.factory_id = $2
+          `,
+          [tenantId, factoryId, itemId],
+        );
+        if (!traceabilityUnitId && (
+          lotPolicyResult.rows[0]?.require_lot_tracking
+          || lotPolicyResult.rows[0]?.has_lot_balance
+        )) {
+          throw new ConflictException('Lot-tracked items require traceability_unit_id for transfer, put-away or picking');
+        }
+
+        if (traceabilityUnitId) {
+          const lotResult = await client.query<{ id: string }>(
+            `
+            SELECT tu.id::text AS id
+            FROM traceability_units tu
+            JOIN inventory_lot_location_balances lb
+              ON lb.traceability_unit_id = tu.id
+              AND lb.tenant_id = tu.tenant_id
+              AND lb.factory_id = tu.factory_id
+              AND lb.item_id = tu.inventory_item_id
+            WHERE tu.id = $1 AND tu.tenant_id = $2 AND tu.factory_id = $3
+              AND tu.inventory_item_id = $4
+              AND lb.location_id = $5
+              AND lb.quantity_on_hand - lb.quantity_reserved >= $6::numeric
+              AND tu.unit_type IN ('LOT', 'SERIAL') AND tu.status = 'ACTIVE'
+              AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+              AND NOT EXISTS (
+                SELECT 1 FROM quality_holds h
+                WHERE h.tenant_id = tu.tenant_id AND h.factory_id = tu.factory_id
+                  AND h.status = 'ACTIVE'
+                  AND (h.inventory_item_id = tu.inventory_item_id OR h.traceability_unit_id = tu.id)
+              )
+            FOR UPDATE OF lb, tu
+            `,
+            [traceabilityUnitId, tenantId, factoryId, itemId, sourceId, quantity],
+          );
+          if (!lotResult.rows[0]) {
+            throw new ConflictException('Selected lot is expired, held, inactive or unavailable at the source BIN');
+          }
+        }
+
         if (movementPurpose === 'PUT_AWAY') {
           if (
             !(
@@ -716,19 +776,19 @@ export class InventoryLocationService {
         const inserted = await client.query<LocationTransferRow>(
           `
           INSERT INTO inventory_location_transfers (
-            tenant_id, factory_id, item_id, source_location_id, destination_location_id,
+            tenant_id, factory_id, item_id, traceability_unit_id, source_location_id, destination_location_id,
             quantity, source_quantity_before, source_quantity_after,
             destination_quantity_before, destination_quantity_after,
             idempotency_key, request_hash, notes, created_by_user_id, correlation_id, movement_purpose
           )
           VALUES (
-            $1, $2, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric,
-            $9::numeric, $10::numeric, $11, $12, $13, $14, $15::uuid, $16
+            $1, $2, $3, $4::uuid, $5, $6, $7::numeric, $8::numeric, $9::numeric,
+            $10::numeric, $11::numeric, $12, $13, $14, $15, $16::uuid, $17
           )
           RETURNING ${TRANSFER_COLUMNS}
           `,
           [
-            tenantId, factoryId, itemId, sourceId, destinationId,
+            tenantId, factoryId, itemId, traceabilityUnitId, sourceId, destinationId,
             quantity, this.fromUnits(sourceBefore), this.fromUnits(sourceAfter),
             this.fromUnits(destinationBefore), this.fromUnits(destinationAfter),
             idempotencyKey, requestHash, notes, userId, correlationId, movementPurpose,
@@ -750,6 +810,7 @@ export class InventoryLocationService {
               id: transfer.id,
               movement_purpose: movementPurpose,
               item_id: transfer.item_id,
+              traceability_unit_id: transfer.traceability_unit_id,
               source_location_id: transfer.source_location_id,
               destination_location_id: transfer.destination_location_id,
               quantity: transfer.quantity,
@@ -776,6 +837,7 @@ export class InventoryLocationService {
         payload: {
           movementPurpose: result.movement_purpose,
           itemId: result.item_id,
+          traceabilityUnitId: result.traceability_unit_id,
           sourceLocationId: result.source_location_id,
           destinationLocationId: result.destination_location_id,
           quantity: result.quantity,
@@ -852,13 +914,13 @@ export class InventoryLocationService {
     replayed: boolean,
   ): InventoryLocationTransferResult {
     const {
-      id, tenant_id, factory_id, item_id, source_location_id, destination_location_id,
+      id, tenant_id, factory_id, item_id, traceability_unit_id, source_location_id, destination_location_id,
       movement_purpose, quantity, source_quantity_before, source_quantity_after,
       destination_quantity_before, destination_quantity_after,
       notes, created_by_user_id, correlation_id, created_at,
     } = row;
     return {
-      id, tenant_id, factory_id, item_id, source_location_id, destination_location_id,
+      id, tenant_id, factory_id, item_id, traceability_unit_id, source_location_id, destination_location_id,
       movement_purpose, quantity, source_quantity_before, source_quantity_after,
       destination_quantity_before, destination_quantity_after,
       notes, created_by_user_id, correlation_id, created_at, replayed,
