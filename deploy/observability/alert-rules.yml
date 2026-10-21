@@ -182,3 +182,43 @@ groups:
         annotations:
           summary: "PostgreSQL exporter is unavailable"
           description: "Monitoring of database queue age and lock saturation is incomplete until the target is healthy."
+
+      - alert: FactoryOSCollectorScrapeDown
+        expr: up{job="factoryos-otel-collector"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          policy_status: proposed
+        annotations:
+          summary: "OpenTelemetry Collector internal metrics scrape is failing"
+          description: "Check collector health, private-network route, configuration validity and exporter backend connectivity."
+
+      - alert: FactoryOSCollectorExporterQueueNearCapacity
+        expr: max(otelcol_exporter_queue_size / clamp_min(otelcol_exporter_queue_capacity, 1)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "OpenTelemetry Collector exporter queue is above 80% capacity"
+          description: "Check backend ingestion latency, retry rate, receiver volume and whether the collector or backend needs scaling."
+
+      - alert: FactoryOSCollectorSpanSendFailures
+        expr: increase(otelcol_exporter_send_failed_spans_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "OpenTelemetry Collector has span export failures"
+          description: "Inspect backend response and retry behaviour; this counter records failed send attempts and does not alone prove permanent loss."
+
+      - alert: FactoryOSCollectorRefusedSpans
+        expr: increase(otelcol_receiver_refused_spans_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "OpenTelemetry Collector refused trace spans"
+          description: "Check receiver capacity, authentication/TLS errors and API-side OTLP dropped-span counters."
