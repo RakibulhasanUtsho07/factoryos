@@ -48,6 +48,7 @@ interface InputLine {
   received_quantity: string;
   rejected_quantity: string;
   rejection_reason: string | null;
+  traceability_unit_id: string | null;
 }
 interface PurchaseOrderLineRow extends QueryResultRow {
   id: string;
@@ -108,8 +109,11 @@ export class GoodsReceiptService {
         throw new BadRequestException('rejection_reason is required when rejected_quantity is greater than zero');
       }
       this.validateUuid(line.purchase_order_line_id, 'purchase_order_line_id');
+      const traceabilityUnitId = line.traceability_unit_id?.trim().toLowerCase() || null;
+      if (traceabilityUnitId) this.validateUuid(traceabilityUnitId, 'traceability_unit_id');
       return {
         purchase_order_line_id: line.purchase_order_line_id.toLowerCase(),
+        traceability_unit_id: traceabilityUnitId,
         received_quantity: received.toFixed(4),
         rejected_quantity: rejected.toFixed(4),
         rejection_reason: reason,
@@ -288,16 +292,64 @@ export class GoodsReceiptService {
           }>(`
             INSERT INTO goods_receipt_lines (
               tenant_id, factory_id, goods_receipt_id, purchase_order_id, purchase_order_line_id,
-              inventory_item_id, received_quantity, rejected_quantity, rejection_reason
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8::numeric,$9)
+              inventory_item_id, traceability_unit_id, received_quantity, rejected_quantity, rejection_reason
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7::uuid,$8::numeric,$9::numeric,$10)
             RETURNING id::text AS id, accepted_quantity::text AS accepted_quantity,
               inventory_item_id::text AS inventory_item_id
           `, [
             tenantId, factoryId, receiptId, purchaseOrderId, poLine.id, poLine.inventory_item_id,
-            input.received_quantity, input.rejected_quantity, input.rejection_reason,
+            input.traceability_unit_id, input.received_quantity, input.rejected_quantity, input.rejection_reason,
           ]);
           const line = insertedLine.rows[0];
           if (!line) throw new Error('GOODS_RECEIPT_LINE_INSERT_FAILED');
+
+          if (input.traceability_unit_id && !poLine.inventory_item_id) {
+            throw new BadRequestException('traceability_unit_id is only valid for an inventory-backed purchase-order line');
+          }
+          if (poLine.inventory_item_id) {
+            const policy = await client.query<{ require_lot_tracking: boolean; has_lot_balance: boolean }>(
+              `
+              SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+                EXISTS (
+                  SELECT 1 FROM inventory_lot_location_balances lb
+                  WHERE lb.tenant_id = $1 AND lb.factory_id = $2
+                    AND lb.item_id = $3 AND lb.quantity_on_hand > 0
+                ) AS has_lot_balance
+              FROM (SELECT 1) singleton
+              LEFT JOIN traceability_settings ts
+                ON ts.tenant_id = $1 AND ts.factory_id = $2
+              `,
+              [tenantId, factoryId, poLine.inventory_item_id],
+            );
+            if (!input.traceability_unit_id && (
+              policy.rows[0]?.require_lot_tracking || policy.rows[0]?.has_lot_balance
+            ) && Number(line.accepted_quantity) > 0) {
+              throw new ConflictException('This item requires traceability_unit_id before lot-tracked stock can be received');
+            }
+            if (input.traceability_unit_id) {
+              const unit = await client.query<{ id: string }>(
+                `
+                SELECT tu.id::text AS id
+                FROM traceability_units tu
+                WHERE tu.id = $1 AND tu.tenant_id = $2 AND tu.factory_id = $3
+                  AND tu.inventory_item_id = $4 AND tu.status = 'ACTIVE'
+                  AND tu.unit_type IN ('LOT', 'SERIAL')
+                  AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM quality_holds h
+                    WHERE h.tenant_id = tu.tenant_id AND h.factory_id = tu.factory_id
+                      AND h.status = 'ACTIVE'
+                      AND (h.inventory_item_id = tu.inventory_item_id OR h.traceability_unit_id = tu.id)
+                  )
+                FOR UPDATE
+                `,
+                [input.traceability_unit_id, tenantId, factoryId, poLine.inventory_item_id],
+              );
+              if (!unit.rows[0]) {
+                throw new ConflictException('GRN lot/serial must be active, unexpired, quality-clear and bound to this item');
+              }
+            }
+          }
 
           if (Number(line.accepted_quantity) > 0) {
             const itemId = line.inventory_item_id!;
@@ -317,16 +369,17 @@ export class GoodsReceiptService {
             const movementHash = createHash('sha256').update(JSON.stringify({
               operation: 'GOODS_RECEIPT.STOCK_POST', receipt_id: receiptId,
               purchase_order_line_id: poLine.id, item_id: itemId,
+              traceability_unit_id: input.traceability_unit_id,
               accepted_quantity: line.accepted_quantity,
             })).digest('hex');
             await client.query(`
               INSERT INTO inventory_movements (
-                tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+                tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
                 quantity_delta, quantity_after, idempotency_key, request_hash,
                 reference_type, reference_id, notes, created_by_user_id, correlation_id
               ) VALUES (
-                $1,$2,$3,$4,'RECEIPT',$5::numeric,$5::numeric,$6::numeric,$7,$8,
-                'GOODS_RECEIPT',$9,$10,$11,$12
+                $1,$2,$3,$4,$5::uuid,'RECEIPT',$6::numeric,$6::numeric,$7::numeric,$8,$9,
+                'GOODS_RECEIPT',$10,$11,$12,$13
               )
             `, [
               tenantId, factoryId, itemId, targetLocationId, line.accepted_quantity,
