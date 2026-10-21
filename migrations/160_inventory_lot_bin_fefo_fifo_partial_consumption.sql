@@ -104,6 +104,8 @@ CREATE TABLE inventory_reservation_consumptions (
   CONSTRAINT fk_inventory_reservation_consumption_item
     FOREIGN KEY (item_id, tenant_id, factory_id)
     REFERENCES inventory_items (id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_inventory_reservation_consumption_actor
+    FOREIGN KEY (created_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
   CONSTRAINT fk_inventory_reservation_consumption_movement
     FOREIGN KEY (movement_id, tenant_id, factory_id)
     REFERENCES inventory_movements (id, tenant_id, factory_id) ON DELETE RESTRICT,
