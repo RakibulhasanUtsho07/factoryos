@@ -452,6 +452,7 @@ DECLARE
   v_expires_at DATE;
   v_unit_quantity NUMERIC(18,4);
   v_available NUMERIC(18,4);
+  v_reserved_issue NUMERIC(18,4) := 0;
 BEGIN
   IF NEW.traceability_unit_id IS NULL THEN
     -- Once an item has tracked lot balances, an unlabelled issue could drain
@@ -504,7 +505,29 @@ BEGIN
   END IF;
 
   IF NEW.movement_type = 'ISSUE' THEN
-    SELECT quantity_on_hand - quantity_reserved INTO v_available
+    -- Reservation consumption may draw on the quantity already reserved by this
+    -- exact reservation, but only when the service explicitly sets the transaction-
+    -- local consumption binding after checking ownership, state and remaining amount.
+    IF NEW.reference_type = 'RESERVATION'
+       AND NEW.reference_id IS NOT NULL
+       AND current_setting('app.inventory_reservation_consumption_id', TRUE) = NEW.reference_id::text THEN
+      SELECT quantity - quantity_consumed INTO v_reserved_issue
+      FROM inventory_reservations
+      WHERE id = NEW.reference_id
+        AND tenant_id = NEW.tenant_id
+        AND factory_id = NEW.factory_id
+        AND item_id = NEW.item_id
+        AND traceability_unit_id = NEW.traceability_unit_id
+        AND location_id = NEW.location_id
+        AND status = 'RESERVED'
+      FOR UPDATE;
+      IF NOT FOUND OR v_reserved_issue < NEW.quantity THEN
+        RAISE EXCEPTION 'reservation does not cover this lot/bin issue'
+          USING ERRCODE = '23514';
+      END IF;
+    END IF;
+
+    SELECT quantity_on_hand - quantity_reserved + v_reserved_issue INTO v_available
     FROM inventory_lot_location_balances
     WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
       AND item_id = NEW.item_id AND traceability_unit_id = NEW.traceability_unit_id
@@ -530,6 +553,7 @@ AS $$
 DECLARE
   v_lot_quantity NUMERIC(18,4);
   v_total_lot_quantity NUMERIC(18,4);
+  v_reserved_issue NUMERIC(18,4) := 0;
 BEGIN
   IF NEW.traceability_unit_id IS NULL THEN
     RETURN NEW;
@@ -546,6 +570,25 @@ BEGIN
                   version = inventory_lot_location_balances.version + 1,
                   updated_at = clock_timestamp();
   ELSE
+    IF NEW.reference_type = 'RESERVATION'
+       AND NEW.reference_id IS NOT NULL
+       AND current_setting('app.inventory_reservation_consumption_id', TRUE) = NEW.reference_id::text THEN
+      SELECT quantity - quantity_consumed INTO v_reserved_issue
+      FROM inventory_reservations
+      WHERE id = NEW.reference_id
+        AND tenant_id = NEW.tenant_id
+        AND factory_id = NEW.factory_id
+        AND item_id = NEW.item_id
+        AND traceability_unit_id = NEW.traceability_unit_id
+        AND location_id = NEW.location_id
+        AND status = 'RESERVED'
+      FOR UPDATE;
+      IF NOT FOUND OR v_reserved_issue < NEW.quantity THEN
+        RAISE EXCEPTION 'reservation does not cover this lot/bin issue'
+          USING ERRCODE = '23514';
+      END IF;
+    END IF;
+
     UPDATE inventory_lot_location_balances
     SET quantity_on_hand = quantity_on_hand - NEW.quantity,
         version = version + 1,
@@ -553,7 +596,7 @@ BEGIN
     WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
       AND item_id = NEW.item_id AND traceability_unit_id = NEW.traceability_unit_id
       AND location_id = NEW.location_id
-      AND quantity_on_hand - quantity_reserved >= NEW.quantity;
+      AND quantity_on_hand - quantity_reserved + v_reserved_issue >= NEW.quantity;
     IF NOT FOUND THEN
       RAISE EXCEPTION 'lot/bin stock changed concurrently; issue rolled back'
         USING ERRCODE = '23514';
