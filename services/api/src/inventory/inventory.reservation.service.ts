@@ -1863,7 +1863,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [transitionQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
       const balance = balanceResult.rows[0];
       if (!balance) throw new ConflictException(`Inventory balance is inconsistent for material reservation ${reservation.id}`);
