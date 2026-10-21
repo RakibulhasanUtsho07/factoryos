@@ -327,6 +327,10 @@ export class InventoryCycleCountService {
         payload: {
           item_id: result.item_id,
           counted_quantity: result.counted_quantity,
+          location_id: result.location_id,
+          location_quantity_at_count: result.location_quantity_at_count,
+          location_version_at_count: result.location_version_at_count,
+          variance_reason_code: result.variance_reason_code,
           status: result.status,
         },
       });
@@ -465,6 +469,11 @@ export class InventoryCycleCountService {
           reconciliation_id: result.id,
           counted_quantity: result.counted_quantity,
           quantity_delta: result.quantity_delta,
+          location_id: result.location_id,
+          location_quantity_before: result.location_quantity_before,
+          location_counted_quantity: result.location_counted_quantity,
+          location_quantity_after: result.location_quantity_after,
+          variance_reason_code: proposal.variance_reason_code,
           review_note: reviewNote,
         },
       });
