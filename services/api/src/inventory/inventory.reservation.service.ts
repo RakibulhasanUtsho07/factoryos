@@ -2467,7 +2467,7 @@ export class InventoryReservationService {
                     OR ($3='SECTOR' AND lower(sector_code)=lower($4)))
                   AND version=$9
                 RETURNING policy_scope, sector_code, inventory_item_id::text AS inventory_item_id,
-                          allocation_policy, require_traceability, version, updated_at::text AS updated_at
+                          allocation_policy, require_traceability, version::int AS version, updated_at::text AS updated_at
                 `,
                 values,
               );
