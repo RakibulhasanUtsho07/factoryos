@@ -2567,9 +2567,24 @@ export class InventoryReservationService {
          a.location_id::text AS location_id,
          (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
+       JOIN traceability_units tu
+         ON tu.id = a.traceability_unit_id AND tu.tenant_id = a.tenant_id
+        AND tu.factory_id = a.factory_id AND tu.inventory_item_id = a.item_id
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
          AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
-       ORDER BY a.created_at, a.id FOR UPDATE`,
+         AND tu.status='ACTIVE'
+         AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+         AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
+         AND NOT (tu.attributes @> '{"held":true}'::jsonb)
+         AND NOT (tu.attributes @> '{"quarantined":true}'::jsonb)
+         AND upper(COALESCE(tu.attributes->>'condition','')) NOT IN ('DAMAGED','HELD','QUARANTINED','EXPIRED')
+         AND NOT EXISTS (
+           SELECT 1 FROM quality_holds qh
+           WHERE qh.tenant_id=tu.tenant_id AND qh.factory_id=tu.factory_id
+             AND qh.status='ACTIVE'
+             AND (qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id)
+         )
+       ORDER BY a.created_at, a.id FOR UPDATE OF a, tu`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],
     );
     if (rows.rows.length === 0) {
