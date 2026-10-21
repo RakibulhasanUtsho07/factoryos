@@ -50,15 +50,22 @@ WHERE has_schema_privilege(:'application_role', namespace.oid, 'USAGE')
    OR has_schema_privilege(:'application_role', namespace.oid, 'CREATE')
 ORDER BY namespace.nspname;
 
-\echo 'Sequence privileges granted to the runtime role'
+\echo 'Sequence privileges available to the runtime role'
 SELECT
-  sequence_schema AS object_schema,
-  sequence_name AS object_name,
-  privilege_type,
-  is_grantable
-FROM information_schema.sequence_privileges
-WHERE grantee = :'application_role'
-ORDER BY sequence_schema, sequence_name, privilege_type;
+  namespace.nspname AS object_schema,
+  sequence.relname AS object_name,
+  has_sequence_privilege(:'application_role', sequence.oid, 'USAGE') AS has_usage,
+  has_sequence_privilege(:'application_role', sequence.oid, 'SELECT') AS has_select,
+  has_sequence_privilege(:'application_role', sequence.oid, 'UPDATE') AS has_update
+FROM pg_class AS sequence
+JOIN pg_namespace AS namespace ON namespace.oid = sequence.relnamespace
+WHERE sequence.relkind = 'S'
+  AND (
+    has_sequence_privilege(:'application_role', sequence.oid, 'USAGE')
+    OR has_sequence_privilege(:'application_role', sequence.oid, 'SELECT')
+    OR has_sequence_privilege(:'application_role', sequence.oid, 'UPDATE')
+  )
+ORDER BY namespace.nspname, sequence.relname;
 
 \echo 'Default privileges that can grant new objects to runtime role'
 SELECT
