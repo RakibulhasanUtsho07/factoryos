@@ -25,6 +25,7 @@ interface CycleCountProposalRow extends QueryResultRow {
   counted_quantity: string;
   ledger_quantity_at_count: string;
   balance_version_at_count: string;
+  variance_reason: string | null;
   status: InventoryCycleCountStatus;
   idempotency_key: string;
   request_hash: string;
@@ -61,6 +62,7 @@ const CYCLE_COUNT_COLUMNS = `
   counted_quantity::text AS counted_quantity,
   ledger_quantity_at_count::text AS ledger_quantity_at_count,
   balance_version_at_count::text AS balance_version_at_count,
+  variance_reason,
   status,
   idempotency_key,
   request_hash,
@@ -89,7 +91,7 @@ export class InventoryCycleCountService {
     tenantId: string,
     factoryId: string,
     itemId: string,
-    dto: { counted_quantity: number; notes?: string },
+    dto: { counted_quantity: number; notes?: string; variance_reason?: string },
     rawIdempotencyKey: string | null,
     requestId: string | null,
     traceId: string | null,
@@ -98,6 +100,10 @@ export class InventoryCycleCountService {
     this.validateUuid(itemId, 'itemId');
     const countedQuantity = this.normalizeQuantity(dto.counted_quantity);
     const notes = dto.notes?.trim() || null;
+    const varianceReason = dto.variance_reason?.trim() || null;
+    if (varianceReason && varianceReason.length > 2000) {
+      throw new BadRequestException('variance_reason must contain at most 2000 characters');
+    }
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const normalizedItemId = itemId.toLowerCase();
     const requestHash = this.hash({
@@ -105,6 +111,7 @@ export class InventoryCycleCountService {
       countedQuantity,
       reasonCode: 'CYCLE_COUNT',
       notes,
+      varianceReason,
     });
 
     let result: InventoryCycleCountSubmitResult;
@@ -154,6 +161,10 @@ export class InventoryCycleCountService {
             throw new ConflictException('Inventory stock balance is not initialized for this item');
           }
 
+          if (countedQuantity !== Number(balance.quantity_on_hand).toFixed(4) && !varianceReason) {
+            throw new BadRequestException('variance_reason is required when counted_quantity differs from the captured ledger quantity');
+          }
+
           const duplicateAfterLock = await this.findBySubmitKey(
             client, tenantId, factoryId, idempotencyKey,
           );
@@ -165,12 +176,12 @@ export class InventoryCycleCountService {
             `
             INSERT INTO inventory_cycle_count_proposals (
               tenant_id, factory_id, item_id, counted_quantity,
-              ledger_quantity_at_count, balance_version_at_count, status,
+              ledger_quantity_at_count, balance_version_at_count, variance_reason, status,
               idempotency_key, request_hash, notes, created_by_user_id
             )
             VALUES (
-              $1, $2, $3, $4::numeric, $5::numeric, $6::bigint,
-              'PENDING_REVIEW', $7, $8, $9, $10
+              $1, $2, $3, $4::numeric, $5::numeric, $6::bigint, $7,
+              'PENDING_REVIEW', $8, $9, $10, $11
             )
             RETURNING ${CYCLE_COUNT_COLUMNS}
             `,
@@ -181,6 +192,7 @@ export class InventoryCycleCountService {
               countedQuantity,
               balance.quantity_on_hand,
               balance.version,
+              varianceReason,
               idempotencyKey,
               requestHash,
               notes,
@@ -202,6 +214,7 @@ export class InventoryCycleCountService {
                 id: proposal.id,
                 item_id: proposal.item_id,
                 counted_quantity: proposal.counted_quantity,
+                variance_reason: proposal.variance_reason,
                 status: proposal.status,
               },
             },
@@ -235,6 +248,7 @@ export class InventoryCycleCountService {
         payload: {
           item_id: result.item_id,
           counted_quantity: result.counted_quantity,
+          variance_reason: result.variance_reason,
           status: result.status,
         },
       });
@@ -301,6 +315,10 @@ export class InventoryCycleCountService {
     const proposal = await this.getProposal(
       userId, tenantId, factoryId, itemId, proposalId,
     );
+    const adjustmentNotes = [
+      proposal.notes?.trim() || null,
+      proposal.variance_reason ? 'Variance reason: ' + proposal.variance_reason : null,
+    ].filter((part): part is string => part !== null).join(' | ') || undefined;
     if (proposal.created_by_user_id === userId) {
       throw new ConflictException('The user who submitted a cycle count cannot approve it');
     }
@@ -315,7 +333,7 @@ export class InventoryCycleCountService {
         {
           counted_quantity: Number(proposal.counted_quantity),
           reason_code: 'CYCLE_COUNT',
-          notes: proposal.notes ?? undefined,
+          notes: adjustmentNotes,
         },
         this.reconciliationKey(proposal.id),
         requestId,
@@ -334,7 +352,7 @@ export class InventoryCycleCountService {
       {
         counted_quantity: Number(proposal.counted_quantity),
         reason_code: 'CYCLE_COUNT',
-        notes: proposal.notes ?? undefined,
+        notes: adjustmentNotes,
       },
       this.reconciliationKey(proposal.id),
       requestId,
