@@ -2,7 +2,7 @@
 # Scrape using a dedicated read-only monitoring role with only the statistics
 # visibility required by pg_stat_activity/pg_blocking_pids and SELECT on outbox_events.
 # Never attach tenant IDs, event IDs, SQL, or payload values as metric labels.
-factoryos_outbox_events:
+factoryos_outbox:
   query: |
     SELECT status, COUNT(*)::double precision AS events
     FROM outbox_events
