@@ -1017,8 +1017,29 @@ DECLARE
   v_expiry DATE;
   v_attributes JSONB;
   v_item_id UUID;
+  v_policy VARCHAR(12);
+  v_has_material_identity BOOLEAN;
 BEGIN
+  SELECT COALESCE(
+      (SELECT p.allocation_policy FROM inventory_item_allocation_policies p
+       WHERE p.tenant_id = NEW.tenant_id AND p.factory_id = NEW.factory_id AND p.item_id = NEW.item_id),
+      (SELECT ts.allocation_policy FROM traceability_settings ts
+       WHERE ts.tenant_id = NEW.tenant_id AND ts.factory_id = NEW.factory_id),
+      'FIFO'
+    ),
+    EXISTS (
+      SELECT 1 FROM traceability_units existing
+      WHERE existing.tenant_id = NEW.tenant_id AND existing.factory_id = NEW.factory_id
+        AND existing.inventory_item_id = NEW.item_id
+        AND existing.product_role = 'MATERIAL' AND existing.unit_type IN ('LOT','SERIAL')
+    )
+  INTO v_policy, v_has_material_identity;
+
   IF NEW.traceability_unit_id IS NULL THEN
+    IF v_policy IN ('LOT','SERIAL') OR v_has_material_identity THEN
+      RAISE EXCEPTION 'lot/serial-controlled stock transfers require an explicit material identity'
+        USING ERRCODE = '23514';
+    END IF;
     RETURN NEW;
   END IF;
 
