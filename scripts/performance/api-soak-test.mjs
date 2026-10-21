@@ -159,6 +159,14 @@ async function main() {
   const rawBase = process.env.FACTORYOS_SOAK_BASE_URL;
   if (!rawBase) throw new Error('Set FACTORYOS_SOAK_BASE_URL to an approved local or isolated staging API');
   const target = validateBase(rawBase);
+  const candidateSha = process.env.FACTORYOS_SOAK_CANDIDATE_SHA || null;
+  if (candidateSha !== null && !/^[a-f0-9]{40}$/i.test(candidateSha)) {
+    throw new Error('FACTORYOS_SOAK_CANDIDATE_SHA must be a 40-character Git commit SHA');
+  }
+  if (target.targetClass !== 'local' && !candidateSha) {
+    throw new Error('Remote soak evidence requires FACTORYOS_SOAK_CANDIDATE_SHA');
+  }
+  const testStartedAtUtc = new Date().toISOString();
   const tenants = await loadTenantTokens();
   const scenarios = await loadScenarios(target.origin);
   const durationSeconds = integerEnv('FACTORYOS_SOAK_DURATION_SECONDS', 60, 1, MAX_DURATION_SECONDS);
@@ -289,6 +297,9 @@ async function main() {
   const recoverySummary = summarize(recoveryLatencies, recoveryCompleted, recoveryFailed, recoveryNetworkErrors, recoveryStatusCounts);
   const report = {
     schema: 'factoryos.capacity-soak-report/v1',
+    candidateSha,
+    startedAtUtc: testStartedAtUtc,
+    finishedAtUtc: new Date().toISOString(),
     targetOrigin: target.origin,
     targetClass: target.targetClass,
     workload: 'multi-tenant authenticated GET-only scenarios',
