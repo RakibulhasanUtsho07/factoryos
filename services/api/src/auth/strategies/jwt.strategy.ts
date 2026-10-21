@@ -22,6 +22,8 @@ import type { Request } from 'express';
 import { DatabaseService } from '../../database/database.service';
 
 import type { AuthUser } from '../auth-user';
+import { oidcClaimsMeetMfaPolicy, resolveAuthRuntimePolicy } from '../auth-runtime-policy';
+import type { AuthRuntimePolicy } from '../auth-runtime-policy';
 
 interface JwtPayload {
   sub?: string;
@@ -32,6 +34,8 @@ interface JwtPayload {
 
   iat?: number;
   exp?: number;
+  amr?: unknown;
+  acr?: unknown;
 }
 
 interface JwkHeader {
@@ -51,14 +55,25 @@ export class JwtStrategy extends PassportStrategy(
   Strategy,
   'jwt',
 ) {
+  private readonly runtimePolicy: AuthRuntimePolicy;
+
   constructor(
     private readonly database: DatabaseService,
     private readonly configService: ConfigService,
   ) {
-    const authMode =
-      configService.get<string>(
-        'AUTH_MODE',
-      ) || 'dev';
+    const runtimePolicy = resolveAuthRuntimePolicy({
+      nodeEnv: configService.get<string>('NODE_ENV') || process.env.NODE_ENV,
+      authMode: configService.get<string>('AUTH_MODE'),
+      devAuthEnabled: configService.get<string>('DEV_AUTH_ENABLED') || process.env.DEV_AUTH_ENABLED,
+      jwtSecret: configService.get<string>('JWT_SECRET'),
+      oidcIssuer: configService.get<string>('OIDC_ISSUER'),
+      oidcAudience: configService.get<string>('OIDC_AUDIENCE'),
+      oidcJwksUri: configService.get<string>('OIDC_JWKS_URI'),
+      oidcRequireMfa: configService.get<string>('OIDC_REQUIRE_MFA'),
+      oidcMfaAmrValues: configService.get<string>('OIDC_MFA_AMR_VALUES'),
+      oidcMfaAcrValues: configService.get<string>('OIDC_MFA_ACR_VALUES'),
+    });
+    const authMode = runtimePolicy.authMode;
 
     if (
       authMode === 'oidc'
@@ -237,6 +252,7 @@ export class JwtStrategy extends PassportStrategy(
         },
       });
 
+      this.runtimePolicy = runtimePolicy;
       return;
     }
 
@@ -280,16 +296,14 @@ export class JwtStrategy extends PassportStrategy(
 
       passReqToCallback: true,
     });
+    this.runtimePolicy = runtimePolicy;
   }
 
   async validate(
     request: FactoryOsRequest,
     payload: JwtPayload,
   ): Promise<AuthUser> {
-    const authMode =
-      this.configService.get<string>(
-        'AUTH_MODE',
-      ) || 'dev';
+    const authMode = this.runtimePolicy.authMode;
 
     if (
       typeof payload.sub !==
@@ -327,6 +341,12 @@ export class JwtStrategy extends PassportStrategy(
     ) {
       throw new UnauthorizedException(
         'JWT issuer is missing',
+      );
+    }
+
+    if (!oidcClaimsMeetMfaPolicy(payload, this.runtimePolicy)) {
+      throw new UnauthorizedException(
+        'OIDC identity does not satisfy the configured MFA claim policy',
       );
     }
 
