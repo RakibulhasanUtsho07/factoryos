@@ -1245,7 +1245,8 @@ export class InventoryReservationService {
         r.id::text AS id, r.tenant_id::text AS tenant_id,
         r.factory_id::text AS factory_id, r.item_id::text AS item_id,
         r.location_id::text AS location_id,
-        r.quantity::text AS quantity, r.status, r.idempotency_key,
+        r.traceability_unit_id::text AS traceability_unit_id,
+        r.quantity::text AS quantity, r.quantity_consumed::text AS quantity_consumed, r.status,
         r.request_hash, r.reference_type, r.reference_id::text AS reference_id,
         r.notes, r.transition_idempotency_key, r.transition_request_hash,
         r.consumed_movement_id::text AS consumed_movement_id,
@@ -1282,12 +1283,18 @@ export class InventoryReservationService {
         reservationId: reservation.id.toLowerCase(),
         targetStatus,
       });
+      const remainingQuantity = this.fromQuantityUnits(
+        this.quantityUnits(reservation.quantity) - this.quantityUnits(reservation.quantity_consumed ?? '0.0000'),
+      );
+      if (remainingQuantity === '0.0000') {
+        throw new ConflictException('Order-line reservation has no remaining quantity to transition');
+      }
 
       let balance: BalanceRow | undefined;
       if (reservation.location_id) {
         await this.decreaseLocationReserved(
           client, input.tenantId, input.factoryId, reservation.item_id,
-          reservation.location_id, reservation.quantity,
+          reservation.location_id, remainingQuantity,
         );
       }
       // Set/clear the location context for every child so a previous bin cannot leak.
@@ -1306,7 +1313,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [remainingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
         balance = result.rows[0];
       } else {
@@ -1322,7 +1329,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [remainingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
         balance = result.rows[0];
       }
@@ -1341,22 +1348,37 @@ export class InventoryReservationService {
         const movementResult = await client.query<MovementRow>(
           `
           INSERT INTO inventory_movements (
-            tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+            tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
             quantity_delta, quantity_after, idempotency_key, request_hash,
             reference_type, reference_id, notes, created_by_user_id, correlation_id
           )
-          VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
-                  $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
+          VALUES ($1, $2, $3, $4::uuid, $5::uuid, 'ISSUE', $6::numeric, -$6::numeric, $7::numeric,
+                  $8, $9, 'RESERVATION', $10::uuid, $11, $12, $13::uuid)
           RETURNING id::text AS id, quantity_after::text AS quantity_after
           `,
           [
             input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
-            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            reservation.traceability_unit_id, remainingQuantity, balance.quantity_on_hand, movementKey, transitionHash,
             reservation.id, reservation.notes, input.userId, correlationId,
           ],
         );
         consumedMovementId = movementResult.rows[0]?.id ?? null;
         if (!consumedMovementId) throw new Error('ORDER_INVENTORY_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+
+        await client.query(
+          `
+          INSERT INTO inventory_reservation_consumptions (
+            tenant_id, factory_id, reservation_id, item_id, traceability_unit_id, location_id,
+            quantity, movement_id, idempotency_key, request_hash, created_by_user_id
+          )
+          VALUES ($1, $2, $3, $4, $5::uuid, $6::uuid, $7::numeric, $8::uuid, $9, $10, $11)
+          `,
+          [
+            input.tenantId, input.factoryId, reservation.id, reservation.item_id,
+            reservation.traceability_unit_id, reservation.location_id, remainingQuantity,
+            consumedMovementId, transitionKey, transitionHash, input.userId,
+          ],
+        );
 
         await this.insertOutboxEvent(client, {
           tenantId: input.tenantId,
@@ -1370,9 +1392,10 @@ export class InventoryReservationService {
               id: consumedMovementId,
               item_id: reservation.item_id,
               location_id: reservation.location_id,
+              traceability_unit_id: reservation.traceability_unit_id,
               movement_type: 'ISSUE',
-              quantity: reservation.quantity,
-              quantity_delta: '-' + reservation.quantity,
+              quantity: remainingQuantity,
+              quantity_delta: '-' + remainingQuantity,
               quantity_after: balance.quantity_on_hand,
               reference_type: 'RESERVATION',
               reference_id: reservation.id,
@@ -1386,7 +1409,9 @@ export class InventoryReservationService {
       const updatedResult = await client.query<ReservationRow>(
         `
         UPDATE inventory_reservations
-        SET status = $1, transition_idempotency_key = $2,
+        SET status = $1,
+            quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+            transition_idempotency_key = $2,
             transition_request_hash = $3, consumed_movement_id = $4::uuid,
             updated_at = clock_timestamp()
         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
@@ -1414,7 +1439,9 @@ export class InventoryReservationService {
           reservation: {
             id: reservation.id,
             item_id: reservation.item_id,
-            quantity: reservation.quantity,
+            quantity: remainingQuantity,
+            original_quantity: reservation.quantity,
+            traceability_unit_id: reservation.traceability_unit_id,
             location_id: reservation.location_id,
             status: targetStatus,
             consumed_movement_id: consumedMovementId,
