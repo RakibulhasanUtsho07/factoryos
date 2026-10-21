@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Param,
   ParseUUIDPipe,
   Put,
@@ -31,6 +32,15 @@ type AllocationPolicyRequest = Request & {
 @Controller('inventory/allocation-policies')
 export class InventoryAllocationPolicyController {
   constructor(private readonly reservationService: InventoryReservationService) {}
+
+  @Get()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.read')
+  @RequireFactoryScope()
+  async listPolicies(@Req() request: AllocationPolicyRequest) {
+    const context = this.requireContext(request);
+    return this.reservationService.listAllocationPolicies(context.tenantId, context.factoryId);
+  }
 
   @Put('materials/:itemId')
   @UseGuards(PermissionGuard)
