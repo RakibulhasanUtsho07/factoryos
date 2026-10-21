@@ -21,6 +21,7 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import { CreateInventoryItemDto } from './dto/create-inventory-item.dto';
 import { CreateStockMovementDto } from './dto/create-stock-movement.dto';
 import { CreateInventoryReservationDto } from './dto/create-inventory-reservation.dto';
+import { ConsumeInventoryReservationDto } from './dto/consume-inventory-reservation.dto';
 import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
 import { CreateInventoryStockReconciliationDto } from './dto/create-inventory-stock-reconciliation.dto';
 import { CreateInventoryCycleCountDto } from './dto/create-inventory-cycle-count.dto';
@@ -256,6 +257,24 @@ export class InventoryController {
     return this.reservationService.listReservations(
       context.tenantId, context.factoryId, itemId,
       { status, limit: rawLimit === undefined ? 50 : Number(rawLimit) },
+    );
+  }
+
+  @Post(':itemId/reservations/:reservationId/consume')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async consumeReservation(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Param('reservationId', new ParseUUIDPipe()) reservationId: string,
+    @Body() body: ConsumeInventoryReservationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.reservationService.consumeReservation(
+      context.userId, context.tenantId, context.factoryId, itemId, reservationId,
+      body, idempotencyKey ?? null, context.requestId, context.traceId,
     );
   }
 
