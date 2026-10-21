@@ -1358,8 +1358,8 @@ export class InventoryReservationService {
         `
         UPDATE inventory_reservations
         SET status = $1, quantity_remaining = 0,
-            quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
-            quantity_released = CASE WHEN $1 = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END, transition_idempotency_key = $2,
+            quantity_consumed = CASE WHEN $1::varchar = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+            quantity_released = CASE WHEN $1::varchar = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END, transition_idempotency_key = $2,
             transition_request_hash = $3, consumed_movement_id = $4::uuid,
             updated_at = clock_timestamp()
         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
@@ -1994,8 +1994,8 @@ export class InventoryReservationService {
         `
         UPDATE inventory_reservations
         SET status = $1, quantity_remaining = 0,
-            quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
-            quantity_released = CASE WHEN $1 = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END,
+            quantity_consumed = CASE WHEN $1::varchar = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+            quantity_released = CASE WHEN $1::varchar = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END,
             transition_idempotency_key = $2,
             transition_request_hash = $3, consumed_movement_id = $4::uuid,
             updated_at = clock_timestamp()
@@ -2275,8 +2275,8 @@ export class InventoryReservationService {
           UPDATE inventory_reservations
           SET status = $1,
               quantity_remaining = 0,
-              quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
-              quantity_released = CASE WHEN $1 = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END,
+              quantity_consumed = CASE WHEN $1::varchar = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+              quantity_released = CASE WHEN $1::varchar = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END,
               transition_idempotency_key = $2,
               transition_request_hash = $3,
               consumed_movement_id = $4::uuid,

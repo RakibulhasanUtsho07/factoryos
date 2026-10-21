@@ -317,12 +317,12 @@ export class InventoryStockReconciliationService {
               'Physical count cannot be lower than the quantity reserved for open work',
             );
           }
-          if (cycleCountReview && balance.hasVariance && !cycleCountReview.varianceReasonCode) {
+          if (cycleCountReview && balance.has_variance && !cycleCountReview.varianceReasonCode) {
             throw new BadRequestException(
               'variance_reason_code is required when an approved cycle count changes stock',
             );
           }
-          if (cycleCountReview && !balance.hasVariance && cycleCountReview.varianceReasonCode) {
+          if (cycleCountReview && !balance.has_variance && cycleCountReview.varianceReasonCode) {
             throw new BadRequestException(
               'variance_reason_code must be omitted when the cycle count has zero variance',
             );
