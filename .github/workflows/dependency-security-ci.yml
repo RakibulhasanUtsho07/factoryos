@@ -17,6 +17,7 @@ on:
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'services/api/test/**'
+      - 'services/api/src/auth/**'
   push:
     branches: [main, dev, rakibul-hasan]
     paths:
@@ -34,6 +35,7 @@ on:
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'services/api/test/**'
+      - 'services/api/src/auth/**'
 
 permissions:
   contents: read
