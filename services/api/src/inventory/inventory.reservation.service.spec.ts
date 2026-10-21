@@ -227,6 +227,138 @@ describe('InventoryReservationService', () => {
     expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO outbox_events');
   });
 
+  it('partially consumes a reservation once and keeps the remainder reserved', async () => {
+    const movementId = randomUUID();
+    const consumptionId = randomUUID();
+    const requestHash = createHash('sha256').update(JSON.stringify({
+      reservationId: RESERVATION_ID.toLowerCase(),
+      targetStatus: 'CONSUMED',
+      quantity: '2.0000',
+    })).digest('hex');
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(queryRows([row({ quantity: '5.0000', remaining_quantity: '5.0000' })]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([])) // transaction-local location
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '3.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ id: movementId, quantity_after: '8.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ id: consumptionId }]))
+      .mockResolvedValueOnce(queryRows([])) // no lot mapping on this untracked fixture
+      .mockResolvedValueOnce(queryRows([{ present: false }]))
+      .mockResolvedValueOnce(queryRows([])) // issue outbox
+      .mockResolvedValueOnce(queryRows([row({
+        quantity: '5.0000', remaining_quantity: '3.0000', consumed_quantity: '2.0000',
+        status: 'RESERVED', transition_idempotency_key: 'consume-partial-1',
+        transition_request_hash: requestHash, consumed_movement_id: null,
+      })]));
+
+    const result = await service.transitionReservation(
+      USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
+      { target_status: 'CONSUMED', quantity: 2 } as TransitionInventoryReservationDto,
+      'consume-partial-1', TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({
+      status: 'RESERVED',
+      quantity: '5.0000',
+      remaining_quantity: '3.0000',
+      consumed_quantity: '2.0000',
+      released_quantity: '0.0000',
+      consumed_quantity_this_request: '2.0000',
+      consumption_movement_id: movementId,
+    });
+    expect(String(client.query.mock.calls[6]?.[0])).toContain('inventory_reservation_consumptions');
+    expect(client.query.mock.calls[6]?.[1]).toContain('2.0000');
+    expect(String(client.query.mock.calls[10]?.[0])).toContain('UPDATE inventory_reservations');
+    expect(client.query.mock.calls[10]?.[1]).toContain('3.0000');
+  });
+
+  it('replays duplicate partial issue requests without touching the stock ledger again', async () => {
+    const movementId = randomUUID();
+    const quantity = '2.0000';
+    const requestHash = createHash('sha256').update(JSON.stringify({
+      reservationId: RESERVATION_ID.toLowerCase(),
+      targetStatus: 'CONSUMED',
+      quantity,
+    })).digest('hex');
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(queryRows([row({
+        quantity: '5.0000', remaining_quantity: '3.0000', consumed_quantity: '2.0000',
+        status: 'RESERVED', transition_idempotency_key: 'consume-partial-1',
+        transition_request_hash: requestHash,
+      })]))
+      .mockResolvedValueOnce(queryRows([{
+        id: randomUUID(), request_hash: requestHash, movement_id: movementId, quantity,
+      }]));
+
+    const result = await service.transitionReservation(
+      USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
+      { target_status: 'CONSUMED', quantity: 2 } as TransitionInventoryReservationDto,
+      'consume-partial-1', TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({
+      status: 'RESERVED', remaining_quantity: '3.0000',
+      consumed_quantity: '2.0000', replayed: true,
+      consumption_movement_id: movementId, consumed_quantity_this_request: quantity,
+    });
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(String(client.query.mock.calls[0]?.[0])).toContain('inventory_items');
+    expect(String(client.query.mock.calls[1]?.[0])).toContain('inventory_reservations');
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('parses four-decimal quantities without floating-point rounding drift', () => {
+    const parser = (service as unknown as { decimalToUnits(value: string): bigint }).decimalToUnits.bind(service);
+    const formatter = (service as unknown as { unitsToDecimal(value: bigint): string }).unitsToDecimal.bind(service);
+    expect(parser('123456789.0123')).toBe(1234567890123n);
+    expect(formatter(1234567890123n)).toBe('123456789.0123');
+    expect(() => parser('0.00001')).toThrow('four-decimal value');
+  });
+
+  it('allocates FEFO from the earliest unexpired lot and excludes held stock', async () => {
+    const earliestLot = randomUUID();
+    const laterLot = randomUUID();
+    client.query
+      .mockResolvedValueOnce(queryRows([{
+        allocation_policy: 'FEFO', has_lot: true, has_serial: false, has_identity: true,
+      }]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          traceability_unit_id: earliestLot, location_id: BIN_A_ID,
+          unit_type: 'LOT', unit_code: 'LOT-EARLY', expires_at: '2026-11-01',
+          received_at: '2026-10-01', quantity_on_hand: '2.0000', quantity_reserved: '0.0000',
+        },
+        {
+          traceability_unit_id: laterLot, location_id: BIN_B_ID,
+          unit_type: 'LOT', unit_code: 'LOT-LATER', expires_at: '2027-01-01',
+          received_at: '2026-10-02', quantity_on_hand: '6.0000', quantity_reserved: '0.0000',
+        },
+      ]));
+
+    const plan = await (service as unknown as {
+      planTraceabilityAllocations(clientArg: typeof client, input: {
+        tenantId: string; factoryId: string; itemId: string; quantity: string;
+      }): Promise<{ enforced: boolean; policy: string; allocations: Array<{ traceabilityUnitId: string; quantity: string }> }>;
+    }).planTraceabilityAllocations(client as never, {
+      tenantId: TENANT_ID, factoryId: FACTORY_ID, itemId: ITEM_ID, quantity: '3.0000',
+    });
+
+    expect(plan).toMatchObject({
+      enforced: true, policy: 'FEFO',
+      allocations: [
+        { traceabilityUnitId: earliestLot, quantity: '2.0000' },
+        { traceabilityUnitId: laterLot, quantity: '1.0000' },
+      ],
+    });
+    const eligibilitySql = String(client.query.mock.calls[1]?.[0]);
+    expect(eligibilitySql).toContain("tu.expires_at >= CURRENT_DATE");
+    expect(eligibilitySql).toContain("'QUARANTINED'");
+    expect(eligibilitySql).toContain("'DAMAGED'");
+    expect(eligibilitySql).toContain("qh.status = 'ACTIVE'");
+  });
+
   it('posts accepted finished goods as an inventory receipt with durable outbox evidence', async () => {
     const workOrderId = randomUUID();
     const reportId = randomUUID();
