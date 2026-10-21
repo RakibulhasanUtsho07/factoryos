@@ -1,6 +1,6 @@
 # Custom-query file for prometheus-community/postgres_exporter.
 # Scrape using a dedicated read-only monitoring role with only the statistics
-# visibility required by pg_stat_activity/pg_blocking_pids and SELECT on outbox_events.
+# visibility required by pg_stat_activity/pg_blocking_pids; no tenant-table access is needed.
 # Never attach tenant IDs, event IDs, SQL, or payload values as metric labels.
 # outbox_events uses FORCE ROW LEVEL SECURITY; queue metrics are aggregated
 # by the API dispatcher inside tenant-scoped transactions and scraped from each API replica.
