@@ -24,6 +24,7 @@ type InventoryItemRow = QueryResultRow & {
   sku: string;
   name: string;
   unit: string;
+  sector_code: string | null;
   status: 'ACTIVE' | 'DISABLED';
   quantity_on_hand: string;
   quantity_reserved: string;
@@ -81,6 +82,8 @@ export class InventoryService {
     const sku = dto.sku.trim().toUpperCase();
     const name = dto.name.trim();
     const unit = dto.unit.trim().toUpperCase();
+    const sectorCode = dto.sector_code?.trim().toUpperCase() || null;
+    if (sectorCode && sectorCode.length > 64) throw new BadRequestException('sector_code must be at most 64 characters');
     if (!sku || !name || !unit) {
       throw new BadRequestException('SKU, name and unit are required');
     }
@@ -111,18 +114,18 @@ export class InventoryService {
           const itemResult = await client.query<InventoryItemRow>(
             `
             INSERT INTO inventory_items (
-              tenant_id, factory_id, sku, name, unit, created_by_user_id
+              tenant_id, factory_id, sku, name, unit, sector_code, created_by_user_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING
               id::text AS id,
               tenant_id::text AS tenant_id,
               factory_id::text AS factory_id,
-              sku, name, unit, status,
+              sku, name, unit, sector_code, status,
               version::text AS version,
               created_at::text AS created_at
             `,
-            [tenantId, factoryId, sku, name, unit, userId],
+            [tenantId, factoryId, sku, name, unit, sectorCode, userId],
           );
           const created = itemResult.rows[0];
           if (!created) throw new Error('INVENTORY_ITEM_INSERT_FAILED');
@@ -161,6 +164,7 @@ export class InventoryService {
                 sku: created.sku,
                 name: created.name,
                 unit: created.unit,
+                sector_code: created.sector_code,
                 status: created.status,
               },
             },
@@ -178,7 +182,7 @@ export class InventoryService {
     await this.recordAuditSafely({
       tenantId, factoryId, userId, action: 'ITEM_CREATE',
       resourceId: item.id, requestId, traceId,
-      payload: { sku: item.sku, unit: item.unit },
+      payload: { sku: item.sku, unit: item.unit, sectorCode: item.sector_code },
     });
     return item;
   }
@@ -198,7 +202,7 @@ export class InventoryService {
         i.id::text AS id,
         i.tenant_id::text AS tenant_id,
         i.factory_id::text AS factory_id,
-        i.sku, i.name, i.unit, i.status,
+        i.sku, i.name, i.unit, i.sector_code, i.status,
         b.quantity_on_hand::text AS quantity_on_hand,
         b.quantity_reserved::text AS quantity_reserved,
         (b.quantity_on_hand - b.quantity_reserved)::text AS quantity_available,
