@@ -24,7 +24,7 @@ export class CreateStockMovementDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^\\d{1,19}$/)
+  @Matches(/^\d{1,19}$/)
   @MaxLength(19)
   expected_balance_version?: string;
 
