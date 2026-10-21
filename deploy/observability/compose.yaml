@@ -13,6 +13,7 @@ services:
     secrets:
       - otel_receiver_cert
       - otel_receiver_key
+      - otel_receiver_token
     networks: [monitoring]
 
   prometheus:
@@ -110,3 +111,5 @@ secrets:
     file: ${FACTORYOS_OTEL_RECEIVER_CERT_FILE:?point to the collector TLS certificate file}
   otel_receiver_key:
     file: ${FACTORYOS_OTEL_RECEIVER_KEY_FILE:?point to the collector TLS private key file}
+  otel_receiver_token:
+    file: ${FACTORYOS_OTEL_RECEIVER_TOKEN_FILE:?point to the high-entropy OTLP receiver token file}
