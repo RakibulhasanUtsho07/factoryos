@@ -1814,6 +1814,10 @@ export class InventoryReservationService {
     const quantityByItem = new Map<string, bigint>();
 
     for (const reservation of reservations) {
+      const transitionQuantity = reservation.remaining_quantity;
+      if (this.decimalToUnits(transitionQuantity) <= 0n) {
+        throw new ConflictException(`Active work-order reservation ${reservation.id} has no remaining quantity`);
+      }
       if (targetStatus === 'CONSUMED' && itemStatus.get(reservation.item_id) !== 'ACTIVE') {
         throw new ConflictException(`Cannot consume reserved material for disabled item ${reservation.item_id}`);
       }
@@ -1826,7 +1830,7 @@ export class InventoryReservationService {
       if (reservation.location_id) {
         await this.decreaseLocationReserved(
           client, input.tenantId, input.factoryId, reservation.item_id,
-          reservation.location_id, reservation.quantity,
+          reservation.location_id, transitionQuantity,
         );
       }
       await client.query(
@@ -1845,7 +1849,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [transitionQuantity, input.tenantId, input.factoryId, reservation.item_id],
         )
         : await client.query<BalanceRow>(
           `
@@ -1882,12 +1886,27 @@ export class InventoryReservationService {
           `,
           [
             input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
-            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            transitionQuantity, balance.quantity_on_hand, movementKey, transitionHash,
             reservation.id, reservation.notes, input.userId, input.correlationId,
           ],
         );
         consumedMovementId = movement.rows[0]?.id ?? null;
         if (!consumedMovementId) throw new Error('WORK_ORDER_MATERIAL_ISSUE_MOVEMENT_INSERT_FAILED');
+        const consumptionResult = await client.query<{ id: string }>(
+          `INSERT INTO inventory_reservation_consumptions (
+             tenant_id, factory_id, reservation_id, item_id, location_id, quantity,
+             movement_id, idempotency_key, request_hash, created_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,$4,$5::uuid,$6::numeric,$7::uuid,$8,$9,$10,$11::uuid)
+           RETURNING id::text AS id`,
+          [input.tenantId, input.factoryId, reservation.id, reservation.item_id, reservation.location_id,
+            transitionQuantity, consumedMovementId, transitionKey, transitionHash, input.userId, input.correlationId],
+        );
+        const consumptionId = consumptionResult.rows[0]?.id;
+        if (!consumptionId) throw new Error('WORK_ORDER_MATERIAL_CONSUMPTION_EVIDENCE_FAILED');
+        await this.consumeTraceabilityAllocations(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId, itemId: reservation.item_id,
+          reservationId: reservation.id, consumptionId, quantity: transitionQuantity,
+        });
         await this.insertOutboxEvent(client, {
           tenantId: input.tenantId, factoryId: input.factoryId,
           aggregateId: reservation.item_id, eventType: 'INVENTORY.STOCK_ISSUED',
@@ -1901,31 +1920,44 @@ export class InventoryReservationService {
               item_id: reservation.item_id,
               location_id: reservation.location_id,
               movement_type: 'ISSUE',
-              quantity: reservation.quantity,
-              quantity_delta: `-${reservation.quantity}`,
+              quantity: transitionQuantity,
+              quantity_delta: `-${transitionQuantity}`,
               quantity_after: balance.quantity_on_hand,
             },
           },
         });
       }
 
+      if (targetStatus === 'RELEASED') {
+        await this.releaseTraceabilityAllocations(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId, itemId: reservation.item_id,
+          reservationId: reservation.id, quantity: transitionQuantity,
+        });
+      }
+      const consumedAfter = this.decimalToUnits(reservation.consumed_quantity)
+        + (targetStatus === 'CONSUMED' ? this.decimalToUnits(transitionQuantity) : 0n);
+      const releasedAfter = this.decimalToUnits(reservation.released_quantity)
+        + (targetStatus === 'RELEASED' ? this.decimalToUnits(transitionQuantity) : 0n);
       const updated = await client.query<ReservationRow>(
         `
         UPDATE inventory_reservations
-        SET status = $1, transition_idempotency_key = $2,
-            transition_request_hash = $3, consumed_movement_id = $4::uuid,
+        SET status = $1, remaining_quantity = 0,
+            consumed_quantity = $2::numeric, released_quantity = $3::numeric,
+            transition_idempotency_key = $4,
+            transition_request_hash = $5, consumed_movement_id = $6::uuid,
             updated_at = clock_timestamp()
-        WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND item_id = $8
+        WHERE id = $7 AND tenant_id = $8 AND factory_id = $9 AND item_id = $10
           AND status = 'RESERVED'
         RETURNING ${RESERVATION_COLUMNS}
         `,
         [
-          targetStatus, transitionKey, transitionHash, consumedMovementId,
+          targetStatus, this.unitsToDecimal(consumedAfter), this.unitsToDecimal(releasedAfter),
+          transitionKey, transitionHash, consumedMovementId,
           reservation.id, input.tenantId, input.factoryId, reservation.item_id,
         ],
       );
       if (!updated.rows[0]) throw new ConflictException('Work-order material reservation changed concurrently');
-      const units = toUnits(reservation.quantity);
+      const units = toUnits(transitionQuantity);
       quantityByItem.set(reservation.item_id, (quantityByItem.get(reservation.item_id) ?? 0n) + units);
 
       await this.insertOutboxEvent(client, {
@@ -1940,7 +1972,9 @@ export class InventoryReservationService {
           work_order_number: input.workOrderNumber,
           reservation: {
             id: reservation.id, item_id: reservation.item_id,
-            location_id: reservation.location_id, quantity: reservation.quantity,
+            location_id: reservation.location_id, quantity: transitionQuantity,
+            remaining_quantity: '0.0000', consumed_quantity: this.unitsToDecimal(consumedAfter),
+            released_quantity: this.unitsToDecimal(releasedAfter),
             status: targetStatus, consumed_movement_id: consumedMovementId,
           },
           balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
