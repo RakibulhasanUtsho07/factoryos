@@ -14,6 +14,7 @@ import {
   CreateGenealogyEventDto,
   CreateTraceabilityLabelTemplateDto,
   CreateTraceabilityUnitDto,
+  IssueTraceabilityLabelDto,
   UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 
@@ -34,6 +35,7 @@ const UNIT_SELECT = `
   u.product_role,
   u.unit_code,
   u.barcode_value,
+  u.rfid_epc,
   u.inventory_item_id::text AS inventory_item_id,
   i.sku AS inventory_sku,
   i.name AS inventory_item_name,
@@ -125,6 +127,10 @@ export class TraceabilityService {
     const unitCode = this.requiredText(dto.unit_code, 'unit_code', 160).toUpperCase();
     const barcodeValue = dto.barcode_value?.trim() || unitCode;
     if (barcodeValue.length > 255) throw new BadRequestException('barcode_value must contain at most 255 characters');
+    const rfidEpc = dto.rfid_epc?.trim().toUpperCase() || null;
+    if (rfidEpc && !/^[A-Z0-9._:-]{1,128}$/.test(rfidEpc)) {
+      throw new BadRequestException('rfid_epc must contain 1-128 letters, digits, dot, underscore, colon or hyphen');
+    }
     const quantity = this.quantity(dto.quantity, 'quantity');
     if (dto.unit_type === 'SERIAL' && quantity !== '1.0000') {
       throw new BadRequestException('SERIAL identities must have quantity exactly 1');
@@ -167,7 +173,7 @@ export class TraceabilityService {
       throw new BadRequestException('Material/finished-good identity requires an inventory item, GRN line, production report, order line, or external reference');
     }
 
-    const requestHash = this.hash({
+    const requestHashPayload: Record<string, unknown> = {
       unit_type: dto.unit_type,
       product_role: productRole,
       unit_code: unitCode,
@@ -184,7 +190,10 @@ export class TraceabilityService {
       manufactured_at: manufacturedAt?.toISOString() ?? null,
       expires_at: expiresAt,
       attributes,
-    });
+    };
+    // Preserve idempotency hashes for pre-RFID clients that omitted this field.
+    if (rfidEpc !== null) requestHashPayload.rfid_epc = rfidEpc;
+    const requestHash = this.hash(requestHashPayload);
     const requestUuid = this.uuidOrNull(requestId);
     const traceUuid = this.uuidOrNull(traceId);
     const correlationId = traceUuid ?? requestUuid ?? randomUUID();
@@ -246,17 +255,17 @@ export class TraceabilityService {
           }
           const inserted = await client.query<StoredKeyRow>(`
             INSERT INTO traceability_units (
-              tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+              tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value, rfid_epc,
               inventory_item_id, quantity, unit, goods_receipt_line_id, order_id, order_line_id,
               production_report_id, label_template_id, external_reference, manufactured_at, expires_at,
               attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
             ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11, $12,
-              $13, $14, $15, $16::timestamptz, $17::date, $18::jsonb, $19, $20, $21, $22
+              $1, $2, $3, $4, $5, $6, $7, $8, $9::numeric, $10, $11, $12, $13,
+              $14, $15, $16, $17::timestamptz, $18::date, $19::jsonb, $20, $21, $22, $23
             )
             RETURNING id::text AS id, request_hash
           `, [
-            tenantId, factoryId, dto.unit_type, productRole, unitCode, barcodeValue,
+            tenantId, factoryId, dto.unit_type, productRole, unitCode, barcodeValue, rfidEpc,
             inventoryItemId, quantity, unit, goodsReceiptLineId, orderId, orderLineId,
             productionReportId, labelTemplateId, externalReference, manufacturedAt?.toISOString() ?? null,
             expiresAt, JSON.stringify(attributes), idempotencyKey, requestHash, userId, correlationId,
