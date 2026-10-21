@@ -116,7 +116,7 @@ export class InventoryCycleCountService {
     if (locationId) this.validateUuid(locationId, 'location_id');
     const varianceReasonCode = dto.variance_reason_code ?? null;
     if (
-      varianceReasonCode
+      varianceReasonCode !== null
       && !['DAMAGE', 'LOSS', 'FOUND_STOCK', 'OTHER'].includes(varianceReasonCode)
     ) {
       throw new BadRequestException('variance_reason_code is invalid');
