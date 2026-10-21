@@ -688,7 +688,7 @@ export class TraceabilityService {
     this.validateScope(userId, tenantId, factoryId);
     const result = await this.database.query(`
       SELECT tenant_id::text AS tenant_id, factory_id::text AS factory_id,
-        retention_years, allocation_policy, version,
+        retention_years, allocation_policy, require_lot_tracking, version,
         updated_by_user_id::text AS updated_by_user_id,
         created_at::text AS created_at, updated_at::text AS updated_at
       FROM traceability_settings
@@ -707,7 +707,7 @@ export class TraceabilityService {
     if (!Number.isInteger(dto.expected_version) || dto.expected_version < 1) {
       throw new BadRequestException('expected_version must be a positive integer');
     }
-    if (dto.retention_years === undefined && dto.allocation_policy === undefined) {
+    if (dto.retention_years === undefined && dto.allocation_policy === undefined && dto.require_lot_tracking === undefined) {
       throw new BadRequestException('At least one traceability setting must be provided');
     }
     if (dto.retention_years !== undefined && (!Number.isInteger(dto.retention_years) || dto.retention_years < 1 || dto.retention_years > 100)) {
@@ -724,14 +724,15 @@ export class TraceabilityService {
       await this.database.transaction(
         { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
         async (client) => {
-          const updated = await client.query<{ retention_years: number; allocation_policy: string; version: number }>(`
+          const updated = await client.query<{ retention_years: number; allocation_policy: string; require_lot_tracking: boolean; version: number }>(`
             UPDATE traceability_settings
             SET retention_years = COALESCE($1, retention_years),
                 allocation_policy = COALESCE($2, allocation_policy),
-                updated_by_user_id = $3, version = version + 1, updated_at = clock_timestamp()
-            WHERE tenant_id = $4 AND factory_id = $5 AND version = $6
-            RETURNING retention_years, allocation_policy, version
-          `, [dto.retention_years ?? null, allocationPolicy ?? null, userId, tenantId, factoryId, dto.expected_version]);
+                require_lot_tracking = COALESCE($3, require_lot_tracking),
+                updated_by_user_id = $4, version = version + 1, updated_at = clock_timestamp()
+            WHERE tenant_id = $5 AND factory_id = $6 AND version = $7
+            RETURNING retention_years, allocation_policy, require_lot_tracking, version
+          `, [dto.retention_years ?? null, allocationPolicy ?? null, dto.require_lot_tracking ?? null, userId, tenantId, factoryId, dto.expected_version]);
           const settings = updated.rows[0];
           if (!settings) throw new ConflictException('Traceability settings version changed; reload and retry');
           await client.query(`
@@ -741,12 +742,13 @@ export class TraceabilityService {
           `, [tenantId, factoryId, factoryId, JSON.stringify({
             retention_years: settings.retention_years,
             allocation_policy: settings.allocation_policy,
+            require_lot_tracking: settings.require_lot_tracking,
             version: settings.version,
           })]);
           await this.insertAudit(client, {
             tenantId, factoryId, userId, resourceType: 'TRACEABILITY_SETTINGS', resourceId: factoryId,
             action: 'UPDATED', correlationId, requestId: requestUuid,
-            payload: { retentionYears: settings.retention_years, allocationPolicy: settings.allocation_policy, version: settings.version },
+            payload: { retentionYears: settings.retention_years, allocationPolicy: settings.allocation_policy, requireLotTracking: settings.require_lot_tracking, version: settings.version },
           });
         },
       );
