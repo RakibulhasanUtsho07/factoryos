@@ -684,6 +684,91 @@
           "range": true
         }
       ]
+    },
+    {
+      "id": 17,
+      "title": "Outbox metrics snapshot age",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "factoryos-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "factoryos_outbox_metrics_snapshot_age_seconds",
+          "legendFormat": "{{instance_id}} snapshot age",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Outbox metrics snapshot health",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "factoryos-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 64,
+        "w": 6,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "factoryos_outbox_metrics_collection_success",
+          "legendFormat": "{{instance_id}}",
+          "range": true
+        }
+      ]
     }
   ],
   "refresh": "30s",
