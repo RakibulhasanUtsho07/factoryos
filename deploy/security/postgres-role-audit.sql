@@ -42,23 +42,23 @@ ORDER BY table_schema, table_name, privilege_type;
 
 \echo 'Schema privileges granted to the runtime role'
 SELECT
-  schema_name,
-  privilege_type,
-  is_grantable
-FROM information_schema.schema_privileges
-WHERE grantee = :'application_role'
-ORDER BY schema_name, privilege_type;
+  namespace.nspname AS schema_name,
+  has_schema_privilege(:'application_role', namespace.oid, 'USAGE') AS has_usage,
+  has_schema_privilege(:'application_role', namespace.oid, 'CREATE') AS has_create
+FROM pg_namespace AS namespace
+WHERE has_schema_privilege(:'application_role', namespace.oid, 'USAGE')
+   OR has_schema_privilege(:'application_role', namespace.oid, 'CREATE')
+ORDER BY namespace.nspname;
 
 \echo 'Sequence privileges granted to the runtime role'
 SELECT
-  object_schema,
-  object_name,
+  sequence_schema AS object_schema,
+  sequence_name AS object_name,
   privilege_type,
   is_grantable
-FROM information_schema.role_usage_grants
+FROM information_schema.sequence_privileges
 WHERE grantee = :'application_role'
-  AND object_type = 'SEQUENCE'
-ORDER BY object_schema, object_name, privilege_type;
+ORDER BY sequence_schema, sequence_name, privilege_type;
 
 \echo 'Default privileges that can grant new objects to runtime role'
 SELECT
