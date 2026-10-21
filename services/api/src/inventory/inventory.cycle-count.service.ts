@@ -10,6 +10,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
+import type { InventoryCycleCountVarianceReasonCode } from './dto/create-inventory-cycle-count.dto';
 import {
   InventoryStockReconciliationService,
   type InventoryStockReconciliationResult,
@@ -25,6 +26,10 @@ interface CycleCountProposalRow extends QueryResultRow {
   counted_quantity: string;
   ledger_quantity_at_count: string;
   balance_version_at_count: string;
+  location_id: string | null;
+  location_quantity_at_count: string | null;
+  location_version_at_count: string | null;
+  variance_reason_code: InventoryCycleCountVarianceReasonCode | null;
   status: InventoryCycleCountStatus;
   idempotency_key: string;
   request_hash: string;
@@ -61,6 +66,10 @@ const CYCLE_COUNT_COLUMNS = `
   counted_quantity::text AS counted_quantity,
   ledger_quantity_at_count::text AS ledger_quantity_at_count,
   balance_version_at_count::text AS balance_version_at_count,
+  location_id::text AS location_id,
+  location_quantity_at_count::text AS location_quantity_at_count,
+  location_version_at_count::text AS location_version_at_count,
+  variance_reason_code,
   status,
   idempotency_key,
   request_hash,
@@ -89,7 +98,12 @@ export class InventoryCycleCountService {
     tenantId: string,
     factoryId: string,
     itemId: string,
-    dto: { counted_quantity: number; notes?: string },
+    dto: {
+      counted_quantity: number;
+      notes?: string;
+      location_id?: string;
+      variance_reason_code?: InventoryCycleCountVarianceReasonCode;
+    },
     rawIdempotencyKey: string | null,
     requestId: string | null,
     traceId: string | null,
@@ -98,11 +112,25 @@ export class InventoryCycleCountService {
     this.validateUuid(itemId, 'itemId');
     const countedQuantity = this.normalizeQuantity(dto.counted_quantity);
     const notes = dto.notes?.trim() || null;
+    const locationId = dto.location_id?.trim().toLowerCase() || null;
+    if (locationId) this.validateUuid(locationId, 'location_id');
+    const varianceReasonCode = dto.variance_reason_code ?? null;
+    if (
+      varianceReasonCode !== null
+      && !['DAMAGE', 'LOSS', 'FOUND_STOCK', 'OTHER'].includes(varianceReasonCode)
+    ) {
+      throw new BadRequestException('variance_reason_code is invalid');
+    }
+    if (varianceReasonCode && !locationId) {
+      throw new BadRequestException('variance_reason_code is only valid for a location-scoped cycle count');
+    }
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const normalizedItemId = itemId.toLowerCase();
     const requestHash = this.hash({
       itemId: normalizedItemId,
       countedQuantity,
+      locationId,
+      varianceReasonCode,
       reasonCode: 'CYCLE_COUNT',
       notes,
     });
@@ -154,6 +182,59 @@ export class InventoryCycleCountService {
             throw new ConflictException('Inventory stock balance is not initialized for this item');
           }
 
+          let locationSnapshot: { quantity_on_hand: string; version: string } | null = null;
+          if (locationId) {
+            const location = await client.query<{ id: string }>(
+              `
+              SELECT l.id::text AS id
+              FROM inventory_locations l
+              JOIN inventory_locations p
+                ON p.id = l.parent_location_id
+               AND p.tenant_id = l.tenant_id
+               AND p.factory_id = l.factory_id
+              WHERE l.id = $1 AND l.tenant_id = $2 AND l.factory_id = $3
+                AND l.location_type = 'BIN' AND l.status = 'ACTIVE'
+                AND p.location_type IN ('WAREHOUSE', 'STAGING') AND p.status = 'ACTIVE'
+              FOR UPDATE OF l
+              `,
+              [locationId, tenantId, factoryId],
+            );
+            if (!location.rows[0]) {
+              throw new NotFoundException('Active bin not found in this factory');
+            }
+            await client.query(
+              `
+              INSERT INTO inventory_location_balances (
+                tenant_id, factory_id, item_id, location_id, quantity_on_hand
+              )
+              VALUES ($1, $2, $3, $4, 0)
+              ON CONFLICT (tenant_id, factory_id, item_id, location_id) DO NOTHING
+              `,
+              [tenantId, factoryId, normalizedItemId, locationId],
+            );
+            const binBalance = await client.query<{ quantity_on_hand: string; version: string }>(
+              `
+              SELECT quantity_on_hand::text AS quantity_on_hand,
+                     version::text AS version
+              FROM inventory_location_balances
+              WHERE tenant_id = $1 AND factory_id = $2
+                AND item_id = $3 AND location_id = $4
+              FOR UPDATE
+              `,
+              [tenantId, factoryId, normalizedItemId, locationId],
+            );
+            locationSnapshot = binBalance.rows[0] ?? null;
+            if (!locationSnapshot) {
+              throw new ConflictException('Inventory bin balance could not be initialized');
+            }
+            if (
+              countedQuantity !== Number(locationSnapshot.quantity_on_hand).toFixed(4)
+              && !varianceReasonCode
+            ) {
+              throw new BadRequestException('variance_reason_code is required when the bin count differs from the location snapshot');
+            }
+          }
+
           const duplicateAfterLock = await this.findBySubmitKey(
             client, tenantId, factoryId, idempotencyKey,
           );
@@ -165,12 +246,15 @@ export class InventoryCycleCountService {
             `
             INSERT INTO inventory_cycle_count_proposals (
               tenant_id, factory_id, item_id, counted_quantity,
-              ledger_quantity_at_count, balance_version_at_count, status,
-              idempotency_key, request_hash, notes, created_by_user_id
+              ledger_quantity_at_count, balance_version_at_count,
+              location_id, location_quantity_at_count, location_version_at_count,
+              variance_reason_code, status, idempotency_key, request_hash, notes,
+              created_by_user_id
             )
             VALUES (
               $1, $2, $3, $4::numeric, $5::numeric, $6::bigint,
-              'PENDING_REVIEW', $7, $8, $9, $10
+              $7::uuid, $8::numeric, $9::bigint, $10,
+              'PENDING_REVIEW', $11, $12, $13, $14
             )
             RETURNING ${CYCLE_COUNT_COLUMNS}
             `,
@@ -181,6 +265,10 @@ export class InventoryCycleCountService {
               countedQuantity,
               balance.quantity_on_hand,
               balance.version,
+              locationId,
+              locationSnapshot?.quantity_on_hand ?? null,
+              locationSnapshot?.version ?? null,
+              varianceReasonCode,
               idempotencyKey,
               requestHash,
               notes,
@@ -202,6 +290,12 @@ export class InventoryCycleCountService {
                 id: proposal.id,
                 item_id: proposal.item_id,
                 counted_quantity: proposal.counted_quantity,
+                ledger_quantity_at_count: proposal.ledger_quantity_at_count,
+                balance_version_at_count: proposal.balance_version_at_count,
+                location_id: proposal.location_id,
+                location_quantity_at_count: proposal.location_quantity_at_count,
+                location_version_at_count: proposal.location_version_at_count,
+                variance_reason_code: proposal.variance_reason_code,
                 status: proposal.status,
               },
             },
@@ -235,6 +329,12 @@ export class InventoryCycleCountService {
         payload: {
           item_id: result.item_id,
           counted_quantity: result.counted_quantity,
+          ledger_quantity_at_count: result.ledger_quantity_at_count,
+          balance_version_at_count: result.balance_version_at_count,
+          location_id: result.location_id,
+          location_quantity_at_count: result.location_quantity_at_count,
+          location_version_at_count: result.location_version_at_count,
+          variance_reason_code: result.variance_reason_code,
           status: result.status,
         },
       });
@@ -301,6 +401,21 @@ export class InventoryCycleCountService {
     const proposal = await this.getProposal(
       userId, tenantId, factoryId, itemId, proposalId,
     );
+    const approvedQuantity = proposal.location_id
+      ? Number((
+        Number(proposal.ledger_quantity_at_count)
+        + Number(proposal.counted_quantity)
+        - Number(proposal.location_quantity_at_count ?? '0')
+      ).toFixed(4))
+      : Number(proposal.counted_quantity);
+    const locationReview = proposal.location_id
+      ? {
+        locationId: proposal.location_id,
+        locationCountedQuantity: proposal.counted_quantity,
+        locationQuantityAtCount: proposal.location_quantity_at_count,
+        locationVersionAtCount: proposal.location_version_at_count,
+      }
+      : {};
     if (proposal.created_by_user_id === userId) {
       throw new ConflictException('The user who submitted a cycle count cannot approve it');
     }
@@ -313,8 +428,8 @@ export class InventoryCycleCountService {
       return this.reconciliationService.recordReconciliation(
         userId, tenantId, factoryId, itemId,
         {
-          counted_quantity: Number(proposal.counted_quantity),
-          reason_code: 'CYCLE_COUNT',
+          counted_quantity: approvedQuantity,
+          reason_code: proposal.variance_reason_code ?? 'CYCLE_COUNT',
           notes: proposal.notes ?? undefined,
         },
         this.reconciliationKey(proposal.id),
@@ -325,6 +440,7 @@ export class InventoryCycleCountService {
           decisionIdempotencyKey: idempotencyKey,
           reviewRequestHash,
           reviewNote,
+          ...locationReview,
         },
       );
     }
@@ -332,8 +448,8 @@ export class InventoryCycleCountService {
     const result = await this.reconciliationService.recordReconciliation(
       userId, tenantId, factoryId, itemId,
       {
-        counted_quantity: Number(proposal.counted_quantity),
-        reason_code: 'CYCLE_COUNT',
+        counted_quantity: approvedQuantity,
+        reason_code: proposal.variance_reason_code ?? 'CYCLE_COUNT',
         notes: proposal.notes ?? undefined,
       },
       this.reconciliationKey(proposal.id),
@@ -344,6 +460,7 @@ export class InventoryCycleCountService {
         decisionIdempotencyKey: idempotencyKey,
         reviewRequestHash,
         reviewNote,
+        ...locationReview,
       },
     );
     if (!result.replayed) {
@@ -354,8 +471,18 @@ export class InventoryCycleCountService {
         payload: {
           item_id: itemId,
           reconciliation_id: result.id,
-          counted_quantity: result.counted_quantity,
+          counted_quantity: proposal.counted_quantity,
+          aggregate_quantity_after: result.counted_quantity,
+          ledger_quantity_at_count: proposal.ledger_quantity_at_count,
+          balance_version_at_count: proposal.balance_version_at_count,
           quantity_delta: result.quantity_delta,
+          location_id: result.location_id,
+          location_quantity_at_count: proposal.location_quantity_at_count,
+          location_counted_quantity: result.location_counted_quantity,
+          location_version_at_count: proposal.location_version_at_count,
+          location_quantity_before: result.location_quantity_before,
+          location_quantity_after: result.location_quantity_after,
+          variance_reason_code: proposal.variance_reason_code,
           review_note: reviewNote,
         },
       });
@@ -458,6 +585,13 @@ export class InventoryCycleCountService {
               cycle_count: {
                 id: reviewed.id,
                 item_id: reviewed.item_id,
+                counted_quantity: reviewed.counted_quantity,
+                ledger_quantity_at_count: reviewed.ledger_quantity_at_count,
+                balance_version_at_count: reviewed.balance_version_at_count,
+                location_id: reviewed.location_id,
+                location_quantity_at_count: reviewed.location_quantity_at_count,
+                location_version_at_count: reviewed.location_version_at_count,
+                variance_reason_code: reviewed.variance_reason_code,
                 status: reviewed.status,
                 review_note: reviewNote,
               },
@@ -496,7 +630,18 @@ export class InventoryCycleCountService {
         tenantId, factoryId, userId,
         requestId, traceId, resourceId: result.id,
         action: 'CYCLE_COUNT_REJECT',
-        payload: { item_id: itemId, review_note: reviewNote, status: result.status },
+        payload: {
+          item_id: itemId,
+          counted_quantity: result.counted_quantity,
+          ledger_quantity_at_count: result.ledger_quantity_at_count,
+          balance_version_at_count: result.balance_version_at_count,
+          location_id: result.location_id,
+          location_quantity_at_count: result.location_quantity_at_count,
+          location_version_at_count: result.location_version_at_count,
+          variance_reason_code: result.variance_reason_code,
+          review_note: reviewNote,
+          status: result.status,
+        },
       });
     }
     return result;

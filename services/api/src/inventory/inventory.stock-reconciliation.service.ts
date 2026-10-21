@@ -32,6 +32,10 @@ interface ReconciliationRow extends QueryResultRow {
   created_by_user_id: string;
   correlation_id: string;
   created_at: string;
+  location_id: string | null;
+  location_quantity_before: string | null;
+  location_counted_quantity: string | null;
+  location_quantity_after: string | null;
 }
 
 interface InventoryMovementRow extends QueryResultRow {
@@ -40,6 +44,7 @@ interface InventoryMovementRow extends QueryResultRow {
   quantity: string;
   quantity_delta: string;
   quantity_after: string;
+  location_id: string | null;
 }
 
 interface LockedBalanceRow extends QueryResultRow {
@@ -76,7 +81,11 @@ const RECONCILIATION_COLUMNS = `
   notes,
   created_by_user_id::text AS created_by_user_id,
   correlation_id::text AS correlation_id,
-  created_at::text AS created_at
+  created_at::text AS created_at,
+  location_id::text AS location_id,
+  location_quantity_before::text AS location_quantity_before,
+  location_counted_quantity::text AS location_counted_quantity,
+  location_quantity_after::text AS location_quantity_after
 `;
 
 @Injectable()
@@ -104,6 +113,10 @@ export class InventoryStockReconciliationService {
       decisionIdempotencyKey: string;
       reviewRequestHash: string;
       reviewNote: string | null;
+      locationId?: string;
+      locationCountedQuantity?: string;
+      locationQuantityAtCount?: string | null;
+      locationVersionAtCount?: string | null;
     },
   ): Promise<InventoryStockReconciliationResult> {
     this.validateScope(userId, tenantId, factoryId);
@@ -162,6 +175,11 @@ export class InventoryStockReconciliationService {
           let cycleCountSnapshot: {
             ledger_quantity_at_count: string;
             balance_version_at_count: string;
+            counted_quantity: string;
+            location_id: string | null;
+            location_quantity_at_count: string | null;
+            location_version_at_count: string | null;
+            approved_quantity: string;
           } | null = null;
           if (cycleCountReview) {
             const workflowResult = await client.query<{
@@ -170,6 +188,11 @@ export class InventoryStockReconciliationService {
               created_by_user_id: string;
               ledger_quantity_at_count: string;
               balance_version_at_count: string;
+              counted_quantity: string;
+              location_id: string | null;
+              location_quantity_at_count: string | null;
+              location_version_at_count: string | null;
+              approved_quantity: string;
               reviewed_by_user_id: string | null;
               review_idempotency_key: string | null;
               review_request_hash: string | null;
@@ -182,6 +205,12 @@ export class InventoryStockReconciliationService {
                 created_by_user_id::text AS created_by_user_id,
                 ledger_quantity_at_count::text AS ledger_quantity_at_count,
                 balance_version_at_count::text AS balance_version_at_count,
+                counted_quantity::text AS counted_quantity,
+                location_id::text AS location_id,
+                location_quantity_at_count::text AS location_quantity_at_count,
+                location_version_at_count::text AS location_version_at_count,
+                CASE WHEN location_id IS NULL THEN counted_quantity::numeric(18,4)::text
+                     ELSE (ledger_quantity_at_count + counted_quantity - location_quantity_at_count)::numeric(18,4)::text END AS approved_quantity,
                 reviewed_by_user_id::text AS reviewed_by_user_id,
                 review_idempotency_key,
                 review_request_hash,
@@ -199,7 +228,18 @@ export class InventoryStockReconciliationService {
             cycleCountSnapshot = {
               ledger_quantity_at_count: proposal.ledger_quantity_at_count,
               balance_version_at_count: proposal.balance_version_at_count,
+              counted_quantity: proposal.counted_quantity,
+              location_id: proposal.location_id,
+              location_quantity_at_count: proposal.location_quantity_at_count,
+              location_version_at_count: proposal.location_version_at_count,
+              approved_quantity: proposal.approved_quantity,
             };
+            if (proposal.approved_quantity !== countedQuantity) {
+              throw new ConflictException('Cycle-count approval quantity does not match the immutable submitted snapshot');
+            }
+            if (cycleCountReview.locationId !== (proposal.location_id ?? undefined)) {
+              throw new ConflictException('Cycle-count location does not match the submitted proposal');
+            }
             if (proposal.created_by_user_id === userId) {
               throw new ConflictException('The user who submitted a cycle count cannot approve it');
             }
@@ -308,6 +348,65 @@ export class InventoryStockReconciliationService {
               'Inventory stock changed after this cycle count was submitted; submit a fresh physical count',
             );
           }
+          let locationSnapshotForReconciliation: {
+            quantity_before: string;
+            version: string;
+            quantity_reserved: string;
+          } | null = null;
+          if (cycleCountSnapshot?.location_id) {
+            const activeLocation = await client.query<{ id: string }>(
+              `
+              SELECT l.id::text AS id
+              FROM inventory_locations l
+              JOIN inventory_locations p
+                ON p.id = l.parent_location_id
+               AND p.tenant_id = l.tenant_id
+               AND p.factory_id = l.factory_id
+              WHERE l.id = $1 AND l.tenant_id = $2 AND l.factory_id = $3
+                AND l.location_type = 'BIN' AND l.status = 'ACTIVE'
+                AND p.location_type IN ('WAREHOUSE', 'STAGING') AND p.status = 'ACTIVE'
+              FOR UPDATE OF l, p
+              `,
+              [cycleCountSnapshot.location_id, tenantId, factoryId],
+            );
+            if (!activeLocation.rows[0]) {
+              throw new ConflictException('Cycle-count bin or its parent location is no longer active');
+            }
+            const locationBalanceResult = await client.query<{
+              quantity_before: string;
+              version: string;
+              quantity_reserved: string;
+            }>(
+              `
+              SELECT quantity_on_hand::text AS quantity_before,
+                     version::text AS version,
+                     quantity_reserved::text AS quantity_reserved
+              FROM inventory_location_balances
+              WHERE tenant_id = $1 AND factory_id = $2
+                AND item_id = $3 AND location_id = $4
+              FOR UPDATE
+              `,
+              [tenantId, factoryId, normalizedItemId, cycleCountSnapshot.location_id],
+            );
+            const locationBalance = locationBalanceResult.rows[0];
+            if (!locationBalance) {
+              throw new ConflictException('Cycle-count bin balance is no longer available; submit a fresh count');
+            }
+            if (
+              locationBalance.quantity_before !== cycleCountSnapshot.location_quantity_at_count
+              || locationBalance.version !== cycleCountSnapshot.location_version_at_count
+            ) {
+              throw new ConflictException(
+                'Bin stock changed after this cycle count was submitted; submit a fresh physical count',
+              );
+            }
+            if (
+              Number(cycleCountSnapshot.counted_quantity) < Number(locationBalance.quantity_reserved)
+            ) {
+              throw new ConflictException('Physical bin count cannot be lower than the quantity reserved in the bin');
+            }
+            locationSnapshotForReconciliation = locationBalance;
+          }
           if (!balance.count_covers_reservations) {
             throw new ConflictException(
               'Physical count cannot be lower than the quantity reserved for open work',
@@ -319,6 +418,12 @@ export class InventoryStockReconciliationService {
           let movementId: string | null = null;
 
           if (balance.has_variance) {
+            if (cycleCountSnapshot?.location_id) {
+              await client.query(
+                `SELECT set_config('app.inventory_location_id', $1, true)`,
+                [cycleCountSnapshot.location_id],
+              );
+            }
             const updatedBalance = await client.query<{ quantity_on_hand: string }>(
               `
               UPDATE inventory_stock_balances
@@ -350,11 +455,13 @@ export class InventoryStockReconciliationService {
               INSERT INTO inventory_movements (
                 tenant_id, factory_id, item_id, movement_type, quantity,
                 quantity_delta, quantity_after, idempotency_key, request_hash,
-                reference_type, reference_id, notes, created_by_user_id, correlation_id
+                reference_type, reference_id, notes, created_by_user_id, correlation_id,
+                location_id
               )
               VALUES (
                 $1, $2, $3, $4, ABS($5::numeric), $5::numeric, $6::numeric,
-                $7, $8, 'STOCK_RECONCILIATION', $9::uuid, $10, $11, $12::uuid
+                $7, $8, 'STOCK_RECONCILIATION', $9::uuid, $10, $11, $12::uuid,
+                $13::uuid
               )
               RETURNING
                 id::text AS id,
@@ -376,6 +483,7 @@ export class InventoryStockReconciliationService {
                 movementNotes,
                 userId,
                 correlationId,
+                cycleCountSnapshot?.location_id ?? null,
               ],
             );
             const movement = movementResult.rows[0];
@@ -391,12 +499,13 @@ export class InventoryStockReconciliationService {
               id, tenant_id, factory_id, item_id, quantity_before,
               counted_quantity, quantity_delta, quantity_after, reason_code,
               idempotency_key, request_hash, adjustment_movement_id, notes,
-              created_by_user_id, correlation_id
+              created_by_user_id, correlation_id, location_id,
+              location_quantity_before, location_counted_quantity, location_quantity_after
             )
             VALUES (
               $1::uuid, $2, $3, $4, $5::numeric, $6::numeric,
               $7::numeric, $6::numeric, $8, $9, $10, $11::uuid,
-              $12, $13, $14::uuid
+              $12, $13, $14::uuid, $15::uuid, $16::numeric, $17::numeric, $18::numeric
             )
             RETURNING ${RECONCILIATION_COLUMNS}
             `,
@@ -415,6 +524,10 @@ export class InventoryStockReconciliationService {
               notes,
               userId,
               correlationId,
+              cycleCountSnapshot?.location_id ?? null,
+              locationSnapshotForReconciliation?.quantity_before ?? null,
+              cycleCountSnapshot?.location_id ? cycleCountSnapshot.counted_quantity : null,
+              cycleCountSnapshot?.location_id ? Number(cycleCountSnapshot.counted_quantity).toFixed(4) : null,
             ],
           );
           const reconciliation = reconciliationResult.rows[0];
@@ -436,6 +549,10 @@ export class InventoryStockReconciliationService {
                 counted_quantity: reconciliation.counted_quantity,
                 quantity_delta: reconciliation.quantity_delta,
                 quantity_after: reconciliation.quantity_after,
+                location_id: reconciliation.location_id,
+                location_quantity_before: reconciliation.location_quantity_before,
+                location_counted_quantity: reconciliation.location_counted_quantity,
+                location_quantity_after: reconciliation.location_quantity_after,
                 reason_code: reconciliation.reason_code,
                 adjustment_movement_id: reconciliation.adjustment_movement_id,
               },
@@ -477,6 +594,9 @@ export class InventoryStockReconciliationService {
             if (!applied.rows[0]) {
               throw new ConflictException('Cycle-count approval lost its pending state');
             }
+            if (!cycleCountSnapshot) {
+              throw new ConflictException('Cycle-count approval snapshot is missing');
+            }
             await this.insertCycleCountApprovedEvent(client, {
               tenantId,
               factoryId,
@@ -487,6 +607,17 @@ export class InventoryStockReconciliationService {
               userId,
               quantityDelta: reconciliation.quantity_delta,
               reviewNote: cycleCountReview.reviewNote,
+              countedQuantity: cycleCountSnapshot.counted_quantity,
+              ledgerQuantityAtCount: cycleCountSnapshot.ledger_quantity_at_count,
+              balanceVersionAtCount: cycleCountSnapshot.balance_version_at_count,
+              locationId: cycleCountSnapshot.location_id,
+              locationQuantityAtCount: cycleCountSnapshot.location_quantity_at_count,
+              locationCountedQuantity: cycleCountSnapshot.location_id
+                ? cycleCountSnapshot.counted_quantity : null,
+              locationQuantityBefore: locationSnapshotForReconciliation?.quantity_before ?? null,
+              locationVersionAtCount: cycleCountSnapshot.location_version_at_count,
+              varianceReasonCode: reasonCode,
+              aggregateQuantityAfter: reconciliation.counted_quantity,
             });
           }
 
@@ -530,6 +661,10 @@ export class InventoryStockReconciliationService {
           counted_quantity: result.counted_quantity,
           quantity_delta: result.quantity_delta,
           reason_code: result.reason_code,
+          location_id: result.location_id,
+          location_quantity_before: result.location_quantity_before,
+          location_counted_quantity: result.location_counted_quantity,
+          location_quantity_after: result.location_quantity_after,
           adjustment_movement_id: result.adjustment_movement_id,
         },
       });
@@ -672,6 +807,16 @@ export class InventoryStockReconciliationService {
       userId: string;
       quantityDelta: string;
       reviewNote: string | null;
+      countedQuantity: string;
+      ledgerQuantityAtCount: string;
+      balanceVersionAtCount: string;
+      locationId: string | null;
+      locationQuantityAtCount: string | null;
+      locationCountedQuantity: string | null;
+      locationQuantityBefore: string | null;
+      locationVersionAtCount: string | null;
+      varianceReasonCode: StockReconciliationReasonCode;
+      aggregateQuantityAfter: string;
     },
   ): Promise<void> {
     await client.query(
@@ -702,7 +847,18 @@ export class InventoryStockReconciliationService {
             id: input.proposalId,
             item_id: input.itemId,
             reconciliation_id: input.reconciliationId,
+            counted_quantity: input.countedQuantity,
+            ledger_quantity_at_count: input.ledgerQuantityAtCount,
+            balance_version_at_count: input.balanceVersionAtCount,
+            location_id: input.locationId,
+            location_quantity_before: input.locationQuantityBefore,
+            location_quantity_at_count: input.locationQuantityAtCount,
+            location_counted_quantity: input.locationCountedQuantity,
+            location_quantity_after: input.locationCountedQuantity,
+            location_version_at_count: input.locationVersionAtCount,
+            aggregate_quantity_after: input.aggregateQuantityAfter,
             quantity_delta: input.quantityDelta,
+            variance_reason_code: input.varianceReasonCode,
             review_note: input.reviewNote,
             status: 'APPLIED',
           },

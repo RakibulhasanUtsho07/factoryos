@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 
 import { AuditService } from '../audit/audit.service';
 import {
@@ -20,6 +20,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
   let tenantId!: string;
   let factoryId!: string;
   const itemIds: string[] = [];
+  const locationIds: string[] = [];
 
   const createItem = async (
     quantityOnHand: string,
@@ -55,6 +56,87 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       [tenantId, factoryId, itemId, quantityOnHand, quantityReserved],
     );
     return itemId;
+  };
+
+  const createBinWithBalance = async (
+    itemId: string,
+    binQuantity: string,
+    defaultQuantity: string,
+  ): Promise<{ binId: string; defaultLocationId: string }> => {
+    const warehouse = await adminPool.query<{ id: string }>(
+      `
+      INSERT INTO inventory_locations (
+        tenant_id, factory_id, location_code, name, location_type,
+        putaway_enabled, picking_enabled, putaway_priority, picking_priority,
+        created_by_user_id
+      )
+      VALUES ($1, $2, $3, 'Cycle-count fixture warehouse', 'WAREHOUSE', FALSE, FALSE, 100, 100, $4)
+      RETURNING id::text AS id
+      `,
+      [tenantId, factoryId, 'CC-WH-' + randomUUID(), TEST_USER_ID],
+    );
+    const warehouseId = warehouse.rows[0]?.id;
+    if (!warehouseId) throw new Error('Cycle-count warehouse fixture was not created');
+    locationIds.push(warehouseId);
+
+    const bin = await adminPool.query<{ id: string }>(
+      `
+      INSERT INTO inventory_locations (
+        tenant_id, factory_id, parent_location_id,
+        location_code, name, location_type, created_by_user_id
+      )
+      VALUES ($1, $2, $3, $4, 'Cycle-count fixture bin', 'BIN', $5)
+      RETURNING id::text AS id
+      `,
+      [tenantId, factoryId, warehouseId, 'CC-BIN-' + randomUUID(), TEST_USER_ID],
+    );
+    const binId = bin.rows[0]?.id;
+    if (!binId) throw new Error('Cycle-count bin fixture was not created');
+    locationIds.push(binId);
+
+    const defaultLocation = await adminPool.query<{ id: string }>(
+      `
+      SELECT id::text AS id FROM inventory_locations
+      WHERE tenant_id = $1 AND factory_id = $2 AND is_default = TRUE
+      `,
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultLocation.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Default inventory location was not found');
+
+    const fixtureClient = await adminPool.connect();
+    try {
+      await fixtureClient.query('BEGIN');
+      await fixtureClient.query(
+        `
+        UPDATE inventory_location_balances
+        SET quantity_on_hand = $1::numeric,
+            version = version + 1,
+            updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3
+          AND item_id = $4 AND location_id = $5
+        `,
+        [defaultQuantity, tenantId, factoryId, itemId, defaultLocationId],
+      );
+      await fixtureClient.query(
+        `
+        INSERT INTO inventory_location_balances (
+          tenant_id, factory_id, item_id, location_id,
+          quantity_on_hand, quantity_reserved
+        )
+        VALUES ($1, $2, $3, $4, $5::numeric, 0)
+        `,
+        [tenantId, factoryId, itemId, binId, binQuantity],
+      );
+      await fixtureClient.query('COMMIT');
+    } catch (error) {
+      await fixtureClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      fixtureClient.release();
+    }
+
+    return { binId, defaultLocationId };
   };
 
   beforeAll(async () => {
@@ -156,6 +238,9 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
             'DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])',
             [itemIds],
           );
+          for (const locationId of [...locationIds].reverse()) {
+            await adminPool.query('DELETE FROM inventory_locations WHERE id = $1', [locationId]);
+          }
           await adminPool.query(
             'DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])',
             [itemIds],
@@ -509,6 +594,155 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       [itemId],
     );
     expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
+  });
+
+  it('requires a variance reason and applies a bin-scoped count exactly once', async () => {
+    const itemId = await createItem('10.0000', '1.0000');
+    const { binId } = await createBinWithBalance(itemId, '4.0000', '6.0000');
+    const submitKey = 'cycle-count-bin-submit-' + randomUUID();
+
+    await expect(
+      cycleCountService.submitCycleCount(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+        { counted_quantity: 3, location_id: binId },
+        submitKey, randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      {
+        counted_quantity: 3,
+        location_id: binId,
+        variance_reason_code: 'LOSS',
+        notes: 'Physical bin recount',
+      },
+      submitKey, randomUUID(), randomUUID(),
+    );
+    expect(proposal.status).toBe('PENDING_REVIEW');
+    expect(proposal.ledger_quantity_at_count).toBe('10.0000');
+    expect(proposal.location_quantity_at_count).toBe('4.0000');
+    expect(proposal.location_version_at_count).toBeDefined();
+    expect(proposal.variance_reason_code).toBe('LOSS');
+
+    await expect(
+      adminPool.query(
+        `UPDATE inventory_cycle_count_proposals
+         SET location_version_at_count = location_version_at_count + 1
+         WHERE id = $1`,
+        [proposal.id],
+      ),
+    ).rejects.toMatchObject({ code: '55000' });
+
+    const approvalKey = 'cycle-count-bin-approve-' + randomUUID();
+    const decisions = await Promise.all([
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Independent reviewer verified the bin count' },
+        approvalKey, randomUUID(), randomUUID(),
+      ),
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Independent reviewer verified the bin count' },
+        approvalKey, randomUUID(), randomUUID(),
+      ),
+    ]);
+    expect(decisions.filter((decision) => !decision.replayed)).toHaveLength(1);
+    expect(decisions.filter((decision) => decision.replayed)).toHaveLength(1);
+    const first = decisions.find((decision) => !decision.replayed)!;
+    const replay = decisions.find((decision) => decision.replayed)!;
+
+    expect(first.quantity_before).toBe('10.0000');
+    expect(first.counted_quantity).toBe('9.0000');
+    expect(first.quantity_delta).toBe('-1.0000');
+    expect(first.reason_code).toBe('LOSS');
+    expect(first.location_id).toBe(binId);
+    expect(first.location_quantity_before).toBe('4.0000');
+    expect(first.location_counted_quantity).toBe('3.0000');
+    expect(first.location_quantity_after).toBe('3.0000');
+    expect(first.replayed).toBe(false);
+    expect(replay.id).toBe(first.id);
+    expect(replay.replayed).toBe(true);
+
+    const aggregate = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    const binBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_location_balances WHERE item_id = $1 AND location_id = $2',
+      [itemId, binId],
+    );
+    const movements = await adminPool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM inventory_movements
+       WHERE item_id = $1 AND reference_type = 'STOCK_RECONCILIATION'`,
+      [itemId],
+    );
+    expect(aggregate.rows[0]?.quantity_on_hand).toBe('9.0000');
+    expect(binBalance.rows[0]?.quantity_on_hand).toBe('3.0000');
+    expect(movements.rows[0]?.count).toBe('1');
+  });
+
+  it('rejects approval when a bin version changes after count submission and rolls back all review effects', async () => {
+    const itemId = await createItem('10.0000', '1.0000');
+    const { binId, defaultLocationId } = await createBinWithBalance(itemId, '4.0000', '6.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      {
+        counted_quantity: 5,
+        location_id: binId,
+        variance_reason_code: 'FOUND_STOCK',
+      },
+      'cycle-count-bin-stale-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    const transferClient = await adminPool.connect();
+    try {
+      await transferClient.query('BEGIN');
+      await transferClient.query(
+        `UPDATE inventory_location_balances
+         SET quantity_on_hand = quantity_on_hand + 1, version = version + 1,
+             updated_at = clock_timestamp()
+         WHERE item_id = $1 AND location_id = $2`,
+        [itemId, binId],
+      );
+      await transferClient.query(
+        `UPDATE inventory_location_balances
+         SET quantity_on_hand = quantity_on_hand - 1, version = version + 1,
+             updated_at = clock_timestamp()
+         WHERE item_id = $1 AND location_id = $2`,
+        [itemId, defaultLocationId],
+      );
+      await transferClient.query('COMMIT');
+    } catch (error) {
+      await transferClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      transferClient.release();
+    }
+
+    await expect(
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Reject a stale bin count' },
+        'cycle-count-bin-stale-approve-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const storedProposal = await adminPool.query<{ status: string }>(
+      'SELECT status FROM inventory_cycle_count_proposals WHERE id = $1',
+      [proposal.id],
+    );
+    const aggregate = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    const reconciliations = await adminPool.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM inventory_stock_reconciliations WHERE item_id = $1',
+      [itemId],
+    );
+    expect(storedProposal.rows[0]?.status).toBe('PENDING_REVIEW');
+    expect(aggregate.rows[0]?.quantity_on_hand).toBe('10.0000');
+    expect(reconciliations.rows[0]?.count).toBe('0');
   });
 
   it('records zero variance without creating a no-op movement', async () => {
