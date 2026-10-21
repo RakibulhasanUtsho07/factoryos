@@ -17,4 +17,9 @@ export class CreateInventoryCycleCountDto {
   @IsString()
   @MaxLength(1000)
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  variance_reason?: string;
 }
