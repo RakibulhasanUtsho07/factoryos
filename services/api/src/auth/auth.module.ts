@@ -25,7 +25,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       useFactory: (configService: ConfigService) => {
         const authMode = (configService.get<string>('AUTH_MODE') || 'dev').trim().toLowerCase();
         const signOptions = {
-          expiresIn: '15m',
+          expiresIn: '15m' as const,
           issuer:
             configService.get<string>('JWT_ISSUER') ||
             'factoryos-api',
