@@ -245,9 +245,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const heldLotId = await createLot('LOT-HELD-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-held-' + randomUUID(), {
       attributes: { held: true, condition: 'HELD' },
     });
-    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-quarantine-' + randomUUID(), {
-      attributes: { quarantined: true, condition: 'QUARANTINED' },
-    });
+    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-quarantine-' + randomUUID());
     // New traceability identities must begin ACTIVE. Exercise quarantine through
     // the audited lifecycle so the candidate query excludes a real quarantined unit.
     await traceabilityService.changeUnitStatus(
