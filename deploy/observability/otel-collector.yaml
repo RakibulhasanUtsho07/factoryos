@@ -1,10 +1,16 @@
 # OTLP/HTTP receiver for FactoryOS API spans. The API exporter posts to /v1/traces.
 # Mount an approved certificate whose SAN matches the hostname configured by the API.
+extensions:
+  bearertokenauth:
+    filename: /run/secrets/otel_receiver_token
+
 receivers:
   otlp:
     protocols:
       http:
         endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth
         tls:
           cert_file: /run/secrets/otel_receiver_cert
           key_file: /run/secrets/otel_receiver_key
@@ -40,6 +46,7 @@ exporters:
       max_elapsed_time: 5m
 
 service:
+  extensions: [bearertokenauth]
   pipelines:
     traces:
       receivers: [otlp]
