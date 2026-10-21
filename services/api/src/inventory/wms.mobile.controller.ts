@@ -24,7 +24,7 @@ export class WmsMobileController {
 
   @Post('offline-sync/batches')
   @UseGuards(PermissionGuard)
-  @RequirePermission('inventory.reconcile')
+  @RequirePermission('inventory.write')
   @RequireFactoryScope()
   async syncOfflineBatch(@Req() request: WmsMobileRequest, @Body() body: SyncOfflineBatchDto) {
     const context = this.requireContext(request);
