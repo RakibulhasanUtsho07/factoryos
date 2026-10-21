@@ -1,0 +1,23 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: production-operator-webhook
+  group_by: ["alertname", "service", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: production-operator-webhook
+    webhook_configs:
+      # This file must contain the approved on-call relay URL and be mounted as a secret.
+      # Do not replace this with an inline URL or commit a real webhook token.
+      - url_file: /run/secrets/oncall_webhook_url
+        send_resolved: true
+        max_alerts: 10
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ["alertname", "instance_id"]
