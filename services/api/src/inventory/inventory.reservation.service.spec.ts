@@ -321,6 +321,52 @@ describe('InventoryReservationService', () => {
     expect(() => parser('0.00001')).toThrow('four-decimal value');
   });
 
+  it('creates an optimistic-versioned material allocation policy with audit and outbox evidence', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, sector_code: 'FABRIC' }]))
+      .mockResolvedValueOnce(queryRows([{
+        policy_scope: 'MATERIAL',
+        sector_code: null,
+        inventory_item_id: ITEM_ID,
+        allocation_policy: 'FEFO',
+        require_traceability: true,
+        version: 1,
+        updated_at: '2026-10-21T10:00:00.000Z',
+      }]))
+      .mockResolvedValueOnce(queryRows([]));
+
+    const result = await service.updateAllocationPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { scope: 'MATERIAL', itemId: ITEM_ID },
+      { allocation_policy: 'FEFO', require_traceability: true, expected_version: 0 } as never,
+      TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({
+      policy_scope: 'MATERIAL', inventory_item_id: ITEM_ID,
+      allocation_policy: 'FEFO', require_traceability: true, version: 1,
+    });
+    expect(String(client.query.mock.calls[1]?.[0])).toContain('ON CONFLICT DO NOTHING');
+    expect(client.query.mock.calls[2]?.[1]).toContain('INVENTORY.ALLOCATION_POLICY_UPDATED');
+    expect(audit.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects stale material allocation policy versions without writing audit/outbox events', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, sector_code: 'FABRIC' }]))
+      .mockResolvedValueOnce(queryRows([]));
+
+    await expect(service.updateAllocationPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { scope: 'MATERIAL', itemId: ITEM_ID },
+      { allocation_policy: 'FIFO', expected_version: 2 } as never,
+      TRACE_ID, TRACE_ID,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
   it('allocates FEFO from the earliest unexpired lot and excludes held stock', async () => {
     const earliestLot = randomUUID();
     const laterLot = randomUUID();
