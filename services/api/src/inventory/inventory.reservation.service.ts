@@ -2138,14 +2138,13 @@ export class InventoryReservationService {
         const reservation = reservationResult.rows[0];
         if (!reservation) throw new NotFoundException('Inventory reservation not found in this factory');
 
-        const previousConsumption = await this.findReservationConsumption(
-          client, tenantId, factoryId, transitionKey,
-        );
-        if (previousConsumption) {
-          return this.replayReservationConsumption(client, reservation, previousConsumption, transitionHash);
-        }
-
         if (requestedQuantity !== null) {
+          const previousConsumption = await this.findReservationConsumption(
+            client, tenantId, factoryId, transitionKey,
+          );
+          if (previousConsumption) {
+            return this.replayReservationConsumption(client, reservation, previousConsumption, transitionHash);
+          }
           return this.consumeReservationQuantityLocked(client, {
             userId, tenantId, factoryId, itemId, reservation,
             quantity: requestedQuantity, idempotencyKey: transitionKey,
@@ -2760,11 +2759,6 @@ export class InventoryReservationService {
     ) {
       throw new ConflictException('Partial issues for order/work-order lifecycle reservations must use the production material issue workflow');
     }
-
-    const receipt = await this.findReservationConsumption(
-      client, tenantId, factoryId, input.idempotencyKey,
-    );
-    if (receipt) return this.replayReservationConsumption(client, reservation, receipt, input.requestHash);
 
     if (reservation.location_id) {
       await this.decreaseLocationReserved(
