@@ -91,6 +91,8 @@ Do not interpret inventory visibility as proof every indirect ownership relation
 
 Do not store bearer tokens in URLs or metrics labels; do not log request bodies, SQL text or bind values. Keep telemetry/database/backup credentials in secret management, restrict scrape and DB access to trusted identities/networks, and use a non-superuser application database role. Production dependency audit is distinct from the API's functional security tests; neither substitutes for secret scanning, penetration testing or a review of live deployment permissions.
 
+The detailed production identity, secrets, database-role, egress, credential-rotation and independent-review gate is recorded in [Production Security Configuration and Independent Review](production-security-configuration-and-independent-review.md). Its attestation remains NOT_ATTESTED and PENDING_EXTERNAL_REVIEW until the hosting owner provides the active config evidence and an independent reviewer completes the authorized scope. It includes the current preliminary implementation findings (production auth-mode fallback, MFA claim policy and local PostgreSQL bind) and tracks unverified deployed privileges, secrets manager bindings, active network rules, SCIM applicability and independent retest as release blockers. Do not check the release-approval box below solely because the new code/config tests pass.
+
 ## Release acceptance record
 
 Complete this record on the exact candidate SHA:
