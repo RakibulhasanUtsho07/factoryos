@@ -2118,6 +2118,378 @@ export class InventoryReservationService {
     return result;
   }
 
+  private decimalToUnits(value: string): bigint {
+    const match = /^(\\d+)(?:\\.(\\d{1,4}))?$/.exec(String(value).trim());
+    if (!match) throw new ConflictException('Inventory quantity is not a valid four-decimal value');
+    return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
+  }
+
+  private unitsToDecimal(value: bigint): string {
+    if (value < 0n) throw new ConflictException('Inventory quantity cannot be negative');
+    return `${value / 10000n}.${String(value % 10000n).padStart(4, '0')}`;
+  }
+
+  private async planTraceabilityAllocations(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      itemId: string;
+      quantity: string;
+      locationId?: string | null;
+    },
+  ): Promise<TraceabilityAllocationPlan> {
+    const settings = await client.query<{ allocation_policy: TraceabilityAllocationPolicy }>(
+      `
+      SELECT allocation_policy
+      FROM traceability_settings
+      WHERE tenant_id = $1 AND factory_id = $2
+      FOR SHARE
+      `,
+      [input.tenantId, input.factoryId],
+    );
+    const policy = settings.rows[0]?.allocation_policy ?? 'FIFO';
+    const identityTypeResult = await client.query<{ has_lot: boolean; has_serial: boolean; has_identity: boolean }>(
+      `
+      SELECT
+        COALESCE(bool_or(unit_type = 'LOT'), FALSE) AS has_lot,
+        COALESCE(bool_or(unit_type = 'SERIAL'), FALSE) AS has_serial,
+        (count(*) > 0) AS has_identity
+      FROM traceability_units
+      WHERE tenant_id = $1 AND factory_id = $2
+        AND inventory_item_id = $3 AND product_role = 'MATERIAL'
+        AND unit_type IN ('LOT', 'SERIAL')
+      `,
+      [input.tenantId, input.factoryId, input.itemId],
+    );
+    const identities = identityTypeResult.rows[0];
+    const hasIdentity = identities?.has_identity ?? false;
+    if ((policy === 'LOT' || policy === 'SERIAL') && !hasIdentity) {
+      throw new ConflictException(`Material allocation policy ${policy} requires registered ${policy.toLowerCase()} identities before reserving stock`);
+    }
+    if ((policy === 'FIFO' || policy === 'FEFO') && !hasIdentity) {
+      return { enforced: false, policy, allocations: [] };
+    }
+    const unitType: 'LOT' | 'SERIAL' =
+      policy === 'LOT' ? 'LOT'
+        : policy === 'SERIAL' ? 'SERIAL'
+          : identities?.has_lot ? 'LOT' : 'SERIAL';
+    if (unitType === 'LOT' && !identities?.has_lot) {
+      throw new ConflictException('Material allocation policy requires a registered lot identity');
+    }
+    if (unitType === 'SERIAL' && !identities?.has_serial) {
+      throw new ConflictException('Material allocation policy requires registered serial identities');
+    }
+
+    const requestedUnits = this.decimalToUnits(input.quantity);
+    if (requestedUnits <= 0n) throw new BadRequestException('Reservation quantity must be positive');
+    if (unitType === 'SERIAL' && requestedUnits % 10000n !== 0n) {
+      throw new ConflictException('Serial-controlled material can only be allocated in whole serialized units');
+    }
+
+    const candidates = await client.query<TraceabilityCandidate>(
+      `
+      SELECT
+        tlb.traceability_unit_id::text AS traceability_unit_id,
+        tlb.location_id::text AS location_id,
+        tu.unit_type,
+        tu.unit_code,
+        tu.expires_at::text AS expires_at,
+        COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at,
+        tlb.quantity_on_hand::text AS quantity_on_hand,
+        tlb.quantity_reserved::text AS quantity_reserved
+      FROM inventory_traceability_location_balances tlb
+      JOIN traceability_units tu
+        ON tu.id = tlb.traceability_unit_id
+       AND tu.tenant_id = tlb.tenant_id AND tu.factory_id = tlb.factory_id
+       AND tu.inventory_item_id = tlb.item_id
+      JOIN inventory_locations l
+        ON l.id = tlb.location_id AND l.tenant_id = tlb.tenant_id AND l.factory_id = tlb.factory_id
+      LEFT JOIN inventory_locations parent
+        ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+      LEFT JOIN goods_receipts gr
+        ON gr.id = tu.goods_receipt_id AND gr.tenant_id = tu.tenant_id AND gr.factory_id = tu.factory_id
+      WHERE tlb.tenant_id = $1 AND tlb.factory_id = $2 AND tlb.item_id = $3
+        AND ($4::uuid IS NULL OR tlb.location_id = $4::uuid)
+        AND tu.product_role = 'MATERIAL' AND tu.unit_type = $5
+        AND tu.status = 'ACTIVE'
+        AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+        AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
+        AND NOT (tu.attributes @> '{"held":true}'::jsonb)
+        AND NOT (tu.attributes @> '{"quarantined":true}'::jsonb)
+        AND upper(COALESCE(tu.attributes->>'condition', '')) NOT IN ('DAMAGED', 'HELD', 'QUARANTINED', 'EXPIRED')
+        AND NOT EXISTS (
+          SELECT 1 FROM quality_holds qh
+          WHERE qh.tenant_id = tu.tenant_id AND qh.factory_id = tu.factory_id
+            AND qh.status = 'ACTIVE'
+            AND (qh.inventory_item_id = tu.inventory_item_id OR qh.traceability_unit_id = tu.id)
+        )
+        AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
+        AND (
+          (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
+          OR (l.location_type = 'VIRTUAL' AND l.is_default = TRUE)
+        )
+        AND tlb.quantity_on_hand > tlb.quantity_reserved
+      ORDER BY
+        CASE WHEN $6::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
+        CASE WHEN $6::text IN ('FIFO', 'FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
+        lower(tu.unit_code), tlb.location_id, tu.id
+      FOR UPDATE OF tlb, tu
+      `,
+      [input.tenantId, input.factoryId, input.itemId, input.locationId ?? null, unitType, policy],
+    );
+
+    let remaining = requestedUnits;
+    const allocations: TraceabilityAllocation[] = [];
+    for (const candidate of candidates.rows) {
+      if (remaining === 0n) break;
+      const available = this.decimalToUnits(candidate.quantity_on_hand)
+        - this.decimalToUnits(candidate.quantity_reserved);
+      if (available <= 0n) continue;
+      const quantityUnits = unitType === 'SERIAL' ? 10000n
+        : (available < remaining ? available : remaining);
+      if (unitType === 'SERIAL' && available < 10000n) continue;
+      const allocated = quantityUnits < remaining ? quantityUnits : remaining;
+      allocations.push({
+        traceabilityUnitId: candidate.traceability_unit_id.toLowerCase(),
+        locationId: candidate.location_id.toLowerCase(),
+        quantity: this.unitsToDecimal(allocated),
+      });
+      remaining -= allocated;
+    }
+    if (remaining !== 0n) {
+      throw new ConflictException(
+        `Insufficient eligible ${policy} lot/serial stock for item ${input.itemId}; expired, held, damaged, quarantined, recalled and unavailable identities are excluded`,
+      );
+    }
+    return { enforced: true, policy, allocations };
+  }
+
+  private groupTraceabilityAllocationsByLocation(
+    plan: TraceabilityAllocationPlan,
+  ): Array<{ locationId: string; quantity: string }> {
+    const grouped = new Map<string, bigint>();
+    for (const allocation of plan.allocations) {
+      grouped.set(
+        allocation.locationId,
+        (grouped.get(allocation.locationId) ?? 0n) + this.decimalToUnits(allocation.quantity),
+      );
+    }
+    return [...grouped.entries()].map(([locationId, units]) => ({
+      locationId,
+      quantity: this.unitsToDecimal(units),
+    }));
+  }
+
+  private async persistTraceabilityAllocations(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      itemId: string;
+      reservationId: string;
+      allocations: TraceabilityAllocation[];
+    },
+  ): Promise<void> {
+    for (const allocation of input.allocations) {
+      const updated = await client.query<{ id: string }>(
+        `
+        UPDATE inventory_traceability_location_balances
+        SET quantity_reserved = quantity_reserved + $1::numeric,
+            version = version + 1, updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+          AND traceability_unit_id = $5 AND location_id = $6
+          AND quantity_on_hand - quantity_reserved >= $1::numeric
+        RETURNING id::text AS id
+        `,
+        [allocation.quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceabilityUnitId, allocation.locationId],
+      );
+      if (!updated.rows[0]) {
+        throw new ConflictException('Lot/serial availability changed during reservation; the complete reservation transaction was rolled back');
+      }
+      await client.query(
+        `
+        INSERT INTO inventory_reservation_traceability_allocations (
+          tenant_id, factory_id, reservation_id, item_id,
+          traceability_unit_id, location_id, allocated_quantity
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)
+        `,
+        [input.tenantId, input.factoryId, input.reservationId, input.itemId,
+          allocation.traceabilityUnitId, allocation.locationId, allocation.quantity],
+      );
+    }
+  }
+
+  private async hasMaterialTraceabilityUnits(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+  ): Promise<boolean> {
+    const result = await client.query<{ present: boolean }>(
+      `
+      SELECT EXISTS (
+        SELECT 1 FROM traceability_units
+        WHERE tenant_id = $1 AND factory_id = $2 AND inventory_item_id = $3
+          AND product_role = 'MATERIAL' AND unit_type IN ('LOT', 'SERIAL')
+      ) AS present
+      `,
+      [tenantId, factoryId, itemId],
+    );
+    return result.rows[0]?.present ?? false;
+  }
+
+  private async consumeTraceabilityAllocations(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      itemId: string;
+      reservationId: string;
+      consumptionId: string;
+      quantity: string;
+    },
+  ): Promise<void> {
+    const allocations = await client.query<{
+      id: string;
+      traceability_unit_id: string;
+      location_id: string;
+      remaining_quantity: string;
+    }>(
+      `
+      SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
+             a.location_id::text AS location_id,
+             (a.allocated_quantity - a.consumed_quantity - a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+      FROM inventory_reservation_traceability_allocations a
+      WHERE a.tenant_id = $1 AND a.factory_id = $2 AND a.item_id = $3
+        AND a.reservation_id = $4
+        AND a.allocated_quantity > a.consumed_quantity + a.released_quantity
+      ORDER BY a.created_at, a.id
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, input.itemId, input.reservationId],
+    );
+    if (allocations.rows.length === 0) {
+      if (await this.hasMaterialTraceabilityUnits(client, input.tenantId, input.factoryId, input.itemId)) {
+        throw new ConflictException('This reservation has no lot/serial allocation evidence; stock cannot be issued through an untracked fallback');
+      }
+      return;
+    }
+
+    let remaining = this.decimalToUnits(input.quantity);
+    for (const allocation of allocations.rows) {
+      if (remaining === 0n) break;
+      const available = this.decimalToUnits(allocation.remaining_quantity);
+      if (available <= 0n) continue;
+      const units = available < remaining ? available : remaining;
+      const quantity = this.unitsToDecimal(units);
+      const balance = await client.query<{ id: string }>(
+        `
+        UPDATE inventory_traceability_location_balances
+        SET quantity_on_hand = quantity_on_hand - $1::numeric,
+            quantity_reserved = quantity_reserved - $1::numeric,
+            version = version + 1, updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+          AND traceability_unit_id = $5 AND location_id = $6
+          AND quantity_on_hand >= $1::numeric AND quantity_reserved >= $1::numeric
+        RETURNING id::text AS id
+        `,
+        [quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceability_unit_id, allocation.location_id],
+      );
+      if (!balance.rows[0]) {
+        throw new ConflictException('Lot/serial balance changed before issue; the full issue transaction was rolled back');
+      }
+      const updated = await client.query<{ id: string }>(
+        `
+        UPDATE inventory_reservation_traceability_allocations
+        SET consumed_quantity = consumed_quantity + $1::numeric,
+            updated_at = clock_timestamp()
+        WHERE id = $2 AND tenant_id = $3 AND factory_id = $4
+          AND consumed_quantity + released_quantity + $1::numeric <= allocated_quantity
+        RETURNING id::text AS id
+        `,
+        [quantity, allocation.id, input.tenantId, input.factoryId],
+      );
+      if (!updated.rows[0]) throw new ConflictException('Lot/serial reservation allocation changed during issue');
+      await client.query(
+        `
+        INSERT INTO inventory_reservation_consumption_traceability_allocations (
+          tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::numeric)
+        `,
+        [input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id, allocation.location_id, quantity],
+      );
+      remaining -= units;
+    }
+    if (remaining !== 0n) {
+      throw new ConflictException('Reserved lot/serial allocations do not cover the requested issue quantity');
+    }
+  }
+
+  private async releaseTraceabilityAllocations(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      itemId: string;
+      reservationId: string;
+      quantity: string;
+    },
+  ): Promise<void> {
+    const allocations = await client.query<{
+      id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string;
+    }>(
+      `
+      SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
+        a.location_id::text AS location_id,
+        (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
+      FROM inventory_reservation_traceability_allocations a
+      WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
+        AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
+      ORDER BY a.created_at, a.id
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, input.itemId, input.reservationId],
+    );
+    let remaining = this.decimalToUnits(input.quantity);
+    for (const allocation of allocations.rows) {
+      if (remaining === 0n) break;
+      const available = this.decimalToUnits(allocation.remaining_quantity);
+      const units = available < remaining ? available : remaining;
+      if (units <= 0n) continue;
+      const quantity = this.unitsToDecimal(units);
+      const balance = await client.query<{ id: string }>(
+        `
+        UPDATE inventory_traceability_location_balances
+        SET quantity_reserved = quantity_reserved - $1::numeric,
+            version = version + 1, updated_at = clock_timestamp()
+        WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4
+          AND traceability_unit_id=$5 AND location_id=$6 AND quantity_reserved >= $1::numeric
+        RETURNING id::text AS id
+        `,
+        [quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceability_unit_id, allocation.location_id],
+      );
+      if (!balance.rows[0]) throw new ConflictException('Lot/serial reserved balance is inconsistent while releasing inventory');
+      const updated = await client.query<{ id: string }>(
+        `
+        UPDATE inventory_reservation_traceability_allocations
+        SET released_quantity = released_quantity + $1::numeric, updated_at = clock_timestamp()
+        WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
+          AND consumed_quantity + released_quantity + $1::numeric <= allocated_quantity
+        RETURNING id::text AS id
+        `,
+        [quantity, allocation.id, input.tenantId, input.factoryId],
+      );
+      if (!updated.rows[0]) throw new ConflictException('Lot/serial allocation changed during reservation release');
+      remaining -= units;
+    }
+    if (remaining !== 0n) {
+      throw new ConflictException('Lot/serial allocation does not cover the reservation quantity being released');
+    }
+  }
+
   private async decreaseLocationReserved(
     client: PoolClient,
     tenantId: string,
