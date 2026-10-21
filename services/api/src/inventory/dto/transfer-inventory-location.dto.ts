@@ -23,6 +23,10 @@ export class TransferInventoryLocationDto {
   quantity!: number;
 
   @IsOptional()
+  @IsUUID()
+  traceability_unit_id?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(1000)
   notes?: string;
