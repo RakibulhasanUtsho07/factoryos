@@ -175,9 +175,11 @@ export class OutboxDispatcherService
   private readonly maxAttempts =
     10;
 
-  private lastQueueMetricsCollectionAtMs = 0;
-
   private queueMetricsCollectionRunning = false;
+
+  private queueMetricsRefreshRunning = false;
+
+  private queueMetricsRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly database:
@@ -202,6 +204,15 @@ export class OutboxDispatcherService
   // ============================================================
 
   async onModuleInit(): Promise<void> {
+    if (this.metrics) {
+      await this.refreshQueueMetrics();
+      this.queueMetricsRefreshTimer = setInterval(
+        () => void this.refreshQueueMetrics(),
+        OUTBOX_METRICS_INTERVAL_MS,
+      );
+      this.queueMetricsRefreshTimer.unref?.();
+    }
+
     const enabled =
       process.env
         .OUTBOX_DISPATCHER_ENABLED !==
@@ -223,6 +234,11 @@ export class OutboxDispatcherService
   }
 
   async onModuleDestroy(): Promise<void> {
+    if (this.queueMetricsRefreshTimer) {
+      clearInterval(this.queueMetricsRefreshTimer);
+      this.queueMetricsRefreshTimer = null;
+    }
+
     this.running =
       false;
 
@@ -275,8 +291,6 @@ export class OutboxDispatcherService
           id
         `,
       );
-
-    await this.collectQueueMetricsIfDue(tenants.rows);
 
     let claimed =
       0;
@@ -438,14 +452,28 @@ export class OutboxDispatcherService
     };
   }
 
-  private async collectQueueMetricsIfDue(tenants: TenantRow[]): Promise<void> {
-    if (!this.metrics || this.queueMetricsCollectionRunning
-      || Date.now() - this.lastQueueMetricsCollectionAtMs < OUTBOX_METRICS_INTERVAL_MS) {
+  private async refreshQueueMetrics(): Promise<void> {
+    if (!this.metrics || this.queueMetricsRefreshRunning) return;
+    this.queueMetricsRefreshRunning = true;
+    try {
+      const tenants = await this.database.query<TenantRow>(
+        `SELECT id::text AS id FROM tenants ORDER BY id`,
+      );
+      await this.collectQueueMetrics(tenants.rows);
+    } catch {
+      this.metrics.recordOutboxQueueSnapshotFailure();
+      this.logger.warn('Outbox queue metrics tenant discovery failed; previous aggregate snapshot retained');
+    } finally {
+      this.queueMetricsRefreshRunning = false;
+    }
+  }
+
+  private async collectQueueMetrics(tenants: TenantRow[]): Promise<void> {
+    if (!this.metrics || this.queueMetricsCollectionRunning) {
       return;
     }
 
     this.queueMetricsCollectionRunning = true;
-    this.lastQueueMetricsCollectionAtMs = Date.now();
     const counts = new Map<string, number>(OUTBOX_METRIC_STATUSES.map((status) => [status, 0]));
     const oldestAges = new Map<string, number>(OUTBOX_METRIC_STATUSES.map((status) => [status, 0]));
     let secondsSinceLastPublish: number | null = null;
