@@ -5,6 +5,7 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 
 import { InventoryController } from './inventory.controller';
+import { InventoryAllocationPolicyController } from './inventory.allocation-policy.controller';
 import { InventoryReplenishmentController } from './inventory.replenishment.controller';
 import { InventoryLocationController } from './inventory.location.controller';
 import { InventoryReservationService } from './inventory.reservation.service';
@@ -20,7 +21,7 @@ import { UnitOfMeasureService } from './uom.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [InventoryController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController],
+  controllers: [InventoryController, InventoryAllocationPolicyController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController],
   providers: [InventoryService, InventoryReplenishmentService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService, TraceabilityService, UnitOfMeasureService],
   exports: [InventoryService, InventoryReservationService, TraceabilityService, UnitOfMeasureService],
 })
