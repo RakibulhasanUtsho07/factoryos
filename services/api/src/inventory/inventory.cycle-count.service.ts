@@ -359,6 +359,7 @@ export class InventoryCycleCountService {
         decisionIdempotencyKey: idempotencyKey,
         reviewRequestHash,
         reviewNote,
+        varianceReasonCode,
       },
     );
     if (!result.replayed) {

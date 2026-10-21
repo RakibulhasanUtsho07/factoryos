@@ -489,7 +489,6 @@ export class InventoryStockReconciliationService {
                 tenantId,
                 factoryId,
                 normalizedItemId,
-                null,
                 cycleCountReview.varianceReasonCode,
               ],
             );

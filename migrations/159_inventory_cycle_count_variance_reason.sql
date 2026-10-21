@@ -7,6 +7,12 @@ ALTER TABLE inventory_cycle_count_proposals
 ALTER TABLE inventory_stock_reconciliations
   ADD COLUMN IF NOT EXISTS variance_reason_code VARCHAR(32);
 
+-- Old stock reconciliations are append-only. Temporarily suspend user triggers
+-- under the migration transaction to backfill explicit legacy provenance; triggers
+-- are restored before the migration commits.
+ALTER TABLE inventory_stock_reconciliations DISABLE TRIGGER USER;
+ALTER TABLE inventory_cycle_count_proposals DISABLE TRIGGER USER;
+
 -- Preserve honest provenance for old approvals; new API submissions cannot use
 -- LEGACY_UNSPECIFIED and must provide a reviewed reason for every non-zero delta.
 UPDATE inventory_stock_reconciliations
@@ -21,7 +27,10 @@ WHERE status = 'APPLIED'
   AND counted_quantity <> ledger_quantity_at_count
   AND variance_reason_code IS NULL;
 
-DO $$
+ALTER TABLE inventory_stock_reconciliations ENABLE TRIGGER USER;
+ALTER TABLE inventory_cycle_count_proposals ENABLE TRIGGER USER;
+
+DO $
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -168,6 +177,23 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'approved cycle counts require an atomic reconciliation and a variance reason exactly when stock changes'
       USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.status = 'APPLIED' THEN
+    PERFORM 1
+    FROM inventory_stock_reconciliations r
+    WHERE r.id = NEW.reconciliation_id
+      AND r.tenant_id = NEW.tenant_id
+      AND r.factory_id = NEW.factory_id
+      AND r.item_id = NEW.item_id
+      AND r.reason_code = 'CYCLE_COUNT'
+      AND r.counted_quantity = NEW.counted_quantity
+      AND r.variance_reason_code IS NOT DISTINCT FROM NEW.variance_reason_code;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'cycle-count approval reason must match its immutable stock reconciliation'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
 
   RETURN NEW;
