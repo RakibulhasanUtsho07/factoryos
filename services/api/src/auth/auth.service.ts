@@ -31,6 +31,8 @@ export class AuthService {
     if (
       process.env.NODE_ENV !==
         'development' ||
+      process.env.AUTH_MODE !==
+        'dev' ||
       process.env.DEV_AUTH_ENABLED !==
         'true'
     ) {

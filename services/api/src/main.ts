@@ -10,6 +10,7 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
 import {
   resolveCorsOrigins,
+  resolveNodeEnvironment,
   resolveSwaggerEnabled,
 } from './config/runtime-config';
 
@@ -31,9 +32,8 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3001);
-  const nodeEnv = configService.get<string>(
-    'NODE_ENV',
-    'development',
+  const nodeEnv = resolveNodeEnvironment(
+    configService.get<string>('NODE_ENV'),
   );
   const corsOrigins = resolveCorsOrigins(
     nodeEnv,
