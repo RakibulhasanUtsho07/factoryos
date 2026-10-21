@@ -479,6 +479,126 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(balance.rows[0]?.quantity_on_hand).toBe('5.0000');
   });
 
+  it('rejects a stale count when the ledger version changes without changing quantity', async () => {
+    const itemId = await createItem('6.0000', '1.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 5, notes: 'Count snapshot must bind to exact ledger version' },
+      'cycle-count-version-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    await adminPool.query(
+      `
+      UPDATE inventory_stock_balances
+      SET version = version + 1, updated_at = clock_timestamp()
+      WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+      `,
+      [tenantId, factoryId, itemId],
+    );
+
+    await expect(
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Ledger version changed after counting', variance_reason_code: 'LOSS' },
+        'cycle-count-version-approve-' + randomUUID(), randomUUID(), randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const unchanged = await adminPool.query<{ status: string; quantity_on_hand: string; version: string }>(
+      `
+      SELECT p.status, b.quantity_on_hand::text AS quantity_on_hand, b.version::text AS version
+      FROM inventory_cycle_count_proposals p
+      JOIN inventory_stock_balances b
+        ON b.tenant_id = p.tenant_id AND b.factory_id = p.factory_id AND b.item_id = p.item_id
+      WHERE p.id = $1
+      `,
+      [proposal.id],
+    );
+    expect(unchanged.rows[0]).toMatchObject({
+      status: 'PENDING_REVIEW',
+      quantity_on_hand: '6.0000',
+      version: '2',
+    });
+    const adjustments = await adminPool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM inventory_stock_reconciliations
+       WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND reason_code = 'CYCLE_COUNT'`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(adjustments.rows[0]?.count).toBe('0');
+  });
+
+  it('rolls back count approval stock, movement and reconciliation when the proposal transition fails', async () => {
+    const itemId = await createItem('10.0000', '2.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 7, notes: 'force-rollback: cycle count approval must be atomic' },
+      'cycle-count-rollback-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    await adminPool.query(`DROP TRIGGER IF EXISTS zz_test_cycle_count_rollback ON inventory_cycle_count_proposals`);
+    await adminPool.query(`DROP FUNCTION IF EXISTS factoryos_test_cycle_count_rollback()`);
+    await adminPool.query(`
+      CREATE FUNCTION factoryos_test_cycle_count_rollback()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $
+      BEGIN
+        IF NEW.status = 'APPLIED' AND COALESCE(NEW.notes, '') LIKE 'force-rollback:%' THEN
+          RAISE EXCEPTION 'TEST_CYCLE_COUNT_ROLLBACK' USING ERRCODE = 'P0001';
+        END IF;
+        RETURN NEW;
+      END;
+      $
+    `);
+    await adminPool.query(`
+      CREATE TRIGGER zz_test_cycle_count_rollback
+      BEFORE UPDATE ON inventory_cycle_count_proposals
+      FOR EACH ROW EXECUTE FUNCTION factoryos_test_cycle_count_rollback()
+    `);
+
+    try {
+      await expect(
+        cycleCountService.approveCycleCount(
+          reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+          { review_note: 'Approved only to exercise rollback', variance_reason_code: 'LOSS' },
+          'cycle-count-rollback-approve-' + randomUUID(), randomUUID(), randomUUID(),
+        ),
+      ).rejects.toThrow(/TEST_CYCLE_COUNT_ROLLBACK/);
+
+      const state = await adminPool.query<{ status: string; quantity_on_hand: string }>(
+        `
+        SELECT p.status, b.quantity_on_hand::text AS quantity_on_hand
+        FROM inventory_cycle_count_proposals p
+        JOIN inventory_stock_balances b
+          ON b.tenant_id = p.tenant_id AND b.factory_id = p.factory_id AND b.item_id = p.item_id
+        WHERE p.id = $1
+        `,
+        [proposal.id],
+      );
+      expect(state.rows[0]).toMatchObject({
+        status: 'PENDING_REVIEW',
+        quantity_on_hand: '10.0000',
+      });
+
+      const writes = await adminPool.query<{ movements: string; reconciliations: string }>(
+        `
+        SELECT
+          (SELECT COUNT(*) FROM inventory_movements
+           WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+             AND reference_type = 'STOCK_RECONCILIATION')::text AS movements,
+          (SELECT COUNT(*) FROM inventory_stock_reconciliations
+           WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+             AND reason_code = 'CYCLE_COUNT')::text AS reconciliations
+        `,
+        [tenantId, factoryId, itemId],
+      );
+      expect(writes.rows[0]).toEqual({ movements: '0', reconciliations: '0' });
+    } finally {
+      await adminPool.query(`DROP TRIGGER IF EXISTS zz_test_cycle_count_rollback ON inventory_cycle_count_proposals`);
+      await adminPool.query(`DROP FUNCTION IF EXISTS factoryos_test_cycle_count_rollback()`);
+    }
+  });
+
   it('refuses to apply a stale count if stock changes before approval', async () => {
     const itemId = await createItem('6.0000', '1.0000');
     const proposal = await cycleCountService.submitCycleCount(
