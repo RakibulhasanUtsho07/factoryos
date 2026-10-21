@@ -7,6 +7,7 @@ import { PassportModule } from '@nestjs/passport';
 import { DatabaseModule } from '../database/database.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { resolveAuthMode, resolveNodeEnvironment } from '../config/runtime-config';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -23,7 +24,18 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       inject: [ConfigService],
 
       useFactory: (configService: ConfigService) => {
-        const authMode = (configService.get<string>('AUTH_MODE') || 'dev').trim().toLowerCase();
+        const nodeEnv = resolveNodeEnvironment(configService.get<string>('NODE_ENV'));
+        const authMode = resolveAuthMode(
+          nodeEnv,
+          configService.get<string>('AUTH_MODE'),
+          configService.get<string>('DEV_AUTH_ENABLED'),
+        );
+        const secret = configService.get<string>('JWT_SECRET');
+
+        if (authMode === 'dev' && !secret) {
+          throw new Error('JWT_SECRET is required when AUTH_MODE=dev.');
+        }
+
         const signOptions = {
           expiresIn: '15m' as const,
           issuer:
@@ -34,19 +46,10 @@ import { JwtStrategy } from './strategies/jwt.strategy';
             'factoryos-web',
         };
 
-        // OIDC validates external RS256 tokens. A local HS256 signing secret is
-        // neither needed nor desirable in that mode; dev-token issuance remains
-        // blocked by AuthService outside NODE_ENV=development.
-        if (authMode === 'oidc') {
-          return { signOptions };
-        }
-
-        const secret = configService.get<string>('JWT_SECRET');
-        if (!secret) {
-          throw new Error('JWT_SECRET is required when AUTH_MODE=dev');
-        }
-
-        return { secret, signOptions };
+        return {
+          ...(secret ? { secret } : {}),
+          signOptions,
+        };
       },
     }),
   ],
