@@ -265,6 +265,19 @@ jobs:
             -v ON_ERROR_STOP=1 -c \
             "SELECT version FROM schema_migrations WHERE version = '028_ai_execution_claim_reconciliation'"
 
+      - name: Validate read-only production database role audit query
+        env:
+          TEST_ADMIN_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
+        run: |
+          psql "$TEST_ADMIN_DATABASE_URL" \
+            -v ON_ERROR_STOP=1 \
+            -v application_role=factoryos_app \
+            -v migration_role=factoryos \
+            -f deploy/security/postgres-role-audit.sql
+          psql "$TEST_ADMIN_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c \
+            "SELECT CASE WHEN rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls THEN 'unsafe' ELSE 'least-privilege-role-flags-pass' END FROM pg_roles WHERE rolname = 'factoryos_app'" \
+            | grep -qx 'least-privilege-role-flags-pass'
+
       - name: Prepare Jest environment file
         shell: bash
         run: |
