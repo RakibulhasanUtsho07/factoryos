@@ -64,6 +64,8 @@ test('alert definitions cover API SLO proposals, queue freshness and saturation 
     'FactoryOSOutboxMetricsCollectionErrors',
     'FactoryOSOtlpSpansDropped',
   ]) assert.ok(rules.includes('alert: ' + alert), 'missing alert ' + alert);
+  assert.match(rules, /factoryos_outbox_freshness_seconds_since_last_publish == -1/);
+  assert.match(rules, /factoryos_outbox_metrics_collection_success != 1/);
   assert.match(rules, /policy_status: proposed/);
   const policy = await read('deploy/observability/slo-policy.yml');
   assert.match(policy, /status: NOT_OWNER_APPROVED/);
