@@ -896,20 +896,48 @@ export class InventoryReservationService {
       const referenceType = 'ORDER_LINE';
       const referenceId = line.id.toLowerCase();
       const notes = `Reserved for order ${input.orderNumber} (line ${line.line_number})`;
+
+      const policyResult = await client.query<{
+        allocation_policy: string; require_lot_tracking: boolean; has_lot_balance: boolean;
+      }>(
+        `
+        SELECT COALESCE(ts.allocation_policy, 'FIFO') AS allocation_policy,
+          COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+          EXISTS (
+            SELECT 1 FROM inventory_lot_location_balances lb
+            WHERE lb.tenant_id = $1 AND lb.factory_id = $2
+              AND lb.item_id = $3 AND lb.quantity_on_hand > 0
+          ) AS has_lot_balance
+        FROM (SELECT 1) singleton
+        LEFT JOIN traceability_settings ts
+          ON ts.tenant_id = $1 AND ts.factory_id = $2
+        `,
+        [input.tenantId, input.factoryId, line.item_id],
+      );
+      const policy = (policyResult.rows[0]?.allocation_policy ?? 'FIFO').toUpperCase();
+      const hasTrackedStock = Boolean(policyResult.rows[0]?.has_lot_balance);
+      const lotRequired = Boolean(policyResult.rows[0]?.require_lot_tracking)
+        || ['LOT', 'SERIAL'].includes(policy)
+        || hasTrackedStock;
+
+      // Do not silently retain an old unallocated v1 order reservation when this
+      // item is now in strict lot mode. Operator-controlled release/reallocation is required.
       const legacyKey = `order:${input.orderId}:line:${line.id}:reserve:v1`;
       const legacyHash = this.hash({ itemId: line.item_id.toLowerCase(), quantity, referenceType, referenceId, notes });
-
-      // Existing v1 unallocated reservations are kept stable through deployment/retries.
       const legacy = await this.findByIdempotencyKey(client, input.tenantId, input.factoryId, legacyKey);
       if (legacy) {
         this.replayOrConflict(legacy, legacyHash);
         if (legacy.status !== 'RESERVED') {
           throw new ConflictException(`Order line ${line.line_number} already has a terminal inventory reservation`);
         }
+        if (lotRequired) {
+          throw new ConflictException(`Order line ${line.line_number} has a legacy unallocated reservation; release it through an approved change before lot-aware allocation`);
+        }
         continue;
       }
 
-      // A retry must replay the complete set of immutable per-bin child rows.
+      // An idempotent retry must verify every immutable bin+lot child, not merely
+      // the aggregate quantity. Multiple lots may share one physical bin.
       const activeResult = await client.query<ReservationRow>(
         `
         SELECT ${RESERVATION_COLUMNS}
@@ -917,30 +945,40 @@ export class InventoryReservationService {
         WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
           AND reference_type = 'ORDER_LINE' AND reference_id = $4::uuid
           AND status = 'RESERVED'
-        ORDER BY location_id NULLS FIRST, id
+        ORDER BY location_id NULLS FIRST, traceability_unit_id NULLS FIRST, id
         FOR UPDATE
         `,
         [input.tenantId, input.factoryId, line.item_id, referenceId],
       );
       if (activeResult.rows.length > 0) {
         let activeUnits = 0n;
-        const usedLocations = new Set<string>();
+        const usedAllocations = new Set<string>();
         for (const existing of activeResult.rows) {
           const locationId = existing.location_id?.toLowerCase() ?? '';
-          const childKey = `order:${input.orderId}:line:${line.id}:bin:${locationId}:reserve:v2`;
-          const childHash = this.hash({
+          const traceabilityUnitId = existing.traceability_unit_id?.toLowerCase() ?? null;
+          const allocationIdentity = locationId + '|' + (traceabilityUnitId ?? '');
+          const childKeyV3 = `order:${input.orderId}:line:${line.id}:bin:${locationId}:lot:${traceabilityUnitId ?? 'untracked'}:reserve:v3`;
+          const childHashV3 = this.hash({
+            itemId: line.item_id.toLowerCase(), locationId, traceabilityUnitId,
+            quantity: existing.quantity, referenceType, referenceId, notes,
+          });
+          const legacyChildKeyV2 = `order:${input.orderId}:line:${line.id}:bin:${locationId}:reserve:v2`;
+          const legacyChildHashV2 = this.hash({
             itemId: line.item_id.toLowerCase(), locationId, quantity: existing.quantity,
             referenceType, referenceId, notes,
           });
+          const v3Valid = existing.idempotency_key === childKeyV3 && existing.request_hash === childHashV3;
+          const v2Valid = !traceabilityUnitId && !lotRequired
+            && existing.idempotency_key === legacyChildKeyV2 && existing.request_hash === legacyChildHashV2;
           if (
-            existing.status !== 'RESERVED' || !locationId || existing.idempotency_key !== childKey
-            || existing.request_hash !== childHash || existing.reference_type !== referenceType
-            || existing.reference_id !== referenceId || existing.notes !== notes
-            || usedLocations.has(locationId)
+            existing.status !== 'RESERVED' || !locationId
+            || existing.reference_type !== referenceType || existing.reference_id !== referenceId
+            || existing.notes !== notes || (!v3Valid && !v2Valid)
+            || usedAllocations.has(allocationIdentity)
           ) {
-            throw new ConflictException(`Order line ${line.line_number} has an incomplete or conflicting active bin allocation`);
+            throw new ConflictException(`Order line ${line.line_number} has an incomplete or conflicting active bin/lot allocation`);
           }
-          usedLocations.add(locationId);
+          usedAllocations.add(allocationIdentity);
           activeUnits += toUnits(existing.quantity);
         }
         if (activeUnits !== requiredUnits) {
@@ -966,48 +1004,108 @@ export class InventoryReservationService {
         throw new ConflictException(`Insufficient available stock for order line ${line.line_number}`);
       }
 
-      // Physical bins first, deterministic code order; UNASSIGNED is compatibility fallback.
-      const locationsResult = await client.query<{
+      type Allocation = { locationId: string; traceabilityUnitId: string | null; quantity: string };
+      let candidateRows: Array<{
         location_id: string; location_code: string; is_default: boolean; location_type: string;
-        quantity_on_hand: string; quantity_reserved: string;
-      }>(
-        `
-        SELECT lb.location_id::text AS location_id, l.location_code, l.is_default, l.location_type,
-               lb.quantity_on_hand::text AS quantity_on_hand,
-               lb.quantity_reserved::text AS quantity_reserved
-        FROM inventory_location_balances lb
-        JOIN inventory_locations l
-          ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id AND l.factory_id = lb.factory_id
-        LEFT JOIN inventory_locations parent
-          ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
-        WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
-          AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
-          AND lb.quantity_on_hand > lb.quantity_reserved
-          AND (
-            (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
-            OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')
-          )
-        ORDER BY l.is_default ASC, lower(l.location_code), lb.location_id
-        FOR UPDATE OF lb, l
-        `,
-        [input.tenantId, input.factoryId, line.item_id],
-      );
+        quantity_on_hand: string; quantity_reserved: string; traceability_unit_id: string | null;
+        unit_type?: string; expires_at?: string | null;
+      }>;
+      if (lotRequired) {
+        const tracked = await client.query<{
+          location_id: string; location_code: string; is_default: boolean; location_type: string;
+          quantity_on_hand: string; quantity_reserved: string; traceability_unit_id: string;
+          unit_type: string; expires_at: string | null;
+        }>(
+          `
+          SELECT lb.location_id::text AS location_id, l.location_code, l.is_default, l.location_type,
+                 lb.quantity_on_hand::text AS quantity_on_hand,
+                 lb.quantity_reserved::text AS quantity_reserved,
+                 tu.id::text AS traceability_unit_id, tu.unit_type, tu.expires_at::text AS expires_at
+          FROM inventory_lot_location_balances lb
+          JOIN traceability_units tu
+            ON tu.id = lb.traceability_unit_id AND tu.tenant_id = lb.tenant_id
+            AND tu.factory_id = lb.factory_id AND tu.inventory_item_id = lb.item_id
+          JOIN inventory_locations l
+            ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id AND l.factory_id = lb.factory_id
+          LEFT JOIN inventory_locations parent
+            ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+          WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+            AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
+            AND lb.quantity_on_hand > lb.quantity_reserved
+            AND (
+              (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
+              OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')
+            )
+            AND tu.status = 'ACTIVE'
+            AND tu.unit_type IN ('LOT', 'SERIAL')
+            AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+            AND ($4 <> 'LOT' OR tu.unit_type = 'LOT')
+            AND ($4 <> 'SERIAL' OR tu.unit_type = 'SERIAL')
+            AND NOT EXISTS (
+              SELECT 1 FROM quality_holds h
+              WHERE h.tenant_id = lb.tenant_id AND h.factory_id = lb.factory_id
+                AND h.status = 'ACTIVE'
+                AND (h.inventory_item_id = lb.item_id OR h.traceability_unit_id = tu.id)
+            )
+          ORDER BY
+            CASE WHEN $4 = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
+            CASE WHEN $4 = 'FIFO' THEN tu.created_at END ASC NULLS LAST,
+            tu.created_at ASC, lower(tu.unit_code), l.is_default ASC,
+            lower(l.location_code), lb.location_id
+          FOR UPDATE OF lb, l, tu
+          `,
+          [input.tenantId, input.factoryId, line.item_id, policy],
+        );
+        candidateRows = tracked.rows;
+      } else {
+        const untracked = await client.query<{
+          location_id: string; location_code: string; is_default: boolean; location_type: string;
+          quantity_on_hand: string; quantity_reserved: string;
+        }>(
+          `
+          SELECT lb.location_id::text AS location_id, l.location_code, l.is_default, l.location_type,
+                 lb.quantity_on_hand::text AS quantity_on_hand,
+                 lb.quantity_reserved::text AS quantity_reserved
+          FROM inventory_location_balances lb
+          JOIN inventory_locations l
+            ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id AND l.factory_id = lb.factory_id
+          LEFT JOIN inventory_locations parent
+            ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+          WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+            AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
+            AND lb.quantity_on_hand > lb.quantity_reserved
+            AND (
+              (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
+              OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')
+            )
+          ORDER BY l.is_default ASC, lower(l.location_code), lb.location_id
+          FOR UPDATE OF lb, l
+          `,
+          [input.tenantId, input.factoryId, line.item_id],
+        );
+        candidateRows = untracked.rows.map((row) => ({ ...row, traceability_unit_id: null }));
+      }
 
       let remainingUnits = requiredUnits;
-      const allocations: Array<{ locationId: string; quantity: string }> = [];
-      for (const location of locationsResult.rows) {
+      const allocations: Allocation[] = [];
+      for (const candidate of candidateRows) {
         if (remainingUnits === 0n) break;
-        const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
+        const availableUnits = toUnits(candidate.quantity_on_hand) - toUnits(candidate.quantity_reserved);
         if (availableUnits <= 0n) continue;
         const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
-        allocations.push({ locationId: location.location_id.toLowerCase(), quantity: fromUnits(allocated) });
+        allocations.push({
+          locationId: candidate.location_id.toLowerCase(),
+          traceabilityUnitId: candidate.traceability_unit_id?.toLowerCase() ?? null,
+          quantity: fromUnits(allocated),
+        });
         remainingUnits -= allocated;
       }
       if (remainingUnits !== 0n) {
-        throw new ConflictException(`Insufficient stock in active bins to allocate order line ${line.line_number}; no partial reservation was committed`);
+        throw new ConflictException(`Insufficient eligible stock in active picking bins/lots to allocate order line ${line.line_number}; the transaction was rolled back`);
       }
 
-      // One aggregate reservation increment per line; location balances and child rows are atomic with it.
+      // Locking the aggregate row serializes concurrent requests that allocate
+      // different lots/bins for the same item. All child reservations commit together.
       const balanceResult = await client.query<BalanceRow>(
         `
         UPDATE inventory_stock_balances
@@ -1041,23 +1139,25 @@ export class InventoryReservationService {
           throw new ConflictException(`Bin stock changed while allocating order line ${line.line_number}; the transaction was rolled back`);
         }
 
-        const idempotencyKey = `order:${input.orderId}:line:${line.id}:bin:${allocation.locationId}:reserve:v2`;
+        const idempotencyKey = `order:${input.orderId}:line:${line.id}:bin:${allocation.locationId}:lot:${allocation.traceabilityUnitId ?? 'untracked'}:reserve:v3`;
         const requestHash = this.hash({
           itemId: line.item_id.toLowerCase(), locationId: allocation.locationId,
+          traceabilityUnitId: allocation.traceabilityUnitId,
           quantity: allocation.quantity, referenceType, referenceId, notes,
         });
         const inserted = await client.query<ReservationRow>(
           `
           INSERT INTO inventory_reservations (
-            tenant_id, factory_id, item_id, location_id, quantity, idempotency_key,
+            tenant_id, factory_id, item_id, location_id, traceability_unit_id, quantity, idempotency_key,
             request_hash, reference_type, reference_id, notes, created_by_user_id, correlation_id
           )
-          VALUES ($1, $2, $3, $4::uuid, $5::numeric, $6, $7, $8, $9::uuid, $10, $11, $12::uuid)
+          VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6::numeric, $7, $8, $9, $10::uuid, $11, $12, $13::uuid)
           RETURNING ${RESERVATION_COLUMNS}
           `,
           [
-            input.tenantId, input.factoryId, line.item_id, allocation.locationId, allocation.quantity,
-            idempotencyKey, requestHash, referenceType, referenceId, notes, input.userId, correlationId,
+            input.tenantId, input.factoryId, line.item_id, allocation.locationId,
+            allocation.traceabilityUnitId, allocation.quantity, idempotencyKey,
+            requestHash, referenceType, referenceId, notes, input.userId, correlationId,
           ],
         );
         const reservation = inserted.rows[0];
@@ -1069,11 +1169,12 @@ export class InventoryReservationService {
           payload: {
             reservation: {
               id: reservation.id, item_id: line.item_id, location_id: allocation.locationId,
+              traceability_unit_id: allocation.traceabilityUnitId,
               quantity: reservation.quantity, status: reservation.status,
               reference_type: referenceType, reference_id: referenceId,
               order_id: input.orderId, order_number: input.orderNumber,
             },
-            allocation: { sequence: index + 1, total: allocations.length, line_quantity: quantity },
+            allocation: { sequence: index + 1, total: allocations.length, line_quantity: quantity, allocation_policy: policy },
             balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
           },
         });
@@ -1082,7 +1183,6 @@ export class InventoryReservationService {
     }
     return createdCount;
   }
-
   private async transitionOrderReservations(
     client: PoolClient,
     input: {
