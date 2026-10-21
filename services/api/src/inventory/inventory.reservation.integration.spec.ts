@@ -285,10 +285,11 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     ]);
 
     const actualLotReservations = await adminPool.query<{
-      unit_code: string; allocated_quantity: string; allocation_sequence: number;
+      traceability_unit_id: string; unit_code: string; allocated_quantity: string; allocation_sequence: number;
     }>(
       `
-      SELECT tu.unit_code, a.allocated_quantity::text, a.allocation_sequence
+      SELECT a.traceability_unit_id::text AS traceability_unit_id,
+             tu.unit_code, a.allocated_quantity::text, a.allocation_sequence
       FROM inventory_reservation_traceability_allocations a
       JOIN traceability_units tu ON tu.id=a.traceability_unit_id
       WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
@@ -301,7 +302,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     expect(actualLotReservations.rows[0]?.unit_code).toContain('LOT-EARLIEST');
     expect(actualLotReservations.rows[1]?.unit_code).toContain('LOT-LATER');
     expect(actualLotReservations.rows.some((row) =>
-      [expiredLotId, damagedLotId, heldLotId, quarantinedLotId].includes(row.unit_code),
+      [expiredLotId, damagedLotId, heldLotId, quarantinedLotId].includes(row.traceability_unit_id),
     )).toBe(false);
     const excludedAllocations = await adminPool.query<{ count: string }>(
       `SELECT count(*)::text AS count
