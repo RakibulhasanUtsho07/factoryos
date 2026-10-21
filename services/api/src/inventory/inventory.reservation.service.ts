@@ -1190,7 +1190,11 @@ export class InventoryReservationService {
         r.id::text AS id, r.tenant_id::text AS tenant_id,
         r.factory_id::text AS factory_id, r.item_id::text AS item_id,
         r.location_id::text AS location_id,
-        r.quantity::text AS quantity, r.status, r.idempotency_key,
+        r.quantity::text AS quantity,
+        r.quantity_remaining::text AS quantity_remaining,
+        r.quantity_consumed::text AS quantity_consumed,
+        r.quantity_released::text AS quantity_released,
+        r.lot_policy_enforced, r.status, r.idempotency_key,
         r.request_hash, r.reference_type, r.reference_id::text AS reference_id,
         r.notes, r.transition_idempotency_key, r.transition_request_hash,
         r.consumed_movement_id::text AS consumed_movement_id,
@@ -1227,12 +1231,16 @@ export class InventoryReservationService {
         reservationId: reservation.id.toLowerCase(),
         targetStatus,
       });
+      const outstandingQuantity = reservation.quantity_remaining;
+      const consumedLots = await this.settleReservationLotAllocations(
+        client, reservation, outstandingQuantity, targetStatus,
+      );
 
       let balance: BalanceRow | undefined;
       if (reservation.location_id) {
         await this.decreaseLocationReserved(
           client, input.tenantId, input.factoryId, reservation.item_id,
-          reservation.location_id, reservation.quantity,
+          reservation.location_id, outstandingQuantity,
         );
       }
       // Set/clear the location context for every child so a previous bin cannot leak.
@@ -1251,7 +1259,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [outstandingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
         balance = result.rows[0];
       } else {
@@ -1267,7 +1275,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [outstandingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
         balance = result.rows[0];
       }
@@ -1296,7 +1304,7 @@ export class InventoryReservationService {
           `,
           [
             input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
-            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            outstandingQuantity, balance.quantity_on_hand, movementKey, transitionHash,
             reservation.id, reservation.notes, input.userId, correlationId,
           ],
         );
@@ -1316,8 +1324,8 @@ export class InventoryReservationService {
               item_id: reservation.item_id,
               location_id: reservation.location_id,
               movement_type: 'ISSUE',
-              quantity: reservation.quantity,
-              quantity_delta: '-' + reservation.quantity,
+              quantity: outstandingQuantity,
+              quantity_delta: '-' + outstandingQuantity,
               quantity_after: balance.quantity_on_hand,
               reference_type: 'RESERVATION',
               reference_id: reservation.id,
@@ -1326,12 +1334,21 @@ export class InventoryReservationService {
             order_id: input.orderId,
           },
         });
+        await this.insertReservationConsumptionReceipt(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId,
+          itemId: reservation.item_id, reservationId: reservation.id,
+          quantity: outstandingQuantity, idempotencyKey: transitionKey,
+          requestHash: transitionHash, movementId: consumedMovementId!, userId: input.userId,
+          correlationId, lotAllocations: consumedLots,
+        });
       }
 
       const updatedResult = await client.query<ReservationRow>(
         `
         UPDATE inventory_reservations
-        SET status = $1, transition_idempotency_key = $2,
+        SET status = $1, quantity_remaining = 0,
+            quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+            quantity_released = CASE WHEN $1 = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END, transition_idempotency_key = $2,
             transition_request_hash = $3, consumed_movement_id = $4::uuid,
             updated_at = clock_timestamp()
         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
@@ -1855,10 +1872,14 @@ export class InventoryReservationService {
         reservationId: reservation.id.toLowerCase(),
         targetStatus,
       });
+      const outstandingQuantity = reservation.quantity_remaining;
+      const consumedLots = await this.settleReservationLotAllocations(
+        client, reservation, outstandingQuantity, targetStatus,
+      );
       if (reservation.location_id) {
         await this.decreaseLocationReserved(
           client, input.tenantId, input.factoryId, reservation.item_id,
-          reservation.location_id, reservation.quantity,
+          reservation.location_id, outstandingQuantity,
         );
       }
       await client.query(
@@ -1877,7 +1898,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [outstandingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         )
         : await client.query<BalanceRow>(
           `
@@ -1890,7 +1911,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [outstandingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
       const balance = balanceResult.rows[0];
       if (!balance) throw new ConflictException(`Inventory balance is inconsistent for material reservation ${reservation.id}`);
@@ -1914,7 +1935,7 @@ export class InventoryReservationService {
           `,
           [
             input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
-            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            outstandingQuantity, balance.quantity_on_hand, movementKey, transitionHash,
             reservation.id, reservation.notes, input.userId, input.correlationId,
           ],
         );
@@ -1933,18 +1954,28 @@ export class InventoryReservationService {
               item_id: reservation.item_id,
               location_id: reservation.location_id,
               movement_type: 'ISSUE',
-              quantity: reservation.quantity,
-              quantity_delta: `-${reservation.quantity}`,
+              quantity: outstandingQuantity,
+              quantity_delta: `-${outstandingQuantity}`,
               quantity_after: balance.quantity_on_hand,
             },
           },
+        });
+        await this.insertReservationConsumptionReceipt(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId,
+          itemId: reservation.item_id, reservationId: reservation.id,
+          quantity: outstandingQuantity, idempotencyKey: transitionKey,
+          requestHash: transitionHash, movementId: consumedMovementId!, userId: input.userId,
+          correlationId: input.correlationId, lotAllocations: consumedLots,
         });
       }
 
       const updated = await client.query<ReservationRow>(
         `
         UPDATE inventory_reservations
-        SET status = $1, transition_idempotency_key = $2,
+        SET status = $1, quantity_remaining = 0,
+            quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+            quantity_released = CASE WHEN $1 = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END,
+            transition_idempotency_key = $2,
             transition_request_hash = $3, consumed_movement_id = $4::uuid,
             updated_at = clock_timestamp()
         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND item_id = $8
@@ -1957,7 +1988,7 @@ export class InventoryReservationService {
         ],
       );
       if (!updated.rows[0]) throw new ConflictException('Work-order material reservation changed concurrently');
-      const units = toUnits(reservation.quantity);
+      const units = toUnits(outstandingQuantity);
       quantityByItem.set(reservation.item_id, (quantityByItem.get(reservation.item_id) ?? 0n) + units);
 
       await this.insertOutboxEvent(client, {
@@ -1973,7 +2004,11 @@ export class InventoryReservationService {
           reservation: {
             id: reservation.id, item_id: reservation.item_id,
             location_id: reservation.location_id, quantity: reservation.quantity,
+            quantity_issued: targetStatus === 'CONSUMED' ? outstandingQuantity : '0.0000',
+            quantity_released: targetStatus === 'RELEASED' ? outstandingQuantity : '0.0000',
+            quantity_remaining: '0.0000',
             status: targetStatus, consumed_movement_id: consumedMovementId,
+            lot_allocations: consumedLots,
           },
           balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
         },
@@ -2162,7 +2197,7 @@ export class InventoryReservationService {
             RETURNING quantity_on_hand::text AS quantity_on_hand,
               quantity_reserved::text AS quantity_reserved
             `,
-            [reservation.quantity, tenantId, factoryId, itemId],
+            [outstandingQuantity, tenantId, factoryId, itemId],
           );
           balance = balanceResult.rows[0];
         }
