@@ -131,3 +131,13 @@ export class UpdateTraceabilitySettingsDto {
   @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
   allocation_policy?: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
 }
+
+export class UpdateInventoryItemAllocationPolicyDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expected_version!: number;
+
+  @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
+  allocation_policy!: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+}
