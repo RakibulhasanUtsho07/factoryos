@@ -347,6 +347,29 @@ export class InventoryCycleCountService {
       );
     }
 
+    const lotScope = await this.database.query<{
+      require_lot_tracking: boolean;
+      has_lot_balance: boolean;
+    }>(
+      `
+      SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+        EXISTS (
+          SELECT 1 FROM inventory_lot_location_balances lb
+          WHERE lb.tenant_id = $1 AND lb.factory_id = $2
+            AND lb.item_id = $3 AND lb.quantity_on_hand > 0
+        ) AS has_lot_balance
+      FROM (SELECT 1) singleton
+      LEFT JOIN traceability_settings ts ON ts.tenant_id = $1 AND ts.factory_id = $2
+      `,
+      [tenantId, factoryId, itemId],
+      { tenantId, userId },
+    );
+    if (lotScope.rows[0]?.require_lot_tracking || lotScope.rows[0]?.has_lot_balance) {
+      throw new ConflictException(
+        'Aggregate cycle-count approval cannot adjust lot-tracked stock; count and reconcile the affected lot/bin identities instead',
+      );
+    }
+
     const result = await this.reconciliationService.recordReconciliation(
       userId, tenantId, factoryId, itemId,
       {
