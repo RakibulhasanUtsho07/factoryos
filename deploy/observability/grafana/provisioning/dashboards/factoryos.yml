@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: FactoryOS operational reliability
+    orgId: 1
+    folder: FactoryOS
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

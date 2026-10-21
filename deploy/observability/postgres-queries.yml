@@ -1,0 +1,47 @@
+# Custom-query file for prometheus-community/postgres_exporter.
+# Scrape using a dedicated read-only monitoring role with only the statistics
+# visibility required by pg_stat_activity/pg_blocking_pids; no tenant-table access is needed.
+# Never attach tenant IDs, event IDs, SQL, or payload values as metric labels.
+# outbox_events uses FORCE ROW LEVEL SECURITY; queue metrics are aggregated
+# by the API dispatcher inside tenant-scoped transactions and scraped from each API replica.
+
+factoryos_pg_blocking_sessions:
+  query: |
+    SELECT COUNT(*)::double precision AS count
+    FROM pg_stat_activity AS activity
+    WHERE activity.datname = current_database()
+      AND activity.pid <> pg_backend_pid()
+      AND cardinality(pg_blocking_pids(activity.pid)) > 0
+  metrics:
+    - count:
+        usage: "GAUGE"
+        description: "Active sessions blocked by another PostgreSQL session in this database"
+
+factoryos_pg_lock_wait:
+  query: |
+    SELECT COALESCE(
+      MAX(EXTRACT(EPOCH FROM clock_timestamp() - activity.query_start)),
+      0
+    )::double precision AS max_wait_seconds
+    FROM pg_stat_activity AS activity
+    WHERE activity.datname = current_database()
+      AND activity.wait_event_type = 'Lock'
+      AND activity.query_start IS NOT NULL
+  metrics:
+    - max_wait_seconds:
+        usage: "GAUGE"
+        description: "Maximum current lock-wait duration in seconds"
+
+factoryos_pg_long_transactions:
+  query: |
+    SELECT COUNT(*)::double precision AS count
+    FROM pg_stat_activity AS activity
+    WHERE activity.datname = current_database()
+      AND activity.pid <> pg_backend_pid()
+      AND activity.state <> 'idle'
+      AND activity.xact_start IS NOT NULL
+      AND clock_timestamp() - activity.xact_start > INTERVAL '30 seconds'
+  metrics:
+    - count:
+        usage: "GAUGE"
+        description: "Active non-idle transactions older than 30 seconds"

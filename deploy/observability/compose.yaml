@@ -1,0 +1,120 @@
+# Add these services to the approved private monitoring network. Images must be pinned
+# to organization-approved immutable versions/digests in the deployment environment.
+services:
+  otel-collector:
+    image: ${OTEL_COLLECTOR_IMAGE:?set a pinned OpenTelemetry Collector Contrib image}
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    restart: unless-stopped
+    environment:
+      OTEL_BACKEND_ENDPOINT: ${OTEL_BACKEND_ENDPOINT:?set an HTTPS OTLP backend root URL}
+      OTEL_BACKEND_AUTHORIZATION: ${OTEL_BACKEND_AUTHORIZATION:?inject the backend authorization value from a secret manager}
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    secrets:
+      - otel_receiver_cert
+      - otel_receiver_key
+      - otel_receiver_token
+    networks: [monitoring]
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:?set a pinned Prometheus image}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    secrets:
+      - metrics_scrape_token
+    networks: [monitoring]
+
+  alertmanager:
+    image: ${ALERTMANAGER_IMAGE:?set a pinned Alertmanager image}
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.external-url=http://localhost:9093
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    secrets:
+      - oncall_webhook_url
+    networks: [monitoring]
+
+  grafana:
+    image: ${GRAFANA_IMAGE:?set a pinned Grafana image}
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-factoryos-operator}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    secrets:
+      - grafana_admin_password
+    networks: [monitoring]
+
+  postgres-exporter:
+    image: ${POSTGRES_EXPORTER_IMAGE:?set a pinned postgres_exporter image}
+    environment:
+      PGSSLROOTCERT: /run/secrets/postgres_exporter_ca
+    command:
+      - --datasource.uri=${FACTORYOS_POSTGRES_EXPORTER_URI:?set a credential-free database URI with verified TLS}
+      - --datasource.user-file=/run/secrets/postgres_exporter_user
+      - --datasource.pass-file=/run/secrets/postgres_exporter_password
+      - --extend.query-path=/etc/postgres_exporter/queries.yml
+      - --log.level=info
+    restart: unless-stopped
+    volumes:
+      - ./postgres-queries.yml:/etc/postgres_exporter/queries.yml:ro
+    secrets:
+      - postgres_exporter_user
+      - postgres_exporter_password
+      - postgres_exporter_ca
+    networks: [monitoring]
+    # Never publish 9187 on the host. Keep this service reachable only on the private network.
+
+networks:
+  monitoring:
+    external: true
+    name: ${FACTORYOS_MONITORING_NETWORK:-factoryos-monitoring}
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+
+secrets:
+  metrics_scrape_token:
+    file: ${FACTORYOS_METRICS_SCRAPE_TOKEN_FILE:?point to the same high-entropy token injected into API instances}
+  oncall_webhook_url:
+    file: ${FACTORYOS_ONCALL_WEBHOOK_URL_FILE:?point to the approved on-call relay URL file}
+  grafana_admin_password:
+    file: ${FACTORYOS_GRAFANA_ADMIN_PASSWORD_FILE:?point to the operator password file}
+  postgres_exporter_user:
+    file: ${FACTORYOS_POSTGRES_EXPORTER_USER_FILE:?point to a read-only monitoring username file}
+  postgres_exporter_password:
+    file: ${FACTORYOS_POSTGRES_EXPORTER_PASSWORD_FILE:?point to the read-only monitoring password file}
+  postgres_exporter_ca:
+    file: ${FACTORYOS_POSTGRES_EXPORTER_CA_FILE:?point to the PostgreSQL TLS CA certificate file}
+  otel_receiver_cert:
+    file: ${FACTORYOS_OTEL_RECEIVER_CERT_FILE:?point to the collector TLS certificate file}
+  otel_receiver_key:
+    file: ${FACTORYOS_OTEL_RECEIVER_KEY_FILE:?point to the collector TLS private key file}
+  otel_receiver_token:
+    file: ${FACTORYOS_OTEL_RECEIVER_TOKEN_FILE:?point to the high-entropy OTLP receiver token file}

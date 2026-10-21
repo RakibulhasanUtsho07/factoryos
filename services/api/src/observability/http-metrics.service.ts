@@ -7,6 +7,9 @@ const BUCKETS_SECONDS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5] as const;
 type DependencyName = 'database';
 type DatabaseOperationLabel = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'OTHER' | 'TRANSACTION';
 type DatabaseOperationStatus = 'success' | 'error';
+const OUTBOX_STATUSES = ['PENDING', 'FAILED', 'PROCESSING', 'QUARANTINED'] as const;
+type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
+interface OutboxQueueSnapshot { status: OutboxStatus; count: number; oldestAgeSeconds: number; }
 interface DatabaseDurationAggregate { bucketCounts: number[]; count: number; sum: number; }
 
 interface DurationAggregate { bucketCounts: number[]; count: number; sum: number; }
@@ -33,11 +36,18 @@ export class HttpMetricsService {
   private readonly requestCounts = new Map<string, number>();
   private readonly routeRequestCounts = new Map<string, number>();
   private readonly inFlight = new Map<HttpMethodLabel, number>();
+  private lastEventLoopUtilization = performance.eventLoopUtilization();
   private readonly durations = new Map<HttpMethodLabel, DurationAggregate>();
   private readonly dependencyHealth = new Map<DependencyName, number>([['database', -1]]);
   private readonly databaseOperationCounts = new Map<string, number>();
   private readonly databaseDurations = new Map<DatabaseOperationLabel, DatabaseDurationAggregate>();
   private databasePool = { total: 0, idle: 0, waiting: 0 };
+  private readonly outboxCounts = new Map<OutboxStatus, number>();
+  private readonly outboxOldestAgeSeconds = new Map<OutboxStatus, number>();
+  private outboxSecondsSinceLastPublish = -1;
+  private outboxMetricsCollectedAtMs = 0;
+  private outboxMetricsCollectionHealthy = -1;
+  private outboxMetricsCollectionErrors = 0;
   private traceSpansExported = 0;
   private traceSpansDropped = 0;
   private traceExportErrors = 0;
@@ -98,6 +108,29 @@ export class HttpMetricsService {
 
   setDependencyHealth(dependency: DependencyName, healthy: boolean): void {
     this.dependencyHealth.set(dependency, healthy ? 1 : 0);
+  }
+
+  recordOutboxQueueSnapshot(snapshot: OutboxQueueSnapshot[], secondsSinceLastPublish: number): void {
+    for (const status of OUTBOX_STATUSES) {
+      this.outboxCounts.set(status, 0);
+      this.outboxOldestAgeSeconds.set(status, 0);
+    }
+    for (const item of snapshot) {
+      if (!(OUTBOX_STATUSES as readonly string[]).includes(item.status)) continue;
+      const count = Number.isFinite(item.count) ? Math.max(0, Math.floor(item.count)) : 0;
+      const oldestAge = Number.isFinite(item.oldestAgeSeconds) ? Math.max(0, item.oldestAgeSeconds) : 0;
+      this.outboxCounts.set(item.status, (this.outboxCounts.get(item.status) ?? 0) + count);
+      this.outboxOldestAgeSeconds.set(item.status, Math.max(this.outboxOldestAgeSeconds.get(item.status) ?? 0, oldestAge));
+    }
+    this.outboxSecondsSinceLastPublish = Number.isFinite(secondsSinceLastPublish) && secondsSinceLastPublish >= 0
+      ? Math.max(0, secondsSinceLastPublish) : -1;
+    this.outboxMetricsCollectedAtMs = Date.now();
+    this.outboxMetricsCollectionHealthy = 1;
+  }
+
+  recordOutboxQueueSnapshotFailure(): void {
+    this.outboxMetricsCollectionHealthy = 0;
+    this.outboxMetricsCollectionErrors += 1;
   }
 
   recordTraceExported(count: number): void { this.traceSpansExported += Math.max(0, Math.floor(count)); }
@@ -185,14 +218,16 @@ export class HttpMetricsService {
       lines.push('factoryos_process_memory_bytes{type="' + kind + '"} ' + value);
     }
     const cpu = process.cpuUsage();
+    const eventLoop = performance.eventLoopUtilization(this.lastEventLoopUtilization);
+    this.lastEventLoopUtilization = performance.eventLoopUtilization();
     lines.push(
       '# HELP factoryos_process_cpu_seconds_total Total process CPU time in seconds by mode.',
       '# TYPE factoryos_process_cpu_seconds_total counter',
       'factoryos_process_cpu_seconds_total{mode="user"} ' + (cpu.user / 1_000_000).toFixed(6),
       'factoryos_process_cpu_seconds_total{mode="system"} ' + (cpu.system / 1_000_000).toFixed(6),
-      '# HELP factoryos_nodejs_event_loop_utilization_ratio Event loop utilization since process start.',
+      '# HELP factoryos_nodejs_event_loop_utilization_ratio Event loop utilization since the preceding metrics scrape.',
       '# TYPE factoryos_nodejs_event_loop_utilization_ratio gauge',
-      'factoryos_nodejs_event_loop_utilization_ratio ' + performance.eventLoopUtilization().utilization.toFixed(6),
+      'factoryos_nodejs_event_loop_utilization_ratio ' + eventLoop.utilization.toFixed(6),
       '# HELP factoryos_process_uptime_seconds Process uptime in seconds.',
       '# TYPE factoryos_process_uptime_seconds gauge',
       'factoryos_process_uptime_seconds ' + Math.max(0, process.uptime()).toFixed(3),
@@ -202,6 +237,36 @@ export class HttpMetricsService {
     for (const dependency of ['database'] as const) {
       lines.push('factoryos_dependency_health{dependency="' + dependency + '"} ' + (this.dependencyHealth.get(dependency) ?? -1));
     }
+    lines.push(
+      '# HELP factoryos_outbox_events Current outbox event count by bounded dispatch state.',
+      '# TYPE factoryos_outbox_events gauge',
+    );
+    for (const status of OUTBOX_STATUSES) {
+      lines.push('factoryos_outbox_events{status="' + status + '"} ' + (this.outboxCounts.get(status) ?? 0));
+    }
+    lines.push(
+      '# HELP factoryos_outbox_oldest_age_seconds Age of the oldest unpublished outbox event by bounded dispatch state.',
+      '# TYPE factoryos_outbox_oldest_age_seconds gauge',
+    );
+    for (const status of OUTBOX_STATUSES) {
+      lines.push('factoryos_outbox_oldest_age_seconds{status="' + status + '"} ' + (this.outboxOldestAgeSeconds.get(status) ?? 0));
+    }
+    lines.push(
+      '# HELP factoryos_outbox_freshness_seconds_since_last_publish Seconds since a successful outbox publication; -1 means no known publication.',
+      '# TYPE factoryos_outbox_freshness_seconds_since_last_publish gauge',
+      'factoryos_outbox_freshness_seconds_since_last_publish ' + this.outboxSecondsSinceLastPublish,
+      '# HELP factoryos_outbox_metrics_snapshot_age_seconds Age of the last tenant-scoped queue metrics snapshot; -1 means no snapshot yet.',
+      '# TYPE factoryos_outbox_metrics_snapshot_age_seconds gauge',
+      'factoryos_outbox_metrics_snapshot_age_seconds ' + (this.outboxMetricsCollectedAtMs > 0
+        ? Math.max(0, (Date.now() - this.outboxMetricsCollectedAtMs) / 1000).toFixed(3) : -1),
+      '# HELP factoryos_outbox_metrics_collection_success Last queue metrics collection status: 1 success, 0 failed, -1 never attempted.',
+      '# TYPE factoryos_outbox_metrics_collection_success gauge',
+      'factoryos_outbox_metrics_collection_success ' + this.outboxMetricsCollectionHealthy,
+      '# HELP factoryos_outbox_metrics_collection_errors_total Tenant-scoped queue metrics collection failures.',
+      '# TYPE factoryos_outbox_metrics_collection_errors_total counter',
+      'factoryos_outbox_metrics_collection_errors_total ' + this.outboxMetricsCollectionErrors,
+    );
+
     lines.push(
       '# HELP factoryos_trace_spans_exported_total Trace spans successfully exported via OTLP/HTTP.',
       '# TYPE factoryos_trace_spans_exported_total counter',

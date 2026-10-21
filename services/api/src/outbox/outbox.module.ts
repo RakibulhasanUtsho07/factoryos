@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
+import { ObservabilityModule } from '../observability/observability.module';
 
 import { InboxService } from './inbox.service';
 import { OrderCreatedConsumer } from './order-created.consumer';
@@ -17,6 +18,7 @@ import { OutboxPublisher } from './outbox.publisher';
     DatabaseModule,
     AuditModule,
     IamModule,
+    ObservabilityModule,
   ],
 
   controllers: [

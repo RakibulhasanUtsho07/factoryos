@@ -71,3 +71,20 @@ Memory pressure and database readiness need service-specific thresholds and host
 ## Operational acceptance gates
 
 Before production release, configure the private collector, token secret, scrape allowlist and per-instance scraping; verify cross-service propagation through at least two instrumented services; verify sampled/error spans and exporter-unavailable behavior; test liveness and readiness independently; confirm no dynamic IDs or credentials appear in metric labels/log fields; and test alert delivery. Record collector retention, access controls, sampling target, SLO thresholds, dashboard URLs, alert owner, release SHA and rollback/disable procedure. CI tests validate repository behavior, not deployed collector connectivity or actual alert delivery.
+
+
+## Deployed collector, backend, dashboards and alerts
+
+The implementation's deployment counterpart now lives in `deploy/observability/`: a TLS-protected OTLP/HTTP Collector exporter, authenticated per-replica Prometheus scrape, pre-provisioned Grafana dashboard, Alertmanager secret-file route, and PostgreSQL queries for active outbox age/publication freshness, blocking sessions, lock-wait age and long transactions. Deployment variables, secret file requirements, exporter permission checks, alert delivery verification, and required release evidence are described in [Central Observability, SLO and Capacity Acceptance](central-observability-slo-capacity.md).
+
+This is repository configuration, not proof of a running deployment. SLO thresholds remain proposal-only until an accountable owner approves and records the exact policy. Run the local contract suite with `npm --workspace services/api run test:observability:contract`; run the multi-tenant read-only soak against approved staging using `npm --workspace services/api run test:soak`. The soak report requires an exact candidate SHA for remote targets and records UTC window, latency percentiles, error rate, per-synthetic-tenant traffic and recovery probe results. It does not mutate records or certify a production read/write workload.
+
+
+## Deployed collector, backend, dashboards and alerts
+
+The implementation's deployment counterpart now lives in `deploy/observability/`: a TLS-protected OTLP/HTTP Collector exporter, authenticated per-replica Prometheus scrape, pre-provisioned Grafana dashboard, Alertmanager secret-file route, and PostgreSQL queries for active outbox age/publication freshness, blocking sessions, lock-wait age and long transactions. Deployment variables, secret file requirements, exporter permission checks, alert delivery verification, and required release evidence are described in [Central Observability, SLO and Capacity Acceptance](central-observability-slo-capacity.md).
+
+This is repository configuration, not proof of a running deployment. SLO thresholds remain proposal-only until an accountable owner approves and records the exact policy. Run the local contract suite with `npm --workspace services/api run test:observability:contract`; run the multi-tenant read-only soak against approved staging using `npm --workspace services/api run test:soak`. The soak report requires an exact candidate SHA for remote targets and records UTC window, latency percentiles, error rate, per-synthetic-tenant traffic and recovery probe results. It does not mutate records or certify a production read/write workload.
+
+
+Outbox queue count/oldest-age/publication-freshness metrics are aggregated by the dispatcher from per-tenant transactions that set the existing transaction-local RLS context. They are not queried by the PostgreSQL exporter across tenants: `outbox_events` uses `FORCE ROW LEVEL SECURITY`. Queue snapshot health/age metrics distinguish a successful zero-backlog snapshot from a stale or failed collection. This preserves tenant isolation instead of making the monitoring role a bypass of business-table policies.

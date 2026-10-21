@@ -1,0 +1,60 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+    stack: factoryos
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: factoryos-api
+    metrics_path: /api/internal/metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    bearer_token_file: /run/secrets/metrics_scrape_token
+    static_configs:
+      # Replace with every API replica's private service DNS name. Never scrape a load balancer
+      # only: process-local counters reset on restart and each instance needs independent evidence.
+      - targets: ["factoryos-api-1:3001"]
+        labels:
+          service: factoryos-api
+          instance_id: factoryos-api-1
+          release_sha: REPLACE_WITH_DEPLOYED_COMMIT_SHA
+      - targets: ["factoryos-api-2:3001"]
+        labels:
+          service: factoryos-api
+          instance_id: factoryos-api-2
+          release_sha: REPLACE_WITH_DEPLOYED_COMMIT_SHA
+
+  - job_name: factoryos-postgres-exporter
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          service: factoryos-postgres
+          instance_id: primary-postgres
+
+  - job_name: factoryos-otel-collector
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels:
+          service: factoryos-otel-collector
+          instance_id: otel-collector
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["prometheus:9090"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
