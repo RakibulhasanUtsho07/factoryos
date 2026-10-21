@@ -23,6 +23,9 @@ interface ReservationRow extends QueryResultRow {
   item_id: string;
   location_id: string | null;
   quantity: string;
+  remaining_quantity: string;
+  consumed_quantity: string;
+  released_quantity: string;
   status: ReservationStatus;
   idempotency_key: string;
   request_hash: string;
@@ -46,6 +49,31 @@ interface BalanceRow extends QueryResultRow {
 interface MovementRow extends QueryResultRow {
   id: string;
   quantity_after: string;
+}
+
+type TraceabilityAllocationPolicy = 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+
+interface TraceabilityCandidate extends QueryResultRow {
+  traceability_unit_id: string;
+  location_id: string;
+  unit_type: 'LOT' | 'SERIAL';
+  unit_code: string;
+  expires_at: string | null;
+  received_at: string;
+  quantity_on_hand: string;
+  quantity_reserved: string;
+}
+
+interface TraceabilityAllocation {
+  traceabilityUnitId: string;
+  locationId: string;
+  quantity: string;
+}
+
+interface TraceabilityAllocationPlan {
+  enforced: boolean;
+  policy: TraceabilityAllocationPolicy;
+  allocations: TraceabilityAllocation[];
 }
 
 export interface OrderMaterialDispositionRow extends QueryResultRow {
@@ -98,6 +126,9 @@ type ReservationResult = {
   item_id: string;
   location_id: string | null;
   quantity: string;
+  remaining_quantity: string;
+  consumed_quantity: string;
+  released_quantity: string;
   status: ReservationStatus;
   reference_type: string | null;
   reference_id: string | null;
@@ -117,6 +148,9 @@ const RESERVATION_COLUMNS = `
   item_id::text AS item_id,
   location_id::text AS location_id,
   quantity::text AS quantity,
+  remaining_quantity::text AS remaining_quantity,
+  consumed_quantity::text AS consumed_quantity,
+  released_quantity::text AS released_quantity,
   status,
   idempotency_key,
   request_hash,
