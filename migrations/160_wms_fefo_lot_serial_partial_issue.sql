@@ -73,6 +73,31 @@ ALTER TABLE inventory_reservations
       )
     );
 
+-- A material can override the factory/sector default with an approved allocation policy.
+-- expected_version=0 creates an override; subsequent updates are optimistic-versioned.
+CREATE TABLE IF NOT EXISTS inventory_item_allocation_policies (
+  tenant_id UUID NOT NULL,
+  factory_id UUID NOT NULL,
+  item_id UUID NOT NULL,
+  allocation_policy VARCHAR(12) NOT NULL,
+  version BIGINT NOT NULL DEFAULT 1,
+  updated_by_user_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT pk_inventory_item_allocation_policies PRIMARY KEY (tenant_id, factory_id, item_id),
+  CONSTRAINT fk_inventory_item_allocation_policy_item
+    FOREIGN KEY (item_id, tenant_id, factory_id)
+    REFERENCES inventory_items (id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_inventory_item_allocation_policy_actor
+    FOREIGN KEY (updated_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+  CONSTRAINT chk_inventory_item_allocation_policy_type
+    CHECK (allocation_policy IN ('FIFO','FEFO','LOT','SERIAL')),
+  CONSTRAINT chk_inventory_item_allocation_policy_version CHECK (version > 0)
+);
+
+COMMENT ON TABLE inventory_item_allocation_policies IS
+  'Material-specific FIFO/FEFO/LOT/SERIAL override; the factory traceability policy is the default when no override exists.';
+
 CREATE TABLE IF NOT EXISTS inventory_reservation_consumptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -965,6 +990,7 @@ DECLARE
   v_table TEXT;
 BEGIN
   FOREACH v_table IN ARRAY ARRAY[
+    'inventory_item_allocation_policies',
     'inventory_reservation_consumptions',
     'inventory_traceability_location_balances',
     'inventory_reservation_traceability_allocations',
