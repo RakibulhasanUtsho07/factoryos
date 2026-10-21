@@ -1,0 +1,27 @@
+# This file is an approval register, not evidence of approval.
+# Copy the final approved values into alert-rules.yml and attach the owner's change record.
+status: NOT_OWNER_APPROVED
+service_owner: ""
+approver: ""
+approval_reference: ""
+approved_at_utc: ""
+reviewed_candidate_sha: ""
+measurement_window: 30d
+traffic_contract:
+  minimum_requests_per_second: null
+  representative_routes_reviewed: false
+targets:
+  availability_percent: null
+  error_rate_percent_max: null
+  latency_p95_ms_max: null
+  latency_p99_ms_max: null
+  throughput_requests_per_second_min: null
+  queue_freshness_seconds_max: null
+  saturation_recovery_seconds_max: null
+proposal_only_starting_points:
+  # These are examples in the runbook/rules, not an approved FactoryOS promise.
+  error_rate_percent_max: 1
+  latency_p95_ms_max: 500
+  latency_p99_ms_max: 1500
+  queue_freshness_seconds_max: 300
+  saturation_recovery_seconds_max: 30
