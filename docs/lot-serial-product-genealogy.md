@@ -32,7 +32,7 @@ Forward/reverse queries cap depth at 12 and nodes at 500. Relationship `evidence
 
 ## Scope boundary
 
-The repository now has first-class quality inspections, immutable defect-to-lot/serial/order/work-order/operation/production-report/GRN links, verified CAPA actions and controlled rework tasks. A rework output is recorded as a new traceability identity tied to the originating defect; existing genealogy edges are not fabricated through a quarantined source. Physical shipment/dispatch/customer fulfilment, QR/barcode rendering, RFID, offline mobile sync and lot-aware partial stock/reservation decrements remain separate work. Recording defect/rework links never posts stock; inventory balances remain owned by the existing inventory ledger and order reservation transactions.
+The repository now has first-class quality inspections, immutable defect-to-lot/serial/order/work-order/operation/production-report/GRN links, verified CAPA actions and controlled rework tasks. A rework output is recorded as a new traceability identity tied to the originating defect; existing genealogy edges are not fabricated through a quarantined source. Physical shipment/dispatch/customer fulfilment, QR/barcode rendering and RFID/offline mobile sync remain separate work. Migration 160 binds material lot/serial stock to physical bins and reservations, enforces FIFO/FEFO/LOT/SERIAL selection, excludes invalid or held identities, and records idempotent partial issues without changing genealogy edges. Recording defect/rework links never posts stock; inventory balances remain owned by the existing inventory ledger and order reservation transactions.
 
 ## Verification
 
