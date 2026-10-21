@@ -5,6 +5,7 @@ import { AuditService } from '../audit/audit.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
 import { CreateInventoryReservationDto } from './dto/create-inventory-reservation.dto';
 import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
+import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
 
 describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () => {
@@ -13,9 +14,12 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
   let adminPool!: Pool;
   let appPool!: Pool;
   let service!: InventoryReservationService;
+  let locationService!: InventoryLocationService;
+  let integrationDatabase!: ReturnType<typeof createIntegrationDatabase>;
   let tenantId!: string;
   let factoryId!: string;
   const itemIds: string[] = [];
+  const locationIds: string[] = [];
 
   const createItem = async (quantityOnHand: string): Promise<string> => {
     const created = await adminPool.query<{ id: string }>(
@@ -71,9 +75,10 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     const actor = await adminPool.query('SELECT id FROM users WHERE id = $1 LIMIT 1', [TEST_USER_ID]);
     if (!actor.rows[0]) throw new Error('WMS integration test actor is missing');
 
-    const db = createIntegrationDatabase(appPool);
+    integrationDatabase = createIntegrationDatabase(appPool);
     const audit = { record: async () => undefined } as unknown as AuditService;
-    service = new InventoryReservationService(db as never, audit);
+    service = new InventoryReservationService(integrationDatabase as never, audit);
+    locationService = new InventoryLocationService(integrationDatabase as never, audit);
   });
 
   afterAll(async () => {
@@ -85,9 +90,14 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           'inventory_reservation_consumptions',
           'inventory_reservation_traceability_allocations',
           'inventory_reservations',
+          'inventory_location_transfers',
+          'inventory_traceability_location_balances',
+          'traceability_units',
+          'inventory_material_allocation_policies',
           'inventory_movements',
           'inventory_location_balances',
           'inventory_stock_balances',
+          'inventory_locations',
         ];
         for (const table of triggerTables) {
           await adminPool.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
@@ -110,11 +120,19 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           );
           await adminPool.query('DELETE FROM inventory_reservation_consumptions WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_reservation_traceability_allocations WHERE item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query('DELETE FROM inventory_traceability_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_reservations WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query('DELETE FROM traceability_units WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query('DELETE FROM inventory_material_allocation_policies WHERE inventory_item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_items WHERE id = ANY($1::uuid[])', [itemIds]);
+          if (locationIds.length > 0) {
+            await adminPool.query("DELETE FROM inventory_locations WHERE id = ANY($1::uuid[]) AND location_type = 'BIN'", [locationIds]);
+            await adminPool.query("DELETE FROM inventory_locations WHERE id = ANY($1::uuid[]) AND location_type IN ('WAREHOUSE','STAGING')", [locationIds]);
+          }
         } finally {
           for (const table of triggerTables.reverse()) {
             await adminPool.query(`ALTER TABLE ${table} ENABLE TRIGGER USER`);
@@ -154,6 +172,154 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       [tenantId, factoryId, itemId],
     );
     expect(reservationTotals.rows[0]).toMatchObject({ remaining: '7.0000', count: '1' });
+  });
+
+  it('allocates the first released production BOM requirement FEFO across bins, then issues the earliest lot idempotently', async () => {
+    const itemId = await createItem('10.0000');
+    const defaultResult = await adminPool.query<{ id: string }>(
+      `SELECT id::text AS id FROM inventory_locations
+       WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE AND status='ACTIVE'`,
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultResult.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED location missing');
+
+    const warehouse = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-WH-' + randomUUID().slice(0, 8), name: 'FEFO integration warehouse', location_type: 'WAREHOUSE' } as never,
+      null, randomUUID(),
+    );
+    const binA = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-BIN-A-' + randomUUID().slice(0, 8), name: 'Earliest-expiry bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    const binB = await locationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'WMS-BIN-B-' + randomUUID().slice(0, 8), name: 'Later-expiry bin', location_type: 'BIN', parent_location_id: warehouse.id } as never,
+      null, randomUUID(),
+    );
+    locationIds.push(warehouse.id, binA.id, binB.id);
+
+    const createLot = async (code: string, quantity: string, expiry: string, key: string) => {
+      const inserted = await adminPool.query<{ id: string }>(
+        `
+        INSERT INTO traceability_units (
+          tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+          inventory_item_id, quantity, unit, external_reference, expires_at,
+          idempotency_key, request_hash, created_by_user_id, correlation_id
+        )
+        VALUES ($1,$2,'LOT','MATERIAL',$3,$4,$5,$6::numeric,'PCS',$7,$8::date,$9,$10,$11,$12::uuid)
+        RETURNING id::text AS id
+        `,
+        [tenantId, factoryId, code, 'BAR-' + code, itemId, quantity, 'SUPPLIER-' + code,
+          expiry, key, 'a'.repeat(64), TEST_USER_ID, randomUUID()],
+      );
+      const id = inserted.rows[0]?.id;
+      if (!id) throw new Error('FEFO traceability lot fixture was not created');
+      return id;
+    };
+
+    const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', '2026-11-01', 'wms-fefo-early-' + randomUUID());
+    const lateLotId = await createLot('LOT-LATER-' + randomUUID().slice(0, 6), '4.0000', '2027-01-01', 'wms-fefo-late-' + randomUUID());
+
+    await adminPool.query(
+      `
+      INSERT INTO inventory_material_allocation_policies (
+        tenant_id, factory_id, policy_scope, inventory_item_id, allocation_policy,
+        require_traceability, created_by_user_id, updated_by_user_id
+      )
+      VALUES ($1,$2,'MATERIAL',$3,'FEFO',TRUE,$4,$4)
+      `,
+      [tenantId, factoryId, itemId, TEST_USER_ID],
+    );
+
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: binA.id, traceability_unit_id: earlyLotId, quantity: 3 } as never,
+      'wms-putaway-early-' + randomUUID(), null, randomUUID(),
+    );
+    await locationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { movement_purpose: 'PUT_AWAY', source_location_id: defaultLocationId,
+        destination_location_id: binB.id, traceability_unit_id: lateLotId, quantity: 4 } as never,
+      'wms-putaway-late-' + randomUUID(), null, randomUUID(),
+    );
+
+    const workOrderId = randomUUID();
+    const bomLineId = randomUUID();
+    const requirementId = randomUUID();
+    const correlationId = randomUUID();
+    const allocations = await integrationDatabase.transaction(
+      { tenantId, userId: TEST_USER_ID },
+      async (client) => service.reserveWorkOrderMaterialRequirement(client, {
+        userId: TEST_USER_ID, tenantId, factoryId, workOrderId,
+        workOrderNumber: 'WO-FIRST-FEFO-' + workOrderId.slice(0, 6),
+        requirementId, bomLineId, itemId, itemUnit: 'PCS',
+        lineNumber: 1, quantity: '4.0000', correlationId,
+      }),
+    );
+    expect(allocations).toHaveLength(2);
+    expect(allocations).toEqual([
+      { reservationId: allocations[0]!.reservationId, locationId: binA.id, quantity: '3.0000' },
+      { reservationId: allocations[1]!.reservationId, locationId: binB.id, quantity: '1.0000' },
+    ]);
+
+    const actualLotReservations = await adminPool.query<{
+      unit_code: string; allocated_quantity: string; allocation_sequence: number;
+    }>(
+      `
+      SELECT tu.unit_code, a.allocated_quantity::text, a.allocation_sequence
+      FROM inventory_reservation_traceability_allocations a
+      JOIN traceability_units tu ON tu.id=a.traceability_unit_id
+      WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3
+        AND a.reservation_id = ANY($4::uuid[])
+      ORDER BY a.allocation_sequence
+      `,
+      [tenantId, factoryId, itemId, allocations.map((allocation) => allocation.reservationId)],
+    );
+    expect(actualLotReservations.rows.map((row) => row.allocated_quantity)).toEqual(['3.0000', '1.0000']);
+    expect(actualLotReservations.rows[0]?.unit_code).toContain('LOT-EARLIEST');
+
+    const firstReservationId = allocations[0]!.reservationId;
+    const issueKey = 'wms-first-order-partial-issue-' + randomUUID();
+    const issueDto = { target_status: 'CONSUMED', quantity: 1 } as TransitionInventoryReservationDto;
+    const partial = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, firstReservationId, issueDto, issueKey, null, randomUUID(),
+    );
+    const replay = await service.transitionReservation(
+      TEST_USER_ID, tenantId, factoryId, itemId, firstReservationId, issueDto, issueKey, null, randomUUID(),
+    );
+    expect(partial).toMatchObject({
+      status: 'RESERVED', quantity: '3.0000', remaining_quantity: '2.0000',
+      consumed_quantity: '1.0000', released_quantity: '0.0000', replayed: false,
+    });
+    expect(replay).toMatchObject({
+      status: 'RESERVED', remaining_quantity: '2.0000', consumed_quantity: '1.0000',
+      replayed: true, consumed_quantity_this_request: '1.0000',
+    });
+
+    const stock = await adminPool.query<{
+      quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `SELECT quantity_on_hand::text, quantity_reserved::text FROM inventory_stock_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3`,
+      [tenantId, factoryId, itemId],
+    );
+    expect(stock.rows[0]).toMatchObject({ quantity_on_hand: '9.0000', quantity_reserved: '3.0000' });
+    const locationA = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      `SELECT quantity_on_hand::text, quantity_reserved::text FROM inventory_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4`,
+      [tenantId, factoryId, itemId, binA.id],
+    );
+    expect(locationA.rows[0]).toMatchObject({ quantity_on_hand: '2.0000', quantity_reserved: '2.0000' });
+    const lotBalance = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      `SELECT quantity_on_hand::text, quantity_reserved::text FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, factoryId, itemId, earlyLotId, binA.id],
+    );
+    expect(lotBalance.rows[0]).toMatchObject({ quantity_on_hand: '2.0000', quantity_reserved: '2.0000' });
   });
 
   it('replays duplicate create and partial-issue keys without duplicating reservations or movements', async () => {
