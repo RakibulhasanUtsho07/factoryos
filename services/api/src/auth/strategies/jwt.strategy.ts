@@ -23,6 +23,12 @@ import { DatabaseService } from '../../database/database.service';
 
 import type { AuthUser } from '../auth-user';
 
+import {
+  resolveAuthMode,
+  resolveNodeEnvironment,
+  resolveOidcConfiguration,
+} from '../../config/runtime-config';
+
 interface JwtPayload {
   sub?: string;
   tenant_id?: string;
@@ -55,46 +61,24 @@ export class JwtStrategy extends PassportStrategy(
     private readonly database: DatabaseService,
     private readonly configService: ConfigService,
   ) {
-    const authMode =
-      configService.get<string>(
-        'AUTH_MODE',
-      ) || 'dev';
+    const nodeEnv = resolveNodeEnvironment(
+      configService.get<string>('NODE_ENV'),
+    );
+    const authMode = resolveAuthMode(
+      nodeEnv,
+      configService.get<string>('AUTH_MODE'),
+      configService.get<string>('DEV_AUTH_ENABLED'),
+    );
 
     if (
       authMode === 'oidc'
     ) {
-      const issuer =
-        configService.get<string>(
-          'OIDC_ISSUER',
-        );
-
-      const audience =
-        configService.get<string>(
-          'OIDC_AUDIENCE',
-        );
-
-      const jwksUri =
-        configService.get<string>(
-          'OIDC_JWKS_URI',
-        );
-
-      if (!issuer) {
-        throw new Error(
-          'OIDC_ISSUER is required when AUTH_MODE=oidc',
-        );
-      }
-
-      if (!audience) {
-        throw new Error(
-          'OIDC_AUDIENCE is required when AUTH_MODE=oidc',
-        );
-      }
-
-      if (!jwksUri) {
-        throw new Error(
-          'OIDC_JWKS_URI is required when AUTH_MODE=oidc',
-        );
-      }
+      const { issuer, audience, jwksUri } = resolveOidcConfiguration(
+        nodeEnv,
+        configService.get<string>('OIDC_ISSUER'),
+        configService.get<string>('OIDC_AUDIENCE'),
+        configService.get<string>('OIDC_JWKS_URI'),
+      );
 
       const jwksClient =
         new JwksClient({
@@ -286,10 +270,11 @@ export class JwtStrategy extends PassportStrategy(
     request: FactoryOsRequest,
     payload: JwtPayload,
   ): Promise<AuthUser> {
-    const authMode =
-      this.configService.get<string>(
-        'AUTH_MODE',
-      ) || 'dev';
+    const authMode = resolveAuthMode(
+      resolveNodeEnvironment(this.configService.get<string>('NODE_ENV')),
+      this.configService.get<string>('AUTH_MODE'),
+      this.configService.get<string>('DEV_AUTH_ENABLED'),
+    );
 
     if (
       typeof payload.sub !==
