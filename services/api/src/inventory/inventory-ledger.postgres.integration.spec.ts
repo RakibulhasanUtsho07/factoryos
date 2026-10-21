@@ -209,19 +209,18 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
       );
 
       await client.query('SAVEPOINT protect_reservation_balance_consistency');
-      await client.query(
+      await expect(client.query(
         `
         UPDATE inventory_reservations
         SET status = 'RELEASED',
+            remaining_quantity = 0,
+            released_quantity = quantity - consumed_quantity,
             transition_idempotency_key = $1,
             transition_request_hash = $2,
             updated_at = clock_timestamp()
         WHERE id = $3
         `,
         ['release-invalid-' + randomUUID(), 'b'.repeat(64), reservationId],
-      );
-      await expect(client.query(
-        'SET CONSTRAINTS ctr_inventory_reservation_balance_consistency IMMEDIATE',
       )).rejects.toMatchObject({ code: '23514' });
       await client.query('ROLLBACK TO SAVEPOINT protect_reservation_balance_consistency');
       await client.query('SET CONSTRAINTS ctr_inventory_reservation_balance_consistency DEFERRED');
@@ -235,6 +234,8 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         `
         UPDATE inventory_reservations
         SET status = 'RELEASED',
+            remaining_quantity = 0,
+            released_quantity = quantity - consumed_quantity,
             transition_idempotency_key = $1,
             transition_request_hash = $2,
             updated_at = clock_timestamp()
