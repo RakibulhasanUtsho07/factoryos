@@ -744,4 +744,173 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(moves.filter((move) => move.movement_purpose === 'PICK')).toHaveLength(1);
   });
 
+  it('allocates a work-order BOM across FEFO lots/bins and replays the same reservation set', async () => {
+    const fixture = await createStockFixture('0.0000');
+    const { binA, binB } = await createWarehouseAndBins(fixture.factoryId);
+    await enableLotTracking(fixture.factoryId, 'FEFO');
+    const earlierExpiryLot = await createTraceabilityLot(fixture.factoryId, fixture.itemId, '6.0000', 5);
+    const laterExpiryLot = await createTraceabilityLot(fixture.factoryId, fixture.itemId, '7.0000', 45);
+
+    await inventoryService.createStockMovement(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { movement_type: 'RECEIPT', quantity: 6, location_id: binA.id, traceability_unit_id: earlierExpiryLot },
+      'fefo-lot-receipt-a-' + randomUUID(), requestId, traceId,
+    );
+    await inventoryService.createStockMovement(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { movement_type: 'RECEIPT', quantity: 7, location_id: binB.id, traceability_unit_id: laterExpiryLot },
+      'fefo-lot-receipt-b-' + randomUUID(), requestId, traceId,
+    );
+
+    const workOrderId = randomUUID();
+    const input = {
+      userId, tenantId, factoryId: fixture.factoryId,
+      workOrderId, workOrderNumber: 'WO-FEFO-' + workOrderId.slice(0, 8),
+      requirementId: randomUUID(), bomLineId: randomUUID(),
+      itemId: fixture.itemId, itemUnit: 'PCS', lineNumber: 10,
+      quantity: '8.0000', correlationId: traceId,
+    };
+    const reserve = async () => {
+      const client = await adminPool.connect();
+      try {
+        await client.query('BEGIN');
+        const allocations = await reservationService.reserveWorkOrderMaterialRequirement(client as never, input);
+        await client.query('COMMIT');
+        return allocations;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    const first = await reserve();
+    expect(first).toHaveLength(2);
+    expect(first.map((row) => row.traceabilityUnitId)).toEqual([earlierExpiryLot, laterExpiryLot]);
+    expect(first.map((row) => row.quantity)).toEqual(['6.0000', '2.0000']);
+    expect(first.map((row) => row.locationId)).toEqual([binA.id, binB.id]);
+
+    const replay = await reserve();
+    expect(replay).toEqual(first);
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(aggregate).toMatchObject({ quantity_on_hand: '13.0000', quantity_reserved: '8.0000' });
+    const reservations = await adminPool.query<{ count: string; quantity: string }>(
+      `SELECT COUNT(*)::text AS count, SUM(quantity)::text AS quantity
+       FROM inventory_reservations
+       WHERE tenant_id = $1 AND factory_id = $2 AND reference_type = 'WORK_ORDER_MATERIAL'
+         AND reference_id = $3 AND status = 'RESERVED'`,
+      [tenantId, fixture.factoryId, workOrderId],
+    );
+    expect(reservations.rows[0]).toEqual({ count: '2', quantity: '8.0000' });
+    const lotBalances = await adminPool.query<{
+      traceability_unit_id: string; quantity_reserved: string; quantity_on_hand: string;
+    }>(
+      `SELECT traceability_unit_id::text AS traceability_unit_id,
+              quantity_reserved::text AS quantity_reserved,
+              quantity_on_hand::text AS quantity_on_hand
+       FROM inventory_lot_location_balances
+       WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+       ORDER BY traceability_unit_id`,
+      [tenantId, fixture.factoryId, fixture.itemId],
+    );
+    expect(lotBalances.rows).toHaveLength(2);
+    expect(lotBalances.rows.reduce((total, row) => total + Number(row.quantity_reserved), 0)).toBe(8);
+  });
+
+  it('serializes concurrent lot reservations and replays partial issue without double-decrementing stock', async () => {
+    const fixture = await createStockFixture('0.0000');
+    const { binA } = await createWarehouseAndBins(fixture.factoryId);
+    await enableLotTracking(fixture.factoryId, 'FIFO');
+    const lotId = await createTraceabilityLot(fixture.factoryId, fixture.itemId, '4.0000', 30);
+    await inventoryService.createStockMovement(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { movement_type: 'RECEIPT', quantity: 4, location_id: binA.id, traceability_unit_id: lotId },
+      'fifo-race-receipt-' + randomUUID(), requestId, traceId,
+    );
+
+    const reserve = (key: string) => reservationService.createReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      { quantity: 3, location_id: binA.id, traceability_unit_id: lotId },
+      key, requestId, traceId,
+    );
+    const results = await Promise.allSettled([
+      reserve('fifo-concurrent-reservation-a-' + randomUUID()),
+      reserve('fifo-concurrent-reservation-b-' + randomUUID()),
+    ]);
+    const successes = results.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof reserve>>> => result.status === 'fulfilled');
+    const failures = results.filter((result) => result.status === 'rejected');
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    const reservation = successes[0]!.value;
+    expect(reservation).toMatchObject({
+      status: 'RESERVED',
+      location_id: binA.id,
+      traceability_unit_id: lotId,
+      quantity: '3.0000',
+      quantity_consumed: '0.0000',
+      remaining_quantity: '3.0000',
+    });
+
+    const firstIssue = await reservationService.consumeReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId, reservation.id,
+      { quantity: 1.25 }, 'fifo-partial-issue-1', requestId, traceId,
+    );
+    expect(firstIssue).toMatchObject({
+      status: 'RESERVED',
+      consumed_quantity: '1.2500',
+      quantity_consumed: '1.2500',
+      remaining_quantity: '1.7500',
+      replayed: false,
+    });
+    const replay = await reservationService.consumeReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId, reservation.id,
+      { quantity: 1.25 }, 'fifo-partial-issue-1', requestId, traceId,
+    );
+    expect(replay).toMatchObject({
+      status: 'RESERVED',
+      consumed_quantity: '1.2500',
+      quantity_consumed: '1.2500',
+      remaining_quantity: '1.7500',
+      replayed: true,
+    });
+
+    const finalIssue = await reservationService.consumeReservation(
+      userId, tenantId, fixture.factoryId, fixture.itemId, reservation.id,
+      { quantity: 1.75 }, 'fifo-partial-issue-2', requestId, traceId,
+    );
+    expect(finalIssue).toMatchObject({
+      status: 'CONSUMED',
+      quantity_consumed: '3.0000',
+      remaining_quantity: '0.0000',
+      replayed: false,
+    });
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(aggregate).toMatchObject({ quantity_on_hand: '1.0000', quantity_reserved: '0.0000' });
+    const bin = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand, quantity_reserved::text AS quantity_reserved
+       FROM inventory_location_balances
+       WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND location_id = $4`,
+      [tenantId, fixture.factoryId, fixture.itemId, binA.id],
+    );
+    expect(bin.rows[0]).toEqual({ quantity_on_hand: '1.0000', quantity_reserved: '0.0000' });
+    const lot = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand, quantity_reserved::text AS quantity_reserved
+       FROM inventory_lot_location_balances
+       WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND traceability_unit_id = $4 AND location_id = $5`,
+      [tenantId, fixture.factoryId, fixture.itemId, lotId, binA.id],
+    );
+    expect(lot.rows[0]).toEqual({ quantity_on_hand: '1.0000', quantity_reserved: '0.0000' });
+    const evidence = await adminPool.query<{ count: string; quantity: string }>(
+      `SELECT COUNT(*)::text AS count, SUM(quantity)::text AS quantity
+       FROM inventory_reservation_consumptions
+       WHERE tenant_id = $1 AND factory_id = $2 AND reservation_id = $3`,
+      [tenantId, fixture.factoryId, reservation.id],
+    );
+    expect(evidence.rows[0]).toEqual({ count: '2', quantity: '3.0000' });
+  });
+
+
 });
