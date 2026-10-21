@@ -1312,18 +1312,31 @@ export class InventoryReservationService {
         });
       }
 
+      if (targetStatus === 'RELEASED') {
+        await this.releaseTraceabilityAllocations(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId, itemId: reservation.item_id,
+          reservationId: reservation.id, quantity: transitionQuantity,
+        });
+      }
+      const consumedAfter = this.decimalToUnits(reservation.consumed_quantity)
+        + (targetStatus === 'CONSUMED' ? this.decimalToUnits(transitionQuantity) : 0n);
+      const releasedAfter = this.decimalToUnits(reservation.released_quantity)
+        + (targetStatus === 'RELEASED' ? this.decimalToUnits(transitionQuantity) : 0n);
       const updatedResult = await client.query<ReservationRow>(
         `
         UPDATE inventory_reservations
-        SET status = $1, transition_idempotency_key = $2,
-            transition_request_hash = $3, consumed_movement_id = $4::uuid,
+        SET status = $1, remaining_quantity = 0,
+            consumed_quantity = $2::numeric, released_quantity = $3::numeric,
+            transition_idempotency_key = $4,
+            transition_request_hash = $5, consumed_movement_id = $6::uuid,
             updated_at = clock_timestamp()
         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
           AND item_id = $8 AND status = 'RESERVED'
         RETURNING ${RESERVATION_COLUMNS}
         `,
         [
-          targetStatus, transitionKey, transitionHash, consumedMovementId,
+          targetStatus, this.unitsToDecimal(consumedAfter), this.unitsToDecimal(releasedAfter),
+          transitionKey, transitionHash, consumedMovementId,
           reservation.id, input.tenantId, input.factoryId, reservation.item_id,
         ],
       );
@@ -1343,7 +1356,10 @@ export class InventoryReservationService {
           reservation: {
             id: reservation.id,
             item_id: reservation.item_id,
-            quantity: reservation.quantity,
+            quantity: transitionQuantity,
+            remaining_quantity: '0.0000',
+            consumed_quantity: this.unitsToDecimal(consumedAfter),
+            released_quantity: this.unitsToDecimal(releasedAfter),
             location_id: reservation.location_id,
             status: targetStatus,
             consumed_movement_id: consumedMovementId,
