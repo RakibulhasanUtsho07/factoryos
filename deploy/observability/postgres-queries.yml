@@ -2,47 +2,8 @@
 # Scrape using a dedicated read-only monitoring role with only the statistics
 # visibility required by pg_stat_activity/pg_blocking_pids and SELECT on outbox_events.
 # Never attach tenant IDs, event IDs, SQL, or payload values as metric labels.
-factoryos_outbox:
-  query: |
-    SELECT status, COUNT(*)::double precision AS events
-    FROM outbox_events
-    WHERE status IN ('PENDING', 'FAILED', 'PROCESSING', 'QUARANTINED')
-    GROUP BY status
-  metrics:
-    - status:
-        usage: "LABEL"
-        description: "Bounded outbox dispatch state"
-    - events:
-        usage: "GAUGE"
-        description: "Number of outbox events in the bounded dispatch state"
-
-factoryos_outbox_oldest:
-  query: |
-    SELECT
-      status,
-      GREATEST(EXTRACT(EPOCH FROM clock_timestamp() - MIN(created_at)), 0)::double precision AS age_seconds
-    FROM outbox_events
-    WHERE status IN ('PENDING', 'FAILED', 'PROCESSING', 'QUARANTINED')
-    GROUP BY status
-  metrics:
-    - status:
-        usage: "LABEL"
-        description: "Bounded outbox dispatch state"
-    - age_seconds:
-        usage: "GAUGE"
-        description: "Age in seconds of the oldest event in the dispatch state"
-
-factoryos_outbox_freshness:
-  query: |
-    SELECT COALESCE(
-      EXTRACT(EPOCH FROM clock_timestamp() - MAX(published_at)),
-      -1
-    )::double precision AS seconds_since_last_publish
-    FROM outbox_events
-  metrics:
-    - seconds_since_last_publish:
-        usage: "GAUGE"
-        description: "Seconds since the most recent successful outbox publication; -1 means none has ever published"
+# outbox_events uses FORCE ROW LEVEL SECURITY; queue metrics are aggregated
+# by the API dispatcher inside tenant-scoped transactions and scraped from each API replica.
 
 factoryos_pg_blocking_sessions:
   query: |
