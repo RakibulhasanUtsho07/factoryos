@@ -477,10 +477,10 @@ BEGIN
     RETURN OLD;
   END IF;
 
-  SELECT quantity_reserved INTO v_current_reserved
-  FROM inventory_location_balances
-  WHERE tenant_id = v_tenant_id AND factory_id = v_factory_id
-    AND item_id = v_item_id AND location_id = v_location_id;
+  SELECT lb.quantity_reserved INTO v_current_reserved
+  FROM inventory_location_balances lb
+  WHERE lb.tenant_id = v_tenant_id AND lb.factory_id = v_factory_id
+    AND lb.item_id = v_item_id AND lb.location_id = v_location_id;
 
   IF FOUND AND (
     v_current_reserved IS DISTINCT FROM v_active_reservations
