@@ -1,0 +1,110 @@
+# Provider-neutral baseline intent. Translate into the target platform's actual firewall,
+# security groups, CNI/network policy or service-mesh policy; this file does not enforce traffic.
+status: PROPOSED_DEFAULT_DENY
+default_policy:
+  ingress: DENY
+  egress: DENY
+zones:
+  edge:
+    ingress:
+      - source: approved_public_load_balancer_or_waf
+        destination: api_private_listener
+        protocol: TCP
+        port: 443
+        owner_evidence: REQUIRED
+    egress:
+      - destination: api_private_listener
+        protocol: TCP
+        port: 3001
+        owner_evidence: REQUIRED
+  api:
+    ingress:
+      - source: approved_edge_zone_only
+        destination: api_private_listener
+        protocol: TCP
+        port: 3001
+        owner_evidence: REQUIRED
+      - source: approved_monitoring_zone_only
+        destination: metrics_endpoint
+        protocol: TCP
+        port: 3001
+        authentication: bearer_token_required
+        owner_evidence: REQUIRED
+    egress:
+      - destination: private_postgres_endpoint
+        protocol: TCP
+        port: 5432
+        tls: verify_full
+        owner_evidence: REQUIRED
+      - destination: approved_oidc_issuer_and_jwks_hosts
+        protocol: TCP
+        port: 443
+        tls: required
+        redirect_to_arbitrary_host: DENY
+        owner_evidence: REQUIRED
+      - destination: approved_secrets_manager_endpoint
+        protocol: TCP
+        port: 443
+        tls: required
+        identity: workload_identity_preferred
+        owner_evidence: REQUIRED
+      - destination: otlp_collector_private_endpoint
+        protocol: TCP
+        port: 4318
+        tls: required
+        authentication: bearer_token_required
+        owner_evidence: REQUIRED
+      - destination: approved_dns_resolver
+        protocol: UDP
+        port: 53
+        owner_evidence: REQUIRED
+      - destination: approved_domain_or_service_allowlist_for_enabled_integrations
+        protocol: OWNER_DEFINED
+        port: OWNER_DEFINED
+        default: DENY
+        wildcard_internet_access: DENY
+        owner_evidence: REQUIRED
+  database:
+    ingress:
+      - source: api_private_subnet_and_jit_migration_runner
+        protocol: TCP
+        port: 5432
+        tls: verify_full
+        owner_evidence: REQUIRED
+    egress:
+      - destination: approved_backup_endpoint_and_dns_only
+        protocol: OWNER_DEFINED
+        default: DENY
+        owner_evidence: REQUIRED
+  observability:
+    ingress:
+      - source: api_private_subnet
+        destination: otlp_collector_receiver
+        protocol: TCP
+        port: 4318
+        tls: required
+        authentication: bearer_token_required
+        owner_evidence: REQUIRED
+      - source: prometheus_private_subnet
+        destination: internal_metrics_endpoints
+        protocol: TCP
+        port: 3001
+        authentication: bearer_token_required
+        owner_evidence: REQUIRED
+    egress:
+      - destination: approved_telemetry_backend
+        protocol: TCP
+        port: 443
+        tls: required
+        authentication: secret_manager_injected
+        owner_evidence: REQUIRED
+forbidden_paths:
+  - public_internet_to_database
+  - public_internet_to_api_private_listener
+  - public_internet_to_metrics_or_otlp_receiver
+  - public_internet_to_ics_ot_network
+  - api_to_arbitrary_internet_without_exception
+  - monitoring_role_to_tenant_business_rows
+exceptions:
+  process: time_bounded_documented_owner_approval_plus_security_review
+  required_fields: [business_reason, exact_sources, exact_destinations, expiry_utc, approver, evidence_reference]

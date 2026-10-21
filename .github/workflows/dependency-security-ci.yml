@@ -13,7 +13,11 @@ on:
       - '.github/workflows/api-postgres-ci.yml'
       - 'scripts/recovery/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'services/api/test/**'
+      - 'services/api/src/auth/**'
   push:
     branches: [main, dev, rakibul-hasan]
     paths:
@@ -27,7 +31,11 @@ on:
       - '.github/workflows/api-postgres-ci.yml'
       - 'scripts/recovery/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'services/api/test/**'
+      - 'services/api/src/auth/**'
 
 permissions:
   contents: read
@@ -58,12 +66,14 @@ jobs:
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/performance/api-load-smoke.mjs
           node --check scripts/performance/api-load-smoke.test.mjs
+          node --check scripts/security/production-security-config.test.mjs
 
       - name: Exercise bounded load and backup/restore security controls
         working-directory: services/api
         run: |
           npm run test:load-smoke:contract
           npm run test:recovery:contract
+          node --test ../../scripts/security/production-security-config.test.mjs
 
       - name: Audit production dependencies
         run: npm audit --omit=dev

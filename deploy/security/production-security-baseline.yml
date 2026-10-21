@@ -1,0 +1,104 @@
+# Production security attestation template. Values are intentionally NOT pre-approved.
+status: NOT_ATTESTED
+candidate:
+  git_sha: ""
+  environment: ""
+  hosting_provider_and_region: ""
+  deployment_topology: ""
+  api_replica_count: null
+  database_service: ""
+  evidence_change_reference: ""
+identity:
+  auth_mode: oidc
+  dev_auth_enabled: false
+  oidc:
+    issuer: ""
+    audience: ""
+    jwks_uri: ""
+    require_mfa: true
+    mfa_amr_values: []
+    mfa_acr_values: []
+    verified_tls: false
+    idp_mfa_policy_evidence: ""
+  scim:
+    repository_implementation_present: false
+    applicability: OWNER_DECISION_REQUIRED
+    identity_provider_scim_enabled: false
+    group_role_mapping_reviewed: false
+    evidence_reference: ""
+service_identities:
+  api_database_role:
+    name: ""
+    login: true
+    superuser: false
+    createdb: false
+    createrole: false
+    replication: false
+    bypassrls: false
+    grants_reviewed_against_table_inventory: false
+  migration_role:
+    distinct_from_runtime_role: true
+    just_in_time_elevation: false
+    credential_source: ""
+    use_window_and_approver_recorded: false
+  monitoring_role:
+    separate_from_runtime_role: true
+    superuser: false
+    bypassrls: false
+    business_table_select: false
+    evidence_reference: ""
+secrets:
+  manager_provider_and_scope: ""
+  no_static_secrets_in_image_or_repository_verified: false
+  runtime_secret_versions_attested: false
+  database_credential_rotation:
+    interval_days: null
+    last_completed_utc: ""
+    tested_application_reconnect: false
+    rollback_credential_overlap_expiry_utc: ""
+  oidc_client_or_workload_credential_rotation:
+    interval_days: null
+    last_completed_utc: ""
+    tested_old_credential_revocation: false
+  signing_key_rotation:
+    issuer_owned: true
+    jwks_overlap_and_cache_tested: false
+    evidence_reference: ""
+network:
+  default_deny_ingress: false
+  default_deny_egress: false
+  api_ingress_restricted_to_trusted_edge: false
+  database_private_only: false
+  metrics_and_otlp_private_only: false
+  production_egress_allowlist_reviewed: false
+  no_public_route_to_ot_networks: false
+  evidence_reference: ""
+security_validation:
+  dependency_audit:
+    workflow_url: ""
+    candidate_sha: ""
+    result: NOT_RUN
+  tenant_negative_tests:
+    api_authz_cross_tenant_read: NOT_RUN
+    api_cross_tenant_write: NOT_RUN
+    postgres_rls_missing_context: NOT_RUN
+    postgres_rls_cross_tenant_write: NOT_RUN
+    unauthorized_metrics_scrape: NOT_RUN
+    dev_auth_disabled_in_production: NOT_RUN
+    invalid_oidc_mfa_claims_denied: NOT_RUN
+  external_review:
+    reviewer_identity: ""
+    reviewer_organization: ""
+    independence_conflict_check: NOT_RUN
+    authorization_reference: ""
+    scope_and_exclusions_approved: false
+    executed_at_utc: ""
+    report_reference: ""
+    all_high_critical_findings_closed: false
+release:
+  operator: ""
+  approver: ""
+  approval_reference: ""
+  rollback_artifact_and_procedure: ""
+  rollback_drill_reference: ""
+  release_approved: false

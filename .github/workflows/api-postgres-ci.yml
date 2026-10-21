@@ -6,6 +6,9 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
       - 'scripts/recovery/**'
@@ -23,6 +26,9 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
       - 'scripts/recovery/**'
@@ -433,6 +439,19 @@ jobs:
           OUTBOX_DISPATCHER_ENABLED=false
           EOF
 
+      - name: Validate read-only production database role audit query
+        env:
+          TEST_ADMIN_DATABASE_URL: postgresql://factoryos:ci-admin-only@127.0.0.1:5432/factoryos_test
+        run: |
+          psql "$TEST_ADMIN_DATABASE_URL" \
+            -v ON_ERROR_STOP=1 \
+            -v application_role=factoryos_app \
+            -v migration_role=factoryos \
+            -f deploy/security/postgres-role-audit.sql
+          psql "$TEST_ADMIN_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c \
+            "SELECT CASE WHEN rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls THEN 'unsafe' ELSE 'least-privilege-role-flags-pass' END FROM pg_roles WHERE rolname = 'factoryos_app'" \
+            | grep -qx 'least-privilege-role-flags-pass'
+
       - name: Validate recovery rehearsal script syntax
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
@@ -443,6 +462,11 @@ jobs:
           node --check scripts/recovery/rehearsal-evidence.test.mjs
       - name: Run recovery contract tests
         run: node --test scripts/recovery/postgres-backup-restore-rehearsal.test.mjs scripts/recovery/rehearsal-evidence.test.mjs
+
+      - name: Validate production security configuration and harness syntax
+        run: |
+          node --check scripts/security/production-security-config.test.mjs
+          node --test scripts/security/production-security-config.test.mjs
 
       - name: Validate observability and performance contracts
         run: |

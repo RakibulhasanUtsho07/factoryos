@@ -6,6 +6,9 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
       - 'scripts/recovery/**'
@@ -19,6 +22,9 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
       - 'scripts/recovery/**'
@@ -94,6 +100,7 @@ jobs:
           node --check scripts/performance/api-soak-test.mjs
           node --check scripts/performance/api-soak-test.test.mjs
           node --check scripts/performance/observability-config.test.mjs
+          node --check scripts/security/production-security-config.test.mjs
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
@@ -101,6 +108,7 @@ jobs:
           npm run test:load-smoke:contract
           npm run test:capacity:contract
           npm run test:recovery:contract
+          node --test ../../scripts/security/production-security-config.test.mjs
       - name: Lint API
         working-directory: services/api
         run: npm run lint
