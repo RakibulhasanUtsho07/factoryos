@@ -37,6 +37,9 @@ test('collector receiver uses TLS and exporter buffering stays bounded', async (
   const config = await read('deploy/observability/otel-collector.yaml');
   assert.match(config, /cert_file: \/run\/secrets\/otel_receiver_cert/);
   assert.match(config, /key_file: \/run\/secrets\/otel_receiver_key/);
+  assert.match(config, /bearertokenauth/);
+  assert.match(config, /filename: \/run\/secrets\/otel_receiver_token/);
+  assert.match(config, /authenticator: bearertokenauth/);
   assert.match(config, /limit_mib: 512/);
   assert.match(config, /queue_size: 1000/);
   assert.match(config, /max_elapsed_time: 5m/);
@@ -70,6 +73,7 @@ test('operator alert routing reads its secret from a file instead of committing 
   assert.match(compose, /127\.0\.0\.1:3000:3000/);
   assert.match(compose, /metrics_scrape_token/);
   assert.match(compose, /postgres_exporter_password/);
+  assert.match(compose, /otel_receiver_token/);
 });
 
 test('provisioned dashboard is valid JSON and displays API, database, queue and OTLP signals', async () => {
