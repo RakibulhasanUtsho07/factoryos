@@ -46,14 +46,19 @@ describe('InventoryReservationService', () => {
   });
 
   function row(overrides: Record<string, unknown> = {}) {
+    const status = String(overrides.status ?? 'RESERVED');
+    const quantity = String(overrides.quantity ?? '2.0000');
     return {
       id: RESERVATION_ID,
       tenant_id: TENANT_ID,
       factory_id: FACTORY_ID,
       item_id: ITEM_ID,
       location_id: null,
-      quantity: '2.0000',
-      status: 'RESERVED',
+      quantity,
+      remaining_quantity: status === 'RESERVED' ? quantity : '0.0000',
+      consumed_quantity: status === 'CONSUMED' ? quantity : '0.0000',
+      released_quantity: status === 'RELEASED' ? quantity : '0.0000',
+      status,
       idempotency_key: 'reserve-1',
       request_hash: createHash('sha256').update(JSON.stringify({
         itemId: ITEM_ID,
@@ -86,6 +91,7 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([]))
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
       .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{ allocation_policy: 'FIFO', has_lot: false, has_serial: false, has_identity: false }]))
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '2.0000' }]))
       .mockResolvedValueOnce(queryRows([row()]))
       .mockResolvedValueOnce(queryRows([]));
@@ -97,10 +103,10 @@ describe('InventoryReservationService', () => {
     );
 
     expect(result).toMatchObject({ id: RESERVATION_ID, status: 'RESERVED', quantity: '2.0000', replayed: false });
-    expect(String(client.query.mock.calls[3]?.[0])).toContain('quantity_on_hand - quantity_reserved >= $1::numeric');
-    expect(String(client.query.mock.calls[4]?.[0])).toContain('INSERT INTO inventory_reservations');
-    expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO outbox_events');
-    expect(client.query.mock.calls[5]?.[1]).toContain('INVENTORY.STOCK_RESERVED');
+    expect(String(client.query.mock.calls[4]?.[0])).toContain('quantity_on_hand - quantity_reserved >= $1::numeric');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO inventory_reservations');
+    expect(String(client.query.mock.calls[6]?.[0])).toContain('INSERT INTO outbox_events');
+    expect(client.query.mock.calls[6]?.[1]).toContain('INVENTORY.STOCK_RESERVED');
     expect(audit.record).toHaveBeenCalledTimes(1);
   });
 
@@ -380,6 +386,7 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([])) // legacy v1 key
       .mockResolvedValueOnce(queryRows([])) // no pre-existing active allocations
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '7.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ allocation_policy: 'FIFO', has_lot: false, has_serial: false, has_identity: false }]))
       .mockResolvedValueOnce(queryRows([
         {
           location_id: BIN_A_ID, location_code: 'A-01', is_default: false,
