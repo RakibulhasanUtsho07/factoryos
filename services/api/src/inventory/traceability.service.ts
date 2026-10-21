@@ -639,7 +639,7 @@ export class TraceabilityService {
       throw new BadRequestException('supported_unit_types must contain at least one traceability unit type');
     }
     const supportedUnitTypes = [...new Set(dto.supported_unit_types.map(x => String(x).toUpperCase()))];
-    if (supportedUnitTypes.some(x => !['LOT', 'SERIAL', 'PALLET', 'CARTON', 'BUNDLE', 'FINISHED_GOOD', 'SHIPMENT'].includes(x))) {
+    if (supportedUnitTypes.some(x => !['MATERIAL', 'LOT', 'SERIAL', 'PALLET', 'CARTON', 'BUNDLE', 'FINISHED_GOOD', 'SHIPMENT'].includes(x))) {
       throw new BadRequestException('supported_unit_types contains an unsupported unit type');
     }
     const labelLayout = this.objectValue(dto.label_layout);
