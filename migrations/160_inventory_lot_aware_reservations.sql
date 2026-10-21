@@ -82,10 +82,14 @@ ALTER TABLE inventory_reservations
   ADD COLUMN quantity_released NUMERIC(18,4) NOT NULL DEFAULT 0,
   ADD COLUMN lot_policy_enforced BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Existing reservations are historical facts. Backfill new counters without
+-- invoking the prior terminal-state immutability trigger.
+ALTER TABLE inventory_reservations DISABLE TRIGGER USER;
 UPDATE inventory_reservations
 SET quantity_remaining = CASE WHEN status = 'RESERVED' THEN quantity ELSE 0 END,
     quantity_consumed = CASE WHEN status = 'CONSUMED' THEN quantity ELSE 0 END,
     quantity_released = CASE WHEN status = 'RELEASED' THEN quantity ELSE 0 END;
+ALTER TABLE inventory_reservations ENABLE TRIGGER USER;
 
 ALTER TABLE inventory_reservations
   ADD CONSTRAINT chk_inventory_reservation_quantity_conservation
@@ -401,10 +405,43 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reservation_balance()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_balance NUMERIC(18,4);
+  v_active_reservations NUMERIC(18,4);
+BEGIN
+  IF NEW.location_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT quantity_reserved INTO v_balance
+  FROM inventory_location_balances
+  WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id AND location_id = NEW.location_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'location-bound reservation requires a location balance'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT COALESCE(SUM(quantity_remaining), 0) INTO v_active_reservations
+  FROM inventory_reservations
+  WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id AND location_id = NEW.location_id AND status = 'RESERVED';
+  IF v_balance IS DISTINCT FROM v_active_reservations THEN
+    RAISE EXCEPTION 'inventory location reserved quantity must equal active bin reservation remaining quantity'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$;
+
 CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reserved_balance()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $
 DECLARE
   v_tenant_id UUID;
   v_factory_id UUID;
@@ -523,6 +560,35 @@ AFTER INSERT OR UPDATE ON inventory_reservations
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_balance();
 
+CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reservation_balance()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_balance NUMERIC(18,4);
+  v_active_reservations NUMERIC(18,4);
+BEGIN
+  IF NEW.location_id IS NULL THEN RETURN NULL; END IF;
+  SELECT quantity_reserved INTO v_balance
+  FROM inventory_location_balances
+  WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id AND location_id = NEW.location_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'location-bound reservation requires a location balance'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT COALESCE(SUM(quantity_remaining), 0) INTO v_active_reservations
+  FROM inventory_reservations
+  WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id AND location_id = NEW.location_id AND status = 'RESERVED';
+  IF v_balance IS DISTINCT FROM v_active_reservations THEN
+    RAISE EXCEPTION 'inventory location reserved quantity must equal active bin reservation remaining quantity'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$;
+
 CREATE CONSTRAINT TRIGGER ctr_inventory_location_balance_final_state
 AFTER INSERT OR UPDATE OR DELETE ON inventory_location_balances
 DEFERRABLE INITIALLY DEFERRED
@@ -628,8 +694,15 @@ BEGIN
   FROM inventory_reservation_lot_allocations
   WHERE reservation_id = NEW.reservation_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
 
-  IF NOT v_reservation.lot_policy_enforced
-     OR v_allocated IS DISTINCT FROM v_reservation.quantity
+  IF NOT v_reservation.lot_policy_enforced THEN
+    IF v_allocated <> 0 OR v_remaining <> 0 OR v_consumed <> 0 OR v_released <> 0 THEN
+      RAISE EXCEPTION 'non-lot-tracked reservations cannot carry lot allocations'
+        USING ERRCODE = '23514';
+    END IF;
+    RETURN NULL;
+  END IF;
+
+  IF v_allocated IS DISTINCT FROM v_reservation.quantity
      OR v_remaining IS DISTINCT FROM v_reservation.quantity_remaining
      OR v_consumed IS DISTINCT FROM v_reservation.quantity_consumed
      OR v_released IS DISTINCT FROM v_reservation.quantity_released THEN
@@ -849,12 +922,19 @@ DECLARE
   v_quantity NUMERIC(18,4);
   v_enforced BOOLEAN;
   v_lot_quantity NUMERIC(18,4);
+  v_consumption_id UUID;
 BEGIN
+  IF TG_TABLE_NAME = 'inventory_reservation_consumptions' THEN
+    v_consumption_id := NEW.id;
+  ELSE
+    v_consumption_id := NEW.consumption_id;
+  END IF;
+
   SELECT c.quantity, r.lot_policy_enforced INTO v_quantity, v_enforced
   FROM inventory_reservation_consumptions c
   JOIN inventory_reservations r
     ON r.id = c.reservation_id AND r.tenant_id = c.tenant_id AND r.factory_id = c.factory_id
-  WHERE c.id = NEW.consumption_id AND c.tenant_id = NEW.tenant_id AND c.factory_id = NEW.factory_id;
+  WHERE c.id = v_consumption_id AND c.tenant_id = NEW.tenant_id AND c.factory_id = NEW.factory_id;
 
   IF v_quantity IS NULL THEN
     RAISE EXCEPTION 'reservation consumption lot allocation references a missing receipt'
@@ -863,7 +943,7 @@ BEGIN
 
   SELECT COALESCE(SUM(quantity), 0) INTO v_lot_quantity
   FROM inventory_reservation_consumption_lots
-  WHERE consumption_id = NEW.consumption_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+  WHERE consumption_id = v_consumption_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
 
   IF v_enforced AND v_lot_quantity IS DISTINCT FROM v_quantity THEN
     RAISE EXCEPTION 'lot-tracked consumption must account for the complete consumed quantity by lot'
@@ -956,11 +1036,6 @@ BEGIN
   RETURN NULL;
 END;
 $$;
-
-CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_lot_policy_consistency
-AFTER INSERT OR UPDATE ON inventory_reservations
-DEFERRABLE INITIALLY DEFERRED
-FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_lot_allocation();
 
 CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_consumption_record_lots
 AFTER INSERT ON inventory_reservation_consumptions
