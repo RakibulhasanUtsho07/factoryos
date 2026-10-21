@@ -541,14 +541,12 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       CREATE FUNCTION factoryos_test_cycle_count_rollback()
       RETURNS trigger
       LANGUAGE plpgsql
-      AS $
-      BEGIN
-        IF NEW.status = 'APPLIED' AND COALESCE(NEW.notes, '') LIKE 'force-rollback:%' THEN
-          RAISE EXCEPTION 'TEST_CYCLE_COUNT_ROLLBACK' USING ERRCODE = 'P0001';
+      AS 'BEGIN
+        IF NEW.status = ''APPLIED'' AND COALESCE(NEW.notes, '''') LIKE ''force-rollback:%'' THEN
+          RAISE EXCEPTION ''TEST_CYCLE_COUNT_ROLLBACK'' USING ERRCODE = ''P0001'';
         END IF;
         RETURN NEW;
-      END;
-      $
+      END;'
     `);
     await adminPool.query(`
       CREATE TRIGGER zz_test_cycle_count_rollback
