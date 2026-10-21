@@ -1966,7 +1966,7 @@ export class InventoryReservationService {
     rawIdempotencyKey: string | null,
     requestId: string | null,
     traceId: string | null,
-  ): Promise<ReservationResult> {
+  ): Promise<ReservationResult & { consumption_movement_id: string | null; consumed_quantity_this_request: string }> {
     this.validateScope(userId, tenantId, factoryId);
     this.validateUuid(itemId, 'itemId');
     this.validateUuid(reservationId, 'reservationId');
@@ -1974,193 +1974,314 @@ export class InventoryReservationService {
     if (!['RELEASED', 'CONSUMED'].includes(targetStatus)) {
       throw new BadRequestException('target_status must be RELEASED or CONSUMED');
     }
+    if (targetStatus === 'RELEASED' && dto.quantity !== undefined) {
+      throw new BadRequestException('quantity is only supported for CONSUMED transitions');
+    }
     const transitionKey = this.requiredIdempotencyKey(rawIdempotencyKey);
-    const transitionHash = this.hash({
-      reservationId: reservationId.toLowerCase(),
-      targetStatus,
-    });
+    const normalizedReservationId = reservationId.toLowerCase();
+    const suppliedQuantity = dto.quantity === undefined ? null : this.normalizeQuantity(dto.quantity);
+    const transitionHash = this.hash(suppliedQuantity === null
+      ? { reservationId: normalizedReservationId, targetStatus }
+      : { reservationId: normalizedReservationId, targetStatus, quantity: suppliedQuantity });
 
-    let result: ReservationResult;
+    let result: ReservationResult & { consumption_movement_id: string | null; consumed_quantity_this_request: string };
     try {
       result = await this.database.transaction(
         { tenantId, userId },
         async (client) => {
-        // Use the same item -> reservation lock order as creation and stock movements.
-        const itemResult = await client.query<{ id: string; status: string }>(
-          `
-          SELECT id::text AS id, status
-          FROM inventory_items
-          WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-          FOR UPDATE
-          `,
-          [itemId, tenantId, factoryId],
-        );
-        const item = itemResult.rows[0];
-        if (!item) throw new NotFoundException('Inventory item not found in this factory');
-
-        const reservationResult = await client.query<ReservationRow>(
-          `SELECT ${RESERVATION_COLUMNS}
-           FROM inventory_reservations
-           WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND item_id = $4
-           FOR UPDATE`,
-          [reservationId, tenantId, factoryId, itemId],
-        );
-        const reservation = reservationResult.rows[0];
-        if (!reservation) throw new NotFoundException('Inventory reservation not found in this factory');
-
-        if (reservation.status !== 'RESERVED') {
-          if (
-            reservation.status === targetStatus
-            && reservation.transition_idempotency_key === transitionKey
-            && reservation.transition_request_hash === transitionHash
-          ) {
-            return this.toResult(reservation, true);
-          }
-          if (reservation.status === targetStatus && reservation.transition_idempotency_key === transitionKey) {
-            throw new ConflictException('Idempotency-Key was reused for a different reservation transition');
-          }
-          throw new ConflictException('Inventory reservation is already terminal and cannot transition again');
-        }
-        if (targetStatus === 'CONSUMED' && item.status !== 'ACTIVE') {
-          throw new ConflictException('Disabled inventory items cannot consume reservations');
-        }
-
-        let balance: BalanceRow | undefined;
-        let consumedMovementId: string | null = null;
-        if (reservation.location_id) {
-          await this.decreaseLocationReserved(
-            client, tenantId, factoryId, itemId, reservation.location_id, reservation.quantity,
+          const itemResult = await client.query<{ id: string; status: string }>(
+            `
+            SELECT id::text AS id, status
+            FROM inventory_items
+            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+            FOR UPDATE
+            `,
+            [itemId, tenantId, factoryId],
           );
+          const item = itemResult.rows[0];
+          if (!item) throw new NotFoundException('Inventory item not found in this factory');
+
+          const reservationResult = await client.query<ReservationRow>(
+            `SELECT ${RESERVATION_COLUMNS}
+             FROM inventory_reservations
+             WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND item_id = $4
+             FOR UPDATE`,
+            [reservationId, tenantId, factoryId, itemId],
+          );
+          const reservation = reservationResult.rows[0];
+          if (!reservation) throw new NotFoundException('Inventory reservation not found in this factory');
+
           if (targetStatus === 'CONSUMED') {
-            await client.query(
-              `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
-              [reservation.location_id],
+            const priorConsumption = await client.query<{
+              id: string; request_hash: string; movement_id: string; quantity: string;
+            }>(
+              `
+              SELECT id::text AS id, request_hash, movement_id::text AS movement_id,
+                     quantity::text AS quantity
+              FROM inventory_reservation_consumptions
+              WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+              LIMIT 1
+              `,
+              [tenantId, factoryId, transitionKey],
             );
+            const prior = priorConsumption.rows[0];
+            if (prior) {
+              if (prior.request_hash !== transitionHash) {
+                throw new ConflictException('Idempotency-Key was reused for a different reservation issue quantity');
+              }
+              return {
+                ...this.toResult(reservation, true),
+                consumption_movement_id: prior.movement_id,
+                consumed_quantity_this_request: prior.quantity,
+              };
+            }
           }
-        }
 
-        if (targetStatus === 'RELEASED') {
-          const balanceResult = await client.query<BalanceRow>(
-            `
-            UPDATE inventory_stock_balances
-            SET quantity_reserved = quantity_reserved - $1::numeric,
-                version = version + 1,
-                updated_at = clock_timestamp()
-            WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
-              AND quantity_reserved >= $1::numeric
-            RETURNING quantity_on_hand::text AS quantity_on_hand,
-              quantity_reserved::text AS quantity_reserved
-            `,
-            [reservation.quantity, tenantId, factoryId, itemId],
-          );
-          balance = balanceResult.rows[0];
-        } else {
-          const balanceResult = await client.query<BalanceRow>(
-            `
-            UPDATE inventory_stock_balances
-            SET
-              quantity_on_hand = quantity_on_hand - $1::numeric,
-              quantity_reserved = quantity_reserved - $1::numeric,
-              version = version + 1,
-              updated_at = clock_timestamp()
-            WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
-              AND quantity_reserved >= $1::numeric
-              AND quantity_on_hand >= $1::numeric
-            RETURNING quantity_on_hand::text AS quantity_on_hand,
-              quantity_reserved::text AS quantity_reserved
-            `,
-            [reservation.quantity, tenantId, factoryId, itemId],
-          );
-          balance = balanceResult.rows[0];
-        }
-        if (!balance) throw new ConflictException('Inventory reservation balance is inconsistent; no transition was applied');
+          if (reservation.status !== 'RESERVED') {
+            if (
+              reservation.status === targetStatus
+              && reservation.transition_idempotency_key === transitionKey
+              && reservation.transition_request_hash === transitionHash
+            ) {
+              return {
+                ...this.toResult(reservation, true),
+                consumption_movement_id: reservation.consumed_movement_id,
+                consumed_quantity_this_request: targetStatus === 'CONSUMED' ? reservation.quantity : '0.0000',
+              };
+            }
+            if (reservation.status === targetStatus && reservation.transition_idempotency_key === transitionKey) {
+              throw new ConflictException('Idempotency-Key was reused for a different reservation transition');
+            }
+            throw new ConflictException('Inventory reservation is already terminal and cannot transition again');
+          }
+          if (targetStatus === 'CONSUMED' && item.status !== 'ACTIVE') {
+            throw new ConflictException('Disabled inventory items cannot consume reservations');
+          }
 
-        const correlationId = this.correlationId(requestId, traceId);
-        if (targetStatus === 'CONSUMED') {
-          const movementKey = 'reservation-consume-' + this.hash({
-            tenantId, factoryId, reservationId, transitionKey,
-          }).slice(0, 48);
-          const movementResult = await client.query<MovementRow>(
-            `
-            INSERT INTO inventory_movements (
-              tenant_id, factory_id, item_id, location_id, movement_type, quantity,
-              quantity_delta, quantity_after, idempotency_key, request_hash,
-              reference_type, reference_id, notes, created_by_user_id, correlation_id
+          const remainingBefore = this.decimalToUnits(reservation.remaining_quantity);
+          if (remainingBefore <= 0n) {
+            throw new ConflictException('Active reservation has no remaining quantity');
+          }
+          const quantityUnits = targetStatus === 'RELEASED'
+            ? remainingBefore
+            : suppliedQuantity === null
+              ? remainingBefore
+              : this.decimalToUnits(suppliedQuantity);
+          if (quantityUnits <= 0n || quantityUnits > remainingBefore) {
+            throw new ConflictException(`Issue quantity must be positive and no greater than the remaining reserved quantity (${reservation.remaining_quantity})`);
+          }
+          const quantity = this.unitsToDecimal(quantityUnits);
+          const remainingAfter = targetStatus === 'CONSUMED' ? remainingBefore - quantityUnits : 0n;
+          const consumedAfter = this.decimalToUnits(reservation.consumed_quantity)
+            + (targetStatus === 'CONSUMED' ? quantityUnits : 0n);
+          const releasedAfter = this.decimalToUnits(reservation.released_quantity)
+            + (targetStatus === 'RELEASED' ? quantityUnits : 0n);
+          const nextStatus: ReservationStatus = targetStatus === 'RELEASED'
+            ? 'RELEASED'
+            : remainingAfter === 0n ? 'CONSUMED' : 'RESERVED';
+
+          if (reservation.location_id) {
+            await this.decreaseLocationReserved(
+              client, tenantId, factoryId, itemId, reservation.location_id, quantity,
+            );
+            if (targetStatus === 'CONSUMED') {
+              await client.query(
+                `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
+                [reservation.location_id],
+              );
+            }
+          } else if (targetStatus === 'CONSUMED') {
+            await client.query(`SELECT set_config('app.inventory_location_id', '', TRUE)`);
+          }
+
+          const balanceResult = targetStatus === 'RELEASED'
+            ? await client.query<BalanceRow>(
+              `
+              UPDATE inventory_stock_balances
+              SET quantity_reserved = quantity_reserved - $1::numeric,
+                  version = version + 1, updated_at = clock_timestamp()
+              WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+                AND quantity_reserved >= $1::numeric
+              RETURNING quantity_on_hand::text AS quantity_on_hand,
+                        quantity_reserved::text AS quantity_reserved
+              `,
+              [quantity, tenantId, factoryId, itemId],
             )
-            VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
-              $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
-            RETURNING id::text AS id, quantity_after::text AS quantity_after
+            : await client.query<BalanceRow>(
+              `
+              UPDATE inventory_stock_balances
+              SET quantity_on_hand = quantity_on_hand - $1::numeric,
+                  quantity_reserved = quantity_reserved - $1::numeric,
+                  version = version + 1, updated_at = clock_timestamp()
+              WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+                AND quantity_reserved >= $1::numeric AND quantity_on_hand >= $1::numeric
+              RETURNING quantity_on_hand::text AS quantity_on_hand,
+                        quantity_reserved::text AS quantity_reserved
+              `,
+              [quantity, tenantId, factoryId, itemId],
+            );
+          const balance = balanceResult.rows[0];
+          if (!balance) throw new ConflictException('Inventory reservation balance is inconsistent; no transition was applied');
+
+          const correlationId = this.correlationId(requestId, traceId);
+          let consumedMovementId: string | null = null;
+          let consumptionId: string | null = null;
+          if (targetStatus === 'CONSUMED') {
+            const movementKey = 'reservation-consume-' + this.hash({
+              tenantId, factoryId, reservationId, transitionKey,
+            }).slice(0, 48);
+            const movementResult = await client.query<MovementRow>(
+              `
+              INSERT INTO inventory_movements (
+                tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+                quantity_delta, quantity_after, idempotency_key, request_hash,
+                reference_type, reference_id, notes, created_by_user_id, correlation_id
+              )
+              VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
+                $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
+              RETURNING id::text AS id, quantity_after::text AS quantity_after
+              `,
+              [
+                tenantId, factoryId, itemId, reservation.location_id,
+                quantity, balance.quantity_on_hand, movementKey, transitionHash,
+                reservationId, reservation.notes, userId, correlationId,
+              ],
+            );
+            consumedMovementId = movementResult.rows[0]?.id ?? null;
+            if (!consumedMovementId) throw new Error('INVENTORY_RESERVATION_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+
+            const consumptionResult = await client.query<{ id: string }>(
+              `
+              INSERT INTO inventory_reservation_consumptions (
+                tenant_id, factory_id, reservation_id, item_id, location_id,
+                quantity, movement_id, idempotency_key, request_hash, created_by_user_id, correlation_id
+              )
+              VALUES ($1, $2, $3, $4, $5::uuid, $6::numeric, $7::uuid, $8, $9, $10, $11::uuid)
+              RETURNING id::text AS id
+              `,
+              [
+                tenantId, factoryId, reservationId, itemId, reservation.location_id,
+                quantity, consumedMovementId, transitionKey, transitionHash, userId, correlationId,
+              ],
+            );
+            consumptionId = consumptionResult.rows[0]?.id ?? null;
+            if (!consumptionId) throw new Error('INVENTORY_RESERVATION_CONSUMPTION_EVIDENCE_INSERT_FAILED');
+            await this.consumeTraceabilityAllocations(client, {
+              tenantId, factoryId, itemId, reservationId, consumptionId, quantity,
+            });
+            await this.insertOutboxEvent(client, {
+              tenantId, factoryId, aggregateId: itemId,
+              eventType: nextStatus === 'RESERVED'
+                ? 'INVENTORY.STOCK_RESERVATION_PARTIALLY_CONSUMED'
+                : 'INVENTORY.STOCK_ISSUED',
+              correlationId, userId,
+              payload: {
+                reservation_id: reservationId,
+                consumption_id: consumptionId,
+                movement: {
+                  id: consumedMovementId, item_id: itemId, location_id: reservation.location_id,
+                  movement_type: 'ISSUE', quantity, quantity_delta: `-${quantity}`,
+                  quantity_after: balance.quantity_on_hand,
+                  reference_type: 'RESERVATION', reference_id: reservationId,
+                },
+                reservation: {
+                  quantity: reservation.quantity,
+                  remaining_quantity: this.unitsToDecimal(remainingAfter),
+                  consumed_quantity: this.unitsToDecimal(consumedAfter),
+                  released_quantity: this.unitsToDecimal(releasedAfter),
+                  status: nextStatus,
+                },
+              },
+            });
+          } else {
+            await this.releaseTraceabilityAllocations(client, {
+              tenantId, factoryId, itemId, reservationId, quantity,
+            });
+          }
+
+          const updatedResult = await client.query<ReservationRow>(
+            `
+            UPDATE inventory_reservations
+            SET status = $1,
+                remaining_quantity = $2::numeric,
+                consumed_quantity = $3::numeric,
+                released_quantity = $4::numeric,
+                transition_idempotency_key = $5,
+                transition_request_hash = $6,
+                consumed_movement_id = $7::uuid,
+                updated_at = clock_timestamp()
+            WHERE id = $8 AND tenant_id = $9 AND factory_id = $10 AND item_id = $11
+              AND status = 'RESERVED'
+            RETURNING ${RESERVATION_COLUMNS}
             `,
             [
-              tenantId, factoryId, itemId, reservation.location_id,
-              reservation.quantity, balance.quantity_on_hand,
-              movementKey, transitionHash, reservationId,
-              reservation.notes, userId, correlationId,
+              nextStatus, this.unitsToDecimal(remainingAfter), this.unitsToDecimal(consumedAfter),
+              this.unitsToDecimal(releasedAfter), transitionKey, transitionHash,
+              nextStatus === 'CONSUMED' ? consumedMovementId : null,
+              reservationId, tenantId, factoryId, itemId,
             ],
           );
-          consumedMovementId = movementResult.rows[0]?.id ?? null;
-          if (!consumedMovementId) throw new Error('INVENTORY_RESERVATION_CONSUMPTION_MOVEMENT_INSERT_FAILED');
-          await this.insertOutboxEvent(client, {
-            tenantId, factoryId, aggregateId: itemId, eventType: 'INVENTORY.STOCK_ISSUED',
-            correlationId, userId,
-            payload: {
-              movement: {
-                id: consumedMovementId,
-                item_id: itemId, location_id: reservation.location_id,
-                movement_type: 'ISSUE', quantity: reservation.quantity,
-                quantity_delta: '-' + reservation.quantity, quantity_after: balance.quantity_on_hand,
-                reference_type: 'RESERVATION', reference_id: reservationId,
+          const updated = updatedResult.rows[0];
+          if (!updated) throw new ConflictException('Inventory reservation changed concurrently; no transition was applied');
+
+          if (targetStatus === 'RELEASED') {
+            await this.insertOutboxEvent(client, {
+              tenantId, factoryId, aggregateId: itemId,
+              eventType: 'INVENTORY.STOCK_RESERVATION_RELEASED',
+              correlationId, userId,
+              payload: {
+                reservation: {
+                  id: reservationId, item_id: itemId, quantity: reservation.quantity,
+                  released_quantity: quantity, status: nextStatus,
+                },
+                balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
               },
-              reservation_id: reservationId,
-            },
-          });
-        }
-
-        const updatedResult = await client.query<ReservationRow>(
-          `
-          UPDATE inventory_reservations
-          SET status = $1,
-              transition_idempotency_key = $2,
-              transition_request_hash = $3,
-              consumed_movement_id = $4::uuid,
-              updated_at = clock_timestamp()
-          WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND item_id = $8
-            AND status = 'RESERVED'
-          RETURNING ${RESERVATION_COLUMNS}
-          `,
-          [
-            targetStatus, transitionKey, transitionHash, consumedMovementId,
-            reservationId, tenantId, factoryId, itemId,
-          ],
-        );
-        const updated = updatedResult.rows[0];
-        if (!updated) throw new ConflictException('Inventory reservation changed concurrently; no transition was applied');
-
-        await this.insertOutboxEvent(client, {
-          tenantId, factoryId, aggregateId: itemId,
-          eventType: targetStatus === 'RELEASED'
-            ? 'INVENTORY.STOCK_RESERVATION_RELEASED'
-            : 'INVENTORY.STOCK_RESERVATION_CONSUMED',
-          correlationId, userId,
-          payload: {
-            reservation: {
-              id: reservationId, item_id: itemId, quantity: reservation.quantity,
-              status: targetStatus, consumed_movement_id: consumedMovementId,
-            },
-            balance: {
-              quantity_on_hand: balance.quantity_on_hand,
-              quantity_reserved: balance.quantity_reserved,
-            },
-          },
-        });
-          return this.toResult(updated, false);
+            });
+          }
+          return {
+            ...this.toResult(updated, false),
+            consumption_movement_id: consumedMovementId,
+            consumed_quantity_this_request: targetStatus === 'CONSUMED' ? quantity : '0.0000',
+          };
         },
       );
     } catch (error) {
       if (this.errorCode(error) === '23505') {
-        throw new ConflictException('Idempotency-Key has already been used for another reservation transition');
+        const prior = await this.database.query<{
+          id: string; request_hash: string; movement_id: string; quantity: string;
+        }>(
+          `
+          SELECT id::text AS id, request_hash, movement_id::text AS movement_id,
+                 quantity::text AS quantity
+          FROM inventory_reservation_consumptions
+          WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+          LIMIT 1
+          `,
+          [tenantId, factoryId, transitionKey],
+          { tenantId, userId },
+        );
+        if (prior.rows[0]) {
+          if (prior.rows[0].request_hash !== transitionHash) {
+            throw new ConflictException('Idempotency-Key was reused for a different reservation issue quantity');
+          }
+          const stored = await this.database.query<ReservationRow>(
+            `SELECT ${RESERVATION_COLUMNS} FROM inventory_reservations
+             WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND item_id=$4 LIMIT 1`,
+            [reservationId, tenantId, factoryId, itemId],
+            { tenantId, userId },
+          );
+          if (!stored.rows[0]) throw new NotFoundException('Inventory reservation not found after an idempotent issue retry');
+          result = {
+            ...this.toResult(stored.rows[0], true),
+            consumption_movement_id: prior.rows[0].movement_id,
+            consumed_quantity_this_request: prior.rows[0].quantity,
+          };
+        } else {
+          throw new ConflictException('Idempotency-Key has already been used for another reservation transition');
+        }
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     if (!result.replayed) {
@@ -2169,384 +2290,13 @@ export class InventoryReservationService {
         action: targetStatus === 'RELEASED' ? 'RESERVATION_RELEASE' : 'RESERVATION_CONSUME',
         resourceId: result.id, requestId, traceId,
         payload: {
-          itemId, quantity: result.quantity, status: result.status,
-          consumedMovementId: result.consumed_movement_id,
+          itemId, quantity: result.consumed_quantity_this_request, status: result.status,
+          remainingQuantity: result.remaining_quantity,
+          consumedMovementId: result.consumption_movement_id,
         },
       });
     }
     return result;
-  }
-
-  private decimalToUnits(value: string): bigint {
-    const match = /^(\\d+)(?:\\.(\\d{1,4}))?$/.exec(String(value).trim());
-    if (!match) throw new ConflictException('Inventory quantity is not a valid four-decimal value');
-    return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
-  }
-
-  private unitsToDecimal(value: bigint): string {
-    if (value < 0n) throw new ConflictException('Inventory quantity cannot be negative');
-    return `${value / 10000n}.${String(value % 10000n).padStart(4, '0')}`;
-  }
-
-  private async planTraceabilityAllocations(
-    client: PoolClient,
-    input: {
-      tenantId: string;
-      factoryId: string;
-      itemId: string;
-      quantity: string;
-      locationId?: string | null;
-    },
-  ): Promise<TraceabilityAllocationPlan> {
-    const settings = await client.query<{ allocation_policy: TraceabilityAllocationPolicy }>(
-      `
-      SELECT allocation_policy
-      FROM traceability_settings
-      WHERE tenant_id = $1 AND factory_id = $2
-      FOR SHARE
-      `,
-      [input.tenantId, input.factoryId],
-    );
-    const policy = settings.rows[0]?.allocation_policy ?? 'FIFO';
-    const identityTypeResult = await client.query<{ has_lot: boolean; has_serial: boolean; has_identity: boolean }>(
-      `
-      SELECT
-        COALESCE(bool_or(unit_type = 'LOT'), FALSE) AS has_lot,
-        COALESCE(bool_or(unit_type = 'SERIAL'), FALSE) AS has_serial,
-        (count(*) > 0) AS has_identity
-      FROM traceability_units
-      WHERE tenant_id = $1 AND factory_id = $2
-        AND inventory_item_id = $3 AND product_role = 'MATERIAL'
-        AND unit_type IN ('LOT', 'SERIAL')
-      `,
-      [input.tenantId, input.factoryId, input.itemId],
-    );
-    const identities = identityTypeResult.rows[0];
-    const hasIdentity = identities?.has_identity ?? false;
-    if ((policy === 'LOT' || policy === 'SERIAL') && !hasIdentity) {
-      throw new ConflictException(`Material allocation policy ${policy} requires registered ${policy.toLowerCase()} identities before reserving stock`);
-    }
-    if ((policy === 'FIFO' || policy === 'FEFO') && !hasIdentity) {
-      return { enforced: false, policy, allocations: [] };
-    }
-    const unitType: 'LOT' | 'SERIAL' =
-      policy === 'LOT' ? 'LOT'
-        : policy === 'SERIAL' ? 'SERIAL'
-          : identities?.has_lot ? 'LOT' : 'SERIAL';
-    if (unitType === 'LOT' && !identities?.has_lot) {
-      throw new ConflictException('Material allocation policy requires a registered lot identity');
-    }
-    if (unitType === 'SERIAL' && !identities?.has_serial) {
-      throw new ConflictException('Material allocation policy requires registered serial identities');
-    }
-
-    const requestedUnits = this.decimalToUnits(input.quantity);
-    if (requestedUnits <= 0n) throw new BadRequestException('Reservation quantity must be positive');
-    if (unitType === 'SERIAL' && requestedUnits % 10000n !== 0n) {
-      throw new ConflictException('Serial-controlled material can only be allocated in whole serialized units');
-    }
-
-    const candidates = await client.query<TraceabilityCandidate>(
-      `
-      SELECT
-        tlb.traceability_unit_id::text AS traceability_unit_id,
-        tlb.location_id::text AS location_id,
-        tu.unit_type,
-        tu.unit_code,
-        tu.expires_at::text AS expires_at,
-        COALESCE(gr.posted_at, gr.received_at, tu.created_at)::text AS received_at,
-        tlb.quantity_on_hand::text AS quantity_on_hand,
-        tlb.quantity_reserved::text AS quantity_reserved
-      FROM inventory_traceability_location_balances tlb
-      JOIN traceability_units tu
-        ON tu.id = tlb.traceability_unit_id
-       AND tu.tenant_id = tlb.tenant_id AND tu.factory_id = tlb.factory_id
-       AND tu.inventory_item_id = tlb.item_id
-      JOIN inventory_locations l
-        ON l.id = tlb.location_id AND l.tenant_id = tlb.tenant_id AND l.factory_id = tlb.factory_id
-      LEFT JOIN inventory_locations parent
-        ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
-      LEFT JOIN goods_receipts gr
-        ON gr.id = tu.goods_receipt_id AND gr.tenant_id = tu.tenant_id AND gr.factory_id = tu.factory_id
-      WHERE tlb.tenant_id = $1 AND tlb.factory_id = $2 AND tlb.item_id = $3
-        AND ($4::uuid IS NULL OR tlb.location_id = $4::uuid)
-        AND tu.product_role = 'MATERIAL' AND tu.unit_type = $5
-        AND tu.status = 'ACTIVE'
-        AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
-        AND NOT (tu.attributes @> '{"damaged":true}'::jsonb)
-        AND NOT (tu.attributes @> '{"held":true}'::jsonb)
-        AND NOT (tu.attributes @> '{"quarantined":true}'::jsonb)
-        AND upper(COALESCE(tu.attributes->>'condition', '')) NOT IN ('DAMAGED', 'HELD', 'QUARANTINED', 'EXPIRED')
-        AND NOT EXISTS (
-          SELECT 1 FROM quality_holds qh
-          WHERE qh.tenant_id = tu.tenant_id AND qh.factory_id = tu.factory_id
-            AND qh.status = 'ACTIVE'
-            AND (qh.inventory_item_id = tu.inventory_item_id OR qh.traceability_unit_id = tu.id)
-        )
-        AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
-        AND (
-          (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
-          OR (l.location_type = 'VIRTUAL' AND l.is_default = TRUE)
-        )
-        AND tlb.quantity_on_hand > tlb.quantity_reserved
-      ORDER BY
-        CASE WHEN $6::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
-        CASE WHEN $6::text IN ('FIFO', 'FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
-        lower(tu.unit_code), tlb.location_id, tu.id
-      FOR UPDATE OF tlb, tu
-      `,
-      [input.tenantId, input.factoryId, input.itemId, input.locationId ?? null, unitType, policy],
-    );
-
-    let remaining = requestedUnits;
-    const allocations: TraceabilityAllocation[] = [];
-    for (const candidate of candidates.rows) {
-      if (remaining === 0n) break;
-      const available = this.decimalToUnits(candidate.quantity_on_hand)
-        - this.decimalToUnits(candidate.quantity_reserved);
-      if (available <= 0n) continue;
-      const quantityUnits = unitType === 'SERIAL' ? 10000n
-        : (available < remaining ? available : remaining);
-      if (unitType === 'SERIAL' && available < 10000n) continue;
-      const allocated = quantityUnits < remaining ? quantityUnits : remaining;
-      allocations.push({
-        traceabilityUnitId: candidate.traceability_unit_id.toLowerCase(),
-        locationId: candidate.location_id.toLowerCase(),
-        quantity: this.unitsToDecimal(allocated),
-      });
-      remaining -= allocated;
-    }
-    if (remaining !== 0n) {
-      throw new ConflictException(
-        `Insufficient eligible ${policy} lot/serial stock for item ${input.itemId}; expired, held, damaged, quarantined, recalled and unavailable identities are excluded`,
-      );
-    }
-    return { enforced: true, policy, allocations };
-  }
-
-  private groupTraceabilityAllocationsByLocation(
-    plan: TraceabilityAllocationPlan,
-  ): Array<{ locationId: string; quantity: string }> {
-    const grouped = new Map<string, bigint>();
-    for (const allocation of plan.allocations) {
-      grouped.set(
-        allocation.locationId,
-        (grouped.get(allocation.locationId) ?? 0n) + this.decimalToUnits(allocation.quantity),
-      );
-    }
-    return [...grouped.entries()].map(([locationId, units]) => ({
-      locationId,
-      quantity: this.unitsToDecimal(units),
-    }));
-  }
-
-  private async persistTraceabilityAllocations(
-    client: PoolClient,
-    input: {
-      tenantId: string;
-      factoryId: string;
-      itemId: string;
-      reservationId: string;
-      allocations: TraceabilityAllocation[];
-    },
-  ): Promise<void> {
-    for (const allocation of input.allocations) {
-      const updated = await client.query<{ id: string }>(
-        `
-        UPDATE inventory_traceability_location_balances
-        SET quantity_reserved = quantity_reserved + $1::numeric,
-            version = version + 1, updated_at = clock_timestamp()
-        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
-          AND traceability_unit_id = $5 AND location_id = $6
-          AND quantity_on_hand - quantity_reserved >= $1::numeric
-        RETURNING id::text AS id
-        `,
-        [allocation.quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceabilityUnitId, allocation.locationId],
-      );
-      if (!updated.rows[0]) {
-        throw new ConflictException('Lot/serial availability changed during reservation; the complete reservation transaction was rolled back');
-      }
-      await client.query(
-        `
-        INSERT INTO inventory_reservation_traceability_allocations (
-          tenant_id, factory_id, reservation_id, item_id,
-          traceability_unit_id, location_id, allocated_quantity
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)
-        `,
-        [input.tenantId, input.factoryId, input.reservationId, input.itemId,
-          allocation.traceabilityUnitId, allocation.locationId, allocation.quantity],
-      );
-    }
-  }
-
-  private async hasMaterialTraceabilityUnits(
-    client: PoolClient,
-    tenantId: string,
-    factoryId: string,
-    itemId: string,
-  ): Promise<boolean> {
-    const result = await client.query<{ present: boolean }>(
-      `
-      SELECT EXISTS (
-        SELECT 1 FROM traceability_units
-        WHERE tenant_id = $1 AND factory_id = $2 AND inventory_item_id = $3
-          AND product_role = 'MATERIAL' AND unit_type IN ('LOT', 'SERIAL')
-      ) AS present
-      `,
-      [tenantId, factoryId, itemId],
-    );
-    return result.rows[0]?.present ?? false;
-  }
-
-  private async consumeTraceabilityAllocations(
-    client: PoolClient,
-    input: {
-      tenantId: string;
-      factoryId: string;
-      itemId: string;
-      reservationId: string;
-      consumptionId: string;
-      quantity: string;
-    },
-  ): Promise<void> {
-    const allocations = await client.query<{
-      id: string;
-      traceability_unit_id: string;
-      location_id: string;
-      remaining_quantity: string;
-    }>(
-      `
-      SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
-             a.location_id::text AS location_id,
-             (a.allocated_quantity - a.consumed_quantity - a.released_quantity)::numeric(18,4)::text AS remaining_quantity
-      FROM inventory_reservation_traceability_allocations a
-      WHERE a.tenant_id = $1 AND a.factory_id = $2 AND a.item_id = $3
-        AND a.reservation_id = $4
-        AND a.allocated_quantity > a.consumed_quantity + a.released_quantity
-      ORDER BY a.created_at, a.id
-      FOR UPDATE
-      `,
-      [input.tenantId, input.factoryId, input.itemId, input.reservationId],
-    );
-    if (allocations.rows.length === 0) {
-      if (await this.hasMaterialTraceabilityUnits(client, input.tenantId, input.factoryId, input.itemId)) {
-        throw new ConflictException('This reservation has no lot/serial allocation evidence; stock cannot be issued through an untracked fallback');
-      }
-      return;
-    }
-
-    let remaining = this.decimalToUnits(input.quantity);
-    for (const allocation of allocations.rows) {
-      if (remaining === 0n) break;
-      const available = this.decimalToUnits(allocation.remaining_quantity);
-      if (available <= 0n) continue;
-      const units = available < remaining ? available : remaining;
-      const quantity = this.unitsToDecimal(units);
-      const balance = await client.query<{ id: string }>(
-        `
-        UPDATE inventory_traceability_location_balances
-        SET quantity_on_hand = quantity_on_hand - $1::numeric,
-            quantity_reserved = quantity_reserved - $1::numeric,
-            version = version + 1, updated_at = clock_timestamp()
-        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
-          AND traceability_unit_id = $5 AND location_id = $6
-          AND quantity_on_hand >= $1::numeric AND quantity_reserved >= $1::numeric
-        RETURNING id::text AS id
-        `,
-        [quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceability_unit_id, allocation.location_id],
-      );
-      if (!balance.rows[0]) {
-        throw new ConflictException('Lot/serial balance changed before issue; the full issue transaction was rolled back');
-      }
-      const updated = await client.query<{ id: string }>(
-        `
-        UPDATE inventory_reservation_traceability_allocations
-        SET consumed_quantity = consumed_quantity + $1::numeric,
-            updated_at = clock_timestamp()
-        WHERE id = $2 AND tenant_id = $3 AND factory_id = $4
-          AND consumed_quantity + released_quantity + $1::numeric <= allocated_quantity
-        RETURNING id::text AS id
-        `,
-        [quantity, allocation.id, input.tenantId, input.factoryId],
-      );
-      if (!updated.rows[0]) throw new ConflictException('Lot/serial reservation allocation changed during issue');
-      await client.query(
-        `
-        INSERT INTO inventory_reservation_consumption_traceability_allocations (
-          tenant_id, factory_id, consumption_id, traceability_unit_id, location_id, quantity
-        )
-        VALUES ($1, $2, $3, $4, $5, $6::numeric)
-        `,
-        [input.tenantId, input.factoryId, input.consumptionId, allocation.traceability_unit_id, allocation.location_id, quantity],
-      );
-      remaining -= units;
-    }
-    if (remaining !== 0n) {
-      throw new ConflictException('Reserved lot/serial allocations do not cover the requested issue quantity');
-    }
-  }
-
-  private async releaseTraceabilityAllocations(
-    client: PoolClient,
-    input: {
-      tenantId: string;
-      factoryId: string;
-      itemId: string;
-      reservationId: string;
-      quantity: string;
-    },
-  ): Promise<void> {
-    const allocations = await client.query<{
-      id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string;
-    }>(
-      `
-      SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
-        a.location_id::text AS location_id,
-        (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
-      FROM inventory_reservation_traceability_allocations a
-      WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
-        AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
-      ORDER BY a.created_at, a.id
-      FOR UPDATE
-      `,
-      [input.tenantId, input.factoryId, input.itemId, input.reservationId],
-    );
-    let remaining = this.decimalToUnits(input.quantity);
-    for (const allocation of allocations.rows) {
-      if (remaining === 0n) break;
-      const available = this.decimalToUnits(allocation.remaining_quantity);
-      const units = available < remaining ? available : remaining;
-      if (units <= 0n) continue;
-      const quantity = this.unitsToDecimal(units);
-      const balance = await client.query<{ id: string }>(
-        `
-        UPDATE inventory_traceability_location_balances
-        SET quantity_reserved = quantity_reserved - $1::numeric,
-            version = version + 1, updated_at = clock_timestamp()
-        WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4
-          AND traceability_unit_id=$5 AND location_id=$6 AND quantity_reserved >= $1::numeric
-        RETURNING id::text AS id
-        `,
-        [quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceability_unit_id, allocation.location_id],
-      );
-      if (!balance.rows[0]) throw new ConflictException('Lot/serial reserved balance is inconsistent while releasing inventory');
-      const updated = await client.query<{ id: string }>(
-        `
-        UPDATE inventory_reservation_traceability_allocations
-        SET released_quantity = released_quantity + $1::numeric, updated_at = clock_timestamp()
-        WHERE id=$2 AND tenant_id=$3 AND factory_id=$4
-          AND consumed_quantity + released_quantity + $1::numeric <= allocated_quantity
-        RETURNING id::text AS id
-        `,
-        [quantity, allocation.id, input.tenantId, input.factoryId],
-      );
-      if (!updated.rows[0]) throw new ConflictException('Lot/serial allocation changed during reservation release');
-      remaining -= units;
-    }
-    if (remaining !== 0n) {
-      throw new ConflictException('Lot/serial allocation does not cover the reservation quantity being released');
-    }
   }
 
   private async decreaseLocationReserved(
