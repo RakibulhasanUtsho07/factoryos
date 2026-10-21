@@ -47,7 +47,7 @@ describe(
         metrics,
       );
       const internal = dispatcher as unknown as {
-        collectQueueMetricsIfDue: (tenants: { id: string }[]) => Promise<void>;
+        collectQueueMetrics: (tenants: { id: string }[]) => Promise<void>;
       };
 
       await internal.collectQueueMetricsIfDue([{ id: firstTenant }, { id: secondTenant }]);
@@ -77,7 +77,7 @@ describe(
         metrics,
       );
       const internal = dispatcher as unknown as {
-        collectQueueMetricsIfDue: (tenants: { id: string }[]) => Promise<void>;
+        collectQueueMetrics: (tenants: { id: string }[]) => Promise<void>;
       };
 
       await internal.collectQueueMetricsIfDue([{ id: tenantId }]);
