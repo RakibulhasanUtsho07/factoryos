@@ -408,7 +408,7 @@ $$;
 CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reservation_balance()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_balance NUMERIC(18,4);
   v_active_reservations NUMERIC(18,4);
@@ -441,7 +441,7 @@ $;
 CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reserved_balance()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_tenant_id UUID;
   v_factory_id UUID;
@@ -565,7 +565,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_assert_inventory_reservation_balance();
 CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reservation_balance()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_balance NUMERIC(18,4);
   v_active_reservations NUMERIC(18,4);
