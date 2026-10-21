@@ -6,6 +6,9 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'scripts/recovery/**'
       - 'scripts/audit/**'
       - 'migrations/**'
@@ -21,6 +24,9 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
       - 'scripts/performance/**'
+      - 'scripts/security/**'
+      - 'deploy/security/**'
+      - 'docs/production-security-configuration-and-independent-review.md'
       - 'scripts/recovery/**'
       - 'scripts/audit/**'
       - 'migrations/**'
@@ -280,10 +286,12 @@ jobs:
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
-      - name: Validate bounded load-smoke harness syntax
+      - name: Validate production security configuration and harness syntax
         run: |
           node --check scripts/performance/api-load-smoke.mjs
           node --check scripts/performance/api-load-smoke.test.mjs
+          node --check scripts/security/production-security-config.test.mjs
+          node --test scripts/security/production-security-config.test.mjs
 
       - name: Lint API
         working-directory: services/api
