@@ -3,6 +3,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   IsUUID,
   MaxLength,
   Min,
@@ -20,6 +21,12 @@ export class CreateStockMovementDto {
   @IsString()
   @MaxLength(50)
   input_unit_code?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\\d{1,19}$/)
+  @MaxLength(19)
+  expected_balance_version?: string;
 
   @IsOptional()
   @IsUUID()
