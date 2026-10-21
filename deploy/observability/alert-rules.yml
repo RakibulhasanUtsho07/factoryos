@@ -1,0 +1,164 @@
+# Initial values are engineering proposals, not owner-approved contractual SLOs.
+# Track approval in slo-policy.yml and update this file only after explicit service-owner review.
+groups:
+  - name: factoryos-api-reliability
+    interval: 15s
+    rules:
+      - alert: FactoryOSApiScrapeDown
+        expr: up{job="factoryos-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS API instance metrics scrape is failing"
+          description: "Check that the private scrape path, bearer secret, instance health, and release SHA labels are correct."
+
+      - alert: FactoryOSApiHigh5xxRatio
+        expr: |
+          (
+            sum(rate(factoryos_http_requests_total{status_class="5xx"}[5m]))
+            /
+            clamp_min(sum(rate(factoryos_http_requests_total[5m])), 1)
+          ) > 0.01
+          and sum(rate(factoryos_http_requests_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS API 5xx ratio exceeds the proposed 1% guardrail"
+          description: "Compare instance-level route errors, release SHA, database pool pressure, and recent deploys."
+
+      - alert: FactoryOSApiHighP95Latency
+        expr: histogram_quantile(0.95, sum by (le) (rate(factoryos_http_request_duration_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS API p95 latency exceeds the proposed 500 ms guardrail"
+          description: "Separate database/lock, event-loop, and downstream saturation before changing capacity."
+
+      - alert: FactoryOSApiHighP99Latency
+        expr: histogram_quantile(0.99, sum by (le) (rate(factoryos_http_request_duration_seconds_bucket[5m]))) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS API p99 latency exceeds the proposed 1500 ms guardrail"
+          description: "Use route and instance filters; confirm representative traffic and sample volume."
+
+      - alert: FactoryOSDatabaseNotReady
+        expr: factoryos_dependency_health{dependency="database"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS database readiness probe is unhealthy"
+          description: "Check database reachability, credentials, pool saturation, and recent migrations."
+
+      - alert: FactoryOSDatabasePoolWaiting
+        expr: max by (instance_id) (factoryos_db_pool_connections{state="waiting"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS API is waiting for a database connection"
+          description: "Review per-instance pool sizing, transaction duration, database connection limits, and locks."
+
+      - alert: FactoryOSPostgresBlockedSessions
+        expr: factoryos_pg_blocking_sessions_count > 0
+        for: 2m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "PostgreSQL has blocked sessions"
+          description: "Inspect pg_stat_activity and blocker chains under the approved read-only monitoring role."
+
+      - alert: FactoryOSPostgresLongTransactions
+        expr: factoryos_pg_long_transactions_count > 0
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "PostgreSQL has an active transaction older than 30 seconds"
+          description: "Find the bounded service/transaction correlation without exporting SQL text or tenant identifiers."
+
+  - name: factoryos-queue-and-telemetry
+    interval: 15s
+    rules:
+      - alert: FactoryOSOutboxQueueOldestAge
+        expr: max(factoryos_outbox_oldest_age_seconds{status=~"PENDING|FAILED|PROCESSING|QUARANTINED"}) > 300
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS outbox queue contains events older than the proposed 5-minute guardrail"
+          description: "Review dispatch health, retry/lease state, delivery outcomes, and downstream availability."
+
+      - alert: FactoryOSOutboxStalePublication
+        expr: factoryos_outbox_freshness_seconds_since_last_publish > 300
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "No successful outbox publication within the proposed freshness window"
+          description: "A value of -1 means there has never been a successful publication; investigate before declaring recovery."
+
+      - alert: FactoryOSOtlpExporterErrors
+        expr: increase(factoryos_trace_export_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS API failed to export OTLP trace batches"
+          description: "Check collector reachability and TLS/auth configuration; exporter failures are dropped rather than retried in-process."
+
+      - alert: FactoryOSOtlpQueueNearCapacity
+        expr: max(factoryos_trace_export_queue_length) > 1536
+        for: 2m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS in-process OTLP trace queue is near its 2048-span bound"
+          description: "Inspect collector/backend latency; span loss is possible because the application queue is deliberately bounded."
+
+      - alert: FactoryOSOtlpSpansDropped
+        expr: increase(factoryos_trace_spans_dropped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS dropped OTLP spans because its bounded queue was full"
+          description: "Investigate collector/backend saturation and keep API latency independent of telemetry delivery."
+
+      - alert: FactoryOSHighEventLoopUtilization
+        expr: max by (instance_id) (factoryos_nodejs_event_loop_utilization_ratio) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          policy_status: proposed
+        annotations:
+          summary: "FactoryOS Node.js event-loop utilization is above the proposed 90% guardrail"
+          description: "Correlate with per-instance latency, CPU, memory, request concurrency, and database wait."
+
+      - alert: FactoryOSPostgresExporterDown
+        expr: up{job="factoryos-postgres-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          policy_status: proposed
+        annotations:
+          summary: "PostgreSQL exporter is unavailable"
+          description: "Monitoring of database queue age and lock saturation is incomplete until the target is healthy."
