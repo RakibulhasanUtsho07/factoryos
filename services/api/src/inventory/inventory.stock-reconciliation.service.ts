@@ -604,6 +604,16 @@ export class InventoryStockReconciliationService {
               userId,
               quantityDelta: reconciliation.quantity_delta,
               reviewNote: cycleCountReview.reviewNote,
+              countedQuantity: cycleCountSnapshot.counted_quantity,
+              ledgerQuantityAtCount: cycleCountSnapshot.ledger_quantity_at_count,
+              balanceVersionAtCount: cycleCountSnapshot.balance_version_at_count,
+              locationId: cycleCountSnapshot.location_id,
+              locationQuantityAtCount: cycleCountSnapshot.location_id
+                ? cycleCountSnapshot.counted_quantity : null,
+              locationQuantityBefore: locationSnapshotForReconciliation?.quantity_before ?? null,
+              locationVersionAtCount: cycleCountSnapshot.location_version_at_count,
+              varianceReasonCode: reasonCode,
+              aggregateQuantityAfter: reconciliation.counted_quantity,
             });
           }
 
@@ -793,6 +803,15 @@ export class InventoryStockReconciliationService {
       userId: string;
       quantityDelta: string;
       reviewNote: string | null;
+      countedQuantity: string;
+      ledgerQuantityAtCount: string;
+      balanceVersionAtCount: string;
+      locationId: string | null;
+      locationQuantityAtCount: string | null;
+      locationQuantityBefore: string | null;
+      locationVersionAtCount: string | null;
+      varianceReasonCode: StockReconciliationReasonCode;
+      aggregateQuantityAfter: string;
     },
   ): Promise<void> {
     await client.query(
@@ -823,7 +842,16 @@ export class InventoryStockReconciliationService {
             id: input.proposalId,
             item_id: input.itemId,
             reconciliation_id: input.reconciliationId,
+            counted_quantity: input.countedQuantity,
+            ledger_quantity_at_count: input.ledgerQuantityAtCount,
+            balance_version_at_count: input.balanceVersionAtCount,
+            location_id: input.locationId,
+            location_quantity_before: input.locationQuantityBefore,
+            location_quantity_at_count: input.locationQuantityAtCount,
+            location_version_at_count: input.locationVersionAtCount,
+            aggregate_quantity_after: input.aggregateQuantityAfter,
             quantity_delta: input.quantityDelta,
+            variance_reason_code: input.varianceReasonCode,
             review_note: input.reviewNote,
             status: 'APPLIED',
           },
