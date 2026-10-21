@@ -608,7 +608,8 @@ export class InventoryStockReconciliationService {
               ledgerQuantityAtCount: cycleCountSnapshot.ledger_quantity_at_count,
               balanceVersionAtCount: cycleCountSnapshot.balance_version_at_count,
               locationId: cycleCountSnapshot.location_id,
-              locationQuantityAtCount: cycleCountSnapshot.location_id
+              locationQuantityAtCount: cycleCountSnapshot.location_quantity_at_count,
+              locationCountedQuantity: cycleCountSnapshot.location_id
                 ? cycleCountSnapshot.counted_quantity : null,
               locationQuantityBefore: locationSnapshotForReconciliation?.quantity_before ?? null,
               locationVersionAtCount: cycleCountSnapshot.location_version_at_count,
@@ -808,6 +809,7 @@ export class InventoryStockReconciliationService {
       balanceVersionAtCount: string;
       locationId: string | null;
       locationQuantityAtCount: string | null;
+      locationCountedQuantity: string | null;
       locationQuantityBefore: string | null;
       locationVersionAtCount: string | null;
       varianceReasonCode: StockReconciliationReasonCode;
@@ -848,6 +850,8 @@ export class InventoryStockReconciliationService {
             location_id: input.locationId,
             location_quantity_before: input.locationQuantityBefore,
             location_quantity_at_count: input.locationQuantityAtCount,
+            location_counted_quantity: input.locationCountedQuantity,
+            location_quantity_after: input.locationCountedQuantity,
             location_version_at_count: input.locationVersionAtCount,
             aggregate_quantity_after: input.aggregateQuantityAfter,
             quantity_delta: input.quantityDelta,
