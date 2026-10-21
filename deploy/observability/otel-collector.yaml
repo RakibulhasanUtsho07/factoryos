@@ -1,0 +1,47 @@
+# OTLP/HTTP receiver for FactoryOS API spans. The API exporter posts to /v1/traces.
+# Mount an approved certificate whose SAN matches the hostname configured by the API.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        tls:
+          cert_file: /run/secrets/otel_receiver_cert
+          key_file: /run/secrets/otel_receiver_key
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+  resource/factoryos:
+    attributes:
+      - key: deployment.environment.name
+        value: production
+        action: upsert
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+
+exporters:
+  otlphttp/backend:
+    # Backend root URL; the exporter appends the OTLP signal path.
+    endpoint: ${env:OTEL_BACKEND_ENDPOINT}
+    headers:
+      Authorization: ${env:OTEL_BACKEND_AUTHORIZATION}
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/factoryos, batch]
+      exporters: [otlphttp/backend]
