@@ -24,6 +24,8 @@ type OfflineReceiptRow = QueryResultRow & {
   created_at: string;
 };
 
+type OfflineReceiptPersistenceResult = OfflineReceiptRow & { replayed: boolean; idempotencyConflict?: boolean };
+
 type RfidBatchRow = QueryResultRow & {
   id: string;
   reader_id: string;
@@ -393,6 +395,13 @@ export class WmsMobileService {
       itemId: storedItemId, resultStatus: status, requestHash, idempotencyKey,
       response, requestId, correlationId,
     });
+    if (receipt.idempotencyConflict) {
+      return {
+        receipt_id: receipt.id, client_transaction_id: clientTransactionId,
+        operation: receipt.operation, status: 'CONFLICT', replayed: false,
+        error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'Client transaction ID was concurrently reused with a different payload' },
+      };
+    }
     return {
       receipt_id: receipt.id, client_transaction_id: clientTransactionId,
       operation: receipt.operation, status: receipt.result_status,
@@ -428,7 +437,7 @@ export class WmsMobileService {
     resultStatus: 'APPLIED' | 'CONFLICT' | 'REJECTED'; requestHash: string;
     idempotencyKey: string; response: Record<string, unknown>;
     requestId: string | null; correlationId: string;
-  }): Promise<OfflineReceiptRow & { replayed: boolean }> {
+  }): Promise<OfflineReceiptPersistenceResult> {
     try {
       const stored = await this.database.transaction(
         { tenantId: input.tenantId, userId: input.userId },
@@ -493,7 +502,7 @@ export class WmsMobileService {
           { code: 'IDEMPOTENCY_KEY_REUSED', message: 'Client transaction ID was concurrently reused with a different payload' },
           input.requestId, input.correlationId,
         );
-        return { ...existing, replayed: false };
+        return { ...existing, replayed: false, idempotencyConflict: true };
       }
       await this.recordOfflineAttempt(
         input.userId, input.tenantId, input.factoryId, input.deviceId, input.clientTransactionId,
