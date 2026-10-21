@@ -394,10 +394,25 @@ describe(
         if (reservationItemIds.length > 0) {
           await pool.query('ALTER TABLE order_material_dispositions DISABLE TRIGGER USER');
           await pool.query('ALTER TABLE inventory_reservations DISABLE TRIGGER USER');
+          await pool.query('ALTER TABLE inventory_reservation_consumption_lots DISABLE TRIGGER USER');
+          await pool.query('ALTER TABLE inventory_reservation_consumptions DISABLE TRIGGER USER');
+          await pool.query('ALTER TABLE inventory_reservation_lot_allocations DISABLE TRIGGER USER');
           await pool.query('ALTER TABLE inventory_movements DISABLE TRIGGER USER');
           try {
             await pool.query(
               'DELETE FROM order_material_dispositions WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_reservation_consumption_lots WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_reservation_consumptions WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+              [tenantId, factoryId, reservationItemIds],
+            );
+            await pool.query(
+              'DELETE FROM inventory_reservation_lot_allocations WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
               [tenantId, factoryId, reservationItemIds],
             );
             await pool.query(
@@ -434,6 +449,9 @@ describe(
             );
           } finally {
             await pool.query('ALTER TABLE inventory_movements ENABLE TRIGGER USER');
+            await pool.query('ALTER TABLE inventory_reservation_lot_allocations ENABLE TRIGGER USER');
+            await pool.query('ALTER TABLE inventory_reservation_consumptions ENABLE TRIGGER USER');
+            await pool.query('ALTER TABLE inventory_reservation_consumption_lots ENABLE TRIGGER USER');
             await pool.query('ALTER TABLE inventory_reservations ENABLE TRIGGER USER');
             await pool.query('ALTER TABLE order_material_dispositions ENABLE TRIGGER USER');
           }

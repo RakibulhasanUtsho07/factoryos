@@ -237,6 +237,8 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         `
         UPDATE inventory_reservations
         SET status = 'RELEASED',
+            quantity_remaining = 0,
+            quantity_released = quantity - quantity_consumed,
             transition_idempotency_key = $1,
             transition_request_hash = $2,
             updated_at = clock_timestamp()
