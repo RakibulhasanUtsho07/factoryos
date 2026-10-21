@@ -300,6 +300,7 @@ DECLARE
   v_location_id UUID;
   v_location_quantity NUMERIC(18,4);
   v_tracked_quantity NUMERIC(18,4);
+  v_bind_quantity NUMERIC(18,4);
 BEGIN
   IF NEW.inventory_item_id IS NULL
      OR NEW.product_role <> 'MATERIAL'
@@ -338,17 +339,20 @@ BEGIN
     AND tlb.item_id = NEW.inventory_item_id
     AND tlb.location_id = v_location_id;
 
-  IF v_location_quantity IS NULL
-     OR v_location_quantity - v_tracked_quantity < NEW.quantity THEN
-    RAISE EXCEPTION 'material lot/serial quantity exceeds unassigned stock available for traceability binding'
-      USING ERRCODE = '23514';
-  END IF;
+  -- Registering genealogy identity must not invent stock or fail merely because
+  -- the identity is not currently bound to available physical quantity. Bind only
+  -- the quantity actually available in UNASSIGNED; the remainder cannot be reserved
+  -- until a receipt/transfer establishes traceable physical stock.
+  v_bind_quantity := LEAST(
+    NEW.quantity,
+    GREATEST(COALESCE(v_location_quantity, 0) - COALESCE(v_tracked_quantity, 0), 0)
+  );
 
   INSERT INTO inventory_traceability_location_balances (
     tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand
   )
   VALUES (
-    NEW.tenant_id, NEW.factory_id, NEW.inventory_item_id, NEW.id, v_location_id, NEW.quantity
+    NEW.tenant_id, NEW.factory_id, NEW.inventory_item_id, NEW.id, v_location_id, v_bind_quantity
   );
 
   RETURN NEW;
