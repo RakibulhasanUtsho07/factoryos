@@ -32,10 +32,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
         );
         const secret = configService.get<string>('JWT_SECRET');
 
-        if (authMode === 'dev' && !secret) {
-          throw new Error('JWT_SECRET is required when AUTH_MODE=dev.');
-        }
-
         const signOptions = {
           expiresIn: '15m' as const,
           issuer:
@@ -46,10 +42,17 @@ import { JwtStrategy } from './strategies/jwt.strategy';
             'factoryos-web',
         };
 
-        return {
-          ...(secret ? { secret } : {}),
-          signOptions,
-        };
+        // OIDC tokens are verified by JWKS. Never configure a local HS256
+        // signing secret in OIDC mode.
+        if (authMode === 'oidc') {
+          return { signOptions };
+        }
+
+        if (!secret) {
+          throw new Error('JWT_SECRET is required when AUTH_MODE=dev.');
+        }
+
+        return { secret, signOptions };
       },
     }),
   ],
