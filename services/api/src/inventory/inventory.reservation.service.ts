@@ -868,11 +868,22 @@ export class InventoryReservationService {
     const correlationId = this.correlationId(input.requestId, input.traceId);
 
     for (const line of linesResult.rows) {
-      const itemResult = await client.query<{ id: string; status: string; unit: string }>(
+      const itemResult = await client.query<{
+        id: string; status: string; unit: string; allocation_policy?: string; lot_tracked?: boolean;
+      }>(
         `
-        SELECT id::text AS id, status, unit FROM inventory_items
-        WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-        FOR UPDATE
+        SELECT i.id::text AS id, i.status, i.unit,
+          COALESCE(ts.allocation_policy, 'FIFO') AS allocation_policy,
+          EXISTS (
+            SELECT 1 FROM traceability_units tu
+            WHERE tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
+              AND tu.inventory_item_id = i.id AND tu.product_role IN ('MATERIAL','PACKAGING')
+          ) AS lot_tracked
+        FROM inventory_items i
+        LEFT JOIN traceability_settings ts
+          ON ts.tenant_id = i.tenant_id AND ts.factory_id = i.factory_id
+        WHERE i.id = $1 AND i.tenant_id = $2 AND i.factory_id = $3
+        FOR UPDATE OF i
         `,
         [line.item_id, input.tenantId, input.factoryId],
       );
@@ -882,6 +893,7 @@ export class InventoryReservationService {
       if (item.unit.trim().toUpperCase() !== line.unit.trim().toUpperCase()) {
         throw new ConflictException(`Order line ${line.line_number} unit no longer matches its inventory item`);
       }
+      const lotPolicy = this.resolveLotPolicy(item.lot_tracked, item.allocation_policy);
 
       const quantity = this.normalizeQuantity(Number(line.quantity));
       const requiredUnits = toUnits(quantity);
@@ -958,7 +970,6 @@ export class InventoryReservationService {
         throw new ConflictException(`Insufficient available stock for order line ${line.line_number}`);
       }
 
-      const lotPolicy = await this.getLotPolicy(client, input.tenantId, input.factoryId, line.item_id);
       // Lot-tracked reservations allocate only eligible, unheld lots. Legacy items
       // retain the unassigned/default-bin fallback until they have traceability units.
       const locationsResult = await client.query<{
@@ -1415,12 +1426,22 @@ export class InventoryReservationService {
       correlationId: string;
     },
   ): Promise<Array<{ reservationId: string; locationId: string; quantity: string }>> {
-    const itemResult = await client.query<{ id: string; status: string; unit: string }>(
+    const itemResult = await client.query<{
+      id: string; status: string; unit: string; allocation_policy?: string; lot_tracked?: boolean;
+    }>(
       `
-      SELECT id::text AS id, status, unit
-      FROM inventory_items
-      WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-      FOR UPDATE
+      SELECT i.id::text AS id, i.status, i.unit,
+        COALESCE(ts.allocation_policy, 'FIFO') AS allocation_policy,
+        EXISTS (
+          SELECT 1 FROM traceability_units tu
+          WHERE tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
+            AND tu.inventory_item_id = i.id AND tu.product_role IN ('MATERIAL','PACKAGING')
+        ) AS lot_tracked
+      FROM inventory_items i
+      LEFT JOIN traceability_settings ts
+        ON ts.tenant_id = i.tenant_id AND ts.factory_id = i.factory_id
+      WHERE i.id = $1 AND i.tenant_id = $2 AND i.factory_id = $3
+      FOR UPDATE OF i
       `,
       [input.itemId, input.tenantId, input.factoryId],
     );
@@ -1457,7 +1478,7 @@ export class InventoryReservationService {
       throw new ConflictException(`Insufficient unreserved stock to release work-order BOM line ${input.lineNumber}`);
     }
 
-    const lotPolicy = await this.getLotPolicy(client, input.tenantId, input.factoryId, input.itemId);
+    const lotPolicy = this.resolveLotPolicy(item.lot_tracked, item.allocation_policy);
     const locationsResult = await client.query<{
       location_id: string; location_code: string; is_default: boolean; location_type: string;
       quantity_on_hand: string; quantity_reserved: string; lot_quantity_available: string;
@@ -2318,6 +2339,17 @@ export class InventoryReservationService {
     return result;
   }
 
+  private resolveLotPolicy(
+    tracked: boolean | undefined,
+    configuredPolicy: string | undefined,
+  ): LotPolicyContext {
+    const policy = configuredPolicy ?? 'FIFO';
+    if (!['FIFO', 'FEFO', 'LOT', 'SERIAL'].includes(policy)) {
+      throw new ConflictException('Inventory lot allocation policy is missing or unsupported');
+    }
+    return { tracked: tracked === true, policy: policy as LotAllocationPolicy };
+  }
+
   private async getLotPolicy(
     client: PoolClient,
     tenantId: string,
@@ -2339,11 +2371,8 @@ export class InventoryReservationService {
       [tenantId, factoryId, itemId],
     );
     const row = result.rows[0];
-    const policy = row?.allocation_policy;
-    if (!row || !['FIFO', 'FEFO', 'LOT', 'SERIAL'].includes(policy)) {
-      throw new ConflictException('Inventory lot allocation policy is missing or unsupported');
-    }
-    return { tracked: row.tracked, policy: policy as LotAllocationPolicy };
+    if (!row) throw new ConflictException('Inventory lot allocation policy is missing');
+    return this.resolveLotPolicy(row.tracked, row.allocation_policy);
   }
 
   private quantityToUnits(value: string): bigint {
