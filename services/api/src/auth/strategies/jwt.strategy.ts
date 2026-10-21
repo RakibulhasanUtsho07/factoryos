@@ -22,6 +22,7 @@ import type { Request } from 'express';
 import { DatabaseService } from '../../database/database.service';
 
 import type { AuthUser } from '../auth-user';
+import { resolveNodeEnvironment, resolveOidcConfiguration } from '../../config/runtime-config';
 import { oidcClaimsMeetMfaPolicy, resolveAuthRuntimePolicy } from '../auth-runtime-policy';
 import type { AuthRuntimePolicy } from '../auth-runtime-policy';
 
@@ -61,8 +62,11 @@ export class JwtStrategy extends PassportStrategy(
     private readonly database: DatabaseService,
     private readonly configService: ConfigService,
   ) {
+    const nodeEnv = resolveNodeEnvironment(
+      configService.get<string>('NODE_ENV') || process.env.NODE_ENV,
+    );
     const runtimePolicy = resolveAuthRuntimePolicy({
-      nodeEnv: configService.get<string>('NODE_ENV') || process.env.NODE_ENV,
+      nodeEnv,
       authMode: configService.get<string>('AUTH_MODE'),
       devAuthEnabled: configService.get<string>('DEV_AUTH_ENABLED') || process.env.DEV_AUTH_ENABLED,
       jwtSecret: configService.get<string>('JWT_SECRET'),
@@ -78,38 +82,12 @@ export class JwtStrategy extends PassportStrategy(
     if (
       authMode === 'oidc'
     ) {
-      const issuer =
-        configService.get<string>(
-          'OIDC_ISSUER',
-        );
-
-      const audience =
-        configService.get<string>(
-          'OIDC_AUDIENCE',
-        );
-
-      const jwksUri =
-        configService.get<string>(
-          'OIDC_JWKS_URI',
-        );
-
-      if (!issuer) {
-        throw new Error(
-          'OIDC_ISSUER is required when AUTH_MODE=oidc',
-        );
-      }
-
-      if (!audience) {
-        throw new Error(
-          'OIDC_AUDIENCE is required when AUTH_MODE=oidc',
-        );
-      }
-
-      if (!jwksUri) {
-        throw new Error(
-          'OIDC_JWKS_URI is required when AUTH_MODE=oidc',
-        );
-      }
+      const { issuer, audience, jwksUri } = resolveOidcConfiguration(
+        nodeEnv,
+        configService.get<string>('OIDC_ISSUER'),
+        configService.get<string>('OIDC_AUDIENCE'),
+        configService.get<string>('OIDC_JWKS_URI'),
+      );
 
       const jwksClient =
         new JwksClient({
