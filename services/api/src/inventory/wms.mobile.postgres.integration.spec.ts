@@ -5,7 +5,6 @@ import { AuditService } from '../audit/audit.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
 import { CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto, CreateTraceabilityUnitDto } from './dto/traceability.dto';
 import { CreateRfidReadBatchDto, SyncOfflineBatchDto } from './dto/wms-mobile.dto';
-import { InventoryLocationService } from './inventory.location.service';
 import { InventoryService } from './inventory.service';
 import { TraceabilityService } from './traceability.service';
 import { WmsMobileService } from './wms.mobile.service';
@@ -20,7 +19,6 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
   let factoryId!: string;
   let database!: ReturnType<typeof createIntegrationDatabase>;
   let inventoryService!: InventoryService;
-  let locationService!: InventoryLocationService;
   let traceabilityService!: TraceabilityService;
   let mobileService!: WmsMobileService;
 
@@ -128,7 +126,6 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
     database = createIntegrationDatabase(appPool);
     const audit = { record: async () => undefined } as unknown as AuditService;
     inventoryService = new InventoryService(database as never, audit);
-    locationService = new InventoryLocationService(database as never, audit);
     traceabilityService = new TraceabilityService(database as never);
     mobileService = new WmsMobileService(database as never, inventoryService);
   });
@@ -172,10 +169,10 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
             'DELETE FROM product_genealogy_events WHERE source_unit_id = ANY($1::uuid[]) OR target_unit_id = ANY($1::uuid[])',
             [unitIds],
           );
+          await adminPool.query('DELETE FROM inventory_traceability_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM traceability_units WHERE id = ANY($1::uuid[])', [unitIds]);
           await adminPool.query('DELETE FROM traceability_label_templates WHERE id = ANY($1::uuid[])', [templateIds]);
           await adminPool.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [itemIds]);
-          await adminPool.query('DELETE FROM inventory_traceability_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
@@ -299,10 +296,11 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       barcode: 'QR-' + bundleCode, quantity: 1, templateId: String(template.id),
     });
 
+    const labelIssueKey = 'mobile-label-issue-' + randomUUID();
     const issue = await traceabilityService.issueLabel(
       TEST_USER_ID, tenantId, factoryId,
       { unit_id: String(lot.id), template_id: String(template.id), copy_count: 2 },
-      'mobile-label-issue-' + randomUUID(), null, correlation(),
+      labelIssueKey, null, correlation(),
     );
     expect(issue).toMatchObject({
       unit_id: lot.id,
@@ -317,11 +315,9 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
     const replay = await traceabilityService.issueLabel(
       TEST_USER_ID, tenantId, factoryId,
       { unit_id: String(lot.id), template_id: String(template.id), copy_count: 2 },
-      'mobile-label-issue-' + 'same-key-not-used', null, correlation(),
+      labelIssueKey, null, correlation(),
     );
-    // A different idempotency key creates a separate immutable issue event; both
-    // remain attached to the same stable traceability identity.
-    expect(replay.unit_id).toBe(lot.id);
+    expect(replay).toMatchObject({ id: issue.id, unit_id: lot.id, replayed: true });
 
     const resolved = await traceabilityService.resolveLabel(
       TEST_USER_ID, tenantId, factoryId, 'QR-' + lotCode,
