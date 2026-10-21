@@ -2323,71 +2323,83 @@ export class InventoryReservationService {
       throw new BadRequestException('target_status must be RELEASED or CONSUMED');
     }
     const transitionKey = this.requiredIdempotencyKey(rawIdempotencyKey);
-    const transitionHash = this.hash({
-      reservationId: reservationId.toLowerCase(),
-      targetStatus,
-    });
+    const transitionHash = this.hash({ reservationId: reservationId.toLowerCase(), targetStatus });
+
+    if (targetStatus === 'CONSUMED') {
+      const current = await this.database.query<ReservationRow>(
+        `SELECT ${RESERVATION_COLUMNS}
+         FROM inventory_reservations
+         WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND item_id = $4
+         LIMIT 1`,
+        [reservationId, tenantId, factoryId, itemId],
+        { tenantId, userId },
+      );
+      const row = current.rows[0];
+      if (!row) throw new NotFoundException('Inventory reservation not found in this factory');
+      if (row.status === 'CONSUMED' && row.transition_idempotency_key === transitionKey) {
+        return this.toResult(row, true);
+      }
+      if (row.status !== 'RESERVED') {
+        throw new ConflictException('Inventory reservation is already terminal and cannot transition again');
+      }
+      const remainingUnits = this.quantityUnits(row.quantity)
+        - this.quantityUnits(row.quantity_consumed ?? '0.0000');
+      if (remainingUnits <= 0n) throw new ConflictException('Reservation has no remaining quantity to consume');
+      return this.consumeReservation(
+        userId, tenantId, factoryId, itemId, reservationId,
+        { quantity: Number(this.fromQuantityUnits(remainingUnits)) },
+        transitionKey, requestId, traceId,
+      );
+    }
 
     let result: ReservationResult;
     try {
       result = await this.database.transaction(
-        { tenantId, userId },
+        { tenantId, userId, requestId: isUUID(requestId ?? '') ? requestId : null, traceId: isUUID(traceId ?? '') ? traceId : null },
         async (client) => {
-        // Use the same item -> reservation lock order as creation and stock movements.
-        const itemResult = await client.query<{ id: string; status: string }>(
-          `
-          SELECT id::text AS id, status
-          FROM inventory_items
-          WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
-          FOR UPDATE
-          `,
-          [itemId, tenantId, factoryId],
-        );
-        const item = itemResult.rows[0];
-        if (!item) throw new NotFoundException('Inventory item not found in this factory');
-
-        const reservationResult = await client.query<ReservationRow>(
-          `SELECT ${RESERVATION_COLUMNS}
-           FROM inventory_reservations
-           WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND item_id = $4
-           FOR UPDATE`,
-          [reservationId, tenantId, factoryId, itemId],
-        );
-        const reservation = reservationResult.rows[0];
-        if (!reservation) throw new NotFoundException('Inventory reservation not found in this factory');
-
-        if (reservation.status !== 'RESERVED') {
-          if (
-            reservation.status === targetStatus
-            && reservation.transition_idempotency_key === transitionKey
-            && reservation.transition_request_hash === transitionHash
-          ) {
-            return this.toResult(reservation, true);
-          }
-          if (reservation.status === targetStatus && reservation.transition_idempotency_key === transitionKey) {
-            throw new ConflictException('Idempotency-Key was reused for a different reservation transition');
-          }
-          throw new ConflictException('Inventory reservation is already terminal and cannot transition again');
-        }
-        if (targetStatus === 'CONSUMED' && item.status !== 'ACTIVE') {
-          throw new ConflictException('Disabled inventory items cannot consume reservations');
-        }
-
-        let balance: BalanceRow | undefined;
-        let consumedMovementId: string | null = null;
-        if (reservation.location_id) {
-          await this.decreaseLocationReserved(
-            client, tenantId, factoryId, itemId, reservation.location_id, reservation.quantity,
+          const itemResult = await client.query<{ id: string; status: string }>(
+            `
+            SELECT id::text AS id, status
+            FROM inventory_items
+            WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+            FOR UPDATE
+            `,
+            [itemId, tenantId, factoryId],
           );
-          if (targetStatus === 'CONSUMED') {
-            await client.query(
-              `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
-              [reservation.location_id],
+          if (!itemResult.rows[0]) throw new NotFoundException('Inventory item not found in this factory');
+
+          const reservationResult = await client.query<ReservationRow>(
+            `SELECT ${RESERVATION_COLUMNS}
+             FROM inventory_reservations
+             WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 AND item_id = $4
+             FOR UPDATE`,
+            [reservationId, tenantId, factoryId, itemId],
+          );
+          const reservation = reservationResult.rows[0];
+          if (!reservation) throw new NotFoundException('Inventory reservation not found in this factory');
+
+          if (reservation.status !== 'RESERVED') {
+            if (
+              reservation.status === 'RELEASED'
+              && reservation.transition_idempotency_key === transitionKey
+              && reservation.transition_request_hash === transitionHash
+            ) return this.toResult(reservation, true);
+            if (reservation.transition_idempotency_key === transitionKey) {
+              throw new ConflictException('Idempotency-Key was reused for a different reservation transition');
+            }
+            throw new ConflictException('Inventory reservation is already terminal and cannot transition again');
+          }
+
+          const remainingUnits = this.quantityUnits(reservation.quantity)
+            - this.quantityUnits(reservation.quantity_consumed ?? '0.0000');
+          if (remainingUnits <= 0n) throw new ConflictException('Reservation has no remaining quantity to release');
+          const remainingQuantity = this.fromQuantityUnits(remainingUnits);
+          if (reservation.location_id) {
+            await this.decreaseLocationReserved(
+              client, tenantId, factoryId, itemId, reservation.location_id, remainingQuantity,
             );
           }
-        }
 
-        if (targetStatus === 'RELEASED') {
           const balanceResult = await client.query<BalanceRow>(
             `
             UPDATE inventory_stock_balances
@@ -2397,110 +2409,44 @@ export class InventoryReservationService {
             WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
               AND quantity_reserved >= $1::numeric
             RETURNING quantity_on_hand::text AS quantity_on_hand,
-              quantity_reserved::text AS quantity_reserved
+                      quantity_reserved::text AS quantity_reserved
             `,
-            [reservation.quantity, tenantId, factoryId, itemId],
+            [remainingQuantity, tenantId, factoryId, itemId],
           );
-          balance = balanceResult.rows[0];
-        } else {
-          const balanceResult = await client.query<BalanceRow>(
-            `
-            UPDATE inventory_stock_balances
-            SET
-              quantity_on_hand = quantity_on_hand - $1::numeric,
-              quantity_reserved = quantity_reserved - $1::numeric,
-              version = version + 1,
-              updated_at = clock_timestamp()
-            WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
-              AND quantity_reserved >= $1::numeric
-              AND quantity_on_hand >= $1::numeric
-            RETURNING quantity_on_hand::text AS quantity_on_hand,
-              quantity_reserved::text AS quantity_reserved
-            `,
-            [reservation.quantity, tenantId, factoryId, itemId],
-          );
-          balance = balanceResult.rows[0];
-        }
-        if (!balance) throw new ConflictException('Inventory reservation balance is inconsistent; no transition was applied');
+          const balance = balanceResult.rows[0];
+          if (!balance) throw new ConflictException('Inventory reservation balance is inconsistent; no release was applied');
 
-        const correlationId = this.correlationId(requestId, traceId);
-        if (targetStatus === 'CONSUMED') {
-          const movementKey = 'reservation-consume-' + this.hash({
-            tenantId, factoryId, reservationId, transitionKey,
-          }).slice(0, 48);
-          const movementResult = await client.query<MovementRow>(
+          const updatedResult = await client.query<ReservationRow>(
             `
-            INSERT INTO inventory_movements (
-              tenant_id, factory_id, item_id, location_id, movement_type, quantity,
-              quantity_delta, quantity_after, idempotency_key, request_hash,
-              reference_type, reference_id, notes, created_by_user_id, correlation_id
-            )
-            VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
-              $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
-            RETURNING id::text AS id, quantity_after::text AS quantity_after
+            UPDATE inventory_reservations
+            SET status = 'RELEASED',
+                transition_idempotency_key = $1,
+                transition_request_hash = $2,
+                consumed_movement_id = NULL,
+                updated_at = clock_timestamp()
+            WHERE id = $3 AND tenant_id = $4 AND factory_id = $5
+              AND item_id = $6 AND status = 'RESERVED'
+            RETURNING ${RESERVATION_COLUMNS}
             `,
-            [
-              tenantId, factoryId, itemId, reservation.location_id,
-              reservation.quantity, balance.quantity_on_hand,
-              movementKey, transitionHash, reservationId,
-              reservation.notes, userId, correlationId,
-            ],
+            [transitionKey, transitionHash, reservationId, tenantId, factoryId, itemId],
           );
-          consumedMovementId = movementResult.rows[0]?.id ?? null;
-          if (!consumedMovementId) throw new Error('INVENTORY_RESERVATION_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+          const updated = updatedResult.rows[0];
+          if (!updated) throw new ConflictException('Inventory reservation changed concurrently; no release was applied');
+
+          const correlationId = this.correlationId(requestId, traceId);
           await this.insertOutboxEvent(client, {
-            tenantId, factoryId, aggregateId: itemId, eventType: 'INVENTORY.STOCK_ISSUED',
+            tenantId, factoryId, aggregateId: itemId,
+            eventType: 'INVENTORY.STOCK_RESERVATION_RELEASED',
             correlationId, userId,
             payload: {
-              movement: {
-                id: consumedMovementId,
-                item_id: itemId, location_id: reservation.location_id,
-                movement_type: 'ISSUE', quantity: reservation.quantity,
-                quantity_delta: '-' + reservation.quantity, quantity_after: balance.quantity_on_hand,
-                reference_type: 'RESERVATION', reference_id: reservationId,
+              reservation: {
+                id: reservationId, item_id: itemId, quantity: remainingQuantity,
+                original_quantity: reservation.quantity, quantity_consumed: reservation.quantity_consumed,
+                status: 'RELEASED', consumed_movement_id: null,
               },
-              reservation_id: reservationId,
+              balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
             },
           });
-        }
-
-        const updatedResult = await client.query<ReservationRow>(
-          `
-          UPDATE inventory_reservations
-          SET status = $1,
-              transition_idempotency_key = $2,
-              transition_request_hash = $3,
-              consumed_movement_id = $4::uuid,
-              updated_at = clock_timestamp()
-          WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND item_id = $8
-            AND status = 'RESERVED'
-          RETURNING ${RESERVATION_COLUMNS}
-          `,
-          [
-            targetStatus, transitionKey, transitionHash, consumedMovementId,
-            reservationId, tenantId, factoryId, itemId,
-          ],
-        );
-        const updated = updatedResult.rows[0];
-        if (!updated) throw new ConflictException('Inventory reservation changed concurrently; no transition was applied');
-
-        await this.insertOutboxEvent(client, {
-          tenantId, factoryId, aggregateId: itemId,
-          eventType: targetStatus === 'RELEASED'
-            ? 'INVENTORY.STOCK_RESERVATION_RELEASED'
-            : 'INVENTORY.STOCK_RESERVATION_CONSUMED',
-          correlationId, userId,
-          payload: {
-            reservation: {
-              id: reservationId, item_id: itemId, quantity: reservation.quantity,
-              status: targetStatus, consumed_movement_id: consumedMovementId,
-            },
-            balance: {
-              quantity_on_hand: balance.quantity_on_hand,
-              quantity_reserved: balance.quantity_reserved,
-            },
-          },
-        });
           return this.toResult(updated, false);
         },
       );
@@ -2514,11 +2460,13 @@ export class InventoryReservationService {
     if (!result.replayed) {
       await this.recordAuditSafely({
         tenantId, factoryId, userId,
-        action: targetStatus === 'RELEASED' ? 'RESERVATION_RELEASE' : 'RESERVATION_CONSUME',
+        action: 'RESERVATION_RELEASE',
         resourceId: result.id, requestId, traceId,
         payload: {
-          itemId, quantity: result.quantity, status: result.status,
-          consumedMovementId: result.consumed_movement_id,
+          itemId, quantity: result.quantity,
+          quantityConsumed: result.quantity_consumed,
+          remainingQuantity: result.remaining_quantity,
+          status: result.status,
         },
       });
     }
