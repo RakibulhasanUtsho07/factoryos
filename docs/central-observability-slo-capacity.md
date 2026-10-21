@@ -2,7 +2,7 @@
 
 ## Status and release boundary
 
-This bundle provisions a Prometheus/Grafana/Alertmanager monitoring plane, a TLS-protected OpenTelemetry Collector OTLP/HTTP receiver, PostgreSQL custom metrics for locks and outbox freshness, operator-routed alerting, and an authenticated multi-tenant GET-only soak/recovery harness.
+This bundle provisions a Prometheus/Grafana/Alertmanager monitoring plane, a TLS-protected OpenTelemetry Collector OTLP/HTTP receiver, PostgreSQL lock metrics plus tenant-scoped application outbox freshness, operator-routed alerting, and an authenticated multi-tenant GET-only soak/recovery harness.
 
 **Production acceptance is not complete until an owner-approved deployment supplies real endpoints/secrets, every API instance and the database exporter are healthy, a test alert reaches the on-call destination, and a representative staging soak produces a reviewed evidence bundle.** A repository change, valid config files, unit/contract tests, or a green CI run is not proof that a collector/backend is deployed or that notifications were delivered.
 
