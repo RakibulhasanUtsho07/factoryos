@@ -164,7 +164,7 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
             [deviceIds],
           );
           await adminPool.query('DELETE FROM mobile_offline_sync_receipts WHERE device_id = ANY($1::text[])', [deviceIds]);
-          await adminPool.query('DELETE FROM traceability_label_issues WHERE unit_id = ANY($1::uuid[])', [unitIds]);
+          await adminPool.query('DELETE FROM traceability_label_issues WHERE unit_id = ANY($1::uuid[]) OR inventory_item_id = ANY($2::uuid[])', [unitIds, itemIds]);
           await adminPool.query(
             'DELETE FROM product_genealogy_events WHERE source_unit_id = ANY($1::uuid[]) OR target_unit_id = ANY($1::uuid[])',
             [unitIds],
@@ -282,7 +282,7 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
 
   it('issues labels for identities, resolves the same barcode into genealogy, and suppresses repeated RFID reads', async () => {
     const itemId = await createItem('3.0000');
-    const template = await createTemplate(['LOT', 'BUNDLE']);
+    const template = await createTemplate(['MATERIAL', 'LOT', 'BUNDLE']);
     const lotCode = 'MOBILE-LOT-' + randomUUID().slice(0, 8);
     const rfidEpc = 'E200-MOBILE-' + randomUUID().slice(0, 10).toUpperCase();
     const lot = await createUnit({
@@ -311,6 +311,28 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       replayed: false,
     });
     expect((issue.print_contract as { encoded_value: string }).encoded_value).toBe('QR-' + lotCode);
+
+    const materialLabel = await traceabilityService.issueLabel(
+      TEST_USER_ID, tenantId, factoryId,
+      { item_id: itemId, template_id: String(template.id), copy_count: 1 },
+      'mobile-material-label-' + randomUUID(), null, correlation(),
+    );
+    expect(materialLabel).toMatchObject({
+      unit_id: null,
+      inventory_item_id: itemId,
+      template_id: template.id,
+      barcode_value: expect.any(String),
+      replayed: false,
+    });
+    const resolvedMaterial = await traceabilityService.resolveLabel(
+      TEST_USER_ID, tenantId, factoryId, String(materialLabel.barcode_value),
+    );
+    expect(resolvedMaterial.identity_type).toBe('MATERIAL');
+    expect((resolvedMaterial.identity as { id: string }).id).toBe(itemId);
+    const materialHistory = await traceabilityService.listLabelIssuesForItem(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+    );
+    expect(materialHistory.issues).toHaveLength(1);
 
     const replay = await traceabilityService.issueLabel(
       TEST_USER_ID, tenantId, factoryId,
