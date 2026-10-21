@@ -2133,6 +2133,292 @@ export class InventoryReservationService {
     return result;
   }
 
+  private async getLotPolicy(
+    client: PoolClient,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+  ): Promise<LotPolicyContext> {
+    const result = await client.query<{ allocation_policy: string; tracked: boolean }>(
+      `
+      SELECT COALESCE(ts.allocation_policy, 'FIFO') AS allocation_policy,
+        EXISTS (
+          SELECT 1 FROM traceability_units tu
+          WHERE tu.tenant_id = $1 AND tu.factory_id = $2 AND tu.inventory_item_id = $3
+            AND tu.product_role IN ('MATERIAL', 'PACKAGING')
+        ) AS tracked
+      FROM (SELECT 1) seed
+      LEFT JOIN traceability_settings ts
+        ON ts.tenant_id = $1 AND ts.factory_id = $2
+      `,
+      [tenantId, factoryId, itemId],
+    );
+    const row = result.rows[0];
+    const policy = row?.allocation_policy;
+    if (!row || !['FIFO', 'FEFO', 'LOT', 'SERIAL'].includes(policy)) {
+      throw new ConflictException('Inventory lot allocation policy is missing or unsupported');
+    }
+    return { tracked: row.tracked, policy: policy as LotAllocationPolicy };
+  }
+
+  private quantityToUnits(value: string): bigint {
+    const match = /^(\\d+)(?:\\.(\\d{1,4}))?$/.exec(String(value).trim());
+    if (!match) throw new ConflictException('Inventory quantity is not a valid four-decimal value');
+    return BigInt(match[1]!) * 10000n + BigInt((match[2] ?? '').padEnd(4, '0'));
+  }
+
+  private quantityFromUnits(value: bigint): string {
+    return (value / 10000n).toString() + '.' + (value % 10000n).toString().padStart(4, '0');
+  }
+
+  private async getEligibleLotCandidates(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      itemId: string;
+      locationId?: string | null;
+      policy: LotAllocationPolicy;
+    },
+  ): Promise<LotCandidate[]> {
+    const result = await client.query<LotCandidate>(
+      `
+      SELECT lb.traceability_unit_id::text AS traceability_unit_id,
+             lb.location_id::text AS location_id,
+             lb.quantity_on_hand::text AS quantity_on_hand,
+             lb.quantity_reserved::text AS quantity_reserved,
+             tu.unit_type, tu.unit_code, tu.expires_at::text AS expires_at
+      FROM inventory_lot_stock_balances lb
+      JOIN traceability_units tu
+        ON tu.id = lb.traceability_unit_id
+       AND tu.tenant_id = lb.tenant_id AND tu.factory_id = lb.factory_id
+       AND tu.inventory_item_id = lb.item_id
+      LEFT JOIN goods_receipt_lines gl
+        ON gl.id = tu.goods_receipt_line_id
+       AND gl.tenant_id = tu.tenant_id AND gl.factory_id = tu.factory_id
+      LEFT JOIN goods_receipts gr
+        ON gr.id = gl.goods_receipt_id
+       AND gr.tenant_id = gl.tenant_id AND gr.factory_id = gl.factory_id
+      WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+        AND ($4::uuid IS NULL OR lb.location_id = $4::uuid)
+        AND tu.product_role IN ('MATERIAL', 'PACKAGING')
+        AND tu.status = 'ACTIVE'
+        AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+        AND ($5::text <> 'LOT' OR tu.unit_type = 'LOT')
+        AND ($5::text <> 'SERIAL' OR tu.unit_type = 'SERIAL')
+        AND lb.quantity_on_hand > lb.quantity_reserved
+        AND NOT EXISTS (
+          SELECT 1 FROM quality_holds qh
+          WHERE qh.tenant_id = tu.tenant_id AND qh.factory_id = tu.factory_id
+            AND qh.status = 'ACTIVE'
+            AND (qh.traceability_unit_id = tu.id OR qh.inventory_item_id = tu.inventory_item_id)
+        )
+      ORDER BY
+        CASE WHEN $5::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
+        CASE WHEN $5::text = 'FEFO' THEN gr.created_at END ASC NULLS LAST,
+        CASE WHEN $5::text <> 'FEFO' THEN gr.created_at END ASC NULLS LAST,
+        tu.created_at ASC, tu.unit_code ASC, lb.location_id ASC, lb.traceability_unit_id ASC
+      FOR UPDATE OF lb, tu
+      `,
+      [input.tenantId, input.factoryId, input.itemId, input.locationId ?? null, input.policy],
+    );
+    return result.rows;
+  }
+
+  private async allocateReservationLots(
+    client: PoolClient,
+    input: {
+      tenantId: string; factoryId: string; itemId: string; reservationId: string;
+      locationId: string | null; quantity: string; policy: LotAllocationPolicy;
+    },
+  ): Promise<Array<{ traceability_unit_id: string; location_id: string; quantity: string }>> {
+    if (!input.locationId) {
+      throw new ConflictException('Lot-tracked reservations require an explicit physical location');
+    }
+    const required = this.quantityToUnits(input.quantity);
+    if (input.policy === 'SERIAL' && required % 10000n !== 0n) {
+      throw new ConflictException('SERIAL allocation only supports whole serial units');
+    }
+    const candidates = await this.getEligibleLotCandidates(client, {
+      tenantId: input.tenantId, factoryId: input.factoryId, itemId: input.itemId,
+      locationId: input.locationId, policy: input.policy,
+    });
+
+    let remaining = required;
+    const selected: Array<{ traceability_unit_id: string; location_id: string; quantity: string }> = [];
+    if (input.policy === 'LOT') {
+      const wholeLot = candidates.find((row) =>
+        this.quantityToUnits(row.quantity_on_hand) - this.quantityToUnits(row.quantity_reserved) >= required,
+      );
+      if (!wholeLot) {
+        throw new ConflictException('LOT policy requires one eligible lot in the selected BIN to cover the reservation');
+      }
+      selected.push({
+        traceability_unit_id: wholeLot.traceability_unit_id,
+        location_id: wholeLot.location_id,
+        quantity: input.quantity,
+      });
+    } else {
+      for (const candidate of candidates) {
+        if (remaining === 0n) break;
+        const available = this.quantityToUnits(candidate.quantity_on_hand) - this.quantityToUnits(candidate.quantity_reserved);
+        if (available <= 0n) continue;
+        const allocated = available < remaining ? available : remaining;
+        if (input.policy === 'SERIAL' && allocated % 10000n !== 0n) {
+          throw new ConflictException('SERIAL allocation only supports whole serial units');
+        }
+        selected.push({
+          traceability_unit_id: candidate.traceability_unit_id,
+          location_id: candidate.location_id,
+          quantity: this.quantityFromUnits(allocated),
+        });
+        remaining -= allocated;
+      }
+      if (remaining !== 0n) {
+        throw new ConflictException('Eligible FEFO/FIFO stock is insufficient; quarantined, held, recalled, disposed or expired stock is excluded');
+      }
+    }
+
+    for (let index = 0; index < selected.length; index += 1) {
+      const allocation = selected[index]!;
+      const updated = await client.query<{ traceability_unit_id: string }>(
+        `
+        UPDATE inventory_lot_stock_balances
+        SET quantity_reserved = quantity_reserved + $1::numeric,
+            version = version + 1, updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+          AND traceability_unit_id = $5 AND location_id = $6
+          AND quantity_on_hand - quantity_reserved >= $1::numeric
+        RETURNING traceability_unit_id::text AS traceability_unit_id
+        `,
+        [allocation.quantity, input.tenantId, input.factoryId, input.itemId, allocation.traceability_unit_id, allocation.location_id],
+      );
+      if (!updated.rows[0]) {
+        throw new ConflictException('Lot availability changed concurrently; reservation transaction was rolled back');
+      }
+      await client.query(
+        `
+        INSERT INTO inventory_reservation_lot_allocations (
+          tenant_id, factory_id, item_id, reservation_id, traceability_unit_id,
+          location_id, allocation_sequence, quantity_allocated, quantity_remaining
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $8::numeric)
+        `,
+        [
+          input.tenantId, input.factoryId, input.itemId, input.reservationId,
+          allocation.traceability_unit_id, allocation.location_id, index + 1, allocation.quantity,
+        ],
+      );
+    }
+    return selected;
+  }
+
+  private async settleReservationLotAllocations(
+    client: PoolClient,
+    reservation: ReservationRow,
+    quantity: string,
+    action: 'CONSUMED' | 'RELEASED',
+  ): Promise<Array<{ traceability_unit_id: string; location_id: string; quantity: string }>> {
+    if (!reservation.lot_policy_enforced) return [];
+    const allocationResult = await client.query<{
+      id: string; traceability_unit_id: string; location_id: string;
+      quantity_allocated: string; quantity_remaining: string;
+      quantity_consumed: string; quantity_released: string; allocation_sequence: number;
+    }>(
+      `
+      SELECT id::text AS id, traceability_unit_id::text AS traceability_unit_id,
+             location_id::text AS location_id, quantity_allocated::text AS quantity_allocated,
+             quantity_remaining::text AS quantity_remaining, quantity_consumed::text AS quantity_consumed,
+             quantity_released::text AS quantity_released, allocation_sequence
+      FROM inventory_reservation_lot_allocations
+      WHERE tenant_id = $1 AND factory_id = $2 AND reservation_id = $3
+      ORDER BY allocation_sequence, traceability_unit_id
+      FOR UPDATE
+      `,
+      [reservation.tenant_id, reservation.factory_id, reservation.id],
+    );
+    const allocations = allocationResult.rows;
+    if (allocations.length === 0) {
+      throw new ConflictException('Lot-tracked reservation is missing its immutable lot allocation records');
+    }
+    let remaining = this.quantityToUnits(quantity);
+    const consumedLots: Array<{ traceability_unit_id: string; location_id: string; quantity: string }> = [];
+    for (const allocation of allocations) {
+      if (remaining === 0n) break;
+      const available = this.quantityToUnits(allocation.quantity_remaining);
+      if (available <= 0n) continue;
+      const take = available < remaining ? available : remaining;
+      const takeText = this.quantityFromUnits(take);
+      if (action === 'CONSUMED') {
+        const lotBalance = await client.query<{ traceability_unit_id: string }>(
+          `
+          UPDATE inventory_lot_stock_balances
+          SET quantity_on_hand = quantity_on_hand - $1::numeric,
+              quantity_reserved = quantity_reserved - $1::numeric,
+              version = version + 1, updated_at = clock_timestamp()
+          WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+            AND traceability_unit_id = $5 AND location_id = $6
+            AND quantity_on_hand >= $1::numeric AND quantity_reserved >= $1::numeric
+            AND NOT EXISTS (
+              SELECT 1 FROM quality_holds qh
+              WHERE qh.tenant_id = $2 AND qh.factory_id = $3 AND qh.status = 'ACTIVE'
+                AND (qh.traceability_unit_id = $5 OR qh.inventory_item_id = $4)
+            )
+            AND EXISTS (
+              SELECT 1 FROM traceability_units tu
+              WHERE tu.id = $5 AND tu.tenant_id = $2 AND tu.factory_id = $3
+                AND tu.inventory_item_id = $4 AND tu.status = 'ACTIVE'
+                AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+            )
+          RETURNING traceability_unit_id::text AS traceability_unit_id
+          `,
+          [takeText, reservation.tenant_id, reservation.factory_id, reservation.item_id, allocation.traceability_unit_id, allocation.location_id],
+        );
+        if (!lotBalance.rows[0]) {
+          throw new ConflictException('Lot became held, expired, or unavailable before issue; no stock was consumed');
+        }
+        consumedLots.push({
+          traceability_unit_id: allocation.traceability_unit_id,
+          location_id: allocation.location_id,
+          quantity: takeText,
+        });
+      } else {
+        const lotBalance = await client.query<{ traceability_unit_id: string }>(
+          `
+          UPDATE inventory_lot_stock_balances
+          SET quantity_reserved = quantity_reserved - $1::numeric,
+              version = version + 1, updated_at = clock_timestamp()
+          WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+            AND traceability_unit_id = $5 AND location_id = $6
+            AND quantity_reserved >= $1::numeric
+          RETURNING traceability_unit_id::text AS traceability_unit_id
+          `,
+          [takeText, reservation.tenant_id, reservation.factory_id, reservation.item_id, allocation.traceability_unit_id, allocation.location_id],
+        );
+        if (!lotBalance.rows[0]) {
+          throw new ConflictException('Lot reserved quantity is inconsistent; release was rolled back');
+        }
+      }
+      const updatedAllocation = await client.query<{ id: string }>(
+        `
+        UPDATE inventory_reservation_lot_allocations
+        SET quantity_remaining = quantity_remaining - $1::numeric,
+            quantity_consumed = quantity_consumed + CASE WHEN $2 = 'CONSUMED' THEN $1::numeric ELSE 0 END,
+            quantity_released = quantity_released + CASE WHEN $2 = 'RELEASED' THEN $1::numeric ELSE 0 END
+        WHERE id = $3 AND tenant_id = $4 AND factory_id = $5 AND quantity_remaining >= $1::numeric
+        RETURNING id::text AS id
+        `,
+        [takeText, action, allocation.id, reservation.tenant_id, reservation.factory_id],
+      );
+      if (!updatedAllocation.rows[0]) throw new ConflictException('Lot allocation changed concurrently; transaction rolled back');
+      remaining -= take;
+    }
+    if (remaining !== 0n) {
+      throw new ConflictException('Lot allocations do not cover the outstanding reservation quantity');
+    }
+    return consumedLots;
+  }
+
   private async decreaseLocationReserved(
     client: PoolClient,
     tenantId: string,
