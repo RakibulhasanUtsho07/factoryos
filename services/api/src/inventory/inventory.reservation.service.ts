@@ -1440,37 +1440,84 @@ export class InventoryReservationService {
       throw new ConflictException(`Insufficient unreserved stock to release work-order BOM line ${input.lineNumber}`);
     }
 
+    const lotPolicy = await this.getLotPolicy(client, input.tenantId, input.factoryId, input.itemId);
     const locationsResult = await client.query<{
       location_id: string; location_code: string; is_default: boolean; location_type: string;
-      quantity_on_hand: string; quantity_reserved: string;
+      quantity_on_hand: string; quantity_reserved: string; lot_quantity_available: string;
+      earliest_expiry: string | null; earliest_receipt: string | null;
     }>(
       `
       SELECT lb.location_id::text AS location_id, l.location_code, l.is_default, l.location_type,
              lb.quantity_on_hand::text AS quantity_on_hand,
-             lb.quantity_reserved::text AS quantity_reserved
+             lb.quantity_reserved::text AS quantity_reserved,
+             COALESCE(lots.quantity_available, 0)::text AS lot_quantity_available,
+             lots.earliest_expiry::text AS earliest_expiry,
+             lots.earliest_receipt::text AS earliest_receipt
       FROM inventory_location_balances lb
       JOIN inventory_locations l
         ON l.id = lb.location_id AND l.tenant_id = lb.tenant_id AND l.factory_id = lb.factory_id
       LEFT JOIN inventory_locations parent
-        ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id AND parent.factory_id = l.factory_id
+        ON parent.id = l.parent_location_id AND parent.tenant_id = lb.tenant_id AND parent.factory_id = lb.factory_id
+      LEFT JOIN LATERAL (
+        SELECT CASE WHEN $5::text = 'LOT' THEN COALESCE(MAX(c.available_quantity), 0)
+                    ELSE COALESCE(SUM(c.available_quantity), 0) END AS quantity_available,
+               MIN(c.expires_at) FILTER (WHERE c.expires_at IS NOT NULL) AS earliest_expiry,
+               MIN(c.received_at) AS earliest_receipt
+        FROM (
+          SELECT ll.quantity_on_hand - ll.quantity_reserved AS available_quantity,
+                 tu.expires_at, COALESCE(gr.created_at, tu.created_at) AS received_at
+          FROM inventory_lot_stock_balances ll
+          JOIN traceability_units tu
+            ON tu.id = ll.traceability_unit_id AND tu.tenant_id = ll.tenant_id
+           AND tu.factory_id = ll.factory_id AND tu.inventory_item_id = ll.item_id
+          LEFT JOIN goods_receipt_lines gl
+            ON gl.id = tu.goods_receipt_line_id AND gl.tenant_id = tu.tenant_id
+           AND gl.factory_id = tu.factory_id
+          LEFT JOIN goods_receipts gr
+            ON gr.id = gl.goods_receipt_id AND gr.tenant_id = gl.tenant_id
+           AND gr.factory_id = gl.factory_id
+          WHERE ll.tenant_id = lb.tenant_id AND ll.factory_id = lb.factory_id
+            AND ll.item_id = lb.item_id AND ll.location_id = lb.location_id
+            AND tu.product_role IN ('MATERIAL','PACKAGING')
+            AND tu.status = 'ACTIVE'
+            AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+            AND ($5::text <> 'LOT' OR tu.unit_type = 'LOT')
+            AND ($5::text <> 'SERIAL' OR tu.unit_type = 'SERIAL')
+            AND ll.quantity_on_hand > ll.quantity_reserved
+            AND NOT EXISTS (
+              SELECT 1 FROM quality_holds qh
+              WHERE qh.tenant_id = tu.tenant_id AND qh.factory_id = tu.factory_id
+                AND qh.status = 'ACTIVE'
+                AND (qh.traceability_unit_id = tu.id OR qh.inventory_item_id = tu.inventory_item_id)
+            )
+        ) c
+      ) lots ON TRUE
       WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
         AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
         AND lb.quantity_on_hand > lb.quantity_reserved
+        AND ($4::boolean = FALSE OR (l.location_type = 'BIN' AND lots.quantity_available > 0))
         AND (
-          (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE')
-          OR (l.is_default = TRUE AND l.location_type = 'VIRTUAL')
+          (l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status = 'ACTIVE')
+          OR ($4::boolean = FALSE AND l.is_default = TRUE AND l.location_type = 'VIRTUAL')
         )
-      ORDER BY l.is_default ASC, lower(l.location_code), lb.location_id
+      ORDER BY
+        CASE WHEN $5::text = 'FEFO' THEN lots.earliest_expiry END ASC NULLS LAST,
+        lots.earliest_receipt ASC NULLS LAST,
+        l.picking_priority ASC, l.is_default ASC, lower(l.location_code), lb.location_id
       FOR UPDATE OF lb, l
       `,
-      [input.tenantId, input.factoryId, input.itemId],
+      [input.tenantId, input.factoryId, input.itemId, lotPolicy.tracked, lotPolicy.policy],
     );
 
     let remainingUnits = requiredUnits;
     const allocations: Array<{ locationId: string; quantity: string }> = [];
     for (const location of locationsResult.rows) {
       if (remainingUnits === 0n) break;
-      const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
+      const physicalAvailable = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
+      const lotAvailable = toUnits(location.lot_quantity_available ?? '0');
+      const availableUnits = lotPolicy.tracked
+        ? (lotAvailable < physicalAvailable ? lotAvailable : physicalAvailable)
+        : physicalAvailable;
       if (availableUnits <= 0n) continue;
       const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
       allocations.push({
@@ -1548,6 +1595,14 @@ export class InventoryReservationService {
       const reservation = inserted.rows[0];
       if (!reservation) throw new Error('WORK_ORDER_MATERIAL_RESERVATION_INSERT_FAILED');
 
+      const lotAllocations = reservation.lot_policy_enforced
+        ? await this.allocateReservationLots(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId, itemId: input.itemId,
+          reservationId: reservation.id, locationId: reservation.location_id,
+          quantity: reservation.quantity, policy: lotPolicy.policy,
+        })
+        : [];
+
       await this.insertOutboxEvent(client, {
         tenantId: input.tenantId,
         factoryId: input.factoryId,
@@ -1562,7 +1617,7 @@ export class InventoryReservationService {
           bom_line_id: input.bomLineId,
           reservation: {
             id: reservation.id, item_id: input.itemId, location_id: allocation.locationId,
-            quantity: allocation.quantity, status: 'RESERVED',
+            quantity: allocation.quantity, status: 'RESERVED', lot_allocations: lotAllocations,
           },
           balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
         },
