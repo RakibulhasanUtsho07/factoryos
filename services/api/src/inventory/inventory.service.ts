@@ -38,6 +38,7 @@ type InventoryMovementRow = QueryResultRow & {
   factory_id: string;
   item_id: string;
   location_id: string | null;
+  traceability_unit_id: string | null;
   movement_type: 'RECEIPT' | 'ISSUE';
   quantity: string;
   input_quantity: string;
@@ -262,6 +263,9 @@ export class InventoryService {
 
     const locationId = dto.location_id?.trim().toLowerCase() || null;
     if (locationId) this.validateUuid(locationId, 'location_id');
+    const traceabilityUnitId = dto.traceability_unit_id?.trim().toLowerCase() || null;
+    if (traceabilityUnitId) this.validateUuid(traceabilityUnitId, 'traceability_unit_id');
+    if (traceabilityUnitId && !locationId) throw new BadRequestException('location_id is required for a lot/serial stock movement');
     const referenceType = dto.reference_type?.trim().toUpperCase() || null;
     const referenceId = dto.reference_id?.toLowerCase() || null;
     if (referenceId) this.validateUuid(referenceId, 'reference_id');
@@ -272,6 +276,7 @@ export class InventoryService {
       movementType: dto.movement_type,
       locationId,
       quantity: quantityForHash,
+      ...(traceabilityUnitId ? { traceabilityUnitId } : {}),
       referenceType,
       referenceId,
       notes,
@@ -312,6 +317,51 @@ export class InventoryService {
             client, tenantId, factoryId, idempotencyKey,
           );
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
+
+          const lotPolicyResult = await client.query<{
+            require_lot_tracking: boolean; has_lot_balance: boolean;
+          }>(
+            `
+            SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+              EXISTS (
+                SELECT 1 FROM inventory_lot_location_balances lb
+                WHERE lb.tenant_id = $1 AND lb.factory_id = $2
+                  AND lb.item_id = $3 AND lb.quantity_on_hand > 0
+              ) AS has_lot_balance
+            FROM (SELECT 1) singleton
+            LEFT JOIN traceability_settings ts
+              ON ts.tenant_id = $1 AND ts.factory_id = $2
+            `,
+            [tenantId, factoryId, itemId],
+          );
+          const lotRequired = Boolean(lotPolicyResult.rows[0]?.require_lot_tracking)
+            || Boolean(lotPolicyResult.rows[0]?.has_lot_balance);
+          if (!traceabilityUnitId && lotRequired) {
+            throw new ConflictException('This item requires traceability_unit_id for stock movements');
+          }
+          if (traceabilityUnitId) {
+            const unit = await client.query<{ id: string }>(
+              `
+              SELECT tu.id::text AS id
+              FROM traceability_units tu
+              WHERE tu.id = $1 AND tu.tenant_id = $2 AND tu.factory_id = $3
+                AND tu.inventory_item_id = $4 AND tu.status = 'ACTIVE'
+                AND tu.unit_type IN ('LOT', 'SERIAL')
+                AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                AND NOT EXISTS (
+                  SELECT 1 FROM quality_holds h
+                  WHERE h.tenant_id = tu.tenant_id AND h.factory_id = tu.factory_id
+                    AND h.status = 'ACTIVE'
+                    AND (h.inventory_item_id = tu.inventory_item_id OR h.traceability_unit_id = tu.id)
+                )
+              FOR UPDATE
+              `,
+              [traceabilityUnitId, tenantId, factoryId, itemId],
+            );
+            if (!unit.rows[0]) {
+              throw new ConflictException('Selected lot/serial is expired, quality-held, inactive or not bound to this item');
+            }
+          }
 
           if (locationId) {
             const locationResult = await client.query<{
@@ -392,16 +442,16 @@ export class InventoryService {
           const movementResult = await client.query<InventoryMovementRow>(
             `
             INSERT INTO inventory_movements (
-              tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+              tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
               quantity_delta, quantity_after, input_quantity, input_unit_code, conversion_rule_id,
               conversion_factor_numerator, conversion_factor_denominator, conversion_rounding_mode,
               idempotency_key, request_hash, reference_type, reference_id, notes,
               created_by_user_id, correlation_id
             )
             VALUES (
-              $1, $2, $3, $4::uuid, $5, $6::numeric, $7::numeric, $8::numeric,
-              $9::numeric, $10, $11::uuid, $12::numeric, $13::numeric, $14,
-              $15, $16, $17, $18::uuid, $19, $20, $21::uuid
+              $1, $2, $3, $4::uuid, $5::uuid, $6, $7::numeric, $8::numeric, $9::numeric,
+              $10::numeric, $11, $12::uuid, $13::numeric, $14::numeric, $15,
+              $16, $17, $18, $19::uuid, $20, $21, $22::uuid
             )
             RETURNING
               id::text AS id,
@@ -409,6 +459,7 @@ export class InventoryService {
               factory_id::text AS factory_id,
               item_id::text AS item_id,
               location_id::text AS location_id,
+              traceability_unit_id::text AS traceability_unit_id,
               movement_type,
               quantity::text AS quantity,
               input_quantity::text AS input_quantity,
@@ -428,7 +479,7 @@ export class InventoryService {
               created_at::text AS created_at
             `,
             [
-              tenantId, factoryId, itemId, locationId, dto.movement_type, quantity,
+              tenantId, factoryId, itemId, locationId, traceabilityUnitId, dto.movement_type, quantity,
               delta, balance.quantity_on_hand, inputQuantity, movementInputUnitCode, conversionRuleId,
               conversionFactorNumerator, conversionFactorDenominator, conversionRoundingMode,
               idempotencyKey, requestHash, referenceType, referenceId, notes, userId, correlationId,
@@ -451,6 +502,7 @@ export class InventoryService {
                 id: movement.id,
                 item_id: itemId,
                 location_id: movement.location_id,
+                traceability_unit_id: movement.traceability_unit_id,
                 movement_type: movement.movement_type,
                 quantity: movement.quantity,
                 input_quantity: movement.input_quantity,
@@ -524,6 +576,7 @@ export class InventoryService {
         payload: {
           itemId,
           locationId: result.location_id,
+          traceabilityUnitId: result.traceability_unit_id,
           quantity: result.quantity,
           inputQuantity: result.input_quantity,
           inputUnitCode: result.input_unit_code,
