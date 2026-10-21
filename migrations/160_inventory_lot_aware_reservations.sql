@@ -436,7 +436,7 @@ BEGIN
   END IF;
   RETURN NULL;
 END;
-$;
+$$;
 
 CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reserved_balance()
 RETURNS trigger
@@ -589,7 +589,7 @@ BEGIN
   END IF;
   RETURN NULL;
 END;
-$;
+$$;
 
 CREATE CONSTRAINT TRIGGER ctr_inventory_location_balance_final_state
 AFTER INSERT OR UPDATE OR DELETE ON inventory_location_balances
