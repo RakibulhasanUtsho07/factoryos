@@ -15,6 +15,7 @@ BEGIN
   END IF;
 
   FOREACH v_table IN ARRAY ARRAY[
+    'inventory_material_allocation_policies',
     'inventory_reservation_consumptions',
     'inventory_traceability_location_balances',
     'inventory_reservation_traceability_allocations',
@@ -86,6 +87,27 @@ BEGIN
       AND NOT t.tgisinternal
   ) THEN
     RAISE EXCEPTION 'Lot/serial stock must remain within physical bin capacity';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE c.relname = 'inventory_location_transfers'
+      AND t.tgname = 'inventory_location_transfer_traceability_guard'
+      AND NOT t.tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'Directed stock transfer must enforce material identity policy';
+  END IF;
+
+  SELECT pg_get_functiondef(p.oid) INTO v_function_definition
+  FROM pg_proc p
+  WHERE p.proname = 'factoryos_guard_inventory_location_transfer_traceability'
+  LIMIT 1;
+  IF v_function_definition IS NULL
+    OR position('inventory_material_allocation_policies' IN v_function_definition) = 0
+    OR position('require_traceability' IN v_function_definition) = 0
+    OR position('traceability_unit_id IS NULL' IN v_function_definition) = 0 THEN
+    RAISE EXCEPTION 'Directed transfer must resolve material/sector policy and reject unlabelled tracked stock';
   END IF;
 END;
 $$;
