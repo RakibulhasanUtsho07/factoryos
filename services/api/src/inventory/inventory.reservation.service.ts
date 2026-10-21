@@ -1342,6 +1342,7 @@ export class InventoryReservationService {
 
       let consumedMovementId: string | null = null;
       if (targetStatus === 'CONSUMED') {
+        await client.query("SELECT set_config('app.inventory_reservation_consumption_id', $1, TRUE)", [reservation.id]);
         const movementKey = 'reservation-consume-' + this.hash({
           tenantId: input.tenantId,
           factoryId: input.factoryId,
@@ -2003,13 +2004,14 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [remainingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
       const balance = balanceResult.rows[0];
       if (!balance) throw new ConflictException(`Inventory balance is inconsistent for material reservation ${reservation.id}`);
 
       let consumedMovementId: string | null = null;
       if (targetStatus === 'CONSUMED') {
+        await client.query("SELECT set_config('app.inventory_reservation_consumption_id', $1, TRUE)", [reservation.id]);
         const movementKey = 'reservation-consume-' + this.hash({
           tenantId: input.tenantId, factoryId: input.factoryId,
           reservationId: reservation.id, transitionKey,
@@ -2317,6 +2319,7 @@ export class InventoryReservationService {
           const balance = balanceResult.rows[0];
           if (!balance) throw new ConflictException('Aggregate stock/reservation balance is inconsistent; consumption was not applied');
 
+          await client.query("SELECT set_config('app.inventory_reservation_consumption_id', $1, TRUE)", [reservationId]);
           const movementKey = 'reservation-consume-' + this.hash({ tenantId, factoryId, reservationId, idempotencyKey }).slice(0, 48);
           const movementResult = await client.query<MovementRow>(
             `
