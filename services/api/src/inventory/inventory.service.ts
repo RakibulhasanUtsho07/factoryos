@@ -620,6 +620,7 @@ export class InventoryService {
         factory_id::text AS factory_id,
         item_id::text AS item_id,
         location_id::text AS location_id,
+        traceability_unit_id::text AS traceability_unit_id,
         movement_type,
         quantity::text AS quantity,
         input_quantity::text AS input_quantity,
@@ -661,6 +662,7 @@ export class InventoryService {
         factory_id::text AS factory_id,
         item_id::text AS item_id,
         location_id::text AS location_id,
+        traceability_unit_id::text AS traceability_unit_id,
         movement_type,
         quantity::text AS quantity,
         input_quantity::text AS input_quantity,
@@ -702,14 +704,14 @@ export class InventoryService {
     replayed: boolean,
   ): InventoryMovementResult {
     const {
-      id, tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+      id, tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
       input_quantity, input_unit_code, conversion_rule_id, conversion_factor_numerator,
       conversion_factor_denominator, conversion_rounding_mode,
       quantity_delta, quantity_after, reference_type, reference_id, notes,
       created_by_user_id, correlation_id, created_at,
     } = stored;
     return {
-      id, tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+      id, tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
       input_quantity, input_unit_code, conversion_rule_id, conversion_factor_numerator,
       conversion_factor_denominator, conversion_rounding_mode,
       quantity_delta, quantity_after, reference_type, reference_id, notes,
