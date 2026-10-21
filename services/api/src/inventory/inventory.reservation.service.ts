@@ -1368,6 +1368,7 @@ export class InventoryReservationService {
         );
         consumedMovementId = movementResult.rows[0]?.id ?? null;
         if (!consumedMovementId) throw new Error('ORDER_INVENTORY_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+        await client.query("SELECT set_config('app.inventory_reservation_consumption_id', '', TRUE)");
 
         await client.query(
           `
@@ -2035,6 +2036,7 @@ export class InventoryReservationService {
         );
         consumedMovementId = movement.rows[0]?.id ?? null;
         if (!consumedMovementId) throw new Error('WORK_ORDER_MATERIAL_ISSUE_MOVEMENT_INSERT_FAILED');
+        await client.query("SELECT set_config('app.inventory_reservation_consumption_id', '', TRUE)");
         await client.query(
           `
           INSERT INTO inventory_reservation_consumptions (
@@ -2340,6 +2342,7 @@ export class InventoryReservationService {
           );
           const movement = movementResult.rows[0];
           if (!movement) throw new Error('INVENTORY_RESERVATION_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+          await client.query("SELECT set_config('app.inventory_reservation_consumption_id', '', TRUE)");
 
           await client.query(
             `
