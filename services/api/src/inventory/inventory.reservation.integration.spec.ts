@@ -300,6 +300,26 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       replayed: true, consumed_quantity_this_request: '1.0000',
     });
 
+    // Exercise the same inventory path invoked when the first production work order
+    // issues its released BOM material. The partial issue above must not be charged
+    // a second time: only the two remaining units in BIN A and one in BIN B are issued.
+    const workOrderIssue = await integrationDatabase.transaction(
+      { tenantId, userId: TEST_USER_ID },
+      async (client) => service.transitionWorkOrderMaterialReservations(
+        client,
+        {
+          userId: TEST_USER_ID, tenantId, factoryId, workOrderId,
+          workOrderNumber: 'WO-FIRST-FEFO-' + workOrderId.slice(0, 6),
+          correlationId: randomUUID(),
+        },
+        'CONSUMED',
+      ),
+    );
+    expect(workOrderIssue).toMatchObject({
+      reservationCount: 2,
+      quantityByItem: [{ item_id: itemId, quantity: '4.0000' }],
+    });
+
     const stock = await adminPool.query<{
       quantity_on_hand: string; quantity_reserved: string;
     }>(
@@ -307,19 +327,27 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3`,
       [tenantId, factoryId, itemId],
     );
-    expect(stock.rows[0]).toMatchObject({ quantity_on_hand: '9.0000', quantity_reserved: '3.0000' });
+    expect(stock.rows[0]).toMatchObject({ quantity_on_hand: '6.0000', quantity_reserved: '0.0000' });
     const locationA = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
       `SELECT quantity_on_hand::text, quantity_reserved::text FROM inventory_location_balances
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND location_id=$4`,
       [tenantId, factoryId, itemId, binA.id],
     );
-    expect(locationA.rows[0]).toMatchObject({ quantity_on_hand: '2.0000', quantity_reserved: '2.0000' });
+    expect(locationA.rows[0]).toMatchObject({ quantity_on_hand: '0.0000', quantity_reserved: '0.0000' });
     const lotBalance = await adminPool.query<{ quantity_on_hand: string; quantity_reserved: string }>(
       `SELECT quantity_on_hand::text, quantity_reserved::text FROM inventory_traceability_location_balances
        WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4 AND location_id=$5`,
       [tenantId, factoryId, itemId, earlyLotId, binA.id],
     );
-    expect(lotBalance.rows[0]).toMatchObject({ quantity_on_hand: '2.0000', quantity_reserved: '2.0000' });
+    expect(lotBalance.rows[0]).toMatchObject({ quantity_on_hand: '0.0000', quantity_reserved: '0.0000' });
+
+    const consumptionEvidence = await adminPool.query<{ issue_count: string; issued_quantity: string }>(
+      `SELECT count(*)::text AS issue_count, COALESCE(sum(quantity),0)::text AS issued_quantity
+       FROM inventory_reservation_consumptions
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND reservation_id = ANY($4::uuid[])`,
+      [tenantId, factoryId, itemId, allocations.map((allocation) => allocation.reservationId)],
+    );
+    expect(consumptionEvidence.rows[0]).toMatchObject({ issue_count: '3', issued_quantity: '4.0000' });
   });
 
   it('replays duplicate create and partial-issue keys without duplicating reservations or movements', async () => {
