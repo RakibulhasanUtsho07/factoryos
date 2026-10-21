@@ -1402,6 +1402,12 @@ export class InventoryReservationService {
     if (toUnits(balanceBefore.quantity_on_hand) - toUnits(balanceBefore.quantity_reserved) < requiredUnits) {
       throw new ConflictException(`Insufficient unreserved stock to release work-order BOM line ${input.lineNumber}`);
     }
+    const traceabilityPlan = await this.planTraceabilityAllocations(client, {
+      tenantId: input.tenantId,
+      factoryId: input.factoryId,
+      itemId: input.itemId,
+      quantity: input.quantity,
+    });
 
     const locationsResult = await client.query<{
       location_id: string; location_code: string; is_default: boolean; location_type: string;
@@ -1430,22 +1436,30 @@ export class InventoryReservationService {
     );
 
     let remainingUnits = requiredUnits;
-    const allocations: Array<{ locationId: string; quantity: string }> = [];
-    for (const location of locationsResult.rows) {
-      if (remainingUnits === 0n) break;
-      const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
-      if (availableUnits <= 0n) continue;
-      const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
-      allocations.push({
-        locationId: location.location_id.toLowerCase(),
-        quantity: fromUnits(allocated),
-      });
-      remainingUnits -= allocated;
-    }
-    if (remainingUnits !== 0n) {
-      throw new ConflictException(
-        `Insufficient available quantity in active picking bins for work-order BOM line ${input.lineNumber}`,
-      );
+    let allocations: Array<{ locationId: string; quantity: string }> = [];
+    if (traceabilityPlan.enforced) {
+      allocations = this.groupTraceabilityAllocationsByLocation(traceabilityPlan);
+      const allocatedUnits = allocations.reduce((sum, allocation) => sum + toUnits(allocation.quantity), 0n);
+      if (allocatedUnits !== requiredUnits) {
+        throw new ConflictException(`Eligible lot/serial quantities do not cover work-order BOM line ${input.lineNumber}`);
+      }
+    } else {
+      for (const location of locationsResult.rows) {
+        if (remainingUnits === 0n) break;
+        const availableUnits = toUnits(location.quantity_on_hand) - toUnits(location.quantity_reserved);
+        if (availableUnits <= 0n) continue;
+        const allocated = availableUnits < remainingUnits ? availableUnits : remainingUnits;
+        allocations.push({
+          locationId: location.location_id.toLowerCase(),
+          quantity: fromUnits(allocated),
+        });
+        remainingUnits -= allocated;
+      }
+      if (remainingUnits !== 0n) {
+        throw new ConflictException(
+          `Insufficient available quantity in active picking bins for work-order BOM line ${input.lineNumber}`,
+        );
+      }
     }
 
     const aggregateBalance = await client.query<BalanceRow>(
@@ -1510,6 +1524,15 @@ export class InventoryReservationService {
       );
       const reservation = inserted.rows[0];
       if (!reservation) throw new Error('WORK_ORDER_MATERIAL_RESERVATION_INSERT_FAILED');
+      if (traceabilityPlan.enforced) {
+        await this.persistTraceabilityAllocations(client, {
+          tenantId: input.tenantId,
+          factoryId: input.factoryId,
+          itemId: input.itemId,
+          reservationId: reservation.id,
+          allocations: traceabilityPlan.allocations.filter((entry) => entry.locationId === allocation.locationId),
+        });
+      }
 
       await this.insertOutboxEvent(client, {
         tenantId: input.tenantId,
