@@ -39,6 +39,17 @@ test('PostgreSQL monitoring queries cover bounded lock signals without attemptin
   assert.match(dispatcher, /recordOutboxQueueSnapshotFailure/);
 });
 
+test('PostgreSQL exporter grants statistics access without tenant-table SELECT or RLS bypass', async () => {
+  const grants = await read('deploy/observability/postgres-monitoring-role.sql');
+  assert.match(grants, /GRANT pg_monitor TO/);
+  assert.match(grants, /GRANT CONNECT ON DATABASE/);
+  assert.match(grants, /GRANT %I TO %I/);
+  assert.doesNotMatch(grants, /BYPASSRLS/i);
+  assert.doesNotMatch(grants, /SUPERUSER/i);
+  assert.doesNotMatch(grants, /GRANT SELECT/i);
+  assert.match(grants, /including outbox_events/);
+});
+
 test('collector receiver uses TLS and exporter buffering stays bounded', async () => {
   const config = await read('deploy/observability/otel-collector.yaml');
   assert.match(config, /cert_file: \/run\/secrets\/otel_receiver_cert/);
