@@ -230,6 +230,13 @@ export class InventoryReservationService {
           );
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
 
+          const traceabilityPlan = await this.planTraceabilityAllocations(client, {
+            tenantId, factoryId, itemId, quantity, locationId,
+          });
+          if (traceabilityPlan.enforced && !locationId) {
+            throw new ConflictException('Lot/serial-controlled reservations require an explicit BIN so stock identity remains physically traceable');
+          }
+
           if (locationId) {
             const locationResult = await client.query<{ id: string }>(
               `
@@ -303,6 +310,12 @@ export class InventoryReservationService {
           );
           const row = inserted.rows[0];
           if (!row) throw new Error('INVENTORY_RESERVATION_INSERT_FAILED');
+          if (traceabilityPlan.enforced) {
+            await this.persistTraceabilityAllocations(client, {
+              tenantId, factoryId, itemId, reservationId: row.id,
+              allocations: traceabilityPlan.allocations,
+            });
+          }
 
           await this.insertOutboxEvent(client, {
             tenantId, factoryId, aggregateId: itemId, eventType: 'INVENTORY.STOCK_RESERVED',
