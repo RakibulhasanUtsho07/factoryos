@@ -354,6 +354,24 @@ export class InventoryStockReconciliationService {
             quantity_reserved: string;
           } | null = null;
           if (cycleCountSnapshot?.location_id) {
+            const activeLocation = await client.query<{ id: string }>(
+              `
+              SELECT l.id::text AS id
+              FROM inventory_locations l
+              JOIN inventory_locations p
+                ON p.id = l.parent_location_id
+               AND p.tenant_id = l.tenant_id
+               AND p.factory_id = l.factory_id
+              WHERE l.id = $1 AND l.tenant_id = $2 AND l.factory_id = $3
+                AND l.location_type = 'BIN' AND l.status = 'ACTIVE'
+                AND p.location_type IN ('WAREHOUSE', 'STAGING') AND p.status = 'ACTIVE'
+              FOR UPDATE OF l, p
+              `,
+              [cycleCountSnapshot.location_id, tenantId, factoryId],
+            );
+            if (!activeLocation.rows[0]) {
+              throw new ConflictException('Cycle-count bin or its parent location is no longer active');
+            }
             const locationBalanceResult = await client.query<{
               quantity_before: string;
               version: string;
