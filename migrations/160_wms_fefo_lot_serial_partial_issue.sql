@@ -2,7 +2,7 @@ BEGIN;
 
 ALTER TABLE inventory_items
   ADD COLUMN IF NOT EXISTS sector_code VARCHAR(64);
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -14,7 +14,7 @@ BEGIN
       CHECK (sector_code IS NULL OR (length(btrim(sector_code)) > 0 AND length(sector_code) <= 64));
   END IF;
 END;
-$;
+$$;
 
 CREATE TABLE IF NOT EXISTS inventory_material_allocation_policies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
