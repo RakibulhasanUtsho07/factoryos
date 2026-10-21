@@ -131,7 +131,6 @@ export class UpdateTraceabilitySettingsDto {
   @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
   allocation_policy?: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
   @IsOptional()
-  @Type(() => Boolean)
   @IsBoolean()
   require_lot_tracking?: boolean;
 }
