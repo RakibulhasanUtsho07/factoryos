@@ -18,6 +18,10 @@ export class TransferInventoryLocationDto {
   @IsUUID()
   destination_location_id!: string;
 
+  @IsOptional()
+  @IsUUID()
+  traceability_unit_id?: string;
+
   @IsNumber({ maxDecimalPlaces: 4 })
   @Min(0.0001)
   quantity!: number;
