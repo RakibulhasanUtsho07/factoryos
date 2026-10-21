@@ -217,23 +217,24 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
       key: string,
       options: { attributes?: Record<string, unknown> } = {},
     ) => {
-      const inserted = await adminPool.query<{ id: string }>(
-        `
-        INSERT INTO traceability_units (
-          tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
-          inventory_item_id, quantity, unit, external_reference, expires_at, status, attributes,
-          idempotency_key, request_hash, created_by_user_id, correlation_id
-        )
-        VALUES ($1,$2,'LOT','MATERIAL',$3,$4,$5,$6::numeric,'PCS',$7,$8::date,'ACTIVE',$9::jsonb,$10,$11,$12,$13::uuid)
-        RETURNING id::text AS id
-        `,
-        [tenantId, factoryId, code, 'BAR-' + code, itemId, quantity, 'SUPPLIER-' + code,
-          expiry, JSON.stringify(options.attributes ?? {}),
-          key, 'a'.repeat(64), TEST_USER_ID, randomUUID()],
+      const unit = await traceabilityService.createUnit(
+        TEST_USER_ID, tenantId, factoryId,
+        {
+          unit_type: 'LOT',
+          product_role: 'MATERIAL',
+          unit_code: code,
+          barcode_value: 'BAR-' + code,
+          inventory_item_id: itemId,
+          quantity: Number(quantity),
+          unit: 'PCS',
+          external_reference: 'SUPPLIER-' + code,
+          expires_at: expiry,
+          attributes: options.attributes ?? {},
+        } as never,
+        key, randomUUID(), randomUUID(),
       );
-      const id = inserted.rows[0]?.id;
-      if (!id) throw new Error('FEFO traceability lot fixture was not created');
-      return id;
+      if (!unit.id) throw new Error('FEFO traceability lot fixture was not created');
+      return unit.id;
     };
 
     const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', '2026-11-01', 'wms-fefo-early-' + randomUUID());
