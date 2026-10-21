@@ -2387,6 +2387,7 @@ export class InventoryReservationService {
   ): Promise<TraceabilityAllocationPlan> {
     const identityResult = await client.query<{
       allocation_policy: TraceabilityAllocationPolicy;
+      require_traceability: boolean;
       has_lot: boolean;
       has_serial: boolean;
       has_identity: boolean;
@@ -2414,6 +2415,17 @@ export class InventoryReservationService {
            WHERE ts.tenant_id = $1 AND ts.factory_id = $2),
           'FIFO'
         ) AS allocation_policy,
+        COALESCE(
+          (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='MATERIAL' AND p.inventory_item_id=$3),
+          (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+           JOIN inventory_items selected_item ON selected_item.id=$3 AND selected_item.tenant_id=p.tenant_id AND selected_item.factory_id=p.factory_id
+           WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='SECTOR'
+             AND lower(p.sector_code)=lower(selected_item.sector_code)),
+          (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id=$1 AND p.factory_id=$2 AND p.policy_scope='FACTORY'),
+          FALSE
+        ) AS require_traceability,
         COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_lot,
         COALESCE(bool_or(tu.unit_type = 'SERIAL'), FALSE) AS has_serial,
         (count(tu.id) > 0) AS has_identity
@@ -2429,8 +2441,8 @@ export class InventoryReservationService {
     );
     const identities = identityResult.rows[0];
     const policy = identities?.allocation_policy ?? 'FIFO';
-    if ((policy === 'LOT' || policy === 'SERIAL') && !identities?.has_identity) {
-      throw new ConflictException(`Material allocation policy ${policy} requires registered ${policy.toLowerCase()} identities`);
+    if ((policy === 'LOT' || policy === 'SERIAL' || identities?.require_traceability) && !identities?.has_identity) {
+      throw new ConflictException(`Material allocation policy ${policy} requires registered lot/serial identities`);
     }
     if ((policy === 'FIFO' || policy === 'FEFO') && !identities?.has_identity) {
       return { enforced: false, policy, allocations: [] };
@@ -2481,8 +2493,8 @@ export class InventoryReservationService {
             AND (qh.inventory_item_id = tu.inventory_item_id OR qh.traceability_unit_id = tu.id)
         )
         AND l.status = 'ACTIVE' AND l.picking_enabled = TRUE
-        AND ((l.location_type = 'BIN' AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status = 'ACTIVE')
-          OR (l.location_type = 'VIRTUAL' AND l.is_default = TRUE))
+        AND l.location_type = 'BIN'
+        AND parent.location_type IN ('WAREHOUSE','STAGING') AND parent.status = 'ACTIVE'
         AND tlb.quantity_on_hand > tlb.quantity_reserved
       ORDER BY CASE WHEN $6::text = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
         CASE WHEN $6::text IN ('FIFO','FEFO') THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
