@@ -1957,7 +1957,9 @@ export class InventoryReservationService {
         ],
       );
       if (!updated.rows[0]) throw new ConflictException('Work-order material reservation changed concurrently');
-      const units = toUnits(transitionQuantity);
+      const units = targetStatus === 'CONSUMED'
+        ? toUnits(reservation.consumed_quantity) + toUnits(transitionQuantity)
+        : toUnits(transitionQuantity);
       quantityByItem.set(reservation.item_id, (quantityByItem.get(reservation.item_id) ?? 0n) + units);
 
       await this.insertOutboxEvent(client, {
