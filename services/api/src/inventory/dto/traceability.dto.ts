@@ -1,5 +1,5 @@
 import {
-  ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
+  ArrayUnique, IsArray, IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsObject, IsOptional,
   IsString, IsUUID, Max, MaxLength, Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -130,4 +130,8 @@ export class UpdateTraceabilitySettingsDto {
   @IsOptional()
   @IsIn(['FIFO', 'FEFO', 'LOT', 'SERIAL'])
   allocation_policy?: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  require_lot_tracking?: boolean;
 }
