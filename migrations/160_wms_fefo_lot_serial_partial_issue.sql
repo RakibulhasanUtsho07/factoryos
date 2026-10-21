@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS inventory_reservation_traceability_allocations (
   item_id UUID NOT NULL,
   traceability_unit_id UUID NOT NULL,
   location_id UUID NOT NULL,
+  allocation_sequence INTEGER NOT NULL DEFAULT 1,
   allocated_quantity NUMERIC(18,4) NOT NULL,
   consumed_quantity NUMERIC(18,4) NOT NULL DEFAULT 0,
   released_quantity NUMERIC(18,4) NOT NULL DEFAULT 0,
@@ -236,6 +237,7 @@ CREATE TABLE IF NOT EXISTS inventory_reservation_traceability_allocations (
   CONSTRAINT fk_inventory_reservation_traceability_allocation_location
     FOREIGN KEY (location_id, tenant_id, factory_id)
     REFERENCES inventory_locations (id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_inventory_reservation_traceability_allocation_sequence CHECK (allocation_sequence > 0),
   CONSTRAINT chk_inventory_reservation_traceability_allocation_quantities
     CHECK (
       allocated_quantity > 0
@@ -244,6 +246,26 @@ CREATE TABLE IF NOT EXISTS inventory_reservation_traceability_allocations (
       AND consumed_quantity + released_quantity <= allocated_quantity
     )
 );
+
+-- Keep policy order stable through issue/release; this is also safe on migration re-apply.
+ALTER TABLE inventory_reservation_traceability_allocations
+  ADD COLUMN IF NOT EXISTS allocation_sequence INTEGER;
+WITH ranked AS (
+  SELECT id, row_number() OVER (
+    PARTITION BY tenant_id, factory_id, reservation_id ORDER BY created_at, id
+  )::integer AS sequence_number
+  FROM inventory_reservation_traceability_allocations
+  WHERE allocation_sequence IS NULL
+)
+UPDATE inventory_reservation_traceability_allocations a
+SET allocation_sequence = ranked.sequence_number
+FROM ranked
+WHERE a.id = ranked.id;
+ALTER TABLE inventory_reservation_traceability_allocations
+  ALTER COLUMN allocation_sequence SET DEFAULT 1,
+  ALTER COLUMN allocation_sequence SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_reservation_traceability_sequence
+  ON inventory_reservation_traceability_allocations (tenant_id, factory_id, reservation_id, allocation_sequence);
 
 CREATE INDEX IF NOT EXISTS idx_inventory_reservation_traceability_remaining
   ON inventory_reservation_traceability_allocations (tenant_id, factory_id, reservation_id, traceability_unit_id);
