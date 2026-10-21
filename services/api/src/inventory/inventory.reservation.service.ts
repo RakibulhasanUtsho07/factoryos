@@ -2373,6 +2373,32 @@ export class InventoryReservationService {
     return result;
   }
 
+  async listAllocationPolicies(tenantId: string, factoryId: string) {
+    this.validateReadScope(tenantId, factoryId);
+    const result = await this.database.query<{
+      policy_scope: 'FACTORY' | 'SECTOR' | 'MATERIAL';
+      sector_code: string | null;
+      inventory_item_id: string | null;
+      allocation_policy: TraceabilityAllocationPolicy;
+      require_traceability: boolean;
+      version: number;
+      updated_at: string;
+    }>(
+      `
+      SELECT policy_scope, sector_code, inventory_item_id::text AS inventory_item_id,
+             allocation_policy, require_traceability, version::int AS version,
+             updated_at::text AS updated_at
+      FROM inventory_material_allocation_policies
+      WHERE tenant_id=$1 AND factory_id=$2
+      ORDER BY CASE policy_scope WHEN 'FACTORY' THEN 0 WHEN 'SECTOR' THEN 1 ELSE 2 END,
+               lower(COALESCE(sector_code, '')), inventory_item_id
+      `,
+      [tenantId, factoryId],
+      { tenantId },
+    );
+    return result.rows;
+  }
+
   async updateAllocationPolicy(
     userId: string,
     tenantId: string,
