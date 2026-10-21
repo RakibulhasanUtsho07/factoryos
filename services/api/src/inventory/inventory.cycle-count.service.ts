@@ -393,6 +393,21 @@ export class InventoryCycleCountService {
     const proposal = await this.getProposal(
       userId, tenantId, factoryId, itemId, proposalId,
     );
+    const approvedQuantity = proposal.location_id
+      ? Number((
+        Number(proposal.ledger_quantity_at_count)
+        + Number(proposal.counted_quantity)
+        - Number(proposal.location_quantity_at_count ?? '0')
+      ).toFixed(4))
+      : Number(proposal.counted_quantity);
+    const locationReview = proposal.location_id
+      ? {
+        locationId: proposal.location_id,
+        locationCountedQuantity: proposal.counted_quantity,
+        locationQuantityAtCount: proposal.location_quantity_at_count,
+        locationVersionAtCount: proposal.location_version_at_count,
+      }
+      : {};
     if (proposal.created_by_user_id === userId) {
       throw new ConflictException('The user who submitted a cycle count cannot approve it');
     }
@@ -405,7 +420,7 @@ export class InventoryCycleCountService {
       return this.reconciliationService.recordReconciliation(
         userId, tenantId, factoryId, itemId,
         {
-          counted_quantity: Number(proposal.counted_quantity),
+          counted_quantity: approvedQuantity,
           reason_code: proposal.variance_reason_code ?? 'CYCLE_COUNT',
           notes: proposal.notes ?? undefined,
         },
@@ -417,6 +432,7 @@ export class InventoryCycleCountService {
           decisionIdempotencyKey: idempotencyKey,
           reviewRequestHash,
           reviewNote,
+          ...locationReview,
         },
       );
     }
@@ -424,7 +440,7 @@ export class InventoryCycleCountService {
     const result = await this.reconciliationService.recordReconciliation(
       userId, tenantId, factoryId, itemId,
       {
-        counted_quantity: Number(proposal.counted_quantity),
+        counted_quantity: approvedQuantity,
         reason_code: proposal.variance_reason_code ?? 'CYCLE_COUNT',
         notes: proposal.notes ?? undefined,
       },
@@ -436,6 +452,7 @@ export class InventoryCycleCountService {
         decisionIdempotencyKey: idempotencyKey,
         reviewRequestHash,
         reviewNote,
+        ...locationReview,
       },
     );
     if (!result.replayed) {
