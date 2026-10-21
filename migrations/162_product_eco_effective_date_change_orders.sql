@@ -56,7 +56,6 @@ CREATE TABLE IF NOT EXISTS product_eco_order_impacts (
  CONSTRAINT uq_product_eco_impact UNIQUE(eco_id,work_order_id),
  CONSTRAINT fk_product_eco_impact_eco FOREIGN KEY(eco_id,tenant_id,factory_id,product_id) REFERENCES product_engineering_changes(id,tenant_id,factory_id,product_id) ON DELETE RESTRICT,
  CONSTRAINT fk_product_eco_impact_work_order FOREIGN KEY(work_order_id,tenant_id,factory_id) REFERENCES work_orders(id,tenant_id,factory_id) ON DELETE RESTRICT,
- CONSTRAINT fk_product_eco_impact_order_line FOREIGN KEY(order_line_id,tenant_id,factory_id) REFERENCES order_lines(id,tenant_id,factory_id) ON DELETE RESTRICT,
  CONSTRAINT fk_product_eco_impact_version FOREIGN KEY(pinned_product_version_id,tenant_id,factory_id,product_id) REFERENCES product_versions(id,tenant_id,factory_id,product_id) ON DELETE RESTRICT,
  CONSTRAINT chk_product_eco_impact_type CHECK(impact_type IN('REPLAN_BEFORE_RELEASE','PRESERVE_RELEASED_SNAPSHOT_REVIEW')),
  CONSTRAINT chk_product_eco_impact_values CHECK(target_quantity>0 AND work_order_row_version>0 AND jsonb_typeof(order_snapshot)='object')
