@@ -20,7 +20,7 @@ test('Prometheus scrapes every declared API instance with a bearer token and rel
 test('PostgreSQL monitoring queries cover bounded queue-age and lock signals without tenant labels', async () => {
   const config = await read('deploy/observability/postgres-queries.yml');
   for (const name of [
-    'factoryos_outbox_events:',
+    'factoryos_outbox:',
     'factoryos_outbox_oldest:',
     'factoryos_outbox_freshness:',
     'factoryos_pg_blocking_sessions:',
