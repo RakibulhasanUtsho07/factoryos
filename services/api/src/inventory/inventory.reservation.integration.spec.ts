@@ -87,6 +87,7 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
           'inventory_reservations',
           'inventory_movements',
           'inventory_location_balances',
+          'inventory_stock_balances',
         ];
         for (const table of triggerTables) {
           await adminPool.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
