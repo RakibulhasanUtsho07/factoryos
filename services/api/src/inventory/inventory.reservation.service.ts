@@ -2044,10 +2044,15 @@ export class InventoryReservationService {
       throw new BadRequestException('target_status must be RELEASED or CONSUMED');
     }
     const transitionKey = this.requiredIdempotencyKey(rawIdempotencyKey);
-    const transitionHash = this.hash({
-      reservationId: reservationId.toLowerCase(),
-      targetStatus,
-    });
+    const requestedQuantity = dto.quantity === undefined
+      ? null
+      : this.normalizeQuantity(dto.quantity);
+    if (requestedQuantity !== null && targetStatus !== 'CONSUMED') {
+      throw new BadRequestException('quantity is only supported for CONSUMED reservation issues');
+    }
+    const transitionHash = this.hash(requestedQuantity === null
+      ? { reservationId: reservationId.toLowerCase(), targetStatus }
+      : { reservationId: reservationId.toLowerCase(), targetStatus, quantity: requestedQuantity });
 
     let result: ReservationResult;
     try {
@@ -2077,6 +2082,21 @@ export class InventoryReservationService {
         const reservation = reservationResult.rows[0];
         if (!reservation) throw new NotFoundException('Inventory reservation not found in this factory');
 
+        const previousConsumption = await this.findReservationConsumption(
+          client, tenantId, factoryId, transitionKey,
+        );
+        if (previousConsumption) {
+          return this.replayReservationConsumption(client, reservation, previousConsumption, transitionHash);
+        }
+
+        if (requestedQuantity !== null) {
+          return this.consumeReservationQuantityLocked(client, {
+            userId, tenantId, factoryId, itemId, reservation,
+            quantity: requestedQuantity, idempotencyKey: transitionKey,
+            requestHash: transitionHash, requestId, traceId, itemStatus: item.status,
+          });
+        }
+
         if (reservation.status !== 'RESERVED') {
           if (
             reservation.status === targetStatus
@@ -2096,9 +2116,13 @@ export class InventoryReservationService {
 
         let balance: BalanceRow | undefined;
         let consumedMovementId: string | null = null;
+        const outstandingQuantity = reservation.quantity_remaining;
+        const consumedLots = await this.settleReservationLotAllocations(
+          client, reservation, outstandingQuantity, targetStatus,
+        );
         if (reservation.location_id) {
           await this.decreaseLocationReserved(
-            client, tenantId, factoryId, itemId, reservation.location_id, reservation.quantity,
+            client, tenantId, factoryId, itemId, reservation.location_id, outstandingQuantity,
           );
           if (targetStatus === 'CONSUMED') {
             await client.query(
@@ -2120,7 +2144,7 @@ export class InventoryReservationService {
             RETURNING quantity_on_hand::text AS quantity_on_hand,
               quantity_reserved::text AS quantity_reserved
             `,
-            [reservation.quantity, tenantId, factoryId, itemId],
+            [outstandingQuantity, tenantId, factoryId, itemId],
           );
           balance = balanceResult.rows[0];
         } else {
@@ -2162,7 +2186,7 @@ export class InventoryReservationService {
             `,
             [
               tenantId, factoryId, itemId, reservation.location_id,
-              reservation.quantity, balance.quantity_on_hand,
+              outstandingQuantity, balance.quantity_on_hand,
               movementKey, transitionHash, reservationId,
               reservation.notes, userId, correlationId,
             ],
@@ -2176,12 +2200,18 @@ export class InventoryReservationService {
               movement: {
                 id: consumedMovementId,
                 item_id: itemId, location_id: reservation.location_id,
-                movement_type: 'ISSUE', quantity: reservation.quantity,
-                quantity_delta: '-' + reservation.quantity, quantity_after: balance.quantity_on_hand,
+                movement_type: 'ISSUE', quantity: outstandingQuantity,
+                quantity_delta: '-' + outstandingQuantity, quantity_after: balance.quantity_on_hand,
                 reference_type: 'RESERVATION', reference_id: reservationId,
               },
               reservation_id: reservationId,
             },
+          });
+          await this.insertReservationConsumptionReceipt(client, {
+            tenantId, factoryId, itemId, reservationId: reservation.id,
+            quantity: outstandingQuantity, idempotencyKey: transitionKey,
+            requestHash: transitionHash, movementId: consumedMovementId!, userId, correlationId,
+            lotAllocations: consumedLots,
           });
         }
 
@@ -2189,6 +2219,9 @@ export class InventoryReservationService {
           `
           UPDATE inventory_reservations
           SET status = $1,
+              quantity_remaining = 0,
+              quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+              quantity_released = CASE WHEN $1 = 'RELEASED' THEN quantity - quantity_consumed ELSE quantity_released END,
               transition_idempotency_key = $2,
               transition_request_hash = $3,
               consumed_movement_id = $4::uuid,
@@ -2214,7 +2247,11 @@ export class InventoryReservationService {
           payload: {
             reservation: {
               id: reservationId, item_id: itemId, quantity: reservation.quantity,
+              quantity_issued: targetStatus === 'CONSUMED' ? outstandingQuantity : '0.0000',
+              quantity_released: targetStatus === 'RELEASED' ? outstandingQuantity : '0.0000',
+              quantity_remaining: '0.0000',
               status: targetStatus, consumed_movement_id: consumedMovementId,
+              lot_allocations: consumedLots,
             },
             balance: {
               quantity_on_hand: balance.quantity_on_hand,
