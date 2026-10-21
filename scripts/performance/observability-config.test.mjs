@@ -60,6 +60,8 @@ test('alert definitions cover API SLO proposals, queue freshness and saturation 
     'FactoryOSPostgresBlockedSessions',
     'FactoryOSOutboxQueueOldestAge',
     'FactoryOSOutboxStalePublication',
+    'FactoryOSOutboxMetricsSnapshotStale',
+    'FactoryOSOutboxMetricsCollectionErrors',
     'FactoryOSOtlpSpansDropped',
   ]) assert.ok(rules.includes('alert: ' + alert), 'missing alert ' + alert);
   assert.match(rules, /policy_status: proposed/);
@@ -91,6 +93,8 @@ test('provisioned dashboard is valid JSON and displays API, database, queue and 
     'factoryos_db_pool_connections',
     'factoryos_pg_blocking_sessions_count',
     'factoryos_outbox_oldest_age_seconds',
+    'factoryos_outbox_metrics_snapshot_age_seconds',
+    'factoryos_outbox_metrics_collection_success',
     'factoryos_trace_export_queue_length',
     'factoryos_trace_spans_dropped_total',
   ]) assert.ok(content.includes(metric), 'dashboard missing ' + metric);
