@@ -68,6 +68,7 @@ interface TraceabilityAllocation {
   traceabilityUnitId: string;
   locationId: string;
   quantity: string;
+  sequence: number;
 }
 
 interface TraceabilityAllocationPlan {
@@ -2669,6 +2670,7 @@ export class InventoryReservationService {
         traceabilityUnitId: candidate.traceability_unit_id.toLowerCase(),
         locationId: candidate.location_id.toLowerCase(),
         quantity: this.unitsToDecimal(allocated),
+        sequence: allocations.length + 1,
       });
       remaining -= allocated;
     }
@@ -2704,10 +2706,11 @@ export class InventoryReservationService {
       if (!updated.rows[0]) throw new ConflictException('Lot/serial availability changed during reservation; transaction rolled back');
       await client.query(
         `INSERT INTO inventory_reservation_traceability_allocations (
-           tenant_id, factory_id, reservation_id, item_id, traceability_unit_id, location_id, allocated_quantity
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)`,
+           tenant_id, factory_id, reservation_id, item_id, traceability_unit_id, location_id,
+           allocation_sequence, allocated_quantity
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric)`,
         [input.tenantId, input.factoryId, input.reservationId, input.itemId,
-          allocation.traceabilityUnitId, allocation.locationId, allocation.quantity],
+          allocation.traceabilityUnitId, allocation.locationId, allocation.sequence, allocation.quantity],
       );
     }
   }
@@ -2728,9 +2731,9 @@ export class InventoryReservationService {
     client: PoolClient,
     input: { tenantId: string; factoryId: string; itemId: string; reservationId: string; consumptionId: string; quantity: string },
   ): Promise<void> {
-    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string }>(
+    const rows = await client.query<{ id: string; traceability_unit_id: string; location_id: string; remaining_quantity: string; allocation_sequence: number }>(
       `SELECT a.id::text AS id, a.traceability_unit_id::text AS traceability_unit_id,
-         a.location_id::text AS location_id,
+         a.location_id::text AS location_id, a.allocation_sequence,
          (a.allocated_quantity-a.consumed_quantity-a.released_quantity)::numeric(18,4)::text AS remaining_quantity
        FROM inventory_reservation_traceability_allocations a
        JOIN traceability_units tu
@@ -2750,7 +2753,7 @@ export class InventoryReservationService {
              AND qh.status='ACTIVE'
              AND (qh.inventory_item_id=tu.inventory_item_id OR qh.traceability_unit_id=tu.id)
          )
-       ORDER BY a.created_at, a.id FOR UPDATE OF a, tu`,
+       ORDER BY a.allocation_sequence ASC FOR UPDATE OF a, tu`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],
     );
     if (rows.rows.length === 0) {
@@ -2808,7 +2811,7 @@ export class InventoryReservationService {
        FROM inventory_reservation_traceability_allocations a
        WHERE a.tenant_id=$1 AND a.factory_id=$2 AND a.item_id=$3 AND a.reservation_id=$4
          AND a.allocated_quantity>a.consumed_quantity+a.released_quantity
-       ORDER BY a.created_at, a.id FOR UPDATE`,
+       ORDER BY a.allocation_sequence ASC FOR UPDATE`,
       [input.tenantId, input.factoryId, input.itemId, input.reservationId],
     );
     if (rows.rows.length === 0) return;
