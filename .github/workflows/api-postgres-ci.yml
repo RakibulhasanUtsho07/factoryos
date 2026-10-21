@@ -123,6 +123,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/156_tenant_privacy_inventory_and_rls_guardrails.sql
 
+          echo "Reapplying tenant ownership review migration to verify FK-derived policy idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/159_tenant_relation_ownership_reviews.sql
+
           echo "Reapplying OPC UA gateway migration to verify permission and audit contract idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/157_ot_opcua_read_gateway.sql
@@ -130,6 +134,14 @@ jobs:
           echo "Reapplying MQTT/Modbus gateway migration to verify permission and audit contract idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/158_ot_mqtt_modbus_gateway.sql
+
+          echo "Reapplying external erasure propagation migration to verify lifecycle, receipt and finance policy idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/160_saas_external_erasure_propagation_and_finance_retention.sql
+
+          echo "Rechecking all tenant ownership classifications after the newest governance relations were created"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/159_tenant_relation_ownership_reviews.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
@@ -217,8 +229,10 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ot-device-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-data-retention-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-propagation-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-isolation-matrix.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-data-governance-inventory.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-ownership-review.sql
 
           # Deliberately fail after transactional DDL/DML; psql must leave no partial migration state.
           recovery_log="$(mktemp)"

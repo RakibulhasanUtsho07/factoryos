@@ -395,10 +395,10 @@ describe('SaasTenantGovernanceExecutionService', () => {
         return { rows: [completedRun({ manifest_digest: insertedDigest, categories: receiptCategories,
           table_manifest: JSON.parse(String(params[6])) as Record<string, unknown>, deleted_rows: String(params[5]) })] };
       }
-      if (sql.includes("SET status='VERIFIED'")) {
+      if (sql.includes("SET status='PROPAGATION_PENDING'")) {
         const params = args[1] as unknown[];
         return { rows: [erasureRow({
-          status: 'VERIFIED',
+          status: 'PROPAGATION_PENDING',
           row_version: 4,
           execution_manifest_digest: String(params[3]),
           execution_completed_at: '2026-10-19T13:00:00.000Z',
@@ -420,13 +420,16 @@ describe('SaasTenantGovernanceExecutionService', () => {
     const persistedDigest = String(receiptValues[7]);
     expect(result).toMatchObject({
       run: { status: 'COMPLETED', manifestDigest: persistedDigest, deletedRows: '0' },
-      request: { status: 'VERIFIED', version: 4, executionManifestDigest: persistedDigest },
+      request: { status: 'PROPAGATION_PENDING', version: 4, executionManifestDigest: persistedDigest },
       replayed: false,
     });
     expect(result.run.tableManifest).toMatchObject({
       retainedTables: { saas_usage_events: '7' },
       retainedRows: '7',
       scope: 'REVIEWED_TENANT_TABLE_ALLOWLIST_ONLY',
+      receiptScope: 'POSTGRESQL_ONLY',
+      wholeTenantErasureVerified: false,
+      requiresExternalPropagation: true,
     });
     expect((result.run.tableManifest.exclusions as Array<Record<string, unknown>>).some((entry) =>
       entry.table === 'saas_usage_events'
@@ -438,13 +441,13 @@ describe('SaasTenantGovernanceExecutionService', () => {
       expect.objectContaining({ tenantId: tenant, userId: executor }),
     );
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes("SET status='EXECUTING'"))).toBe(true);
-    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes("SET status='VERIFIED'"))).toBe(true);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes("SET status='PROPAGATION_PENDING'"))).toBe(true);
     expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('DELETE FROM public.'))).toBe(true);
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
-        action: 'TENANT_ERASURE_VERIFIED',
-        payload: expect.objectContaining({ deletedRows: '0', retainedRows: '7', retainedTables: expect.objectContaining({ saas_usage_events: '7' }), manifestDigest: persistedDigest }),
+        action: 'TENANT_ERASURE_POSTGRESQL_COMPLETED',
+        payload: expect.objectContaining({ deletedRows: '0', retainedRows: '7', retainedTables: expect.objectContaining({ saas_usage_events: '7' }), manifestDigest: persistedDigest, receiptScope: 'POSTGRESQL_ONLY', wholeTenantErasureVerified: false, pendingExternalPropagation: true }),
       }),
     );
   });

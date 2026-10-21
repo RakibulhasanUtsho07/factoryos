@@ -87,6 +87,7 @@ interface ErasureRunRow extends QueryResultRow {
   request_hash: string;
   created_at: string;
   finished_at: string;
+  receipt_scope?: 'POSTGRESQL_ONLY';
 }
 
 interface TenantTableMetadata {
@@ -506,6 +507,9 @@ export class SaasTenantGovernanceExecutionService {
             rowCount: retainedCounts[table.table] ?? '0',
           })),
           scope: 'REVIEWED_TENANT_TABLE_ALLOWLIST_ONLY',
+          receiptScope: 'POSTGRESQL_ONLY',
+          wholeTenantErasureVerified: false,
+          requiresExternalPropagation: true,
           verifiedAt: new Date().toISOString(),
         };
         const digest = this.hash(manifest);
@@ -522,14 +526,14 @@ export class SaasTenantGovernanceExecutionService {
         );
         const verified = await client.query<ErasureRequestRow>(
           `UPDATE saas_tenant_data_erasure_requests
-           SET status='VERIFIED', execution_completed_at=clock_timestamp(), execution_run_id=$3,
+           SET status='PROPAGATION_PENDING', execution_completed_at=clock_timestamp(), execution_run_id=$3,
                execution_manifest_digest=$4, row_version=row_version+1, updated_at=clock_timestamp()
            WHERE tenant_id=$1 AND request_id=$2 AND version=1 AND status='EXECUTING'
            RETURNING *`,
           [tenantId, requestId, runId, digest],
         );
-        if (!verified.rows[0]) throw new ConflictException('Erasure completion could not be verified');
-        await this.audit(client, tenantId, actorUserId, 'TENANT_ERASURE_VERIFIED', run.rows[0].id, {
+        if (!verified.rows[0]) throw new ConflictException('PostgreSQL erasure phase could not be recorded');
+        await this.audit(client, tenantId, actorUserId, 'TENANT_ERASURE_POSTGRESQL_COMPLETED', run.rows[0].id, {
           requestId,
           runId,
           categories: [...categories].sort(),
@@ -539,6 +543,9 @@ export class SaasTenantGovernanceExecutionService {
           retainedTables: retainedCounts,
           sourceExportDigest: current.export_bundle_digest,
           manifestDigest: digest,
+          receiptScope: 'POSTGRESQL_ONLY',
+          wholeTenantErasureVerified: false,
+          pendingExternalPropagation: true,
         });
         return { row: run.rows[0], replayed: false, request: verified.rows[0] };
       }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-erasure:' + tenantId + ':' + requestId });
@@ -1016,6 +1023,8 @@ export class SaasTenantGovernanceExecutionService {
     return {
       id: row.id,
       runId: row.run_id,
+      receiptScope: row.receipt_scope ?? 'POSTGRESQL_ONLY',
+      wholeTenantErasureVerified: false,
       requestId: row.request_id,
       requestVersion: Number(row.request_version),
       status: row.status,

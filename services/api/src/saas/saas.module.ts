@@ -13,6 +13,9 @@ import { SaasTenantRetentionController } from './saas-tenant-retention.controlle
 import { SaasTenantDataTransferService } from './saas-tenant-data-transfer.service';
 import { SaasTenantRetentionService } from './saas-tenant-retention.service';
 import { SaasTenantGovernanceExecutionService } from './saas-tenant-governance-execution.service';
+import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
+import { SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS, SAAS_TENANT_FINANCE_RETENTION_ADAPTER } from './saas-tenant-propagation.adapters';
+import { SaasTenantFinanceRetentionService } from './saas-tenant-finance-retention.service';
 import { SAAS_ENCRYPTED_TENANT_BUNDLE_STORE, SAAS_TENANT_TRANSFER_DATASET_SOURCE } from './saas-tenant-data-transfer.adapters';
 import { SaasTenantPostgresDatasetSource } from './saas-tenant-postgres-dataset-source';
 import { SaasEncryptedTenantBundleStore } from './saas-encrypted-tenant-bundle.store';
@@ -44,6 +47,10 @@ import { SaasUsageService } from './saas-usage.service';
     SaasTenantDataTransferService,
     SaasTenantRetentionService,
     SaasTenantGovernanceExecutionService,
+    SaasTenantPropagationService,
+    SaasTenantFinanceRetentionService,
+    { provide: SAAS_TENANT_EXTERNAL_PROPAGATION_ADAPTERS, useValue: [] },
+    { provide: SAAS_TENANT_FINANCE_RETENTION_ADAPTER, useValue: null },
     SaasTenantPostgresDatasetSource,
     { provide: SAAS_TENANT_TRANSFER_DATASET_SOURCE, useExisting: SaasTenantPostgresDatasetSource },
     SaasTenantPostgresMigrationTargetAdapter,
@@ -61,6 +68,8 @@ import { SaasUsageService } from './saas-usage.service';
     SaasTenantDataTransferService,
     SaasTenantRetentionService,
     SaasTenantGovernanceExecutionService,
+    SaasTenantPropagationService,
+    SaasTenantFinanceRetentionService,
     SaasTenantDataTransferWorkerService,
   ],
 })
