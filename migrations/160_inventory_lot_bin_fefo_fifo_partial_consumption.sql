@@ -125,6 +125,24 @@ CREATE TABLE inventory_reservation_consumptions (
 CREATE INDEX idx_inventory_reservation_consumptions_reservation
   ON inventory_reservation_consumptions (tenant_id, factory_id, reservation_id, created_at, id);
 
+-- A single physical bin may legitimately hold multiple separately tracked lots.
+-- The uniqueness key is therefore bin + lot identity; NULL is one legacy allocation.
+DROP INDEX IF EXISTS uq_inventory_order_line_bin_active;
+CREATE UNIQUE INDEX uq_inventory_order_line_bin_lot_active
+  ON inventory_reservations (
+    tenant_id, factory_id, reference_id, location_id,
+    COALESCE(traceability_unit_id, '00000000-0000-0000-0000-000000000000'::uuid)
+  )
+  WHERE reference_type = 'ORDER_LINE' AND status = 'RESERVED'
+    AND reference_id IS NOT NULL AND location_id IS NOT NULL;
+
+ALTER TABLE inventory_location_transfers
+  ADD COLUMN traceability_unit_id UUID,
+  ADD CONSTRAINT fk_inventory_location_transfer_lot_scope
+    FOREIGN KEY (traceability_unit_id, tenant_id, factory_id, item_id)
+    REFERENCES traceability_units (id, tenant_id, factory_id, inventory_item_id)
+    ON DELETE RESTRICT;
+
 ALTER TABLE inventory_reservation_consumptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_reservation_consumptions FORCE ROW LEVEL SECURITY;
 CREATE POLICY inventory_reservation_consumptions_tenant_isolation
@@ -189,6 +207,13 @@ BEGIN
   END IF;
 
   v_consumption_delta := NEW.quantity_consumed - OLD.quantity_consumed;
+  IF v_consumption_delta > 0
+     AND NEW.reference_type IN ('ORDER_LINE', 'WORK_ORDER_MATERIAL')
+     AND NEW.quantity_consumed < NEW.quantity THEN
+    RAISE EXCEPTION 'order and work-order material reservations must be consumed atomically as a complete allocation'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF OLD.status = 'RESERVED'
      AND NEW.status = 'RESERVED'
      AND v_consumption_delta > 0 THEN
@@ -735,6 +760,123 @@ COMMENT ON TABLE inventory_lot_location_balances IS
   'Live stock and reservations by traceability LOT/SERIAL and physical location. Stock movements are the only on-hand writer; reservations derive lot reserved quantities.';
 COMMENT ON TABLE inventory_reservation_consumptions IS
   'Immutable idempotent partial/full reservation issue evidence. Sum of this ledger must equal inventory_reservations.quantity_consumed.';
+
+CREATE OR REPLACE FUNCTION factoryos_validate_inventory_location_transfer_lot()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+DECLARE
+  v_status VARCHAR(16);
+  v_unit_type VARCHAR(24);
+  v_expires_at DATE;
+  v_unit_quantity NUMERIC(18,4);
+  v_available NUMERIC(18,4);
+BEGIN
+  IF NEW.traceability_unit_id IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM inventory_lot_location_balances lb
+      WHERE lb.tenant_id = NEW.tenant_id AND lb.factory_id = NEW.factory_id
+        AND lb.item_id = NEW.item_id AND lb.quantity_on_hand > 0
+    ) OR EXISTS (
+      SELECT 1 FROM traceability_settings ts
+      WHERE ts.tenant_id = NEW.tenant_id AND ts.factory_id = NEW.factory_id
+        AND ts.require_lot_tracking = TRUE
+    ) THEN
+      RAISE EXCEPTION 'lot-tracked items require a lot identity for stock transfer, pick or put-away'
+        USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  SELECT status, unit_type, expires_at, quantity
+    INTO v_status, v_unit_type, v_expires_at, v_unit_quantity
+  FROM traceability_units
+  WHERE id = NEW.traceability_unit_id
+    AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND inventory_item_id = NEW.item_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'transfer lot must be bound to the selected item and factory'
+      USING ERRCODE = '23503';
+  END IF;
+  IF v_status <> 'ACTIVE' OR v_unit_type NOT IN ('LOT', 'SERIAL')
+     OR (v_expires_at IS NOT NULL AND v_expires_at < CURRENT_DATE) THEN
+    RAISE EXCEPTION 'quarantined, recalled, disposed, shipped or expired lots cannot be transferred'
+      USING ERRCODE = '23514';
+  END IF;
+  IF v_unit_type = 'SERIAL' AND NEW.quantity <> 1 THEN
+    RAISE EXCEPTION 'serial transfer quantity must be exactly one'
+      USING ERRCODE = '23514';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM quality_holds h
+    WHERE h.tenant_id = NEW.tenant_id AND h.factory_id = NEW.factory_id
+      AND h.status = 'ACTIVE'
+      AND (h.inventory_item_id = NEW.item_id OR h.traceability_unit_id = NEW.traceability_unit_id)
+  ) THEN
+    RAISE EXCEPTION 'quality-held stock cannot be transferred, picked or put away'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT quantity_on_hand - quantity_reserved INTO v_available
+  FROM inventory_lot_location_balances
+  WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id AND traceability_unit_id = NEW.traceability_unit_id
+    AND location_id = NEW.source_location_id
+  FOR UPDATE;
+  IF NOT FOUND OR v_available < NEW.quantity THEN
+    RAISE EXCEPTION 'insufficient available stock in the source lot/bin'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER inventory_location_transfer_lot_policy_guard
+BEFORE INSERT ON inventory_location_transfers
+FOR EACH ROW EXECUTE FUNCTION factoryos_validate_inventory_location_transfer_lot();
+
+CREATE OR REPLACE FUNCTION factoryos_apply_inventory_location_transfer_lot()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  IF NEW.traceability_unit_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  UPDATE inventory_lot_location_balances
+  SET quantity_on_hand = quantity_on_hand - NEW.quantity,
+      version = version + 1, updated_at = clock_timestamp()
+  WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id AND traceability_unit_id = NEW.traceability_unit_id
+    AND location_id = NEW.source_location_id
+    AND quantity_on_hand - quantity_reserved >= NEW.quantity;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'source lot/bin availability changed during transfer'
+      USING ERRCODE = '23514';
+  END IF;
+
+  INSERT INTO inventory_lot_location_balances (
+    tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand
+  ) VALUES (
+    NEW.tenant_id, NEW.factory_id, NEW.item_id, NEW.traceability_unit_id,
+    NEW.destination_location_id, NEW.quantity
+  )
+  ON CONFLICT (tenant_id, factory_id, item_id, traceability_unit_id, location_id)
+  DO UPDATE SET
+    quantity_on_hand = inventory_lot_location_balances.quantity_on_hand + EXCLUDED.quantity_on_hand,
+    version = inventory_lot_location_balances.version + 1,
+    updated_at = clock_timestamp();
+  RETURN NEW;
+END;
+$;
+
+CREATE TRIGGER inventory_location_transfer_apply_lot_balance
+AFTER INSERT ON inventory_location_transfers
+FOR EACH ROW EXECUTE FUNCTION factoryos_apply_inventory_location_transfer_lot();
 
 INSERT INTO schema_migrations (version, checksum)
 VALUES ('160_inventory_lot_bin_fefo_fifo_partial_consumption', NULL)
