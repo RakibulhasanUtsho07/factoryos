@@ -201,19 +201,26 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     locationIds.push(warehouse.id, binA.id, binB.id);
 
-    const createLot = async (code: string, quantity: string, expiry: string, key: string) => {
+    const createLot = async (
+      code: string,
+      quantity: string,
+      expiry: string,
+      key: string,
+      options: { status?: 'ACTIVE' | 'QUARANTINED'; attributes?: Record<string, unknown> } = {},
+    ) => {
       const inserted = await adminPool.query<{ id: string }>(
         `
         INSERT INTO traceability_units (
           tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
-          inventory_item_id, quantity, unit, external_reference, expires_at,
+          inventory_item_id, quantity, unit, external_reference, expires_at, status, attributes,
           idempotency_key, request_hash, created_by_user_id, correlation_id
         )
-        VALUES ($1,$2,'LOT','MATERIAL',$3,$4,$5,$6::numeric,'PCS',$7,$8::date,$9,$10,$11,$12::uuid)
+        VALUES ($1,$2,'LOT','MATERIAL',$3,$4,$5,$6::numeric,'PCS',$7,$8::date,$9,$10::jsonb,$11,$12,$13,$14::uuid)
         RETURNING id::text AS id
         `,
         [tenantId, factoryId, code, 'BAR-' + code, itemId, quantity, 'SUPPLIER-' + code,
-          expiry, key, 'a'.repeat(64), TEST_USER_ID, randomUUID()],
+          expiry, options.status ?? 'ACTIVE', JSON.stringify(options.attributes ?? {}),
+          key, 'a'.repeat(64), TEST_USER_ID, randomUUID()],
       );
       const id = inserted.rows[0]?.id;
       if (!id) throw new Error('FEFO traceability lot fixture was not created');
@@ -222,6 +229,17 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
 
     const earlyLotId = await createLot('LOT-EARLIEST-' + randomUUID().slice(0, 6), '3.0000', '2026-11-01', 'wms-fefo-early-' + randomUUID());
     const lateLotId = await createLot('LOT-LATER-' + randomUUID().slice(0, 6), '4.0000', '2027-01-01', 'wms-fefo-late-' + randomUUID());
+    const expiredLotId = await createLot('LOT-EXPIRED-' + randomUUID().slice(0, 6), '0.5000', '2026-10-20', 'wms-fefo-expired-' + randomUUID());
+    const damagedLotId = await createLot('LOT-DAMAGED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-damaged-' + randomUUID(), {
+      attributes: { damaged: true, condition: 'DAMAGED' },
+    });
+    const heldLotId = await createLot('LOT-HELD-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-held-' + randomUUID(), {
+      attributes: { held: true, condition: 'HELD' },
+    });
+    const quarantinedLotId = await createLot('LOT-QUARANTINED-' + randomUUID().slice(0, 6), '0.5000', '2027-01-01', 'wms-fefo-quarantine-' + randomUUID(), {
+      status: 'QUARANTINED',
+      attributes: { quarantined: true, condition: 'QUARANTINED' },
+    });
 
     await adminPool.query(
       `
@@ -281,6 +299,18 @@ describe('Inventory reservation FEFO/partial issue PostgreSQL integration', () =
     );
     expect(actualLotReservations.rows.map((row) => row.allocated_quantity)).toEqual(['3.0000', '1.0000']);
     expect(actualLotReservations.rows[0]?.unit_code).toContain('LOT-EARLIEST');
+    expect(actualLotReservations.rows[1]?.unit_code).toContain('LOT-LATER');
+    expect(actualLotReservations.rows.some((row) =>
+      [expiredLotId, damagedLotId, heldLotId, quarantinedLotId].includes(row.unit_code),
+    )).toBe(false);
+    const excludedAllocations = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM inventory_reservation_traceability_allocations
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND traceability_unit_id = ANY($4::uuid[])`,
+      [tenantId, factoryId, itemId, [expiredLotId, damagedLotId, heldLotId, quarantinedLotId]],
+    );
+    expect(excludedAllocations.rows[0]?.count).toBe('0');
 
     const firstReservationId = allocations[0]!.reservationId;
     const issueKey = 'wms-first-order-partial-issue-' + randomUUID();
