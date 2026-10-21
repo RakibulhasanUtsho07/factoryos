@@ -8,6 +8,9 @@ export class GoodsReceiptLineDto {
   @IsUUID()
   purchase_order_line_id!: string;
 
+  @IsOptional() @IsUUID()
+  traceability_unit_id?: string;
+
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 4 }) @Min(0.0001)
   received_quantity!: number;
 
