@@ -55,9 +55,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   afterAll(async () => {
     if (adminPool && factoryIds.length) {
       for (const factoryId of factoryIds) {
-        await adminPool.query(
-          'ALTER TABLE inventory_reservations DISABLE TRIGGER USER',
-        );
+        await adminPool.query('ALTER TABLE inventory_reservation_consumptions DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE inventory_reservations DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -73,6 +73,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
+            'DELETE FROM inventory_reservation_consumptions WHERE tenant_id = $1 AND factory_id = $2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
             'DELETE FROM inventory_reservations WHERE tenant_id = $1 AND factory_id = $2',
             [tenantId, factoryId],
           );
@@ -82,6 +86,14 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM outbox_events WHERE tenant_id = $1 AND factory_id = $2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_lot_location_balances WHERE tenant_id = $1 AND factory_id = $2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_units WHERE tenant_id = $1 AND factory_id = $2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -113,7 +125,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
         } finally {
+          await adminPool.query('ALTER TABLE inventory_reservation_consumptions ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_location_transfers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_movements ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
@@ -188,6 +202,52 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       requestId, traceId,
     );
     return { warehouse, binA, binB };
+  }
+
+  async function createTraceabilityLot(
+    factoryId: string,
+    itemId: string,
+    unitQuantity: string,
+    expiresInDays: number,
+  ): Promise<string> {
+    const unitCode = 'LOT-' + randomUUID().slice(0, 12);
+    const result = await adminPool.query<{ id: string }>(
+      `
+      INSERT INTO traceability_units (
+        tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+        inventory_item_id, quantity, unit, expires_at, status, idempotency_key,
+        request_hash, created_by_user_id, correlation_id
+      )
+      VALUES (
+        $1, $2, 'LOT', 'MATERIAL', $3, $4, $5, $6::numeric, 'PCS',
+        CURRENT_DATE + $7::int, 'ACTIVE', $8, $9, $10, $11
+      )
+      RETURNING id::text AS id
+      `,
+      [
+        tenantId, factoryId, unitCode, 'BAR-' + unitCode, itemId, unitQuantity, expiresInDays,
+        'location-lot-' + randomUUID(), 'a'.repeat(64), userId, traceId,
+      ],
+    );
+    const id = result.rows[0]?.id;
+    if (!id) throw new Error('Traceability lot fixture was not created');
+    return id;
+  }
+
+  async function enableLotTracking(factoryId: string, policy: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL') {
+    await adminPool.query(
+      `
+      INSERT INTO traceability_settings (tenant_id, factory_id, allocation_policy, require_lot_tracking, version, updated_by_user_id)
+      VALUES ($1, $2, $3, TRUE, 2, $4)
+      ON CONFLICT (tenant_id, factory_id)
+      DO UPDATE SET allocation_policy = EXCLUDED.allocation_policy,
+                    require_lot_tracking = TRUE,
+                    version = traceability_settings.version + 1,
+                    updated_by_user_id = EXCLUDED.updated_by_user_id,
+                    updated_at = clock_timestamp()
+      `,
+      [tenantId, factoryId, policy, userId],
+    );
   }
 
   async function readAggregate(factoryId: string, itemId: string) {
