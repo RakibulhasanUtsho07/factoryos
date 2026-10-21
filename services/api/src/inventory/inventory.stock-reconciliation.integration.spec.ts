@@ -528,6 +528,63 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
   });
 
+  it('fails closed on aggregate cycle-count approval while strict lot tracking is active', async () => {
+    const prior = await adminPool.query<{
+      require_lot_tracking: boolean;
+      allocation_policy: string;
+      retention_years: number;
+      updated_by_user_id: string | null;
+    }>(
+      `SELECT require_lot_tracking, allocation_policy, retention_years, updated_by_user_id::text AS updated_by_user_id
+       FROM traceability_settings WHERE tenant_id = $1 AND factory_id = $2`,
+      [tenantId, factoryId],
+    );
+    const old = prior.rows[0];
+    if (!old) throw new Error('Traceability settings fixture was not seeded for the test factory');
+
+    await adminPool.query(
+      `UPDATE traceability_settings
+       SET require_lot_tracking = TRUE, version = version + 1, updated_by_user_id = $3
+       WHERE tenant_id = $1 AND factory_id = $2`,
+      [tenantId, factoryId, TEST_USER_ID],
+    );
+    const itemId = await createItem('6.0000', '0.0000');
+    const proposal = await cycleCountService.submitCycleCount(
+      TEST_USER_ID, tenantId, factoryId, itemId,
+      { counted_quantity: 5, variance_reason: 'Lot/bin quantities require individual recounts' },
+      'cycle-count-lot-guard-submit-' + randomUUID(), randomUUID(), randomUUID(),
+    );
+
+    try {
+      await expect(
+        cycleCountService.approveCycleCount(
+          reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+          { review_note: 'Cannot apply an aggregate count to lot-tracked stock' },
+          'cycle-count-lot-guard-approve-' + randomUUID(), randomUUID(), randomUUID(),
+        ),
+      ).rejects.toThrow('Aggregate cycle-count approval cannot adjust lot-tracked stock');
+
+      const state = await adminPool.query<{ status: string }>(
+        'SELECT status FROM inventory_cycle_count_proposals WHERE id = $1',
+        [proposal.id],
+      );
+      const balance = await adminPool.query<{ quantity_on_hand: string }>(
+        'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+        [itemId],
+      );
+      expect(state.rows[0]?.status).toBe('PENDING_REVIEW');
+      expect(balance.rows[0]?.quantity_on_hand).toBe('6.0000');
+    } finally {
+      await adminPool.query(
+        `UPDATE traceability_settings
+         SET require_lot_tracking = $3, allocation_policy = $4, retention_years = $5,
+             updated_by_user_id = $6, version = version + 1
+         WHERE tenant_id = $1 AND factory_id = $2`,
+        [tenantId, factoryId, old.require_lot_tracking, old.allocation_policy, old.retention_years, old.updated_by_user_id],
+      );
+    }
+  });
+
   it('records zero variance without creating a no-op movement', async () => {
     const itemId = await createItem('4.0000', '1.0000');
     const result = await service.recordReconciliation(
