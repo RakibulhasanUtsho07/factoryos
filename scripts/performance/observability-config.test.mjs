@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import * as prettier from 'prettier';
 import { test } from 'node:test';
 
 const root = new URL('../../', import.meta.url);
@@ -85,4 +86,23 @@ test('provisioned dashboard is valid JSON and displays API, database, queue and 
     'factoryos_trace_export_queue_length',
     'factoryos_trace_spans_dropped_total',
   ]) assert.ok(content.includes(metric), 'dashboard missing ' + metric);
+});
+
+
+test('all committed observability YAML files parse with a YAML parser', async () => {
+  const paths = [
+    'deploy/observability/alert-rules.yml',
+    'deploy/observability/alertmanager.yml',
+    'deploy/observability/compose.yaml',
+    'deploy/observability/grafana/provisioning/dashboards/factoryos.yml',
+    'deploy/observability/grafana/provisioning/datasources/prometheus.yml',
+    'deploy/observability/otel-collector.yaml',
+    'deploy/observability/postgres-queries.yml',
+    'deploy/observability/prometheus.yml',
+    'deploy/observability/slo-policy.yml',
+  ];
+  for (const path of paths) {
+    const source = await read(path);
+    await prettier.format(source, { parser: 'yaml' });
+  }
 });
