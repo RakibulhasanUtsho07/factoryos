@@ -79,6 +79,8 @@ test('operator alert routing reads its secret from a file instead of committing 
   assert.match(compose, /127\.0\.0\.1:3000:3000/);
   assert.match(compose, /metrics_scrape_token/);
   assert.match(compose, /postgres_exporter_password/);
+  assert.match(compose, /PGSSLROOTCERT: \/run\/secrets\/postgres_exporter_ca/);
+  assert.match(compose, /postgres_exporter_ca/);
   assert.match(compose, /otel_receiver_token/);
 });
 
