@@ -109,7 +109,7 @@ CREATE TABLE mobile_offline_sync_receipts (
   device_id VARCHAR(128) NOT NULL,
   client_transaction_id UUID NOT NULL,
   operation VARCHAR(24) NOT NULL,
-  item_id UUID NOT NULL,
+  item_id UUID,
   result_status VARCHAR(12) NOT NULL,
   request_hash CHAR(64) NOT NULL,
   idempotency_key VARCHAR(255) NOT NULL,
