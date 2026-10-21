@@ -85,6 +85,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build candidate API for restored-database smoke test
+        run: npm --workspace services/api run build
+
       - name: Initialize isolated PostgreSQL test database
         shell: bash
         run: |
@@ -127,6 +130,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/156_tenant_privacy_inventory_and_rls_guardrails.sql
 
+          echo "Reapplying tenant ownership review migration to verify FK-derived policy idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/159_tenant_relation_ownership_reviews.sql
+
           echo "Reapplying OPC UA gateway migration to verify permission and audit contract idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/157_ot_opcua_read_gateway.sql
@@ -134,6 +141,14 @@ jobs:
           echo "Reapplying MQTT/Modbus gateway migration to verify permission and audit contract idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/158_ot_mqtt_modbus_gateway.sql
+
+          echo "Reapplying external erasure propagation migration to verify lifecycle, receipt and finance policy idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/160_saas_external_erasure_propagation_and_finance_retention.sql
+
+          echo "Rechecking all tenant ownership classifications after the newest governance relations were created"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/159_tenant_relation_ownership_reviews.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
@@ -221,8 +236,137 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ot-device-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-data-retention-contract.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-propagation-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-isolation-matrix.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-data-governance-inventory.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/tenant-ownership-review.sql
+
+          # Deterministic two-tenant rows verify that data and audit history survive encrypted restore.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          INSERT INTO tenants (id,slug,name,status,timezone,default_locale) VALUES
+            ('e7110000-0000-4000-8000-000000000001','dr-rehearsal-a-ci','DR rehearsal tenant A','ACTIVE','Asia/Dhaka','en-BD'),
+            ('e7110000-0000-4000-8000-000000000002','dr-rehearsal-b-ci','DR rehearsal tenant B','ACTIVE','Asia/Dhaka','en-BD')
+          ON CONFLICT (id) DO UPDATE SET slug=EXCLUDED.slug,name=EXCLUDED.name,status='ACTIVE';
+          INSERT INTO users (id,external_subject,email,display_name,status) VALUES
+            ('e7120000-0000-4000-8000-000000000001','dr-rehearsal-a-ci','dr-rehearsal-a@factoryos.test','DR rehearsal A','ACTIVE'),
+            ('e7120000-0000-4000-8000-000000000002','dr-rehearsal-b-ci','dr-rehearsal-b@factoryos.test','DR rehearsal B','ACTIVE')
+          ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,status='ACTIVE';
+          INSERT INTO factories (id,tenant_id,code,name,status,timezone) VALUES
+            ('e7130000-0000-4000-8000-000000000001','e7110000-0000-4000-8000-000000000001','DR-RESTORE-A','DR restore fixture A','ACTIVE','Asia/Dhaka'),
+            ('e7130000-0000-4000-8000-000000000002','e7110000-0000-4000-8000-000000000002','DR-RESTORE-B','DR restore fixture B','ACTIVE','Asia/Dhaka')
+          ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,status='ACTIVE';
+          INSERT INTO audit_events (id,tenant_id,actor_user_id,event_type,action,resource_type,resource_id,data_class,payload,created_at) VALUES
+            ('e7140000-0000-4000-8000-000000000001','e7110000-0000-4000-8000-000000000001','e7120000-0000-4000-8000-000000000001','RECOVERY_REHEARSAL','RESTORE_CONTINUITY','TENANT','e7110000-0000-4000-8000-000000000001','INTERNAL','{"fixture":"backup-restore-audit-continuity","tenant":"A"}'::jsonb,clock_timestamp()),
+            ('e7140000-0000-4000-8000-000000000002','e7110000-0000-4000-8000-000000000002','e7120000-0000-4000-8000-000000000002','RECOVERY_REHEARSAL','RESTORE_CONTINUITY','TENANT','e7110000-0000-4000-8000-000000000002','INTERNAL','{"fixture":"backup-restore-audit-continuity","tenant":"B"}'::jsonb,clock_timestamp())
+          ON CONFLICT (id) DO UPDATE SET payload=EXCLUDED.payload,created_at=EXCLUDED.created_at;
+          COMMIT;
+          SQL
+
+          # This end-to-end check uses only an ephemeral CI database and a one-run GPG key.
+          # The encrypted dump and private key remain on the runner and are never uploaded.
+          recovery_home="$(mktemp -d)"
+          recovery_backup_dir="$RUNNER_TEMP/dr-backups"
+          recovery_evidence_dir="$RUNNER_TEMP/dr-evidence"
+          mkdir -m 700 -p "$recovery_backup_dir" "$recovery_evidence_dir"
+          chmod 700 "$recovery_home"
+          export GNUPGHOME="$recovery_home"
+          cat > "$RUNNER_TEMP/factoryos-ci-recovery-key.params" <<'GPG'
+          Key-Type: RSA
+          Key-Length: 3072
+          Key-Usage: sign cert
+          Subkey-Type: RSA
+          Subkey-Length: 3072
+          Subkey-Usage: encrypt
+          Name-Real: FactoryOS CI Recovery Rehearsal
+          Name-Email: factoryos-ci-recovery@example.invalid
+          Expire-Date: 1d
+          %no-protection
+          %commit
+          GPG
+          gpg --batch --generate-key "$RUNNER_TEMP/factoryos-ci-recovery-key.params"
+          recovery_recipient="$(gpg --with-colons --list-keys factoryos-ci-recovery@example.invalid | awk -F: '$1=="fpr" {print $10; exit}')"
+          if [[ -z "$recovery_recipient" ]]; then
+            echo "::error::Could not create an ephemeral GPG recovery recipient"
+            exit 1
+          fi
+
+          cat > "$RUNNER_TEMP/factoryos-recovery.pg_service.conf" <<'PGSERVICE'
+          [factoryos-ci-source]
+          host=127.0.0.1
+          port=5432
+          dbname=factoryos_test
+          user=postgres
+          password=ci-postgres-only
+          connect_timeout=5
+
+          [factoryos-ci-restore]
+          host=127.0.0.1
+          port=5432
+          dbname=factoryos_recovery_restore_test_ci
+          user=postgres
+          password=ci-postgres-only
+          connect_timeout=5
+          PGSERVICE
+          chmod 600 "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
+          psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE factoryos_recovery_restore_test_ci'
+          psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 \
+            -c 'GRANT CONNECT ON DATABASE factoryos_recovery_restore_test_ci TO factoryos_app'
+          PGSERVICEFILE="$RUNNER_TEMP/factoryos-recovery.pg_service.conf" \
+          GNUPGHOME="$GNUPGHOME" \
+          FACTORYOS_DR_MODE=RELEASE_GATE \
+          FACTORYOS_MIGRATION_MANIFEST_MODE=IDEMPOTENT_REPLAY \
+          FACTORYOS_DR_APPLICATION_DATABASE_URL="postgresql://factoryos_app:ci-app-only@127.0.0.1:5432/factoryos_recovery_restore_test_ci" \
+          FACTORYOS_BACKUP_PGSERVICE=factoryos-ci-source \
+          FACTORYOS_RESTORE_PGSERVICE=factoryos-ci-restore \
+          FACTORYOS_BACKUP_OUTPUT="$recovery_backup_dir/factoryos-ci-recovery.dump.gpg" \
+          FACTORYOS_BACKUP_GPG_RECIPIENT="$recovery_recipient" \
+          FACTORYOS_RESTORE_SMOKE_SQL="scripts/recovery/ci-restore-smoke.sql" \
+          FACTORYOS_RESTORE_CONFIRM_EMPTY_DATABASE=I_HAVE_VERIFIED_EMPTY \
+          FACTORYOS_RECOVERY_EVIDENCE_JSON="$recovery_evidence_dir/ci-restore-receipt.json" \
+          FACTORYOS_CANDIDATE_MIGRATION_MANIFEST=scripts/recovery/ci-candidate-migrations.txt \
+          FACTORYOS_RECOVERY_WATERMARK_SQL=scripts/recovery/ci-recovery-watermark.sql \
+          FACTORYOS_RECOVERY_EVENT_TIME_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+          FACTORYOS_RECOVERY_OPERATOR="GitHub Actions CI" \
+          FACTORYOS_RECOVERY_APPROVER="Automated CI contract" \
+          FACTORYOS_CANDIDATE_SHA="$GITHUB_SHA" \
+          bash scripts/recovery/postgres-backup-restore-rehearsal.sh
+          rm -rf "$recovery_home"
+          rm -f "$RUNNER_TEMP/factoryos-ci-recovery-key.params" "$RUNNER_TEMP/factoryos-recovery.pg_service.conf"
+
+          # A rehearsal cannot pass this step with missing/unbound migration or rollback evidence.
+          receipt_path="$recovery_evidence_dir/ci-restore-receipt.json"
+          test -s "$receipt_path"
+          node --input-type=module - "$receipt_path" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const receipt = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          assert.equal(receipt.schema, 'factoryos.disaster-recovery-rehearsal/v1');
+          assert.equal(receipt.status, 'TECHNICAL_PASS');
+          assert.equal(receipt.databases.distinctIdentityVerified, true);
+          assert.equal(receipt.databases.targetWasEmptyBeforeRestore, true);
+          assert.match(receipt.backup.sha256, /^[a-f0-9]{64}$/);
+          assert.equal(receipt.backup.checksumVerified, true);
+          assert.equal(receipt.backup.encryption, 'ENCRYPTED_GPG');
+          assert.equal(receipt.backup.archiveReadability, 'READABLE');
+          assert.equal(receipt.verification.restoreStatus, 'PASS');
+          assert.equal(receipt.candidate.migrationStatus, 'PASS');
+          assert.equal(receipt.candidate.migrationManifestMode, 'IDEMPOTENT_REPLAY');
+          assert.equal(receipt.candidate.migrationCount, 8);
+          assert.match(receipt.candidate.migrationManifestSha256, /^[a-f0-9]{64}$/);
+          assert.equal(receipt.candidate.failedTransactionRecoveryStatus, 'PASS');
+          assert.equal(receipt.verification.migrationRecoveryStatus, 'PASS');
+          assert.equal(receipt.verification.schemaSmokeStatus, 'PASS');
+          assert.equal(receipt.verification.applicationSmokeStatus, 'PASS');
+          assert.equal(receipt.verification.apiReadinessStatus, 'PASS');
+          assert.equal(receipt.verification.tenantIsolationStatus, 'PASS');
+          assert.equal(receipt.verification.auditContinuityStatus, 'PASS');
+          assert.ok(Number.isSafeInteger(receipt.measured.observedRpoSeconds));
+          assert.ok(Number.isSafeInteger(receipt.measured.observedRtoSeconds));
+          assert.equal(receipt.operatorSignoff.status, 'PENDING_POST_RUN_REVIEW');
+          console.log('RECOVERY_EVIDENCE_RECEIPT_CONTRACT=PASS');
+          NODE
 
           # Deliberately fail after transactional DDL/DML; psql must leave no partial migration state.
           recovery_log="$(mktemp)"
@@ -263,6 +407,15 @@ jobs:
             -v ON_ERROR_STOP=1 -c \
             "SELECT version FROM schema_migrations WHERE version = '028_ai_execution_claim_reconciliation'"
 
+      - name: Upload sanitized encrypted-restore rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dr-rehearsal-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/dr-evidence/ci-restore-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Prepare Jest environment file
         shell: bash
         run: |
@@ -284,6 +437,13 @@ jobs:
         run: |
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
           node --check scripts/recovery/postgres-backup-restore-rehearsal.test.mjs
+          node --check scripts/recovery/application-restore-smoke.mjs
+          node --check scripts/recovery/write-rehearsal-evidence.mjs
+          node --check scripts/recovery/record-dr-operator-signoff.mjs
+          node --check scripts/recovery/rehearsal-evidence.test.mjs
+      - name: Run recovery contract tests
+        run: node --test scripts/recovery/postgres-backup-restore-rehearsal.test.mjs scripts/recovery/rehearsal-evidence.test.mjs
+
       - name: Validate observability and performance contracts
         run: |
           node --check scripts/performance/api-load-smoke.mjs
