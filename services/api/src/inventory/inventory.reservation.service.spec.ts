@@ -359,6 +359,81 @@ describe('InventoryReservationService', () => {
     expect(eligibilitySql).toContain("qh.status = 'ACTIVE'");
   });
 
+  it('allocates the first released production work-order BOM requirement by FEFO across eligible bins', async () => {
+    const workOrderId = randomUUID();
+    const requirementId = randomUUID();
+    const bomLineId = randomUUID();
+    const lotA = randomUUID();
+    const lotB = randomUUID();
+    const reservationA = randomUUID();
+    const reservationB = randomUUID();
+    const notes = 'Reserved for work order WO-FIRST-FEFO BOM line 1';
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE', unit: 'EA' }]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([{
+        allocation_policy: 'FEFO', require_traceability: true,
+        has_lot: true, has_serial: false, has_identity: true,
+      }]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          traceability_unit_id: lotA, location_id: BIN_A_ID,
+          unit_type: 'LOT', unit_code: 'LOT-EXPIRING-FIRST', expires_at: '2026-11-01',
+          received_at: '2026-10-01', quantity_on_hand: '2.0000', quantity_reserved: '0.0000',
+        },
+        {
+          traceability_unit_id: lotB, location_id: BIN_B_ID,
+          unit_type: 'LOT', unit_code: 'LOT-EXPIRING-LATER', expires_at: '2027-01-01',
+          received_at: '2026-10-02', quantity_on_hand: '4.0000', quantity_reserved: '0.0000',
+        },
+      ]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          location_id: BIN_A_ID, location_code: 'A-01', is_default: false,
+          location_type: 'BIN', quantity_on_hand: '2.0000', quantity_reserved: '0.0000',
+        },
+        {
+          location_id: BIN_B_ID, location_code: 'A-02', is_default: false,
+          location_type: 'BIN', quantity_on_hand: '4.0000', quantity_reserved: '0.0000',
+        },
+      ]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '3.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ location_id: BIN_A_ID }]))
+      .mockResolvedValueOnce(queryRows([row({
+        id: reservationA, location_id: BIN_A_ID, quantity: '2.0000',
+        reference_type: 'WORK_ORDER_MATERIAL', reference_id: workOrderId,
+        notes, idempotency_key: `work-order:${workOrderId}:bom:${bomLineId}:bin:${BIN_A_ID}:reserve:v1`,
+      })]))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID() }])) // reserve lot A quantity
+      .mockResolvedValueOnce(queryRows([])) // bind lot A to reservation A
+      .mockResolvedValueOnce(queryRows([])) // work-order reservation outbox
+      .mockResolvedValueOnce(queryRows([{ location_id: BIN_B_ID }]))
+      .mockResolvedValueOnce(queryRows([row({
+        id: reservationB, location_id: BIN_B_ID, quantity: '1.0000',
+        reference_type: 'WORK_ORDER_MATERIAL', reference_id: workOrderId,
+        notes, idempotency_key: `work-order:${workOrderId}:bom:${bomLineId}:bin:${BIN_B_ID}:reserve:v1`,
+      })]))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID() }])) // reserve lot B quantity
+      .mockResolvedValueOnce(queryRows([])) // bind lot B to reservation B
+      .mockResolvedValueOnce(queryRows([])); // work-order reservation outbox
+
+    const result = await service.reserveWorkOrderMaterialRequirement(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      workOrderId, workOrderNumber: 'WO-FIRST-FEFO',
+      requirementId, bomLineId, itemId: ITEM_ID, itemUnit: 'EA',
+      lineNumber: 1, quantity: '3.0000', correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual([
+      { reservationId: reservationA, locationId: BIN_A_ID, quantity: '2.0000' },
+      { reservationId: reservationB, locationId: BIN_B_ID, quantity: '1.0000' },
+    ]);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservation_traceability_allocations'))).toHaveLength(2);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toHaveLength(2);
+    expect(String(client.query.mock.calls[2]?.[0])).toContain('inventory_material_allocation_policies');
+    expect(String(client.query.mock.calls[3]?.[0])).toContain("tu.expires_at >= CURRENT_DATE");
+  });
+
   it('posts accepted finished goods as an inventory receipt with durable outbox evidence', async () => {
     const workOrderId = randomUUID();
     const reportId = randomUUID();
