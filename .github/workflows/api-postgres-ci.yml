@@ -139,6 +139,9 @@ jobs:
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/inventory-wms-allocation.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-replenishment.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
