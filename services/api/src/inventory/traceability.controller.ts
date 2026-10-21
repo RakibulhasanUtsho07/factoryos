@@ -184,6 +184,18 @@ export class TraceabilityController {
     return this.traceabilityService.listLabelIssuesForUnit(c.userId, c.tenantId, c.factoryId, unitId);
   }
 
+  @Get('items/:itemId/label-history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async materialLabelHistory(
+    @Req() request: TraceabilityRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.listLabelIssuesForItem(c.userId, c.tenantId, c.factoryId, itemId);
+  }
+
   @Get('settings')
   @UseGuards(PermissionGuard)
   @RequirePermission('traceability.read')
