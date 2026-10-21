@@ -12,6 +12,10 @@ export class TransferInventoryLocationDto {
   @IsOptional()
   @IsIn(['TRANSFER', 'PUT_AWAY', 'PICK'])
   movement_purpose?: 'TRANSFER' | 'PUT_AWAY' | 'PICK';
+  @IsOptional()
+  @IsUUID()
+  traceability_unit_id?: string;
+
   @IsUUID()
   source_location_id!: string;
 

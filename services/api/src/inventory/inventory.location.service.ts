@@ -45,6 +45,7 @@ interface LocationTransferRow extends QueryResultRow {
   tenant_id: string;
   factory_id: string;
   item_id: string;
+  traceability_unit_id: string | null;
   source_location_id: string;
   destination_location_id: string;
   movement_purpose: 'TRANSFER' | 'PUT_AWAY' | 'PICK';
@@ -78,6 +79,7 @@ const TRANSFER_COLUMNS = `
   tenant_id::text AS tenant_id,
   factory_id::text AS factory_id,
   item_id::text AS item_id,
+  traceability_unit_id::text AS traceability_unit_id,
   source_location_id::text AS source_location_id,
   destination_location_id::text AS destination_location_id,
   movement_purpose,
@@ -538,6 +540,8 @@ export class InventoryLocationService {
     if (!['TRANSFER', 'PUT_AWAY', 'PICK'].includes(movementPurpose)) {
       throw new BadRequestException('movement_purpose must be TRANSFER, PUT_AWAY or PICK');
     }
+    const traceabilityUnitId = dto.traceability_unit_id?.toLowerCase() ?? null;
+    if (traceabilityUnitId) this.validateUuid(traceabilityUnitId, 'traceability_unit_id');
 
     const idempotencyKey = rawIdempotencyKey?.trim() ?? '';
     if (!idempotencyKey) throw new BadRequestException('Idempotency-Key is required for location transfers');
@@ -564,6 +568,7 @@ export class InventoryLocationService {
       notes,
     };
     if (movementPurpose !== 'TRANSFER') requestIdentity.movementPurpose = movementPurpose;
+    if (traceabilityUnitId) requestIdentity.traceabilityUnitId = traceabilityUnitId;
     const requestHash = this.hash(requestIdentity);
 
     const result = await this.database.transaction(
@@ -576,11 +581,16 @@ export class InventoryLocationService {
         const existing = await this.findTransferByKey(client, tenantId, factoryId, idempotencyKey);
         if (existing) return this.replayOrConflict(existing, requestHash);
 
-        const itemResult = await client.query<{ id: string; status: string }>(
+        const itemResult = await client.query<{ id: string; status: string; lot_tracked: boolean }>(
           `
-          SELECT id::text AS id, status
-          FROM inventory_items
-          WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+          SELECT i.id::text AS id, i.status,
+            EXISTS (
+              SELECT 1 FROM traceability_units tu
+              WHERE tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
+                AND tu.inventory_item_id = i.id AND tu.product_role IN ('MATERIAL','PACKAGING')
+            ) AS lot_tracked
+          FROM inventory_items i
+          WHERE i.id = $1 AND i.tenant_id = $2 AND i.factory_id = $3
           FOR UPDATE
           `,
           [itemId, tenantId, factoryId],
@@ -695,6 +705,94 @@ export class InventoryLocationService {
 
         const sourceAfter = sourceBefore - quantityUnits;
         const destinationAfter = destinationBefore + quantityUnits;
+        const correlationId = this.correlationId(requestId, traceId);
+
+        // Insert audit intent while the source lot balance still reflects the
+        // pre-transfer state; the DB trigger verifies the selected lot is active,
+        // unexpired, unheld and available. The surrounding transaction rolls the
+        // audit row back if any physical or lot balance update fails.
+        const inserted = await client.query<LocationTransferRow>(
+          `
+          INSERT INTO inventory_location_transfers (
+            tenant_id, factory_id, item_id, source_location_id, destination_location_id,
+            quantity, source_quantity_before, source_quantity_after,
+            destination_quantity_before, destination_quantity_after,
+            idempotency_key, request_hash, notes, created_by_user_id, correlation_id, movement_purpose,
+            traceability_unit_id
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric,
+            $9::numeric, $10::numeric, $11, $12, $13, $14, $15::uuid, $16, $17::uuid
+          )
+          RETURNING ${TRANSFER_COLUMNS}
+          `,
+          [
+            tenantId, factoryId, itemId, sourceId, destinationId,
+            quantity, this.fromUnits(sourceBefore), this.fromUnits(sourceAfter),
+            this.fromUnits(destinationBefore), this.fromUnits(destinationAfter),
+            idempotencyKey, requestHash, notes, userId, correlationId, movementPurpose, traceabilityUnitId,
+          ],
+        );
+        const transfer = inserted.rows[0];
+        if (!transfer) throw new Error('INVENTORY_LOCATION_TRANSFER_INSERT_FAILED');
+
+        if (traceabilityUnitId) {
+          const lotSource = await client.query<{ quantity_on_hand: string; quantity_reserved: string }>(
+            `
+            SELECT quantity_on_hand::text AS quantity_on_hand, quantity_reserved::text AS quantity_reserved
+            FROM inventory_lot_stock_balances
+            WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+              AND traceability_unit_id = $4 AND location_id = $5
+            FOR UPDATE
+            `,
+            [tenantId, factoryId, itemId, traceabilityUnitId, sourceId],
+          );
+          const sourceLotBalance = lotSource.rows[0];
+          if (!sourceLotBalance || this.toUnits(sourceLotBalance.quantity_on_hand) - this.toUnits(sourceLotBalance.quantity_reserved) < quantityUnits) {
+            throw new ConflictException('Transfer quantity exceeds unreserved stock in the selected lot and source bin');
+          }
+          if (item.lot_tracked !== true) {
+            throw new ConflictException('traceability_unit_id is only valid for a lot-tracked item');
+          }
+          const sourceLotAfter = this.toUnits(sourceLotBalance.quantity_on_hand) - quantityUnits;
+          const sourceLotUpdate = await client.query(
+            `
+            UPDATE inventory_lot_stock_balances
+            SET quantity_on_hand = $1::numeric, version = version + 1, updated_at = clock_timestamp()
+            WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+              AND traceability_unit_id = $5 AND location_id = $6
+              AND quantity_on_hand >= $7::numeric
+            `,
+            [this.fromUnits(sourceLotAfter), tenantId, factoryId, itemId, traceabilityUnitId, sourceId, quantity],
+          );
+          void sourceLotUpdate;
+          await client.query(
+            `
+            INSERT INTO inventory_lot_stock_balances (
+              tenant_id, factory_id, item_id, traceability_unit_id, location_id,
+              quantity_on_hand, quantity_reserved
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::numeric, 0)
+            ON CONFLICT (tenant_id, factory_id, item_id, traceability_unit_id, location_id)
+            DO UPDATE SET quantity_on_hand = inventory_lot_stock_balances.quantity_on_hand + EXCLUDED.quantity_on_hand,
+              version = inventory_lot_stock_balances.version + 1, updated_at = clock_timestamp()
+            `,
+            [tenantId, factoryId, itemId, traceabilityUnitId, destinationId, quantity],
+          );
+        } else {
+          const trackedAtSource = await client.query<{ total: string }>(
+            `
+            SELECT COALESCE(SUM(quantity_on_hand), 0)::text AS total
+            FROM inventory_lot_stock_balances
+            WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3 AND location_id = $4
+            `,
+            [tenantId, factoryId, itemId, sourceId],
+          );
+          if (this.toUnits(trackedAtSource.rows[0]?.total ?? '0.0000') > 0n) {
+            throw new ConflictException('Lot-tracked stock transfers must specify traceability_unit_id');
+          }
+        }
+
         await client.query(
           `
           UPDATE inventory_location_balances
@@ -711,31 +809,6 @@ export class InventoryLocationService {
           `,
           [this.fromUnits(destinationAfter), tenantId, factoryId, itemId, destinationId],
         );
-
-        const correlationId = this.correlationId(requestId, traceId);
-        const inserted = await client.query<LocationTransferRow>(
-          `
-          INSERT INTO inventory_location_transfers (
-            tenant_id, factory_id, item_id, source_location_id, destination_location_id,
-            quantity, source_quantity_before, source_quantity_after,
-            destination_quantity_before, destination_quantity_after,
-            idempotency_key, request_hash, notes, created_by_user_id, correlation_id, movement_purpose
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric,
-            $9::numeric, $10::numeric, $11, $12, $13, $14, $15::uuid, $16
-          )
-          RETURNING ${TRANSFER_COLUMNS}
-          `,
-          [
-            tenantId, factoryId, itemId, sourceId, destinationId,
-            quantity, this.fromUnits(sourceBefore), this.fromUnits(sourceAfter),
-            this.fromUnits(destinationBefore), this.fromUnits(destinationAfter),
-            idempotencyKey, requestHash, notes, userId, correlationId, movementPurpose,
-          ],
-        );
-        const transfer = inserted.rows[0];
-        if (!transfer) throw new Error('INVENTORY_LOCATION_TRANSFER_INSERT_FAILED');
 
         await this.insertOutboxEvent(client, {
           tenantId, factoryId, aggregateType: 'INVENTORY_ITEM', aggregateId: itemId,
