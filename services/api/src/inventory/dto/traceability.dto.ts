@@ -118,7 +118,7 @@ export class CreateTraceabilityLabelTemplateDto {
   @IsArray()
   @ArrayUnique()
   @IsIn([...TRACEABILITY_LABEL_TARGET_TYPES], { each: true })
-  supported_unit_types!: Array<(typeof TRACEABILITY_UNIT_TYPES)[number]>;
+  supported_unit_types!: Array<(typeof TRACEABILITY_LABEL_TARGET_TYPES)[number]>;
   @IsOptional()
   @IsObject()
   label_layout?: Record<string, unknown>;
