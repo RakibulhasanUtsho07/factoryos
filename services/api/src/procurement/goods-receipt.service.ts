@@ -382,14 +382,15 @@ export class GoodsReceiptService {
                 'GOODS_RECEIPT',$10,$11,$12,$13
               )
             `, [
-              tenantId, factoryId, itemId, targetLocationId, line.accepted_quantity,
-              balance.rows[0].quantity_on_hand, movementKey, movementHash,
+              tenantId, factoryId, itemId, targetLocationId, input.traceability_unit_id,
+              line.accepted_quantity, balance.rows[0].quantity_on_hand, movementKey, movementHash,
               receiptId, 'Goods receipt ' + receiptNumber + ' for PO ' + purchaseOrder.po_number,
               userId, correlationId,
             ]);
             postedLines.push({
               purchase_order_line_id: poLine.id,
               inventory_item_id: itemId,
+              traceability_unit_id: input.traceability_unit_id,
               received_quantity: input.received_quantity,
               rejected_quantity: input.rejected_quantity,
               accepted_quantity: line.accepted_quantity,
@@ -399,6 +400,7 @@ export class GoodsReceiptService {
             postedLines.push({
               purchase_order_line_id: poLine.id,
               inventory_item_id: line.inventory_item_id,
+              traceability_unit_id: input.traceability_unit_id,
               received_quantity: input.received_quantity,
               rejected_quantity: input.rejected_quantity,
               accepted_quantity: line.accepted_quantity,
