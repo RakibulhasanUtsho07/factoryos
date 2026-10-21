@@ -46,14 +46,19 @@ describe('InventoryReservationService', () => {
   });
 
   function row(overrides: Record<string, unknown> = {}) {
+    const status = String(overrides.status ?? 'RESERVED');
+    const quantity = String(overrides.quantity ?? '2.0000');
     return {
       id: RESERVATION_ID,
       tenant_id: TENANT_ID,
       factory_id: FACTORY_ID,
       item_id: ITEM_ID,
       location_id: null,
-      quantity: '2.0000',
-      status: 'RESERVED',
+      quantity,
+      remaining_quantity: status === 'RESERVED' ? quantity : '0.0000',
+      consumed_quantity: status === 'CONSUMED' ? quantity : '0.0000',
+      released_quantity: status === 'RELEASED' ? quantity : '0.0000',
+      status,
       idempotency_key: 'reserve-1',
       request_hash: createHash('sha256').update(JSON.stringify({
         itemId: ITEM_ID,
@@ -86,6 +91,7 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([]))
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
       .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{ allocation_policy: 'FIFO', has_lot: false, has_serial: false, has_identity: false }]))
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '2.0000' }]))
       .mockResolvedValueOnce(queryRows([row()]))
       .mockResolvedValueOnce(queryRows([]));
@@ -97,10 +103,10 @@ describe('InventoryReservationService', () => {
     );
 
     expect(result).toMatchObject({ id: RESERVATION_ID, status: 'RESERVED', quantity: '2.0000', replayed: false });
-    expect(String(client.query.mock.calls[3]?.[0])).toContain('quantity_on_hand - quantity_reserved >= $1::numeric');
-    expect(String(client.query.mock.calls[4]?.[0])).toContain('INSERT INTO inventory_reservations');
-    expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO outbox_events');
-    expect(client.query.mock.calls[5]?.[1]).toContain('INVENTORY.STOCK_RESERVED');
+    expect(String(client.query.mock.calls[4]?.[0])).toContain('quantity_on_hand - quantity_reserved >= $1::numeric');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO inventory_reservations');
+    expect(String(client.query.mock.calls[6]?.[0])).toContain('INSERT INTO outbox_events');
+    expect(client.query.mock.calls[6]?.[1]).toContain('INVENTORY.STOCK_RESERVED');
     expect(audit.record).toHaveBeenCalledTimes(1);
   });
 
@@ -109,6 +115,10 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([]))
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
       .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{
+        allocation_policy: 'FIFO', require_traceability: false,
+        has_lot: false, has_serial: false, has_identity: false,
+      }]))
       .mockResolvedValueOnce(queryRows([]));
 
     await expect(service.createReservation(
@@ -150,24 +160,28 @@ describe('InventoryReservationService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('consumes a reservation atomically with an ISSUE movement and outbox events', async () => {
+  it('consumes a reservation atomically with an ISSUE movement and durable consumption evidence', async () => {
     const consumedMovementId = randomUUID();
+    const consumptionId = randomUUID();
     client.query
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
       .mockResolvedValueOnce(queryRows([row()]))
+      .mockResolvedValueOnce(queryRows([])) // no prior issue with this idempotency key
+      .mockResolvedValueOnce(queryRows([])) // clear the transaction-local location
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '0.0000' }]))
       .mockResolvedValueOnce(queryRows([{ id: consumedMovementId, quantity_after: '8.0000' }]))
-      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{ id: consumptionId }]))
+      .mockResolvedValueOnce(queryRows([])) // no traceability allocation on the legacy test fixture
+      .mockResolvedValueOnce(queryRows([{ present: false }])) // no tracked material identity
+      .mockResolvedValueOnce(queryRows([])) // issue outbox
       .mockResolvedValueOnce(queryRows([row({
-        status: 'CONSUMED',
+        status: 'CONSUMED', remaining_quantity: '0.0000', consumed_quantity: '2.0000',
         transition_idempotency_key: 'consume-1',
         transition_request_hash: createHash('sha256').update(JSON.stringify({
-          reservationId: RESERVATION_ID,
-          targetStatus: 'CONSUMED',
+          reservationId: RESERVATION_ID, targetStatus: 'CONSUMED',
         })).digest('hex'),
         consumed_movement_id: consumedMovementId,
-      })]))
-      .mockResolvedValueOnce(queryRows([]));
+      })]));
 
     const result = await service.transitionReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
@@ -178,29 +192,31 @@ describe('InventoryReservationService', () => {
     expect(result).toMatchObject({
       id: RESERVATION_ID, status: 'CONSUMED',
       consumed_movement_id: consumedMovementId, replayed: false,
+      remaining_quantity: '0.0000', consumed_quantity: '2.0000',
     });
-    expect(String(client.query.mock.calls[2]?.[0])).toContain('quantity_on_hand = quantity_on_hand - $1::numeric');
-    expect(String(client.query.mock.calls[3]?.[0])).toContain("'ISSUE'");
-    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_ISSUED');
-    expect(String(client.query.mock.calls[5]?.[0])).toContain("status = 'RESERVED'");
-    expect(client.query.mock.calls[6]?.[1]).toContain('INVENTORY.STOCK_RESERVATION_CONSUMED');
+    expect(String(client.query.mock.calls[4]?.[0])).toContain('quantity_on_hand = quantity_on_hand - $1::numeric');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain("'ISSUE'");
+    expect(String(client.query.mock.calls[6]?.[0])).toContain('INSERT INTO inventory_reservation_consumptions');
+    expect(String(client.query.mock.calls[9]?.[0])).toContain('INSERT INTO outbox_events');
+    expect(String(client.query.mock.calls[10]?.[0])).toContain("status = 'RESERVED'");
     expect(audit.record).toHaveBeenCalledTimes(1);
   });
 
-  it('releases a reservation without reducing quantity on hand', async () => {
+  it('releases only the remaining reservation quantity without reducing on-hand stock', async () => {
     client.query
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
-      .mockResolvedValueOnce(queryRows([row()]))
-      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([row({ quantity: '5.0000', remaining_quantity: '3.0000', consumed_quantity: '2.0000' })]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '3.0000' }]))
+      .mockResolvedValueOnce(queryRows([])) // untracked legacy reservation has no trace allocations
       .mockResolvedValueOnce(queryRows([row({
-        status: 'RELEASED',
+        quantity: '5.0000', status: 'RELEASED', remaining_quantity: '0.0000',
+        consumed_quantity: '2.0000', released_quantity: '3.0000',
         transition_idempotency_key: 'release-1',
         transition_request_hash: createHash('sha256').update(JSON.stringify({
-          reservationId: RESERVATION_ID,
-          targetStatus: 'RELEASED',
+          reservationId: RESERVATION_ID, targetStatus: 'RELEASED',
         })).digest('hex'),
       })]))
-      .mockResolvedValueOnce(queryRows([]));
+      .mockResolvedValueOnce(queryRows([])); // release outbox
 
     const result = await service.transitionReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
@@ -208,10 +224,264 @@ describe('InventoryReservationService', () => {
       'release-1', TRACE_ID, TRACE_ID,
     );
 
-    expect(result.status).toBe('RELEASED');
+    expect(result).toMatchObject({ status: 'RELEASED', remaining_quantity: '0.0000', consumed_quantity: '2.0000', released_quantity: '3.0000' });
     expect(String(client.query.mock.calls[2]?.[0])).toContain('quantity_reserved = quantity_reserved - $1::numeric');
+    expect(client.query.mock.calls[2]?.[1]?.[0]).toBe('3.0000');
     expect(String(client.query.mock.calls[2]?.[0])).not.toContain('quantity_on_hand = quantity_on_hand -');
-    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_RESERVATION_RELEASED');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO outbox_events');
+  });
+
+  it('partially consumes a reservation once and keeps the remainder reserved', async () => {
+    const movementId = randomUUID();
+    const consumptionId = randomUUID();
+    const requestHash = createHash('sha256').update(JSON.stringify({
+      reservationId: RESERVATION_ID.toLowerCase(),
+      targetStatus: 'CONSUMED',
+      quantity: '2.0000',
+    })).digest('hex');
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(queryRows([row({ quantity: '5.0000', remaining_quantity: '5.0000' })]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([])) // transaction-local location
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '3.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ id: movementId, quantity_after: '8.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ id: consumptionId }]))
+      .mockResolvedValueOnce(queryRows([])) // no lot mapping on this untracked fixture
+      .mockResolvedValueOnce(queryRows([{ present: false }]))
+      .mockResolvedValueOnce(queryRows([])) // issue outbox
+      .mockResolvedValueOnce(queryRows([row({
+        quantity: '5.0000', remaining_quantity: '3.0000', consumed_quantity: '2.0000',
+        status: 'RESERVED', transition_idempotency_key: 'consume-partial-1',
+        transition_request_hash: requestHash, consumed_movement_id: null,
+      })]));
+
+    const result = await service.transitionReservation(
+      USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
+      { target_status: 'CONSUMED', quantity: 2 } as TransitionInventoryReservationDto,
+      'consume-partial-1', TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({
+      status: 'RESERVED',
+      quantity: '5.0000',
+      remaining_quantity: '3.0000',
+      consumed_quantity: '2.0000',
+      released_quantity: '0.0000',
+      consumed_quantity_this_request: '2.0000',
+      consumption_movement_id: movementId,
+    });
+    expect(String(client.query.mock.calls[6]?.[0])).toContain('inventory_reservation_consumptions');
+    expect(client.query.mock.calls[6]?.[1]).toContain('2.0000');
+    expect(String(client.query.mock.calls[10]?.[0])).toContain('UPDATE inventory_reservations');
+    expect(client.query.mock.calls[10]?.[1]).toContain('3.0000');
+  });
+
+  it('replays duplicate partial issue requests without touching the stock ledger again', async () => {
+    const movementId = randomUUID();
+    const quantity = '2.0000';
+    const requestHash = createHash('sha256').update(JSON.stringify({
+      reservationId: RESERVATION_ID.toLowerCase(),
+      targetStatus: 'CONSUMED',
+      quantity,
+    })).digest('hex');
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(queryRows([row({
+        quantity: '5.0000', remaining_quantity: '3.0000', consumed_quantity: '2.0000',
+        status: 'RESERVED', transition_idempotency_key: 'consume-partial-1',
+        transition_request_hash: requestHash,
+      })]))
+      .mockResolvedValueOnce(queryRows([{
+        id: randomUUID(), request_hash: requestHash, movement_id: movementId, quantity,
+      }]));
+
+    const result = await service.transitionReservation(
+      USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
+      { target_status: 'CONSUMED', quantity: 2 } as TransitionInventoryReservationDto,
+      'consume-partial-1', TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({
+      status: 'RESERVED', remaining_quantity: '3.0000',
+      consumed_quantity: '2.0000', replayed: true,
+      consumption_movement_id: movementId, consumed_quantity_this_request: quantity,
+    });
+    expect(client.query).toHaveBeenCalledTimes(3);
+    expect(String(client.query.mock.calls[0]?.[0])).toContain('inventory_items');
+    expect(String(client.query.mock.calls[1]?.[0])).toContain('inventory_reservations');
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('parses four-decimal quantities without floating-point rounding drift', () => {
+    const parser = (service as unknown as { decimalToUnits(value: string): bigint }).decimalToUnits.bind(service);
+    const formatter = (service as unknown as { unitsToDecimal(value: bigint): string }).unitsToDecimal.bind(service);
+    expect(parser('123456789.0123')).toBe(1234567890123n);
+    expect(formatter(1234567890123n)).toBe('123456789.0123');
+    expect(() => parser('0.00001')).toThrow('four-decimal value');
+  });
+
+  it('creates an optimistic-versioned material allocation policy with audit and outbox evidence', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, sector_code: 'FABRIC' }]))
+      .mockResolvedValueOnce(queryRows([{
+        policy_scope: 'MATERIAL',
+        sector_code: null,
+        inventory_item_id: ITEM_ID,
+        allocation_policy: 'FEFO',
+        require_traceability: true,
+        version: 1,
+        updated_at: '2026-10-21T10:00:00.000Z',
+      }]))
+      .mockResolvedValueOnce(queryRows([]));
+
+    const result = await service.updateAllocationPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { scope: 'MATERIAL', itemId: ITEM_ID },
+      { allocation_policy: 'FEFO', require_traceability: true, expected_version: 0 } as never,
+      TRACE_ID, TRACE_ID,
+    );
+
+    expect(result).toMatchObject({
+      policy_scope: 'MATERIAL', inventory_item_id: ITEM_ID,
+      allocation_policy: 'FEFO', require_traceability: true, version: 1,
+    });
+    expect(String(client.query.mock.calls[1]?.[0])).toContain('ON CONFLICT DO NOTHING');
+    expect(client.query.mock.calls[2]?.[1]).toContain('INVENTORY.ALLOCATION_POLICY_UPDATED');
+    expect(audit.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects stale material allocation policy versions without writing audit/outbox events', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, sector_code: 'FABRIC' }]))
+      .mockResolvedValueOnce(queryRows([]));
+
+    await expect(service.updateAllocationPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { scope: 'MATERIAL', itemId: ITEM_ID },
+      { allocation_policy: 'FIFO', expected_version: 2 } as never,
+      TRACE_ID, TRACE_ID,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('allocates FEFO from the earliest unexpired lot and excludes held stock', async () => {
+    const earliestLot = randomUUID();
+    const laterLot = randomUUID();
+    client.query
+      .mockResolvedValueOnce(queryRows([{
+        allocation_policy: 'FEFO', has_lot: true, has_serial: false, has_identity: true,
+      }]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          traceability_unit_id: earliestLot, location_id: BIN_A_ID,
+          unit_type: 'LOT', unit_code: 'LOT-EARLY', expires_at: '2026-11-01',
+          received_at: '2026-10-01', quantity_on_hand: '2.0000', quantity_reserved: '0.0000',
+        },
+        {
+          traceability_unit_id: laterLot, location_id: BIN_B_ID,
+          unit_type: 'LOT', unit_code: 'LOT-LATER', expires_at: '2027-01-01',
+          received_at: '2026-10-02', quantity_on_hand: '6.0000', quantity_reserved: '0.0000',
+        },
+      ]));
+
+    const plan = await (service as unknown as {
+      planTraceabilityAllocations(clientArg: typeof client, input: {
+        tenantId: string; factoryId: string; itemId: string; quantity: string;
+      }): Promise<{ enforced: boolean; policy: string; allocations: Array<{ traceabilityUnitId: string; quantity: string }> }>;
+    }).planTraceabilityAllocations(client as never, {
+      tenantId: TENANT_ID, factoryId: FACTORY_ID, itemId: ITEM_ID, quantity: '3.0000',
+    });
+
+    expect(plan).toMatchObject({
+      enforced: true, policy: 'FEFO',
+      allocations: [
+        { traceabilityUnitId: earliestLot, quantity: '2.0000' },
+        { traceabilityUnitId: laterLot, quantity: '1.0000' },
+      ],
+    });
+    const eligibilitySql = String(client.query.mock.calls[1]?.[0]);
+    expect(eligibilitySql).toContain("tu.expires_at >= CURRENT_DATE");
+    expect(eligibilitySql).toContain("'QUARANTINED'");
+    expect(eligibilitySql).toContain("'DAMAGED'");
+    expect(eligibilitySql).toContain("qh.status = 'ACTIVE'");
+  });
+
+  it('allocates the first released production work-order BOM requirement by FEFO across eligible bins', async () => {
+    const workOrderId = randomUUID();
+    const requirementId = randomUUID();
+    const bomLineId = randomUUID();
+    const lotA = randomUUID();
+    const lotB = randomUUID();
+    const reservationA = randomUUID();
+    const reservationB = randomUUID();
+    const notes = 'Reserved for work order WO-FIRST-FEFO BOM line 1';
+    client.query
+      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE', unit: 'EA' }]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([{
+        allocation_policy: 'FEFO', require_traceability: true,
+        has_lot: true, has_serial: false, has_identity: true,
+      }]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          traceability_unit_id: lotA, location_id: BIN_A_ID,
+          unit_type: 'LOT', unit_code: 'LOT-EXPIRING-FIRST', expires_at: '2026-11-01',
+          received_at: '2026-10-01', quantity_on_hand: '2.0000', quantity_reserved: '0.0000',
+        },
+        {
+          traceability_unit_id: lotB, location_id: BIN_B_ID,
+          unit_type: 'LOT', unit_code: 'LOT-EXPIRING-LATER', expires_at: '2027-01-01',
+          received_at: '2026-10-02', quantity_on_hand: '4.0000', quantity_reserved: '0.0000',
+        },
+      ]))
+      .mockResolvedValueOnce(queryRows([
+        {
+          location_id: BIN_A_ID, location_code: 'A-01', is_default: false,
+          location_type: 'BIN', quantity_on_hand: '2.0000', quantity_reserved: '0.0000',
+        },
+        {
+          location_id: BIN_B_ID, location_code: 'A-02', is_default: false,
+          location_type: 'BIN', quantity_on_hand: '4.0000', quantity_reserved: '0.0000',
+        },
+      ]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '3.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ location_id: BIN_A_ID }]))
+      .mockResolvedValueOnce(queryRows([row({
+        id: reservationA, location_id: BIN_A_ID, quantity: '2.0000',
+        reference_type: 'WORK_ORDER_MATERIAL', reference_id: workOrderId,
+        notes, idempotency_key: `work-order:${workOrderId}:bom:${bomLineId}:bin:${BIN_A_ID}:reserve:v1`,
+      })]))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID() }])) // reserve lot A quantity
+      .mockResolvedValueOnce(queryRows([])) // bind lot A to reservation A
+      .mockResolvedValueOnce(queryRows([])) // work-order reservation outbox
+      .mockResolvedValueOnce(queryRows([{ location_id: BIN_B_ID }]))
+      .mockResolvedValueOnce(queryRows([row({
+        id: reservationB, location_id: BIN_B_ID, quantity: '1.0000',
+        reference_type: 'WORK_ORDER_MATERIAL', reference_id: workOrderId,
+        notes, idempotency_key: `work-order:${workOrderId}:bom:${bomLineId}:bin:${BIN_B_ID}:reserve:v1`,
+      })]))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID() }])) // reserve lot B quantity
+      .mockResolvedValueOnce(queryRows([])) // bind lot B to reservation B
+      .mockResolvedValueOnce(queryRows([])); // work-order reservation outbox
+
+    const result = await service.reserveWorkOrderMaterialRequirement(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      workOrderId, workOrderNumber: 'WO-FIRST-FEFO',
+      requirementId, bomLineId, itemId: ITEM_ID, itemUnit: 'EA',
+      lineNumber: 1, quantity: '3.0000', correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual([
+      { reservationId: reservationA, locationId: BIN_A_ID, quantity: '2.0000' },
+      { reservationId: reservationB, locationId: BIN_B_ID, quantity: '1.0000' },
+    ]);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservation_traceability_allocations'))).toHaveLength(2);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toHaveLength(2);
+    expect(String(client.query.mock.calls[2]?.[0])).toContain('inventory_material_allocation_policies');
+    expect(String(client.query.mock.calls[3]?.[0])).toContain("tu.expires_at >= CURRENT_DATE");
   });
 
   it('posts accepted finished goods as an inventory receipt with durable outbox evidence', async () => {
@@ -332,14 +602,15 @@ describe('InventoryReservationService', () => {
           reservationId: RESERVATION_ID,
           targetStatus: 'RELEASED',
         })).digest('hex'),
-      })]));
+      })]))
+      .mockResolvedValueOnce(queryRows([])); // idempotency replay lookup precedes terminal-state rejection
 
     await expect(service.transitionReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
       { target_status: 'CONSUMED' } as TransitionInventoryReservationDto,
       'consume-after-release', TRACE_ID, TRACE_ID,
     )).rejects.toBeInstanceOf(ConflictException);
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query).toHaveBeenCalledTimes(3);
     expect(audit.record).not.toHaveBeenCalled();
   });
 
@@ -380,6 +651,7 @@ describe('InventoryReservationService', () => {
       .mockResolvedValueOnce(queryRows([])) // legacy v1 key
       .mockResolvedValueOnce(queryRows([])) // no pre-existing active allocations
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '7.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([{ allocation_policy: 'FIFO', has_lot: false, has_serial: false, has_identity: false }]))
       .mockResolvedValueOnce(queryRows([
         {
           location_id: BIN_A_ID, location_code: 'A-01', is_default: false,
@@ -416,7 +688,11 @@ describe('InventoryReservationService', () => {
     });
 
     expect(result.reservations_created).toBe(2);
-    expect(client.query.mock.calls[6]?.[1]).toContain('5.0000');
+    const aggregateReservationUpdate = client.query.mock.calls.find(
+      (call) => String(call[0]).includes('UPDATE inventory_stock_balances')
+        && String(call[0]).includes('quantity_reserved = quantity_reserved +'),
+    );
+    expect(aggregateReservationUpdate?.[1]).toContain('5.0000');
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toHaveLength(2);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('UPDATE inventory_location_balances'))).toHaveLength(2);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO outbox_events'))).toHaveLength(2);

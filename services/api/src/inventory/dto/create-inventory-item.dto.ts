@@ -1,5 +1,6 @@
 import {
   IsNotEmpty,
+  IsOptional,
   IsString,
   MaxLength,
 } from 'class-validator';
@@ -19,4 +20,9 @@ export class CreateInventoryItemDto {
   @IsNotEmpty()
   @MaxLength(50)
   unit!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  sector_code?: string;
 }

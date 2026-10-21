@@ -213,6 +213,8 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         `
         UPDATE inventory_reservations
         SET status = 'RELEASED',
+            remaining_quantity = 0,
+            released_quantity = quantity - consumed_quantity,
             transition_idempotency_key = $1,
             transition_request_hash = $2,
             updated_at = clock_timestamp()
@@ -220,6 +222,9 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         `,
         ['release-invalid-' + randomUUID(), 'b'.repeat(64), reservationId],
       );
+      // The balance-consistency guard is deferred so valid multi-row transactions
+      // can update the reservation and stock balance together. Force evaluation
+      // here to prove that releasing a reservation alone cannot commit.
       await expect(client.query(
         'SET CONSTRAINTS ctr_inventory_reservation_balance_consistency IMMEDIATE',
       )).rejects.toMatchObject({ code: '23514' });
@@ -235,6 +240,8 @@ postgresDescribe('Inventory ledger PostgreSQL invariants', () => {
         `
         UPDATE inventory_reservations
         SET status = 'RELEASED',
+            remaining_quantity = 0,
+            released_quantity = quantity - consumed_quantity,
             transition_idempotency_key = $1,
             transition_request_hash = $2,
             updated_at = clock_timestamp()
