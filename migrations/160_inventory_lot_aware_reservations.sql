@@ -557,6 +557,8 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS ctr_inventory_reservation_balance_consistency ON inventory_reservations;
+
 CREATE CONSTRAINT TRIGGER ctr_inventory_reservation_balance_consistency
 AFTER INSERT OR UPDATE ON inventory_reservations
 DEFERRABLE INITIALLY DEFERRED
