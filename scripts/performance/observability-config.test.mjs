@@ -14,7 +14,7 @@ test('Prometheus scrapes every declared API instance with a bearer token and rel
   assert.match(config, /factoryos-api-1:3001/);
   assert.match(config, /factoryos-api-2:3001/);
   assert.match(config, /release_sha: REPLACE_WITH_DEPLOYED_COMMIT_SHA/);
-  assert.match(config, /factoryos-postgres-exporter:9187/);
+  assert.match(config, /postgres-exporter:9187/);
 });
 
 test('PostgreSQL monitoring queries cover bounded queue-age and lock signals without tenant labels', async () => {
