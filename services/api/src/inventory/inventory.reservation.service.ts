@@ -1330,8 +1330,8 @@ export class InventoryReservationService {
             transition_idempotency_key = $4,
             transition_request_hash = $5, consumed_movement_id = $6::uuid,
             updated_at = clock_timestamp()
-        WHERE id = $5 AND tenant_id = $6 AND factory_id = $7
-          AND item_id = $8 AND status = 'RESERVED'
+        WHERE id = $7 AND tenant_id = $8 AND factory_id = $9
+          AND item_id = $10 AND status = 'RESERVED'
         RETURNING ${RESERVATION_COLUMNS}
         `,
         [
