@@ -16,13 +16,15 @@ import { InventoryReplenishmentService } from './inventory.replenishment.service
 import { InventoryLocationService } from './inventory.location.service';
 import { TraceabilityController } from './traceability.controller';
 import { TraceabilityService } from './traceability.service';
+import { WmsMobileController } from './wms.mobile.controller';
+import { WmsMobileService } from './wms.mobile.service';
 import { UnitOfMeasureController } from './uom.controller';
 import { UnitOfMeasureService } from './uom.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [InventoryController, InventoryAllocationPolicyController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController],
-  providers: [InventoryService, InventoryReplenishmentService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService, TraceabilityService, UnitOfMeasureService],
+  controllers: [InventoryController, InventoryAllocationPolicyController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController, WmsMobileController],
+  providers: [InventoryService, InventoryReplenishmentService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryLocationService, TraceabilityService, UnitOfMeasureService, WmsMobileService],
   exports: [InventoryService, InventoryReservationService, TraceabilityService, UnitOfMeasureService],
 })
 export class InventoryModule {}
