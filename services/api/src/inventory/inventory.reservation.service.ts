@@ -453,9 +453,10 @@ export class InventoryReservationService {
             throw new ConflictException('Material disposition is only allowed for an in-progress order');
           }
 
-          const reservationScope = await client.query<{ item_id: string }>(
+          const reservationScope = await client.query<{ item_id: string; location_id: string | null; traceability_unit_id: string | null }>(
             `
-            SELECT r.item_id::text AS item_id
+            SELECT r.item_id::text AS item_id, r.location_id::text AS location_id,
+                   r.traceability_unit_id::text AS traceability_unit_id
             FROM inventory_reservations r
             JOIN order_lines ol
               ON ol.id = r.reference_id
@@ -504,7 +505,10 @@ export class InventoryReservationService {
               r.tenant_id::text AS tenant_id,
               r.factory_id::text AS factory_id,
               r.item_id::text AS item_id,
+              r.location_id::text AS location_id,
+              r.traceability_unit_id::text AS traceability_unit_id,
               r.quantity::text AS quantity,
+              r.quantity_consumed::text AS quantity_consumed,
               r.status,
               r.idempotency_key,
               r.request_hash,
@@ -572,6 +576,55 @@ export class InventoryReservationService {
               throw new ConflictException('Disabled inventory items cannot receive returned material');
             }
 
+            if (reservation.traceability_unit_id) {
+              if (!reservation.location_id) {
+                throw new ConflictException('Lot-tracked material return requires its original issue BIN');
+              }
+              const lot = await client.query<{ id: string }>(
+                `
+                SELECT tu.id::text AS id
+                FROM traceability_units tu
+                WHERE tu.id = $1 AND tu.tenant_id = $2 AND tu.factory_id = $3
+                  AND tu.inventory_item_id = $4 AND tu.status = 'ACTIVE'
+                  AND tu.unit_type IN ('LOT', 'SERIAL')
+                  AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM quality_holds h
+                    WHERE h.tenant_id = tu.tenant_id AND h.factory_id = tu.factory_id
+                      AND h.status = 'ACTIVE'
+                      AND (h.inventory_item_id = tu.inventory_item_id OR h.traceability_unit_id = tu.id)
+                  )
+                FOR UPDATE
+                `,
+                [reservation.traceability_unit_id, tenantId, factoryId, item.id],
+              );
+              if (!lot.rows[0]) {
+                throw new ConflictException('Expired, quarantined or quality-held material cannot be returned to available stock');
+              }
+              await client.query(
+                `SELECT set_config('app.inventory_location_id', $1, TRUE)`,
+                [reservation.location_id],
+              );
+            } else {
+              const tracked = await client.query<{ require_lot_tracking: boolean; has_lot_balance: boolean }>(
+                `
+                SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+                  EXISTS (
+                    SELECT 1 FROM inventory_lot_location_balances lb
+                    WHERE lb.tenant_id = $1 AND lb.factory_id = $2
+                      AND lb.item_id = $3 AND lb.quantity_on_hand > 0
+                  ) AS has_lot_balance
+                FROM (SELECT 1) singleton
+                LEFT JOIN traceability_settings ts ON ts.tenant_id = $1 AND ts.factory_id = $2
+                `,
+                [tenantId, factoryId, item.id],
+              );
+              if (tracked.rows[0]?.require_lot_tracking || tracked.rows[0]?.has_lot_balance) {
+                throw new ConflictException('Lot-tracked material return requires the original lot/bin identity');
+              }
+              await client.query(`SELECT set_config('app.inventory_location_id', '', TRUE)`);
+            }
+
             const balanceResult = await client.query<BalanceRow>(
               `
               UPDATE inventory_stock_balances
@@ -590,6 +643,8 @@ export class InventoryReservationService {
             const movementKey = `order-material-return:${dispositionId}`;
             const movementHash = this.hash({
               itemId: item.id.toLowerCase(),
+              locationId: reservation.location_id,
+              traceabilityUnitId: reservation.traceability_unit_id,
               movementType: 'RECEIPT',
               quantity,
               referenceType: 'ORDER_MATERIAL_RETURN',
@@ -599,18 +654,18 @@ export class InventoryReservationService {
             const movementResult = await client.query<MovementRow>(
               `
               INSERT INTO inventory_movements (
-                tenant_id, factory_id, item_id, movement_type, quantity,
+                tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
                 quantity_delta, quantity_after, idempotency_key, request_hash,
                 reference_type, reference_id, notes, created_by_user_id, correlation_id
               )
-              VALUES ($1, $2, $3, 'RECEIPT', $4::numeric, $4::numeric, $5::numeric,
-                      $6, $7, 'ORDER_MATERIAL_RETURN', $8::uuid, $9, $10, $11::uuid)
+              VALUES ($1, $2, $3, $4::uuid, $5::uuid, 'RECEIPT', $6::numeric, $6::numeric, $7::numeric,
+                      $8, $9, 'ORDER_MATERIAL_RETURN', $10::uuid, $11, $12, $13::uuid)
               RETURNING id::text AS id, quantity_after::text AS quantity_after
               `,
               [
-                tenantId, factoryId, item.id, quantity, balance.quantity_on_hand,
-                movementKey, movementHash, dispositionId, dispositionMovementNotes,
-                userId, correlationId,
+                tenantId, factoryId, item.id, reservation.location_id, reservation.traceability_unit_id,
+                quantity, balance.quantity_on_hand, movementKey, movementHash, dispositionId,
+                dispositionMovementNotes, userId, correlationId,
               ],
             );
             movementId = movementResult.rows[0]?.id ?? null;
@@ -656,6 +711,8 @@ export class InventoryReservationService {
                 quantity: inserted.quantity,
                 notes: inserted.notes,
                 movement_id: movementId,
+                location_id: reservation.location_id,
+                traceability_unit_id: reservation.traceability_unit_id,
               },
               ...(balance ? {
                 balance: {
