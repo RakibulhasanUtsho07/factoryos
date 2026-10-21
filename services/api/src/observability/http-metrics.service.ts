@@ -36,6 +36,7 @@ export class HttpMetricsService {
   private readonly requestCounts = new Map<string, number>();
   private readonly routeRequestCounts = new Map<string, number>();
   private readonly inFlight = new Map<HttpMethodLabel, number>();
+  private lastEventLoopUtilization = performance.eventLoopUtilization();
   private readonly durations = new Map<HttpMethodLabel, DurationAggregate>();
   private readonly dependencyHealth = new Map<DependencyName, number>([['database', -1]]);
   private readonly databaseOperationCounts = new Map<string, number>();
@@ -217,14 +218,16 @@ export class HttpMetricsService {
       lines.push('factoryos_process_memory_bytes{type="' + kind + '"} ' + value);
     }
     const cpu = process.cpuUsage();
+    const eventLoop = performance.eventLoopUtilization(this.lastEventLoopUtilization);
+    this.lastEventLoopUtilization = performance.eventLoopUtilization();
     lines.push(
       '# HELP factoryos_process_cpu_seconds_total Total process CPU time in seconds by mode.',
       '# TYPE factoryos_process_cpu_seconds_total counter',
       'factoryos_process_cpu_seconds_total{mode="user"} ' + (cpu.user / 1_000_000).toFixed(6),
       'factoryos_process_cpu_seconds_total{mode="system"} ' + (cpu.system / 1_000_000).toFixed(6),
-      '# HELP factoryos_nodejs_event_loop_utilization_ratio Event loop utilization since process start.',
+      '# HELP factoryos_nodejs_event_loop_utilization_ratio Event loop utilization since the preceding metrics scrape.',
       '# TYPE factoryos_nodejs_event_loop_utilization_ratio gauge',
-      'factoryos_nodejs_event_loop_utilization_ratio ' + performance.eventLoopUtilization().utilization.toFixed(6),
+      'factoryos_nodejs_event_loop_utilization_ratio ' + eventLoop.utilization.toFixed(6),
       '# HELP factoryos_process_uptime_seconds Process uptime in seconds.',
       '# TYPE factoryos_process_uptime_seconds gauge',
       'factoryos_process_uptime_seconds ' + Math.max(0, process.uptime()).toFixed(3),
