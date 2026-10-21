@@ -621,16 +621,22 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(proposal.variance_reason_code).toBe('LOSS');
 
     const approvalKey = 'cycle-count-bin-approve-' + randomUUID();
-    const first = await cycleCountService.approveCycleCount(
-      reviewerUserId, tenantId, factoryId, itemId, proposal.id,
-      { review_note: 'Independent reviewer verified the bin count' },
-      approvalKey, randomUUID(), randomUUID(),
-    );
-    const replay = await cycleCountService.approveCycleCount(
-      reviewerUserId, tenantId, factoryId, itemId, proposal.id,
-      { review_note: 'Independent reviewer verified the bin count' },
-      approvalKey, randomUUID(), randomUUID(),
-    );
+    const decisions = await Promise.all([
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Independent reviewer verified the bin count' },
+        approvalKey, randomUUID(), randomUUID(),
+      ),
+      cycleCountService.approveCycleCount(
+        reviewerUserId, tenantId, factoryId, itemId, proposal.id,
+        { review_note: 'Independent reviewer verified the bin count' },
+        approvalKey, randomUUID(), randomUUID(),
+      ),
+    ]);
+    expect(decisions.filter((decision) => !decision.replayed)).toHaveLength(1);
+    expect(decisions.filter((decision) => decision.replayed)).toHaveLength(1);
+    const first = decisions.find((decision) => !decision.replayed)!;
+    const replay = decisions.find((decision) => decision.replayed)!;
 
     expect(first.quantity_before).toBe('10.0000');
     expect(first.counted_quantity).toBe('9.0000');
