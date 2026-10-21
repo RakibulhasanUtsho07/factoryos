@@ -22,6 +22,7 @@ interface ReservationRow extends QueryResultRow {
   factory_id: string;
   item_id: string;
   location_id: string | null;
+  traceability_unit_id: string | null;
   quantity: string;
   status: ReservationStatus;
   idempotency_key: string;
@@ -97,6 +98,7 @@ type ReservationResult = {
   factory_id: string;
   item_id: string;
   location_id: string | null;
+  traceability_unit_id: string | null;
   quantity: string;
   status: ReservationStatus;
   reference_type: string | null;
@@ -116,6 +118,7 @@ const RESERVATION_COLUMNS = `
   factory_id::text AS factory_id,
   item_id::text AS item_id,
   location_id::text AS location_id,
+  traceability_unit_id::text AS traceability_unit_id,
   quantity::text AS quantity,
   status,
   idempotency_key,
@@ -158,10 +161,16 @@ export class InventoryReservationService {
     if (referenceId) this.validateUuid(referenceId, 'reference_id');
     const locationId = dto.location_id?.trim().toLowerCase() || null;
     if (locationId) this.validateUuid(locationId, 'location_id');
+    const traceabilityUnitId = dto.traceability_unit_id?.trim().toLowerCase() || null;
+    if (traceabilityUnitId) this.validateUuid(traceabilityUnitId, 'traceability_unit_id');
+    if (traceabilityUnitId && !locationId) {
+      throw new BadRequestException('location_id is required for a lot/serial reservation');
+    }
     const notes = dto.notes?.trim() || null;
     const requestHash = this.hash({
       itemId: itemId.toLowerCase(),
       locationId,
+      traceabilityUnitId,
       quantity,
       referenceType,
       referenceId,
@@ -196,6 +205,24 @@ export class InventoryReservationService {
           );
           if (existingAfterLock) return this.replayOrConflict(existingAfterLock, requestHash);
 
+          const lotPolicyResult = await client.query<{ require_lot_tracking: boolean; has_lot_balance: boolean }>(
+            `
+            SELECT COALESCE(ts.require_lot_tracking, FALSE) AS require_lot_tracking,
+              EXISTS (
+                SELECT 1 FROM inventory_lot_location_balances lb
+                WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+                  AND lb.quantity_on_hand > 0
+              ) AS has_lot_balance
+            FROM (SELECT 1) singleton
+            LEFT JOIN traceability_settings ts
+              ON ts.tenant_id = $1 AND ts.factory_id = $2
+            `,
+            [tenantId, factoryId, itemId],
+          );
+          if (!traceabilityUnitId && (lotPolicyResult.rows[0]?.require_lot_tracking || lotPolicyResult.rows[0]?.has_lot_balance)) {
+            throw new ConflictException('This item requires a lot/serial identity for reservation; allocate from an eligible lot/bin');
+          }
+
           if (locationId) {
             const locationResult = await client.query<{ id: string }>(
               `
@@ -229,6 +256,35 @@ export class InventoryReservationService {
             }
           }
 
+          if (traceabilityUnitId) {
+            const lotBalance = await client.query<{ traceability_unit_id: string }>(
+              `
+              SELECT lb.traceability_unit_id::text AS traceability_unit_id
+              FROM inventory_lot_location_balances lb
+              JOIN traceability_units tu
+                ON tu.id = lb.traceability_unit_id AND tu.tenant_id = lb.tenant_id
+                AND tu.factory_id = lb.factory_id AND tu.inventory_item_id = lb.item_id
+              WHERE lb.tenant_id = $1 AND lb.factory_id = $2 AND lb.item_id = $3
+                AND lb.traceability_unit_id = $4 AND lb.location_id = $5
+                AND lb.quantity_on_hand - lb.quantity_reserved >= $6::numeric
+                AND tu.status = 'ACTIVE'
+                AND tu.unit_type IN ('LOT', 'SERIAL')
+                AND (tu.expires_at IS NULL OR tu.expires_at >= CURRENT_DATE)
+                AND NOT EXISTS (
+                  SELECT 1 FROM quality_holds h
+                  WHERE h.tenant_id = lb.tenant_id AND h.factory_id = lb.factory_id
+                    AND h.status = 'ACTIVE'
+                    AND (h.inventory_item_id = lb.item_id OR h.traceability_unit_id = tu.id)
+                )
+              FOR UPDATE OF lb, tu
+              `,
+              [tenantId, factoryId, itemId, traceabilityUnitId, locationId, quantity],
+            );
+            if (!lotBalance.rows[0]) {
+              throw new ConflictException('Lot/serial is unavailable, expired, quarantined, held or lacks sufficient unreserved stock in the selected BIN');
+            }
+          }
+
           const balanceResult = await client.query<BalanceRow>(
             `
             UPDATE inventory_stock_balances
@@ -255,15 +311,15 @@ export class InventoryReservationService {
           const inserted = await client.query<ReservationRow>(
             `
             INSERT INTO inventory_reservations (
-              tenant_id, factory_id, item_id, location_id, quantity, idempotency_key,
+              tenant_id, factory_id, item_id, location_id, traceability_unit_id, quantity, idempotency_key,
               request_hash, reference_type, reference_id, notes,
               created_by_user_id, correlation_id
             )
-            VALUES ($1, $2, $3, $4::uuid, $5::numeric, $6, $7, $8, $9::uuid, $10, $11, $12::uuid)
+            VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6::numeric, $7, $8, $9, $10::uuid, $11, $12, $13::uuid)
             RETURNING ${RESERVATION_COLUMNS}
             `,
             [
-              tenantId, factoryId, itemId, locationId, quantity, idempotencyKey, requestHash,
+              tenantId, factoryId, itemId, locationId, traceabilityUnitId, quantity, idempotencyKey, requestHash,
               referenceType, referenceId, notes, userId, correlationId,
             ],
           );
@@ -276,6 +332,7 @@ export class InventoryReservationService {
             payload: {
               reservation: {
                 id: row.id, item_id: itemId, location_id: row.location_id,
+                traceability_unit_id: row.traceability_unit_id,
                 quantity: row.quantity, status: row.status,
                 reference_type: row.reference_type, reference_id: row.reference_id,
               },
@@ -308,7 +365,7 @@ export class InventoryReservationService {
       await this.recordAuditSafely({
         tenantId, factoryId, userId, action: 'RESERVATION_CREATE',
         resourceId: result.id, requestId, traceId,
-        payload: { itemId, locationId, quantity: result.quantity, referenceType, referenceId },
+        payload: { itemId, locationId, traceabilityUnitId, quantity: result.quantity, referenceType, referenceId },
       });
     }
     return result;
