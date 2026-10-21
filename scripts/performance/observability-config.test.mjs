@@ -16,6 +16,8 @@ test('Prometheus scrapes every declared API instance with a bearer token and rel
   assert.match(config, /factoryos-api-2:3001/);
   assert.match(config, /release_sha: REPLACE_WITH_DEPLOYED_COMMIT_SHA/);
   assert.match(config, /postgres-exporter:9187/);
+  assert.match(config, /factoryos-otel-collector/);
+  assert.match(config, /otel-collector:8888/);
 });
 
 test('PostgreSQL monitoring queries cover bounded lock signals without attempting to bypass outbox RLS', async () => {
@@ -48,6 +50,8 @@ test('collector receiver uses TLS and exporter buffering stays bounded', async (
   assert.match(config, /queue_size: 1000/);
   assert.match(config, /max_elapsed_time: 5m/);
   assert.match(config, /OTEL_BACKEND_ENDPOINT/);
+  assert.match(config, /port: 8888/);
+  assert.match(config, /without_type_suffix: false/);
 });
 
 test('alert definitions cover API SLO proposals, queue freshness and saturation with proposal labels', async () => {
@@ -58,6 +62,10 @@ test('alert definitions cover API SLO proposals, queue freshness and saturation 
     'FactoryOSApiHighP99Latency',
     'FactoryOSDatabasePoolWaiting',
     'FactoryOSPostgresBlockedSessions',
+    'FactoryOSCollectorScrapeDown',
+    'FactoryOSCollectorExporterQueueNearCapacity',
+    'FactoryOSCollectorSpanSendFailures',
+    'FactoryOSCollectorRefusedSpans',
     'FactoryOSOutboxQueueOldestAge',
     'FactoryOSOutboxStalePublication',
     'FactoryOSOutboxMetricsSnapshotStale',
@@ -101,6 +109,10 @@ test('provisioned dashboard is valid JSON and displays API, database, queue and 
     'factoryos_outbox_metrics_collection_success',
     'factoryos_trace_export_queue_length',
     'factoryos_trace_spans_dropped_total',
+    'otelcol_exporter_queue_size',
+    'otelcol_exporter_queue_capacity',
+    'otelcol_exporter_send_failed_spans_total',
+    'otelcol_process_memory_rss',
   ]) assert.ok(content.includes(metric), 'dashboard missing ' + metric);
 });
 
