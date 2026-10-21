@@ -1,6 +1,76 @@
 BEGIN;
 
+ALTER TABLE inventory_items
+  ADD COLUMN IF NOT EXISTS sector_code VARCHAR(64);
+DO $
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'chk_inventory_items_sector_code'
+      AND conrelid = 'inventory_items'::regclass
+  ) THEN
+    ALTER TABLE inventory_items
+      ADD CONSTRAINT chk_inventory_items_sector_code
+      CHECK (sector_code IS NULL OR (length(btrim(sector_code)) > 0 AND length(sector_code) <= 64));
+  END IF;
+END;
+$;
+
+CREATE TABLE IF NOT EXISTS inventory_material_allocation_policies (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL,
+  factory_id UUID NOT NULL,
+  policy_scope VARCHAR(12) NOT NULL,
+  sector_code VARCHAR(64),
+  inventory_item_id UUID,
+  allocation_policy VARCHAR(12) NOT NULL,
+  require_traceability BOOLEAN NOT NULL DEFAULT TRUE,
+  version BIGINT NOT NULL DEFAULT 1,
+  created_by_user_id UUID,
+  updated_by_user_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT uq_inventory_material_allocation_policy_scope UNIQUE (id, tenant_id, factory_id),
+  CONSTRAINT fk_inventory_material_allocation_policy_factory
+    FOREIGN KEY (factory_id, tenant_id) REFERENCES factories (id, tenant_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_inventory_material_allocation_policy_item
+    FOREIGN KEY (inventory_item_id, tenant_id, factory_id)
+    REFERENCES inventory_items (id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_inventory_material_allocation_policy_creator
+    FOREIGN KEY (created_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_inventory_material_allocation_policy_updater
+    FOREIGN KEY (updated_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+  CONSTRAINT chk_inventory_material_allocation_policy_scope
+    CHECK (
+      (policy_scope = 'FACTORY' AND sector_code IS NULL AND inventory_item_id IS NULL)
+      OR (policy_scope = 'SECTOR' AND sector_code IS NOT NULL AND length(btrim(sector_code)) > 0 AND inventory_item_id IS NULL)
+      OR (policy_scope = 'MATERIAL' AND inventory_item_id IS NOT NULL AND sector_code IS NULL)
+    ),
+  CONSTRAINT chk_inventory_material_allocation_policy_name
+    CHECK (allocation_policy IN ('FIFO', 'FEFO', 'LOT', 'SERIAL')),
+  CONSTRAINT chk_inventory_material_allocation_policy_version CHECK (version > 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_material_allocation_policy_factory
+  ON inventory_material_allocation_policies (tenant_id, factory_id)
+  WHERE policy_scope = 'FACTORY';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_material_allocation_policy_sector
+  ON inventory_material_allocation_policies (tenant_id, factory_id, lower(sector_code))
+  WHERE policy_scope = 'SECTOR';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_material_allocation_policy_material
+  ON inventory_material_allocation_policies (tenant_id, factory_id, inventory_item_id)
+  WHERE policy_scope = 'MATERIAL';
+CREATE INDEX IF NOT EXISTS idx_inventory_material_allocation_policy_lookup
+  ON inventory_material_allocation_policies (tenant_id, factory_id, policy_scope, allocation_policy);
+ALTER TABLE inventory_material_allocation_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_material_allocation_policies FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS inventory_material_allocation_policies_tenant_isolation ON inventory_material_allocation_policies;
+CREATE POLICY inventory_material_allocation_policies_tenant_isolation
+  ON inventory_material_allocation_policies
+  USING (tenant_id = factoryos_current_tenant_id())
+  WITH CHECK (tenant_id = factoryos_current_tenant_id());
+
 -- WMS allocation enforcement: reservation conservation, physical lot/bin balances,
+ reservation conservation, physical lot/bin balances,
 -- immutable lot consumption evidence, and FEFO/FIFO/LOT/SERIAL policy enforcement.
 ALTER TABLE inventory_reservations
   ADD COLUMN IF NOT EXISTS remaining_quantity NUMERIC(18,4),
