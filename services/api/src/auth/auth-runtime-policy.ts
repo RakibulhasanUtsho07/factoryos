@@ -57,7 +57,7 @@ export function resolveAuthRuntimePolicy(config: AuthRuntimeConfiguration): Auth
   }
 
   if (production && authMode !== 'oidc') {
-    throw new Error('AUTH_MODE=oidc is required in production');
+    throw new Error('Development authentication is forbidden in production');
   }
 
   if (production && config.devAuthEnabled?.trim().toLowerCase() === 'true') {
