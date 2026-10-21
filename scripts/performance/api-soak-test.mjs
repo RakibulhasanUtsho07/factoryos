@@ -178,6 +178,8 @@ async function main() {
     ? null : decimalEnv('FACTORYOS_SOAK_MAX_P95_MS', 0, 0, 3_600_000);
   const maxP99Ms = process.env.FACTORYOS_SOAK_MAX_P99_MS === undefined
     ? null : decimalEnv('FACTORYOS_SOAK_MAX_P99_MS', 0, 0, 3_600_000);
+  const minRps = process.env.FACTORYOS_SOAK_MIN_RPS === undefined
+    ? null : decimalEnv('FACTORYOS_SOAK_MIN_RPS', 0, 0, 1_000_000);
   const maxRecoverySeconds = decimalEnv('FACTORYOS_SOAK_MAX_RECOVERY_SECONDS', 30, 0, 300);
 
   const scenarioTotalWeight = scenarios.reduce((total, scenario) => total + scenario.weight, 0);
@@ -314,6 +316,7 @@ async function main() {
       maxErrorRate,
       maxP95Ms,
       maxP99Ms,
+      minRps,
       maxRecoverySeconds,
       note: 'Threshold values are operator-selected guardrails, not approved FactoryOS SLOs unless the owner register is approved.',
     },
@@ -337,6 +340,9 @@ async function main() {
 
   if (completed === 0) throw new Error('No load requests completed; soak results cannot pass');
   if (loadSummary.errorRate > maxErrorRate) throw new Error('Load error rate exceeded FACTORYOS_SOAK_MAX_ERROR_RATE');
+  if (minRps !== null && report.load.requestsPerSecond < minRps) {
+    throw new Error('Observed throughput was below FACTORYOS_SOAK_MIN_RPS');
+  }
   if (maxP95Ms !== null && (loadSummary.latencyMs.p95 === null || loadSummary.latencyMs.p95 > maxP95Ms)) {
     throw new Error('Observed p95 exceeded FACTORYOS_SOAK_MAX_P95_MS');
   }
