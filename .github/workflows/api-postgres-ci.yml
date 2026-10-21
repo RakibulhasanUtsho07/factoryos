@@ -249,6 +249,7 @@ jobs:
             migrations/157_ot_opcua_read_gateway.sql
             migrations/158_ot_mqtt_modbus_gateway.sql
             migrations/159_inventory_cycle_count_variance_reason.sql
+            migrations/160_inventory_lot_aware_reservations.sql
           )
 
           # Fail closed if a SQL migration is added to the repository but omitted
@@ -314,6 +315,8 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/inventory-lot-reservation-contract.sql
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-replenishment.sql

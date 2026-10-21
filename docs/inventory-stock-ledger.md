@@ -31,6 +31,10 @@ The controller is mounted at **/inventory/items**. Each endpoint requires a veri
 
 The movement payload accepts movement_type, a positive quantity with up to four decimal places, optional reference_type, optional UUID reference_id, and optional notes.
 
+Reservation transitions also support an optional `quantity` for idempotent partial issue of an active non-production reservation. Every partial issue writes a stock ISSUE movement, a reservation-consumption receipt, lot-level consumption receipts where traceability is enforced, and a transactional outbox event. The reservation remains `RESERVED` until its remaining quantity reaches zero; retries with the same idempotency key replay the stored receipt, while reusing that key with a changed reservation/quantity conflicts. Order-line and work-order lifecycle reservations continue to be issued by their parent lifecycle workflow so cancellation and material-disposition accounting remain consistent.
+
+Migration 160 adds lot-level bin balances and immutable reservation allocations linked to GRN-backed traceability identities. New lot-tracked material/packaging reservations must be bound to active physical bins and use the factory's configured FIFO, FEFO, LOT or SERIAL policy. FEFO prioritizes eligible, unexpired identities by expiry then receipt date; FIFO prioritizes receipt date. Active quality holds and expired/quarantined/recalled/disposed identities are excluded. Multi-bin order-line and work-order BOM allocation remains atomic with aggregate/bin reservation updates. The migration deliberately does not invent lot stock for historical traceability labels that lack a verifiable GRN/stock movement chain; those items need a reviewed reconciliation/onboarding record before lot-level reservation can be accepted.
+
 Order creation accepts an optional `inventory_item_id` on each order line. When supplied, the API requires an active item from the order's same tenant/factory and requires its unit to match the line unit (case-insensitive). Legacy/unmapped lines remain valid with a null binding.
 
 ## Data integrity and safety guarantees

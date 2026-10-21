@@ -1,4 +1,4 @@
-import { IsIn, IsNumber, IsOptional, Max, MaxLength, Min } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, Max, Min } from 'class-validator';
 
 export class TransitionInventoryReservationDto {
   @IsIn(['RELEASED', 'CONSUMED'])
