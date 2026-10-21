@@ -58,6 +58,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query(
           'ALTER TABLE inventory_reservations DISABLE TRIGGER USER',
         );
+        await adminPool.query('ALTER TABLE inventory_reservation_consumptions DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE inventory_reservation_consumption_traceability_allocations DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE inventory_traceability_location_balances DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -70,6 +74,29 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         try {
           await adminPool.query(
             'DELETE FROM inventory_location_transfers WHERE tenant_id = $1 AND factory_id = $2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            `DELETE FROM inventory_reservation_consumption_traceability_allocations
+             WHERE tenant_id=$1 AND factory_id=$2 AND consumption_id IN (
+               SELECT id FROM inventory_reservation_consumptions WHERE tenant_id=$1 AND factory_id=$2
+             )`,
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_reservation_consumptions WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_reservation_traceability_allocations WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_material_allocation_policies WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -113,6 +140,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
         } finally {
+          await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE inventory_reservation_consumption_traceability_allocations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE inventory_reservation_consumptions ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_location_transfers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_movements ENABLE TRIGGER USER');
