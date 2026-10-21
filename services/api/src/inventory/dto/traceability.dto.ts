@@ -10,6 +10,9 @@ export const TRACEABILITY_UNIT_TYPES = [
 export const TRACEABILITY_PRODUCT_ROLES = [
   'MATERIAL', 'FINISHED_GOOD', 'PACKAGING', 'SHIPMENT', 'OTHER',
 ] as const;
+export const TRACEABILITY_LABEL_TARGET_TYPES = [
+  ...TRACEABILITY_UNIT_TYPES, 'MATERIAL',
+] as const;
 export const TRACEABILITY_STATUSES = [
   'ACTIVE', 'QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED',
 ] as const;
@@ -114,7 +117,7 @@ export class CreateTraceabilityLabelTemplateDto {
   symbology!: 'QR' | 'CODE128' | 'DATAMATRIX' | 'GS1_128';
   @IsArray()
   @ArrayUnique()
-  @IsIn([...TRACEABILITY_UNIT_TYPES], { each: true })
+  @IsIn([...TRACEABILITY_LABEL_TARGET_TYPES], { each: true })
   supported_unit_types!: Array<(typeof TRACEABILITY_UNIT_TYPES)[number]>;
   @IsOptional()
   @IsObject()
@@ -148,8 +151,13 @@ export class UpdateInventoryItemAllocationPolicyDto {
 }
 
 export class IssueTraceabilityLabelDto {
+  @IsOptional()
   @IsUUID()
-  unit_id!: string;
+  unit_id?: string;
+
+  @IsOptional()
+  @IsUUID()
+  item_id?: string;
 
   @IsUUID()
   template_id!: string;
