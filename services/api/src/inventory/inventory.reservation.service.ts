@@ -1271,6 +1271,21 @@ export class InventoryReservationService {
         );
         consumedMovementId = movementResult.rows[0]?.id ?? null;
         if (!consumedMovementId) throw new Error('ORDER_INVENTORY_CONSUMPTION_MOVEMENT_INSERT_FAILED');
+        const consumptionResult = await client.query<{ id: string }>(
+          `INSERT INTO inventory_reservation_consumptions (
+             tenant_id, factory_id, reservation_id, item_id, location_id, quantity,
+             movement_id, idempotency_key, request_hash, created_by_user_id, correlation_id
+           ) VALUES ($1,$2,$3,$4,$5::uuid,$6::numeric,$7::uuid,$8,$9,$10,$11::uuid)
+           RETURNING id::text AS id`,
+          [input.tenantId, input.factoryId, reservation.id, reservation.item_id, reservation.location_id,
+            transitionQuantity, consumedMovementId, transitionKey, transitionHash, input.userId, correlationId],
+        );
+        const consumptionId = consumptionResult.rows[0]?.id;
+        if (!consumptionId) throw new Error('ORDER_INVENTORY_CONSUMPTION_EVIDENCE_FAILED');
+        await this.consumeTraceabilityAllocations(client, {
+          tenantId: input.tenantId, factoryId: input.factoryId, itemId: reservation.item_id,
+          reservationId: reservation.id, consumptionId, quantity: transitionQuantity,
+        });
 
         await this.insertOutboxEvent(client, {
           tenantId: input.tenantId,
@@ -1285,8 +1300,8 @@ export class InventoryReservationService {
               item_id: reservation.item_id,
               location_id: reservation.location_id,
               movement_type: 'ISSUE',
-              quantity: reservation.quantity,
-              quantity_delta: '-' + reservation.quantity,
+              quantity: transitionQuantity,
+              quantity_delta: '-' + transitionQuantity,
               quantity_after: balance.quantity_on_hand,
               reference_type: 'RESERVATION',
               reference_id: reservation.id,
