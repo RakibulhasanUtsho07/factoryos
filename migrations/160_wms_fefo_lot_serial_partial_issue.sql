@@ -970,6 +970,54 @@ BEGIN
 END;
 $$;
 
+-- Override the reservation-row constraint guard from migration 065. That guard
+-- predates partial consumption and summed the original quantity, incorrectly
+-- rejecting a valid partial issue while status remains RESERVED.
+CREATE OR REPLACE FUNCTION factoryos_assert_inventory_location_reservation_balance()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_balance NUMERIC(18,4);
+  v_active_reservations NUMERIC(18,4);
+BEGIN
+  IF NEW.location_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT quantity_reserved
+    INTO v_balance
+  FROM inventory_location_balances
+  WHERE tenant_id = NEW.tenant_id
+    AND factory_id = NEW.factory_id
+    AND item_id = NEW.item_id
+    AND location_id = NEW.location_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'location-bound reservation requires a location balance'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT COALESCE(SUM(r.remaining_quantity), 0)
+    INTO v_active_reservations
+  FROM inventory_reservations r
+  WHERE r.tenant_id = NEW.tenant_id
+    AND r.factory_id = NEW.factory_id
+    AND r.item_id = NEW.item_id
+    AND r.location_id = NEW.location_id
+    AND r.status = 'RESERVED';
+
+  IF v_balance IS DISTINCT FROM v_active_reservations THEN
+    RAISE EXCEPTION
+      'inventory location reserved quantity (%) must equal active bin reservation remaining total (%)',
+      v_balance, v_active_reservations
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION factoryos_assert_order_line_inventory_allocation()
 RETURNS trigger
 LANGUAGE plpgsql
