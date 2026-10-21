@@ -1567,6 +1567,56 @@ export class InventoryReservationService {
       `${value / 10000n}.${String(value % 10000n).padStart(4, '0')}`;
     const requiredUnits = toUnits(input.quantity);
     if (requiredUnits <= 0n) throw new ConflictException('Work-order material requirement must be positive');
+    const notes = `Reserved for work order ${input.workOrderNumber} BOM line ${input.lineNumber}`;
+    const referenceType = 'WORK_ORDER_MATERIAL';
+    const referenceId = input.workOrderId.toLowerCase();
+    const existingResult = await client.query<ReservationRow>(
+      `
+      SELECT ${RESERVATION_COLUMNS}
+      FROM inventory_reservations
+      WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+        AND reference_type = $4 AND reference_id = $5::uuid AND notes = $6
+      ORDER BY location_id, traceability_unit_id NULLS FIRST, id
+      FOR UPDATE
+      `,
+      [input.tenantId, input.factoryId, input.itemId, referenceType, referenceId, notes],
+    );
+    if (existingResult.rows.length > 0) {
+      let existingUnits = 0n;
+      const seen = new Set<string>();
+      const replay: Array<{ reservationId: string; locationId: string; traceabilityUnitId: string | null; quantity: string }> = [];
+      const keyPrefix = `work-order:${input.workOrderId}:bom:${input.bomLineId}:bin:`;
+      for (const existing of existingResult.rows) {
+        const locationId = existing.location_id?.toLowerCase() ?? '';
+        const traceabilityUnitId = existing.traceability_unit_id?.toLowerCase() ?? null;
+        const expectedKey = keyPrefix + locationId + `:lot:${traceabilityUnitId ?? 'untracked'}:reserve:v2`;
+        const expectedHash = this.hash({
+          itemId: input.itemId.toLowerCase(), locationId, traceabilityUnitId,
+          quantity: existing.quantity, referenceType, referenceId, notes,
+        });
+        const identity = locationId + '|' + (traceabilityUnitId ?? '');
+        if (
+          existing.status !== 'RESERVED' || !locationId || existing.reference_type !== referenceType
+          || existing.reference_id !== referenceId || existing.notes !== notes
+          || existing.idempotency_key !== expectedKey || existing.request_hash !== expectedHash
+          || seen.has(identity)
+        ) {
+          throw new ConflictException('Work-order BOM has a terminal, duplicate or conflicting bin/lot reservation allocation');
+        }
+        seen.add(identity);
+        existingUnits += toUnits(existing.quantity);
+        replay.push({
+          reservationId: existing.id,
+          locationId,
+          traceabilityUnitId,
+          quantity: existing.quantity,
+        });
+      }
+      if (existingUnits !== requiredUnits) {
+        throw new ConflictException('Existing work-order BOM reservation total differs from the requested material quantity');
+      }
+      return replay;
+    }
 
     const balanceBeforeResult = await client.query<BalanceRow>(
       `
@@ -1721,7 +1771,6 @@ export class InventoryReservationService {
     const balance = aggregateBalance.rows[0];
     if (!balance) throw new ConflictException('Available stock changed while releasing the work order');
 
-    const notes = `Reserved for work order ${input.workOrderNumber} BOM line ${input.lineNumber}`;
     const allocationsCreated: Array<{ reservationId: string; locationId: string; traceabilityUnitId: string | null; quantity: string }> = [];
     for (const allocation of allocations) {
       const locationBalance = await client.query<{ location_id: string }>(
@@ -1739,8 +1788,6 @@ export class InventoryReservationService {
         throw new ConflictException('Picking-bin stock changed while releasing the work order; transaction rolled back');
       }
 
-      const referenceType = 'WORK_ORDER_MATERIAL';
-      const referenceId = input.workOrderId.toLowerCase();
       const idempotencyKey =
         `work-order:${input.workOrderId}:bom:${input.bomLineId}:bin:${allocation.locationId}:lot:${allocation.traceabilityUnitId ?? 'untracked'}:reserve:v2`;
       const requestHash = this.hash({
