@@ -102,9 +102,10 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const defaultLocationId = defaultLocation.rows[0]?.id;
     if (!defaultLocationId) throw new Error('Default inventory location was not found');
 
-    await adminPool.query('BEGIN');
+    const fixtureClient = await adminPool.connect();
     try {
-      await adminPool.query(
+      await fixtureClient.query('BEGIN');
+      await fixtureClient.query(
         `
         UPDATE inventory_location_balances
         SET quantity_on_hand = $1::numeric,
@@ -115,7 +116,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
         `,
         [defaultQuantity, tenantId, factoryId, itemId, defaultLocationId],
       );
-      await adminPool.query(
+      await fixtureClient.query(
         `
         INSERT INTO inventory_location_balances (
           tenant_id, factory_id, item_id, location_id,
@@ -125,10 +126,12 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
         `,
         [tenantId, factoryId, itemId, binId, binQuantity],
       );
-      await adminPool.query('COMMIT');
+      await fixtureClient.query('COMMIT');
     } catch (error) {
-      await adminPool.query('ROLLBACK');
+      await fixtureClient.query('ROLLBACK');
       throw error;
+    } finally {
+      fixtureClient.release();
     }
 
     return { binId, defaultLocationId };
@@ -690,26 +693,29 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
       'cycle-count-bin-stale-submit-' + randomUUID(), randomUUID(), randomUUID(),
     );
 
-    await adminPool.query('BEGIN');
+    const transferClient = await adminPool.connect();
     try {
-      await adminPool.query(
+      await transferClient.query('BEGIN');
+      await transferClient.query(
         `UPDATE inventory_location_balances
          SET quantity_on_hand = quantity_on_hand + 1, version = version + 1,
              updated_at = clock_timestamp()
          WHERE item_id = $1 AND location_id = $2`,
         [itemId, binId],
       );
-      await adminPool.query(
+      await transferClient.query(
         `UPDATE inventory_location_balances
          SET quantity_on_hand = quantity_on_hand - 1, version = version + 1,
              updated_at = clock_timestamp()
          WHERE item_id = $1 AND location_id = $2`,
         [itemId, defaultLocationId],
       );
-      await adminPool.query('COMMIT');
+      await transferClient.query('COMMIT');
     } catch (error) {
-      await adminPool.query('ROLLBACK');
+      await transferClient.query('ROLLBACK');
       throw error;
+    } finally {
+      transferClient.release();
     }
 
     await expect(
