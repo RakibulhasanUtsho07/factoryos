@@ -143,31 +143,7 @@ ALTER TABLE inventory_reservations
       )
     );
 
--- A material can override the factory/sector default with an approved allocation policy.
--- expected_version=0 creates an override; subsequent updates are optimistic-versioned.
-CREATE TABLE IF NOT EXISTS inventory_item_allocation_policies (
-  tenant_id UUID NOT NULL,
-  factory_id UUID NOT NULL,
-  item_id UUID NOT NULL,
-  allocation_policy VARCHAR(12) NOT NULL,
-  version BIGINT NOT NULL DEFAULT 1,
-  updated_by_user_id UUID NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  CONSTRAINT pk_inventory_item_allocation_policies PRIMARY KEY (tenant_id, factory_id, item_id),
-  CONSTRAINT fk_inventory_item_allocation_policy_item
-    FOREIGN KEY (item_id, tenant_id, factory_id)
-    REFERENCES inventory_items (id, tenant_id, factory_id) ON DELETE RESTRICT,
-  CONSTRAINT fk_inventory_item_allocation_policy_actor
-    FOREIGN KEY (updated_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
-  CONSTRAINT chk_inventory_item_allocation_policy_type
-    CHECK (allocation_policy IN ('FIFO','FEFO','LOT','SERIAL')),
-  CONSTRAINT chk_inventory_item_allocation_policy_version CHECK (version > 0)
-);
-
-COMMENT ON TABLE inventory_item_allocation_policies IS
-  'Material-specific FIFO/FEFO/LOT/SERIAL override; the factory traceability policy is the default when no override exists.';
-
+-- Factory, sector and material overrides are stored in inventory_material_allocation_policies above.
 CREATE TABLE IF NOT EXISTS inventory_reservation_consumptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -1018,26 +994,46 @@ DECLARE
   v_attributes JSONB;
   v_item_id UUID;
   v_policy VARCHAR(12);
+  v_require_traceability BOOLEAN;
   v_has_material_identity BOOLEAN;
 BEGIN
   SELECT COALESCE(
-      (SELECT p.allocation_policy FROM inventory_item_allocation_policies p
-       WHERE p.tenant_id = NEW.tenant_id AND p.factory_id = NEW.factory_id AND p.item_id = NEW.item_id),
+      (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+       WHERE p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id
+         AND p.policy_scope='MATERIAL' AND p.inventory_item_id=NEW.item_id),
+      (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+       JOIN inventory_items i ON i.id=NEW.item_id AND i.tenant_id=p.tenant_id AND i.factory_id=p.factory_id
+       WHERE p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id
+         AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+      (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+       WHERE p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id AND p.policy_scope='FACTORY'),
       (SELECT ts.allocation_policy FROM traceability_settings ts
-       WHERE ts.tenant_id = NEW.tenant_id AND ts.factory_id = NEW.factory_id),
+       WHERE ts.tenant_id=NEW.tenant_id AND ts.factory_id=NEW.factory_id),
       'FIFO'
+    ),
+    COALESCE(
+      (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+       WHERE p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id
+         AND p.policy_scope='MATERIAL' AND p.inventory_item_id=NEW.item_id),
+      (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+       JOIN inventory_items i ON i.id=NEW.item_id AND i.tenant_id=p.tenant_id AND i.factory_id=p.factory_id
+       WHERE p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id
+         AND p.policy_scope='SECTOR' AND lower(p.sector_code)=lower(i.sector_code)),
+      (SELECT p.require_traceability FROM inventory_material_allocation_policies p
+       WHERE p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id AND p.policy_scope='FACTORY'),
+      FALSE
     ),
     EXISTS (
       SELECT 1 FROM traceability_units existing
-      WHERE existing.tenant_id = NEW.tenant_id AND existing.factory_id = NEW.factory_id
-        AND existing.inventory_item_id = NEW.item_id
-        AND existing.product_role = 'MATERIAL' AND existing.unit_type IN ('LOT','SERIAL')
+      WHERE existing.tenant_id=NEW.tenant_id AND existing.factory_id=NEW.factory_id
+        AND existing.inventory_item_id=NEW.item_id
+        AND existing.product_role='MATERIAL' AND existing.unit_type IN ('LOT','SERIAL')
     )
-  INTO v_policy, v_has_material_identity;
+  INTO v_policy, v_require_traceability, v_has_material_identity;
 
   IF NEW.traceability_unit_id IS NULL THEN
-    IF v_policy IN ('LOT','SERIAL') OR v_has_material_identity THEN
-      RAISE EXCEPTION 'lot/serial-controlled stock transfers require an explicit material identity'
+    IF v_require_traceability OR v_policy IN ('LOT','SERIAL') OR v_has_material_identity THEN
+      RAISE EXCEPTION 'material policy requires an explicit lot/serial identity for directed stock transfer'
         USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
@@ -1081,7 +1077,6 @@ DECLARE
   v_table TEXT;
 BEGIN
   FOREACH v_table IN ARRAY ARRAY[
-    'inventory_item_allocation_policies',
     'inventory_reservation_consumptions',
     'inventory_traceability_location_balances',
     'inventory_reservation_traceability_allocations',
