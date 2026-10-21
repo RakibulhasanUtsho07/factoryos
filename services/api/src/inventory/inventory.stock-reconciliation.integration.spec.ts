@@ -318,10 +318,27 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(records[0]?.id).toBe(result.id);
   });
 
+  it('requires a reason when submission records a physical count variance', async () => {
+    const itemId = await createItem('6.0000', '1.0000');
+    await expect(
+      cycleCountService.submitCycleCount(
+        TEST_USER_ID, tenantId, factoryId, itemId,
+        { counted_quantity: 5 }, 'cycle-count-reason-required-' + randomUUID(),
+        randomUUID(), randomUUID(),
+      ),
+    ).rejects.toThrow('variance_reason is required');
+
+    const result = await adminPool.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM inventory_cycle_count_proposals WHERE item_id = $1',
+      [itemId],
+    );
+    expect(result.rows[0]?.count).toBe('0');
+  });
+
   it('submits a cycle count without touching stock and replays the same idempotency key', async () => {
     const itemId = await createItem('6.0000', '1.0000');
     const key = 'cycle-count-submit-' + randomUUID();
-    const input = { counted_quantity: 5.25, notes: 'Aisle B manual count' };
+    const input = { counted_quantity: 5.25, notes: 'Aisle B manual count', variance_reason: 'Broken units found during aisle recount' };
 
     const first = await cycleCountService.submitCycleCount(
       TEST_USER_ID, tenantId, factoryId, itemId, input, key, randomUUID(), randomUUID(),
@@ -344,7 +361,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
 
     const changed = cycleCountService.submitCycleCount(
       TEST_USER_ID, tenantId, factoryId, itemId,
-      { counted_quantity: 5, notes: input.notes }, key, randomUUID(), randomUUID(),
+      { counted_quantity: 5, notes: input.notes, variance_reason: input.variance_reason }, key, randomUUID(), randomUUID(),
     );
     await expect(changed).rejects.toBeInstanceOf(ConflictException);
   });
@@ -353,7 +370,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const itemId = await createItem('10.0000', '2.0000');
     const proposal = await cycleCountService.submitCycleCount(
       TEST_USER_ID, tenantId, factoryId, itemId,
-      { counted_quantity: 7, notes: 'Counted by operator A' },
+      { counted_quantity: 7, notes: 'Counted by operator A', variance_reason: 'Physical shelf quantity is three units lower than ledger' },
       'cycle-count-approve-submit-' + randomUUID(), randomUUID(), randomUUID(),
     );
 
@@ -444,7 +461,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const itemId = await createItem('5.0000', '1.0000');
     const proposal = await cycleCountService.submitCycleCount(
       TEST_USER_ID, tenantId, factoryId, itemId,
-      { counted_quantity: 9 }, 'cycle-count-reject-submit-' + randomUUID(),
+      { counted_quantity: 9, variance_reason: 'Count exceeds ledger after unpacked return was found' }, 'cycle-count-reject-submit-' + randomUUID(),
       randomUUID(), randomUUID(),
     );
     const rejectionKey = 'cycle-count-reject-' + randomUUID();
@@ -480,7 +497,7 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     const itemId = await createItem('6.0000', '1.0000');
     const proposal = await cycleCountService.submitCycleCount(
       TEST_USER_ID, tenantId, factoryId, itemId,
-      { counted_quantity: 5, notes: 'Count captured before late receipt' },
+      { counted_quantity: 5, notes: 'Count captured before late receipt', variance_reason: 'A late receipt is being reconciled after the recount' },
       'cycle-count-stale-submit-' + randomUUID(), randomUUID(), randomUUID(),
     );
 
