@@ -156,24 +156,28 @@ describe('InventoryReservationService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('consumes a reservation atomically with an ISSUE movement and outbox events', async () => {
+  it('consumes a reservation atomically with an ISSUE movement and durable consumption evidence', async () => {
     const consumedMovementId = randomUUID();
+    const consumptionId = randomUUID();
     client.query
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
       .mockResolvedValueOnce(queryRows([row()]))
+      .mockResolvedValueOnce(queryRows([])) // no prior issue with this idempotency key
+      .mockResolvedValueOnce(queryRows([])) // clear the transaction-local location
       .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '0.0000' }]))
       .mockResolvedValueOnce(queryRows([{ id: consumedMovementId, quantity_after: '8.0000' }]))
-      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{ id: consumptionId }]))
+      .mockResolvedValueOnce(queryRows([])) // no traceability allocation on the legacy test fixture
+      .mockResolvedValueOnce(queryRows([{ present: false }])) // no tracked material identity
+      .mockResolvedValueOnce(queryRows([])) // issue outbox
       .mockResolvedValueOnce(queryRows([row({
-        status: 'CONSUMED',
+        status: 'CONSUMED', remaining_quantity: '0.0000', consumed_quantity: '2.0000',
         transition_idempotency_key: 'consume-1',
         transition_request_hash: createHash('sha256').update(JSON.stringify({
-          reservationId: RESERVATION_ID,
-          targetStatus: 'CONSUMED',
+          reservationId: RESERVATION_ID, targetStatus: 'CONSUMED',
         })).digest('hex'),
         consumed_movement_id: consumedMovementId,
-      })]))
-      .mockResolvedValueOnce(queryRows([]));
+      })]));
 
     const result = await service.transitionReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
@@ -184,29 +188,31 @@ describe('InventoryReservationService', () => {
     expect(result).toMatchObject({
       id: RESERVATION_ID, status: 'CONSUMED',
       consumed_movement_id: consumedMovementId, replayed: false,
+      remaining_quantity: '0.0000', consumed_quantity: '2.0000',
     });
-    expect(String(client.query.mock.calls[2]?.[0])).toContain('quantity_on_hand = quantity_on_hand - $1::numeric');
-    expect(String(client.query.mock.calls[3]?.[0])).toContain("'ISSUE'");
-    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_ISSUED');
-    expect(String(client.query.mock.calls[5]?.[0])).toContain("status = 'RESERVED'");
-    expect(client.query.mock.calls[6]?.[1]).toContain('INVENTORY.STOCK_RESERVATION_CONSUMED');
+    expect(String(client.query.mock.calls[4]?.[0])).toContain('quantity_on_hand = quantity_on_hand - $1::numeric');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain("'ISSUE'");
+    expect(String(client.query.mock.calls[6]?.[0])).toContain('INSERT INTO inventory_reservation_consumptions');
+    expect(String(client.query.mock.calls[9]?.[0])).toContain('INSERT INTO outbox_events');
+    expect(String(client.query.mock.calls[10]?.[0])).toContain("status = 'RESERVED'");
     expect(audit.record).toHaveBeenCalledTimes(1);
   });
 
-  it('releases a reservation without reducing quantity on hand', async () => {
+  it('releases only the remaining reservation quantity without reducing on-hand stock', async () => {
     client.query
       .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, status: 'ACTIVE' }]))
-      .mockResolvedValueOnce(queryRows([row()]))
-      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '10.0000', quantity_reserved: '0.0000' }]))
+      .mockResolvedValueOnce(queryRows([row({ quantity: '5.0000', remaining_quantity: '3.0000', consumed_quantity: '2.0000' })]))
+      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '8.0000', quantity_reserved: '3.0000' }]))
+      .mockResolvedValueOnce(queryRows([])) // untracked legacy reservation has no trace allocations
       .mockResolvedValueOnce(queryRows([row({
-        status: 'RELEASED',
+        quantity: '5.0000', status: 'RELEASED', remaining_quantity: '0.0000',
+        consumed_quantity: '2.0000', released_quantity: '3.0000',
         transition_idempotency_key: 'release-1',
         transition_request_hash: createHash('sha256').update(JSON.stringify({
-          reservationId: RESERVATION_ID,
-          targetStatus: 'RELEASED',
+          reservationId: RESERVATION_ID, targetStatus: 'RELEASED',
         })).digest('hex'),
       })]))
-      .mockResolvedValueOnce(queryRows([]));
+      .mockResolvedValueOnce(queryRows([])); // release outbox
 
     const result = await service.transitionReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
@@ -214,10 +220,11 @@ describe('InventoryReservationService', () => {
       'release-1', TRACE_ID, TRACE_ID,
     );
 
-    expect(result.status).toBe('RELEASED');
+    expect(result).toMatchObject({ status: 'RELEASED', remaining_quantity: '0.0000', consumed_quantity: '2.0000', released_quantity: '3.0000' });
     expect(String(client.query.mock.calls[2]?.[0])).toContain('quantity_reserved = quantity_reserved - $1::numeric');
+    expect(client.query.mock.calls[2]?.[1]?.[0]).toBe('3.0000');
     expect(String(client.query.mock.calls[2]?.[0])).not.toContain('quantity_on_hand = quantity_on_hand -');
-    expect(client.query.mock.calls[4]?.[1]).toContain('INVENTORY.STOCK_RESERVATION_RELEASED');
+    expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO outbox_events');
   });
 
   it('posts accepted finished goods as an inventory receipt with durable outbox evidence', async () => {
@@ -338,14 +345,15 @@ describe('InventoryReservationService', () => {
           reservationId: RESERVATION_ID,
           targetStatus: 'RELEASED',
         })).digest('hex'),
-      })]));
+      })]))
+      .mockResolvedValueOnce(queryRows([])); // idempotency replay lookup precedes terminal-state rejection
 
     await expect(service.transitionReservation(
       USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID, RESERVATION_ID,
       { target_status: 'CONSUMED' } as TransitionInventoryReservationDto,
       'consume-after-release', TRACE_ID, TRACE_ID,
     )).rejects.toBeInstanceOf(ConflictException);
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(client.query).toHaveBeenCalledTimes(3);
     expect(audit.record).not.toHaveBeenCalled();
   });
 
