@@ -71,6 +71,8 @@ services:
 
   postgres-exporter:
     image: ${POSTGRES_EXPORTER_IMAGE:?set a pinned postgres_exporter image}
+    environment:
+      PGSSLROOTCERT: /run/secrets/postgres_exporter_ca
     command:
       - --datasource.uri=${FACTORYOS_POSTGRES_EXPORTER_URI:?set a credential-free database URI with verified TLS}
       - --datasource.user-file=/run/secrets/postgres_exporter_user
@@ -83,6 +85,7 @@ services:
     secrets:
       - postgres_exporter_user
       - postgres_exporter_password
+      - postgres_exporter_ca
     networks: [monitoring]
     # Never publish 9187 on the host. Keep this service reachable only on the private network.
 
@@ -107,6 +110,8 @@ secrets:
     file: ${FACTORYOS_POSTGRES_EXPORTER_USER_FILE:?point to a read-only monitoring username file}
   postgres_exporter_password:
     file: ${FACTORYOS_POSTGRES_EXPORTER_PASSWORD_FILE:?point to the read-only monitoring password file}
+  postgres_exporter_ca:
+    file: ${FACTORYOS_POSTGRES_EXPORTER_CA_FILE:?point to the PostgreSQL TLS CA certificate file}
   otel_receiver_cert:
     file: ${FACTORYOS_OTEL_RECEIVER_CERT_FILE:?point to the collector TLS certificate file}
   otel_receiver_key:
