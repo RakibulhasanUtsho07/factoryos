@@ -620,6 +620,15 @@ describe('InventoryStockReconciliationService PostgreSQL integration', () => {
     expect(proposal.location_version_at_count).toBeDefined();
     expect(proposal.variance_reason_code).toBe('LOSS');
 
+    await expect(
+      adminPool.query(
+        `UPDATE inventory_cycle_count_proposals
+         SET location_version_at_count = location_version_at_count + 1
+         WHERE id = $1`,
+        [proposal.id],
+      ),
+    ).rejects.toMatchObject({ code: '55000' });
+
     const approvalKey = 'cycle-count-bin-approve-' + randomUUID();
     const decisions = await Promise.all([
       cycleCountService.approveCycleCount(
