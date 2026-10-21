@@ -2385,22 +2385,38 @@ export class InventoryReservationService {
     client: PoolClient,
     input: { tenantId: string; factoryId: string; itemId: string; quantity: string; locationId?: string | null },
   ): Promise<TraceabilityAllocationPlan> {
-    const settings = await client.query<{ allocation_policy: TraceabilityAllocationPolicy }>(
-      `SELECT allocation_policy FROM traceability_settings
-       WHERE tenant_id = $1 AND factory_id = $2 FOR SHARE`,
-      [input.tenantId, input.factoryId],
-    );
-    const policy = settings.rows[0]?.allocation_policy ?? 'FIFO';
-    const identityResult = await client.query<{ has_lot: boolean; has_serial: boolean; has_identity: boolean }>(
-      `SELECT COALESCE(bool_or(unit_type = 'LOT'), FALSE) AS has_lot,
-              COALESCE(bool_or(unit_type = 'SERIAL'), FALSE) AS has_serial,
-              count(*) > 0 AS has_identity
-       FROM traceability_units
-       WHERE tenant_id = $1 AND factory_id = $2 AND inventory_item_id = $3
-         AND product_role = 'MATERIAL' AND unit_type IN ('LOT','SERIAL')`,
+    const identityResult = await client.query<{
+      allocation_policy: TraceabilityAllocationPolicy;
+      has_lot: boolean;
+      has_serial: boolean;
+      has_identity: boolean;
+    }>(
+      `
+      SELECT
+        COALESCE(
+          (SELECT p.allocation_policy
+           FROM inventory_item_allocation_policies p
+           WHERE p.tenant_id = $1 AND p.factory_id = $2 AND p.item_id = $3),
+          (SELECT ts.allocation_policy
+           FROM traceability_settings ts
+           WHERE ts.tenant_id = $1 AND ts.factory_id = $2),
+          'FIFO'
+        ) AS allocation_policy,
+        COALESCE(bool_or(tu.unit_type = 'LOT'), FALSE) AS has_lot,
+        COALESCE(bool_or(tu.unit_type = 'SERIAL'), FALSE) AS has_serial,
+        (count(tu.id) > 0) AS has_identity
+      FROM inventory_items i
+      LEFT JOIN traceability_units tu
+        ON tu.tenant_id = i.tenant_id AND tu.factory_id = i.factory_id
+       AND tu.inventory_item_id = i.id
+       AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
+      WHERE i.tenant_id = $1 AND i.factory_id = $2 AND i.id = $3
+      GROUP BY i.id
+      `,
       [input.tenantId, input.factoryId, input.itemId],
     );
     const identities = identityResult.rows[0];
+    const policy = identities?.allocation_policy ?? 'FIFO';
     if ((policy === 'LOT' || policy === 'SERIAL') && !identities?.has_identity) {
       throw new ConflictException(`Material allocation policy ${policy} requires registered ${policy.toLowerCase()} identities`);
     }
