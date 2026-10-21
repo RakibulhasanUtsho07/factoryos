@@ -70,7 +70,6 @@ CREATE POLICY inventory_material_allocation_policies_tenant_isolation
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
 -- WMS allocation enforcement: reservation conservation, physical lot/bin balances,
- reservation conservation, physical lot/bin balances,
 -- immutable lot consumption evidence, and FEFO/FIFO/LOT/SERIAL policy enforcement.
 ALTER TABLE inventory_reservations
   ADD COLUMN IF NOT EXISTS remaining_quantity NUMERIC(18,4),
