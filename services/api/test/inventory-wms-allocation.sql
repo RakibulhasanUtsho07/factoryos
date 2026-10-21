@@ -44,6 +44,30 @@ BEGIN
     RAISE EXCEPTION 'Directed put-away/picking must preserve the selected lot/serial identity';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'inventory_items' AND column_name = 'sector_code'
+  ) THEN
+    RAISE EXCEPTION 'Inventory items must persist the sector used for allocation-policy resolution';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname = 'uq_inventory_reservation_traceability_sequence'
+  ) THEN
+    RAISE EXCEPTION 'Lot/serial allocation policy order must survive partial issue retries';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname = 'uq_inventory_material_allocation_policy_sector'
+  ) THEN
+    RAISE EXCEPTION 'Sector allocation policies must be unique within tenant/factory';
+  END IF;
+
   SELECT pg_get_functiondef(p.oid) INTO v_function_definition
   FROM pg_proc p
   WHERE p.proname = 'factoryos_guard_inventory_reservation_lifecycle'
