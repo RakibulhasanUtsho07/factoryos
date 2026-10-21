@@ -15,6 +15,22 @@ import { CreateInventoryReservationDto } from './dto/create-inventory-reservatio
 import { TransitionInventoryReservationDto } from './dto/transition-inventory-reservation.dto';
 
 type ReservationStatus = 'RESERVED' | 'RELEASED' | 'CONSUMED';
+type LotAllocationPolicy = 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
+
+interface LotPolicyContext {
+  tracked: boolean;
+  policy: LotAllocationPolicy;
+}
+
+interface LotCandidate extends QueryResultRow {
+  traceability_unit_id: string;
+  location_id: string;
+  quantity_on_hand: string;
+  quantity_reserved: string;
+  unit_type: string;
+  unit_code: string;
+  expires_at: string | null;
+}
 
 interface ReservationRow extends QueryResultRow {
   id: string;
@@ -23,6 +39,10 @@ interface ReservationRow extends QueryResultRow {
   item_id: string;
   location_id: string | null;
   quantity: string;
+  quantity_remaining: string;
+  quantity_consumed: string;
+  quantity_released: string;
+  lot_policy_enforced: boolean;
   status: ReservationStatus;
   idempotency_key: string;
   request_hash: string;
@@ -98,8 +118,18 @@ type ReservationResult = {
   item_id: string;
   location_id: string | null;
   quantity: string;
+  quantity_remaining: string;
+  quantity_consumed: string;
+  quantity_released: string;
+  lot_policy_enforced: boolean;
   status: ReservationStatus;
   reference_type: string | null;
+  last_consumption?: {
+    id: string;
+    quantity: string;
+    movement_id: string;
+    lot_allocations: Array<{ traceability_unit_id: string; location_id: string; quantity: string }>;
+  } | null;
   reference_id: string | null;
   notes: string | null;
   consumed_movement_id: string | null;
@@ -117,6 +147,10 @@ const RESERVATION_COLUMNS = `
   item_id::text AS item_id,
   location_id::text AS location_id,
   quantity::text AS quantity,
+  quantity_remaining::text AS quantity_remaining,
+  quantity_consumed::text AS quantity_consumed,
+  quantity_released::text AS quantity_released,
+  lot_policy_enforced,
   status,
   idempotency_key,
   request_hash,
@@ -190,6 +224,13 @@ export class InventoryReservationService {
           const item = itemResult.rows[0];
           if (!item) throw new NotFoundException('Inventory item not found in this factory');
           if (item.status !== 'ACTIVE') throw new ConflictException('Disabled inventory items cannot be reserved');
+
+          const lotPolicy = locationId
+            ? await this.getLotPolicy(client, tenantId, factoryId, itemId)
+            : { tracked: false, policy: 'FIFO' as const };
+          if (lotPolicy.tracked && !locationId) {
+            throw new ConflictException('Lot-tracked inventory must be reserved against a specific picking BIN');
+          }
 
           const existingAfterLock = await this.findByIdempotencyKey(
             client, tenantId, factoryId, idempotencyKey,
@@ -270,6 +311,13 @@ export class InventoryReservationService {
           const row = inserted.rows[0];
           if (!row) throw new Error('INVENTORY_RESERVATION_INSERT_FAILED');
 
+          const lotAllocations = row.lot_policy_enforced
+            ? await this.allocateReservationLots(client, {
+              tenantId, factoryId, itemId, reservationId: row.id,
+              locationId: row.location_id, quantity: row.quantity, policy: lotPolicy.policy,
+            })
+            : [];
+
           await this.insertOutboxEvent(client, {
             tenantId, factoryId, aggregateId: itemId, eventType: 'INVENTORY.STOCK_RESERVED',
             correlationId, userId,
@@ -278,6 +326,7 @@ export class InventoryReservationService {
                 id: row.id, item_id: itemId, location_id: row.location_id,
                 quantity: row.quantity, status: row.status,
                 reference_type: row.reference_type, reference_id: row.reference_id,
+                lot_allocations: lotAllocations,
               },
               balance: {
                 quantity_on_hand: balance.quantity_on_hand,
@@ -2140,6 +2189,10 @@ export class InventoryReservationService {
       item_id: row.item_id,
       location_id: row.location_id,
       quantity: row.quantity,
+      quantity_remaining: row.quantity_remaining,
+      quantity_consumed: row.quantity_consumed,
+      quantity_released: row.quantity_released,
+      lot_policy_enforced: row.lot_policy_enforced,
       status: row.status,
       reference_type: row.reference_type,
       reference_id: row.reference_id,
