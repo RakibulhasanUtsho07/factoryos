@@ -2446,7 +2446,7 @@ export class InventoryReservationService {
                 VALUES ($1,$2,$3,$4,$5::uuid,$6,COALESCE($7::boolean, TRUE),$8,$8)
                 ON CONFLICT DO NOTHING
                 RETURNING policy_scope, sector_code, inventory_item_id::text AS inventory_item_id,
-                          allocation_policy, require_traceability, version, updated_at::text AS updated_at
+                          allocation_policy, require_traceability, version::int AS version, updated_at::text AS updated_at
                 `,
                 values.slice(0, 8),
               )
@@ -2503,6 +2503,8 @@ export class InventoryReservationService {
       }
       throw error;
     }
+
+    if (!policyRow) throw new Error('INVENTORY_ALLOCATION_POLICY_UPDATE_FAILED');
 
     await this.recordAuditSafely({
       tenantId, factoryId, userId,
