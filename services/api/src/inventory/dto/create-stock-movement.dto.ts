@@ -26,6 +26,10 @@ export class CreateStockMovementDto {
   location_id?: string;
 
   @IsOptional()
+  @IsUUID()
+  traceability_unit_id?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(64)
   reference_type?: string;
