@@ -526,9 +526,11 @@ BEGIN
   WHERE a.tenant_id = v_tenant_id AND a.factory_id = v_factory_id
     AND a.item_id = v_item_id AND a.traceability_unit_id = v_unit_id
     AND a.location_id = v_location_id;
-  IF TG_OP <> 'DELETE' AND NEW.quantity_reserved IS DISTINCT FROM v_allocation_reserved THEN
-    RAISE EXCEPTION 'lot reserved balance must equal outstanding reservation lot allocations'
-      USING ERRCODE = '23514';
+  IF TG_OP <> 'DELETE' THEN
+    IF NEW.quantity_reserved IS DISTINCT FROM v_allocation_reserved THEN
+      RAISE EXCEPTION 'lot reserved balance must equal outstanding reservation lot allocations'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
 
   SELECT quantity INTO v_unit_quantity
@@ -677,13 +679,19 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_reservation inventory_reservations%ROWTYPE;
+  v_reservation_id UUID;
   v_allocated NUMERIC(18,4);
   v_remaining NUMERIC(18,4);
   v_consumed NUMERIC(18,4);
   v_released NUMERIC(18,4);
 BEGIN
+  IF TG_TABLE_NAME = 'inventory_reservations' THEN
+    v_reservation_id := NEW.id;
+  ELSE
+    v_reservation_id := NEW.reservation_id;
+  END IF;
   SELECT * INTO v_reservation FROM inventory_reservations
-  WHERE id = NEW.reservation_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+  WHERE id = v_reservation_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'reservation lot allocation parent is missing'
       USING ERRCODE = '23503';
@@ -692,7 +700,7 @@ BEGIN
          COALESCE(SUM(quantity_consumed), 0), COALESCE(SUM(quantity_released), 0)
   INTO v_allocated, v_remaining, v_consumed, v_released
   FROM inventory_reservation_lot_allocations
-  WHERE reservation_id = NEW.reservation_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+  WHERE reservation_id = v_reservation_id AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
 
   IF NOT v_reservation.lot_policy_enforced THEN
     IF v_allocated <> 0 OR v_remaining <> 0 OR v_consumed <> 0 OR v_released <> 0 THEN
