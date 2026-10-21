@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { AuthService } from './auth.service';
