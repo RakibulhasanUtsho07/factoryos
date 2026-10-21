@@ -33,7 +33,7 @@ export class OfflineStockTransactionDto {
   quantity!: number;
 
   @IsString()
-  @Matches(/^\\d{1,19}$/)
+  @Matches(/^\d{1,19}$/)
   @MaxLength(19)
   expected_balance_version!: string;
 
