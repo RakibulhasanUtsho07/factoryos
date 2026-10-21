@@ -30,7 +30,7 @@ WHERE status = 'APPLIED'
 ALTER TABLE inventory_stock_reconciliations ENABLE TRIGGER USER;
 ALTER TABLE inventory_cycle_count_proposals ENABLE TRIGGER USER;
 
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
