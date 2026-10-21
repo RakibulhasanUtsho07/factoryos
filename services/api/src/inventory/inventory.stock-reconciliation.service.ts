@@ -629,6 +629,10 @@ export class InventoryStockReconciliationService {
           counted_quantity: result.counted_quantity,
           quantity_delta: result.quantity_delta,
           reason_code: result.reason_code,
+          location_id: result.location_id,
+          location_quantity_before: result.location_quantity_before,
+          location_counted_quantity: result.location_counted_quantity,
+          location_quantity_after: result.location_quantity_after,
           adjustment_movement_id: result.adjustment_movement_id,
         },
       });
