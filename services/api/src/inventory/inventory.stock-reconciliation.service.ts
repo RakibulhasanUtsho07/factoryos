@@ -508,7 +508,7 @@ export class InventoryStockReconciliationService {
               correlationId,
               cycleCountSnapshot?.location_id ?? null,
               locationSnapshotForReconciliation?.quantity_before ?? null,
-              cycleCountSnapshot?.counted_quantity ?? null,
+              cycleCountSnapshot?.location_id ? cycleCountSnapshot.counted_quantity : null,
               cycleCountSnapshot?.location_id ? Number(cycleCountSnapshot.counted_quantity).toFixed(4) : null,
             ],
           );
