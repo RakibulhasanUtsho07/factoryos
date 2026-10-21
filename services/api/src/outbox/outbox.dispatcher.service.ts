@@ -474,8 +474,12 @@ export class OutboxDispatcherService
     }
 
     this.queueMetricsCollectionRunning = true;
-    const counts = new Map<string, number>(OUTBOX_METRIC_STATUSES.map((status) => [status, 0]));
-    const oldestAges = new Map<string, number>(OUTBOX_METRIC_STATUSES.map((status) => [status, 0]));
+    const counts = new Map<string, number>();
+    const oldestAges = new Map<string, number>();
+    for (const status of OUTBOX_METRIC_STATUSES) {
+      counts.set(status, 0);
+      oldestAges.set(status, 0);
+    }
     let secondsSinceLastPublish: number | null = null;
 
     try {
