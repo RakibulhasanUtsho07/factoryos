@@ -23,7 +23,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       inject: [ConfigService],
 
       useFactory: (configService: ConfigService) => {
-        const authMode = configService.get<string>('AUTH_MODE') || 'dev';
+        const authMode = (configService.get<string>('AUTH_MODE') || 'dev').trim().toLowerCase();
         const signOptions = {
           expiresIn: '15m',
           issuer:
