@@ -1882,10 +1882,12 @@ export class InventoryReservationService {
         reservationId: reservation.id.toLowerCase(),
         targetStatus,
       });
+      const remainingQuantity = fromUnits(toUnits(reservation.quantity) - toUnits(reservation.quantity_consumed ?? '0.0000'));
+      if (remainingQuantity === '0.0000') throw new ConflictException('Work-order material reservation has no remaining quantity to transition');
       if (reservation.location_id) {
         await this.decreaseLocationReserved(
           client, input.tenantId, input.factoryId, reservation.item_id,
-          reservation.location_id, reservation.quantity,
+          reservation.location_id, remainingQuantity,
         );
       }
       await client.query(
@@ -1904,7 +1906,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [remainingQuantity, input.tenantId, input.factoryId, reservation.item_id],
         )
         : await client.query<BalanceRow>(
           `
@@ -1931,22 +1933,36 @@ export class InventoryReservationService {
         const movement = await client.query<MovementRow>(
           `
           INSERT INTO inventory_movements (
-            tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+            tenant_id, factory_id, item_id, location_id, traceability_unit_id, movement_type, quantity,
             quantity_delta, quantity_after, idempotency_key, request_hash,
             reference_type, reference_id, notes, created_by_user_id, correlation_id
           )
-          VALUES ($1, $2, $3, $4::uuid, 'ISSUE', $5::numeric, -$5::numeric, $6::numeric,
-            $7, $8, 'RESERVATION', $9::uuid, $10, $11, $12::uuid)
+          VALUES ($1, $2, $3, $4::uuid, $5::uuid, 'ISSUE', $6::numeric, -$6::numeric, $7::numeric,
+            $8, $9, 'RESERVATION', $10::uuid, $11, $12, $13::uuid)
           RETURNING id::text AS id, quantity_after::text AS quantity_after
           `,
           [
             input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
-            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            reservation.traceability_unit_id, remainingQuantity, balance.quantity_on_hand, movementKey, transitionHash,
             reservation.id, reservation.notes, input.userId, input.correlationId,
           ],
         );
         consumedMovementId = movement.rows[0]?.id ?? null;
         if (!consumedMovementId) throw new Error('WORK_ORDER_MATERIAL_ISSUE_MOVEMENT_INSERT_FAILED');
+        await client.query(
+          `
+          INSERT INTO inventory_reservation_consumptions (
+            tenant_id, factory_id, reservation_id, item_id, traceability_unit_id, location_id,
+            quantity, movement_id, idempotency_key, request_hash, created_by_user_id
+          )
+          VALUES ($1, $2, $3, $4, $5::uuid, $6::uuid, $7::numeric, $8::uuid, $9, $10, $11)
+          `,
+          [
+            input.tenantId, input.factoryId, reservation.id, reservation.item_id,
+            reservation.traceability_unit_id, reservation.location_id, remainingQuantity,
+            consumedMovementId, transitionKey, transitionHash, input.userId,
+          ],
+        );
         await this.insertOutboxEvent(client, {
           tenantId: input.tenantId, factoryId: input.factoryId,
           aggregateId: reservation.item_id, eventType: 'INVENTORY.STOCK_ISSUED',
@@ -1959,9 +1975,10 @@ export class InventoryReservationService {
               id: consumedMovementId,
               item_id: reservation.item_id,
               location_id: reservation.location_id,
+              traceability_unit_id: reservation.traceability_unit_id,
               movement_type: 'ISSUE',
-              quantity: reservation.quantity,
-              quantity_delta: `-${reservation.quantity}`,
+              quantity: remainingQuantity,
+              quantity_delta: '-' + remainingQuantity,
               quantity_after: balance.quantity_on_hand,
             },
           },
@@ -1971,7 +1988,9 @@ export class InventoryReservationService {
       const updated = await client.query<ReservationRow>(
         `
         UPDATE inventory_reservations
-        SET status = $1, transition_idempotency_key = $2,
+        SET status = $1,
+            quantity_consumed = CASE WHEN $1 = 'CONSUMED' THEN quantity ELSE quantity_consumed END,
+            transition_idempotency_key = $2,
             transition_request_hash = $3, consumed_movement_id = $4::uuid,
             updated_at = clock_timestamp()
         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND item_id = $8
@@ -1984,7 +2003,7 @@ export class InventoryReservationService {
         ],
       );
       if (!updated.rows[0]) throw new ConflictException('Work-order material reservation changed concurrently');
-      const units = toUnits(reservation.quantity);
+      const units = toUnits(remainingQuantity);
       quantityByItem.set(reservation.item_id, (quantityByItem.get(reservation.item_id) ?? 0n) + units);
 
       await this.insertOutboxEvent(client, {
@@ -1999,7 +2018,8 @@ export class InventoryReservationService {
           work_order_number: input.workOrderNumber,
           reservation: {
             id: reservation.id, item_id: reservation.item_id,
-            location_id: reservation.location_id, quantity: reservation.quantity,
+            location_id: reservation.location_id, traceability_unit_id: reservation.traceability_unit_id,
+            quantity: remainingQuantity, original_quantity: reservation.quantity,
             status: targetStatus, consumed_movement_id: consumedMovementId,
           },
           balance: { quantity_on_hand: balance.quantity_on_hand, quantity_reserved: balance.quantity_reserved },
