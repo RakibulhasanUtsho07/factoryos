@@ -78,6 +78,9 @@ CREATE TABLE traceability_label_issues (
 );
 CREATE INDEX idx_traceability_label_issue_unit_created
   ON traceability_label_issues (tenant_id, factory_id, unit_id, created_at DESC, id DESC);
+CREATE INDEX idx_traceability_label_issue_item_created
+  ON traceability_label_issues (tenant_id, factory_id, inventory_item_id, created_at DESC, id DESC)
+  WHERE inventory_item_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_traceability_label_issue()
 RETURNS trigger
