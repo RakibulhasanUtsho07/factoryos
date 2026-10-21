@@ -1,0 +1,10 @@
+# CI replay list contains only late migrations deliberately re-applied by the PostgreSQL CI gate.
+# Production releases must pass a separate exact manifest of migrations pending from their source snapshot.
+migrations/151_growth_forecast_evaluation_calibration.sql
+migrations/152_ai_agent_retry_backoff.sql
+migrations/153_saas_money_aggregation_precision.sql
+migrations/154_saas_entitlement_enforcement_modes.sql
+migrations/155_saas_retention_execution_and_erasure_receipts.sql
+migrations/156_tenant_privacy_inventory_and_rls_guardrails.sql
+migrations/157_ot_opcua_read_gateway.sql
+migrations/158_ot_mqtt_modbus_gateway.sql
