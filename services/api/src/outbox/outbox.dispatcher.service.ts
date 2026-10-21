@@ -205,7 +205,7 @@ export class OutboxDispatcherService
 
   async onModuleInit(): Promise<void> {
     if (this.metrics) {
-      await this.refreshQueueMetrics();
+      void this.refreshQueueMetrics();
       this.queueMetricsRefreshTimer = setInterval(
         () => void this.refreshQueueMetrics(),
         OUTBOX_METRICS_INTERVAL_MS,
