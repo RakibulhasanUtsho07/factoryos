@@ -38,7 +38,9 @@ BEGIN
         OR
         (
           location_id IS NOT NULL
+          AND location_quantity_at_count IS NOT NULL
           AND location_quantity_at_count >= 0
+          AND location_version_at_count IS NOT NULL
           AND location_version_at_count > 0
         )
       );
@@ -112,8 +114,11 @@ BEGIN
         OR
         (
           location_id IS NOT NULL
+          AND location_quantity_before IS NOT NULL
           AND location_quantity_before >= 0
+          AND location_counted_quantity IS NOT NULL
           AND location_counted_quantity >= 0
+          AND location_quantity_after IS NOT NULL
           AND location_quantity_after = location_counted_quantity
           AND location_counted_quantity - location_quantity_before = quantity_delta
         )
