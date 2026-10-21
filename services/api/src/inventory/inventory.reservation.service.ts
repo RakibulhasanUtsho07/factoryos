@@ -1153,7 +1153,9 @@ export class InventoryReservationService {
         r.id::text AS id, r.tenant_id::text AS tenant_id,
         r.factory_id::text AS factory_id, r.item_id::text AS item_id,
         r.location_id::text AS location_id,
-        r.quantity::text AS quantity, r.status, r.idempotency_key,
+        r.quantity::text AS quantity, r.remaining_quantity::text AS remaining_quantity,
+        r.consumed_quantity::text AS consumed_quantity, r.released_quantity::text AS released_quantity,
+        r.status, r.idempotency_key,
         r.request_hash, r.reference_type, r.reference_id::text AS reference_id,
         r.notes, r.transition_idempotency_key, r.transition_request_hash,
         r.consumed_movement_id::text AS consumed_movement_id,
@@ -1180,6 +1182,10 @@ export class InventoryReservationService {
     const correlationId = this.correlationId(input.requestId, input.traceId);
 
     for (const reservation of reservationsResult.rows) {
+      const transitionQuantity = reservation.remaining_quantity;
+      if (this.decimalToUnits(transitionQuantity) <= 0n) {
+        throw new ConflictException(`Active reservation ${reservation.id} has no remaining quantity`);
+      }
       if (targetStatus === 'CONSUMED' && itemStatuses.get(reservation.item_id) !== 'ACTIVE') {
         throw new ConflictException(`Inventory item for order reservation ${reservation.id} is disabled`);
       }
@@ -1195,7 +1201,7 @@ export class InventoryReservationService {
       if (reservation.location_id) {
         await this.decreaseLocationReserved(
           client, input.tenantId, input.factoryId, reservation.item_id,
-          reservation.location_id, reservation.quantity,
+          reservation.location_id, transitionQuantity,
         );
       }
       // Set/clear the location context for every child so a previous bin cannot leak.
@@ -1214,7 +1220,7 @@ export class InventoryReservationService {
           RETURNING quantity_on_hand::text AS quantity_on_hand,
                     quantity_reserved::text AS quantity_reserved
           `,
-          [reservation.quantity, input.tenantId, input.factoryId, reservation.item_id],
+          [transitionQuantity, input.tenantId, input.factoryId, reservation.item_id],
         );
         balance = result.rows[0];
       } else {
@@ -1259,7 +1265,7 @@ export class InventoryReservationService {
           `,
           [
             input.tenantId, input.factoryId, reservation.item_id, reservation.location_id,
-            reservation.quantity, balance.quantity_on_hand, movementKey, transitionHash,
+            transitionQuantity, balance.quantity_on_hand, movementKey, transitionHash,
             reservation.id, reservation.notes, input.userId, correlationId,
           ],
         );
