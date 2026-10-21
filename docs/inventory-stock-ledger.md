@@ -95,7 +95,7 @@ The allocator locks the inventory item first, then aggregate and candidate locat
 
 On `CONFIRMED -> IN_PROGRESS`, each child consumes from its assigned bin: bin reserved and on-hand values are updated together, and its immutable `ISSUE` movement/outbox carry the source `location_id`. Cancellation before production releases every child and restores each bin's reserved amount without changing on-hand stock. Tenant/factory scoping, forced RLS, immutable history, deferred aggregate/bin consistency, audit attempts and transactional outbox evidence remain in force.
 
-This slice implements deterministic bin spreading, not the full SRS allocation policy: FEFO/FIFO and lot/serial-aware selection remain follow-on work. Directed picking is covered in the location-policy section above, and min/max replenishment is covered below.
+Migration 160 extends deterministic bin spreading with policy-aware material identity selection: FEFO prioritizes the earliest eligible expiry, FIFO uses receipt order, LOT/SERIAL policies fail closed when identity evidence or eligible BIN stock is missing, and item/sector policy overrides resolve before the factory fallback. Directed picking remains covered in the location-policy section above, and min/max replenishment is covered below.
 
 ## Min/max reorder policy and replenishment recommendations (migration 081)
 
@@ -128,3 +128,7 @@ Lot/serial identity registration and product genealogy are implemented as a scop
 Each reservation stores immutable original quantity and conserved `remaining_quantity + consumed_quantity + released_quantity`. `POST /inventory/items/:itemId/reservations/:reservationId/transition` with `target_status=CONSUMED` and optional `quantity` records a partial or full issue in `inventory_reservation_consumptions`; a repeated idempotency key returns the original movement/evidence without consuming again. The first released production work order uses the same identity-aware allocator; completing/cancelling the work order consumes/releases each child-bin reservation inside the work-order lifecycle transaction. Deferred PostgreSQL guards reconcile aggregate, bin and tracked-identity reservations at transaction commit.
 
 PostgreSQL schema contract: `services/api/test/inventory-wms-allocation.sql`. The CI workflow applies and reapplies migration 160 and executes the WMS allocation schema contract.
+
+## Acceptance evidence and boundary
+
+The API unit regressions cover FEFO ordering, stock quantity precision, partial issue quantity conservation, same-key issue replay, and split-bin reservation replay. The PostgreSQL contract script verifies migration-160 DDL, deferred balance guards, append-only issue evidence, lot/serial eligibility checks, and transfer identity enforcement. These checks do not themselves constitute a live two-session load test; the release gate remains the full PostgreSQL CI migration chain plus an environment-backed concurrent-reservation and first-production-order scenario.
