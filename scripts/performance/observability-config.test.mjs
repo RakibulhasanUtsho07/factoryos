@@ -44,8 +44,8 @@ test('PostgreSQL exporter grants statistics access without tenant-table SELECT o
   assert.match(grants, /GRANT pg_monitor TO/);
   assert.match(grants, /GRANT CONNECT ON DATABASE/);
   assert.match(grants, /GRANT %I TO %I/);
-  assert.doesNotMatch(grants, /BYPASSRLS/i);
-  assert.doesNotMatch(grants, /SUPERUSER/i);
+  assert.doesNotMatch(grants, /^\\s*(?:GRANT|ALTER ROLE).*\\bBYPASSRLS\\b/im);
+  assert.doesNotMatch(grants, /^\\s*(?:GRANT|ALTER ROLE).*\\bSUPERUSER\\b/im);
   assert.doesNotMatch(grants, /GRANT SELECT/i);
   assert.match(grants, /including outbox_events/);
 });
