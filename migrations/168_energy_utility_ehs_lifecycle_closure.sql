@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS utility_meter_source_bindings (
   CONSTRAINT fk_utility_source_binding_approver FOREIGN KEY(approved_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_utility_source_binding_adapter CHECK(vendor_adapter IN ('REST_POLL','OPC_UA','MQTT','MODBUS','FILE_IMPORT','MANUAL_IMPORT')),
   CONSTRAINT chk_utility_source_binding_factor CHECK(factor_to_meter_unit > 0),
-  CONSTRAINT chk_utility_source_binding_poll CHECK(polling_interval_seconds IS NULL OR polling_interval_seconds BETWEEN 5 AND 86400),
+  CONSTRAINT chk_utility_source_binding_poll CHECK((vendor_adapter IN ('REST_POLL','OPC_UA','MODBUS') AND polling_interval_seconds BETWEEN 5 AND 86400) OR (vendor_adapter NOT IN ('REST_POLL','OPC_UA','MODBUS') AND (polling_interval_seconds IS NULL OR polling_interval_seconds BETWEEN 5 AND 86400))),
   CONSTRAINT chk_utility_source_binding_status CHECK(status IN ('DRAFT','ACTIVE','INACTIVE','RETIRED')),
   CONSTRAINT chk_utility_source_binding_metadata CHECK(jsonb_typeof(config_metadata)='object'),
   CONSTRAINT chk_utility_source_binding_approval CHECK(
@@ -435,6 +435,7 @@ BEGIN
   OR NEW.source_unit_code IS DISTINCT FROM OLD.source_unit_code OR NEW.factor_to_meter_unit IS DISTINCT FROM OLD.factor_to_meter_unit
   OR NEW.polling_interval_seconds IS DISTINCT FROM OLD.polling_interval_seconds
   OR NEW.credential_reference IS DISTINCT FROM OLD.credential_reference OR NEW.config_metadata IS DISTINCT FROM OLD.config_metadata
+  OR (NEW.status IS NOT DISTINCT FROM OLD.status AND ROW(NEW.approved_by_user_id,NEW.approved_at) IS DISTINCT FROM ROW(OLD.approved_by_user_id,OLD.approved_at))
   OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
   OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id OR NEW.created_at IS DISTINCT FROM OLD.created_at
   OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id THEN
@@ -485,7 +486,8 @@ BEGIN
   OR NEW.threshold_value IS DISTINCT FROM OLD.threshold_value OR NEW.threshold_unit_code IS DISTINCT FROM OLD.threshold_unit_code
   OR NEW.severity IS DISTINCT FROM OLD.severity OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
   OR NEW.request_hash IS DISTINCT FROM OLD.request_hash OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
-  OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id THEN
+  OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
+  OR (NEW.status IS NOT DISTINCT FROM OLD.status AND ROW(NEW.approved_by_user_id,NEW.approved_at) IS DISTINCT FROM ROW(OLD.approved_by_user_id,OLD.approved_at)) THEN
   RAISE EXCEPTION 'Threshold policy definition is immutable; create a new policy code for changed settings' USING ERRCODE='23514';
  END IF;
  IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
@@ -707,7 +709,8 @@ BEGIN
   OR NEW.sds_review_due_at IS DISTINCT FROM OLD.sds_review_due_at OR NEW.handling_instructions IS DISTINCT FROM OLD.handling_instructions
   OR NEW.emergency_instructions IS DISTINCT FROM OLD.emergency_instructions OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
   OR NEW.request_hash IS DISTINCT FROM OLD.request_hash OR NEW.created_by_user_id IS DISTINCT FROM OLD.created_by_user_id
-  OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id THEN
+  OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
+  OR (NEW.status IS NOT DISTINCT FROM OLD.status AND ROW(NEW.approved_by_user_id,NEW.approved_at) IS DISTINCT FROM ROW(OLD.approved_by_user_id,OLD.approved_at)) THEN
   RAISE EXCEPTION 'SDS revision is immutable; create a new revision for document or hazard changes' USING ERRCODE='23514';
  END IF;
  IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
