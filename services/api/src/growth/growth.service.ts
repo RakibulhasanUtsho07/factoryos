@@ -1032,13 +1032,57 @@ export class GrowthService {
     const result = await this.database.transaction(
       { tenantId, userId },
       async client => {
-        const opportunity = await client.query<{ status: string; constraints_snapshot: Record<string, unknown> }>(
-          'SELECT status, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
+        const opportunity = await client.query<{ status: string; currency: string; constraints_snapshot: Record<string, unknown> }>(
+          'SELECT status, currency, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
           [opportunityId, tenantId, factoryId],
         );
         if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
         if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
           throw new ConflictException('Scenarios may only be run against accepted or in-progress hypotheses');
+        }
+        let baselineSourceObservation: Record<string, unknown> | null = null;
+        if (dto.baseline_source_observation_id) {
+          this.validateUuid(dto.baseline_source_observation_id, 'baseline_source_observation_id');
+          const sourceResult = await client.query<{
+            id: string; source_kind: string; adapter_version: string; metric_key: string;
+            unit: string; value: string; observed_at: string; source_record_ref: string;
+            source_revision_hash: string; observation_hash: string; evidence_id: string;
+          }>(
+            `SELECT id::text AS id,source_kind,adapter_version,metric_key,unit,value::text AS value,
+                    observed_at::text AS observed_at,source_record_ref,source_revision_hash,
+                    observation_hash,evidence_id::text AS evidence_id
+               FROM growth_kpi_source_observations
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND opportunity_id=$4
+              FOR SHARE`,
+            [dto.baseline_source_observation_id, tenantId, factoryId, opportunityId],
+          );
+          const source = sourceResult.rows[0];
+          if (!source) throw new NotFoundException('Pinned baseline KPI observation was not found in this Growth opportunity');
+          if (source.source_kind !== 'FINANCIAL_FACT'
+            || source.adapter_version !== 'factoryos.growth.source-of-record.v1'
+            || source.metric_key !== 'finance.actual_revenue') {
+            throw new BadRequestException('A financial sensitivity scenario baseline can only pin a versioned finance.actual_revenue observation');
+          }
+          if (!opportunity.rows[0].currency || source.unit !== opportunity.rows[0].currency) {
+            throw new ConflictException('Pinned revenue observation currency must match the Growth opportunity currency');
+          }
+          if (new Date(source.observed_at).getTime() > vintage.getTime()) {
+            throw new BadRequestException('A baseline source observation must be captured no later than the scenario data vintage');
+          }
+          if (Number(source.value) !== dto.baseline_revenue) {
+            throw new ConflictException('baseline_revenue must equal the pinned source-of-record observation value');
+          }
+          const expectedRef = `factoryos://growth/source-observations/${source.id}`;
+          if (dto.baseline_source_ref.trim() !== expectedRef) {
+            throw new BadRequestException('baseline_source_ref must exactly identify the pinned source observation');
+          }
+          baselineSourceObservation = {
+            id: source.id, source_kind: source.source_kind, adapter_version: source.adapter_version,
+            metric_key: source.metric_key, unit: source.unit, value: source.value,
+            observed_at: new Date(source.observed_at).toISOString(),
+            source_record_ref: source.source_record_ref, source_revision_hash: source.source_revision_hash,
+            observation_hash: source.observation_hash, evidence_id: source.evidence_id,
+          };
         }
         const evidenceResult = await client.query<{ reference_ref: string | null; citation_url: string | null }>(
           'SELECT reference_ref, citation_url FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
@@ -1059,6 +1103,7 @@ export class GrowthService {
           canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
           ...inputs,
           projected_constraint_metrics: dto.projected_constraint_metrics ?? null,
+          baseline_source_observation: baselineSourceObservation,
           constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
         };
         inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
