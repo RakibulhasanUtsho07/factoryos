@@ -182,12 +182,12 @@ export class FinanceWorkbenchService {
             COALESCE(sum(amount) FILTER(WHERE fact_type='TAX_LIABILITY'),0) AS tax_liability,
             COALESCE(sum(amount) FILTER(WHERE fact_type='AR_OPEN' AND due_at < $3),0) AS overdue_receivables,
             COALESCE(sum(amount) FILTER(WHERE fact_type='AP_OPEN' AND due_at < $3),0) AS overdue_payables,
-            COALESCE(sum(amount) FILTER(WHERE fact_type='AR_OPEN' AND due_at <= $4),0) AS scheduled_receivables,
+            COALESCE(sum(amount) FILTER(WHERE fact_type='AR_OPEN' AND due_at > $3 AND due_at <= $4),0) AS scheduled_receivables,
             COALESCE(sum(amount) FILTER(WHERE fact_type='SHIPMENT_MILESTONE' AND due_at > $3 AND due_at <= $4),0) AS scheduled_shipments,
-            COALESCE(sum(amount) FILTER(WHERE fact_type='AP_OPEN' AND due_at <= $4),0) AS scheduled_payables,
-            COALESCE(sum(amount) FILTER(WHERE fact_type='OPEN_PO_COMMITMENT' AND due_at <= $4),0) AS scheduled_commitments,
-            COALESCE(sum(amount) FILTER(WHERE fact_type='LC_EXPOSURE' AND due_at <= $4),0) AS scheduled_lc,
-            COALESCE(sum(amount) FILTER(WHERE fact_type='TAX_LIABILITY' AND due_at <= $4),0) AS scheduled_tax
+            COALESCE(sum(amount) FILTER(WHERE fact_type='AP_OPEN' AND due_at > $3 AND due_at <= $4),0) AS scheduled_payables,
+            COALESCE(sum(amount) FILTER(WHERE fact_type='OPEN_PO_COMMITMENT' AND due_at > $3 AND due_at <= $4),0) AS scheduled_commitments,
+            COALESCE(sum(amount) FILTER(WHERE fact_type='LC_EXPOSURE' AND due_at > $3 AND due_at <= $4),0) AS scheduled_lc,
+            COALESCE(sum(amount) FILTER(WHERE fact_type='TAX_LIABILITY' AND due_at > $3 AND due_at <= $4),0) AS scheduled_tax
           FROM p GROUP BY currency
         )
         SELECT currency,receivables::text,payables::text,bank_balance::text,inventory_value::text,
