@@ -312,7 +312,7 @@ AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_advanced_profile()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_active_count INTEGER;
 BEGIN
@@ -371,7 +371,7 @@ BEFORE INSERT OR UPDATE OR DELETE ON quality_fabric_scoring_profiles
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_advanced_profile();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_sampling_profile_binding()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_type TEXT;
 BEGIN
@@ -406,7 +406,7 @@ BEFORE UPDATE OF aql_profile_id,fabric_scoring_profile_id ON quality_inspections
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_sampling_profile_binding();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_aql_sample_run()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_inspection quality_inspections%ROWTYPE;
   v_profile quality_aql_profiles%ROWTYPE;
@@ -452,7 +452,7 @@ BEFORE INSERT OR UPDATE OR DELETE ON quality_aql_sample_runs
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_aql_sample_run();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_fabric_roll_score()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_inspection quality_inspections%ROWTYPE;
   v_profile quality_fabric_scoring_profiles%ROWTYPE;
@@ -498,7 +498,7 @@ BEFORE INSERT OR UPDATE OR DELETE ON quality_fabric_roll_scores
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_fabric_roll_score();
 
 CREATE OR REPLACE FUNCTION factoryos_require_advanced_quality_evidence()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_decision TEXT;
   v_roll_count INTEGER;
@@ -534,7 +534,7 @@ BEFORE UPDATE OF status ON quality_inspections
 FOR EACH ROW EXECUTE FUNCTION factoryos_require_advanced_quality_evidence();
 
 CREATE OR REPLACE FUNCTION factoryos_record_quality_supplier_defect()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_supplier UUID;
   v_receipt UUID;
@@ -696,7 +696,7 @@ BEFORE INSERT ON quality_supplier_quality_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_supplier_event_source();
 
 CREATE OR REPLACE FUNCTION factoryos_prevent_quality_advanced_evidence_mutation()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$$
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'advanced quality evidence is append-only' USING ERRCODE='55000';
 END;
