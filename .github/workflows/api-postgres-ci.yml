@@ -199,10 +199,6 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/162_plm_eco_effective_dated_revision_integration.sql
 
-          echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
-            -v ON_ERROR_STOP=1 -f services/api/test/mrp-finite-capacity-planning-contract.sql
-
           echo "Reapplying finite-capacity planning migration to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
@@ -430,6 +426,10 @@ jobs:
           # This contract also checks demo-role grants, so run it after the development role seeds.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
+
+          echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/mrp-finite-capacity-planning-contract.sql
 
           # B19 tests clone only this dedicated, idle template DB.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" \
