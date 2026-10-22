@@ -39,7 +39,7 @@ interface SourcePlanRow extends QueryResultRow {
 }
 interface DemandRow extends QueryResultRow {
   order_id: string; order_line_id: string; order_number: string; order_line_number: number;
-  product_id: string; product_code: string; product_name: string; product_version_id: string;
+  product_id: string; product_code: string; product_name: string; style_code: string | null; size_code: string | null; product_version_id: string;
   product_version_number: number; need_by_date: string; quantity: string;
   has_unresolved_material_shortage: boolean; material_available_date: string | null;
 }
@@ -304,7 +304,7 @@ export class MrpFiniteCapacityService {
           (MAX(r.projected_available_date) FILTER (WHERE r.shortage_quantity>0 AND r.projected_available_date IS NOT NULL))::text AS material_available_date
          FROM mrp_plan_requirements r WHERE r.plan_id=$1 AND r.tenant_id=$2 AND r.factory_id=$3
          GROUP BY r.order_id,r.order_line_id,r.order_number,r.order_line_number,r.product_id,r.product_code,
-          r.product_name,r.product_version_id,r.product_version_number,r.need_by_date,r.remaining_finished_quantity
+          r.product_name,r.style_code,r.size_code,r.product_version_id,r.product_version_number,r.need_by_date,r.remaining_finished_quantity
          ORDER BY r.need_by_date,r.order_number,r.order_line_number,r.order_line_id`,
         [sourceId, tenantId, factoryId],
       );
@@ -365,7 +365,7 @@ export class MrpFiniteCapacityService {
         calendarEntryId: row.calendar_entry_id, capacityDate: row.capacity_date,
         shiftTemplateId: row.shift_template_id, shiftCode: row.shift_code, shiftStartMinute: row.shift_start_minute,
         shiftMinutes: row.shift_minutes, workCentreId: row.work_centre_id, workCentreCode: row.work_centre_code,
-        lineCode: row.line_code, availableMinutes: row.available_minutes, parallelLines: row.parallel_lines,
+        lineCode: row.line_code, availableMinutes: Math.min(row.available_minutes, row.shift_minutes), parallelLines: row.parallel_lines,
         capacityUnitsPerHour: row.capacity_units_per_hour,
       }));
       const shiftIds = [...new Set(slots.map((slot) => slot.shiftTemplateId))];
@@ -450,17 +450,17 @@ export class MrpFiniteCapacityService {
             routing_step_id,step_number,order_number,order_line_number,product_code,product_name,product_version_number,
             need_by_date,planned_quantity,operation_code,operation_name,work_centre_id,work_centre_code,required_skill,
             setup_minutes,run_minutes_per_unit,capacity_units_per_hour,required_minutes,scheduled_minutes,
-            planned_start_date,planned_finish_date,status,conflict_codes
+            planned_start_date,planned_finish_date,status,conflict_codes,style_code,size_code
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::date,$17::numeric,
             $18,$19,$20,$21,$22,$23::numeric,$24::numeric,$25::numeric,$26::numeric,$27::numeric,
-            $28::date,$29::date,$30,$31::jsonb)`,
+            $28::date,$29::date,$30,$31::jsonb,$32,$33)`,
           [operationId, tenantId, factoryId, planId, operation.orderId, operation.orderLineId, operation.productId,
             operation.productVersionId, operation.routingStepId, operation.stepNumber, operation.orderNumber,
             operation.orderLineNumber, operation.productCode, operation.productName, operation.productVersionNumber,
             operation.needByDate, operation.quantity, operation.operationCode, operation.operationName, operation.workCentreId,
             operation.workCentreCode, operation.requiredSkill, step?.setupMinutes ?? '0.0000', step?.runMinutesPerUnit ?? '0.0000',
             step?.capacityUnitsPerHour ?? null, operation.requiredMinutes, operation.scheduledMinutes,
-            operation.plannedStartDate, operation.plannedFinishDate, operation.status, JSON.stringify(operation.conflictCodes)],
+            operation.plannedStartDate, operation.plannedFinishDate, operation.status, JSON.stringify(operation.conflictCodes), operation.styleCode, operation.sizeCode],
         );
         for (const allocation of operation.allocations) {
           await client.query(
