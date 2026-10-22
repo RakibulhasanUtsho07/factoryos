@@ -1826,34 +1826,141 @@ export class GrowthService {
     return { ...transactionResult.evaluation, replayed: !transactionResult.created };
   }
 
-  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string) {
+  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string, domain?: string) {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
-    const result = await this.database.query<GrowthForecastCalibrationObservation & {
-      evaluated_at: string; total_count: string;
-    }>(
-      `SELECT model_version, metric_key, unit, forecast_value::text AS forecast_value,
-          actual_value::text AS actual_value, signed_error::text AS signed_error,
-          absolute_error::text AS absolute_error, squared_error::text AS squared_error,
-          symmetric_percentage_error::text AS symmetric_percentage_error, interval_hit,
-          nominal_coverage_pct::text AS nominal_coverage_pct,
-          evaluated_at::text AS evaluated_at, COUNT(*) OVER ()::text AS total_count
-       FROM growth_forecast_evaluations
-       WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
-       ORDER BY evaluated_at DESC, id DESC LIMIT 10000`,
-      [tenantId, factoryId, opportunityId],
-      { tenantId },
-    );
+    const allowedDomains = ['FINANCE', 'PRODUCTION', 'QUALITY', 'DELIVERY', 'COMMERCIAL', 'OTHER'];
+    if (domain && !allowedDomains.includes(domain)) throw new BadRequestException('Unsupported calibration domain');
+    const [result, policiesResult] = await Promise.all([
+      this.database.query<GrowthForecastCalibrationObservation & {
+        evaluated_at: string; total_count: string;
+      }>(
+        `SELECT model_version, metric_key, unit, forecast_value::text AS forecast_value,
+            actual_value::text AS actual_value, signed_error::text AS signed_error,
+            absolute_error::text AS absolute_error, squared_error::text AS squared_error,
+            symmetric_percentage_error::text AS symmetric_percentage_error, interval_hit,
+            nominal_coverage_pct::text AS nominal_coverage_pct,
+            evaluated_at::text AS evaluated_at, COUNT(*) OVER ()::text AS total_count
+         FROM growth_forecast_evaluations
+         WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
+         ORDER BY evaluated_at DESC, id DESC LIMIT 10000`,
+        [tenantId, factoryId, opportunityId],
+        { tenantId },
+      ),
+      this.database.query<{
+        id: string; domain: string; model_version: string; metric_key: string; unit: string;
+        policy_version: number | string; minimum_sample_count: number | string;
+        max_mean_absolute_error: string; max_root_mean_squared_error: string;
+        max_absolute_mean_error: string; max_mean_symmetric_percentage_error_pct: string;
+        max_absolute_calibration_gap_pct_points: string;
+      }>(
+        `SELECT id::text AS id,domain,model_version,metric_key,unit,policy_version,minimum_sample_count,
+            max_mean_absolute_error::text AS max_mean_absolute_error,
+            max_root_mean_squared_error::text AS max_root_mean_squared_error,
+            max_absolute_mean_error::text AS max_absolute_mean_error,
+            max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
+            max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points
+           FROM growth_forecast_calibration_policies
+          WHERE tenant_id=$1 AND factory_id=$2 AND status='APPROVED'
+            AND ($3::text IS NULL OR domain=$3)
+          ORDER BY domain,model_version,metric_key,unit,policy_version DESC`,
+        [tenantId, factoryId, domain ?? null],
+        { tenantId },
+      ),
+    ]);
     const totalCount = Number(result.rows[0]?.total_count ?? 0);
     const observations = result.rows.map(({ total_count: _totalCount, evaluated_at: _evaluatedAt, ...row }) => row);
+    const summaries = summarizeGrowthForecastCalibration(observations);
+    const policies = policiesResult.rows;
+    const calibration = summaries.map(bucket => {
+      const candidates = policies.filter(policy => policy.model_version === bucket.model_version
+        && policy.metric_key === bucket.metric_key && policy.unit === bucket.unit);
+      const domains = [...new Set(candidates.map(policy => policy.domain))];
+      if (!domain && domains.length > 1) {
+        return {
+          ...bucket,
+          calibration_policy: null,
+          error_threshold_assessment: 'DOMAIN_REQUIRED',
+          error_threshold_failures: [],
+          interval_threshold_assessment: bucket.nominal_coverage_pct === null
+            ? (bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED')
+            : 'POLICY_NOT_SELECTED',
+        };
+      }
+      if (!candidates.length) {
+        return {
+          ...bucket,
+          calibration_policy: null,
+          error_threshold_assessment: 'NO_APPROVED_POLICY',
+          error_threshold_failures: [],
+          interval_threshold_assessment: bucket.nominal_coverage_pct === null
+            ? (bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED')
+            : 'NO_APPROVED_POLICY',
+        };
+      }
+      const selected = [...candidates].sort((a, b) => Number(b.policy_version) - Number(a.policy_version))[0];
+      if (!selected) {
+        return { ...bucket, calibration_policy: null, error_threshold_assessment: 'NO_APPROVED_POLICY',
+          error_threshold_failures: [], interval_threshold_assessment: 'NO_APPROVED_POLICY' };
+      }
+      const minSamples = Number(selected.minimum_sample_count);
+      const policySummary = {
+        id: selected.id, domain: selected.domain, policy_version: Number(selected.policy_version),
+        minimum_sample_count: minSamples,
+        thresholds: {
+          max_mean_absolute_error: Number(selected.max_mean_absolute_error),
+          max_root_mean_squared_error: Number(selected.max_root_mean_squared_error),
+          max_absolute_mean_error: Number(selected.max_absolute_mean_error),
+          max_mean_symmetric_percentage_error_pct: Number(selected.max_mean_symmetric_percentage_error_pct),
+          max_absolute_calibration_gap_pct_points: Number(selected.max_absolute_calibration_gap_pct_points),
+        },
+      };
+      if (bucket.sample_count < minSamples) {
+        return {
+          ...bucket, calibration_policy: policySummary,
+          error_threshold_assessment: 'INSUFFICIENT_POLICY_SAMPLE', error_threshold_failures: [],
+          interval_threshold_assessment: bucket.nominal_coverage_pct === null
+            ? (bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED')
+            : bucket.interval_sample_count < minSamples ? 'INSUFFICIENT_INTERVAL_SAMPLE' : 'NOT_ASSESSED',
+        };
+      }
+      const failures: string[] = [];
+      if (bucket.mean_absolute_error > policySummary.thresholds.max_mean_absolute_error) failures.push('MEAN_ABSOLUTE_ERROR');
+      if (bucket.root_mean_squared_error > policySummary.thresholds.max_root_mean_squared_error) failures.push('ROOT_MEAN_SQUARED_ERROR');
+      if (Math.abs(bucket.mean_error) > policySummary.thresholds.max_absolute_mean_error) failures.push('ABSOLUTE_BIAS');
+      if (bucket.mean_symmetric_percentage_error_pct > policySummary.thresholds.max_mean_symmetric_percentage_error_pct) failures.push('MEAN_SMAPE_PERCENT');
+      let intervalAssessment: string;
+      if (bucket.nominal_coverage_pct === null) {
+        intervalAssessment = bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED';
+      } else if (bucket.interval_sample_count < minSamples) {
+        intervalAssessment = 'INSUFFICIENT_INTERVAL_SAMPLE';
+      } else if (bucket.calibration_gap_pct_points === null) {
+        intervalAssessment = 'INTERVAL_COVERAGE_UNAVAILABLE';
+      } else if (Math.abs(bucket.calibration_gap_pct_points) > policySummary.thresholds.max_absolute_calibration_gap_pct_points) {
+        intervalAssessment = 'EXCEEDS_APPROVED_COVERAGE_THRESHOLD';
+      } else {
+        intervalAssessment = 'WITHIN_APPROVED_COVERAGE_THRESHOLD';
+      }
+      if (intervalAssessment === 'EXCEEDS_APPROVED_COVERAGE_THRESHOLD') failures.push('ABSOLUTE_CALIBRATION_GAP');
+      return {
+        ...bucket,
+        calibration_policy: policySummary,
+        error_threshold_assessment: failures.some(failure => failure !== 'ABSOLUTE_CALIBRATION_GAP')
+          ? 'EXCEEDS_APPROVED_ERROR_THRESHOLDS' : 'WITHIN_APPROVED_ERROR_THRESHOLDS',
+        error_threshold_failures: failures.filter(failure => failure !== 'ABSOLUTE_CALIBRATION_GAP'),
+        interval_threshold_assessment: intervalAssessment,
+      };
+    });
     return {
       method_version: GROWTH_FORECAST_EVALUATION_VERSION,
       minimum_calibration_sample_size: GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
       observations_included: observations.length,
       total_observations: totalCount,
       sample_window_truncated: totalCount > observations.length,
-      interpretation: 'Observed out-of-sample errors and declared interval coverage only. No model is auto-refit; a heuristic range without nominal coverage is not labelled a calibrated prediction interval.',
-      calibration: summarizeGrowthForecastCalibration(observations),
+      policy_domain_filter: domain ?? null,
+      approved_policy_count: policies.length,
+      interpretation: 'Observed out-of-sample errors only. An approved domain policy evaluates point-error thresholds; declared interval coverage is evaluated separately. A heuristic range has no nominal coverage and is never described as a confidence or calibrated prediction interval. The 10-observation floor is an operational minimum, not a statistical power guarantee. No model is automatically refit.',
+      calibration,
     };
   }
 
