@@ -191,6 +191,74 @@ export function evaluateGrowthForecast(input: GrowthForecastEvaluationInput): Gr
   };
 }
 
+export interface GrowthEmpiricalResidualThreshold {
+  method_version: 'factoryos.growth.absolute-residual-order-statistic.v1';
+  requested_coverage_pct: number;
+  sample_count: number;
+  minimum_sample_count: number;
+  required_order_rank: number;
+  threshold_value: string | null;
+  status: 'INSUFFICIENT_SAMPLE' | 'TAIL_RANK_UNAVAILABLE' | 'ESTIMATED_FROM_HELD_OUT_RESIDUALS';
+  interpretation: string;
+}
+
+/**
+ * Descriptive held-out residual order statistic. It is not a confidence interval
+ * and does not guarantee future coverage unless the hold-out residuals satisfy
+ * the relevant exchangeability/stationarity assumptions.
+ */
+export function deriveGrowthEmpiricalResidualThreshold(
+  absoluteErrors: Array<string | number>,
+  requestedCoveragePct = 90,
+  minimumSampleCount = GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
+): GrowthEmpiricalResidualThreshold {
+  if (!Number.isFinite(requestedCoveragePct) || requestedCoveragePct < 50 || requestedCoveragePct > 99.99) {
+    throw new Error('FORECAST_RESIDUAL_COVERAGE_TARGET_INVALID');
+  }
+  if (!Number.isInteger(minimumSampleCount) || minimumSampleCount < GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE) {
+    throw new Error('FORECAST_RESIDUAL_MINIMUM_SAMPLE_INVALID');
+  }
+  const residuals = absoluteErrors.map(value => {
+    const parsed = scaledInput('absolute_error', value);
+    if (parsed < 0n) throw new Error('FORECAST_RESIDUAL_ERROR_MUST_BE_NONNEGATIVE');
+    return parsed;
+  }).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const rank = Math.ceil((residuals.length + 1) * requestedCoveragePct / 100);
+  const common = {
+    method_version: 'factoryos.growth.absolute-residual-order-statistic.v1' as const,
+    requested_coverage_pct: Number(requestedCoveragePct.toFixed(4)),
+    sample_count: residuals.length,
+    minimum_sample_count: minimumSampleCount,
+    required_order_rank: rank,
+    threshold_value: null as string | null,
+  };
+  if (residuals.length < minimumSampleCount) {
+    return {
+      ...common, status: 'INSUFFICIENT_SAMPLE',
+      interpretation: 'Too few held-out observations for the configured operational floor. No residual threshold is emitted.',
+    };
+  }
+  if (rank > residuals.length) {
+    return {
+      ...common, status: 'TAIL_RANK_UNAVAILABLE',
+      interpretation: 'The finite-sample order-statistic rank exceeds the observed sample. Collect more held-out observations; do not extrapolate a tail threshold.',
+    };
+  }
+  const threshold = residuals[rank - 1];
+  if (threshold === undefined) {
+    return {
+      ...common, status: 'TAIL_RANK_UNAVAILABLE',
+      interpretation: 'The requested residual order statistic is not present in the observed sample.',
+    };
+  }
+  return {
+    ...common,
+    threshold_value: formatScaled(threshold),
+    status: 'ESTIMATED_FROM_HELD_OUT_RESIDUALS',
+    interpretation: 'Empirical absolute-residual threshold from held-out outcomes. It is not a confidence interval and its future coverage is not guaranteed under drift or non-exchangeable observations.',
+  };
+}
+
 export function summarizeGrowthForecastCalibration(
   observations: GrowthForecastCalibrationObservation[],
 ): GrowthForecastCalibrationBucket[] {
