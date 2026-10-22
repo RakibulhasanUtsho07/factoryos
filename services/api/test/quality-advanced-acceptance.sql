@@ -55,7 +55,7 @@ BEGIN
 
   IF position('v_balance IS DISTINCT FROM NEW.quantity_after'
        IN pg_get_functiondef('factoryos_quality_guard_inventory_issue()'::regprocedure))=0
-    OR position('NEW.quantity_after <> 0'
+    OR position('NEW.quantity_after<>0'
        IN pg_get_functiondef('factoryos_quality_guard_inventory_issue()'::regprocedure))=0 THEN
     RAISE EXCEPTION 'Quality scrap/return guard does not reconcile the post-issue aggregate balance';
   END IF;
