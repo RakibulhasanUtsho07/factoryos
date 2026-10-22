@@ -231,4 +231,20 @@ describe('MRP finite-capacity deterministic arithmetic', () => {
     });
   });
 
+  it('marks a newly added operation inside the frozen horizon as a violation', () => {
+    const added = scheduleMrpFiniteCapacity({
+      horizonStart: HORIZON_START, horizonEnd: HORIZON_END, frozenHorizonDays: 2,
+      jobs: [job()], slots: [slot()], skillPools: [],
+    });
+    const diff = diffMrpCapacityPlans({
+      horizonStart: HORIZON_START, frozenHorizonDays: 2, baseline: [], current: added,
+    });
+    expect(diff).toHaveLength(1);
+    expect(diff[0]).toMatchObject({
+      change: 'ADDED',
+      frozen_horizon: true,
+      frozen_horizon_violation: true,
+    });
+  });
+
 });
