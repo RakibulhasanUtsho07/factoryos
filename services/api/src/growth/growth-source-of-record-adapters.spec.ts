@@ -72,7 +72,6 @@ describe('versioned growth source-of-record adapters', () => {
       good_quantity: '970.0000',
       scrap_quantity: '30.0000',
       unit: 'PCS',
-      unit: 'PCS',
       yield_percentage: '97.0000',
       cumulative_yield_percentage: '95.5000',
       request_hash: 'b'.repeat(64),
