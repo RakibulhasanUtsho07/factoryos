@@ -110,7 +110,7 @@ SELECT set_config('app.user_id',(SELECT id::text FROM users WHERE email='manager
 
 -- Even a properly separated reviewer cannot change the snapshot as part of
 -- approval: the submitted hash is the evidence being approved.
-DO $
+DO $finance_close_snapshot_guard$
 BEGIN
   BEGIN
     UPDATE finance_close_periods
@@ -123,7 +123,7 @@ BEGIN
     RAISE EXCEPTION 'Finance-close snapshot was changed during approval';
   EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL;
   END;
-END $;
+END $finance_close_snapshot_guard$;
 
 UPDATE finance_close_periods
 SET status='APPROVED',row_version=3,
