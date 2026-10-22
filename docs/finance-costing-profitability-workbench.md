@@ -16,7 +16,7 @@
 
 ## API
 
-All routes require the existing verified user/tenant/factory context, IAM permissions, transaction-local tenant RLS and audit correlation.
+All routes require the existing verified user/tenant/factory context, IAM permissions, transaction-local tenant RLS and audit correlation. Every POST route requires an `Idempotency-Key`; lifecycle retries are bound to an immutable request hash and optimistic row version.
 
 | Method | Route | Permission | Behavior |
 |---|---|---|---|

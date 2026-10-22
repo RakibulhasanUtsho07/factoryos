@@ -100,10 +100,11 @@ export class FinanceWorkbenchController {
     @Req() request: FinanceWorkbenchRequest,
     @Param('periodId', new ParseUUIDPipe()) periodId: string,
     @Body() body: FinanceCloseActionDto,
+    @Headers('idempotency-key') key?: string,
   ) {
     const ctx = requestContext(request);
     return this.service.refreshClosePeriod(
-      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, ctx.eventContext,
+      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, key ?? null, ctx.eventContext,
     );
   }
 
@@ -115,10 +116,11 @@ export class FinanceWorkbenchController {
     @Req() request: FinanceWorkbenchRequest,
     @Param('periodId', new ParseUUIDPipe()) periodId: string,
     @Body() body: FinanceCloseActionDto,
+    @Headers('idempotency-key') key?: string,
   ) {
     const ctx = requestContext(request);
     return this.service.submitClosePeriod(
-      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, ctx.eventContext,
+      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, key ?? null, ctx.eventContext,
     );
   }
 
@@ -130,10 +132,11 @@ export class FinanceWorkbenchController {
     @Req() request: FinanceWorkbenchRequest,
     @Param('periodId', new ParseUUIDPipe()) periodId: string,
     @Body() body: FinanceCloseActionDto,
+    @Headers('idempotency-key') key?: string,
   ) {
     const ctx = requestContext(request);
     return this.service.recallClosePeriod(
-      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, ctx.eventContext,
+      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, key ?? null, ctx.eventContext,
     );
   }
 
@@ -145,11 +148,12 @@ export class FinanceWorkbenchController {
     @Req() request: FinanceWorkbenchRequest,
     @Param('periodId', new ParseUUIDPipe()) periodId: string,
     @Body() body: FinanceCloseActionDto,
+    @Headers('idempotency-key') key?: string,
   ) {
     const ctx = requestContext(request);
     if (body.expected_version < 1) throw new BadRequestException('expected_version must be positive');
     return this.service.approveClosePeriod(
-      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, ctx.eventContext,
+      ctx.userId, ctx.tenantId, ctx.factoryId, periodId, body, key ?? null, ctx.eventContext,
     );
   }
 }

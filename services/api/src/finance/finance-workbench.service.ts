@@ -350,10 +350,18 @@ export class FinanceWorkbenchService {
     factoryId: string,
     periodId: string,
     dto: FinanceCloseActionDto,
+    idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
   ) {
     const reason = this.requireReason(dto.reason);
-    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, ctx, async (client, row) => {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const requestHash = financeRequestHash({
+      action: 'REFRESH',
+      period_id: periodId,
+      expected_version: dto.expected_version,
+      reason,
+    });
+    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, idempotencyKey, requestHash, ctx, async (client, row) => {
       this.assertVersion(row, dto.expected_version);
       if (row.status !== 'DRAFT') throw new ConflictException('Only a draft finance-close snapshot can be refreshed');
       const snapshot = await this.buildCloseSnapshot(client, tenantId, factoryId, row.currency.trim(), row.period_start, row.period_end);
@@ -366,7 +374,7 @@ export class FinanceWorkbenchService {
       );
       if (!result.rows[0]) throw new ConflictException('Finance-close snapshot was concurrently changed');
       const updated = result.rows[0];
-      await this.insertHistory(client, updated, 'REFRESHED', userId, reason, { readiness: snapshot.readiness });
+      await this.insertHistory(client, updated, 'REFRESHED', userId, reason, { readiness: snapshot.readiness }, idempotencyKey, requestHash);
       await this.recordTransition(client, updated, userId, ctx, 'FINANCE_CLOSE_REFRESHED', 'REFRESH', reason);
       return this.publicClosePeriod(updated);
     });
@@ -378,10 +386,18 @@ export class FinanceWorkbenchService {
     factoryId: string,
     periodId: string,
     dto: FinanceCloseActionDto,
+    idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
   ) {
     const reason = this.requireReason(dto.reason);
-    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, ctx, async (client, row) => {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const requestHash = financeRequestHash({
+      action: 'SUBMIT',
+      period_id: periodId,
+      expected_version: dto.expected_version,
+      reason,
+    });
+    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, idempotencyKey, requestHash, ctx, async (client, row) => {
       this.assertVersion(row, dto.expected_version);
       if (row.status !== 'DRAFT') throw new ConflictException('Only a draft finance-close snapshot can be submitted');
       const snapshot = await this.buildCloseSnapshot(client, tenantId, factoryId, row.currency.trim(), row.period_start, row.period_end);
@@ -396,7 +412,7 @@ export class FinanceWorkbenchService {
       );
       if (!result.rows[0]) throw new ConflictException('Finance-close snapshot was concurrently changed');
       const updated = result.rows[0];
-      await this.insertHistory(client, updated, 'SUBMITTED', userId, reason, { readiness: snapshot.readiness });
+      await this.insertHistory(client, updated, 'SUBMITTED', userId, reason, { readiness: snapshot.readiness }, idempotencyKey, requestHash);
       await this.recordTransition(client, updated, userId, ctx, 'FINANCE_CLOSE_SUBMITTED', 'SUBMIT', reason);
       return this.publicClosePeriod(updated);
     });
@@ -408,10 +424,18 @@ export class FinanceWorkbenchService {
     factoryId: string,
     periodId: string,
     dto: FinanceCloseActionDto,
+    idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
   ) {
     const reason = this.requireReason(dto.reason);
-    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, ctx, async (client, row) => {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const requestHash = financeRequestHash({
+      action: 'RECALL',
+      period_id: periodId,
+      expected_version: dto.expected_version,
+      reason,
+    });
+    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, idempotencyKey, requestHash, ctx, async (client, row) => {
       this.assertVersion(row, dto.expected_version);
       if (row.status !== 'SUBMITTED') throw new ConflictException('Only a submitted finance-close snapshot can be recalled');
       if (row.submitted_by_user_id !== userId) {
@@ -429,7 +453,7 @@ export class FinanceWorkbenchService {
       );
       if (!result.rows[0]) throw new ConflictException('Finance-close snapshot was concurrently changed');
       const updated = result.rows[0];
-      await this.insertHistory(client, updated, 'RECALLED', userId, reason, { readiness: snapshot.readiness });
+      await this.insertHistory(client, updated, 'RECALLED', userId, reason, { readiness: snapshot.readiness }, idempotencyKey, requestHash);
       await this.recordTransition(client, updated, userId, ctx, 'FINANCE_CLOSE_RECALLED', 'RECALL', reason);
       return this.publicClosePeriod(updated);
     });
@@ -441,10 +465,18 @@ export class FinanceWorkbenchService {
     factoryId: string,
     periodId: string,
     dto: FinanceCloseActionDto,
+    idempotencyKeyInput: string | null,
     ctx: FinanceEventContext,
   ) {
     const reason = this.requireReason(dto.reason);
-    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, ctx, async (client, row) => {
+    const idempotencyKey = this.requireIdempotencyKey(idempotencyKeyInput);
+    const requestHash = financeRequestHash({
+      action: 'APPROVE',
+      period_id: periodId,
+      expected_version: dto.expected_version,
+      reason,
+    });
+    return this.withLockedPeriod(userId, tenantId, factoryId, periodId, idempotencyKey, requestHash, ctx, async (client, row) => {
       this.assertVersion(row, dto.expected_version);
       if (row.status !== 'SUBMITTED') throw new ConflictException('Only a submitted finance-close snapshot can be approved');
       if (row.submitted_by_user_id === userId || row.created_by_user_id === userId) {
@@ -465,7 +497,7 @@ export class FinanceWorkbenchService {
       );
       if (!result.rows[0]) throw new ConflictException('Finance-close snapshot was concurrently changed');
       const updated = result.rows[0];
-      await this.insertHistory(client, updated, 'APPROVED', userId, reason, { snapshot_hash: currentHash });
+      await this.insertHistory(client, updated, 'APPROVED', userId, reason, { snapshot_hash: currentHash }, idempotencyKey, requestHash);
       await this.recordTransition(client, updated, userId, ctx, 'FINANCE_CLOSE_APPROVED', 'APPROVE', reason);
       return this.publicClosePeriod(updated);
     });
@@ -476,6 +508,8 @@ export class FinanceWorkbenchService {
     tenantId: string,
     factoryId: string,
     periodId: string,
+    idempotencyKey: string,
+    requestHash: string,
     ctx: FinanceEventContext,
     callback: (client: PoolClient, row: ClosePeriodRow) => Promise<T>,
   ): Promise<T> {
@@ -490,6 +524,17 @@ export class FinanceWorkbenchService {
       );
       const row = found.rows[0];
       if (!row) throw new NotFoundException('Finance-close period was not found in the active factory scope');
+      const prior = await client.query<{ request_hash: string; action: string }>(
+        `SELECT request_hash,action FROM finance_close_period_history
+        WHERE tenant_id=$1 AND factory_id=$2 AND close_period_id=$3 AND idempotency_key=$4`,
+        [tenantId, factoryId, periodId, idempotencyKey],
+      );
+      if (prior.rows[0]) {
+        if (prior.rows[0].request_hash.trim() !== requestHash) {
+          throw new ConflictException('Idempotency-Key was already used for a different finance-close transition');
+        }
+        return { ...this.publicClosePeriod(row), replayed: true } as T;
+      }
       return callback(client, row);
     });
   }
@@ -667,13 +712,16 @@ export class FinanceWorkbenchService {
     actorUserId: string,
     reason: string,
     details: Record<string, unknown>,
+    idempotencyKey = row.idempotency_key,
+    requestHash = row.request_hash.trim(),
   ) {
     await client.query(
       `INSERT INTO finance_close_period_history(
-        tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,details
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+        tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,
+        idempotency_key,request_hash,details
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
       [row.tenant_id, row.factory_id, row.id, Number(row.row_version), action, actorUserId,
-        reason, row.snapshot_hash.trim(), JSON.stringify(details)],
+        reason, row.snapshot_hash.trim(), idempotencyKey, requestHash, JSON.stringify(details)],
     );
   }
 

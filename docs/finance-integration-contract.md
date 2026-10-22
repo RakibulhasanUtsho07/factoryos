@@ -6,7 +6,7 @@ This is a read-side integration and financial-input contract. An external accoun
 
 ## API contract
 
-All endpoints use the authenticated tenant and factory context, PostgreSQL tenant RLS, IAM permission guards and existing request/trace correlation. The caller cannot choose a different tenant or factory via the financial fact body. Write calls require the **Idempotency-Key** header; a repeated key with a different normalized request returns **409 Conflict**.
+All endpoints use the authenticated tenant and factory context, PostgreSQL tenant RLS, IAM permission guards and existing request/trace correlation. The caller cannot choose a different tenant or factory via the financial fact body. Write calls require the **Idempotency-Key** header; a repeated key with a different normalized request returns **409 Conflict**. Finance-close refresh/submit/recall/approve transitions also persist the key/request hash in append-only close history: an identical retry is a no-op replay, while key reuse for different transition input conflicts; the expected row version still applies to first execution.
 
 | Method and route | Permission | Purpose |
 |---|---|---|

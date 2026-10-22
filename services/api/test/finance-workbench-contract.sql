@@ -69,12 +69,12 @@ INSERT INTO finance_close_periods(
 );
 
 INSERT INTO finance_close_period_history(
-  tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,details
+  tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,idempotency_key,request_hash,details
 ) VALUES(
   'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
   'da200000-0000-4000-8000-000000000001',1,'CREATED',
   '921382b8-e83f-43ab-a576-e3db6a06b70c','Create finance close contract fixture',
-  repeat('b',64),'{"contract_test":true}'::jsonb
+  repeat('b',64),'close-created-history',repeat('1',64),'{"contract_test":true}'::jsonb
 );
 
 -- Valid submission is versioned; an attempted self-approval must fail at the
@@ -85,12 +85,12 @@ SET status='SUBMITTED',row_version=2,
 WHERE id='da200000-0000-4000-8000-000000000001';
 
 INSERT INTO finance_close_period_history(
-  tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,details
+  tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,idempotency_key,request_hash,details
 ) VALUES(
   'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
   'da200000-0000-4000-8000-000000000001',2,'SUBMITTED',
   '921382b8-e83f-43ab-a576-e3db6a06b70c','Submit finance close contract fixture',
-  repeat('b',64),'{"contract_test":true}'::jsonb
+  repeat('b',64),'close-submitted-history',repeat('2',64),'{"contract_test":true}'::jsonb
 );
 
 DO $$
@@ -132,12 +132,12 @@ SET status='APPROVED',row_version=3,
 WHERE id='da200000-0000-4000-8000-000000000001';
 
 INSERT INTO finance_close_period_history(
-  tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,details
+  tenant_id,factory_id,close_period_id,event_version,action,actor_user_id,reason,snapshot_hash,idempotency_key,request_hash,details
 ) VALUES(
   'faaab63d-c447-46ce-950d-deebdd7f5f30','24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
   'da200000-0000-4000-8000-000000000001',3,'APPROVED',
   (SELECT id FROM users WHERE email='manager@factoryos.local'),
-  'Independent finance close review approved',repeat('b',64),'{"contract_test":true}'::jsonb
+  'Independent finance close review approved',repeat('b',64),'close-approved-history',repeat('3',64),'{"contract_test":true}'::jsonb
 );
 
 DO $$

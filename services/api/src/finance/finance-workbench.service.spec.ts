@@ -124,9 +124,12 @@ describe('FinanceWorkbenchService', () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  function setupClose(initialRow: Record<string, unknown>, approvedRow: Record<string, unknown>) {
-    const query = jest.fn(async (statement: string, _values?: unknown[]) => {
-      void _values;
+  function setupClose(initialRow: Record<string, unknown>, approvedRow: Record<string, unknown>, priorHistory: Array<{ request_hash: string; action: string }> = []) {
+    const query = jest.fn(async (statement: string, values?: unknown[]) => {
+      void values;
+      if (statement.includes('SELECT request_hash,action FROM finance_close_period_history')) {
+        return { rows: priorHistory };
+      }
       if (statement.includes('SELECT * FROM finance_close_periods')) return { rows: [initialRow] };
       if (statement.includes("UPDATE finance_close_periods SET status='APPROVED'")) return { rows: [approvedRow] };
       return { rows: [] };
@@ -182,7 +185,7 @@ describe('FinanceWorkbenchService', () => {
     await expect(service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
       expected_version: 2,
       reason: 'Reviewed month-end close evidence',
-    }, { requestId: null, traceId: null })).rejects.toThrow(
+    }, 'approve-stale-facts-1', { requestId: null, traceId: null })).rejects.toThrow(
       'Source facts or readiness changed after submission; the submitter must recall, refresh and resubmit',
     );
     expect(query.mock.calls.some(([statement]) => statement.includes("SET status='APPROVED'"))).toBe(false);
@@ -203,7 +206,7 @@ describe('FinanceWorkbenchService', () => {
     const result = await service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
       expected_version: 2,
       reason: 'Independent month-end reconciliation approved',
-    }, { requestId: null, traceId: null });
+    }, 'approve-close-success-1', { requestId: null, traceId: null });
 
     expect(result.status).toBe('APPROVED');
     expect(result.row_version).toBe(3);
@@ -211,6 +214,51 @@ describe('FinanceWorkbenchService', () => {
     expect(query.mock.calls.some(([statement]) => statement.includes('INSERT INTO finance_close_period_history'))).toBe(true);
     expect(query.mock.calls.some(([statement]) => statement.includes('INSERT INTO audit_events'))).toBe(true);
     expect(query.mock.calls.some(([statement]) => statement.includes('INSERT INTO outbox_events'))).toBe(true);
+  });
+
+  it('replays a repeated close transition key without reapplying the approval', async () => {
+    const initial = closeRow();
+    const reason = 'Independent month-end reconciliation approved';
+    const key = 'approve-close-replay-1';
+    const hash = financeRequestHash({
+      action: 'APPROVE',
+      period_id: 'close-1',
+      expected_version: 2,
+      reason,
+    });
+    const { service, query } = setupClose(initial, closeRow({ status: 'APPROVED', row_version: 3 }), [
+      { request_hash: hash, action: 'APPROVED' },
+    ]);
+    const snapshotBuilder = jest.fn(async () => approvedSnapshot);
+    Object.defineProperty(service, 'buildCloseSnapshot', { value: snapshotBuilder });
+
+    const result = await service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
+      expected_version: 2,
+      reason,
+    }, key, { requestId: null, traceId: null });
+
+    expect(result.replayed).toBe(true);
+    expect(result.status).toBe('SUBMITTED');
+    expect(snapshotBuilder).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([statement]) => statement.includes(`SET status='APPROVED'`))).toBe(false);
+  });
+
+  it('rejects reuse of a close transition key for a different normalized request', async () => {
+    const initial = closeRow();
+    const { service, query } = setupClose(initial, closeRow({ status: 'APPROVED', row_version: 3 }), [
+      { request_hash: 'f'.repeat(64), action: 'APPROVED' },
+    ]);
+    const snapshotBuilder = jest.fn(async () => approvedSnapshot);
+    Object.defineProperty(service, 'buildCloseSnapshot', { value: snapshotBuilder });
+
+    await expect(service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
+      expected_version: 2,
+      reason: 'Independent month-end reconciliation approved',
+    }, 'approve-close-reuse-1', { requestId: null, traceId: null })).rejects.toThrow(
+      'Idempotency-Key was already used for a different finance-close transition',
+    );
+    expect(snapshotBuilder).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([statement]) => statement.includes(`SET status='APPROVED'`))).toBe(false);
   });
 
   it('blocks the close creator from approving their own submitted snapshot', async () => {
@@ -221,7 +269,7 @@ describe('FinanceWorkbenchService', () => {
     await expect(service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
       expected_version: 2,
       reason: 'Attempted self approval should fail',
-    }, { requestId: null, traceId: null })).rejects.toThrow(
+    }, 'approve-close-self-1', { requestId: null, traceId: null })).rejects.toThrow(
       'Finance-close creator/submitter cannot approve their own close',
     );
     expect(query.mock.calls.some(([statement]) => statement.includes("SET status='APPROVED'"))).toBe(false);
