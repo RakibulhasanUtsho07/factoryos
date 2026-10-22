@@ -2,7 +2,7 @@
 
 **Task:** 19 — Finance costing, profitability and working-capital workbench  
 **Branch:** `rakibul-hasan`  
-**Candidate code/migration/test/workflow SHA:** `d3fd811fdacdf99f04eae5ab33bb6fc5e9dff4df`  
+**Candidate code/migration/test/workflow SHA:** `b7dd771a3c607b7edbf89ae71fcf602a9477d887`  
 **Implementation status:** Backend and database contracts committed  
 **Automated exact-SHA CI status:** PENDING VERIFICATION — do not mark PASS until the run's API and PostgreSQL jobs conclude successfully  
 **Finance-owner close acceptance:** OPEN
@@ -21,12 +21,12 @@
 
 ## Automated evidence required
 
-After the candidate SHA is available, capture the actual GitHub Actions run and verify:
+The candidate SHA above is the current branch head. The repository status query returned no combined status checks, and the available commit/workflow query returned no PR-triggered run for that SHA. Therefore the exact-SHA automated result is still **PENDING VERIFICATION**. Capture the push-triggered GitHub Actions result and verify:
 1. API lint/build and the workbench service spec pass.
 2. PostgreSQL CI applies the entire ordered migration manifest including migration 170, runs `finance-integration.sql` and `finance-workbench-contract.sql`, and passes the forced-RLS, maker-checker, approved-snapshot immutability and cross-tenant checks.
 3. SRS/HLD/Blueprint traceability validation passes after the evidence matrix change.
 
-The GitHub repository connector exposed no direct-push workflow run/check result at evidence authoring time; therefore this document intentionally records CI as **PENDING VERIFICATION** rather than fabricating a green result.
+The available repository metadata did not expose a completed push-triggered workflow result for this candidate; therefore this document intentionally records CI as **PENDING VERIFICATION** rather than fabricating a green result.
 
 ## Acceptance still required from Finance
 
