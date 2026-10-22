@@ -15,7 +15,7 @@ DECLARE
   v_scale INTEGER;
   v_pair RECORD;
   v_key_table TEXT;
-  v_function TEXT;
+  v_trigger RECORD;
   v_required_quantity NUMERIC(18,4);
   v_report_yield NUMERIC(7,4);
   v_trigger_enabled BOOLEAN;
@@ -72,10 +72,12 @@ BEGIN
   FOREACH v_table IN ARRAY ARRAY[
     'purchase_orders',
     'purchase_order_lines',
+    'purchase_order_status_history',
     'goods_receipts',
     'goods_receipt_lines',
     'uom_units',
     'uom_conversion_rules',
+    'uom_conversion_events',
     'product_definitions',
     'product_versions',
     'product_bom_lines',
@@ -95,9 +97,14 @@ BEGIN
     'traceability_units',
     'product_genealogy_events',
     'quality_inspections',
+    'quality_inspection_events',
+    'quality_defects',
+    'quality_defect_events',
+    'quality_audit_events',
     'quality_holds',
     'quality_dispositions',
     'quality_rework_orders',
+    'quality_rework_events',
     'audit_events',
     'outbox_events'
   ] LOOP
@@ -108,15 +115,16 @@ BEGIN
 
   -- Core mutable records must remain tenant-isolated even when this contract runs as a DB owner.
   FOREACH v_table IN ARRAY ARRAY[
-    'purchase_orders', 'purchase_order_lines', 'goods_receipts', 'goods_receipt_lines',
-    'uom_units', 'uom_conversion_rules', 'product_definitions', 'product_versions',
+    'purchase_orders', 'purchase_order_lines', 'purchase_order_status_history', 'goods_receipts', 'goods_receipt_lines',
+    'uom_units', 'uom_conversion_rules', 'uom_conversion_events', 'product_definitions', 'product_versions',
     'product_bom_lines', 'product_bom_alternates', 'product_routing_steps',
     'work_orders', 'work_order_operations', 'work_order_events',
     'work_order_material_requirements', 'work_order_material_reservations',
     'inventory_reservations', 'inventory_stock_balances', 'inventory_movements',
     'order_production_reports', 'production_output_postings', 'traceability_units',
-    'product_genealogy_events', 'quality_inspections', 'quality_holds',
-    'quality_dispositions', 'quality_rework_orders'
+    'product_genealogy_events', 'traceability_unit_status_events',
+    'quality_inspections', 'quality_inspection_events', 'quality_defects', 'quality_defect_events',
+    'quality_holds', 'quality_dispositions', 'quality_rework_orders', 'quality_rework_events'
   ] LOOP
     SELECT c.relrowsecurity, c.relforcerowsecurity
     INTO v_enabled, v_forced
@@ -220,11 +228,13 @@ BEGIN
 
   -- Writes across the lifecycle must carry unique replay keys; exact key replays cannot duplicate stock.
   FOREACH v_key_table IN ARRAY ARRAY[
-    'purchase_orders', 'goods_receipts', 'uom_conversion_rules', 'product_versions',
+    'purchase_orders', 'goods_receipts', 'uom_units', 'uom_conversion_rules', 'uom_conversion_events',
+    'manufacturing_work_centres', 'product_versions', 'product_bom_alternates',
     'work_orders', 'work_order_events', 'inventory_reservations',
     'order_production_reports', 'production_output_postings', 'quality_inspections',
-    'quality_dispositions', 'quality_rework_orders', 'traceability_units',
-    'product_genealogy_events'
+    'quality_inspection_events', 'quality_defects', 'quality_defect_events',
+    'quality_dispositions', 'quality_rework_orders', 'quality_rework_events', 'traceability_units',
+    'traceability_unit_status_events', 'product_genealogy_events'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1
@@ -290,6 +300,58 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Order output must remain linked to its final production work-order operation';
   END IF;
+
+  -- Require the guard rails that make the isolated domain test fixtures composable.
+  -- These checks deliberately assert enabled triggers and deferred commit-time evidence,
+  -- rather than accepting table existence as proof of lifecycle integrity.
+  FOR v_trigger IN
+    SELECT required.table_name, required.trigger_name, required.must_defer
+    FROM (VALUES
+      ('purchase_orders', 'trg_purchase_orders_lifecycle_guard', FALSE),
+      ('goods_receipts', 'trg_goods_receipts_lifecycle_guard', FALSE),
+      ('goods_receipts', 'ctr_goods_receipt_posted_integrity', TRUE),
+      ('inventory_movements', 'trg_goods_receipt_stock_movement_guard', FALSE),
+      ('uom_units', 'trg_uom_unit_immutable', FALSE),
+      ('uom_units', 'ctr_uom_unit_evidence', TRUE),
+      ('uom_conversion_rules', 'trg_uom_conversion_rule_guard', FALSE),
+      ('uom_conversion_rules', 'ctr_uom_conversion_evidence', TRUE),
+      ('uom_conversion_events', 'ctr_uom_conversion_event_evidence', TRUE),
+      ('product_versions', 'trg_product_version_guard', FALSE),
+      ('product_versions', 'trg_product_version_release_readiness', FALSE),
+      ('product_bom_lines', 'trg_product_bom_line_guard', FALSE),
+      ('product_bom_alternates', 'trg_product_bom_alternate_guard', FALSE),
+      ('product_routing_steps', 'trg_product_routing_step_guard', FALSE),
+      ('work_orders', 'trg_work_order_lifecycle', FALSE),
+      ('work_order_operations', 'trg_work_order_operation_lifecycle', FALSE),
+      ('work_order_events', 'trg_work_order_event_payload_guard', FALSE),
+      ('production_output_postings', 'trg_production_output_posting_guard', FALSE),
+      ('traceability_units', 'trg_traceability_unit_guard', FALSE),
+      ('traceability_units', 'ctr_traceability_unit_evidence', TRUE),
+      ('product_genealogy_events', 'trg_product_genealogy_guard', FALSE),
+      ('product_genealogy_events', 'ctr_product_genealogy_event_evidence', TRUE),
+      ('quality_inspections', 'trg_quality_inspection_target_guard', FALSE),
+      ('quality_inspections', 'ctr_quality_inspection_evidence', TRUE),
+      ('quality_holds', 'trg_quality_hold_guard', FALSE),
+      ('quality_holds', 'trg_quality_sync_traceability_hold', FALSE),
+      ('quality_dispositions', 'trg_quality_disposition_guard', FALSE),
+      ('quality_rework_orders', 'trg_quality_rework_order_lifecycle', FALSE),
+      ('quality_rework_orders', 'ctr_quality_rework_state_event', TRUE),
+      ('quality_rework_events', 'ctr_quality_rework_event_audit', TRUE)
+    ) AS required(table_name, trigger_name, must_defer)
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_trigger t
+      WHERE t.tgrelid = to_regclass(v_trigger.table_name)
+        AND t.tgname = v_trigger.trigger_name
+        AND NOT t.tgisinternal
+        AND t.tgenabled <> 'D'
+        AND (NOT v_trigger.must_defer OR (t.tgdeferrable AND t.tginitdeferred))
+    ) THEN
+      RAISE EXCEPTION 'Manufacturing lifecycle trigger %.% is missing, disabled or not deferred as required',
+        v_trigger.table_name, v_trigger.trigger_name;
+    END IF;
+  END LOOP;
 
   -- A small deterministic quantity oracle spans BOM, yield, wastage and the database's 4dp policy.
   v_required_quantity := CEIL(
