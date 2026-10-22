@@ -6,7 +6,7 @@ ALTER TABLE research_release_channels
   ALTER COLUMN active_release_id DROP NOT NULL,
   ALTER COLUMN active_version DROP NOT NULL;
 ALTER TABLE research_release_channels
-  DROP CONSTRAINT chk_research_release_channel_version;
+  DROP CONSTRAINT IF EXISTS chk_research_release_channel_version;
 ALTER TABLE research_release_channels
   ADD CONSTRAINT chk_research_release_channel_active_pair CHECK (
     (active_release_id IS NULL AND active_version IS NULL)
