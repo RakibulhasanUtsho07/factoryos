@@ -77,6 +77,27 @@ BEGIN
     RAISE EXCEPTION 'RESEARCH_RELEASE_ACTIVE_POINTER_GUARD_MISSING';
   END IF;
 
+  IF position('RESEARCH_RELEASE_CHANNEL_EMPTY_TARGET_REQUIRES_RETRACTION'
+      IN pg_get_functiondef('public.factoryos_guard_research_release_channel()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_CHANNEL_GUARD_MISSING';
+  END IF;
+
+  IF position('RETRACTED' IN pg_get_constraintdef((
+      SELECT oid FROM pg_constraint WHERE conname='chk_research_release_lifecycle_event_type'
+    ))) = 0
+     OR position('RESEARCH_RELEASE_RETRACTION_CHANNEL_NOT_EMPTY'
+      IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0
+     OR position('RESEARCH_RELEASE_RETRACTION_REQUIRES_RECENT_ACTIVE_EVENT'
+      IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_HISTORY_GUARDS_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='174_research_release_retraction'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_MIGRATION_NOT_REGISTERED';
+  END IF;
+
   IF position('RESEARCH_RELEASE_LIFECYCLE_EVENTS_ARE_APPEND_ONLY'
       IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0
      OR position('RESEARCH_RELEASE_LIFECYCLE_EVENT_TARGET_IS_NOT_ACTIVE'
