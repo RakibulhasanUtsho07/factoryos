@@ -427,6 +427,11 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
 
+          # Migration 163 is first applied before development roles are seeded; replay it here so its role grants
+          # are also exercised against the fully seeded test fixture before checking the capacity contract.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
+
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/mrp-finite-capacity-planning-contract.sql
