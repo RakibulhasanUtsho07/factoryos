@@ -72,6 +72,21 @@ export interface WorkOrderImpactRow extends QueryResultRow {
   impact_type: string;
 }
 
+export function areProductAffectedOrderSnapshotsEqual(
+  submitted: WorkOrderImpactRow[],
+  current: WorkOrderImpactRow[],
+): boolean {
+  const canonical = (rows: WorkOrderImpactRow[]) => rows.map((row) => ({
+    id: row.id,
+    product_version_id: row.product_version_id,
+    status: row.status,
+    planned_start_date: row.planned_start_date,
+    due_date: row.due_date,
+    impact_type: row.impact_type,
+  }));
+  return JSON.stringify(canonical(submitted)) === JSON.stringify(canonical(current));
+}
+
 interface RevisionDiff {
   from_version_id: string | null;
   to_version_id: string;
@@ -860,15 +875,7 @@ export class ProductChangeOrdersService {
     submitted: WorkOrderImpactRow[],
     current: WorkOrderImpactRow[],
   ): boolean {
-    const canonical = (rows: WorkOrderImpactRow[]) => rows.map((row) => ({
-      id: row.id,
-      product_version_id: row.product_version_id,
-      status: row.status,
-      planned_start_date: row.planned_start_date,
-      due_date: row.due_date,
-      impact_type: row.impact_type,
-    }));
-    return JSON.stringify(canonical(submitted)) === JSON.stringify(canonical(current));
+    return areProductAffectedOrderSnapshotsEqual(submitted, current);
   }
 
   private async replaceAffectedOrderSnapshot(
