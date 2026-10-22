@@ -554,6 +554,7 @@ $immutable$;
 CREATE OR REPLACE FUNCTION factoryos_guard_ehs_drill()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Emergency-drill records are retained; use lifecycle transitions' USING ERRCODE='55000'; END IF;
  IF TG_OP='INSERT' THEN
   IF NEW.status<>'PLANNED' OR NEW.row_version<>1 OR NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
     OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
@@ -724,7 +725,7 @@ BEGIN
  END IF;
  SELECT * INTO v_binding FROM utility_meter_source_bindings b
  WHERE b.tenant_id=NEW.tenant_id AND b.factory_id=NEW.factory_id AND b.meter_id=NEW.meter_id
-   AND b.status='ACTIVE' AND (NEW.source_event_id LIKE b.source_system_code||':%')
+   AND b.status='ACTIVE' AND (split_part(NEW.source_event_id,':',1)=b.source_system_code)
  FOR SHARE;
  IF NOT FOUND THEN RAISE EXCEPTION 'Vendor reading requires an ACTIVE approved source binding' USING ERRCODE='23514'; END IF;
  SELECT * INTO v_meter FROM utility_meters m WHERE m.id=NEW.meter_id AND m.tenant_id=NEW.tenant_id AND m.factory_id=NEW.factory_id;
