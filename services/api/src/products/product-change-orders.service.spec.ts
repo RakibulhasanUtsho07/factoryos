@@ -2,7 +2,11 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
-import { ProductChangeOrdersService, diffProductRevisionRows } from './product-change-orders.service';
+import {
+  areProductAffectedOrderSnapshotsEqual,
+  ProductChangeOrdersService,
+  diffProductRevisionRows,
+} from './product-change-orders.service';
 
 const USER = '921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TENANT = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
@@ -122,5 +126,38 @@ describe('diffProductRevisionRows', () => {
       before: before[0],
       after: after[0],
     });
+  });
+});
+
+describe('areProductAffectedOrderSnapshotsEqual', () => {
+  const original = {
+    id: '4c3bb447-25e3-48bd-b0fd-66f5a9fa9ca3',
+    work_order_number: 'WO-1001',
+    product_version_id: 'f6530381-74ad-4f2b-b1bd-3126c2c3a4bc',
+    status: 'RELEASED',
+    planned_start_date: '2027-02-01',
+    due_date: '2027-02-15',
+    impact_type: 'REVISION_REVIEW_BEFORE_START',
+  };
+
+  it('accepts a stable submitted order snapshot', () => {
+    expect(areProductAffectedOrderSnapshotsEqual([original], [{ ...original }])).toBe(true);
+  });
+
+  it.each([
+    ['membership', { ...original, id: 'e49ecb3b-f2cd-48f9-bbb6-1c4b6714c9da' }],
+    ['pinned revision', { ...original, product_version_id: 'a8b3cbb9-966a-4f03-8f33-3dcb7e1184d0' }],
+    ['work-order status', { ...original, status: 'IN_PROGRESS' }],
+    ['planned date', { ...original, planned_start_date: '2027-02-02' }],
+    ['due date', { ...original, due_date: '2027-02-16' }],
+    ['impact classification', { ...original, impact_type: 'SNAPSHOT_CROSSES_EFFECTIVE_DATE' }],
+  ])('rejects a snapshot changed in %s', (_dimension, changed) => {
+    expect(areProductAffectedOrderSnapshotsEqual([original], [changed])).toBe(false);
+  });
+
+  it('detects orders added or removed after submission', () => {
+    const laterOrder = { ...original, id: 'e49ecb3b-f2cd-48f9-bbb6-1c4b6714c9da', work_order_number: 'WO-1002' };
+    expect(areProductAffectedOrderSnapshotsEqual([original], [original, laterOrder])).toBe(false);
+    expect(areProductAffectedOrderSnapshotsEqual([original], [])).toBe(false);
   });
 });
