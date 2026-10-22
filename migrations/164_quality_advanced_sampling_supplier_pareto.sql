@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS quality_sampling_profile_bindings (
     AND observed_nonconforming BETWEEN 0 AND sample_size
   ),
   CONSTRAINT chk_quality_aql_run_decision CHECK (decision IN ('ACCEPT','REJECT','HOLD')),
-  CONSTRAINT chk_quality_aql_run_evidence CHECK (jsonb_typeof(evidence)='object' AND jsonb_object_length(evidence)>0),
+  CONSTRAINT chk_quality_aql_run_evidence CHECK (jsonb_typeof(evidence)='object' AND evidence <> '{}'::jsonb),
   CONSTRAINT chk_quality_aql_run_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
   CONSTRAINT chk_quality_aql_run_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS quality_fabric_roll_scores (
   CONSTRAINT chk_quality_fabric_roll_points CHECK (total_defect_points >= 0 AND points_per_100_square_yards >= 0 AND max_points_snapshot > 0),
   CONSTRAINT chk_quality_fabric_roll_decision CHECK (decision IN ('PASS','HOLD')),
   CONSTRAINT chk_quality_fabric_roll_defects CHECK (jsonb_typeof(defects)='array'),
-  CONSTRAINT chk_quality_fabric_roll_evidence CHECK (jsonb_typeof(evidence)='object' AND jsonb_object_length(evidence)>0),
+  CONSTRAINT chk_quality_fabric_roll_evidence CHECK (jsonb_typeof(evidence)='object' AND evidence <> '{}'::jsonb),
   CONSTRAINT chk_quality_fabric_roll_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
   CONSTRAINT chk_quality_fabric_roll_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
@@ -673,7 +673,7 @@ BEGIN
   IF NEW.affected_quantity IS DISTINCT FROM v_expected_quantity THEN
     RAISE EXCEPTION 'supplier quality event quantity must match the source defect link' USING ERRCODE='23514';
   END IF;
-  IF jsonb_typeof(NEW.evidence)<>'object' OR jsonb_object_length(NEW.evidence)=0 THEN
+  IF jsonb_typeof(NEW.evidence)<>'object' OR NEW.evidence='{}'::jsonb THEN
     RAISE EXCEPTION 'supplier quality event must retain non-empty evidence' USING ERRCODE='23514';
   END IF;
   NEW.evidence:=NEW.evidence || jsonb_build_object(
