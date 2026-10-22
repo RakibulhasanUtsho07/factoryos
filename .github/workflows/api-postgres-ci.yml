@@ -164,6 +164,14 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/160_wms_fefo_lot_serial_partial_issue.sql
 
+          echo "Reapplying PLM/ECO migration to verify immutable revision and approval guard idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/162_product_eco_effective_date_change_orders.sql
+
+          echo "Reapplying finite-capacity MRP migration to verify calendar and snapshot guard idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_scenarios.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/inventory-bin-reservations.sql
 
@@ -190,6 +198,9 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/product-eco-capacity-planning-contract.sql
 
 
           # The target importer is tested against a distinct database with the same reviewed schema.
