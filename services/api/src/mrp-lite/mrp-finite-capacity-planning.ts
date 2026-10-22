@@ -654,11 +654,50 @@ export function diffMrpCapacityPlans(input: {
     const before = baselineMapValue.get(key);
     const after = currentMap.get(key);
     let change: string;
+    const baselineAllocationSignature = (allocations: MrpCapacityBaselineAllocation[]) =>
+      allocations.map((allocation) => ({
+        calendarEntryId: allocation.calendarEntryId,
+        capacityDate: allocation.capacityDate,
+        shiftTemplateId: allocation.shiftTemplateId,
+        workCentreId: allocation.workCentreId,
+        lineCode: allocation.lineCode,
+        allocatedMinutes: allocation.allocatedMinutes,
+        workerAllocations: [...(allocation.workerAllocations ?? [])]
+          .map((worker) => ({ workerId: worker.workerId, allocatedMinutes: worker.allocatedMinutes }))
+          .sort((left, right) => left.workerId.localeCompare(right.workerId)),
+      })).sort((left, right) =>
+        left.capacityDate.localeCompare(right.capacityDate)
+        || left.shiftTemplateId.localeCompare(right.shiftTemplateId)
+        || left.workCentreId.localeCompare(right.workCentreId)
+        || left.lineCode.localeCompare(right.lineCode)
+        || left.calendarEntryId.localeCompare(right.calendarEntryId),
+      );
+    const currentAllocationSignature = (allocations: MrpCapacityAllocation[]) =>
+      allocations.map((allocation) => ({
+        calendarEntryId: allocation.calendarEntryId,
+        capacityDate: allocation.capacityDate,
+        shiftTemplateId: allocation.shiftTemplateId,
+        workCentreId: allocation.workCentreId,
+        lineCode: allocation.lineCode,
+        allocatedMinutes: allocation.allocatedMinutes,
+        workerAllocations: [...allocation.workerAllocations]
+          .map((worker) => ({ workerId: worker.workerId, allocatedMinutes: worker.allocatedMinutes }))
+          .sort((left, right) => left.workerId.localeCompare(right.workerId)),
+      })).sort((left, right) =>
+        left.capacityDate.localeCompare(right.capacityDate)
+        || left.shiftTemplateId.localeCompare(right.shiftTemplateId)
+        || left.workCentreId.localeCompare(right.workCentreId)
+        || left.lineCode.localeCompare(right.lineCode)
+        || left.calendarEntryId.localeCompare(right.calendarEntryId),
+      );
     if (!before) change = 'ADDED';
     else if (!after) change = 'REMOVED';
     else if (before.plannedStartDate !== after.plannedStartDate
       || before.plannedFinishDate !== after.plannedFinishDate
-      || before.status !== after.status) change = 'CHANGED';
+      || before.status !== after.status
+      || before.requiredMinutes !== after.requiredMinutes
+      || JSON.stringify(baselineAllocationSignature(before.allocations))
+        !== JSON.stringify(currentAllocationSignature(after.allocations))) change = 'CHANGED';
     else change = 'UNCHANGED';
     if (change === 'UNCHANGED') continue;
     const frozen = Boolean(before?.plannedStartDate && before.plannedStartDate < cutoff);
