@@ -13,7 +13,7 @@ describe('FinanceWorkbenchService', () => {
       last_completed_at: '2026-10-01T00:00:00.000Z',
       is_active: true,
     }));
-    const query = jest.fn(async (statement: string) => {
+    const query = jest.fn(async (statement: string, _values?: unknown[]) => {
       if (statement.includes('WITH scoped AS (')) {
         return { rows: [{
           period: '2026-09',
