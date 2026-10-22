@@ -29,7 +29,9 @@ export interface FinanceSecretManager {
 export interface FinanceJsonHttpRequest {
   url: string;
   method: 'GET' | 'POST';
-  bearerToken: string;
+  bearerToken?: string;
+  /** Explicit auth header for Vault API calls; provider tokens otherwise use Bearer auth. */
+  authHeader?: { name: 'Authorization' | 'X-Vault-Token'; value: string };
   body?: Record<string, unknown>;
   idempotencyKey?: string;
 }
@@ -134,6 +136,12 @@ export class PinnedFinanceJsonHttpClient implements FinanceJsonHttpClient {
     if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
       throw new Error('FINANCE_ERP_HTTPS_ENDPOINT_REQUIRED');
     }
+    const authHeader = input.authHeader ?? (input.bearerToken
+      ? { name: 'Authorization' as const, value: 'Bearer ' + input.bearerToken }
+      : null);
+    if (!authHeader || !authHeader.value || /[\\r\\n\\u0000-\\u001f\\u007f]/.test(authHeader.value)) {
+      throw new Error('FINANCE_ERP_AUTH_HEADER_INVALID');
+    }
     const pinned = await resolveFinancePinnedAddress(url.hostname, this.allowedHosts, this.allowedIps, this.dnsLookup);
     const body = input.body === undefined ? undefined : Buffer.from(JSON.stringify(input.body), 'utf8');
     if (body && body.length > 3 * 1024 * 1024) throw new Error('FINANCE_ERP_REQUEST_TOO_LARGE');
@@ -147,7 +155,7 @@ export class PinnedFinanceJsonHttpClient implements FinanceJsonHttpClient {
         path: url.pathname + url.search,
         headers: {
           Accept: 'application/json',
-          Authorization: 'Bearer ' + input.bearerToken,
+          [authHeader.name]: authHeader.value,
           ...(body ? { 'Content-Type': 'application/json', 'Content-Length': String(body.length) } : {}),
           ...(input.idempotencyKey ? { 'Idempotency-Key': input.idempotencyKey } : {}),
         },
