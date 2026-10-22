@@ -171,3 +171,4 @@ migrations/160_wms_fefo_lot_serial_partial_issue.sql
 migrations/161_wms_mobile_offline_rfid_label_contract.sql
 migrations/162_plm_eco_effective_dated_revision_integration.sql
 migrations/163_mrp_finite_capacity_planning.sql
+migrations/164_quality_advanced_sampling_supplier_pareto.sql
