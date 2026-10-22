@@ -71,6 +71,8 @@ describe('versioned growth source-of-record adapters', () => {
       created_at: '2026-10-18T14:00:00.000Z',
       good_quantity: '970.0000',
       scrap_quantity: '30.0000',
+      unit: 'PCS',
+      unit: 'PCS',
       yield_percentage: '97.0000',
       cumulative_yield_percentage: '95.5000',
       request_hash: 'b'.repeat(64),
@@ -78,7 +80,7 @@ describe('versioned growth source-of-record adapters', () => {
     expect(resolveProductionOutputMetric(source, 'production.good_quantity')).toMatchObject({
       source_kind: 'PRODUCTION_OUTPUT',
       metric_key: 'production.good_quantity',
-      unit: 'pieces',
+      unit: 'PCS',
       value: '970.00000000',
       observed_at: '2026-10-18T14:00:00.000Z',
       source_record_ref: 'production-output:139e9b4d-c14f-45ec-a2da-471df53c74c3',
