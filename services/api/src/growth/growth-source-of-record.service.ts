@@ -6,6 +6,8 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { GrowthService } from './growth.service';
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
+import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
+import { RecordGrowthOpportunityOutcomeFromSourceDto } from './dto/record-growth-opportunity-outcome-from-source.dto';
 import { SyncGrowthSourceObservationsDto } from './dto/sync-growth-source-observations.dto';
 import { RecordGrowthExperimentResultFromSourceDto } from './dto/record-growth-experiment-result-from-source.dto';
 import {
@@ -291,6 +293,114 @@ export class GrowthSourceOfRecordService {
       { tenantId },
     );
     return { adapter_version: GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION, observations: result.rows };
+  }
+
+  async recordOpportunityOutcomeFromSource(
+    userId: string, tenantId: string, factoryId: string, opportunityId: string,
+    dto: RecordGrowthOpportunityOutcomeFromSourceDto, requestId: string | null, traceId: string | null,
+  ) {
+    this.assertScope(userId, tenantId, factoryId, opportunityId);
+    if (!Array.isArray(dto.kpi_measurements) || dto.kpi_measurements.length < 1 || dto.kpi_measurements.length > 100) {
+      throw new BadRequestException('Provide 1–100 source-backed realized outcome KPI pairs');
+    }
+    const keys = new Set<string>();
+    const observationIds = new Set<string>();
+    for (const pair of dto.kpi_measurements) {
+      if (!/^[a-z][a-z0-9_.-]{0,99}$/.test(pair.metric_key) || keys.has(pair.metric_key)) {
+        throw new BadRequestException('Realized outcome metric keys must be unique lowercase identifiers');
+      }
+      keys.add(pair.metric_key);
+      for (const id of [pair.baseline_observation_id, pair.actual_observation_id]) {
+        if (!isUUID(id) || observationIds.has(id)) {
+          throw new BadRequestException('Baseline and actual source-observation IDs must be unique UUIDs');
+        }
+        observationIds.add(id);
+      }
+      if (pair.target_value !== undefined && (!Number.isFinite(pair.target_value) || Math.abs(pair.target_value) > 1e12)) {
+        throw new BadRequestException('target_value must be finite and within supported bounds');
+      }
+    }
+
+    const result = await this.database.query<{
+      id: string; opportunity_id: string; source_kind: string; adapter_version: string;
+      metric_key: string; unit: string; value: string; observed_at: string;
+      source_record_ref: string; source_revision_hash: string; evidence_id: string;
+    }>(
+      `SELECT id::text AS id,opportunity_id::text AS opportunity_id,source_kind,adapter_version,
+              metric_key,unit,value::text AS value,observed_at::text AS observed_at,
+              source_record_ref,source_revision_hash,evidence_id::text AS evidence_id
+         FROM growth_kpi_source_observations
+        WHERE id=ANY($1::uuid[]) AND tenant_id=$2 AND factory_id=$3 AND opportunity_id=$4`,
+      [[...observationIds], tenantId, factoryId, opportunityId], { tenantId },
+    );
+    if (result.rows.length !== observationIds.size) {
+      throw new NotFoundException('One or more source observations do not belong to this Growth opportunity');
+    }
+
+    const byId = new Map(result.rows.map(row => [row.id, row]));
+    const realizedMetrics: Record<string, number> = {};
+    const evidenceRefs = new Set<string>();
+    const kpiMeasurements: RecordGrowthOpportunityOutcomeDto['kpi_measurements'] = [];
+    let observedAt: string | null = null;
+
+    for (const pair of dto.kpi_measurements) {
+      const baseline = byId.get(pair.baseline_observation_id);
+      const actual = byId.get(pair.actual_observation_id);
+      if (!baseline || !actual) throw new NotFoundException('Baseline or actual source observation was not found');
+      if (baseline.metric_key !== pair.metric_key || actual.metric_key !== pair.metric_key
+        || baseline.unit !== actual.unit || baseline.source_kind !== actual.source_kind
+        || baseline.adapter_version !== GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION
+        || actual.adapter_version !== GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION) {
+        throw new ConflictException('Baseline and actual must share the requested metric, canonical unit, source kind and pinned adapter version');
+      }
+      if (actual.source_kind === 'FINANCIAL_FACT' && !actual.metric_key.startsWith('finance.actual_')) {
+        throw new ConflictException('A Finance forecast, position or commitment cannot be recorded as a realized outcome actual');
+      }
+      const baselineTime = Date.parse(baseline.observed_at);
+      const actualTime = Date.parse(actual.observed_at);
+      if (!Number.isFinite(baselineTime) || !Number.isFinite(actualTime) || baselineTime >= actualTime) {
+        throw new BadRequestException('Each realized actual source observation must be later than its baseline');
+      }
+      const actualTimestamp = new Date(actualTime).toISOString();
+      if (observedAt !== null && observedAt !== actualTimestamp) {
+        throw new BadRequestException('All KPI actual observations in one outcome snapshot must share the same observation timestamp');
+      }
+      observedAt = actualTimestamp;
+
+      const baselineValue = this.toSafeMeasurementNumber(baseline.value);
+      const actualValue = this.toSafeMeasurementNumber(actual.value);
+      realizedMetrics[pair.metric_key] = actualValue;
+      const baselineRef = `factoryos://growth/source-observations/${baseline.id}`;
+      const actualRef = `factoryos://growth/source-observations/${actual.id}`;
+      evidenceRefs.add(baselineRef);
+      evidenceRefs.add(actualRef);
+      kpiMeasurements.push({
+        metric_key: pair.metric_key,
+        unit: actual.unit,
+        direction: pair.direction,
+        baseline_value: baselineValue,
+        actual_value: actualValue,
+        ...(pair.target_value === undefined ? {} : { target_value: pair.target_value }),
+        evidence_ref: actualRef,
+      });
+    }
+
+    const outcomeDto: RecordGrowthOpportunityOutcomeDto = {
+      ...(dto.experiment_result_id ? { experiment_result_id: dto.experiment_result_id } : {}),
+      assessment: dto.assessment,
+      realized_metrics: realizedMetrics,
+      evidence_refs: [...evidenceRefs].sort(),
+      notes: [
+        dto.notes?.trim(),
+        `Source-of-record adapter ${GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION}; values and observation time are derived from immutable KPI evidence.`,
+      ].filter(Boolean).join('\\n').slice(0, 4000),
+      ...(dto.confidence === undefined ? {} : { confidence: dto.confidence }),
+      kpi_measurements: kpiMeasurements,
+      observed_at: observedAt as string,
+    };
+    return this.growth.recordOpportunityOutcome(
+      userId, tenantId, factoryId, opportunityId, outcomeDto, requestId, traceId,
+    );
   }
 
   async recordExperimentResultFromSource(
