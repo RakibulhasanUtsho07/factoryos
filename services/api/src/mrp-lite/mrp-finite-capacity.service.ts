@@ -336,7 +336,7 @@ export class MrpFiniteCapacityService {
       const jobs: MrpCapacityJob[] = demandRows.map((row) => ({
         orderId: row.order_id, orderLineId: row.order_line_id, orderNumber: row.order_number,
         orderLineNumber: row.order_line_number, productCode: row.product_code, productName: row.product_name,
-        productId: row.product_id, productVersionId: row.product_version_id,
+        styleCode: row.style_code, sizeCode: row.size_code, productId: row.product_id, productVersionId: row.product_version_id,
         productVersionNumber: row.product_version_number, needByDate: row.need_by_date,
         quantity: row.quantity, materialAvailableDate: row.material_available_date,
         hasUnresolvedMaterialShortage: row.has_unresolved_material_shortage,
