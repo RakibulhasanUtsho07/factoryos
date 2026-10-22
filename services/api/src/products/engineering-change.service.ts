@@ -12,13 +12,13 @@ interface EcoRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; product_id:string; eco_number:string; title:string; rationale:string;
   source_version_id:string; target_version_id:string; effective_on:string; status:'DRAFT'|'SUBMITTED'|'APPROVED'|'REJECTED';
   row_version:string; source_snapshot:EngineeringSnapshot; target_snapshot:EngineeringSnapshot; revision_diff:Record<string,unknown>;
-  affected_order_count:number; request_hash:string; created_by_user_id:string; decision_note:string|null;
+  affected_order_count:number; request_hash:string; created_by_user_id:string; decision_note:string|null; created_at:string; updated_at:string;
   submit_idempotency_key:string|null; submit_request_hash:string|null; decision_idempotency_key:string|null; decision_request_hash:string|null;
 }
 const ECO_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,product_id::text AS product_id,'+
  'eco_number,title,rationale,source_version_id::text AS source_version_id,target_version_id::text AS target_version_id,'+
  'effective_on::text AS effective_on,status,row_version::text AS row_version,source_snapshot,target_snapshot,revision_diff,'+
- 'affected_order_count,request_hash,created_by_user_id::text AS created_by_user_id,decision_note,'+
+ 'affected_order_count,request_hash,created_by_user_id::text AS created_by_user_id,decision_note,created_at::text AS created_at,updated_at::text AS updated_at,'+
  'submit_idempotency_key,submit_request_hash,decision_idempotency_key,decision_request_hash';
 
 @Injectable()
