@@ -16,47 +16,47 @@ export class EngineeringChangeController {
 
   @Get()
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.read') @RequireFactoryScope()
-  list(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Query('limit') limit?:string) {
+  list(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Query('limit') limit?:string): Promise<unknown> {
     const c=this.context(req); return this.service.list(c.userId,c.tenantId,c.factoryId,productId,limit===undefined?50:Number(limit));
   }
 
   @Post()
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.write') @RequireFactoryScope()
   create(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Body() dto:CreateEngineeringChangeDto,
-    @Headers('idempotency-key') key?:string) {
+    @Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req); return this.service.create(c.userId,c.tenantId,c.factoryId,productId,dto,key??null,c.requestId,c.traceId);
   }
 
   @Get(':ecoId/affected-orders')
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.read') @RequireFactoryScope()
-  affectedOrders(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string) {
+  affectedOrders(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string): Promise<unknown> {
     const c=this.context(req); return this.service.affectedOrders(c.userId,c.tenantId,c.factoryId,productId,ecoId);
   }
 
   @Get(':ecoId')
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.read') @RequireFactoryScope()
-  detail(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string) {
+  detail(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string): Promise<unknown> {
     const c=this.context(req); return this.service.detail(c.userId,c.tenantId,c.factoryId,productId,ecoId);
   }
 
   @Post(':ecoId/submit')
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.write') @RequireFactoryScope()
   submit(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string,
-    @Body() dto:EngineeringChangeReviewDto,@Headers('idempotency-key') key?:string) {
+    @Body() dto:EngineeringChangeReviewDto,@Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req); return this.service.submit(c.userId,c.tenantId,c.factoryId,productId,ecoId,dto,key??null,c.requestId,c.traceId);
   }
 
   @Post(':ecoId/approve')
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.approve') @RequireFactoryScope()
   approve(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string,
-    @Body() dto:EngineeringChangeReviewDto,@Headers('idempotency-key') key?:string) {
+    @Body() dto:EngineeringChangeReviewDto,@Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req); return this.service.decide(c.userId,c.tenantId,c.factoryId,productId,ecoId,'APPROVED',dto,key??null,c.requestId,c.traceId);
   }
 
   @Post(':ecoId/reject')
   @UseGuards(PermissionGuard) @RequirePermission('products.eco.approve') @RequireFactoryScope()
   reject(@Req() req:EcoRequest,@Param('productId',new ParseUUIDPipe()) productId:string,@Param('ecoId',new ParseUUIDPipe()) ecoId:string,
-    @Body() dto:EngineeringChangeReviewDto,@Headers('idempotency-key') key?:string) {
+    @Body() dto:EngineeringChangeReviewDto,@Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req); return this.service.decide(c.userId,c.tenantId,c.factoryId,productId,ecoId,'REJECTED',dto,key??null,c.requestId,c.traceId);
   }
 
