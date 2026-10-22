@@ -463,7 +463,16 @@ export class ProductChangeOrdersService {
       if (draftAlternates.rows.length) throw new ConflictException('ECO cannot release a revision with unauthorized alternate-material contracts');
 
       const diff = await this.revisionDiff(client, tenantId, factoryId, p, row.source_product_version_id, row.proposed_product_version_id, row.effective_date);
-      const impact = await this.replaceAffectedOrderSnapshot(client, row, tenantId, factoryId);
+      const submittedImpact = await this.readAffectedOrderSnapshot(client, row, tenantId, factoryId);
+      const currentImpact = await this.listCurrentAffectedOrders(
+        client, row, tenantId, factoryId,
+      );
+      if (!this.sameAffectedOrderSnapshot(submittedImpact, currentImpact)) {
+        throw new ConflictException(
+          'Open work-order impact changed after ECO submission; reject this ECO and submit a new one to refresh the immutable impact snapshot',
+        );
+      }
+      const impact = submittedImpact;
 
       const futureOverlap = await client.query<{ id: string }>(
         `SELECT id::text AS id FROM product_versions
@@ -773,6 +782,66 @@ export class ProductChangeOrdersService {
     return diffProductRevisionRows(beforeRows, afterRows, key, groupKey);
   }
 
+  private async readAffectedOrderSnapshot(
+    client: PoolClient,
+    row: ChangeOrderRow,
+    tenantId: string,
+    factoryId: string,
+  ): Promise<WorkOrderImpactRow[]> {
+    const result = await client.query<WorkOrderImpactRow>(
+      `SELECT a.work_order_id::text AS id, wo.work_order_number,
+        a.pinned_product_version_id::text AS product_version_id, a.status_at_snapshot AS status,
+        a.planned_start_date::text AS planned_start_date, a.due_date::text AS due_date,
+        a.impact_type
+      FROM product_change_order_affected_orders a
+      JOIN work_orders wo ON wo.id = a.work_order_id
+        AND wo.tenant_id = a.tenant_id AND wo.factory_id = a.factory_id
+      WHERE a.change_order_id = $1 AND a.tenant_id = $2 AND a.factory_id = $3
+      ORDER BY a.planned_start_date, wo.work_order_number, a.work_order_id`,
+      [row.id, tenantId, factoryId],
+    );
+    return result.rows;
+  }
+
+  private async listCurrentAffectedOrders(
+    client: PoolClient,
+    row: ChangeOrderRow,
+    tenantId: string,
+    factoryId: string,
+  ): Promise<WorkOrderImpactRow[]> {
+    const result = await client.query<WorkOrderImpactRow>(
+      `SELECT wo.id::text AS id, wo.work_order_number,
+        wo.product_version_id::text AS product_version_id, wo.status,
+        wo.planned_start_date::text AS planned_start_date, wo.due_date::text AS due_date,
+        CASE WHEN wo.planned_start_date >= $4::date
+          THEN 'REVISION_REVIEW_BEFORE_START' ELSE 'SNAPSHOT_CROSSES_EFFECTIVE_DATE' END AS impact_type
+      FROM work_orders wo
+      WHERE wo.product_id = $1 AND wo.tenant_id = $2 AND wo.factory_id = $3
+        AND wo.status IN ('DRAFT','RELEASED','IN_PROGRESS','ON_HOLD')
+        AND wo.product_version_id IS DISTINCT FROM $5
+        AND (wo.planned_start_date >= $4::date OR wo.due_date >= $4::date)
+      ORDER BY wo.planned_start_date, wo.work_order_number, wo.id
+      FOR UPDATE OF wo`,
+      [row.product_id, tenantId, factoryId, row.effective_date, row.proposed_product_version_id],
+    );
+    return result.rows;
+  }
+
+  private sameAffectedOrderSnapshot(
+    submitted: WorkOrderImpactRow[],
+    current: WorkOrderImpactRow[],
+  ): boolean {
+    const canonical = (rows: WorkOrderImpactRow[]) => rows.map((row) => ({
+      id: row.id,
+      product_version_id: row.product_version_id,
+      status: row.status,
+      planned_start_date: row.planned_start_date,
+      due_date: row.due_date,
+      impact_type: row.impact_type,
+    }));
+    return JSON.stringify(canonical(submitted)) === JSON.stringify(canonical(current));
+  }
+
   private async replaceAffectedOrderSnapshot(
     client: PoolClient,
     row: ChangeOrderRow,
@@ -798,6 +867,7 @@ export class ProductChangeOrdersService {
         AND wo.product_version_id IS DISTINCT FROM $6
         AND (wo.planned_start_date >= $4::date OR wo.due_date >= $4::date)
       ORDER BY wo.planned_start_date, wo.work_order_number, wo.id
+      FOR UPDATE OF wo
       RETURNING work_order_id::text AS id, status_at_snapshot AS status,
         pinned_product_version_id::text AS product_version_id,
         planned_start_date::text AS planned_start_date, due_date::text AS due_date, impact_type`,
