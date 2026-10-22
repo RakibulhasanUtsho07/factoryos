@@ -5,6 +5,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   ArrayMinSize,
   Max,
   MaxLength,
@@ -152,6 +153,10 @@ export class CreateAiAgentTaskDto {
   @IsString()
   @MaxLength(100)
   plan_version?: string | null;
+
+  @IsOptional()
+  @IsUUID()
+  agent_definition_id?: string | null;
 
   @IsOptional()
   @IsString()
