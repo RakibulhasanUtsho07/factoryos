@@ -683,8 +683,9 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
     });
   });
 
-  it('stops exposing a promoted release after a linked source right is revoked', async () => {
+  it('retracts the active release from its serving channel when a linked source right is revoked', async () => {
     await withFixture(async (client, f) => {
+      const releaseKey = 'rights-' + randomUUID().slice(0, 8);
       const release = await client.query<{ id: string }>(
         `
         INSERT INTO research_knowledge_releases (
@@ -695,7 +696,7 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
           '[]'::jsonb, 'B', $4, '{}'::jsonb)
         RETURNING id::text AS id
         `,
-        [f.tenantId, 'rights-' + randomUUID().slice(0, 8), JSON.stringify([f.claimId]), f.userId],
+        [f.tenantId, releaseKey, JSON.stringify([f.claimId]), f.userId],
       );
       const evaluation = await client.query<{ id: string }>(
         `
@@ -720,6 +721,19 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         WHERE id = $3
         `,
         [evaluation.rows[0].id, f.userId, release.rows[0].id],
+      );
+
+      await client.query(
+        `INSERT INTO research_release_channels (
+           tenant_id,release_key,active_release_id,active_version,revision,updated_by
+         ) VALUES ($1,$2,$3,1,1,$4)`,
+        [f.tenantId,releaseKey,release.rows[0].id,f.userId],
+      );
+      await client.query(
+        `INSERT INTO research_release_lifecycle_events (
+           tenant_id,release_id,release_key,version,event_type,reason,actor_user_id
+         ) VALUES ($1,$2,$3,1,'PROMOTED','Rights-visibility fixture release was promoted.',$4)`,
+        [f.tenantId,release.rows[0].id,releaseKey,f.userId],
       );
 
       const visibleBeforeRevocation = await client.query<{ id: string }>(
@@ -755,6 +769,26 @@ postgresDescribe('Research and Growth PostgreSQL invariants', () => {
         'UPDATE research_sources SET access_status = $1, review_reason = $2, reviewed_by = $3, reviewed_at = clock_timestamp() WHERE id = $4',
         ['REVOKED', 'Source license withdrawn by rights holder', f.userId, f.sourceId],
       );
+      const activeChannelAfterRevocation = await client.query<{
+        active_release_id: string | null; active_version: number | null;
+      }>(
+        `SELECT active_release_id::text AS active_release_id,active_version
+         FROM research_release_channels WHERE tenant_id=$1 AND release_key=$2`,
+        [f.tenantId,releaseKey],
+      );
+      expect(activeChannelAfterRevocation.rows[0]).toMatchObject({
+        active_release_id: null,
+        active_version: null,
+      });
+      const withdrawal = await client.query<{ event_type: string; release_id: string }>(
+        `SELECT event_type,release_id::text AS release_id
+         FROM research_release_lifecycle_events
+         WHERE tenant_id=$1 AND release_key=$2 AND event_type='RETRACTED'`,
+        [f.tenantId,releaseKey],
+      );
+      expect(withdrawal.rows).toHaveLength(1);
+      expect(withdrawal.rows[0].release_id).toBe(release.rows[0].id);
+
       const visibleAfterRevocation = await client.query<{ id: string }>(
         `
         SELECT r.id::text AS id
