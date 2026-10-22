@@ -18,11 +18,12 @@ BEGIN
     )
   ) THEN RAISE EXCEPTION 'GROWTH_KPI_SOURCE_RLS_NOT_FORCED'; END IF;
 
-  IF (SELECT count(*) FROM pg_policies
+  IF (SELECT count(DISTINCT tablename) FROM pg_policies
        WHERE schemaname='public'
-         AND tablename IN ('growth_kpi_source_sync_runs','growth_kpi_source_observations','growth_kpi_source_sync_items')
-         AND qual LIKE '%factoryos_current_tenant_id%'
-         AND with_check LIKE '%factoryos_current_tenant_id%') <> 3 THEN
+         AND policyname IN ('growth_kpi_source_sync_runs_tenant_isolation',
+           'growth_kpi_source_observations_tenant_isolation','growth_kpi_source_sync_items_tenant_isolation')
+         AND COALESCE(qual,'') LIKE '%factoryos_current_tenant_id%'
+         AND COALESCE(with_check,qual,'') LIKE '%factoryos_current_tenant_id%') <> 3 THEN
     RAISE EXCEPTION 'GROWTH_KPI_SOURCE_TENANT_POLICIES_MISSING';
   END IF;
 
