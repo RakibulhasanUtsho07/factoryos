@@ -46,6 +46,7 @@ export interface FinanceSftpTransport {
     secret_reference: string;
     configuration: FinanceSftpConfiguration;
     remote_path: string;
+    payload_sha256: string;
     disposition: 'PROCESSED' | 'QUARANTINED';
   }): Promise<void>;
 
