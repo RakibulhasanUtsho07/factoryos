@@ -21,10 +21,6 @@ import { assertValidOutboxEvent } from './outbox-event.contract';
 import type { OutboxEvent } from './outbox-event.contract';
 import { OutboxConsumerRegistry } from './outbox.consumer.registry';
 
-interface DeadLetterRow {
-  id: string;
-}
-
 const DEFAULT_TOPIC = 'factoryos.domain-events';
 const DEFAULT_DLQ_TOPIC = 'factoryos.domain-events.dlq';
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -37,7 +33,6 @@ export class KafkaEventBusAdapter implements OnModuleInit, OnModuleDestroy {
   private kafka: Kafka | null = null;
   private producer: Producer | null = null;
   private consumer: Consumer | null = null;
-  private consumerStarted = false;
   private readonly clientInstance = randomUUID();
 
   constructor(
@@ -82,7 +77,6 @@ export class KafkaEventBusAdapter implements OnModuleInit, OnModuleDestroy {
       autoCommit: false,
       eachMessage: async (record) => this.handleMessage(record),
     });
-    this.consumerStarted = true;
     this.logger.log(JSON.stringify({
       event: 'KAFKA_EVENT_BUS_READY',
       brokers: this.brokers(),
@@ -116,7 +110,6 @@ export class KafkaEventBusAdapter implements OnModuleInit, OnModuleDestroy {
       }
       this.producer = null;
     }
-    this.consumerStarted = false;
     this.kafka = null;
   }
 
