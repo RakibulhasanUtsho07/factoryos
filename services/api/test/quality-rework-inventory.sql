@@ -524,7 +524,7 @@ BEGIN
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
   VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'QUALITY_DEFECT_REPORTED',
-    '{"defect_code":"QWR-CANCEL-DEFECT","affected_quantity":1,"source_unit_id":"fixture"}'::jsonb,v_actor,v_correlation);
+    jsonb_build_object('defect_code','QWR-CANCEL-DEFECT','affected_quantity',1,'source_unit_id',v_source_unit),v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_CHANGED','{"status":"OPEN"}'::jsonb);
 
@@ -707,6 +707,11 @@ BEGIN
       AND reference_type='QUALITY_REWORK_RESTORE' AND reference_id=v_cancel_rework AND movement_type='RECEIPT')<>1
     OR EXISTS (SELECT 1 FROM inventory_movements WHERE tenant_id=v_tenant AND factory_id=v_factory
       AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=v_cancel_rework AND movement_type='RECEIPT')
+    OR NOT EXISTS (SELECT 1 FROM audit_events WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND resource_type='INVENTORY_MOVEMENT' AND resource_id=v_cancel_issue_movement AND action='STOCK_ISSUE')
+    OR NOT EXISTS (SELECT 1 FROM outbox_events WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND aggregate_id=v_item AND event_type='INVENTORY.STOCK_ISSUED'
+      AND payload->>'rework_order_id'=v_cancel_rework::text)
     OR NOT EXISTS (SELECT 1 FROM audit_events WHERE tenant_id=v_tenant AND factory_id=v_factory
       AND resource_type='INVENTORY_MOVEMENT' AND resource_id=v_cancel_restore_movement AND action='STOCK_RECEIPT')
     OR NOT EXISTS (SELECT 1 FROM outbox_events WHERE tenant_id=v_tenant AND factory_id=v_factory
