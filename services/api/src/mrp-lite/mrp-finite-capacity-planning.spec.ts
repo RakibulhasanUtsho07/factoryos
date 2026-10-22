@@ -40,6 +40,8 @@ function job(overrides: Partial<MrpCapacityJob> = {}): MrpCapacityJob {
     orderLineNumber: 1,
     productCode: 'STYLE-A-S',
     productName: 'Style A Small',
+    styleCode: 'STYLE-A',
+    sizeCode: 'S',
     productId: 'product-1',
     productVersionId: 'version-1',
     productVersionNumber: 3,
@@ -180,7 +182,7 @@ describe('MRP finite-capacity deterministic arithmetic', () => {
       horizonStart: HORIZON_START, frozenHorizonDays: 2, baseline,
       current: [{
         orderId: 'order-1', orderLineId: 'line-1', orderNumber: 'SO-100', orderLineNumber: 1,
-        productCode: 'STYLE-A-S', productName: 'Style A Small', productId: 'product-1',
+        productCode: 'STYLE-A-S', productName: 'Style A Small', styleCode: 'STYLE-A', sizeCode: 'S', productId: 'product-1',
         productVersionId: 'version-1', productVersionNumber: 3, needByDate: '2027-01-08',
         quantity: '1.0000', routingStepId: 'routing-1', stepNumber: 1,
         operationCode: 'CUT', operationName: 'Cut panels', workCentreId: WORK_CENTRE,
