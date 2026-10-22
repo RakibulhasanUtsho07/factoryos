@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS quality_defect_context_snapshots (
     AND (line_code IS NOT NULL OR operation_code IS NOT NULL OR style_code IS NOT NULL OR shift_code IS NOT NULL)
   ),
   CONSTRAINT chk_quality_defect_context_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
-  CONSTRAINT chk_quality_defect_context_hash CHECK (request_hash ~ '^[0-9a-f]{64}
+  CONSTRAINT chk_quality_defect_context_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
 
 CREATE TABLE IF NOT EXISTS quality_supplier_quality_events (
