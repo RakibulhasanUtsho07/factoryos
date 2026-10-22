@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS outbox_bus_dead_letters (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_outbox_bus_dead_letter_tenant_id UNIQUE(id, tenant_id),
+  CONSTRAINT fk_outbox_bus_dead_letter_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT uq_outbox_bus_dead_letter_consumer_event UNIQUE(tenant_id, event_id, consumer_name),
   CONSTRAINT chk_outbox_bus_dlq_status CHECK(status IN ('QUARANTINED','REDRIVE_PENDING','REDRIVEN')),
   CONSTRAINT chk_outbox_bus_dlq_versions CHECK(event_version>0 AND row_version>0),
@@ -244,9 +245,9 @@ CREATE TRIGGER trg_outbox_bus_dlq_audit_immutable
 DO $bus_grants$
 BEGIN
   IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='factoryos_app') THEN
-    GRANT SELECT,INSERT,UPDATE ON outbox_bus_dead_letters TO factoryos_app;
-    GRANT SELECT,INSERT,UPDATE ON outbox_bus_dlq_redrive_requests TO factoryos_app;
-    GRANT SELECT,INSERT ON outbox_bus_dlq_audit_events TO factoryos_app;
+    EXECUTE 'GRANT SELECT,INSERT,UPDATE ON outbox_bus_dead_letters TO factoryos_app';
+    EXECUTE 'GRANT SELECT,INSERT,UPDATE ON outbox_bus_dlq_redrive_requests TO factoryos_app';
+    EXECUTE 'GRANT SELECT,INSERT ON outbox_bus_dlq_audit_events TO factoryos_app';
   END IF;
 END;
 $bus_grants$;
