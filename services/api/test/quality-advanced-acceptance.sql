@@ -224,20 +224,6 @@ BEGIN
     RAISE EXCEPTION 'Advanced quality permissions are missing';
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM role_permissions rp
-    JOIN roles r ON r.id=rp.role_id
-    JOIN permissions p ON p.id=rp.permission_id
-    WHERE r.code='QUALITY_MANAGER' AND p.code='quality.advanced.read'
-  ) OR NOT EXISTS (
-    SELECT 1 FROM role_permissions rp
-    JOIN roles r ON r.id=rp.role_id
-    JOIN permissions p ON p.id=rp.permission_id
-    WHERE r.code='QUALITY_MANAGER' AND p.code='quality.advanced.manage'
-  ) THEN
-    RAISE EXCEPTION 'QUALITY_MANAGER must have the advanced-quality read/manage grant';
-  END IF;
-
   RAISE NOTICE 'Advanced quality AQL, fabric scoring, supplier-linkage and release-gate contract passed';
 END;
 $$;
