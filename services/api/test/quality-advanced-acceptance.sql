@@ -110,6 +110,13 @@ BEGIN
     RAISE EXCEPTION 'AQL and roll scoring require non-empty evidence objects';
   END IF;
 
+  IF position($needle$OLD.status = 'OPEN' AND NEW.status = 'ON_HOLD'$needle$
+      IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0
+    OR position($needle$OLD.status = 'OPEN' AND NEW.status = 'OPEN'$needle$
+      IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0 THEN
+    RAISE EXCEPTION 'Quality inspection target guard must support hold and one-time profile-binding transitions';
+  END IF;
+
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_aql_profiles'::regclass
       AND tgname='trg_quality_aql_profile_lifecycle' AND NOT tgisinternal AND tgenabled<>'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_fabric_scoring_profiles'::regclass
