@@ -2,15 +2,15 @@
 
 **Status:** `AUTOMATED_ACCEPTANCE_PASS; STAGING_RELEASE_GATE_OPEN`  
 **Branch:** `rakibul-hasan`  
-**Application code SHA tested:** `546a50f8cc4cb556ac1da3b533e53e7fabfb82d8`  
+**Application code SHA tested:** `dfc6023b81b0d1db067ffe859b93618efba73b36`  
 **Evidence date:** 2026-10-22
 
 ## Exact-SHA automated evidence
 
 | Evidence | Run / result | What it proves |
 |---|---|---|
-| API CI | [Run 39790283869](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39790283869) — **success**, exact code SHA `546a50f8cc4cb556ac1da3b533e53e7fabfb82d8` | API build/lint and non-PostgreSQL unit suite pass with the Kafka adapter registered; the environment remains local transport unless Kafka mode is configured. |
-| API PostgreSQL CI | [Run 39790283862](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39790283862) — **success**, exact code SHA `546a50f8cc4cb556ac1da3b533e53e7fabfb82d8` | Disposable PostgreSQL and Kafka-compatible Redpanda integration completed. Logs report **167 test suites passed / 1,325 tests passed**; the Kafka integration tests exercised publisher confirmation, consumer retry, durable consumer DLQ, idempotent redrive receipt, offset behavior, malformed/header mismatch and unsupported known schema version. |
+| API CI | [Run 39791635871](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39791635871) — **success**, exact code SHA `546a50f8cc4cb556ac1da3b533e53e7fabfb82d8` | API build/lint and non-PostgreSQL unit suite pass with the Kafka adapter registered; the environment remains local transport unless Kafka mode is configured. |
+| API PostgreSQL CI | [Run 39791636084](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39791636084) — **success**, exact code SHA `546a50f8cc4cb556ac1da3b533e53e7fabfb82d8` | Disposable PostgreSQL and Kafka-compatible Redpanda integration completed. Logs report **167 test suites passed / 1,325 tests passed**; the Kafka integration tests exercised publisher confirmation, consumer retry, durable consumer DLQ, idempotent redrive receipt, offset behavior, malformed/header mismatch and unsupported known schema version. |
 | Migration/manifest | Included in the PostgreSQL CI run above | Ordered manifest includes migration 169; migration 169 was applied and replayed, and `services/api/test/outbox-bus-dlq-contract.sql` reported “Kafka event-bus DLQ schema and RLS contract passed.” |
 | Blueprint traceability | [Run 39790146943](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39790146943) — **success** on the updated WP03 evidence-matrix commit | The HLD/Blueprint evidence matrix validator accepted the updated WP03 evidence mapping and status language. |
 
@@ -19,7 +19,7 @@
 - KafkaJS publisher uses an idempotent producer and `acks=-1`; the transactional outbox row is marked published only after broker confirmation.
 - Kafka consumer uses manual offsets; it commits after the handler succeeds, or after invalid data is durably sent to the Kafka DLQ, or after a valid event's tenant-scoped PostgreSQL DLQ record is committed.
 - Known order-event schema versions are enforced by the existing contract. Body/header event ID, type and version mismatches are quarantined.
-- Consumer DLQ has tenant RLS, factory ownership, unique event/consumer identity, versioned state transitions, an idempotent redrive receipt and append-only audit records.
+- Consumer DLQ has tenant RLS, factory ownership, unique event/consumer identity, versioned state transitions, an idempotent redrive receipt and append-only audit records. The API role cannot directly insert/update/delete/truncate audit history; a guarded `SECURITY DEFINER` trigger appends audit records, and PostgreSQL CI reapplies migration 169 after creating the runtime role to verify this grant boundary.
 - `OUTBOX_TRANSPORT=local` remains a development-only log publisher. `NODE_ENV=production` fails startup unless Kafka mode is selected with TLS and SASL credentials.
 - Local Redpanda Compose and the CI broker are test/development deployments. They are **not evidence of a production cluster deployment**.
 
