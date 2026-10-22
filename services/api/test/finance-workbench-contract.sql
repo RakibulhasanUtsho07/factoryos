@@ -35,6 +35,21 @@ BEGIN
     'finance.close.submit','finance.close.approve'
   );
   IF permission_count<>5 THEN RAISE EXCEPTION 'Finance workbench/close permissions are incomplete'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM users u
+    JOIN tenant_memberships tm ON tm.user_id=u.id AND tm.tenant_id='faaab63d-c447-46ce-950d-deebdd7f5f30' AND tm.status='ACTIVE'
+    JOIN user_roles ur ON ur.membership_id=tm.id AND ur.factory_id='24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7'
+    JOIN roles r ON r.id=ur.role_id
+    JOIN role_permissions rp ON rp.role_id=r.id
+    JOIN permissions p ON p.id=rp.permission_id AND p.code='finance.workbench.read'
+    WHERE u.email='manager@factoryos.local' AND r.code='FACTORY_MANAGER'
+  ) THEN RAISE EXCEPTION 'Development factory manager is missing finance workbench read permission'; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM roles r
+    JOIN role_permissions rp ON rp.role_id=r.id
+    JOIN permissions p ON p.id=rp.permission_id AND p.code='finance.close.approve'
+    WHERE r.code='ORG_ADMIN'
+  ) THEN RAISE EXCEPTION 'Development org admin is missing finance close approval permission'; END IF;
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='170_finance_costing_profitability_close_workbench') THEN
     RAISE EXCEPTION 'Finance workbench close migration is not registered';
   END IF;
