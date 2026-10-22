@@ -211,10 +211,10 @@ export class OutboxBusDlqService {
           );
           await client.query(
             `UPDATE outbox_bus_dead_letters
-             SET status='QUARANTINED',row_version=row_version+1,updated_by_user_id=$4::uuid,
+             SET status='QUARANTINED',row_version=row_version+1,updated_by_user_id=$3::uuid,
                updated_at=clock_timestamp()
              WHERE id=$1::uuid AND tenant_id=$2::uuid AND status='REDRIVE_PENDING'`,
-            [input.deadLetterId, input.tenantId, null, input.actorUserId],
+            [input.deadLetterId, input.tenantId, input.actorUserId],
           );
         }, {
           tenantId: input.tenantId,
