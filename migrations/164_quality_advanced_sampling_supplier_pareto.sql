@@ -10,7 +10,7 @@ INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM roles r
 JOIN permissions p ON p.code IN ('quality.advanced.read', 'quality.advanced.manage')
-WHERE r.code IN ('ORG_ADMIN', 'FACTORY_MANAGER')
+WHERE r.code IN ('ORG_ADMIN', 'FACTORY_MANAGER', 'QUALITY_MANAGER')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS quality_aql_profiles (
