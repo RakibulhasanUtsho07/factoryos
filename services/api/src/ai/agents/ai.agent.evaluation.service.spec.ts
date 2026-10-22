@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals';
+import { createHash } from 'node:crypto';
 import {
   BadRequestException, ConflictException, ForbiddenException, NotFoundException,
 } from '@nestjs/common';
@@ -54,6 +55,75 @@ function resultRow(overrides: Record<string, unknown> = {}) {
     created_by: userId, created_at: '2026-10-11T00:02:00.000Z', ...overrides,
   };
 }
+
+const liveTaskId = '99999999-9999-4999-8999-999999999999';
+const liveDecisionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const liveTraceId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const liveStepId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const liveActionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const liveExecutionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const liveExecutionKey = 'agent:live-test:step:execution:1';
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map(key => [key, canonicalValue(record[key])]));
+  }
+  return value;
+}
+function canonicalHash(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(canonicalValue(value)), 'utf8').digest('hex');
+}
+function liveTaskRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: liveTaskId, agent_definition_id: definitionId, decision_id: liveDecisionId,
+    parent_trace_id: liveTraceId, state: 'COMPLETED', plan_version: 'planner-v4',
+    context_version: 'context-v3', context_hash: 'a'.repeat(64), request_hash: 'b'.repeat(64),
+    cancel_requested_at: null, deadline_at: '2026-10-12T00:00:00.000Z', ...overrides,
+  };
+}
+function liveTraceRow(overrides: Record<string, unknown> = {}) {
+  const payload = { orderId: 'ORD-1', harmless: true };
+  const payloadHash = canonicalHash(payload);
+  const executionResult = { accepted: true, output_ref: 'order:ORD-1' };
+  const executionError = {};
+  const outcomeHash = canonicalHash({ status: 'SUCCEEDED', result: executionResult, error: executionError });
+  const evidence = {
+    schemaVersion: 1, executionKind: 'STEP', taskId: liveTaskId, stepId: liveStepId,
+    decisionId: liveDecisionId, parentTraceId: liveTraceId, actionIntentId: liveActionId,
+    executionRecordId: liveExecutionId, executionKey: liveExecutionKey, toolId: 'AI.RUNTIME.NOOP',
+    toolVersion: '1.0.0', executorType: 'AGENT_RUNTIME', inputsHash: payloadHash,
+    outcomeStatus: 'SUCCEEDED', outcomeHash,
+  };
+  return {
+    step_id: liveStepId, step_index: 0, agent_id: 'AGENT.TEST', tool_id: 'AI.RUNTIME.NOOP',
+    tool_version: '1.0.0', action_type: 'AI.RUNTIME.NOOP', target: {}, payload,
+    step_status: 'SUCCEEDED', step_error: {}, step_output: executionResult,
+    step_resource_type: null, step_resource_id: null,
+    step_action_intent_id: liveActionId, step_execution_record_id: liveExecutionId,
+    execution_evidence: evidence,
+    action_intent_id: liveActionId, authorization_status: 'AUTHORIZED', action_decision_id: liveDecisionId,
+    action_tool_id: 'AI.RUNTIME.NOOP', action_tool_version: '1.0.0', action_action_type: 'AI.RUNTIME.NOOP',
+    action_target: {}, action_payload: payload, action_payload_hash: payloadHash,
+    action_resource_type: null, action_resource_id: null, action_authorization: { status: 'AUTHORIZED', approvalChecked: true },
+    execution_id: liveExecutionId, execution_decision_id: liveDecisionId,
+    execution_action_intent_id: liveActionId, execution_key: liveExecutionKey, executor_type: 'AGENT_RUNTIME',
+    execution_tool_version: '1.0.0', execution_inputs_hash: payloadHash, execution_status: 'SUCCEEDED',
+    execution_result: executionResult, execution_error: executionError,
+    claim_status: 'COMPLETED', reconciliation_decision: null, ...overrides,
+  };
+}
+function liveEvaluationRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', tenant_id: tenantId, factory_id: factoryId,
+    case_id: caseId, agent_task_id: liveTaskId, status: 'PASS',
+    expected_summary: { caseKey: 'calls-noop', kind: 'EXPECTED_TOOL_CALL' },
+    observed_summary: { evidenceSource: 'LIVE_AGENT_TASK_TRACE', liveExecution: true, rawPayloadsReturned: false },
+    created_by: userId, created_at: '2026-10-11T00:03:00.000Z', ...overrides,
+  };
+}
+
 function makeService() {
   return new AiAgentEvaluationService(database as never, iamService as never, auditService as never);
 }
@@ -299,4 +369,95 @@ describe('AiAgentEvaluationService', () => {
     await expect(makeService().evaluateCase(tenantId, factoryId, userId, definitionId, caseId, runId))
       .rejects.toBeInstanceOf(NotFoundException);
   });
+  it('passes a live expected-tool case only when the action, durable execution, claim and outcome digest are correlated', () => {
+    const service = makeService();
+    const evaluated = (service as any).compareCaseToLiveTrace(caseRow, liveTaskRow(), [liveTraceRow()]);
+    expect(evaluated.status).toBe('PASS');
+    expect(evaluated.observedSummary).toMatchObject({
+      evidenceSource: 'LIVE_AGENT_TASK_TRACE',
+      liveExecution: true,
+      verifiedExecutionCount: 1,
+      rawPayloadsReturned: false,
+      versionPinBlockers: [],
+    });
+  });
+
+  it('keeps a claimed execution with no resolved executor record inconclusive and never retries it', () => {
+    const service = makeService();
+    const ambiguous = liveTraceRow({
+      step_status: 'RUNNING',
+      step_execution_record_id: null,
+      execution_id: null,
+      execution_status: null,
+      execution_evidence: null,
+      claim_status: 'CLAIMED',
+      reconciliation_decision: null,
+    });
+    const evaluated = (service as any).compareCaseToLiveTrace(caseRow, liveTaskRow({ state: 'EXECUTING' }), [ambiguous]);
+    expect(evaluated.status).toBe('INCONCLUSIVE');
+    expect(JSON.stringify(evaluated)).toContain('evaluation never retries execution');
+  });
+
+  it('passes a policy refusal only when a bound DENIED decision has no step execution, claim or execution record', () => {
+    const service = makeService();
+    const refusalCase = {
+      ...caseRow, kind: 'EXPECTED_REFUSAL', expected_refusal_reason_contains: 'not permitted',
+    };
+    const denied = liveTraceRow({
+      step_status: 'BLOCKED',
+      step_error: { code: 'AI_AGENT_AUTHORIZATION_DENIED', message: 'Action not permitted by policy' },
+      step_action_intent_id: null, step_execution_record_id: null, execution_evidence: null,
+      authorization_status: 'DENIED', action_authorization: { status: 'DENIED', reason: 'Action not permitted by policy' },
+      execution_id: null, execution_status: null, execution_result: null, execution_error: null,
+      claim_status: null, reconciliation_decision: null,
+    });
+    const evaluated = (service as any).compareCaseToLiveTrace(refusalCase, liveTaskRow({ state: 'BLOCKED' }), [denied]);
+    expect(evaluated.status).toBe('PASS');
+    expect(evaluated.observedSummary).toMatchObject({ policyDecision: 'DENIED', executorInvoked: false });
+  });
+
+  it('fails privacy evaluation on a secret-shaped executor output without retaining the secret value', () => {
+    const service = makeService();
+    const secret = 'super-secret-value-must-not-appear-in-report';
+    const evaluated = (service as any).compareCaseToLiveTrace(
+      { ...caseRow, kind: 'PRIVACY_NO_SECRET_LEAKAGE', expected_tool_id: null, expected_tool_version: null },
+      liveTaskRow(),
+      [liveTraceRow({ step_output: { access_token: secret }, execution_result: { nested: { api_key: secret } } })],
+    );
+    expect(evaluated.status).toBe('FAIL');
+    expect(evaluated.observedSummary.sensitiveOutputFindingCount).toBeGreaterThan(0);
+    expect(JSON.stringify(evaluated)).not.toContain(secret);
+  });
+
+  it('does not treat simulated sandbox output as passing a privacy acceptance case', () => {
+    const service = makeService();
+    const evaluated = (service as any).compareCaseToRun(
+      { ...caseRow, kind: 'PRIVACY_NO_SECRET_LEAKAGE', expected_tool_id: null, expected_tool_version: null },
+      simulationRow({ result: { api_key: 'secret-shaped-value' } }),
+    );
+    expect(evaluated.status).toBe('INCONCLUSIVE');
+    expect(evaluated.observedSummary.liveExecution).toBe(false);
+  });
+
+  it('persists live evaluation results idempotently against the pinned task and actual trace', async () => {
+    database.query
+      .mockResolvedValueOnce({ rows: [caseRow] })
+      .mockResolvedValueOnce({ rows: [liveTaskRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [liveTraceRow()] })
+      .mockResolvedValueOnce({ rows: [liveEvaluationRow()] });
+    const result = await makeService().evaluateLiveExecution(
+      tenantId, factoryId, userId, definitionId, caseId, liveTaskId,
+    );
+    expect(result.status).toBe('PASS');
+    expect(result.evidenceSource).toBe('LIVE_AGENT_TASK_TRACE');
+    expect(database.query).toHaveBeenCalledTimes(5);
+    expect(auditService.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'EVALUATE_AGENT_LIVE_EXECUTION_CASE',
+    }));
+    expect(String(database.query.mock.calls[3]?.[0])).toContain('ai_execution_claims');
+    expect(String(database.query.mock.calls[3]?.[0])).toContain('ai_execution_records');
+  });
+
+
 });
