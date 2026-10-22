@@ -129,7 +129,7 @@ describe('ResearchSourceProductionService', () => {
     expect(String(client.query.mock.calls[4][0])).toContain('INSERT INTO research_source_document_content');
     expect(client.query.mock.calls[4][1]?.[2]).toEqual(fileBytes);
     expect(client.query.mock.calls[4][1]?.[3]).toBe('Textile quality evidence, inspected on line 4.');
-    expect(audit.recordWithClient).toHaveBeenCalledWith(expect.objectContaining({
+    expect(audit.recordWithClient).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'RESEARCH_SOURCE_DOCUMENT_UPLOADED',
       resourceType: 'RESEARCH_SOURCE_DOCUMENT',
     }));
