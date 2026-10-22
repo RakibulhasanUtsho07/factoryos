@@ -543,6 +543,28 @@ BEGIN
   VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_TRACEABILITY_LINKED',
     jsonb_build_object('link_id',v_cancel_source_link,'defect_id',v_cancel_defect,'target_id',v_source_unit));
 
+  -- Rework is only permitted against a failed/held/dispositioned inspection.
+  -- Hold the cancellation fixture's second inspection before creating its rework order.
+  UPDATE quality_inspections SET status='ON_HOLD',row_version=3,
+    updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_cancel_inspection AND tenant_id=v_tenant AND factory_id=v_factory
+    AND status='IN_PROGRESS' AND row_version=2;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Cancellation inspection could not be placed on hold before rework'; END IF;
+  INSERT INTO quality_inspection_events (
+    tenant_id,factory_id,inspection_id,version,from_status,to_status,action,reason,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_inspection,3,'IN_PROGRESS','ON_HOLD','HOLD',
+    'Quarantine source inspection before rework cancellation test',
+    'qwr-cancel-inspection-hold',repeat('8',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_cancel_inspection,'QWR_CANCEL_INSPECTION_HOLD',
+    '{"status":"ON_HOLD","rework_source_gate":true}'::jsonb,v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_INSPECTION',v_cancel_inspection,'QUALITY.INSPECTION_CHANGED',
+    '{"status":"ON_HOLD","reason":"rework source quarantine"}'::jsonb);
+
   INSERT INTO quality_rework_orders (
     id,tenant_id,factory_id,rework_number,defect_id,inspection_id,source_inventory_item_id,source_traceability_unit_id,
     input_quantity,recovered_quantity,scrap_quantity,status,reason,instructions,row_version,idempotency_key,request_hash,
