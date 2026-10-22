@@ -187,3 +187,4 @@ migrations/176_research_release_retraction_audit_guard.sql
 migrations/177_growth_kpi_source_observations.sql
 migrations/178_growth_forecast_calibration_policies.sql
 migrations/179_growth_kpi_baseline_evidence_provenance.sql
+migrations/180_ai_agent_live_execution_evaluation.sql
