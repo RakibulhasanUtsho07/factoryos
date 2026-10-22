@@ -526,7 +526,7 @@ export class MrpFiniteCapacityService {
     if (!plan) throw new NotFoundException('Finite-capacity plan was not found in this factory');
     const ops = await this.database.query(
       `SELECT id::text AS id,order_id::text AS order_id,order_line_id::text AS order_line_id,
-        order_number,order_line_number,product_id::text AS product_id,product_code,product_name,
+        order_number,order_line_number,product_id::text AS product_id,product_code,product_name,style_code,size_code,
         product_version_id::text AS product_version_id,product_version_number,routing_step_id::text AS routing_step_id,
         step_number,need_by_date::text AS need_by_date,planned_quantity::text AS planned_quantity,
         operation_code,operation_name,work_centre_id::text AS work_centre_id,work_centre_code,required_skill,
