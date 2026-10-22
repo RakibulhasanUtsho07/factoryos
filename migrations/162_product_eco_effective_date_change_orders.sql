@@ -49,13 +49,14 @@ CREATE INDEX IF NOT EXISTS idx_product_eco_timeline ON product_engineering_chang
 
 CREATE TABLE IF NOT EXISTS product_eco_order_impacts (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID NOT NULL, factory_id UUID NOT NULL, product_id UUID NOT NULL,
- eco_id UUID NOT NULL, work_order_id UUID NOT NULL, order_line_id UUID NOT NULL, work_order_number VARCHAR(100) NOT NULL,
+ eco_id UUID NOT NULL, work_order_id UUID NOT NULL, source_order_id UUID NOT NULL, order_line_id UUID NOT NULL, work_order_number VARCHAR(100) NOT NULL,
  status_at_assessment VARCHAR(24) NOT NULL, work_order_row_version BIGINT NOT NULL, pinned_product_version_id UUID NOT NULL,
  planned_start_date DATE NOT NULL, due_date DATE NOT NULL, target_quantity NUMERIC(18,4) NOT NULL,
  impact_type VARCHAR(40) NOT NULL, order_snapshot JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
  CONSTRAINT uq_product_eco_impact UNIQUE(eco_id,work_order_id),
  CONSTRAINT fk_product_eco_impact_eco FOREIGN KEY(eco_id,tenant_id,factory_id,product_id) REFERENCES product_engineering_changes(id,tenant_id,factory_id,product_id) ON DELETE RESTRICT,
  CONSTRAINT fk_product_eco_impact_work_order FOREIGN KEY(work_order_id,tenant_id,factory_id) REFERENCES work_orders(id,tenant_id,factory_id) ON DELETE RESTRICT,
+ CONSTRAINT fk_product_eco_impact_order_line FOREIGN KEY(order_line_id,source_order_id,tenant_id,factory_id) REFERENCES order_lines(id,order_id,tenant_id,factory_id) ON DELETE RESTRICT,
  CONSTRAINT fk_product_eco_impact_version FOREIGN KEY(pinned_product_version_id,tenant_id,factory_id,product_id) REFERENCES product_versions(id,tenant_id,factory_id,product_id) ON DELETE RESTRICT,
  CONSTRAINT chk_product_eco_impact_type CHECK(impact_type IN('REPLAN_BEFORE_RELEASE','PRESERVE_RELEASED_SNAPSHOT_REVIEW')),
  CONSTRAINT chk_product_eco_impact_values CHECK(target_quantity>0 AND work_order_row_version>0 AND jsonb_typeof(order_snapshot)='object')
