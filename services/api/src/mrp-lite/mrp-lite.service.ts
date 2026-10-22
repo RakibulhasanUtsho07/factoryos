@@ -30,6 +30,8 @@ interface DemandBomRow extends QueryResultRow {
   product_id: string | null;
   product_code: string | null;
   product_name: string | null;
+  product_style_code: string | null;
+  product_size_code: string | null;
   product_status: string | null;
   product_version_id: string | null;
   product_version_number: number | null;
@@ -210,6 +212,8 @@ export class MrpLiteService {
           p.id::text AS product_id,
           p.product_code,
           p.product_name,
+          p.style_code AS product_style_code,
+          p.size_code AS product_size_code,
           p.status AS product_status,
           pv.id::text AS product_version_id,
           pv.version_number AS product_version_number,
@@ -508,23 +512,24 @@ export class MrpLiteService {
           INSERT INTO mrp_plan_requirements (
             id, tenant_id, factory_id, plan_id, order_id, order_line_id, product_id,
             product_version_id, bom_line_id, component_item_id, order_number, order_status,
-            order_line_number, need_by_date, product_code, product_name, product_version_number,
-            bom_line_number, component_sku, component_name, component_unit, remaining_finished_quantity,
-            expected_yield_percent, base_quantity_per, wastage_percent, required_quantity,
-            on_hand_quantity, allocated_quantity, available_on_hand_quantity, incoming_quantity,
-            planned_on_hand_allocation_quantity, planned_incoming_allocation_quantity,
+            order_line_number, need_by_date, product_code, product_name, style_code, size_code,
+            product_version_number, bom_line_number, component_sku, component_name, component_unit,
+            remaining_finished_quantity, expected_yield_percent, base_quantity_per, wastage_percent,
+            required_quantity, on_hand_quantity, allocated_quantity, available_on_hand_quantity,
+            incoming_quantity, planned_on_hand_allocation_quantity, planned_incoming_allocation_quantity,
             available_by_need_date_quantity, shortage_quantity, shortage_date, projected_available_date,
             allocation_status, substitute_scenarios
           ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-            $22::numeric,$23::numeric,$24::numeric,$25::numeric,$26::numeric,$27::numeric,$28::numeric,
-            $29::numeric,$30::numeric,$31::numeric,$32::numeric,$33::numeric,$34::numeric,$35::date,
-            $36::date,$37,$38::jsonb
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
+            $24::numeric,$25::numeric,$26::numeric,$27::numeric,$28::numeric,$29::numeric,$30::numeric,
+            $31::numeric,$32::numeric,$33::numeric,$34::numeric,$35::numeric,$36::numeric,$37::date,
+            $38::date,$39,$40::jsonb
           )
         `, [
           candidate.id, tenantId, factoryId, planId, row.order_id, row.order_line_id, row.product_id,
           row.product_version_id, row.bom_line_id, itemId, row.order_number, row.order_status,
           row.order_line_number, row.need_by_date, row.product_code, row.product_name,
+          row.product_style_code, row.product_size_code,
           row.product_version_number, row.bom_line_number, row.component_sku, row.component_name,
           row.component_unit, row.remaining_finished_quantity, row.expected_yield_percent,
           row.base_quantity_per, row.wastage_percent, candidate.requiredQuantity,
@@ -592,7 +597,7 @@ export class MrpLiteService {
       SELECT id::text AS id, order_id::text AS order_id, order_line_id::text AS order_line_id,
         order_number, order_status, order_line_number, need_by_date::text AS need_by_date,
         product_id::text AS product_id, product_version_id::text AS product_version_id,
-        product_code, product_name, product_version_number, bom_line_id::text AS bom_line_id,
+        product_code, product_name, style_code, size_code, product_version_number, bom_line_id::text AS bom_line_id,
         bom_line_number, component_item_id::text AS component_item_id, component_sku,
         component_name, component_unit, remaining_finished_quantity::text AS remaining_finished_quantity,
         expected_yield_percent::text AS expected_yield_percent, base_quantity_per::text AS base_quantity_per,
