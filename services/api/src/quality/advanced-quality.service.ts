@@ -123,6 +123,7 @@ export class AdvancedQualityService {
       throw new BadRequestException('lot_size must be positive and observed_nonconforming must be a non-negative integer');
     }
     const evidence = this.jsonObject(dto.evidence);
+    if (Object.keys(evidence).length === 0) throw new BadRequestException('AQL sample evidence must include a sampling-sheet reference or other inspection evidence');
     const hash = this.hash({ inspection_id: inspectionId, lot_size: dto.lot_size, observed_nonconforming: dto.observed_nonconforming, evidence });
     const correlation = this.correlation(c);
 
@@ -194,6 +195,7 @@ export class AdvancedQualityService {
       throw new BadRequestException('total_defect_points must equal the sum of points in defects');
     }
     const evidence = this.jsonObject(dto.evidence);
+    if (Object.keys(evidence).length === 0) throw new BadRequestException('Fabric roll evidence must include an inspection-sheet, photo or other quality evidence reference');
     const defects = dto.defects;
     const request = { inspection_id: inspectionId, roll_code: rollCode, roll_length_yards: dto.roll_length_yards,
       roll_width_inches: dto.roll_width_inches, total_defect_points: dto.total_defect_points, defects, evidence };
