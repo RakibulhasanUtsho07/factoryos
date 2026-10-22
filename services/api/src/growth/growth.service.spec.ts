@@ -128,6 +128,94 @@ describe('GrowthService', () => {
     expect(result.impact.upperBound).toBe(150.2);
   });
 
+
+  it('pins the exact source revision into a reproducible finance scenario input hash', async () => {
+    const observationId = 'e6a20b27-1920-4cf0-9f8c-82c0f9d5e132';
+    const sourceRef = `factoryos://growth/source-observations/${observationId}`;
+    const sourceRow = {
+      id: observationId, source_kind: 'FINANCIAL_FACT',
+      adapter_version: 'factoryos.growth.source-of-record.v1',
+      metric_key: 'finance.actual_revenue', unit: 'BDT', value: '1000.00000000',
+      observed_at: '2026-10-05T12:00:00.000Z', source_record_ref: 'finance-fact:1234',
+      source_revision_hash: 'a'.repeat(64), observation_hash: 'b'.repeat(64),
+      evidence_id: 'bf0f335f-57f3-4b8c-8f64-167e50717d46',
+    };
+    client.query
+      .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED', currency: 'BDT', constraints_snapshot: {} }] })
+      .mockResolvedValueOnce({ rows: [sourceRow] })
+      .mockResolvedValueOnce({ rows: [{ reference_ref: sourceRef, citation_url: null }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: 'ac3f38e5-3e3c-44d8-86f4-3a9ad7ec96ec',
+        scenario_name: 'Source pinned base', scenario_type: 'BASE',
+        model_version: 'factoryos.growth.financial-sensitivity.v1',
+        data_vintage: '2026-10-10T00:00:00.000Z', baseline_source_ref: sourceRef,
+        inputs: {}, output_snapshot: {}, input_hash: 'c'.repeat(64), decision_ready: false,
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const dto: CreateGrowthScenarioDto = {
+      scenario_name: 'Source pinned base',
+      scenario_type: 'BASE',
+      data_vintage: '2026-10-10T00:00:00.000Z',
+      baseline_source_ref: sourceRef,
+      baseline_source_observation_id: observationId,
+      baseline_revenue: 1000,
+      baseline_variable_cost: 400,
+      baseline_fixed_cost: 200,
+      price_change_pct: 0,
+      volume_change_pct: 0,
+      variable_cost_change_pct: 0,
+      fixed_cost_change_pct: 0,
+      investment: 0,
+      uncertainty_pct: 0,
+    };
+    const result = await service.createScenario(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+    expect(result.id).toBe('ac3f38e5-3e3c-44d8-86f4-3a9ad7ec96ec');
+    const insert = client.query.mock.calls.find(call => String(call[0]).includes('INSERT INTO growth_scenarios'));
+    expect(insert).toBeDefined();
+    const values = insert?.[1] as unknown[];
+    const inputs = JSON.parse(String(values[8])) as Record<string, unknown>;
+    expect(inputs.baseline_source_observation).toEqual(expect.objectContaining({
+      id: observationId,
+      adapter_version: 'factoryos.growth.source-of-record.v1',
+      metric_key: 'finance.actual_revenue',
+      unit: 'BDT',
+      value: '1000.00000000',
+      source_revision_hash: 'a'.repeat(64),
+      observation_hash: 'b'.repeat(64),
+    }));
+    expect(String(values[10])).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('rejects a scenario when its revenue baseline differs from the pinned source observation', async () => {
+    const observationId = 'e6a20b27-1920-4cf0-9f8c-82c0f9d5e132';
+    const sourceRef = `factoryos://growth/source-observations/${observationId}`;
+    client.query
+      .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED', currency: 'BDT', constraints_snapshot: {} }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: observationId, source_kind: 'FINANCIAL_FACT',
+        adapter_version: 'factoryos.growth.source-of-record.v1',
+        metric_key: 'finance.actual_revenue', unit: 'BDT', value: '1000.00000000',
+        observed_at: '2026-10-05T12:00:00.000Z', source_record_ref: 'finance-fact:1234',
+        source_revision_hash: 'a'.repeat(64), observation_hash: 'b'.repeat(64),
+        evidence_id: 'bf0f335f-57f3-4b8c-8f64-167e50717d46',
+      }] });
+
+    await expect(service.createScenario(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
+      {
+        scenario_name: 'Invalid pinned base', scenario_type: 'BASE',
+        data_vintage: '2026-10-10T00:00:00.000Z', baseline_source_ref: sourceRef,
+        baseline_source_observation_id: observationId, baseline_revenue: 999,
+        baseline_variable_cost: 400, baseline_fixed_cost: 200,
+        price_change_pct: 0, volume_change_pct: 0, variable_cost_change_pct: 0,
+        fixed_cost_change_pct: 0, investment: 0, uncertainty_pct: 0,
+      }, null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('will not run scenarios for an unapproved hypothesis', async () => {
     client.query.mockResolvedValueOnce({ rows: [{ status: 'PROPOSED' }] });
     const dto: CreateGrowthScenarioDto = {
@@ -151,7 +239,7 @@ describe('GrowthService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
 
     expect(client.query).toHaveBeenCalledTimes(1);
-    expect(client.query.mock.calls[0][0]).toContain('SELECT status, constraints_snapshot FROM growth_opportunities');
+    expect(client.query.mock.calls[0][0]).toContain('SELECT status, currency, constraints_snapshot FROM growth_opportunities');
   });
 
   it('keeps a sensitivity scenario exploratory when constraint snapshots or projections are missing', () => {
