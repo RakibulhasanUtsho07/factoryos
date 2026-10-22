@@ -397,7 +397,7 @@ describe('AiAgentEvaluationService', () => {
     });
     const evaluated = (service as any).compareCaseToLiveTrace(caseRow, liveTaskRow({ state: 'EXECUTING' }), [ambiguous]);
     expect(evaluated.status).toBe('INCONCLUSIVE');
-    expect(JSON.stringify(evaluated)).toContain('evaluation never retries execution');
+    expect(JSON.stringify(evaluated)).toContain('evaluator never retries ambiguous side effects');
   });
 
   it('passes a policy refusal only when a bound DENIED decision has no step execution, claim or execution record', () => {
