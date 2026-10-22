@@ -64,6 +64,8 @@ export interface CreateAiAgentTaskInput {
   contextVersion?: string | null;
   planVersion?: string | null;
   contextHash?: string | null;
+  /** Exact immutable agent definition version that produced this task plan. */
+  agentDefinitionId?: string | null;
 
   idempotencyKey?: string | null;
 
@@ -81,6 +83,8 @@ export interface AiAgentTask {
   factoryId: string;
 
   decisionId: string;
+  /** Version-pinned agent definition; null for legacy/unbound tasks. */
+  agentDefinitionId: string | null;
   parentTraceId: string;
   actorUserId: string;
 
