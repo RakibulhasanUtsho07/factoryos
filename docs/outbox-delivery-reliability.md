@@ -28,7 +28,7 @@ The dispatcher uses an initial five-second retry delay, exponential backoff (5, 
 
 ## Automated verification
 
-The PostgreSQL CI migration list includes migrations 001–122 and fails closed when a migration file is omitted. The SQL contract test verifies the replay ledger, forced RLS, tenant policy, uniqueness constraint and migration registration. Integration coverage verifies concurrent outbox claims, stale lease recovery, restart after consumer success but before publish-state commit, inbox duplicate suppression and rollback-on-handler-failure, maximum-attempt quarantine, factory/tenant-scoped DLQ access, and replay receipt idempotency/conflict behavior.
+The PostgreSQL CI applies the explicit ordered migration manifest (currently through migration 169) and fails closed when a SQL migration is omitted. The WP03/Kafka DLQ contract is checked by `services/api/test/outbox-bus-dlq-contract.sql` and the broker-backed integration suite; exact run links and the staging limitation are recorded in [Kafka event-bus acceptance evidence](kafka-event-bus-acceptance-evidence-2026-10-22.md). The SQL contract test verifies the replay ledger, forced RLS, tenant policy, uniqueness constraint and migration registration. Integration coverage verifies concurrent outbox claims, stale lease recovery, restart after consumer success but before publish-state commit, inbox duplicate suppression and rollback-on-handler-failure, maximum-attempt quarantine, factory/tenant-scoped DLQ access, and replay receipt idempotency/conflict behavior.
 
 ## Transport boundary
 
