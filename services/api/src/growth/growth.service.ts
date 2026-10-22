@@ -1093,6 +1093,9 @@ export class GrowthService {
             .filter((ref): ref is string => typeof ref === 'string' && ref.trim().length > 0)
             .map(ref => ref.trim()),
         );
+        if (baselineSourceObservation && !evidenceReferences.has(dto.baseline_source_ref.trim())) {
+          throw new BadRequestException('Pinned source observation must remain linked as evidence to this Growth opportunity');
+        }
         const constraintGate = this.evaluateConstraintGate(
           opportunity.rows[0].constraints_snapshot,
           dto.projected_constraint_metrics as unknown as Record<string, unknown> | undefined,
