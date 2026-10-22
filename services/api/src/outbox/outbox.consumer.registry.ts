@@ -18,6 +18,10 @@ import {
 import {
   OrderCreatedConsumer,
 } from './order-created.consumer';
+import {
+  EhsLifecycleNotificationConsumer,
+  UtilityThresholdNotificationConsumer,
+} from '../notifications/notification-outbox.consumers';
 
 @Injectable()
 export class OutboxConsumerRegistry {
