@@ -143,7 +143,7 @@ export class PinnedFinanceJsonHttpClient implements FinanceJsonHttpClient {
     const authHeader = input.authHeader ?? (input.bearerToken
       ? { name: 'Authorization' as const, value: 'Bearer ' + input.bearerToken }
       : null);
-    if (!authHeader || !authHeader.value || /[\\r\\n\\u0000-\\u001f\\u007f]/.test(authHeader.value)) {
+    if (!authHeader || !authHeader.value || /[\r\n\u0000-\u001f\u007f]/.test(authHeader.value)) {
       throw new Error('FINANCE_ERP_AUTH_HEADER_INVALID');
     }
     const pinned = await resolveFinancePinnedAddress(url.hostname, this.allowedHosts, this.allowedIps, this.dnsLookup);
@@ -299,7 +299,7 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
     if (!this.secrets) throw new Error('FINANCE_SECRET_MANAGER_NOT_CONFIGURED');
     const token = await this.secrets.resolveBearerToken(validated, context);
     if (typeof token !== 'string' || token.trim().length < 8 || token.length > 8192 ||
-        /[\\r\\n\\u0000-\\u001f\\u007f]/.test(token)) {
+        /[\r\n\u0000-\u001f\u007f]/.test(token)) {
       throw new Error('FINANCE_SECRET_MANAGER_RETURNED_INVALID_ACCESS_TOKEN');
     }
     return token.trim();
