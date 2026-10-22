@@ -41,7 +41,10 @@ BEGIN
       AND tgname='trg_quality_supplier_event_source_guard' AND NOT tgisinternal AND tgenabled<>'D')
     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_defect_context_snapshots'::regclass
       AND conname='chk_quality_defect_context_nonempty'
-      AND position('line_code IS NOT NULL OR operation_code IS NOT NULL OR style_code IS NOT NULL OR shift_code IS NOT NULL' IN pg_get_constraintdef(oid))>0) THEN
+      AND position('line_code IS NOT NULL' IN pg_get_constraintdef(oid))>0
+      AND position('operation_code IS NOT NULL' IN pg_get_constraintdef(oid))>0
+      AND position('style_code IS NOT NULL' IN pg_get_constraintdef(oid))>0
+      AND position('shift_code IS NOT NULL' IN pg_get_constraintdef(oid))>0) THEN
     RAISE EXCEPTION 'Advanced evidence actor or supplier provenance guards are missing';
   END IF;
 
