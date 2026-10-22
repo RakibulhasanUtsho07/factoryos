@@ -487,7 +487,7 @@ export class FinanceService {
         await this.sftpTransport.archiveRemoteFile({
           tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
           secret_reference: connector.secret_reference, configuration,
-          remote_path: download.remote_path, disposition: 'PROCESSED',
+          remote_path: download.remote_path, payload_sha256: contentHash, disposition: 'PROCESSED',
         });
         return { status: 'ALREADY_IMPORTED', duplicate: true, receipt: prior.rows[0] };
       } catch {
@@ -511,7 +511,7 @@ export class FinanceService {
         await this.sftpTransport.archiveRemoteFile({
           tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
           secret_reference: connector.secret_reference, configuration,
-          remote_path: download.remote_path, disposition: 'QUARANTINED',
+          remote_path: download.remote_path, payload_sha256: contentHash, disposition: 'QUARANTINED',
         });
         return { status: 'QUARANTINED', imported: false, validation_report: report };
       } catch {
@@ -526,7 +526,7 @@ export class FinanceService {
       await this.sftpTransport.archiveRemoteFile({
         tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
         secret_reference: connector.secret_reference, configuration,
-        remote_path: download.remote_path, disposition: 'PROCESSED',
+        remote_path: download.remote_path, payload_sha256: contentHash, disposition: 'PROCESSED',
       });
       return { status: 'IMPORTED', imported: true, validation_report: report, receipt };
     } catch {
