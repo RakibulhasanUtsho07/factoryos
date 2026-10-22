@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 
 import {
@@ -38,12 +39,14 @@ export class OutboxConsumerRegistry {
 
   constructor(
     private readonly orderCreatedConsumer: OrderCreatedConsumer,
-    private readonly utilityThresholdNotificationConsumer: UtilityThresholdNotificationConsumer,
-    private readonly ehsLifecycleNotificationConsumer: EhsLifecycleNotificationConsumer,
+    @Optional() private readonly utilityThresholdNotificationConsumer?: UtilityThresholdNotificationConsumer,
+    @Optional() private readonly ehsLifecycleNotificationConsumer?: EhsLifecycleNotificationConsumer,
   ) {
     this.register(this.orderCreatedConsumer);
-    this.register(this.utilityThresholdNotificationConsumer);
-    this.register(this.ehsLifecycleNotificationConsumer);
+    // Keep tests and legacy isolated consumers compatible; Nest injects these
+    // providers in the full application module and registers both event types.
+    if (this.utilityThresholdNotificationConsumer) this.register(this.utilityThresholdNotificationConsumer);
+    if (this.ehsLifecycleNotificationConsumer) this.register(this.ehsLifecycleNotificationConsumer);
   }
 
   private register(
