@@ -63,7 +63,8 @@ describe('GrowthSourceOfRecordService source KPI synchronization', () => {
       .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED' }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [sourceRow()] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // Insert sync run.
+      .mockResolvedValueOnce({ rows: [] }); // No existing pinned observation.
   }
 
   it('records source-derived values, canonical units, timestamps and immutable revision fingerprints', async () => {
@@ -126,7 +127,8 @@ describe('GrowthSourceOfRecordService source KPI synchronization', () => {
       .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED' }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [sourceRow()] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // Insert sync run.
+      .mockResolvedValueOnce({ rows: [] }); // No existing pinned observation.
     await service.syncObservations(OTHER_USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto(), null, null);
     const secondRun = client.query.mock.calls.find(call =>
       String(call[0]).includes('INSERT INTO growth_kpi_source_sync_runs'));
