@@ -324,7 +324,7 @@ export class AiAgentEvaluationService {
       'a.id::text AS action_intent_id,a.authorization_status,a.decision_id::text AS action_decision_id,',
       'a.tool_id AS action_tool_id,a.tool_version AS action_tool_version,a.action_type AS action_action_type,',
       'a.target AS action_target,a.payload AS action_payload,a.payload_hash AS action_payload_hash,',
-      'a.resource_type AS action_resource_type,a.resource_id AS action_resource_id,a.authorization AS action_authorization,',
+      'a.resource_type AS action_resource_type,a.resource_id AS action_resource_id,a.\"authorization\" AS action_authorization,',
       'e.id::text AS execution_id,e.decision_id::text AS execution_decision_id,',
       'e.action_intent_id::text AS execution_action_intent_id,e.execution_key,e.executor_type,',
       'e.tool_version AS execution_tool_version,e.inputs_hash AS execution_inputs_hash,e.status AS execution_status,',
