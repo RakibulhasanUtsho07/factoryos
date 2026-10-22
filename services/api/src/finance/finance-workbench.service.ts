@@ -56,7 +56,12 @@ export class FinanceWorkbenchService {
     factoryId: string,
     query: FinanceWorkbenchQueryDto,
   ) {
-    const to = query.to ? new Date(query.to).toISOString() : new Date().toISOString();
+    const toDate = query.to ? new Date(query.to) : new Date();
+    // Date-only end bounds include the entire UTC calendar day, not just midnight.
+    if (query.to && /^\d{4}-\d{2}-\d{2}$/.test(query.to)) {
+      toDate.setUTCHours(23, 59, 59, 999);
+    }
+    const to = toDate.toISOString();
     const from = query.from
       ? new Date(query.from).toISOString()
       : new Date(Date.parse(to) - 180 * 86_400_000).toISOString();
