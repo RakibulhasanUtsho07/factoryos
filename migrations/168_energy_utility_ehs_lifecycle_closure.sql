@@ -535,7 +535,7 @@ CREATE TRIGGER trg_utility_create_threshold_alerts AFTER INSERT ON utility_meter
  FOR EACH ROW EXECUTE FUNCTION factoryos_create_utility_threshold_alerts();
 
 CREATE OR REPLACE FUNCTION factoryos_append_utility_config_audit()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $utility_config_audit$
 DECLARE
  v_type VARCHAR(24);
  v_id UUID;
@@ -574,7 +574,7 @@ BEGIN
    jsonb_build_object('entity_type',v_type,'entity_id',v_id,'version',v_version,'action',v_action,'status',to_jsonb(NEW)->>'status'));
  RETURN NEW;
 END;
-$;
+$utility_config_audit$;
 DROP TRIGGER IF EXISTS trg_utility_source_binding_audit ON utility_meter_source_bindings;
 CREATE TRIGGER trg_utility_source_binding_audit AFTER INSERT OR UPDATE ON utility_meter_source_bindings
  FOR EACH ROW EXECUTE FUNCTION factoryos_append_utility_config_audit();
