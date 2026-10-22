@@ -50,9 +50,9 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_aql_sample_runs'::regclass
-      AND conname='chk_quality_aql_run_evidence' AND position('jsonb_object_length' IN pg_get_constraintdef(oid))>0)
+      AND conname='chk_quality_aql_run_evidence' AND position('evidence <>' IN pg_get_constraintdef(oid))>0)
     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_fabric_roll_scores'::regclass
-      AND conname='chk_quality_fabric_roll_evidence' AND position('jsonb_object_length' IN pg_get_constraintdef(oid))>0) THEN
+      AND conname='chk_quality_fabric_roll_evidence' AND position('evidence <>' IN pg_get_constraintdef(oid))>0) THEN
     RAISE EXCEPTION 'AQL and roll scoring require non-empty evidence objects';
   END IF;
 
