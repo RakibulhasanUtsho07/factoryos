@@ -173,7 +173,11 @@ END;
 $bus_redrive_guard$;
 
 CREATE OR REPLACE FUNCTION factoryos_append_outbox_bus_dlq_audit()
-RETURNS trigger LANGUAGE plpgsql AS $bus_dlq_audit$
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $bus_dlq_audit$
 DECLARE
   v_action VARCHAR(32);
   v_reason TEXT;
@@ -253,7 +257,10 @@ BEGIN
   IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='factoryos_app') THEN
     EXECUTE 'GRANT SELECT,INSERT,UPDATE ON outbox_bus_dead_letters TO factoryos_app';
     EXECUTE 'GRANT SELECT,INSERT,UPDATE ON outbox_bus_dlq_redrive_requests TO factoryos_app';
-    EXECUTE 'GRANT SELECT,INSERT ON outbox_bus_dlq_audit_events TO factoryos_app';
+    -- Audit rows are appended only by the SECURITY DEFINER trigger function.
+    -- The API role may inspect history but cannot manufacture or rewrite it.
+    EXECUTE 'GRANT SELECT ON outbox_bus_dlq_audit_events TO factoryos_app';
+    EXECUTE 'REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON outbox_bus_dlq_audit_events FROM factoryos_app';
   END IF;
 END;
 $bus_grants$;
