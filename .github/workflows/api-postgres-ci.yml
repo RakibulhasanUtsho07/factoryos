@@ -468,6 +468,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
 
+          echo "Checking advanced quality grants for the seeded QUALITY_MANAGER role"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-role-grants.sql
+
           echo "Reapplying quality disposition inventory balance guard to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
