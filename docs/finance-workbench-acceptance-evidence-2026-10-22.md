@@ -2,7 +2,7 @@
 
 **Task:** 19 — Finance costing, profitability and working-capital workbench  
 **Branch:** `rakibul-hasan`  
-**Candidate code/migration/test/workflow SHA:** `9f4d8c92833e96a1a22caf843047d916cb24134d`  
+**Candidate code/migration/test/workflow SHA:** `9c50ba5e842e4b28ccf91a6458c84fbac3822802`  
 **Implementation status:** Backend and database contracts committed  
 **Automated exact-SHA CI status:** PENDING VERIFICATION — do not mark PASS until the run's API and PostgreSQL jobs conclude successfully  
 **Finance-owner close acceptance:** OPEN
