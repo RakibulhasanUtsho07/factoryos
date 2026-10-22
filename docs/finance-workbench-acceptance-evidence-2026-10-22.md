@@ -2,14 +2,14 @@
 
 **Task:** 19 — Finance costing, profitability and working-capital workbench  
 **Branch:** `rakibul-hasan`  
-**Candidate code/migration/test/workflow SHA:** `941dbfcad3f075035ea37dbd507b19957b0b670a`  
+**Candidate code/migration/test/workflow SHA:** `9f4d8c92833e96a1a22caf843047d916cb24134d`  
 **Implementation status:** Backend and database contracts committed  
 **Automated exact-SHA CI status:** PENDING VERIFICATION — do not mark PASS until the run's API and PostgreSQL jobs conclude successfully  
 **Finance-owner close acceptance:** OPEN
 
 ## Implemented in the candidate
 
-- Added `GET /api/finance/workbench` to return calendar-month actual/forecast costing and profitability, contribution margin, actual-minus-forecast variance, operational quantity/rate attribution, working-capital balances, cash-horizon projection, reporting-domain readiness, and unreconciled facts.
+- Added `GET /api/finance/workbench` to return calendar-month actual/forecast costing and profitability, contribution margin, actual-minus-forecast variance attributed by mapped product/order/customer/cost center, operational quantity/rate variance by source/fact type and business dimensions, working-capital balances, cash-horizon projection, reporting-domain readiness, and unreconciled facts.
 - Added a currency filter and strict currency separation. No implicit FX conversion is applied. Monthly bucketing is explicit UTC; report ranges are validated before SQL queries. Date-only end bounds include the full UTC calendar day in the workbench and existing margin/working-capital input APIs.
 - Forecast versions are selected per connector/fact type/source key/currency/month. Actual facts remain immutable and separately identified.
 - Overdue receivables/payables remain visible and are included in due-date cash horizon totals. Open PO commitments, LC exposure, bank position, inventory value and tax liability are presented by source currency.
