@@ -507,7 +507,8 @@ BEGIN
   VALUES(NEW.tenant_id,NEW.factory_id,v_policy.id,NEW.id,v_event_id,v_policy.metric,v_value,v_policy.threshold_value,v_unit,
     jsonb_build_object('reading_id',NEW.id,'meter_id',NEW.meter_id,'policy_code',v_policy.policy_code,
       'source_type',NEW.source_type,'source_event_id',NEW.source_event_id,'reading_at',NEW.reading_at,
-      'comparison',v_policy.comparison,'threshold',v_policy.threshold_value));
+      'comparison',v_policy.comparison,'threshold',v_policy.threshold_value))
+  RETURNING id INTO v_alert_id;
   INSERT INTO outbox_events(tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES(NEW.tenant_id,NEW.factory_id,'UTILITY_THRESHOLD_ALERT',v_alert_id,'UTILITIES.THRESHOLD_ALERT_RAISED',
     jsonb_build_object('alert_id',v_alert_id,'utility_event_id',v_event_id,'reading_id',NEW.id,'meter_id',NEW.meter_id,
