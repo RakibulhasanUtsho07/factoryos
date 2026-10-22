@@ -176,12 +176,12 @@ BEGIN
 
   INSERT INTO ehs_contractor_inductions(
     tenant_id,factory_id,contractor_code,company_name,person_name,induction_at,expires_at,topics,evidence,status,
-    row_version,idempotency_key,request_hash,recorded_by_user_id,correlation_id
+    row_version,idempotency_key,request_hash,recorded_by_user_id,updated_by_user_id,correlation_id
   ) VALUES(v_tenant,v_factory,'EEC-CON-01','Test contractor company','Test visitor',
     clock_timestamp()-INTERVAL '1 minute',clock_timestamp()+INTERVAL '1 day',
     '["PPE","EMERGENCY-ROUTES","PERMIT-TO-WORK"]'::jsonb,
     '{"trainer":"EHS CI","evidence_ref":"induction-sheet-01","quiz_passed":true}'::jsonb,'ACTIVE',1,
-    'eec-contractor-induction',v_hash,v_actor,v_correlation)
+    'eec-contractor-induction',v_hash,v_actor,v_actor,v_correlation)
   RETURNING id INTO v_induction;
   IF NOT EXISTS(SELECT 1 FROM ehs_lifecycle_events WHERE tenant_id=v_tenant AND factory_id=v_factory
       AND entity_type='CONTRACTOR_INDUCTION' AND entity_id=v_induction AND action='CREATED')
