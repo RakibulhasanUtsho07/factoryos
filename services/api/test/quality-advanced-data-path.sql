@@ -22,6 +22,7 @@ DECLARE
   v_disposition UUID := gen_random_uuid();
   v_correlation UUID := gen_random_uuid();
   v_pass_blocked BOOLEAN := FALSE;
+  v_result_id UUID := gen_random_uuid();
   v_decision TEXT;
   v_score NUMERIC(18,4);
   v_stock_before NUMERIC(18,4);
@@ -290,6 +291,27 @@ BEGIN
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_INSPECTION',v_accept_inspection,'QUALITY.INSPECTION_CHANGED',
     jsonb_build_object('status','IN_PROGRESS','version',3,'correlation_id',v_correlation));
+
+  -- A plan-bound inspection can pass only with a real, rule-evaluated result for every required criterion.
+  INSERT INTO quality_inspection_results (
+    id,tenant_id,factory_id,inspection_id,plan_id,plan_revision,criterion_code,criterion_snapshot,
+    attempt,observed_value,outcome,notes,evidence,idempotency_key,request_hash,actor_user_id,correlation_id
+  )
+  SELECT v_result_id,qi.tenant_id,qi.factory_id,qi.id,qi.plan_id,qi.plan_revision,
+    qi.criteria_snapshot->0->>'criterion_code',qi.criteria_snapshot->0,
+    1,'180',factoryos_evaluate_quality_criterion(qi.criteria_snapshot->0,'180'),
+    'Measured against the approved incoming fabric inspection plan',
+    '{"measurement_sheet":"QA-FABRIC-WEIGHT-001","unit":"GSM"}'::jsonb,
+    'qa-data-accept-result',repeat('b',64),v_actor,v_correlation
+  FROM quality_inspections qi
+  WHERE qi.id=v_accept_inspection AND qi.tenant_id=v_tenant AND qi.factory_id=v_factory;
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_accept_inspection,'INSPECTION_RESULT_RECORDED',
+    jsonb_build_object('result_id',v_result_id,'criterion_code','FABRIC-WEIGHT','observed_value','180','outcome','PASS'),
+    v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_INSPECTION',v_accept_inspection,'QUALITY.INSPECTION_RESULT_RECORDED',
+    jsonb_build_object('result_id',v_result_id,'criterion_code','FABRIC-WEIGHT','outcome','PASS','correlation_id',v_correlation));
 
   UPDATE quality_inspections SET status='PASSED',row_version=4,updated_by_user_id=v_actor,updated_at=clock_timestamp()
   WHERE id=v_accept_inspection AND tenant_id=v_tenant AND factory_id=v_factory AND row_version=3;
