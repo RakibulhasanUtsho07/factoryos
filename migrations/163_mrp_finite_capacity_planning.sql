@@ -231,7 +231,9 @@ CREATE TABLE IF NOT EXISTS mrp_capacity_plan_operations (
       'BLOCKED_PREDECESSOR', 'FROZEN_HORIZON_CONFLICT')
   ),
   CONSTRAINT chk_mrp_capacity_operation_conflicts CHECK (jsonb_typeof(conflict_codes) = 'array'),
-  CONSTRAINT chk_mrp_capacity_operation_skill CHECK (required_skill IS NULL OR length(btrim(required_skill)) > 0)
+  CONSTRAINT chk_mrp_capacity_operation_skill CHECK (required_skill IS NULL OR length(btrim(required_skill)) > 0),
+  CONSTRAINT chk_mrp_capacity_operation_style CHECK (style_code IS NULL OR length(btrim(style_code)) BETWEEN 1 AND 120),
+  CONSTRAINT chk_mrp_capacity_operation_size CHECK (size_code IS NULL OR length(btrim(size_code)) BETWEEN 1 AND 80)
 );
 CREATE INDEX IF NOT EXISTS idx_mrp_capacity_operations_order
   ON mrp_capacity_plan_operations (tenant_id, factory_id, capacity_plan_id, need_by_date, order_number, order_line_number, step_number);
