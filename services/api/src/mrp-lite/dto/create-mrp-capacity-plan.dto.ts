@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize, IsArray, IsInt, IsOptional, IsString, IsUUID, Length,
-  Matches, Max, MaxLength, Min, ValidateNested,
+  Matches, Max, Min, ValidateNested,
 } from 'class-validator';
 
 export class MrpCapacityAdjustmentDto {
@@ -12,7 +12,7 @@ export class MrpCapacityAdjustmentDto {
   shift_template_id!: string;
 
   @IsString()
-  @Matches(/^\\d{4}-\\d{2}-\\d{2}$/)
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
   capacity_date!: string;
 
   @IsString()
