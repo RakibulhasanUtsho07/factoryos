@@ -600,7 +600,7 @@ BEFORE INSERT OR UPDATE OR DELETE ON quality_fabric_roll_scores
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_fabric_roll_score();
 
 CREATE OR REPLACE FUNCTION factoryos_require_advanced_quality_evidence()
-RETURNS TRIGGER LANGUAGE plpgsql AS $
+RETURNS TRIGGER LANGUAGE plpgsql AS $factoryos_advanced_quality_evidence$
 DECLARE
   v_decision TEXT;
   v_roll_count INTEGER;
@@ -636,7 +636,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$factoryos_advanced_quality_evidence$;
 DROP TRIGGER IF EXISTS trg_zz_quality_require_advanced_evidence ON quality_inspections;
 CREATE TRIGGER trg_zz_quality_require_advanced_evidence
 BEFORE UPDATE OF status ON quality_inspections
