@@ -71,7 +71,7 @@ export class FinanceWorkbenchService {
     return this.database.transaction({ tenantId, userId }, async (client) => {
       const margin = await client.query(
         `WITH scoped AS (
-          SELECT f.*, date_trunc('month',f.effective_at)::date AS period_start
+          SELECT f.*, date_trunc('month',f.effective_at AT TIME ZONE 'UTC')::date AS period_start
           FROM financial_facts f
           JOIN finance_connectors fc
             ON fc.id=f.connector_id AND fc.tenant_id=f.tenant_id AND fc.factory_id=f.factory_id
@@ -131,7 +131,7 @@ export class FinanceWorkbenchService {
       );
 
       const operationalVariance = await client.query(
-        `SELECT to_char(date_trunc('month',f.effective_at),'YYYY-MM') AS period,f.currency,
+        `SELECT to_char(date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),'YYYY-MM') AS period,f.currency,
           count(*)::int AS reconciled_fact_count,
           count(*) FILTER(WHERE r.match_status='MISMATCH' AND r.review_status='OPEN')::int AS open_mismatch_count,
           count(*) FILTER(WHERE r.review_status='RESOLVED')::int AS resolved_mismatch_count,
@@ -147,8 +147,8 @@ export class FinanceWorkbenchService {
           AND fc.status='ACTIVE' AND fc.is_reporting_source
           AND f.effective_at >= $3 AND f.effective_at <= $4
           AND ($5::char(3) IS NULL OR f.currency=$5)
-        GROUP BY date_trunc('month',f.effective_at),f.currency
-        ORDER BY date_trunc('month',f.effective_at),f.currency`,
+        GROUP BY date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),f.currency
+        ORDER BY date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),f.currency`,
         [tenantId, factoryId, from, to, currency],
       );
 
@@ -519,10 +519,10 @@ export class FinanceWorkbenchService {
         SELECT * FROM scoped WHERE fact_type IN ('ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST')
       ), forecasts AS (
         SELECT DISTINCT ON (
-          connector_id,fact_type,source_fact_key,currency,date_trunc('month',effective_at)
+          connector_id,fact_type,source_fact_key,currency,date_trunc('month',effective_at AT TIME ZONE 'UTC')
         ) *
         FROM scoped WHERE fact_type IN ('FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST')
-        ORDER BY connector_id,fact_type,source_fact_key,currency,date_trunc('month',effective_at),
+        ORDER BY connector_id,fact_type,source_fact_key,currency,date_trunc('month',effective_at AT TIME ZONE 'UTC'),
           created_at DESC,effective_at DESC,id DESC
       ), selected AS (
         SELECT * FROM actuals UNION ALL SELECT * FROM forecasts
