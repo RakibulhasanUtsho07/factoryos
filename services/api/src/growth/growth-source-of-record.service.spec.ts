@@ -49,13 +49,13 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
       {
         id: BASELINE_ID, opportunity_id: OPPORTUNITY_ID, source_kind: 'PRODUCTION_OUTPUT',
         adapter_version: GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION, metric_key: 'production.good_quantity',
-        unit: 'pieces', value: '900.00000000', observed_at: '2026-10-01T14:00:00.000Z',
+        unit: 'PCS', value: '900.00000000', observed_at: '2026-10-01T14:00:00.000Z',
         source_record_ref: `production-output:${BASELINE_ID}`, source_revision_hash: 'a'.repeat(64),
       },
       {
         id: ACTUAL_ID, opportunity_id: OPPORTUNITY_ID, source_kind: 'PRODUCTION_OUTPUT',
         adapter_version: GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION, metric_key: 'production.good_quantity',
-        unit: 'pieces', value: '950.00000000', observed_at: actualTimestamp,
+        unit: 'PCS', value: '950.00000000', observed_at: actualTimestamp,
         source_record_ref: `production-output:${ACTUAL_ID}`, source_revision_hash: 'b'.repeat(64),
       },
     ];
@@ -77,8 +77,8 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
     expect(recorded.post_measurements).toEqual({ 'production.good_quantity': 950 });
     expect(recorded.observed_at).toBe('2026-10-10T14:00:00.000Z');
     expect(recorded.evidence_refs).toEqual([
-      `factoryos://growth/source-observations/${ACTUAL_ID}`,
       `factoryos://growth/source-observations/${BASELINE_ID}`,
+      `factoryos://growth/source-observations/${ACTUAL_ID}`,
     ]);
     expect(recorded.kpi_measurements).toEqual([expect.objectContaining({
       metric_key: 'production.good_quantity', unit: 'pieces',
@@ -100,14 +100,11 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
 
   it('rejects mixed KPI observation timestamps in one realized feed', async () => {
     const sourceRows = observations();
-    sourceRows.push({
+    const alternateActual = {
       ...sourceRows[1], id: '6bc5616a-7edf-4a39-b0c1-7c41e1ac77f4',
       metric_key: 'production.scrap_quantity', value: '10.00000000',
-    });
-    database.query
-      .mockResolvedValueOnce({ rows: [{ id: EXPERIMENT_ID, opportunity_id: OPPORTUNITY_ID, status: 'RUNNING' }] })
-      .mockResolvedValueOnce({ rows: sourceRows });
-
+      observed_at: '2026-10-11T14:00:00.000Z',
+    };
     const mixed = dto();
     mixed.kpi_measurements.push({
       metric_key: 'production.scrap_quantity',
@@ -119,10 +116,9 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
       ...sourceRows[0], id: '6d1f65c2-8d34-45af-8bbb-c2eff5a5fdb2',
       metric_key: 'production.scrap_quantity', value: '20.00000000',
     };
-    database.query.mockReset();
     database.query
       .mockResolvedValueOnce({ rows: [{ id: EXPERIMENT_ID, opportunity_id: OPPORTUNITY_ID, status: 'RUNNING' }] })
-      .mockResolvedValueOnce({ rows: [sourceRows[0], sourceRows[1], baselineTwo, sourceRows[2]] });
+      .mockResolvedValueOnce({ rows: [sourceRows[0], sourceRows[1], baselineTwo, alternateActual] });
 
     await expect(service.recordExperimentResultFromSource(
       USER_ID, TENANT_ID, FACTORY_ID, EXPERIMENT_ID, mixed, null, null,
