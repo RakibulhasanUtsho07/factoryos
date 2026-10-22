@@ -9,6 +9,8 @@ DECLARE
   v_actor UUID := gen_random_uuid();
   v_approver UUID := gen_random_uuid();
   v_item UUID := gen_random_uuid();
+  v_inspection_plan UUID := gen_random_uuid();
+  v_plan_criterion UUID := gen_random_uuid();
   v_aql_profile UUID := gen_random_uuid();
   v_fabric_profile UUID := gen_random_uuid();
   v_reject_inspection UUID := gen_random_uuid();
@@ -41,6 +43,27 @@ BEGIN
   INSERT INTO inventory_stock_balances (tenant_id,factory_id,item_id,quantity_on_hand)
   VALUES (v_tenant,v_factory,v_item,50);
 
+  -- Incoming inspections require a real ACTIVE versioned inspection plan, not a bypassed fixture.
+  INSERT INTO quality_inspection_plans (
+    id,tenant_id,factory_id,plan_code,revision,name,inspection_type,status,default_sample_quantity,
+    row_version,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
+  ) VALUES (
+    v_inspection_plan,v_tenant,v_factory,'QA-INCOMING-ADVANCED',1,'Incoming Fabric Acceptance',
+    'INCOMING','DRAFT',5,1,'qa-data-incoming-plan',repeat('c',64),v_actor,v_actor,v_correlation
+  );
+  INSERT INTO quality_inspection_plan_criteria (
+    id,tenant_id,factory_id,plan_id,criterion_code,name,value_type,comparison_operator,target_value,
+    unit,is_required,is_critical,sequence_number,created_by_user_id
+  ) VALUES (
+    v_plan_criterion,v_tenant,v_factory,v_inspection_plan,'FABRIC-WEIGHT','Fabric weight acceptance',
+    'NUMERIC','GTE','0','GSM',TRUE,FALSE,1,v_actor
+  );
+  UPDATE quality_inspection_plans
+  SET status='ACTIVE',row_version=2,activated_by_user_id=v_actor,activated_at=clock_timestamp(),
+      updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_inspection_plan AND tenant_id=v_tenant AND factory_id=v_factory AND status='DRAFT';
+  IF NOT FOUND THEN RAISE EXCEPTION 'Could not activate incoming acceptance plan for quality fixture'; END IF;
+
   INSERT INTO quality_aql_profiles (
     id,tenant_id,factory_id,profile_code,revision,inspection_type,aql_percent,inspection_level,
     lot_size_min,lot_size_max,sample_size,accept_number,reject_number,status,row_version,
@@ -66,10 +89,10 @@ BEGIN
 
   -- A rejected AQL sample and one failed roll must prevent inspection PASS.
   INSERT INTO quality_inspections (
-    id,tenant_id,factory_id,inspection_type,target_type,target_id,status,row_version,
+    id,tenant_id,factory_id,inspection_type,target_type,target_id,plan_code,status,row_version,
     idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
-    v_reject_inspection,v_tenant,v_factory,'INCOMING','INVENTORY_ITEM',v_item,'OPEN',1,
+    v_reject_inspection,v_tenant,v_factory,'INCOMING','INVENTORY_ITEM',v_item,'QA-INCOMING-ADVANCED','OPEN',1,
     'qa-data-reject-inspection',repeat('c',64),v_actor,v_actor,v_correlation
   );
   INSERT INTO quality_inspection_events (
@@ -224,10 +247,10 @@ BEGIN
   -- A separate inspection with an ACCEPT sample is allowed to pass.
   PERFORM set_config('app.user_id',v_actor::text,true);
   INSERT INTO quality_inspections (
-    id,tenant_id,factory_id,inspection_type,target_type,target_id,status,row_version,
+    id,tenant_id,factory_id,inspection_type,target_type,target_id,plan_code,status,row_version,
     idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
-    v_accept_inspection,v_tenant,v_factory,'INCOMING','INVENTORY_ITEM',v_item,'OPEN',1,
+    v_accept_inspection,v_tenant,v_factory,'INCOMING','INVENTORY_ITEM',v_item,'QA-INCOMING-ADVANCED','OPEN',1,
     'qa-data-accept-inspection',repeat('7',64),v_actor,v_actor,v_correlation
   );
   INSERT INTO quality_inspection_events (
