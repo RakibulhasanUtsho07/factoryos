@@ -78,7 +78,9 @@ CREATE TABLE IF NOT EXISTS mrp_capacity_plan_operations (
  material_ready_on DATE, material_status VARCHAR(24) NOT NULL, capacity_status VARCHAR(32) NOT NULL,
  scheduled_start_date DATE, scheduled_finish_date DATE, schedule_segments JSONB NOT NULL DEFAULT '[]'::jsonb,
  conflict_codes JSONB NOT NULL DEFAULT '[]'::jsonb, frozen_horizon_protected BOOLEAN NOT NULL DEFAULT FALSE,
- frozen_revision_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+ frozen_revision_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+ alternate_material_scenarios JSONB NOT NULL DEFAULT '[]'::jsonb,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
  CONSTRAINT uq_mrp_capacity_op UNIQUE(plan_id,order_line_id,product_routing_step_id),
  CONSTRAINT fk_mrp_capacity_op_plan FOREIGN KEY(plan_id,tenant_id,factory_id) REFERENCES mrp_capacity_plans(id,tenant_id,factory_id) ON DELETE RESTRICT,
  CONSTRAINT fk_mrp_capacity_op_order_line FOREIGN KEY(order_line_id,order_id,tenant_id,factory_id)
@@ -93,7 +95,7 @@ CREATE TABLE IF NOT EXISTS mrp_capacity_plan_operations (
  CONSTRAINT chk_mrp_capacity_op_step CHECK(step_number>0 AND order_line_number>0 AND product_version_number>0),
  CONSTRAINT chk_mrp_capacity_op_material CHECK(material_status IN('READY','LATE_SUPPLY','UNSUPPLIED')),
  CONSTRAINT chk_mrp_capacity_op_status CHECK(capacity_status IN('SCHEDULED','LATE_SCHEDULE','CAPACITY_CONFLICT','MATERIAL_BLOCKED','FROZEN_HORIZON_CONFLICT')),
- CONSTRAINT chk_mrp_capacity_op_json CHECK(jsonb_typeof(schedule_segments)='array' AND jsonb_typeof(conflict_codes)='array' AND jsonb_typeof(frozen_revision_snapshot)='object')
+ CONSTRAINT chk_mrp_capacity_op_json CHECK(jsonb_typeof(schedule_segments)='array' AND jsonb_typeof(conflict_codes)='array' AND jsonb_typeof(frozen_revision_snapshot)='object' AND jsonb_typeof(alternate_material_scenarios)='array')
 );
 CREATE INDEX IF NOT EXISTS idx_mrp_capacity_op_plan_schedule
  ON mrp_capacity_plan_operations(tenant_id,factory_id,plan_id,scheduled_start_date,work_centre_id,step_number);
