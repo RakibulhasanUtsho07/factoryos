@@ -12,7 +12,7 @@
 - Secret manager: `services/api/src/finance/finance-vault-secret-manager.ts` — HashiCorp Vault KV-v2 with a short-lived Vault Agent token file and allowlisted secret paths. It returns provider tokens and SFTP private-key material only through separate adapter methods.
 - SFTP transport: `services/api/src/finance/finance-openssh-sftp.transport.ts` — OpenSSH-based SFTP, exact host/IP allowlists, pinned DNS answer, observed SSH host-key SHA-256 check, strict host-key checking, bounded transfers, hash-guarded archive/quarantine replay, atomic temp-upload/rename and final digest verification.
 - Wired through `services/api/src/finance/finance.module.ts`; ERP and SFTP work continue through the existing FinanceService validators, durable receipt tables and source-of-record/domain rules.
-- Configuration example: `.env.example` at repository root/service deployment configuration, with ERP, Vault and SFTP allowlist variables. No credentials or private keys are committed.
+- Configuration example: `services/api/.env.example`, with ERP, Vault and SFTP allowlist variables. No credentials or private keys are committed.
 
 ## 2. Automated checks
 
