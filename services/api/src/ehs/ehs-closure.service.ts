@@ -143,6 +143,29 @@ export class EhsClosureService {
     });
   }
 
+  async listDrillAttendance(c:EhsContext,drillId:string,limitRaw?:number){
+    this.scope(c);this.uuid(drillId,'drillId');const limit=this.limit(limitRaw,200);
+    const q=await this.database.query<Row>(
+      `SELECT id::text AS id,drill_id::text AS drill_id,attendee_ref,attendee_name,user_id::text AS user_id,
+        attendance_status,recorded_at::text AS recorded_at,notes,evidence,recorded_by_user_id::text AS recorded_by_user_id
+       FROM ehs_drill_attendance WHERE tenant_id=$1 AND factory_id=$2 AND drill_id=$3
+       ORDER BY recorded_at,id LIMIT $4`,
+      [c.tenantId,c.factoryId,drillId,limit],{tenantId:c.tenantId,userId:c.userId});
+    return {items:q.rows};
+  }
+
+  async listDrillResponses(c:EhsContext,drillId:string,limitRaw?:number){
+    this.scope(c);this.uuid(drillId,'drillId');const limit=this.limit(limitRaw,200);
+    const q=await this.database.query<Row>(
+      `SELECT id::text AS id,drill_id::text AS drill_id,response_code,response_action,
+        responder_user_id::text AS responder_user_id,elapsed_seconds,occurred_at::text AS occurred_at,evidence,
+        recorded_by_user_id::text AS recorded_by_user_id,created_at::text AS created_at
+       FROM ehs_drill_responses WHERE tenant_id=$1 AND factory_id=$2 AND drill_id=$3
+       ORDER BY occurred_at,id LIMIT $4`,
+      [c.tenantId,c.factoryId,drillId,limit],{tenantId:c.tenantId,userId:c.userId});
+    return {items:q.rows};
+  }
+
   async listChemicalSds(c:EhsContext,limitRaw?:number,status?:string){
     this.scope(c);const limit=this.limit(limitRaw,100),values:unknown[]=[c.tenantId,c.factoryId],filters=['tenant_id=$1','factory_id=$2'];
     if(status){if(!['DRAFT','ACTIVE','INACTIVE','RETIRED'].includes(status))throw new BadRequestException('Invalid chemical/SDS status');values.push(status);filters.push(`status=$${values.length}`);}
