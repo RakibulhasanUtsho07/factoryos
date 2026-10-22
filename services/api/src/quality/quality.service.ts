@@ -802,7 +802,7 @@ export class QualityService {
       "SELECT id::text AS id,location_id::text AS location_id,quantity::text AS quantity FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_INPUT' AND reference_id=$3 AND movement_type='ISSUE' ORDER BY created_at,id FOR UPDATE",
       [c.tenantId,c.factoryId,input.reworkOrderId]);
     if(!issued.rows.length)return;
-    const total=this.units(issued.rows.reduce((sum,row)=>sum+this.units(String(row.quantity)),0n).toString());
+    const total=issued.rows.reduce((sum,row)=>sum+this.units(String(row.quantity)),0n);
     const expected=await client.query(
       'SELECT input_quantity::text AS input_quantity FROM quality_rework_orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [input.reworkOrderId,c.tenantId,c.factoryId]);
