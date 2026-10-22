@@ -162,7 +162,7 @@ describe('Kafka-compatible event-bus integration (Redpanda)', () => {
       return result.rowCount === 1;
     }, 'persistent consumer dead-letter');
     const quarantined = await pool.query(
-      'SELECT id::text AS id,status,failed_attempts,failure_count,row_version FROM outbox_bus_dead_letters WHERE tenant_id=$1::uuid AND event_id=$2::uuid',
+      'SELECT id::text AS id,status,failed_attempts,failure_count,row_version::int AS row_version FROM outbox_bus_dead_letters WHERE tenant_id=$1::uuid AND event_id=$2::uuid',
       [tenantId, event.id],
     );
     expect(quarantined.rows[0]).toEqual(expect.objectContaining({
