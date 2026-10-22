@@ -73,6 +73,23 @@ describe('AdvancedQualityService request guardrails',()=>{
     expect(database.query).not.toHaveBeenCalled();
   });
 
+  it('routes a replayed rejected AQL sample through the existing inspection hold lifecycle',async()=>{
+    database.transaction.mockResolvedValue({id:DEFECT,replayed:true} as never);
+    database.query
+      .mockResolvedValueOnce({rows:[{decision:'REJECT'}]} as never)
+      .mockResolvedValueOnce({rows:[{status:'OPEN',row_version:8}]} as never);
+    qualityService.decideInspection.mockResolvedValue({status:'ON_HOLD'} as never);
+    const dto:RecordQualityAqlSampleDto={
+      lot_size:120,observed_nonconforming:3,evidence:{sample_sheet:'QC-AQL-001'},
+    };
+    await service.recordAqlSample(context,INSPECTION,dto,'aql-rejected-key');
+    expect(qualityService.decideInspection).toHaveBeenCalledWith(
+      context,INSPECTION,
+      expect.objectContaining({action:'HOLD',expected_version:8,reason:'AQL sample decision REJECT requires quality review'}),
+      expect.any(String),
+    );
+  });
+
   it('rejects a malformed tenant context before querying supplier analytics',async()=>{
     await expect(service.supplierQuality({...context,factoryId:'not-a-uuid'})).rejects.toBeInstanceOf(BadRequestException);
     expect(database.query).not.toHaveBeenCalled();
