@@ -44,9 +44,10 @@ export interface MrpCapacityCalendarSlot {
 export interface MrpCapacitySkillPool {
   capacityDate: string;
   shiftTemplateId: string;
+  workerId: string;
   skillCode: string;
-  availableWorkers: number;
-  netShiftMinutes: number;
+  skillLevel: number;
+  availableMinutes: number;
 }
 
 export interface MrpCapacityScenarioAdjustment {
@@ -68,6 +69,7 @@ export interface MrpCapacityAllocation {
   lineCode: string;
   allocatedMinutes: string;
   requiredSkill: string | null;
+  workerAllocations: Array<{ workerId: string; allocatedMinutes: string }>;
 }
 
 export type MrpCapacityOperationStatus =
@@ -257,16 +259,72 @@ function skillKey(capacityDate: string, shiftTemplateId: string, skillCode: stri
   return capacityDate + '|' + shiftTemplateId + '|' + skillCode.trim().toUpperCase();
 }
 
-function buildSkillRemaining(pools: readonly MrpCapacitySkillPool[]): Map<string, bigint> {
-  const result = new Map<string, bigint>();
+function workerKey(capacityDate: string, shiftTemplateId: string, workerId: string): string {
+  return capacityDate + '|' + shiftTemplateId + '|' + workerId;
+}
+
+function buildSkillCapacity(pools: readonly MrpCapacitySkillPool[]): {
+  workerRemaining: Map<string, bigint>;
+  workerIdsBySkill: Map<string, string[]>;
+} {
+  const workerRemaining = new Map<string, bigint>();
+  const workerIdsBySkill = new Map<string, string[]>();
   for (const pool of pools) {
-    if (!Number.isInteger(pool.availableWorkers) || pool.availableWorkers < 0
-      || !Number.isInteger(pool.netShiftMinutes) || pool.netShiftMinutes < 0) {
-      throw new Error('Skill pool worker and shift-minute values must be non-negative integers');
+    if (!Number.isInteger(pool.availableMinutes) || pool.availableMinutes < 0
+      || !Number.isInteger(pool.skillLevel) || pool.skillLevel < 1 || pool.skillLevel > 5) {
+      throw new Error('Qualified worker capacity values are outside the supported range');
     }
-    const key = skillKey(pool.capacityDate, pool.shiftTemplateId, pool.skillCode);
-    const minutes = BigInt(pool.availableWorkers) * BigInt(pool.netShiftMinutes) * SCALE;
-    result.set(key, (result.get(key) ?? 0n) + minutes);
+    const wKey = workerKey(pool.capacityDate, pool.shiftTemplateId, pool.workerId);
+    const minutes = BigInt(pool.availableMinutes) * SCALE;
+    const previous = workerRemaining.get(wKey);
+    if (previous === undefined || minutes < previous) workerRemaining.set(wKey, minutes);
+    const sKey = skillKey(pool.capacityDate, pool.shiftTemplateId, pool.skillCode);
+    const workers = workerIdsBySkill.get(sKey) ?? [];
+    if (!workers.includes(wKey)) workers.push(wKey);
+    workerIdsBySkill.set(sKey, workers);
+  }
+  for (const workers of workerIdsBySkill.values()) workers.sort();
+  return { workerRemaining, workerIdsBySkill };
+}
+
+function remainingSkillMinutes(
+  capacityDate: string,
+  shiftTemplateId: string,
+  skillCode: string,
+  workerRemaining: ReadonlyMap<string, bigint>,
+  workerIdsBySkill: ReadonlyMap<string, string[]>,
+): bigint {
+  const workers = workerIdsBySkill.get(skillKey(capacityDate, shiftTemplateId, skillCode)) ?? [];
+  return workers.reduce((total, key) => total + (workerRemaining.get(key) ?? 0n), 0n);
+}
+
+function allocateSkillMinutes(
+  amount: bigint,
+  capacityDate: string,
+  shiftTemplateId: string,
+  skillCode: string,
+  workerRemaining: Map<string, bigint>,
+  workerIdsBySkill: ReadonlyMap<string, string[]>,
+): Array<{ workerId: string; allocated: bigint }> | null {
+  const workers = workerIdsBySkill.get(skillKey(capacityDate, shiftTemplateId, skillCode)) ?? [];
+  let remaining = amount;
+  const result: Array<{ workerId: string; allocated: bigint }> = [];
+  for (const key of workers) {
+    const available = workerRemaining.get(key) ?? 0n;
+    if (available <= 0n) continue;
+    const used = available < remaining ? available : remaining;
+    if (used <= 0n) continue;
+    workerRemaining.set(key, available - used);
+    result.push({ workerId: key.split('|').slice(2).join('|'), allocated: used });
+    remaining -= used;
+    if (remaining === 0n) break;
+  }
+  if (remaining > 0n) {
+    for (const entry of result) {
+      const key = workerKey(capacityDate, shiftTemplateId, entry.workerId);
+      workerRemaining.set(key, (workerRemaining.get(key) ?? 0n) + entry.allocated);
+    }
+    return null;
   }
   return result;
 }
@@ -330,7 +388,9 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
   );
   const slotIndex = new Map(slots.map((slot, index) => [slotKey(slot), index]));
   const slotRemaining = slots.map((slot) => BigInt(slot.availableMinutes) * BigInt(slot.parallelLines) * SCALE);
-  const skillRemaining = buildSkillRemaining(input.skillPools);
+  const skillCapacity = buildSkillCapacity(input.skillPools);
+  const workerRemaining = skillCapacity.workerRemaining;
+  const workerIdsBySkill = skillCapacity.workerIdsBySkill;
   const jobs = [...input.jobs].sort(jobOrder);
   const baselines = baselineMap(input.baselineOperations ?? []);
   const outputByKey = new Map<string, MrpCapacityOperationResult>();
@@ -362,16 +422,27 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
           decrementedSlots.push({ index, amount });
           if (step.requiredSkill) {
             const poolKey = skillKey(allocation.capacityDate, allocation.shiftTemplateId, step.requiredSkill);
-            const balance = skillRemaining.get(poolKey) ?? 0n;
-            if (balance < amount) { fits = false; break; }
-            skillRemaining.set(poolKey, balance - amount);
-            decrementedSkills.push({ key: poolKey, amount });
+            const workerEntries = allocation.workerAllocations ?? [];
+            if (!workerEntries.length) { fits = false; break; }
+            for (const workerEntry of workerEntries) {
+              const workerIdentity = workerKey(allocation.capacityDate, allocation.shiftTemplateId, workerEntry.workerId);
+              const workerAmount = parseFixed(workerEntry.allocatedMinutes, 'baseline worker allocated minutes');
+              const workerBalance = workerRemaining.get(workerIdentity) ?? 0n;
+              if (workerBalance < workerAmount
+                || !(workerIdsBySkill.get(poolKey) ?? []).includes(workerIdentity)) {
+                fits = false;
+                break;
+              }
+              workerRemaining.set(workerIdentity, workerBalance - workerAmount);
+              decrementedSkills.push({ key: workerIdentity, amount: workerAmount });
+            }
+            if (!fits) break;
           }
         }
       }
       if (!fits) {
         for (const entry of decrementedSlots) slotRemaining[entry.index] += entry.amount;
-        for (const entry of decrementedSkills) skillRemaining.set(entry.key, (skillRemaining.get(entry.key) ?? 0n) + entry.amount);
+        for (const entry of decrementedSkills) workerRemaining.set(entry.key, (workerRemaining.get(entry.key) ?? 0n) + entry.amount);
       }
       const result = makeResult(job, step, fits ? 'SCHEDULED' : 'FROZEN_HORIZON_CONFLICT',
         fits ? [] : ['FROZEN_HORIZON_CAPACITY_CHANGED']);
@@ -388,6 +459,7 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
             lineCode: allocation.lineCode,
             allocatedMinutes: allocation.allocatedMinutes,
             requiredSkill: step.requiredSkill,
+            workerAllocations: allocation.workerAllocations ?? [],
           };
         });
         result.requiredMinutes = formatFixed(required);
@@ -451,15 +523,28 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
         if (slotOrdinal < horizonStartOrdinal || slotOrdinal > horizonEndOrdinal) continue;
         if (job.materialAvailableDate && slot.capacityDate < job.materialAvailableDate) continue;
         if (step.requiredSkill) {
-          const poolKey = skillKey(slot.capacityDate, slot.shiftTemplateId, step.requiredSkill);
-          if ((skillRemaining.get(poolKey) ?? 0n) <= 0n) continue;
-          const amount = slotRemaining[index] < (skillRemaining.get(poolKey) ?? 0n)
-            ? slotRemaining[index] : (skillRemaining.get(poolKey) ?? 0n);
+          const availableSkill = remainingSkillMinutes(
+            slot.capacityDate, slot.shiftTemplateId, step.requiredSkill,
+            workerRemaining, workerIdsBySkill,
+          );
+          if (availableSkill <= 0n) continue;
+          const amount = slotRemaining[index] < availableSkill ? slotRemaining[index] : availableSkill;
           if (amount <= 0n) continue;
           const used = amount < remaining ? amount : remaining;
+          const workerEntries = allocateSkillMinutes(
+            used, slot.capacityDate, slot.shiftTemplateId, step.requiredSkill,
+            workerRemaining, workerIdsBySkill,
+          );
+          if (!workerEntries) continue;
           slotRemaining[index] -= used;
-          skillRemaining.set(poolKey, (skillRemaining.get(poolKey) ?? 0n) - used);
-          attempted.push({ index, amount: used, key: poolKey });
+          attempted.push({ index, amount: used, key: null });
+          for (const workerEntry of workerEntries) {
+            attempted.push({
+              index: -1,
+              amount: workerEntry.allocated,
+              key: workerKey(slot.capacityDate, slot.shiftTemplateId, workerEntry.workerId),
+            });
+          }
           allocations.push({
             calendarEntryId: slot.calendarEntryId,
             capacityDate: slot.capacityDate,
@@ -470,6 +555,9 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
             lineCode: slot.lineCode,
             allocatedMinutes: formatFixed(used),
             requiredSkill: step.requiredSkill,
+            workerAllocations: workerEntries.map((entry) => ({
+              workerId: entry.workerId, allocatedMinutes: formatFixed(entry.allocated),
+            })),
           });
           remaining -= used;
           if (firstIndex === null) firstIndex = index;
@@ -489,6 +577,7 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
             lineCode: slot.lineCode,
             allocatedMinutes: formatFixed(amount),
             requiredSkill: null,
+            workerAllocations: [],
           });
           remaining -= amount;
           if (firstIndex === null) firstIndex = index;
@@ -498,8 +587,8 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
 
       if (remaining > 0n || firstIndex === null || lastIndex === null) {
         for (const entry of attempted) {
-          slotRemaining[entry.index] += entry.amount;
-          if (entry.key) skillRemaining.set(entry.key, (skillRemaining.get(entry.key) ?? 0n) + entry.amount);
+          if (entry.index >= 0) slotRemaining[entry.index] += entry.amount;
+          if (entry.key) workerRemaining.set(entry.key, (workerRemaining.get(entry.key) ?? 0n) + entry.amount);
         }
         const result = makeResult(job, step, 'CAPACITY_CONFLICT', ['INSUFFICIENT_QUALIFIED_CAPACITY']);
         result.requiredMinutes = formatFixed(required);
