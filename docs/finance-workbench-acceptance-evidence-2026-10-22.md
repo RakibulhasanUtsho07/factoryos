@@ -2,7 +2,7 @@
 
 **Task:** 19 — Finance costing, profitability and working-capital workbench  
 **Branch:** `rakibul-hasan`  
-**Candidate code/migration/test/workflow SHA:** `b7dd771a3c607b7edbf89ae71fcf602a9477d887`  
+**Candidate code/migration/test/workflow SHA:** `941dbfcad3f075035ea37dbd507b19957b0b670a`  
 **Implementation status:** Backend and database contracts committed  
 **Automated exact-SHA CI status:** PENDING VERIFICATION — do not mark PASS until the run's API and PostgreSQL jobs conclude successfully  
 **Finance-owner close acceptance:** OPEN
@@ -10,7 +10,7 @@
 ## Implemented in the candidate
 
 - Added `GET /api/finance/workbench` to return calendar-month actual/forecast costing and profitability, contribution margin, actual-minus-forecast variance, operational quantity/rate attribution, working-capital balances, cash-horizon projection, reporting-domain readiness, and unreconciled facts.
-- Added a currency filter and strict currency separation. No implicit FX conversion is applied. Monthly bucketing is explicit UTC; report ranges are validated before SQL queries.
+- Added a currency filter and strict currency separation. No implicit FX conversion is applied. Monthly bucketing is explicit UTC; report ranges are validated before SQL queries. Date-only end bounds include the full UTC calendar day in the workbench and existing margin/working-capital input APIs.
 - Forecast versions are selected per connector/fact type/source key/currency/month. Actual facts remain immutable and separately identified.
 - Overdue receivables/payables remain visible and are included in due-date cash horizon totals. Open PO commitments, LC exposure, bank position, inventory value and tax liability are presented by source currency.
 - Added currency/period-specific finance-close snapshots with SHA-256 snapshot binding, expected row versions, append-only history, transactional audit/outbox events, forced tenant RLS, source-readiness submission gate, stale-snapshot approval rejection and independent maker-checker approval.
