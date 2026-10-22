@@ -256,7 +256,7 @@ export class MrpFiniteCapacityService {
     const correlationId = this.correlationId(traceId, requestId);
     const outcome = await this.database.transaction({
       tenantId, userId, requestId, traceId, isolationLevel: 'REPEATABLE READ',
-      advisoryLockKey: 'mrp-capacity-plan:' + tenantId + ':' + factoryId + ':' + sourceId + ':' + key,
+      advisoryLockKey: 'mrp-capacity-plan:' + tenantId + ':' + factoryId,
     }, async (client) => {
       const replay = await client.query<{ id: string; request_hash: string }>(
         `SELECT id::text AS id, request_hash FROM mrp_capacity_plans
