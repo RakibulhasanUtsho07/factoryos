@@ -40,3 +40,23 @@ BOM and route replacement bodies carry `expected_version`; stale updates fail wi
 Migrations `082` and `083` add composite tenant/factory foreign keys, case-insensitive product/work-centre code uniqueness, database lifecycle triggers, effective-window checks during approval, idempotency ledgers/indexes, and forced tenant RLS. Material-changing commands commit canonical state and an outbox event together. Audit-sink delivery is attempted after commit; the outbox retains durable state-change evidence if the sink is unavailable. SQL queries filter by tenant **and** factory.
 
 Actual production output, scrap, inventory reservations and stock movements remain in their existing domains. BOM yield/wastage are planning assumptions, not inventory postings or automatic procurement actions.
+
+
+## ECO lifecycle and effective-dated change control
+
+Engineering change orders (ECOs) wrap an existing **draft** product revision in a maker-checker lifecycle. The revision's `effective_from` must exactly match the ECO effective date; backdated submissions are rejected. A submission captures a canonical before/after comparison for specification/yield, BOM lines, routing steps and alternate-material contracts, and freezes the proposed revision's dates/specification and BOM/alternate/routing inputs until the ECO is rejected or approved. Draft alternate contracts must be approved or retired before submission. Approval requires a checker different from the ECO creator and submitter, and a checker distinct from the proposed revision's creator.
+
+| Method and path | Permission | Purpose |
+|---|---|---|
+| `GET /api/products/:productId/change-orders?limit=50` | `products.eco.read` | List ECO history |
+| `POST /api/products/:productId/change-orders` | `products.eco.write` | Create an ECO for a draft version; requires `Idempotency-Key` |
+| `GET /api/products/:productId/change-orders/:changeOrderId` | `products.eco.read` | Read before/after diff, state history and affected-order snapshot |
+| `POST /api/products/:productId/change-orders/:changeOrderId/submit` | `products.eco.write` | Snapshot the diff/impact list and submit; requires key + `expected_version` |
+| `POST /api/products/:productId/change-orders/:changeOrderId/approve` | `products.eco.approve` | Atomically supersede the earlier revision and approve this one from its effective date; requires key + `expected_version` |
+| `POST /api/products/:productId/change-orders/:changeOrderId/reject` | `products.eco.approve` | Reject with a mandatory comment; requires key + `expected_version` |
+
+Create request fields are `proposed_version_id`, `title`, `rationale` and `effective_date`. Lifecycle actions use `expected_version`; the optional approval comment is retained and rejection requires a non-empty comment. All writes are factory-scoped, idempotent and optimistic-version checked. ECO status, actor/time evidence, review outcome and event/outbox records are retained rather than deleted.
+
+The affected-order snapshot includes open work orders in `DRAFT`, `RELEASED`, `IN_PROGRESS` or `ON_HOLD` whose planned start or due date reaches the new effective date. It records each order's pinned revision, status and dates at impact calculation time. This list is an impact/review record—not an instruction to rewrite or auto-migrate a live order. The new revision is approved in the same database transaction that closes the prior approved interval at the day before the new effective date; overlapping later-effective revisions fail closed. A work order whose pinned version is no longer effective for its planned start cannot be newly created or have its revision/date silently moved into validity; release readiness remains a separate check.
+
+Migration `162_plm_eco_effective_dated_revision_integration.sql` adds the ECO lifecycle, forced tenant RLS, submitted-revision freeze triggers, a database release gate that prevents bypassing submitted ECO review, and a work-order planned-start/effective-version check. Contract coverage is `services/api/test/product-change-order-contract.sql` plus API tests and the PostgreSQL CI migration replay gate.
