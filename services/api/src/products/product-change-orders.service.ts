@@ -318,9 +318,6 @@ export class ProductChangeOrdersService {
       }
       if (row.status !== 'DRAFT') throw new ConflictException('Only a draft ECO can be submitted');
       this.expectVersion(row.row_version, dto.expected_version);
-      if (row.created_by_user_id !== userId) {
-        // The originator may submit, but may not later approve their own ECO.
-      }
       const proposedResult = await client.query<ProductVersionRow>(
         'SELECT ' + VERSION_COLS + ' FROM product_versions WHERE id = $1 AND product_id = $2 ' +
           'AND tenant_id = $3 AND factory_id = $4 FOR UPDATE',
@@ -363,10 +360,6 @@ export class ProductChangeOrdersService {
         payload: { proposed_product_version_id: row.proposed_product_version_id, effective_date: row.effective_date, affected_order_count: impact.length, diff_summary: diff.summary },
         correlationId, requestId, traceId,
       });
-      await this.outbox(client, {
-        tenantId, factoryId, aggregateId: id, eventType: 'PLM.ECO_SUBMITTED', correlationId, requestId, userId,
-        payload: { change_order_id: id, product_id: p, proposed_product_version_id: row.proposed_product_version_id, effective_date: row.effective_date, affected_order_count: impact.length },
-      });
       return { id, replayed: false };
     });
 
@@ -392,7 +385,7 @@ export class ProductChangeOrdersService {
     const p = productId.toLowerCase();
     const id = changeOrderId.toLowerCase();
     const correlationId = this.correlationId(traceId, requestId);
-    const ecoApprovalHash = this.hash({ change_order_id: id, expected_version: dto.expected_version });
+    const ecoApprovalHash = this.hash({ change_order_id: id, expected_version: dto.expected_version, comment: dto.comment?.trim() ?? '' });
 
     const outcome = await this.database.transaction({ tenantId, userId }, async (client) => {
       const product = await this.lockProduct(client, p, tenantId, factoryId);
@@ -534,10 +527,6 @@ export class ProductChangeOrdersService {
         correlationId, requestId, traceId,
       });
       await this.outbox(client, {
-        tenantId, factoryId, aggregateId: id, eventType: 'PLM.ECO_APPROVED', correlationId, requestId, userId,
-        payload: { change_order_id: id, product_id: p, source_product_version_id: row.source_product_version_id, proposed_product_version_id: proposed.id, effective_date: row.effective_date, affected_order_count: impact.length },
-      });
-      await this.outbox(client, {
         tenantId, factoryId, aggregateId: proposed.id, eventType: 'PRODUCT.VERSION_APPROVED', correlationId, requestId, userId,
         payload: { product_id: p, product_version_id: proposed.id, version_number: approved.rows[0].version_number, effective_from: proposed.effective_from, effective_to: proposed.effective_to, row_version: approved.rows[0].row_version, approved_via_change_order_id: id, superseded_version_id: prior?.id ?? null },
       });
@@ -600,10 +589,6 @@ export class ProductChangeOrdersService {
         userId, key: 'ECO:' + id + ':REJECTED:' + key, requestHash,
         payload: { product_id: p, proposed_product_version_id: row.proposed_product_version_id, effective_date: row.effective_date, reason: comment },
         correlationId, requestId, traceId,
-      });
-      await this.outbox(client, {
-        tenantId, factoryId, aggregateId: id, eventType: 'PLM.ECO_REJECTED', correlationId, requestId, userId,
-        payload: { change_order_id: id, product_id: p, proposed_product_version_id: row.proposed_product_version_id, reason: comment },
       });
       return { id, replayed: false };
     });
