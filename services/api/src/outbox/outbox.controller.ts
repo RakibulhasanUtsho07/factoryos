@@ -48,8 +48,8 @@ type FactoryOsRequest =
 @Controller('outbox')
 export class OutboxController {
   constructor(
-    private readonly outboxDlqService:
-      OutboxDlqService,
+    private readonly outboxDlqService: OutboxDlqService,
+    private readonly outboxBusDlqService: OutboxBusDlqService,
   ) {}
 
   // ============================================================
@@ -103,6 +103,59 @@ export class OutboxController {
           Number(offset),
       },
     );
+  }
+
+  // ============================================================
+  // GET /api/outbox/bus-dead-letters
+  // ============================================================
+
+  @Get('bus-dead-letters')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('outbox.dlq.read')
+  async listBusDeadLetters(
+    @Req() request: FactoryOsRequest,
+    @Query('factory_id') factoryId?: string,
+    @Query('limit') limit = '50',
+    @Query('offset') offset = '0',
+  ) {
+    const context = request.factoryos;
+    const tenantId = context?.tenantId ?? request.user?.tenantId ?? null;
+    if (!tenantId) throw new UnauthorizedException('Authenticated tenant context is missing');
+    return this.outboxBusDlqService.listDeadLetters(tenantId, {
+      factoryId: factoryId ?? null,
+      requestFactoryId: context?.factoryId ?? null,
+      limit: Number(limit),
+      offset: Number(offset),
+    });
+  }
+
+  // ============================================================
+  // POST /api/outbox/bus-dead-letters/:deadLetterId/redrive
+  // ============================================================
+
+  @Post('bus-dead-letters/:deadLetterId/redrive')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('outbox.dlq.replay')
+  async redriveBusDeadLetter(
+    @Param('deadLetterId', new ParseUUIDPipe()) deadLetterId: string,
+    @Req() request: FactoryOsRequest,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = request.factoryos;
+    const tenantId = context?.tenantId ?? request.user?.tenantId ?? null;
+    const actorUserId = context?.userId ?? request.user?.userId ?? null;
+    if (!tenantId || !actorUserId) {
+      throw new UnauthorizedException('Authenticated user and tenant context are required');
+    }
+    return this.outboxBusDlqService.redrive({
+      tenantId,
+      actorUserId,
+      deadLetterId,
+      idempotencyKey: idempotencyKey ?? null,
+      requestId: context?.requestId ?? null,
+      traceId: context?.traceId ?? null,
+      requestFactoryId: context?.factoryId ?? null,
+    });
   }
 
   // ============================================================
