@@ -93,7 +93,7 @@ export class FinanceWorkbenchService {
           WHERE fact_type IN ('ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST')
         ), forecasts AS (
           SELECT DISTINCT ON (connector_id,fact_type,source_fact_key,currency,period_start)
-            connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start,
+            id,connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start,
             customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref
           FROM scoped
           WHERE fact_type IN ('FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST')
