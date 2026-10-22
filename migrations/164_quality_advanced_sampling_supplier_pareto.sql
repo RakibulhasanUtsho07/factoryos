@@ -600,36 +600,43 @@ BEFORE INSERT OR UPDATE OR DELETE ON quality_fabric_roll_scores
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_fabric_roll_score();
 
 CREATE OR REPLACE FUNCTION factoryos_require_advanced_quality_evidence()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+RETURNS TRIGGER LANGUAGE plpgsql AS $
 DECLARE
   v_decision TEXT;
   v_roll_count INTEGER;
   v_minimum_roll_count INTEGER;
+  v_non_passing_roll_count INTEGER;
 BEGIN
-  IF TG_OP='UPDATE' AND NEW.status='PASSED' AND OLD.status IS DISTINCT FROM NEW.status THEN
+  IF TG_OP='UPDATE' AND OLD.status IS DISTINCT FROM NEW.status
+    AND NEW.status IN ('PASSED','CANCELLED') THEN
     IF NEW.aql_profile_id IS NOT NULL THEN
       SELECT decision INTO v_decision FROM quality_aql_sample_runs
       WHERE inspection_id=NEW.id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
-      IF v_decision IS DISTINCT FROM 'ACCEPT' THEN
+      IF NEW.status='PASSED' AND v_decision IS DISTINCT FROM 'ACCEPT' THEN
         RAISE EXCEPTION 'AQL-bound inspection cannot pass without an ACCEPT sample decision' USING ERRCODE='23514';
+      END IF;
+      IF NEW.status='CANCELLED' AND v_decision IN ('REJECT','HOLD') THEN
+        RAISE EXCEPTION 'AQL rejection/hold cannot be cancelled to bypass quarantine or disposition' USING ERRCODE='23514';
       END IF;
     END IF;
     IF NEW.fabric_scoring_profile_id IS NOT NULL THEN
       SELECT minimum_roll_count INTO v_minimum_roll_count FROM quality_fabric_scoring_profiles
       WHERE id=NEW.fabric_scoring_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
       SELECT count(*) INTO v_roll_count FROM quality_fabric_roll_scores
-      WHERE inspection_id=NEW.id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id
-        AND decision='PASS';
-      IF v_minimum_roll_count IS NULL OR v_roll_count<v_minimum_roll_count
-        OR EXISTS (SELECT 1 FROM quality_fabric_roll_scores WHERE inspection_id=NEW.id
-                   AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND decision<>'PASS') THEN
+      WHERE inspection_id=NEW.id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND decision='PASS';
+      SELECT count(*) INTO v_non_passing_roll_count FROM quality_fabric_roll_scores
+      WHERE inspection_id=NEW.id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND decision<>'PASS';
+      IF NEW.status='PASSED' AND (v_minimum_roll_count IS NULL OR v_roll_count<v_minimum_roll_count OR v_non_passing_roll_count>0) THEN
         RAISE EXCEPTION 'fabric-scored inspection requires the configured number of passing rolls and no held roll' USING ERRCODE='23514';
+      END IF;
+      IF NEW.status='CANCELLED' AND v_non_passing_roll_count>0 THEN
+        RAISE EXCEPTION 'a held fabric roll cannot be cancelled to bypass quarantine or disposition' USING ERRCODE='23514';
       END IF;
     END IF;
   END IF;
   RETURN NEW;
 END;
-$$;
+$;
 DROP TRIGGER IF EXISTS trg_zz_quality_require_advanced_evidence ON quality_inspections;
 CREATE TRIGGER trg_zz_quality_require_advanced_evidence
 BEFORE UPDATE OF status ON quality_inspections
