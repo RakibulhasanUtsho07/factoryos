@@ -223,7 +223,7 @@ function adjustedSlots(input: MrpCapacityScheduleInput): MrpCapacityCalendarSlot
     if (adjustmentByKey.has(key)) throw new Error('Duplicate capacity adjustment for the same line, shift and date');
     adjustmentByKey.set(key, adjustment);
   }
-  return input.slots.map((slot) => {
+  const adjusted = input.slots.map((slot) => {
     const key = [slot.workCentreId, slot.shiftTemplateId, slot.capacityDate, slot.lineCode].join('|');
     const adjustment = adjustmentByKey.get(key);
     if (!adjustment) return { ...slot };
@@ -235,9 +235,11 @@ function adjustedSlots(input: MrpCapacityScheduleInput): MrpCapacityCalendarSlot
     }
     adjustmentByKey.delete(key);
     return { ...slot, availableMinutes, parallelLines };
-  }).concat(
-    adjustmentByKey.size ? [] : [],
-  ).sort((left, right) =>
+  });
+  if (adjustmentByKey.size > 0) {
+    throw new Error('A scenario capacity adjustment does not match an active dated calendar slot');
+  }
+  return adjusted.sort((left, right) =>
     left.capacityDate.localeCompare(right.capacityDate)
     || left.shiftStartMinute - right.shiftStartMinute
     || left.shiftCode.localeCompare(right.shiftCode)
