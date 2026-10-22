@@ -8,7 +8,7 @@ export class CreateMrpCapacityCalendarDto {
   shift_template_id!: string;
 
   @IsString()
-  @Matches(/^\\d{4}-\\d{2}-\\d{2}$/)
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
   capacity_date!: string;
 
   @IsString()
