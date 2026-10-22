@@ -61,6 +61,7 @@ function taskRow(
     tenant_id: tenantId,
     factory_id: factoryId,
     decision_id: decisionId,
+    agent_definition_id: null,
     parent_trace_id: traceId,
     actor_user_id: userId,
     goal: 'Run deterministic AI agent task',
@@ -293,6 +294,7 @@ describe(
       decisionId,
       parentTraceId: traceId,
       goal,
+      agentDefinitionId: null,
       idempotencyKey: 'task-001',
       steps: [
         {
@@ -333,6 +335,7 @@ describe(
         contextVersion: null,
         planVersion: null,
         contextHash: null,
+        agentDefinitionId: input.agentDefinitionId ?? null,
       });
 
     it('rejects task creation when the deadline expires before the database insert', async () => {
