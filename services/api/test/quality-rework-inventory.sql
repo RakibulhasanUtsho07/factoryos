@@ -19,6 +19,7 @@ DECLARE
   v_source_link UUID := gen_random_uuid();
   v_output_link UUID := gen_random_uuid();
   v_rework UUID := gen_random_uuid();
+  v_cancel_inspection UUID := gen_random_uuid();
   v_cancel_defect UUID := gen_random_uuid();
   v_cancel_source_link UUID := gen_random_uuid();
   v_cancel_rework UUID := gen_random_uuid();
@@ -471,11 +472,46 @@ BEGIN
   -- Exercise cancellation separately: a fully issued rework task must return the exact
   -- source lot quantity to the same bin, rather than creating recovered output.
   PERFORM set_config('app.user_id',v_actor::text,TRUE);
+
+  -- Use a valid in-progress inspection for the second defect; the original inspection remains ON_HOLD.
+  INSERT INTO quality_inspections (
+    id,tenant_id,factory_id,inspection_type,target_type,target_id,inventory_item_id,traceability_unit_id,
+    status,row_version,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
+  ) VALUES (
+    v_cancel_inspection,v_tenant,v_factory,'INVENTORY','TRACEABILITY_UNIT',v_source_unit,v_item,v_source_unit,
+    'OPEN',1,'qwr-cancel-inspection',repeat('4',64),v_actor,v_actor,v_correlation
+  );
+  INSERT INTO quality_inspection_events (
+    tenant_id,factory_id,inspection_id,version,from_status,to_status,action,reason,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_inspection,1,NULL,'OPEN','CREATED','Cancellation stock restoration inspection',
+    'qwr-cancel-inspection-created',repeat('5',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_cancel_inspection,'QWR_CANCEL_INSPECTION_CREATED','{"status":"OPEN"}'::jsonb,v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_INSPECTION',v_cancel_inspection,'QUALITY.INSPECTION_CHANGED','{"status":"OPEN"}'::jsonb);
+  UPDATE quality_inspections SET status='IN_PROGRESS',row_version=2,updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_cancel_inspection AND tenant_id=v_tenant AND factory_id=v_factory AND status='OPEN' AND row_version=1;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Cancellation inspection could not enter IN_PROGRESS'; END IF;
+  INSERT INTO quality_inspection_events (
+    tenant_id,factory_id,inspection_id,version,from_status,to_status,action,reason,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_inspection,2,'OPEN','IN_PROGRESS','START','Begin cancellation fixture inspection',
+    'qwr-cancel-inspection-start',repeat('6',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_cancel_inspection,'QWR_CANCEL_INSPECTION_STARTED','{"status":"IN_PROGRESS"}'::jsonb,v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_INSPECTION',v_cancel_inspection,'QUALITY.INSPECTION_CHANGED','{"status":"IN_PROGRESS"}'::jsonb);
+
   INSERT INTO quality_defects (
     id,tenant_id,factory_id,inspection_id,defect_code,severity,affected_quantity,description,evidence,
     status,row_version,idempotency_key,request_hash,reported_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
-    v_cancel_defect,v_tenant,v_factory,v_source_inspection,'QWR-CANCEL-DEFECT','MINOR',1,
+    v_cancel_defect,v_tenant,v_factory,v_cancel_inspection,'QWR-CANCEL-DEFECT','MINOR',1,
     'One additional unit is used to prove cancelled rework restores its source stock',
     '{"inspection_sheet":"QWR-CANCEL-QC-001","evidence_ref":"cancel-source-lot"}'::jsonb,
     'OPEN',1,'qwr-cancel-defect',repeat('4',64),v_actor,v_actor,v_correlation
@@ -487,7 +523,7 @@ BEGIN
     'qwr-cancel-defect-event',repeat('5',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_DEFECT_REPORTED',
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'QUALITY_DEFECT_REPORTED',
     '{"defect_code":"QWR-CANCEL-DEFECT","affected_quantity":1,"source_unit_id":"fixture"}'::jsonb,v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_CHANGED','{"status":"OPEN"}'::jsonb);
@@ -501,7 +537,7 @@ BEGIN
     'qwr-cancel-source-link',repeat('6',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'DEFECT_TRACEABILITY_LINKED',
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'DEFECT_TRACEABILITY_LINKED',
     jsonb_build_object('link_id',v_cancel_source_link,'link_type','TRACEABILITY_UNIT','target_id',v_source_unit),v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_TRACEABILITY_LINKED',
@@ -513,7 +549,7 @@ BEGIN
     created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
     v_cancel_rework,v_tenant,v_factory,'QWR-CANCEL-'||upper(substr(v_cancel_rework::text,1,10)),
-    v_cancel_defect,v_source_inspection,v_item,v_source_unit,1,0,0,'DRAFT',
+    v_cancel_defect,v_cancel_inspection,v_item,v_source_unit,1,0,0,'DRAFT',
     'Cancellation must restore held source stock','Cancel before recovery or scrap is recorded',1,
     'qwr-cancel-rework-order',repeat('7',64),v_actor,v_actor,v_correlation
   );
@@ -526,7 +562,7 @@ BEGIN
     'qwr-cancel-rework-created',repeat('8',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
     jsonb_build_object('rework_order_id',v_cancel_rework,'version',1,'to_status','DRAFT'),v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED','{"version":1,"status":"DRAFT"}'::jsonb);
@@ -543,7 +579,7 @@ BEGIN
     'qwr-cancel-rework-approved',repeat('9',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
     jsonb_build_object('rework_order_id',v_cancel_rework,'version',2,'to_status','APPROVED'),v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED','{"version":2,"status":"APPROVED"}'::jsonb);
@@ -560,7 +596,7 @@ BEGIN
     'qwr-cancel-defect-rework',repeat('a',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'DEFECT_REWORK','{"status":"REWORK"}'::jsonb,v_actor,v_correlation);
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'DEFECT_REWORK','{"status":"REWORK"}'::jsonb,v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_CHANGED','{"status":"REWORK"}'::jsonb);
   INSERT INTO quality_rework_events (
@@ -572,7 +608,7 @@ BEGIN
     'qwr-cancel-rework-started',repeat('b',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
     jsonb_build_object('rework_order_id',v_cancel_rework,'version',3,'to_status','IN_PROGRESS'),v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED','{"version":3,"status":"IN_PROGRESS"}'::jsonb);
@@ -627,7 +663,7 @@ BEGIN
     'qwr-cancel-rework-cancelled',repeat('d',64),v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+  VALUES (v_tenant,v_factory,v_cancel_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
     jsonb_build_object('rework_order_id',v_cancel_rework,'version',4,'to_status','CANCELLED','source_restore_required',true),v_actor,v_correlation);
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED',
