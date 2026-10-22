@@ -45,8 +45,8 @@ export interface FinanceJsonHttpClient {
   request<T>(input: FinanceJsonHttpRequest): Promise<T>;
 }
 
-type ResolvedAddress = { address: string; family: number };
-type FinanceDnsLookup = (hostname: string) => Promise<ResolvedAddress[]>;
+export type FinanceResolvedAddress = { address: string; family: number };
+export type FinanceDnsLookup = (hostname: string) => Promise<FinanceResolvedAddress[]>;
 
 function csvSet(value: string | undefined): Set<string> {
   return new Set((value ?? '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean));
@@ -100,7 +100,7 @@ export async function resolveFinancePinnedAddress(
     const answers = await dns.lookup(host, { all: true, verbatim: true });
     return answers.map((item) => ({ address: item.address, family: item.family }));
   },
-): Promise<ResolvedAddress> {
+): Promise<FinanceResolvedAddress> {
   const host = hostname.toLowerCase().replace(/\.$/, '');
   if (!host || isIP(host) !== 0 || !allowedHosts.has(host)) {
     throw new Error('FINANCE_ERP_HOST_NOT_ALLOWLISTED');
@@ -115,7 +115,7 @@ export async function resolveFinancePinnedAddress(
   return answers[0];
 }
 
-function financeLookupForPinnedAddress(address: ResolvedAddress): NonNullable<RequestOptions['lookup']> {
+function financeLookupForPinnedAddress(address: FinanceResolvedAddress): NonNullable<RequestOptions['lookup']> {
   return ((hostname: string, options: unknown, callback: (...args: unknown[]) => void) => {
     void hostname;
     const cb = (typeof options === 'function' ? options : callback) as (...args: unknown[]) => void;
