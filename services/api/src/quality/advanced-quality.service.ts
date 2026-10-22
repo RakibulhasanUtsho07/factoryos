@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
+import { QualityService } from './quality.service';
 import {
   BindQualitySamplingProfilesDto, CreateFabricScoringProfileDto, CreateQualityAqlProfileDto,
   QualityAdvancedProfileTransitionDto, QualityDefectParetoQueryDto, QualityRepeatAlertsQueryDto,
@@ -22,7 +23,7 @@ type ProfileRow = Record<string, any>;
 
 @Injectable()
 export class AdvancedQualityService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly database: DatabaseService, private readonly qualityService: QualityService) {}
 
   async createAqlProfile(c: AdvancedQualityContext, dto: CreateQualityAqlProfileDto, rawKey: string | null) {
     return this.createProfile(c, 'AQL', dto, rawKey);
@@ -166,6 +167,9 @@ export class AdvancedQualityService {
       'aql_percent_snapshot::text AS aql_percent, inspection_level_snapshot, lot_size, sample_size, accept_number, reject_number, ' +
       'observed_nonconforming, decision, evidence, created_at::text AS created_at FROM quality_aql_sample_runs WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [result.id, c.tenantId, c.factoryId], { tenantId: c.tenantId, userId: c.userId });
+    if (q.rows[0] && q.rows[0].decision !== 'ACCEPT') {
+      await this.ensureInspectionHeld(c, inspectionId, key, 'AQL sample decision ' + q.rows[0].decision + ' requires quality review');
+    }
     return { ...q.rows[0], replayed: result.replayed };
   }
 
@@ -235,6 +239,9 @@ export class AdvancedQualityService {
       'max_points_snapshot::text AS max_points_per_100_square_yards, decision, defects, evidence, created_at::text AS created_at ' +
       'FROM quality_fabric_roll_scores WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [result.id, c.tenantId, c.factoryId], { tenantId: c.tenantId, userId: c.userId });
+    if (q.rows[0] && q.rows[0].decision !== 'PASS') {
+      await this.ensureInspectionHeld(c, inspectionId, key, 'Fabric roll ' + q.rows[0].roll_code + ' exceeded the approved point limit');
+    }
     return { ...q.rows[0], replayed: result.replayed };
   }
 
@@ -384,6 +391,21 @@ export class AdvancedQualityService {
       ' HAVING count(DISTINCT ds.id)>=$4 ORDER BY critical_count DESC,occurrence_count DESC,latest_occurrence_at DESC LIMIT $5',
       [c.tenantId,c.factoryId,days,minimum,limit],{tenantId:c.tenantId,userId:c.userId});
     return {lookback_days:days,minimum_occurrences:minimum,items:r.rows};
+  }
+
+  private async ensureInspectionHeld(c: AdvancedQualityContext, inspectionId: string, sourceKey: string, reason: string) {
+    const state = await this.database.query(
+      'SELECT status,row_version::int AS row_version FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [inspectionId,c.tenantId,c.factoryId], { tenantId:c.tenantId,userId:c.userId });
+    const row = state.rows[0];
+    if (!row) throw new NotFoundException('Quality inspection was not found in this factory');
+    if (row.status === 'ON_HOLD') return;
+    if (!['OPEN','IN_PROGRESS'].includes(String(row.status))) {
+      throw new ConflictException('Non-accepted advanced quality evidence requires a hold, but the inspection is already ' + row.status);
+    }
+    await this.qualityService.decideInspection(c, inspectionId, {
+      action:'HOLD', expected_version:Number(row.row_version), reason,
+    }, 'advanced-quality-hold:' + this.hash({inspectionId,sourceKey}).slice(0,48));
   }
 
   private async createProfile(c: AdvancedQualityContext, kind: ProfileKind, dto: CreateQualityAqlProfileDto | CreateFabricScoringProfileDto, rawKey: string | null) {
