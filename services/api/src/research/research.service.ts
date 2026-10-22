@@ -1462,7 +1462,7 @@ export class ResearchService {
         if (!result) throw new ConflictException('Research release changed during promotion');
 
         const initializedChannel = await client.query<{
-          active_release_id: string; active_version: number; revision: number;
+          active_release_id: string | null; active_version: number | null; revision: number;
         }>(
           `
           INSERT INTO research_release_channels (
@@ -1479,7 +1479,7 @@ export class ResearchService {
         let channelRevision = 1;
         if (!initializedChannel.rows[0]) {
           const channelResult = await client.query<{
-            active_release_id: string; active_version: number; revision: number;
+            active_release_id: string | null; active_version: number | null; revision: number;
           }>(
             `
             SELECT active_release_id::text AS active_release_id, active_version, revision
@@ -1494,7 +1494,7 @@ export class ResearchService {
           if (previous.active_release_id === releaseId) {
             throw new ConflictException('This release version is already active');
           }
-          if (previous.active_version >= row.version) {
+          if (previous.active_version !== null && previous.active_version >= row.version) {
             throw new ConflictException('Promotion must advance the active version; use rollback to return to an older version');
           }
           const switched = await client.query<{ revision: number }>(
@@ -1502,7 +1502,7 @@ export class ResearchService {
             UPDATE research_release_channels
             SET active_release_id = $1, active_version = $2,
                 revision = revision + 1, updated_by = $3
-            WHERE tenant_id = $4 AND release_key = $5 AND active_release_id = $6
+            WHERE tenant_id = $4 AND release_key = $5 AND active_release_id IS NOT DISTINCT FROM $6
             RETURNING revision
             `,
             [releaseId, row.version, userId, tenantId, row.release_key, previous.active_release_id],
@@ -1514,7 +1514,7 @@ export class ResearchService {
         }
 
         const promotionReason = ('Promotion approved: ' + reviewSummary).slice(0, 2000);
-        if (previous) {
+        if (previous?.active_release_id) {
           await client.query(
             `
             INSERT INTO research_release_lifecycle_events (
