@@ -317,6 +317,80 @@ CREATE TRIGGER trg_mrp_capacity_calendar_guard
 BEFORE INSERT OR UPDATE OR DELETE ON mrp_capacity_calendar
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_mrp_capacity_calendar();
 
+CREATE OR REPLACE FUNCTION factoryos_guard_mrp_capacity_calendar_overlap()
+RETURNS TRIGGER LANGUAGE plpgsql AS $
+DECLARE
+  v_timezone TEXT;
+  v_start TIMESTAMPTZ;
+  v_end TIMESTAMPTZ;
+  v_overlap BOOLEAN;
+BEGIN
+  IF TG_OP = 'DELETE' OR NEW.status <> 'ACTIVE' THEN
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
+
+  -- Serialize even direct SQL writes. The API takes the same factory calendar
+  -- advisory lock before BEGIN, so cross-date overnight shifts cannot race.
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('mrp-capacity-calendar:' || NEW.tenant_id::text || ':' || NEW.factory_id::text, 0)
+  );
+
+  SELECT timezone_name,
+    ((NEW.capacity_date + starts_at_local) AT TIME ZONE timezone_name),
+    ((NEW.capacity_date + ends_at_local
+       + CASE WHEN ends_at_local <= starts_at_local THEN INTERVAL '1 day' ELSE INTERVAL '0 day' END)
+       AT TIME ZONE timezone_name)
+  INTO v_timezone, v_start, v_end
+  FROM workforce_shift_templates
+  WHERE id = NEW.shift_template_id
+    AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
+    AND status = 'ACTIVE';
+
+  IF v_start IS NULL OR v_end IS NULL OR v_end <= v_start THEN
+    RAISE EXCEPTION 'capacity calendar entry requires an active shift with a valid interval'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1
+    FROM mrp_capacity_calendar other
+    JOIN workforce_shift_templates other_shift
+      ON other_shift.id = other.shift_template_id
+     AND other_shift.tenant_id = other.tenant_id
+     AND other_shift.factory_id = other.factory_id
+    CROSS JOIN LATERAL (
+      SELECT
+        ((other.capacity_date + other_shift.starts_at_local) AT TIME ZONE other_shift.timezone_name) AS starts_at,
+        ((other.capacity_date + other_shift.ends_at_local
+          + CASE WHEN other_shift.ends_at_local <= other_shift.starts_at_local
+              THEN INTERVAL '1 day' ELSE INTERVAL '0 day' END)
+          AT TIME ZONE other_shift.timezone_name) AS ends_at
+    ) other_window
+    WHERE other.tenant_id = NEW.tenant_id
+      AND other.factory_id = NEW.factory_id
+      AND other.work_centre_id = NEW.work_centre_id
+      AND lower(btrim(other.line_code)) = lower(btrim(NEW.line_code))
+      AND other.status = 'ACTIVE'
+      AND other.id IS DISTINCT FROM NEW.id
+      AND other.capacity_date BETWEEN NEW.capacity_date - 1 AND NEW.capacity_date + 1
+      AND tstzrange(other_window.starts_at, other_window.ends_at, '[)')
+          && tstzrange(v_start, v_end, '[)')
+  ) INTO v_overlap;
+
+  IF v_overlap THEN
+    RAISE EXCEPTION 'active capacity calendar slots for the same work-centre line cannot overlap across shifts'
+      USING ERRCODE = '23P01';
+  END IF;
+  RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS trg_mrp_capacity_calendar_overlap ON mrp_capacity_calendar;
+CREATE TRIGGER trg_mrp_capacity_calendar_overlap
+BEFORE INSERT OR UPDATE OF work_centre_id, shift_template_id, capacity_date, line_code, status
+ON mrp_capacity_calendar
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_mrp_capacity_calendar_overlap();
+
 CREATE OR REPLACE FUNCTION factoryos_prevent_mrp_capacity_snapshot_mutation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
