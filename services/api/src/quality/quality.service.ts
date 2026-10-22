@@ -613,7 +613,9 @@ export class QualityService {
     if(!r.rows[0])throw new NotFoundException('Quality rework order was not found in this factory');
     const events=await this.database.query("SELECT id::text AS id,version::int AS version,from_status,to_status,command,reason,evidence,payload,actor_user_id::text AS actor_user_id,created_at::text AS created_at FROM quality_rework_events WHERE rework_order_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY version",
       [reworkOrderId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
-    return{...r.rows[0],events:events.rows};
+    const inventoryMovements=await this.database.query("SELECT id::text AS id,item_id::text AS item_id,location_id::text AS location_id,movement_type,quantity::text AS quantity,quantity_delta::text AS quantity_delta,quantity_after::text AS quantity_after,reference_type,reference_id::text AS reference_id,idempotency_key,created_by_user_id::text AS created_by_user_id,correlation_id::text AS correlation_id,created_at::text AS created_at FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_id=$3 AND reference_type IN ('QUALITY_REWORK_INPUT','QUALITY_REWORK_OUTPUT','QUALITY_REWORK_RESTORE') ORDER BY created_at,id",
+      [c.tenantId,c.factoryId,reworkOrderId],{tenantId:c.tenantId,userId:c.userId});
+    return{...r.rows[0],events:events.rows,inventory_movements:inventoryMovements.rows};
   }
 
   async transitionReworkOrder(c:QualityContext,reworkOrderId:string,dto:QualityReworkTransitionDto,rawKey:string|null){
@@ -653,6 +655,13 @@ export class QualityService {
         if(from!=='APPROVED')throw new ConflictException('Only an approved rework task can start');to='IN_PROGRESS';
         update=await client.query("UPDATE quality_rework_orders SET status='IN_PROGRESS',row_version=row_version+1,started_by_user_id=$1,started_at=clock_timestamp(),updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5 RETURNING row_version::int AS row_version",[c.userId,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
         if(r.defect_status==='OPEN')await this.updateDefect(client,c,String(r.defect_id),Number(r.defect_row_version),'REWORK',reason,correlation);
+        if (r.source_inventory_item_id) {
+          await this.postReworkInputInventory(client,c,{
+            reworkOrderId, itemId:String(r.source_inventory_item_id),
+            sourceTraceabilityUnitId:r.source_traceability_unit_id ? String(r.source_traceability_unit_id) : null,
+            inputQuantity:String(r.input_quantity), actorId:c.userId, correlation,
+          });
+        }
       }else if(dto.action==='RESTART'){
         if(from!=='REWORK_REQUIRED')throw new ConflictException('Only a rework-required task can restart');to='IN_PROGRESS';
         update=await client.query("UPDATE quality_rework_orders SET status='IN_PROGRESS',row_version=row_version+1,started_by_user_id=$1,started_at=clock_timestamp(),completed_by_user_id=NULL,completed_at=NULL,completion_reason=NULL,recovered_quantity=0,scrap_quantity=0,output_traceability_unit_id=NULL,follow_up_inspection_id=NULL,verified_by_user_id=NULL,verified_at=NULL,verification_reason=NULL,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$2 AND tenant_id=$3 AND factory_id=$4 AND row_version=$5 RETURNING row_version::int AS row_version",[c.userId,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
@@ -680,12 +689,26 @@ export class QualityService {
         update=await client.query("UPDATE quality_rework_orders SET status=$1,row_version=row_version+1,verified_by_user_id=$2,verified_at=clock_timestamp(),verification_reason=$3,updated_by_user_id=$2,updated_at=clock_timestamp() WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7 RETURNING row_version::int AS row_version",[to,c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
       }else if(dto.action==='CANCEL'){
         if(!['APPROVED','IN_PROGRESS','REWORK_REQUIRED'].includes(from))throw new ConflictException('Only approved, in-progress or rework-required tasks can be cancelled');to='CANCELLED';
-        update=await client.query("UPDATE quality_rework_orders SET status='CANCELLED',row_version=row_version+1,cancelled_by_user_id=$1,cancelled_at=clock_timestamp(),cancellation_reason=$2,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",[c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
+        update=await client.query("UPDATE quality_rework_orders SET status='CANCELLED',row_version=row_version+1,cancelled_by_user_id=$1,cancelled_at=clock_timestamp(),cancellation_reason=$2,completed_by_user_id=NULL,completed_at=NULL,completion_reason=NULL,recovered_quantity=0,scrap_quantity=0,output_traceability_unit_id=NULL,follow_up_inspection_id=NULL,verified_by_user_id=NULL,verified_at=NULL,verification_reason=NULL,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",[c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
       }else throw new BadRequestException('Unsupported rework transition');
       const version=Number(update.rows[0]?.row_version??0);if(!version)throw new ConflictException('Rework task changed during transition');
       await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action,reason,evidence,
         payload:{input_quantity:r.input_quantity,recovered_quantity:recovered,scrap_quantity:scrap,output_traceability_unit_id:outputId,follow_up_inspection_id:followupId},
         key,hash,correlation});
+      if (dto.action==='CANCEL' && ['IN_PROGRESS','REWORK_REQUIRED'].includes(from) && r.source_inventory_item_id) {
+        await this.restoreReworkInputInventory(client,c,{
+          reworkOrderId,itemId:String(r.source_inventory_item_id),
+          sourceTraceabilityUnitId:r.source_traceability_unit_id ? String(r.source_traceability_unit_id) : null,
+          actorId:c.userId,correlation,
+        });
+      }
+      if (dto.action==='VERIFY' && to==='VERIFIED' && this.units(String(r.recovered_quantity))>0n && r.source_inventory_item_id) {
+        await this.postReworkRecoveredOutputInventory(client,c,{
+          reworkOrderId,itemId:String(r.source_inventory_item_id),
+          outputTraceabilityUnitId:String(r.output_traceability_unit_id),
+          recoveredQuantity:String(r.recovered_quantity),actorId:c.userId,correlation,
+        });
+      }
       if(dto.action==='COMPLETE'&&Number(recovered)>0){
         await this.insertDefectLink(client,c,{defectId:String(r.defect_id),linkType:'REWORK_OUTPUT',targetId:String(outputId),source:'REWORK_OUTPUT',quantity:recovered,
           notes:'Recovered output from the rework task',evidence:{rework_order_id:reworkOrderId,follow_up_inspection_id:followupId},
@@ -699,6 +722,186 @@ export class QualityService {
       return{id:reworkOrderId,replayed:false};
     });
     return{...(await this.getReworkOrder(c,result.id)),replayed:result.replayed};
+  }
+
+
+  private async postReworkInputInventory(client:PoolClient,c:QualityContext,input:{
+    reworkOrderId:string;itemId:string;sourceTraceabilityUnitId:string|null;inputQuantity:string;actorId:string;correlation:string;
+  }):Promise<void>{
+    const existing=await client.query(
+      "SELECT COALESCE(sum(quantity),0)::numeric(18,4)::text AS quantity FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_INPUT' AND reference_id=$3 AND movement_type='ISSUE'",
+      [c.tenantId,c.factoryId,input.reworkOrderId]);
+    const already=this.units(String(existing.rows[0]?.quantity??'0'));
+    const needed=this.units(input.inputQuantity);
+    if(already===needed)return;
+    if(already!==0n)throw new ConflictException('Rework source input has a partial prior issue; stock reconciliation must be reviewed before retry');
+    const balance=await client.query(
+      'SELECT quantity_on_hand::text AS quantity_on_hand,quantity_reserved::text AS quantity_reserved FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 FOR UPDATE',
+      [c.tenantId,c.factoryId,input.itemId]);
+    if(!balance.rows[0])throw new ConflictException('Rework source inventory balance is unavailable');
+    if(this.units(String(balance.rows[0].quantity_reserved))!==0n)throw new ConflictException('Release all item reservations before issuing a held source to rework');
+    if(this.units(String(balance.rows[0].quantity_on_hand))<needed)throw new ConflictException('Rework input quantity exceeds available aggregate stock');
+
+    if(!input.sourceTraceabilityUnitId){
+      const tracked=await client.query(
+        "SELECT EXISTS(SELECT 1 FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND inventory_item_id=$3 AND product_role='MATERIAL' AND unit_type IN ('LOT','SERIAL')) AS tracked",
+        [c.tenantId,c.factoryId,input.itemId]);
+      if(tracked.rows[0]?.tracked)throw new ConflictException('A source lot/serial is required before rework can consume an item with material traceability enabled');
+    }
+    const candidates=input.sourceTraceabilityUnitId
+      ? await client.query(
+        "SELECT tlb.location_id::text AS location_id,(tlb.quantity_on_hand-tlb.quantity_reserved)::numeric(18,4)::text AS available_quantity FROM inventory_traceability_location_balances tlb JOIN inventory_locations l ON l.id=tlb.location_id AND l.tenant_id=tlb.tenant_id AND l.factory_id=tlb.factory_id WHERE tlb.tenant_id=$1 AND tlb.factory_id=$2 AND tlb.item_id=$3 AND tlb.traceability_unit_id=$4 AND l.status='ACTIVE' AND l.picking_enabled=TRUE AND l.putaway_enabled=TRUE AND tlb.quantity_on_hand>tlb.quantity_reserved ORDER BY l.is_default DESC,tlb.location_id FOR UPDATE OF tlb",
+        [c.tenantId,c.factoryId,input.itemId,input.sourceTraceabilityUnitId])
+      : await client.query(
+        "SELECT lb.location_id::text AS location_id,(lb.quantity_on_hand-lb.quantity_reserved)::numeric(18,4)::text AS available_quantity FROM inventory_location_balances lb JOIN inventory_locations l ON l.id=lb.location_id AND l.tenant_id=lb.tenant_id AND l.factory_id=lb.factory_id WHERE lb.tenant_id=$1 AND lb.factory_id=$2 AND lb.item_id=$3 AND l.status='ACTIVE' AND l.picking_enabled=TRUE AND l.putaway_enabled=TRUE AND lb.quantity_on_hand>lb.quantity_reserved ORDER BY l.is_default DESC,lb.location_id FOR UPDATE OF lb",
+        [c.tenantId,c.factoryId,input.itemId]);
+    const rows=candidates.rows as {location_id:string;available_quantity:string}[];
+    const available=rows.reduce((sum,row)=>sum+this.units(row.available_quantity),0n);
+    if(available<needed)throw new ConflictException('Eligible unreserved bin/lot quantities do not cover the requested rework input');
+    let remaining=needed,sequence=0;
+    for(const row of rows){
+      if(remaining===0n)break;
+      const candidateUnits=this.units(row.available_quantity);
+      const take=candidateUnits<remaining?candidateUnits:remaining;
+      if(take<=0n)continue;
+      const quantity=this.unitsToDecimal(take);
+      await client.query('SELECT set_config(\'app.inventory_location_id\',$1,TRUE)',[row.location_id]);
+      const stock=await client.query(
+        'UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand-$1::numeric,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4 AND quantity_reserved=0 AND quantity_on_hand >= $1::numeric RETURNING quantity_on_hand::text AS quantity_on_hand',
+        [quantity,c.tenantId,c.factoryId,input.itemId]);
+      if(!stock.rows[0])throw new ConflictException('Aggregate stock changed while issuing rework input');
+      if(input.sourceTraceabilityUnitId){
+        const tracked=await client.query(
+          'UPDATE inventory_traceability_location_balances SET quantity_on_hand=quantity_on_hand-$1::numeric,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4 AND traceability_unit_id=$5 AND location_id=$6 AND quantity_reserved=0 AND quantity_on_hand >= $1::numeric RETURNING id::text AS id',
+          [quantity,c.tenantId,c.factoryId,input.itemId,input.sourceTraceabilityUnitId,row.location_id]);
+        if(!tracked.rows[0])throw new ConflictException('Source lot/serial bin balance changed while issuing rework input');
+      }
+      sequence++;
+      const key='quality-rework-input:'+input.reworkOrderId+':'+sequence;
+      const hash=this.hash({kind:'QUALITY_REWORK_INPUT',rework_order_id:input.reworkOrderId,item_id:input.itemId,
+        traceability_unit_id:input.sourceTraceabilityUnitId,location_id:row.location_id,quantity,sequence});
+      const movement=await client.query(
+        "INSERT INTO inventory_movements (tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,'ISSUE',$5::numeric,-$5::numeric,$6::numeric,$7,$8,'QUALITY_REWORK_INPUT',$9::uuid,$10,$11,$12::uuid) RETURNING id::text AS id,created_at::text AS created_at",
+        [c.tenantId,c.factoryId,input.itemId,row.location_id,quantity,stock.rows[0].quantity_on_hand,key,hash,input.reworkOrderId,'Quarantined source consumed by approved rework task',input.actorId,input.correlation]);
+      const movementId=String(movement.rows[0]?.id??'');
+      if(!movementId)throw new Error('QUALITY_REWORK_INPUT_MOVEMENT_FAILED');
+      await this.recordReworkInventoryEvidence(client,c,{
+        movementId,itemId:input.itemId,locationId:row.location_id,movementType:'ISSUE',quantity,quantityAfter:String(stock.rows[0].quantity_on_hand),
+        reworkOrderId:input.reworkOrderId,traceabilityUnitId:input.sourceTraceabilityUnitId,actorId:input.actorId,correlation:input.correlation,
+        key,outboxEvent:'INVENTORY.STOCK_ISSUED',
+      });
+      remaining-=take;
+    }
+    if(remaining!==0n)throw new ConflictException('Rework input issue did not consume the requested quantity');
+  }
+
+  private async restoreReworkInputInventory(client:PoolClient,c:QualityContext,input:{
+    reworkOrderId:string;itemId:string;sourceTraceabilityUnitId:string|null;actorId:string;correlation:string;
+  }):Promise<void>{
+    const issued=await client.query(
+      "SELECT id::text AS id,location_id::text AS location_id,quantity::text AS quantity FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_INPUT' AND reference_id=$3 AND movement_type='ISSUE' ORDER BY created_at,id FOR UPDATE",
+      [c.tenantId,c.factoryId,input.reworkOrderId]);
+    if(!issued.rows.length)return;
+    const total=this.units(issued.rows.reduce((sum,row)=>sum+this.units(String(row.quantity)),0n).toString());
+    const expected=await client.query(
+      'SELECT input_quantity::text AS input_quantity FROM quality_rework_orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [input.reworkOrderId,c.tenantId,c.factoryId]);
+    if(total!==this.units(String(expected.rows[0]?.input_quantity??'0')))throw new ConflictException('Rework cancellation cannot restore an incomplete source issue');
+    for(let i=0;i<issued.rows.length;i++){
+      const row=issued.rows[i] as {location_id:string;quantity:string};
+      const quantity=row.quantity;
+      await client.query('SELECT set_config(\'app.inventory_location_id\',$1,TRUE)',[row.location_id]);
+      const stock=await client.query(
+        'UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand+$1::numeric,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4 RETURNING quantity_on_hand::text AS quantity_on_hand',
+        [quantity,c.tenantId,c.factoryId,input.itemId]);
+      if(!stock.rows[0])throw new ConflictException('Inventory balance is missing while restoring cancelled rework input');
+      if(input.sourceTraceabilityUnitId){
+        const tracked=await client.query(
+          'UPDATE inventory_traceability_location_balances SET quantity_on_hand=quantity_on_hand+$1::numeric,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4 AND traceability_unit_id=$5 AND location_id=$6 RETURNING id::text AS id',
+          [quantity,c.tenantId,c.factoryId,input.itemId,input.sourceTraceabilityUnitId,row.location_id]);
+        if(!tracked.rows[0])throw new ConflictException('Source lot/serial balance is missing while restoring cancelled rework input');
+      }
+      const sequence=i+1,key='quality-rework-restore:'+input.reworkOrderId+':'+sequence;
+      const hash=this.hash({kind:'QUALITY_REWORK_RESTORE',rework_order_id:input.reworkOrderId,item_id:input.itemId,
+        traceability_unit_id:input.sourceTraceabilityUnitId,location_id:row.location_id,quantity,sequence});
+      const movement=await client.query(
+        "INSERT INTO inventory_movements (tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,'RECEIPT',$5::numeric,$5::numeric,$6::numeric,$7,$8,'QUALITY_REWORK_RESTORE',$9::uuid,$10,$11,$12::uuid) RETURNING id::text AS id",
+        [c.tenantId,c.factoryId,input.itemId,row.location_id,quantity,stock.rows[0].quantity_on_hand,key,hash,input.reworkOrderId,'Restore source stock when rework is cancelled',input.actorId,input.correlation]);
+      const movementId=String(movement.rows[0]?.id??'');
+      if(!movementId)throw new Error('QUALITY_REWORK_RESTORE_MOVEMENT_FAILED');
+      await this.recordReworkInventoryEvidence(client,c,{
+        movementId,itemId:input.itemId,locationId:row.location_id,movementType:'RECEIPT',quantity,quantityAfter:String(stock.rows[0].quantity_on_hand),
+        reworkOrderId:input.reworkOrderId,traceabilityUnitId:input.sourceTraceabilityUnitId,actorId:input.actorId,correlation:input.correlation,
+        key,outboxEvent:'INVENTORY.STOCK_RECEIVED',
+      });
+    }
+  }
+
+  private async postReworkRecoveredOutputInventory(client:PoolClient,c:QualityContext,input:{
+    reworkOrderId:string;itemId:string;outputTraceabilityUnitId:string;recoveredQuantity:string;actorId:string;correlation:string;
+  }):Promise<void>{
+    const prior=await client.query(
+      "SELECT id FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=$3 LIMIT 1",
+      [c.tenantId,c.factoryId,input.reworkOrderId]);
+    if(prior.rows[0])return;
+    const output=await client.query(
+      'SELECT inventory_item_id::text AS inventory_item_id,quantity::text AS quantity,status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
+      [input.outputTraceabilityUnitId,c.tenantId,c.factoryId]);
+    if(!output.rows[0]||output.rows[0].status!=='ACTIVE'||String(output.rows[0].inventory_item_id)!==input.itemId
+      ||this.units(String(output.rows[0].quantity))!==this.units(input.recoveredQuantity)){
+      throw new ConflictException('Verified recovered output identity does not match its inventory item and quantity');
+    }
+    const existing=await client.query(
+      'SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text AS quantity FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4',
+      [c.tenantId,c.factoryId,input.itemId,input.outputTraceabilityUnitId]);
+    if(this.units(String(existing.rows[0]?.quantity??'0'))!==0n)throw new ConflictException('Recovered output already has on-hand traceability stock');
+    const location=await client.query(
+      "SELECT id::text AS id FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND status='ACTIVE' AND putaway_enabled=TRUE ORDER BY is_default DESC,id LIMIT 1 FOR SHARE",
+      [c.tenantId,c.factoryId]);
+    const locationId=String(location.rows[0]?.id??'');
+    if(!locationId)throw new ConflictException('No active put-away location is available for recovered output');
+    await client.query('SELECT set_config(\'app.inventory_location_id\',$1,TRUE)',[locationId]);
+    const stock=await client.query(
+      'UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand+$1::numeric,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4 RETURNING quantity_on_hand::text AS quantity_on_hand',
+      [input.recoveredQuantity,c.tenantId,c.factoryId,input.itemId]);
+    if(!stock.rows[0])throw new ConflictException('Inventory balance is missing for recovered rework output');
+    const key='quality-rework-output:'+input.reworkOrderId;
+    const hash=this.hash({kind:'QUALITY_REWORK_OUTPUT',rework_order_id:input.reworkOrderId,item_id:input.itemId,
+      output_traceability_unit_id:input.outputTraceabilityUnitId,location_id:locationId,quantity:input.recoveredQuantity});
+    const movement=await client.query(
+      "INSERT INTO inventory_movements (tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,'RECEIPT',$5::numeric,$5::numeric,$6::numeric,$7,$8,'QUALITY_REWORK_OUTPUT',$9::uuid,$10,$11,$12::uuid) RETURNING id::text AS id",
+      [c.tenantId,c.factoryId,input.itemId,locationId,input.recoveredQuantity,stock.rows[0].quantity_on_hand,key,hash,input.reworkOrderId,'Recovered rework output after independent verification and passing follow-up inspection',input.actorId,input.correlation]);
+    const movementId=String(movement.rows[0]?.id??'');
+    if(!movementId)throw new Error('QUALITY_REWORK_OUTPUT_MOVEMENT_FAILED');
+    const tracked=await client.query(
+      'INSERT INTO inventory_traceability_location_balances (tenant_id,factory_id,item_id,traceability_unit_id,location_id,quantity_on_hand,quantity_reserved) VALUES ($1,$2,$3,$4,$5::uuid,$6::numeric,0) RETURNING id::text AS id',
+      [c.tenantId,c.factoryId,input.itemId,input.outputTraceabilityUnitId,locationId,input.recoveredQuantity]);
+    if(!tracked.rows[0])throw new Error('QUALITY_REWORK_OUTPUT_TRACEABILITY_BALANCE_FAILED');
+    await this.recordReworkInventoryEvidence(client,c,{
+      movementId,itemId:input.itemId,locationId,movementType:'RECEIPT',quantity:input.recoveredQuantity,
+      quantityAfter:String(stock.rows[0].quantity_on_hand),reworkOrderId:input.reworkOrderId,
+      traceabilityUnitId:input.outputTraceabilityUnitId,actorId:input.actorId,correlation:input.correlation,
+      key,outboxEvent:'INVENTORY.STOCK_RECEIVED',
+    });
+  }
+
+  private async recordReworkInventoryEvidence(client:PoolClient,c:QualityContext,input:{
+    movementId:string;itemId:string;locationId:string;movementType:'ISSUE'|'RECEIPT';quantity:string;quantityAfter:string;
+    reworkOrderId:string;traceabilityUnitId:string|null;actorId:string;correlation:string;key:string;outboxEvent:string;
+  }):Promise<void>{
+    const delta=input.movementType==='ISSUE'?'-'+input.quantity:input.quantity;
+    const payload={
+      movement_id:input.movementId,quality_rework_order_id:input.reworkOrderId,item_id:input.itemId,
+      location_id:input.locationId,traceability_unit_id:input.traceabilityUnitId,movement_type:input.movementType,
+      quantity:input.quantity,quantity_delta:delta,quantity_after:input.quantityAfter,idempotency_key:input.key,
+    };
+    await client.query(
+      "INSERT INTO audit_events (tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,correlation_id,request_id,data_class,payload) VALUES ($1,$2,$3,'INVENTORY',$4,'INVENTORY_MOVEMENT',$5::uuid,$6::uuid,$7::uuid,'INTERNAL',$8::jsonb)",
+      [c.tenantId,c.factoryId,input.actorId,input.movementType==='ISSUE'?'ISSUED':'RECEIVED',input.movementId,input.correlation,
+        c.requestId&&isUUID(c.requestId)?c.requestId:input.correlation,JSON.stringify(payload)]);
+    await client.query(
+      'INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)',
+      [c.tenantId,c.factoryId,'INVENTORY_ITEM',input.itemId,input.outboxEvent,JSON.stringify({...payload,correlation_id:input.correlation})]);
   }
 
   private async insertQualityReworkEvent(client:PoolClient,c:QualityContext,input:{
