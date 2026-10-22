@@ -1899,6 +1899,7 @@ export class GrowthService {
       if (!candidates.length) {
         return {
           ...bucket,
+          empirical_residual_threshold: residualThreshold,
           calibration_policy: null,
           error_threshold_assessment: 'NO_APPROVED_POLICY',
           error_threshold_failures: [],
@@ -1925,7 +1926,9 @@ export class GrowthService {
       };
       if (bucket.sample_count < minSamples) {
         return {
-          ...bucket, calibration_policy: policySummary,
+          ...bucket,
+          empirical_residual_threshold: residualThreshold,
+          calibration_policy: policySummary,
           error_threshold_assessment: 'INSUFFICIENT_POLICY_SAMPLE', error_threshold_failures: [],
           interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
             : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED'
@@ -1954,6 +1957,7 @@ export class GrowthService {
       if (intervalAssessment === 'EXCEEDS_APPROVED_COVERAGE_THRESHOLD') failures.push('ABSOLUTE_CALIBRATION_GAP');
       return {
         ...bucket,
+        empirical_residual_threshold: residualThreshold,
         calibration_policy: policySummary,
         error_threshold_assessment: failures.some(failure => failure !== 'ABSOLUTE_CALIBRATION_GAP')
           ? 'EXCEEDS_APPROVED_ERROR_THRESHOLDS' : 'WITHIN_APPROVED_ERROR_THRESHOLDS',
