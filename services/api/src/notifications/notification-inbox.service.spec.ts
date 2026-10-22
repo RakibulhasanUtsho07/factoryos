@@ -13,17 +13,17 @@ const context={userId:USER,tenantId:TENANT,factoryId:FACTORY,requestId:null,trac
 
 describe('NotificationInboxService outbox integration',()=>{
   let service:NotificationInboxService;
-  const client={query:jest.fn()};
+  const dbClient={query:jest.fn()};
   const database={transaction:jest.fn(),query:jest.fn()};
 
   beforeEach(()=>{
     jest.clearAllMocks();
-    database.transaction.mockImplementation((async (callback:(client:typeof client)=>Promise<unknown>)=>callback(client)) as never);
+    database.transaction.mockImplementation((async (callback:(client:typeof dbClient)=>Promise<unknown>)=>callback(dbClient)) as never);
     service=new NotificationInboxService(database as unknown as DatabaseService);
   });
 
   it('queues source-linked utility threshold notifications idempotently',async()=>{
-    client.query.mockResolvedValueOnce({rows:[{user_id:USER}]} as never)
+    dbClient.query.mockResolvedValueOnce({rows:[{user_id:USER}]} as never)
       .mockResolvedValueOnce({rowCount:1} as never);
     const event:OutboxEvent={
       id:EVENT,tenantId:TENANT,factoryId:FACTORY,aggregateType:'UTILITY_THRESHOLD_ALERT',aggregateId:ALERT,
@@ -32,8 +32,8 @@ describe('NotificationInboxService outbox integration',()=>{
     };
     const result=await service.enqueueUtilityThreshold(event);
     expect(result).toEqual({recipients:1,created:1,replayed:false});
-    expect(client.query).toHaveBeenCalledTimes(2);
-    expect(String(client.query.mock.calls[1][0])).toContain('ON CONFLICT(tenant_id,factory_id,recipient_user_id,source_event_id) DO NOTHING');
+    expect(dbClient.query).toHaveBeenCalledTimes(2);
+    expect(String(dbClient.query.mock.calls[1][0])).toContain('ON CONFLICT(tenant_id,factory_id,recipient_user_id,source_event_id) DO NOTHING');
     expect(client.query.mock.calls[1][1]).toContain(EVENT);
   });
 
