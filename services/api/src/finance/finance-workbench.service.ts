@@ -563,7 +563,7 @@ export class FinanceWorkbenchService {
             'ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST',
             'FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST'
           )
-          AND f.effective_at >= $4::date AND f.effective_at < ($5::date + interval '1 day')
+          AND f.effective_at >= ($4::date::timestamp AT TIME ZONE 'UTC') AND f.effective_at < (($5::date + interval '1 day') AT TIME ZONE 'UTC')
       ), actuals AS (
         SELECT * FROM scoped WHERE fact_type IN ('ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST')
       ), forecasts AS (
@@ -631,7 +631,7 @@ export class FinanceWorkbenchService {
             'AR_OPEN','AP_OPEN','BANK_BALANCE','INVENTORY_VALUE','OPEN_PO_COMMITMENT',
             'LC_EXPOSURE','SHIPMENT_MILESTONE','TAX_LIABILITY','GL_BALANCE'
           )
-          AND f.effective_at < ($4::date + interval '1 day')
+          AND f.effective_at < (($4::date + interval '1 day') AT TIME ZONE 'UTC')
       ), p AS (SELECT * FROM ranked WHERE position_rank=1)
       SELECT fact_type,sum(amount)::text AS amount,count(*)::int AS fact_count
       FROM p GROUP BY fact_type ORDER BY fact_type`,
@@ -647,7 +647,7 @@ export class FinanceWorkbenchService {
       WHERE r.tenant_id=$1 AND r.factory_id=$2 AND f.currency=$3
         AND fc.status='ACTIVE' AND fc.is_reporting_source
         AND r.match_status='MISMATCH' AND r.review_status='OPEN'
-        AND f.effective_at >= $4::date AND f.effective_at < ($5::date + interval '1 day')`,
+        AND f.effective_at >= ($4::date::timestamp AT TIME ZONE 'UTC') AND f.effective_at < (($5::date + interval '1 day') AT TIME ZONE 'UTC')`,
       [tenantId, factoryId, currency, periodStart, periodEnd],
     );
     const unresolvedCount = Number(mismatchResult.rows[0]?.count ?? 0);
