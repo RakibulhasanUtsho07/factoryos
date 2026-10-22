@@ -48,8 +48,8 @@ export class GrowthCalibrationPolicyService {
       advisoryLockKey: ['growth-calibration-policy', tenantId, factoryId, domain, modelVersion, metricKey, unit].join(':'),
     }, async client => {
       const factory = await client.query(
-        'SELECT id FROM factories WHERE id=$1 AND tenant_id=$2 AND status=$3 FOR SHARE',
-        [factoryId, tenantId, 'ACTIVE'],
+        'SELECT id FROM factories WHERE id=$1 AND tenant_id=$2 FOR SHARE',
+        [factoryId, tenantId],
       );
       if (!factory.rows[0]) throw new NotFoundException('Active factory not found in tenant scope');
       const next = await client.query<{ policy_version: number | string }>(
