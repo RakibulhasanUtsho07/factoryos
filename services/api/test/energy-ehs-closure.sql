@@ -11,6 +11,7 @@ DECLARE
   v_meter UUID:=gen_random_uuid();
   v_binding UUID:=gen_random_uuid();
   v_policy UUID:=gen_random_uuid();
+  v_cost_policy UUID:=gen_random_uuid();
   v_reading UUID:=gen_random_uuid();
   v_drill UUID:=gen_random_uuid();
   v_failed_drill UUID:=gen_random_uuid();
@@ -55,6 +56,7 @@ BEGIN
   WHERE id=v_binding AND tenant_id=v_tenant AND factory_id=v_factory AND status='DRAFT' AND row_version=1;
   IF NOT FOUND THEN RAISE EXCEPTION 'Approved vendor source mapping could not be activated'; END IF;
 
+  PERFORM set_config('app.user_id',v_actor::text,TRUE);
   INSERT INTO utility_threshold_policies(
     id,tenant_id,factory_id,policy_code,name,meter_id,utility_type,metric,comparison,threshold_value,
     threshold_unit_code,severity,status,row_version,idempotency_key,request_hash,created_by_user_id,
@@ -68,6 +70,20 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'Threshold policy could not be independently activated'; END IF;
 
   PERFORM set_config('app.user_id',v_actor::text,TRUE);
+  INSERT INTO utility_threshold_policies(
+    id,tenant_id,factory_id,policy_code,name,meter_id,utility_type,metric,comparison,threshold_value,
+    threshold_unit_code,severity,status,row_version,idempotency_key,request_hash,created_by_user_id,
+    updated_by_user_id,correlation_id
+  ) VALUES(v_cost_policy,v_tenant,v_factory,'EEC-HIGH-COST','Energy cost alert',v_meter,'ELECTRICITY',
+    'COST','GTE',40,'BDT','MEDIUM','DRAFT',1,'eec-threshold-cost-policy',v_hash,v_actor,v_actor,v_correlation);
+  PERFORM set_config('app.user_id',v_approver::text,TRUE);
+  UPDATE utility_threshold_policies SET status='ACTIVE',row_version=2,approved_by_user_id=v_approver,
+    approved_at=clock_timestamp(),updated_by_user_id=v_approver,updated_at=clock_timestamp(),
+    last_change_reason='Approved for staged cost threshold test'
+  WHERE id=v_cost_policy AND tenant_id=v_tenant AND factory_id=v_factory AND status='DRAFT' AND row_version=1;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Cost threshold policy could not be independently activated'; END IF;
+
+  PERFORM set_config('app.user_id',v_actor::text,TRUE);
   INSERT INTO utility_meter_readings(
     id,tenant_id,factory_id,meter_id,reading_at,reading_value,previous_reading_value,consumption_quantity,
     unit_code,unit_cost_snapshot,cost_amount,source_type,source_event_id,notes,idempotency_key,request_hash,
@@ -78,7 +94,12 @@ BEGIN
 
   SELECT count(*) INTO v_alert_count FROM utility_threshold_alerts
     WHERE tenant_id=v_tenant AND factory_id=v_factory AND reading_id=v_reading AND policy_id=v_policy;
-  IF v_alert_count<>1 THEN RAISE EXCEPTION 'A threshold-matching reading must create exactly one linked alert'; END IF;
+  IF v_alert_count<>1 THEN RAISE EXCEPTION 'A threshold-matching reading must create exactly one consumption alert'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM utility_threshold_alerts WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND reading_id=v_reading AND policy_id=v_cost_policy AND metric='COST'
+      AND observed_value=50 AND threshold_snapshot=40 AND unit_code='BDT') THEN
+    RAISE EXCEPTION 'Meter rate snapshot and currency must drive a source-linked cost threshold alert';
+  END IF;
   IF NOT EXISTS(
     SELECT 1 FROM utility_threshold_alerts a
     JOIN utility_events e ON e.id=a.utility_event_id AND e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
@@ -101,7 +122,7 @@ BEGIN
   ) VALUES(v_tenant,v_factory,v_meter,clock_timestamp()+INTERVAL '1 second',5,NULL,5,'kWh',2.5,12.5,'METER_GATEWAY',
     'EDGE-CI-01:evt-002','Below threshold fixture','eec-source-reading-002',v_hash,v_actor,v_correlation,v_correlation::text);
   SELECT count(*) INTO v_alert_count FROM utility_threshold_alerts WHERE tenant_id=v_tenant AND factory_id=v_factory;
-  IF v_alert_count<>1 THEN RAISE EXCEPTION 'A below-threshold reading must not create an alert'; END IF;
+  IF v_alert_count<>2 THEN RAISE EXCEPTION 'A below-threshold reading must not create an alert beyond the consumption and cost alerts already linked to the first reading'; END IF;
 
   -- Drill completion is blocked until attendance and at least one response are recorded.
   INSERT INTO ehs_emergency_drills(
