@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 
 import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { EhsLifecycleNotificationConsumer, UtilityThresholdNotificationConsumer } from '../notifications/notification-outbox.consumers';
 import { IamModule } from '../iam/iam.module';
 import { ObservabilityModule } from '../observability/observability.module';
 
@@ -16,6 +18,7 @@ import { OutboxPublisher } from './outbox.publisher';
 @Module({
   imports: [
     DatabaseModule,
+    NotificationsModule,
     AuditModule,
     IamModule,
     ObservabilityModule,
@@ -28,6 +31,8 @@ import { OutboxPublisher } from './outbox.publisher';
   providers: [
     InboxService,
     OrderCreatedConsumer,
+    UtilityThresholdNotificationConsumer,
+    EhsLifecycleNotificationConsumer,
     OutboxConsumerRegistry,
     OutboxPublisher,
     OutboxDlqService,
