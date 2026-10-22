@@ -385,6 +385,27 @@ BEGIN
 END;
 $policies$;
 
+CREATE OR REPLACE FUNCTION factoryos_jsonb_has_sensitive_key(p_value JSONB)
+RETURNS BOOLEAN LANGUAGE plpgsql IMMUTABLE AS $sensitive_json$
+DECLARE
+ v_entry RECORD;
+BEGIN
+ IF jsonb_typeof(p_value)='object' THEN
+  FOR v_entry IN SELECT key,value FROM jsonb_each(p_value) LOOP
+   IF lower(v_entry.key) ~ '(secret|password|token|credential|private.?key|api.?key|authorization|cookie|client.?secret|access.?key)'
+     OR factoryos_jsonb_has_sensitive_key(v_entry.value) THEN
+    RETURN TRUE;
+   END IF;
+  END LOOP;
+ ELSIF jsonb_typeof(p_value)='array' THEN
+  FOR v_entry IN SELECT value FROM jsonb_array_elements(p_value) LOOP
+   IF factoryos_jsonb_has_sensitive_key(v_entry.value) THEN RETURN TRUE; END IF;
+  END LOOP;
+ END IF;
+ RETURN FALSE;
+END;
+$sensitive_json$;
+
 CREATE OR REPLACE FUNCTION factoryos_guard_utility_source_binding()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -393,6 +414,9 @@ BEGIN
   IF NEW.status<>'DRAFT' OR NEW.row_version<>1 OR NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
     OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
    RAISE EXCEPTION 'Meter-source mapping must start as DRAFT under the authenticated actor' USING ERRCODE='42501';
+  END IF;
+  IF factoryos_jsonb_has_sensitive_key(NEW.config_metadata) THEN
+   RAISE EXCEPTION 'Meter-source metadata cannot contain credential material; use a secret-manager reference' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
  END IF;
