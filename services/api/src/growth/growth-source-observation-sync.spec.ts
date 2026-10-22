@@ -13,9 +13,7 @@ const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
 const FACTORY_ID = '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 const OPPORTUNITY_ID = 'a9816b59-9f47-4bcb-b594-8ef2b23c0cb8';
 const SOURCE_ID = '139e9b4d-c14f-45ec-a2da-471df53c74c3';
-const SYNC_ID = 'ee04cd03-3b96-41a8-9e8f-ff4bce87c7fd';
 const OBSERVATION_ID = '2c6e5d9b-8b25-46ae-90cb-a6d9c16f05b1';
-const EVIDENCE_ID = 'bb4c81c1-9c2b-48d6-9b56-605351c94f6e';
 const IDEMPOTENCY_KEY = 'sync-run-2026-10';
 const ADAPTER_VERSION = 'factoryos.growth.source-of-record.v1';
 
