@@ -112,6 +112,34 @@ describe('FinanceWorkbenchService', () => {
     expect(positionCall?.[1]).toEqual(['tenant-1', 'factory-1', '2026-10-01T00:00:00.000Z', '2026-10-31T00:00:00.000Z', 'BDT']);
   });
 
+  it('treats date-only report end bounds as inclusive UTC end-of-day', async () => {
+    const { service, query } = setup();
+    await service.readWorkbench('user-1', 'tenant-1', 'factory-1', {
+      from: '2026-09-01',
+      to: '2026-09-30',
+      currency: 'BDT',
+      horizon_days: 30,
+      unreconciled_limit: 25,
+    });
+
+    const marginCall = query.mock.calls.find(([statement]) => statement.includes('WITH scoped AS ('));
+    expect(marginCall?.[1]).toEqual([
+      'tenant-1',
+      'factory-1',
+      '2026-09-01T00:00:00.000Z',
+      '2026-09-30T23:59:59.999Z',
+      'BDT',
+    ]);
+    const positionCall = query.mock.calls.find(([statement]) => statement.includes('WITH ranked_positions AS'));
+    expect(positionCall?.[1]).toEqual([
+      'tenant-1',
+      'factory-1',
+      '2026-09-30T23:59:59.999Z',
+      '2026-10-30T23:59:59.999Z',
+      'BDT',
+    ]);
+  });
+
   it('rejects a reversed reporting period before querying PostgreSQL', async () => {
     const { service, transaction } = setup();
     await expect(service.readWorkbench('user-1', 'tenant-1', 'factory-1', {
