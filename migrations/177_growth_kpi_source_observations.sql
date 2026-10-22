@@ -150,17 +150,18 @@ BEGIN
     expected_ref := 'finance-fact:' || fact.id::text;
     expected_hash := fact.fact_hash;
   ELSE
-    SELECT * INTO production
+    SELECT p.*,i.unit AS item_unit INTO production
       FROM production_output_postings p
+      JOIN inventory_items i ON i.id=p.finished_item_id AND i.tenant_id=p.tenant_id AND i.factory_id=p.factory_id
      WHERE p.id=NEW.source_production_output_posting_id
        AND p.tenant_id=NEW.tenant_id AND p.factory_id=NEW.factory_id
-     FOR KEY SHARE;
+     FOR KEY SHARE OF p,i;
     IF NOT FOUND THEN
       RAISE EXCEPTION 'GROWTH_KPI_PRODUCTION_SOURCE_NOT_FOUND' USING ERRCODE='23503';
     END IF;
     expected_unit := CASE NEW.metric_key
-      WHEN 'production.good_quantity' THEN 'pieces'
-      WHEN 'production.scrap_quantity' THEN 'pieces'
+      WHEN 'production.good_quantity' THEN production.item_unit
+      WHEN 'production.scrap_quantity' THEN production.item_unit
       WHEN 'production.yield_percentage' THEN 'pct'
       WHEN 'production.cumulative_yield_percentage' THEN 'pct'
       ELSE NULL END;
