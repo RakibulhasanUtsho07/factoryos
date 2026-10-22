@@ -176,8 +176,20 @@ DECLARE
   v_issued NUMERIC(18,4);
   v_restored NUMERIC(18,4);
   v_recovered NUMERIC(18,4);
+  v_current_status VARCHAR(20);
+  v_input_quantity NUMERIC(18,4);
+  v_recovered_quantity NUMERIC(18,4);
+  v_source_item UUID;
 BEGIN
-  IF NEW.source_inventory_item_id IS NULL THEN RETURN NULL; END IF;
+  -- Constraint triggers are deferred. A single API transaction may pass through
+  -- COMPLETED and VERIFIED (or IN_PROGRESS and CANCELLED); reconcile against the
+  -- committed current row state, not a transient NEW row image queued earlier.
+  SELECT status,input_quantity,recovered_quantity,source_inventory_item_id
+    INTO v_current_status,v_input_quantity,v_recovered_quantity,v_source_item
+  FROM quality_rework_orders
+  WHERE id=NEW.id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+  IF NOT FOUND OR v_source_item IS NULL THEN RETURN NULL; END IF;
+
   SELECT COALESCE(sum(quantity),0)::numeric(18,4) INTO v_issued
   FROM inventory_movements
   WHERE tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id
@@ -191,23 +203,23 @@ BEGIN
   WHERE tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id
     AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=NEW.id AND movement_type='RECEIPT';
 
-  IF NEW.status IN ('DRAFT','APPROVED') THEN
+  IF v_current_status IN ('DRAFT','APPROVED') THEN
     IF v_issued<>0 OR v_restored<>0 OR v_recovered<>0 THEN
       RAISE EXCEPTION 'draft/approved rework cannot have inventory postings' USING ERRCODE='23514';
     END IF;
-  ELSIF NEW.status IN ('IN_PROGRESS','COMPLETED','REWORK_REQUIRED') THEN
-    IF v_issued<>NEW.input_quantity OR v_restored<>0 OR v_recovered<>0 THEN
+  ELSIF v_current_status IN ('IN_PROGRESS','COMPLETED','REWORK_REQUIRED') THEN
+    IF v_issued<>v_input_quantity OR v_restored<>0 OR v_recovered<>0 THEN
       RAISE EXCEPTION 'in-progress/completed rework must hold the full input outside stock and cannot post recovered output before verification'
         USING ERRCODE='23514';
     END IF;
-  ELSIF NEW.status='VERIFIED' THEN
-    IF v_issued<>NEW.input_quantity OR v_restored<>0 OR v_recovered<>NEW.recovered_quantity THEN
+  ELSIF v_current_status='VERIFIED' THEN
+    IF v_issued<>v_input_quantity OR v_restored<>0 OR v_recovered<>v_recovered_quantity THEN
       RAISE EXCEPTION 'verified rework requires full source consumption and an exact recovered-output receipt'
         USING ERRCODE='23514';
     END IF;
-  ELSIF NEW.status='CANCELLED' THEN
+  ELSIF v_current_status='CANCELLED' THEN
     IF (v_issued=0 AND (v_restored<>0 OR v_recovered<>0))
-      OR (v_issued>0 AND (v_issued<>NEW.input_quantity OR v_restored<>v_issued OR v_recovered<>0)) THEN
+      OR (v_issued>0 AND (v_issued<>v_input_quantity OR v_restored<>v_issued OR v_recovered<>0)) THEN
       RAISE EXCEPTION 'cancelled rework must fully restore its input stock or have no stock postings'
         USING ERRCODE='23514';
     END IF;
