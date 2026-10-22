@@ -23,6 +23,11 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
+    WHERE version='165_quality_sampling_binding_state_guard'
+  ) THEN RAISE EXCEPTION 'Sampling profile binding state guard migration marker is missing'; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
     WHERE version='165_quality_disposition_inventory_balance_guard'
   ) THEN RAISE EXCEPTION 'Quality disposition inventory balance guard migration marker is missing'; END IF;
 
@@ -161,6 +166,13 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_supplier_quality_events'::regclass
     AND tgname='trg_quality_supplier_event_immutable' AND NOT tgisinternal AND tgenabled<>'D') THEN
     RAISE EXCEPTION 'AQL, roll scoring and supplier quality evidence must be append-only';
+  END IF;
+
+  IF position('OLD.status = ''OPEN'' AND NEW.status = ''OPEN'''
+      IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0
+    OR position('OLD.aql_profile_id IS NULL AND OLD.fabric_scoring_profile_id IS NULL'
+      IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0 THEN
+    RAISE EXCEPTION 'One-time versioned sampling binding on an OPEN inspection is not permitted by the target guard';
   END IF;
 
   IF position('AQL-bound inspection cannot pass without an ACCEPT sample decision'
