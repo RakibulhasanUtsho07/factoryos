@@ -52,6 +52,10 @@ BEGIN
  IF NOT (result_evidence @> jsonb_build_array(NEW.evidence_ref)) THEN
    RAISE EXCEPTION 'GROWTH_EXPERIMENT_KPI_EVIDENCE_NOT_LINKED_TO_RESULT' USING ERRCODE='23514';
  END IF;
+ IF NEW.baseline_evidence_ref IS NOT NULL
+    AND NOT (result_evidence @> jsonb_build_array(NEW.baseline_evidence_ref)) THEN
+   RAISE EXCEPTION 'GROWTH_EXPERIMENT_KPI_BASELINE_EVIDENCE_NOT_LINKED_TO_RESULT' USING ERRCODE='23514';
+ END IF;
 
  IF NEW.evidence_ref LIKE evidence_prefix || '%'
     OR COALESCE(NEW.baseline_evidence_ref,'') LIKE evidence_prefix || '%' THEN
