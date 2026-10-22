@@ -321,6 +321,7 @@ CREATE TABLE IF NOT EXISTS ehs_contractor_inductions (
   idempotency_key VARCHAR(255) NOT NULL,
   request_hash CHAR(64) NOT NULL,
   recorded_by_user_id UUID NOT NULL,
+  updated_by_user_id UUID NOT NULL,
   last_change_reason TEXT,
   correlation_id UUID NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -329,6 +330,7 @@ CREATE TABLE IF NOT EXISTS ehs_contractor_inductions (
   CONSTRAINT uq_ehs_contractor_induction_key UNIQUE(tenant_id,factory_id,idempotency_key),
   CONSTRAINT fk_ehs_contractor_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_contractor_recorder FOREIGN KEY(recorded_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_ehs_contractor_updater FOREIGN KEY(updated_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_ehs_contractor_dates CHECK(expires_at>induction_at),
   CONSTRAINT chk_ehs_contractor_status CHECK(status IN ('ACTIVE','EXPIRED','REVOKED')),
   CONSTRAINT chk_ehs_contractor_topics CHECK(jsonb_typeof(topics)='array' AND jsonb_array_length(topics)>0),
@@ -697,13 +699,15 @@ BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Contractor induction evidence is retained; use lifecycle transitions' USING ERRCODE='55000'; END IF;
  IF TG_OP='INSERT' THEN
   IF NEW.recorded_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+    OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
     OR NEW.status<>'ACTIVE' OR NEW.row_version<>1 THEN
    RAISE EXCEPTION 'Contractor induction must start ACTIVE under authenticated recorder' USING ERRCODE='42501';
   END IF;
   IF NEW.expires_at<=clock_timestamp() THEN RAISE EXCEPTION 'Expired contractor induction cannot be registered active' USING ERRCODE='23514'; END IF;
   RETURN NEW;
  END IF;
- IF NEW.row_version<>OLD.row_version+1 OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
+ IF NEW.row_version<>OLD.row_version+1 OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+  OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
   OR NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
   OR NEW.contractor_code IS DISTINCT FROM OLD.contractor_code OR NEW.company_name IS DISTINCT FROM OLD.company_name
   OR NEW.person_name IS DISTINCT FROM OLD.person_name OR NEW.induction_at IS DISTINCT FROM OLD.induction_at
