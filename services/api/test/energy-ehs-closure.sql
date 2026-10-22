@@ -50,7 +50,8 @@ BEGIN
 
   PERFORM set_config('app.user_id',v_approver::text,TRUE);
   UPDATE utility_meter_source_bindings SET status='ACTIVE',row_version=2,approved_by_user_id=v_approver,
-    approved_at=clock_timestamp(),updated_by_user_id=v_approver,updated_at=clock_timestamp()
+    approved_at=clock_timestamp(),last_change_reason='Independent approval of source and unit conversion',
+    updated_by_user_id=v_approver,updated_at=clock_timestamp()
   WHERE id=v_binding AND tenant_id=v_tenant AND factory_id=v_factory AND status='DRAFT' AND row_version=1;
   IF NOT FOUND THEN RAISE EXCEPTION 'Approved vendor source mapping could not be activated'; END IF;
 
