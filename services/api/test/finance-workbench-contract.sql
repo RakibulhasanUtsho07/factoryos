@@ -107,6 +107,24 @@ BEGIN
 END $$;
 
 SELECT set_config('app.user_id',(SELECT id::text FROM users WHERE email='manager@factoryos.local'),true);
+
+-- Even a properly separated reviewer cannot change the snapshot as part of
+-- approval: the submitted hash is the evidence being approved.
+DO $
+BEGIN
+  BEGIN
+    UPDATE finance_close_periods
+    SET status='APPROVED',row_version=3,
+        approved_by_user_id=factoryos_current_user_id(),approved_at=clock_timestamp(),
+        approval_reason='Independent finance close review approved',
+        snapshot='{"tampered_during_approval":true}'::jsonb,
+        snapshot_hash=repeat('c',64)
+    WHERE id='da200000-0000-4000-8000-000000000001';
+    RAISE EXCEPTION 'Finance-close snapshot was changed during approval';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL;
+  END;
+END $;
+
 UPDATE finance_close_periods
 SET status='APPROVED',row_version=3,
     approved_by_user_id=factoryos_current_user_id(),approved_at=clock_timestamp(),
