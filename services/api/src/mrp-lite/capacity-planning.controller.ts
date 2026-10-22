@@ -19,38 +19,38 @@ export class CapacityPlanningController {
 
   @Get('capacity-calendars')
   @UseGuards(PermissionGuard) @RequirePermission('mrp.capacity.read') @RequireFactoryScope()
-  listCalendars(@Req() req:CapacityRequest,@Query('start') start?:string,@Query('end') end?:string) {
+  listCalendars(@Req() req:CapacityRequest,@Query('start') start?:string,@Query('end') end?:string): Promise<unknown> {
     const c=this.context(req);return this.service.listCalendars(c.userId,c.tenantId,c.factoryId,start,end);
   }
 
   @Post('capacity-calendars')
   @UseGuards(PermissionGuard) @RequirePermission('mrp.capacity.manage') @RequireFactoryScope()
-  createCalendar(@Req() req:CapacityRequest,@Body() dto:CreateCapacityCalendarDto,@Headers('idempotency-key') key?:string) {
+  createCalendar(@Req() req:CapacityRequest,@Body() dto:CreateCapacityCalendarDto,@Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req);return this.service.createCalendar(c.userId,c.tenantId,c.factoryId,dto,key??null,c.requestId,c.traceId);
   }
 
   @Put('capacity-calendars/:calendarId')
   @UseGuards(PermissionGuard) @RequirePermission('mrp.capacity.manage') @RequireFactoryScope()
   updateCalendar(@Req() req:CapacityRequest,@Param('calendarId',new ParseUUIDPipe()) calendarId:string,
-    @Body() dto:UpdateCapacityCalendarDto,@Headers('idempotency-key') key?:string) {
+    @Body() dto:UpdateCapacityCalendarDto,@Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req);return this.service.updateCalendar(c.userId,c.tenantId,c.factoryId,calendarId,dto,key??null,c.requestId,c.traceId);
   }
 
   @Post('capacity-plans')
   @UseGuards(PermissionGuard) @RequirePermission('mrp.capacity.write') @RequireFactoryScope()
-  createPlan(@Req() req:CapacityRequest,@Body() dto:CreateCapacityPlanDto,@Headers('idempotency-key') key?:string) {
+  createPlan(@Req() req:CapacityRequest,@Body() dto:CreateCapacityPlanDto,@Headers('idempotency-key') key?:string): Promise<unknown> {
     const c=this.context(req);return this.service.createPlan(c.userId,c.tenantId,c.factoryId,dto,key??null,c.requestId,c.traceId);
   }
 
   @Get('capacity-plans')
   @UseGuards(PermissionGuard) @RequirePermission('mrp.capacity.read') @RequireFactoryScope()
-  listPlans(@Req() req:CapacityRequest,@Query('source_mrp_plan_id') source?:string,@Query('limit') limit?:string) {
+  listPlans(@Req() req:CapacityRequest,@Query('source_mrp_plan_id') source?:string,@Query('limit') limit?:string): Promise<unknown> {
     const c=this.context(req);return this.service.listPlans(c.userId,c.tenantId,c.factoryId,source,limit===undefined?50:Number(limit));
   }
 
   @Get('capacity-plans/:planId')
   @UseGuards(PermissionGuard) @RequirePermission('mrp.capacity.read') @RequireFactoryScope()
-  getPlan(@Req() req:CapacityRequest,@Param('planId',new ParseUUIDPipe()) planId:string) {
+  getPlan(@Req() req:CapacityRequest,@Param('planId',new ParseUUIDPipe()) planId:string): Promise<unknown> {
     const c=this.context(req);return this.service.getPlan(c.userId,c.tenantId,c.factoryId,planId);
   }
 
