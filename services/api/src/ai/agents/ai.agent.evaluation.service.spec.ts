@@ -111,6 +111,8 @@ function liveTraceRow(overrides: Record<string, unknown> = {}) {
     execution_action_intent_id: liveActionId, execution_key: liveExecutionKey, executor_type: 'AGENT_RUNTIME',
     execution_tool_version: '1.0.0', execution_inputs_hash: payloadHash, execution_status: 'SUCCEEDED',
     execution_result: executionResult, execution_error: executionError,
+    execution_finished_at: '2026-10-11T00:02:00.000Z',
+    step_finished_at: '2026-10-11T00:02:00.000Z',
     claim_status: 'COMPLETED', reconciliation_decision: null, ...overrides,
   };
 }
