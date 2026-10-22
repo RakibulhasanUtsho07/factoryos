@@ -381,9 +381,13 @@ export class GrowthController {
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
     @Query('domain') domain?: string,
+    @Query('residual_coverage_pct') residualCoveragePct?: string,
   ): Promise<unknown> {
     const c = this.context(req);
-    return this.growth.getForecastCalibration(c.tenantId, c.factoryId, opportunityId, domain);
+    return this.growth.getForecastCalibration(
+      c.tenantId, c.factoryId, opportunityId, domain,
+      residualCoveragePct === undefined ? 90 : Number(residualCoveragePct),
+    );
   }
 
 
