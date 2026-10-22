@@ -512,7 +512,7 @@ export class FinanceWorkbenchService {
     requestHash: string,
     ctx: FinanceEventContext,
     callback: (client: PoolClient, row: ClosePeriodRow) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<T & { replayed?: boolean }> {
     return this.database.transaction({
       tenantId, userId, requestId: this.uuidOrNull(ctx.requestId), traceId: this.uuidOrNull(ctx.traceId),
       advisoryLockKey: 'finance-close-period:' + tenantId + ':' + factoryId + ':' + periodId,
@@ -533,9 +533,9 @@ export class FinanceWorkbenchService {
         if (prior.rows[0].request_hash.trim() !== requestHash) {
           throw new ConflictException('Idempotency-Key was already used for a different finance-close transition');
         }
-        return { ...this.publicClosePeriod(row), replayed: true } as T;
+        return { ...this.publicClosePeriod(row), replayed: true } as T & { replayed?: boolean };
       }
-      return callback(client, row);
+      return await callback(client, row) as T & { replayed?: boolean };
     });
   }
 
