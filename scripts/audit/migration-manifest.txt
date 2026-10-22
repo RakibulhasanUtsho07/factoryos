@@ -174,3 +174,4 @@ migrations/163_mrp_finite_capacity_planning.sql
 migrations/164_quality_advanced_sampling_supplier_pareto.sql
 migrations/165_quality_disposition_inventory_balance_guard.sql
 migrations/165_quality_sampling_binding_state_guard.sql
+migrations/166_quality_rework_inventory_ledger.sql
