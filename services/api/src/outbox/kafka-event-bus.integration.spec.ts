@@ -20,6 +20,7 @@ let appPool!: Pool;
 let testKafka!: Kafka;
 let testProducer: ReturnType<Kafka['producer']> | null = null;
 let dlqProbe: ReturnType<Kafka['consumer']> | null = null;
+let schemaProbe: ReturnType<Kafka['consumer']> | null = null;
 let adapter!: KafkaEventBusAdapter;
 let database!: ReturnType<typeof createIntegrationDatabase>;
 let dlqService!: OutboxBusDlqService;
@@ -131,6 +132,7 @@ describe('Kafka-compatible event-bus integration (Redpanda)', () => {
     if (adapter) await adapter.onModuleDestroy();
     await disconnectQuietly(testProducer);
     await disconnectQuietly(dlqProbe);
+    await disconnectQuietly(schemaProbe);
     await pool?.end();
     await appPool?.end();
     for (const name of envNames) {
@@ -243,6 +245,71 @@ describe('Kafka-compatible event-bus integration (Redpanda)', () => {
     }));
     expect((deadLetter.original as Record<string, unknown>).topic).toBe(topic);
     expect(String(deadLetter.reason)).toContain('schema version header does not match');
+  });
+
+  it('quarantines unsupported versions of known event schemas before running a consumer', async () => {
+    const factoryId = randomUUID();
+    const aggregateId = randomUUID();
+    const event = {
+      id: randomUUID(),
+      tenantId,
+      factoryId,
+      aggregateType: 'ORDER',
+      aggregateId,
+      eventType: 'ORDER.CREATED',
+      eventVersion: 99,
+      occurredAt: new Date().toISOString(),
+      correlationId: randomUUID(),
+      payload: {
+        order: {
+          id: aggregateId,
+          tenant_id: tenantId,
+          factory_id: factoryId,
+          order_number: 'KAFKA-SCHEMA-COMPAT-' + runId.slice(0, 8),
+          status: 'DRAFT',
+        },
+      },
+    } satisfies OutboxEvent;
+
+    let resolveSchemaDlq!: (value: Record<string, unknown>) => void;
+    const schemaDlqMessage = new Promise<Record<string, unknown>>((resolve) => { resolveSchemaDlq = resolve; });
+    schemaProbe = testKafka.consumer({ groupId: 'factoryos-it-schema-dlq-' + runId, allowAutoTopicCreation: false });
+    await schemaProbe.connect();
+    await schemaProbe.subscribe({ topic: dlqTopic, fromBeginning: true });
+    await schemaProbe.run({
+      eachMessage: async ({ message }) => {
+        const raw = message.value?.toString('utf8');
+        if (!raw) return;
+        const value = JSON.parse(raw) as Record<string, unknown>;
+        const original = value.original as Record<string, unknown> | undefined;
+        if (original?.key === aggregateId) resolveSchemaDlq(value);
+      },
+    });
+
+    await expect(adapter.publish(event)).rejects.toThrow('ORDER.CREATED does not support event version 99');
+    // The adapter publisher intentionally validates before broker send. Send the same
+    // poison envelope directly to exercise consumer-side schema compatibility quarantine.
+    await testProducer!.send({
+      topic,
+      acks: -1,
+      messages: [{
+        key: aggregateId,
+        value: JSON.stringify(event),
+        headers: {
+          'content-type': 'application/json',
+          'event-id': event.id,
+          'event-type': event.eventType,
+          'event-version': String(event.eventVersion),
+        },
+      }],
+    });
+    const deadLetter = await Promise.race([
+      schemaDlqMessage,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out waiting for unsupported-schema DLQ')), 15000)),
+    ]);
+    expect(String(deadLetter.reason)).toContain('does not support event version 99');
+    expect((deadLetter.original as Record<string, unknown>).key).toBe(aggregateId);
+    expect(deadLetter.deadLetterVersion).toBe(1);
   });
 
   it('fails startup closed if Kafka transport is selected without broker endpoints', async () => {
