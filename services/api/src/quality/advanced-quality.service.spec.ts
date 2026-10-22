@@ -90,6 +90,20 @@ describe('AdvancedQualityService request guardrails',()=>{
     );
   });
 
+  it('returns a replayed rejected AQL result after an authorized disposition without recreating its hold',async()=>{
+    database.transaction.mockResolvedValue({id:INSPECTION,replayed:true} as never);
+    database.query
+      .mockResolvedValueOnce({rows:[{decision:'REJECT'}]} as never)
+      .mockResolvedValueOnce({rows:[{status:'DISPOSITIONED',row_version:9}]} as never);
+    const dto:RecordQualityAqlSampleDto={
+      lot_size:120,observed_nonconforming:3,evidence:{sample_sheet:'QC-AQL-002'},
+    };
+    const result=await service.recordAqlSample(context,INSPECTION,dto,'aql-disposed-replay-key');
+    expect(result.replayed).toBe(true);
+    expect(result.decision).toBe('REJECT');
+    expect(qualityService.decideInspection).not.toHaveBeenCalled();
+  });
+
   it('rejects a malformed tenant context before querying supplier analytics',async()=>{
     await expect(service.supplierQuality({...context,factoryId:'not-a-uuid'})).rejects.toBeInstanceOf(BadRequestException);
     expect(database.query).not.toHaveBeenCalled();
