@@ -86,8 +86,10 @@ BEGIN
 
   IF position('FOR UPDATE' IN pg_get_functiondef(
     'factoryos_guard_submitted_product_revision_inputs()'::regprocedure
+  )) = 0 OR position('IN (OLD.product_version_id, NEW.product_version_id)' IN pg_get_functiondef(
+    'factoryos_guard_submitted_product_revision_inputs()'::regprocedure
   )) = 0 THEN
-    RAISE EXCEPTION 'Submitted ECO revision-input guard must serialize child edits against submission';
+    RAISE EXCEPTION 'Submitted ECO revision-input guard must serialize child edits and reject revision reassignment bypasses';
   END IF;
 
   IF position('proposed revision author' IN pg_get_functiondef(
