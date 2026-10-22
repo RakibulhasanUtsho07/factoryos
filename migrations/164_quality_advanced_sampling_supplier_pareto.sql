@@ -96,7 +96,7 @@ ALTER TABLE quality_inspections
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_inspection_target()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $factoryos_sampling_target_guard$
 DECLARE
   v_item UUID;
   v_unit UUID;
@@ -186,7 +186,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$factoryos_sampling_target_guard$;
 
 
 DO $quality_sampling_fks$
