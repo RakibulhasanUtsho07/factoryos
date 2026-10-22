@@ -274,6 +274,9 @@ jobs:
           echo "Reapplying growth KPI baseline evidence provenance migration"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/179_growth_kpi_baseline_evidence_provenance.sql
 
+          echo "Reapplying AI live execution evaluation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/180_ai_agent_live_execution_evaluation.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
@@ -354,6 +357,7 @@ jobs:
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-money-precision.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-entitlement-enforcement.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-agent-live-execution-evaluation.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ot-device-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-data-retention-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-propagation-contract.sql
