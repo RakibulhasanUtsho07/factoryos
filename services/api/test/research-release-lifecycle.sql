@@ -128,6 +128,26 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='research_release_channels'
+      AND column_name='active_release_id' AND is_nullable='YES'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='research_release_channels'
+      AND column_name='active_version' AND is_nullable='YES'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_ACTIVE_POINTER_NOT_NULLABLE';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname='research_release_channel_retraction_audit_guard'
+      AND tgdeferrable AND tginitdeferred AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_DEFERRED_GUARD_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname = 'public'
       AND tablename = 'research_knowledge_releases'
