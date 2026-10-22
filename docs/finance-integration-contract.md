@@ -23,8 +23,21 @@ All endpoints use the authenticated tenant and factory context, PostgreSQL tenan
 | POST /api/finance/reconciliations/:id/review | finance.reconciliation.review | Resolve or waive a mismatch with reviewer/reason retained |
 | GET /api/finance/margin/inputs | finance.margin.read | Read period-scoped actual/forecast revenue, cost, margin and variance inputs |
 | GET /api/finance/working-capital/inputs | finance.working_capital.read | Read currency-separated positions and horizon cash inputs |
+| GET /api/finance/workbench | finance.workbench.read | Read period/currency-scoped actual/forecast profitability, quantity/rate variance, working capital, cash horizon, source readiness and unreconciled facts |
+| GET /api/finance/close-periods | finance.close.read | List currency- and period-specific finance-close snapshots and approvals |
+| POST /api/finance/close-periods | finance.close.write | Create an idempotent draft finance-close snapshot |
+| POST /api/finance/close-periods/:periodId/refresh | finance.close.write | Rebuild a draft snapshot using optimistic row version |
+| POST /api/finance/close-periods/:periodId/submit | finance.close.submit | Submit only if required reporting domains and period reconciliation are ready |
+| POST /api/finance/close-periods/:periodId/recall | finance.close.submit | Recall an unapproved submission by the original submitter |
+| POST /api/finance/close-periods/:periodId/approve | finance.close.approve | Independently approve an unchanged submitted snapshot with expected version and reason |
 
 Connector and financial-fact read APIs intentionally omit secret material. Credentials are represented only by a secret-manager reference (vault://... or secret://...), never an inline token/password/API key. Live endpoints must use HTTPS without credentials embedded in the URL.
+
+## Costing, profitability and finance-close workbench
+
+The consolidated `GET /api/finance/workbench` endpoint groups governed inputs by currency and UTC calendar month, keeps actual facts separate from latest forecast version per source key/currency/month, exposes gross/contribution margin and actual-minus-forecast variance, attributes operational quantity/rate mismatches, and returns working-capital/cash-horizon positions plus unreconciled fact details. It never silently converts currencies; FX must be explicitly governed and source-backed. See `docs/finance-costing-profitability-workbench.md` for endpoint filters, formulas, lifecycle and acceptance.
+
+Finance-close periods are snapshots rather than posted accounting entries. A snapshot is pinned to one currency and explicit start/end dates, has a SHA-256 digest and append-only transition history, and is tenant-RLS enforced. Submission fails while any required reporting domain is missing or a source mismatch is open in that currency/period. Approval requires a different authenticated reviewer from the creator and submitter; the service rebuilds and compares the current snapshot hash to reject stale inputs. Approved snapshots are immutable. These endpoints cannot post external GL journals, make payments, write bank transactions or submit tax.
 
 ## Connector domains and fact mapping
 
