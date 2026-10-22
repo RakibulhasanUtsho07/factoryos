@@ -129,7 +129,6 @@ CREATE TABLE IF NOT EXISTS product_change_order_affected_orders (
   CONSTRAINT chk_product_change_order_impact_type CHECK (
     impact_type IN ('REVISION_REVIEW_BEFORE_START', 'SNAPSHOT_CROSSES_EFFECTIVE_DATE')
   ),
-  CONSTRAINT chk_product_change_order_order_dates CHECK (due_date >= planned_start_date)
 );
 CREATE INDEX IF NOT EXISTS idx_product_change_order_affected_history
   ON product_change_order_affected_orders (tenant_id, factory_id, change_order_id, planned_start_date, work_order_id);
