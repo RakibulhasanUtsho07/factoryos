@@ -25,7 +25,7 @@ export class UtilitiesClosureService {
       source_meter_code: this.text(dto.source_meter_code, 'source_meter_code', 160),
       vendor_adapter: dto.vendor_adapter,
       meter_id: this.uuid(dto.meter_id, 'meter_id'),
-      source_unit_code: this.code(dto.source_unit_code, 'source_unit_code', 24),
+      source_unit_code: this.text(dto.source_unit_code, 'source_unit_code', 24),
       factor_to_meter_unit: this.decimal(dto.factor_to_meter_unit, 'factor_to_meter_unit', 8, true),
       polling_interval_seconds: dto.polling_interval_seconds ?? null,
       credential_reference: this.optionalText(dto.credential_reference, 255),
@@ -104,7 +104,7 @@ export class UtilitiesClosureService {
     const sourceSystem=this.code(dto.source_system_code,'source_system_code',100);
     const sourceMeter=this.text(dto.source_meter_code,'source_meter_code',160);
     const eventId=this.text(dto.source_event_id,'source_event_id',160);
-    const sourceUnit=this.code(dto.source_unit_code,'source_unit_code',24);
+    const sourceUnit=this.text(dto.source_unit_code,'source_unit_code',24);
     const readingAt=this.instant(dto.reading_at,'reading_at');
     const sourceValue=this.decimal(dto.reading_value,'reading_value',8,false);
     const production=dto.production_quantity===undefined?undefined:this.decimal(dto.production_quantity,'production_quantity',8,true);
@@ -122,10 +122,11 @@ export class UtilitiesClosureService {
     const normalizedValue=Number((sourceValue*Number(binding.factor_to_meter_unit)).toFixed(8));
     if(!Number.isFinite(normalizedValue))throw new BadRequestException('Normalized source reading is outside the supported numeric range');
     const eventKey=`${sourceSystem}:${eventId}`;
+    if(eventKey.length>187)throw new BadRequestException('source_system_code and source_event_id are too long for a stable idempotency key');
     const dtoForReading:RecordUtilityReadingDto={
       reading_at:readingAt,reading_value:normalizedValue,source_type:'METER_GATEWAY',source_event_id:eventKey,
       production_quantity:production,
-      notes:[dto.notes?.trim(),`Normalized from ${sourceSystem}/${sourceMeter}; unit ${sourceUnit} x ${String(binding.factor_to_meter_unit)} -> ${String(binding.unit_code)}`]
+      notes:[this.optionalText(dto.notes,600),`Normalized from ${sourceSystem}/${sourceMeter}; unit ${sourceUnit} x ${String(binding.factor_to_meter_unit)} -> ${String(binding.unit_code)}`]
         .filter(Boolean).join(' | ').slice(0,2000),
     };
     const idempotencyKey=`vendor-event:${eventKey}`;
@@ -144,7 +145,7 @@ export class UtilitiesClosureService {
       policy_code:this.code(dto.policy_code,'policy_code',100),name:this.text(dto.name,'name',255),
       meter_id:dto.meter_id?this.uuid(dto.meter_id,'meter_id'):null,utility_type:dto.utility_type??null,
       metric:dto.metric,comparison:dto.comparison,threshold_value:this.decimal(dto.threshold_value,'threshold_value',8,false),
-      threshold_unit_code:this.code(dto.threshold_unit_code,'threshold_unit_code',24),severity:dto.severity,
+      threshold_unit_code:this.text(dto.threshold_unit_code,'threshold_unit_code',24),severity:dto.severity,
     };
     if(!payload.meter_id&&!payload.utility_type)throw new BadRequestException('A threshold policy must select a meter or utility_type');
     const hash=this.hash(payload);
