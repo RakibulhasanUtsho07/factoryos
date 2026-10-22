@@ -293,8 +293,8 @@ export class EhsClosureService {
       if(prior.rows[0]){this.same(prior.rows[0].request_hash,hash);return {...(await this.contractorDetail(client,c,String(prior.rows[0].id))),replayed:true};}
       const inserted=await client.query<Row>(
         `INSERT INTO ehs_contractor_inductions(tenant_id,factory_id,contractor_code,company_name,person_name,induction_at,
-          expires_at,topics,evidence,idempotency_key,request_hash,recorded_by_user_id,correlation_id)
-         VALUES($1,$2,$3,$4,$5,$6::timestamptz,$7::timestamptz,$8::jsonb,$9::jsonb,$10,$11,$12,$13::uuid)
+          expires_at,topics,evidence,idempotency_key,request_hash,recorded_by_user_id,updated_by_user_id,correlation_id)
+         VALUES($1,$2,$3,$4,$5,$6::timestamptz,$7::timestamptz,$8::jsonb,$9::jsonb,$10,$11,$12,$12,$13::uuid)
          RETURNING id::text AS id`,
         [c.tenantId,c.factoryId,payload.contractor_code,payload.company_name,payload.person_name,payload.induction_at,payload.expires_at,
           JSON.stringify(payload.topics),JSON.stringify(payload.evidence),key,hash,c.userId,this.correlation(c)]);
@@ -313,8 +313,8 @@ export class EhsClosureService {
       if(dto.action==='EXPIRE'&&!row.expired)throw new ConflictException('Induction cannot be marked expired before its expiry timestamp');
       await client.query(
         `UPDATE ehs_contractor_inductions SET status=$4,row_version=row_version+1,last_change_reason=$5,
-          updated_at=clock_timestamp() WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$6`,
-        [id,c.tenantId,c.factoryId,next,reason,dto.expected_version]);
+          updated_by_user_id=$6,updated_at=clock_timestamp() WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$7`,
+        [id,c.tenantId,c.factoryId,next,reason,c.userId,dto.expected_version]);
       return this.contractorDetail(client,c,id);
     });
   }
@@ -344,7 +344,7 @@ export class EhsClosureService {
     if(!q.rows[0])throw new NotFoundException('Chemical/SDS record was not found');return q.rows[0];
   }
   private async contractorDetail(client:PoolClient,c:EhsContext,id:string){
-    const q=await client.query<Row>('SELECT id::text AS id,contractor_code,company_name,person_name,induction_at::text AS induction_at,expires_at::text AS expires_at,topics,evidence,status,row_version::int AS row_version,last_change_reason,recorded_by_user_id::text AS recorded_by_user_id,created_at::text AS created_at,updated_at::text AS updated_at FROM ehs_contractor_inductions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[id,c.tenantId,c.factoryId]);
+    const q=await client.query<Row>('SELECT id::text AS id,contractor_code,company_name,person_name,induction_at::text AS induction_at,expires_at::text AS expires_at,topics,evidence,status,row_version::int AS row_version,last_change_reason,recorded_by_user_id::text AS recorded_by_user_id,updated_by_user_id::text AS updated_by_user_id,created_at::text AS created_at,updated_at::text AS updated_at FROM ehs_contractor_inductions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[id,c.tenantId,c.factoryId]);
     if(!q.rows[0])throw new NotFoundException('Contractor induction was not found');return q.rows[0];
   }
 
