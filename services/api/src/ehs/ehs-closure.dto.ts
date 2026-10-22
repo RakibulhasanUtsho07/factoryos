@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize, IsArray, IsDateString, IsIn, IsInt, IsObject, IsOptional,
-  IsString, IsUUID, Max, MaxLength, Min, ValidateNested,
+  IsString, IsUUID, Max, MaxLength, Min,
 } from 'class-validator';
 
 export const EHS_DRILL_TYPES=['FIRE','EVACUATION','CHEMICAL_SPILL','MEDICAL','NATURAL_DISASTER','OTHER'] as const;
