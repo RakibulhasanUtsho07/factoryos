@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS quality_sampling_profile_bindings (
     AND observed_nonconforming BETWEEN 0 AND sample_size
   ),
   CONSTRAINT chk_quality_aql_run_decision CHECK (decision IN ('ACCEPT','REJECT','HOLD')),
-  CONSTRAINT chk_quality_aql_run_evidence CHECK (jsonb_typeof(evidence)='object'),
+  CONSTRAINT chk_quality_aql_run_evidence CHECK (jsonb_typeof(evidence)='object' AND jsonb_object_length(evidence)>0),
   CONSTRAINT chk_quality_aql_run_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
   CONSTRAINT chk_quality_aql_run_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS quality_fabric_roll_scores (
   CONSTRAINT chk_quality_fabric_roll_points CHECK (total_defect_points >= 0 AND points_per_100_square_yards >= 0 AND max_points_snapshot > 0),
   CONSTRAINT chk_quality_fabric_roll_decision CHECK (decision IN ('PASS','HOLD')),
   CONSTRAINT chk_quality_fabric_roll_defects CHECK (jsonb_typeof(defects)='array'),
-  CONSTRAINT chk_quality_fabric_roll_evidence CHECK (jsonb_typeof(evidence)='object'),
+  CONSTRAINT chk_quality_fabric_roll_evidence CHECK (jsonb_typeof(evidence)='object' AND jsonb_object_length(evidence)>0),
   CONSTRAINT chk_quality_fabric_roll_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
   CONSTRAINT chk_quality_fabric_roll_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
@@ -547,7 +547,8 @@ BEGIN
   ) VALUES (
     NEW.tenant_id,NEW.factory_id,v_supplier,NEW.id,v_defect.inspection_id,NEW.defect_id,v_receipt,NEW.goods_receipt_line_id,
     'DEFECT_REPORTED',v_defect.defect_code,v_defect.severity,
-    COALESCE(NEW.affected_quantity,v_defect.affected_quantity),jsonb_build_object('source','QUALITY_DEFECT_LINK','link_type',NEW.link_type),
+    COALESCE(NEW.affected_quantity,v_defect.affected_quantity),jsonb_build_object('source','QUALITY_DEFECT_LINK','link_type',NEW.link_type,
+      'source_link_id',NEW.id,'source_link_evidence',NEW.evidence,'quality_defect_evidence',v_defect.evidence),
     v_actor,v_corr
   ) ON CONFLICT (tenant_id,factory_id,source_link_id,event_type) DO NOTHING
   RETURNING id INTO v_event_id;
@@ -567,6 +568,120 @@ DROP TRIGGER IF EXISTS trg_quality_supplier_defect_link ON quality_defect_links;
 CREATE TRIGGER trg_quality_supplier_defect_link
 AFTER INSERT ON quality_defect_links
 FOR EACH ROW EXECUTE FUNCTION factoryos_record_quality_supplier_defect();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_quality_sampling_binding_evidence()
+RETURNS TRIGGER LANGUAGE plpgsql AS $
+DECLARE
+  v_inspection quality_inspections%ROWTYPE;
+  v_type TEXT;
+BEGIN
+  IF TG_OP<>'INSERT' THEN
+    RAISE EXCEPTION 'sampling profile binding evidence is immutable' USING ERRCODE='55000';
+  END IF;
+  IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'sampling-profile binding actor must match authenticated user' USING ERRCODE='23514';
+  END IF;
+  SELECT * INTO v_inspection FROM quality_inspections
+  WHERE id=NEW.inspection_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id FOR SHARE;
+  IF NOT FOUND OR v_inspection.status<>'OPEN'
+    OR NEW.aql_profile_id IS DISTINCT FROM v_inspection.aql_profile_id
+    OR NEW.fabric_scoring_profile_id IS DISTINCT FROM v_inspection.fabric_scoring_profile_id THEN
+    RAISE EXCEPTION 'sampling-profile binding evidence must match the OPEN inspection binding' USING ERRCODE='23514';
+  END IF;
+  IF NEW.aql_profile_id IS NOT NULL THEN
+    SELECT inspection_type INTO v_type FROM quality_aql_profiles
+    WHERE id=NEW.aql_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    IF NOT FOUND OR v_type IS DISTINCT FROM v_inspection.inspection_type THEN
+      RAISE EXCEPTION 'AQL evidence binding must match the inspection type and factory' USING ERRCODE='23514';
+    END IF;
+  END IF;
+  IF NEW.fabric_scoring_profile_id IS NOT NULL THEN
+    SELECT inspection_type INTO v_type FROM quality_fabric_scoring_profiles
+    WHERE id=NEW.fabric_scoring_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
+    IF NOT FOUND OR v_type IS DISTINCT FROM v_inspection.inspection_type THEN
+      RAISE EXCEPTION 'fabric scoring evidence binding must match the inspection type and factory' USING ERRCODE='23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS trg_quality_sampling_binding_evidence_guard ON quality_sampling_profile_bindings;
+CREATE TRIGGER trg_quality_sampling_binding_evidence_guard
+BEFORE INSERT ON quality_sampling_profile_bindings
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_sampling_binding_evidence();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_quality_defect_context_evidence()
+RETURNS TRIGGER LANGUAGE plpgsql AS $
+BEGIN
+  IF TG_OP<>'INSERT' THEN
+    RAISE EXCEPTION 'defect context is append-only evidence' USING ERRCODE='55000';
+  END IF;
+  IF NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    RAISE EXCEPTION 'defect context actor must match authenticated user' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS trg_quality_defect_context_actor_guard ON quality_defect_context_snapshots;
+CREATE TRIGGER trg_quality_defect_context_actor_guard
+BEFORE INSERT ON quality_defect_context_snapshots
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_defect_context_evidence();
+
+CREATE OR REPLACE FUNCTION factoryos_guard_quality_supplier_event_source()
+RETURNS TRIGGER LANGUAGE plpgsql AS $
+DECLARE
+  v_link quality_defect_links%ROWTYPE;
+  v_defect quality_defects%ROWTYPE;
+  v_supplier UUID;
+  v_receipt UUID;
+  v_expected_quantity NUMERIC(18,4);
+BEGIN
+  IF TG_OP<>'INSERT' THEN
+    RAISE EXCEPTION 'supplier quality events are append-only' USING ERRCODE='55000';
+  END IF;
+  IF NEW.event_type<>'DEFECT_REPORTED' THEN
+    RAISE EXCEPTION 'unsupported supplier-quality event type' USING ERRCODE='23514';
+  END IF;
+  SELECT * INTO v_link FROM quality_defect_links
+  WHERE id=NEW.source_link_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id FOR SHARE;
+  IF NOT FOUND OR v_link.link_type<>'GOODS_RECEIPT_LINE' OR v_link.goods_receipt_line_id IS NULL OR v_link.goods_receipt_id IS NULL THEN
+    RAISE EXCEPTION 'supplier quality event must derive from a scoped goods-receipt-line defect link' USING ERRCODE='23514';
+  END IF;
+  SELECT * INTO v_defect FROM quality_defects
+  WHERE id=v_link.defect_id AND tenant_id=v_link.tenant_id AND factory_id=v_link.factory_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'supplier quality source defect was not found' USING ERRCODE='23503'; END IF;
+  SELECT po.supplier_id,gr.goods_receipt_id INTO v_supplier,v_receipt
+  FROM goods_receipt_lines gr
+  JOIN purchase_orders po ON po.id=gr.purchase_order_id AND po.tenant_id=gr.tenant_id AND po.factory_id=gr.factory_id
+  WHERE gr.id=v_link.goods_receipt_line_id AND gr.tenant_id=v_link.tenant_id AND gr.factory_id=v_link.factory_id;
+  IF v_supplier IS NULL OR v_receipt IS DISTINCT FROM v_link.goods_receipt_id
+    OR NEW.supplier_id IS DISTINCT FROM v_supplier
+    OR NEW.goods_receipt_id IS DISTINCT FROM v_receipt
+    OR NEW.goods_receipt_line_id IS DISTINCT FROM v_link.goods_receipt_line_id
+    OR NEW.defect_id IS DISTINCT FROM v_defect.id
+    OR NEW.inspection_id IS DISTINCT FROM v_defect.inspection_id
+    OR NEW.defect_code IS DISTINCT FROM v_defect.defect_code
+    OR NEW.severity IS DISTINCT FROM v_defect.severity
+    OR NEW.recorded_by_user_id IS DISTINCT FROM v_link.created_by_user_id THEN
+    RAISE EXCEPTION 'supplier quality event must preserve PO-derived supplier, GRN, defect, actor and severity provenance' USING ERRCODE='23514';
+  END IF;
+  v_expected_quantity:=COALESCE(v_link.affected_quantity,v_defect.affected_quantity);
+  IF NEW.affected_quantity IS DISTINCT FROM v_expected_quantity THEN
+    RAISE EXCEPTION 'supplier quality event quantity must match the source defect link' USING ERRCODE='23514';
+  END IF;
+  IF jsonb_typeof(NEW.evidence)<>'object' OR jsonb_object_length(NEW.evidence)=0 THEN
+    RAISE EXCEPTION 'supplier quality event must retain non-empty evidence' USING ERRCODE='23514';
+  END IF;
+  NEW.evidence:=NEW.evidence || jsonb_build_object(
+    'source_link_evidence',v_link.evidence,'quality_defect_evidence',v_defect.evidence,
+    'purchase_order_supplier_id',v_supplier,'goods_receipt_id',v_receipt);
+  RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS trg_quality_supplier_event_source_guard ON quality_supplier_quality_events;
+CREATE TRIGGER trg_quality_supplier_event_source_guard
+BEFORE INSERT ON quality_supplier_quality_events
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_supplier_event_source();
 
 CREATE OR REPLACE FUNCTION factoryos_prevent_quality_advanced_evidence_mutation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
