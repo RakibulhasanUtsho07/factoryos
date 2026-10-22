@@ -2,6 +2,10 @@ BEGIN;
 
 -- Task 16: connect approved utility source mappings to normalized readings,
 -- threshold evaluation/alert evidence, and the remaining EHS lifecycle registers.
+
+ALTER TABLE utility_audit_events DROP CONSTRAINT IF EXISTS chk_utility_audit_entity;
+ALTER TABLE utility_audit_events ADD CONSTRAINT chk_utility_audit_entity
+ CHECK(entity_type IN ('METER','READING','UTILITY_EVENT','METER_SOURCE_BINDING','THRESHOLD_POLICY'));
 INSERT INTO permissions(code,description) VALUES
  ('utilities.sources.manage','Manage approved vendor meter source and unit mappings; this does not deploy a vendor driver'),
  ('utilities.alerts.read','Read threshold policies and source-linked utility alerts'),
@@ -498,8 +502,8 @@ BEGIN
   INSERT INTO utility_events(id,tenant_id,factory_id,meter_id,event_number,event_type,severity,title,description,occurred_at,
     impact_quantity,cause,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id)
   VALUES(v_event_id,NEW.tenant_id,NEW.factory_id,NEW.meter_id,'UT-'||upper(substr(v_event_id::text,1,12)),'EFFICIENCY_EXCEPTION',
-    v_policy.severity,'Threshold exceeded: '||v_policy.name,
-    'Normalized reading '||NEW.id::text||' observed '||v_value::text||' '||v_unit||' against '||
+    v_policy.severity,'Threshold alert: '||v_policy.name,
+    'Normalized reading '||NEW.id::text||' observed '||v_value::text||' '||v_unit||' matched policy rule '||
       v_policy.comparison||' '||v_policy.threshold_value::text||' '||v_policy.threshold_unit_code,
     NEW.reading_at,v_value,'policy='||v_policy.policy_code, v_event_key,v_hash,NEW.recorded_by_user_id,NEW.recorded_by_user_id,NEW.correlation_id);
   INSERT INTO utility_threshold_alerts(tenant_id,factory_id,policy_id,reading_id,utility_event_id,metric,observed_value,
