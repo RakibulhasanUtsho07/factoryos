@@ -19,7 +19,7 @@ interface AdvancedQualityContext {
 }
 
 type ProfileKind = 'AQL' | 'FABRIC';
-type ProfileRow = Record<string, any>;
+type ProfileRow = { id: string; profile_code: string; revision: number };
 
 @Injectable()
 export class AdvancedQualityService {
@@ -93,9 +93,10 @@ export class AdvancedQualityService {
 
       const aql = aqlCode ? await this.findActiveProfile(client, c, 'AQL', aqlCode, String(inspection.inspection_type)) : null;
       const fabric = fabricCode ? await this.findActiveProfile(client, c, 'FABRIC', fabricCode, String(inspection.inspection_type)) : null;
-      await client.query(
-        'UPDATE quality_inspections SET aql_profile_id=$1::uuid, fabric_scoring_profile_id=$2::uuid, updated_by_user_id=$3, updated_at=clock_timestamp() WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7',
+      const updatedInspection = await client.query(
+        'UPDATE quality_inspections SET aql_profile_id=$1::uuid, fabric_scoring_profile_id=$2::uuid, row_version=row_version+1, updated_by_user_id=$3, updated_at=clock_timestamp() WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND row_version=$7 RETURNING row_version::int AS row_version',
         [aql?.id ?? null, fabric?.id ?? null, c.userId, inspectionId, c.tenantId, c.factoryId, dto.expected_version]);
+      if (!updatedInspection.rows[0]) throw new ConflictException('Quality inspection changed while binding sampling profiles');
       await client.query(
         'INSERT INTO quality_sampling_profile_bindings (tenant_id,factory_id,inspection_id,aql_profile_id,fabric_scoring_profile_id,idempotency_key,request_hash,created_by_user_id,correlation_id) VALUES ($1,$2,$3,$4::uuid,$5::uuid,$6,$7,$8,$9::uuid)',
         [c.tenantId, c.factoryId, inspectionId, aql?.id ?? null, fabric?.id ?? null, key, hash, c.userId, correlation]);
@@ -460,6 +461,7 @@ export class AdvancedQualityService {
         if (String(existing.rows[0].request_hash).trim() !== hash) throw new ConflictException('Idempotency-Key was already used for a different profile');
         return {id:String(existing.rows[0].id),replayed:true};
       }
+      await this.lockKey(client,c,kind.toLowerCase()+'-profile-code',profileCode.toLowerCase());
       const rev = await client.query('SELECT COALESCE(MAX(revision),0)::int+1 AS revision FROM ' + table +
         ' WHERE tenant_id=$1 AND factory_id=$2 AND lower(profile_code)=lower($3)',[c.tenantId,c.factoryId,profileCode]);
       const revision = Number(rev.rows[0]?.revision ?? 1);
