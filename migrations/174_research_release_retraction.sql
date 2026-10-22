@@ -8,6 +8,8 @@ ALTER TABLE research_release_channels
 ALTER TABLE research_release_channels
   DROP CONSTRAINT IF EXISTS chk_research_release_channel_version;
 ALTER TABLE research_release_channels
+  DROP CONSTRAINT IF EXISTS chk_research_release_channel_active_pair;
+ALTER TABLE research_release_channels
   ADD CONSTRAINT chk_research_release_channel_active_pair CHECK (
     (active_release_id IS NULL AND active_version IS NULL)
     OR (active_release_id IS NOT NULL AND active_version IS NOT NULL AND active_version > 0)
