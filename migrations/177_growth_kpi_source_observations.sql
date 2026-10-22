@@ -230,28 +230,27 @@ CREATE TRIGGER growth_kpi_source_sync_items_immutable
 BEFORE UPDATE OR DELETE ON growth_kpi_source_sync_items
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_growth_kpi_source_sync_mutation();
 
-CREATE OR REPLACE FUNCTION factoryos_guard_growth_source_observation_evidence()
+CREATE OR REPLACE FUNCTION factoryos_guard_growth_source_observation_evidence_mutation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF NEW.evidence_type='OPERATIONAL_METRIC'
-     AND NEW.reference_ref LIKE 'factoryos://growth/source-observations/%'
-     AND NOT EXISTS (
-       SELECT 1 FROM growth_kpi_source_observations o
-        WHERE o.id::text=substring(NEW.reference_ref from length('factoryos://growth/source-observations/')+1)
-          AND o.evidence_id=NEW.id
-          AND o.tenant_id=NEW.tenant_id
-          AND o.factory_id=NEW.factory_id
-          AND o.opportunity_id=NEW.opportunity_id
-     ) THEN
-    -- The matching observation is inserted after this evidence row in the same transaction.
-    -- Defer this check to transaction commit to allow the two immutable records to cross-reference.
-    NULL;
+  IF TG_OP='DELETE' THEN
+    IF OLD.reference_ref LIKE 'factoryos://growth/source-observations/%' THEN
+      RAISE EXCEPTION 'GROWTH_KPI_SOURCE_OBSERVATION_EVIDENCE_IMMUTABLE' USING ERRCODE='55000';
+    END IF;
+    RETURN OLD;
   END IF;
-  RETURN NULL;
+  IF OLD.reference_ref LIKE 'factoryos://growth/source-observations/%'
+     OR NEW.reference_ref LIKE 'factoryos://growth/source-observations/%' THEN
+    RAISE EXCEPTION 'GROWTH_KPI_SOURCE_OBSERVATION_EVIDENCE_IMMUTABLE' USING ERRCODE='55000';
+  END IF;
+  RETURN NEW;
 END;
 $$;
+CREATE TRIGGER growth_source_observation_evidence_immutable
+BEFORE UPDATE OR DELETE ON growth_opportunity_evidence
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_source_observation_evidence_mutation();
 
 CREATE OR REPLACE FUNCTION factoryos_check_growth_source_observation_evidence()
 RETURNS TRIGGER
