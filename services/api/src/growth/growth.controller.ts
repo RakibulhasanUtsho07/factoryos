@@ -380,9 +380,10 @@ export class GrowthController {
   getForecastCalibration(
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Query('domain') domain?: string,
   ): Promise<unknown> {
     const c = this.context(req);
-    return this.growth.getForecastCalibration(c.tenantId, c.factoryId, opportunityId);
+    return this.growth.getForecastCalibration(c.tenantId, c.factoryId, opportunityId, domain);
   }
 
 
