@@ -234,6 +234,7 @@ CREATE TABLE IF NOT EXISTS quality_defect_context_snapshots (
     AND (operation_code IS NULL OR length(btrim(operation_code)) BETWEEN 1 AND 100)
     AND (style_code IS NULL OR length(btrim(style_code)) BETWEEN 1 AND 120)
     AND (shift_code IS NULL OR length(btrim(shift_code)) BETWEEN 1 AND 80)
+    AND (line_code IS NOT NULL OR operation_code IS NOT NULL OR style_code IS NOT NULL OR shift_code IS NOT NULL)
   ),
   CONSTRAINT chk_quality_defect_context_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
   CONSTRAINT chk_quality_defect_context_hash CHECK (request_hash ~ '^[0-9a-f]{64}
@@ -278,10 +279,14 @@ CREATE INDEX IF NOT EXISTS idx_quality_aql_profile_selection
   ON quality_aql_profiles (tenant_id, factory_id, profile_code, inspection_type, status, revision DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_quality_aql_profile_active
   ON quality_aql_profiles (tenant_id, factory_id, lower(profile_code), inspection_type) WHERE status='ACTIVE';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quality_aql_profile_code_revision_ci
+  ON quality_aql_profiles (tenant_id, factory_id, lower(profile_code), revision);
 CREATE INDEX IF NOT EXISTS idx_quality_fabric_profile_selection
   ON quality_fabric_scoring_profiles (tenant_id, factory_id, profile_code, inspection_type, status, revision DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_quality_fabric_profile_active
   ON quality_fabric_scoring_profiles (tenant_id, factory_id, lower(profile_code), inspection_type) WHERE status='ACTIVE';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quality_fabric_profile_code_revision_ci
+  ON quality_fabric_scoring_profiles (tenant_id, factory_id, lower(profile_code), revision);
 CREATE INDEX IF NOT EXISTS idx_quality_supplier_event_supplier_time
   ON quality_supplier_quality_events (tenant_id, factory_id, supplier_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_quality_defect_context_dimensions
