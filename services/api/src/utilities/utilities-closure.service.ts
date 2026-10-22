@@ -116,7 +116,7 @@ export class UtilitiesClosureService {
     const readingAt=this.instant(dto.reading_at,'reading_at');
     if(Date.parse(readingAt)>Date.now()+30_000)throw new BadRequestException('Vendor reading timestamp cannot be more than 30 seconds in the future');
     const sourceValue=this.decimal(dto.reading_value,'reading_value',8,false);
-    const production=dto.production_quantity===undefined?undefined:this.decimal(dto.production_quantity,'production_quantity',8,true);
+    const production=dto.production_quantity===undefined?undefined:Number(this.decimal(dto.production_quantity,'production_quantity',8,true));
     const bindingResult=await this.database.query<Row>(
       `SELECT b.id::text AS id,b.meter_id::text AS meter_id,b.source_unit_code,b.factor_to_meter_unit::text AS factor_to_meter_unit,
         m.status AS meter_status,m.unit_code,m.reading_mode
@@ -135,7 +135,7 @@ export class UtilitiesClosureService {
     const dtoForReading:RecordUtilityReadingDto={
       reading_at:readingAt,reading_value:normalizedValue,source_type:'METER_GATEWAY',source_event_id:eventKey,
       production_quantity:production,
-      notes:[this.optionalText(dto.notes,600),`Normalized from ${sourceSystem}/${sourceMeter}; unit ${sourceUnit} x ${String(binding.factor_to_meter_unit)} -> ${String(binding.unit_code)}`]
+      notes:[this.optionalText(dto.notes,500),`Source value ${sourceValue} ${sourceUnit}; normalized from ${sourceSystem}/${sourceMeter}; factor ${String(binding.factor_to_meter_unit)} -> ${String(binding.unit_code)}`]
         .filter(Boolean).join(' | ').slice(0,2000),
     };
     const idempotencyKey=`vendor-event:${eventKey}`;
@@ -166,6 +166,8 @@ export class UtilitiesClosureService {
         const meter=await client.query<Row>('SELECT status,unit_code,currency_code,utility_type FROM utility_meters WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE',[payload.meter_id,c.tenantId,c.factoryId]);
         if(!meter.rows[0])throw new NotFoundException('Utility meter was not found in this factory');
         if(meter.rows[0].status!=='ACTIVE')throw new ConflictException('Threshold policy requires an active meter');
+        if(payload.utility_type&&payload.utility_type!==String(meter.rows[0].utility_type))
+          throw new BadRequestException('utility_type must match the selected meter utility type');
         const expectedUnit=payload.metric==='COST'?String(meter.rows[0].currency_code):payload.metric==='INTENSITY'?`${String(meter.rows[0].unit_code)}/unit`:String(meter.rows[0].unit_code);
         if(payload.threshold_unit_code!==expectedUnit)throw new BadRequestException(`Metric ${payload.metric} must use unit ${expectedUnit}`);
       }
