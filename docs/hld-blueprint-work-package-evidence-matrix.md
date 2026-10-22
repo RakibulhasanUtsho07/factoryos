@@ -53,6 +53,8 @@ The HLD defines logical planes/deployment profiles and cross-cutting invariants 
 
 The runs above refer to the exact code/configuration SHAs shown. The later Round 43 commits are documentation-only. The production-only audit does not establish zero advisories in the full development dependency tree. No run above demonstrates an actual production deployment, real backup restoration, live provider connections, industrial HIL, central alert delivery or independently signed acceptance.
 
+**Task 19 finance workbench candidate:** `9c50ba5e842e4b28ccf91a6458c84fbac3822802` (API code, migration 170, service/SQL contracts and CI workflow). At evidence update, the available status metadata returned no combined checks and no PR-triggered workflow run for this candidate. Automated Task 19 acceptance is therefore **PENDING**, not PASS; see [finance workbench acceptance evidence](finance-workbench-acceptance-evidence-2026-10-22.md). Independent finance-owner close acceptance remains **OPEN**.
+
 ## 5. Release decision
 
 **Current gate: PARTIAL — do not mark all WP01–WP12 complete.** The repository contains many credible bounded backend implementations and automated tests. Before release sign-off:
