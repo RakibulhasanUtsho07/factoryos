@@ -18,15 +18,6 @@ import {
   type ResolvedGrowthSourceMetric,
 } from './growth-source-of-record-adapters';
 
-interface SourceSyncObservationRow extends ResolvedGrowthSourceMetric {
-  id: string;
-  evidence_id: string;
-  created_at: string;
-  observation_hash: string;
-  source_financial_fact_id: string | null;
-  source_production_output_posting_id: string | null;
-}
-
 @Injectable()
 export class GrowthSourceOfRecordService {
   constructor(
