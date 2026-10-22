@@ -1004,7 +1004,7 @@ export class ProductChangeOrdersService {
   }
 
   private calendarDate(value: string, field: string) {
-    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) throw new BadRequestException(field + ' must use YYYY-MM-DD format');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new BadRequestException(field + ' must use YYYY-MM-DD format');
     const parsed = new Date(value + 'T00:00:00.000Z');
     if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
       throw new BadRequestException(field + ' must be a valid calendar date');
