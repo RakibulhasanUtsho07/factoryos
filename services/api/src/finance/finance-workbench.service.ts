@@ -525,9 +525,44 @@ export class FinanceWorkbenchService {
           created_at DESC,effective_at DESC,id DESC
       ), selected AS (
         SELECT * FROM actuals UNION ALL SELECT * FROM forecasts
+      ), by_type AS (
+        SELECT fact_type,sum(amount) AS amount,count(*)::int AS fact_count
+        FROM selected GROUP BY fact_type
+      ), totals AS (
+        SELECT
+          count(*) FILTER(WHERE fact_type LIKE 'ACTUAL_%')::int AS actual_fact_count,
+          count(*) FILTER(WHERE fact_type LIKE 'FORECAST_%')::int AS forecast_fact_count,
+          COALESCE(sum(amount) FILTER(WHERE fact_type='ACTUAL_REVENUE'),0) AS actual_revenue,
+          COALESCE(sum(amount) FILTER(WHERE fact_type='ACTUAL_COST'),0) AS actual_cost,
+          COALESCE(sum(amount) FILTER(WHERE fact_type='ACTUAL_CONTRIBUTION_COST'),0) AS actual_contribution_cost,
+          COALESCE(sum(amount) FILTER(WHERE fact_type='FORECAST_REVENUE'),0) AS forecast_revenue,
+          COALESCE(sum(amount) FILTER(WHERE fact_type='FORECAST_COST'),0) AS forecast_cost,
+          COALESCE(sum(amount) FILTER(WHERE fact_type='FORECAST_CONTRIBUTION_COST'),0) AS forecast_contribution_cost
+        FROM selected
       )
-      SELECT fact_type,sum(amount)::text AS amount,count(*)::int AS fact_count
-      FROM selected GROUP BY fact_type ORDER BY fact_type`,
+      SELECT
+        COALESCE((SELECT jsonb_agg(jsonb_build_object(
+          'fact_type',fact_type,'amount',amount::text,'fact_count',fact_count
+        ) ORDER BY fact_type) FROM by_type),'[]'::jsonb) AS fact_type_totals,
+        actual_fact_count,forecast_fact_count,
+        actual_revenue::text AS actual_revenue,
+        actual_cost::text AS actual_cost,
+        actual_contribution_cost::text AS actual_contribution_cost,
+        (actual_revenue-actual_cost)::text AS actual_gross_margin,
+        (actual_revenue-actual_contribution_cost)::text AS actual_contribution_margin,
+        CASE WHEN actual_revenue=0 THEN NULL ELSE round((actual_revenue-actual_cost)/NULLIF(actual_revenue,0)*100,4)::text END AS actual_gross_margin_percent,
+        CASE WHEN actual_revenue=0 THEN NULL ELSE round((actual_revenue-actual_contribution_cost)/NULLIF(actual_revenue,0)*100,4)::text END AS actual_contribution_margin_percent,
+        forecast_revenue::text AS forecast_revenue,
+        forecast_cost::text AS forecast_cost,
+        forecast_contribution_cost::text AS forecast_contribution_cost,
+        (forecast_revenue-forecast_cost)::text AS forecast_gross_margin,
+        (forecast_revenue-forecast_contribution_cost)::text AS forecast_contribution_margin,
+        (actual_revenue-forecast_revenue)::text AS revenue_variance,
+        (actual_cost-forecast_cost)::text AS cost_variance,
+        (actual_contribution_cost-forecast_contribution_cost)::text AS contribution_cost_variance,
+        ((actual_revenue-actual_cost)-(forecast_revenue-forecast_cost))::text AS gross_margin_variance,
+        ((actual_revenue-actual_contribution_cost)-(forecast_revenue-forecast_contribution_cost))::text AS contribution_margin_variance
+      FROM totals`,
       [tenantId, factoryId, currency, periodStart, periodEnd],
     );
     const positions = await client.query(
@@ -579,7 +614,7 @@ export class FinanceWorkbenchService {
       currency_policy: 'Source currency retained; no implicit FX conversion.',
       source_of_record_policy: 'Only active reporting connectors are included; external accounting remains authoritative.',
       actual_forecast_policy: 'Actual facts are summed; forecast versions are de-duplicated by source key and latest source receipt.',
-      period_costing_profitability: performance.rows,
+      period_costing_profitability: performance.rows[0] ?? null,
       working_capital_positions: positions.rows,
       reporting_domains: domains,
       operational_reconciliation: {
