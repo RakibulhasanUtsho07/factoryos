@@ -205,4 +205,30 @@ describe('MRP finite-capacity deterministic arithmetic', () => {
       }],
     })).toThrow('does not match an active dated calendar slot');
   });
+  it('detects a frozen-horizon shift/line allocation change even when operation dates match', () => {
+    const baseline: MrpCapacityBaselineOperation[] = [{
+      orderLineId: 'line-1', stepNumber: 1, status: 'SCHEDULED',
+      plannedStartDate: '2027-01-04', plannedFinishDate: '2027-01-04',
+      requiredMinutes: '40.0000',
+      allocations: [{
+        calendarEntryId: 'calendar-old', capacityDate: '2027-01-04', shiftTemplateId: SHIFT,
+        workCentreId: WORK_CENTRE, lineCode: 'LINE-1', allocatedMinutes: '40.0000',
+        workerAllocations: [],
+      }],
+    }];
+    const current = scheduleMrpFiniteCapacity({
+      horizonStart: HORIZON_START, horizonEnd: HORIZON_END, frozenHorizonDays: 2,
+      jobs: [job()], slots: [slot({ calendarEntryId: 'calendar-new' })], skillPools: [],
+    });
+    const diff = diffMrpCapacityPlans({
+      horizonStart: HORIZON_START, frozenHorizonDays: 2, baseline, current,
+    });
+    expect(diff).toHaveLength(1);
+    expect(diff[0]).toMatchObject({
+      change: 'CHANGED',
+      frozen_horizon: true,
+      frozen_horizon_violation: true,
+    });
+  });
+
 });
