@@ -47,8 +47,12 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger WHERE tgrelid = 'product_change_order_events'::regclass
       AND tgname = 'trg_product_change_order_events_immutable' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'product_change_order_affected_orders'::regclass
+      AND tgname = 'trg_product_change_order_affected_orders_immutable'
+      AND NOT tgisinternal AND tgenabled <> 'D'
   ) THEN
-    RAISE EXCEPTION 'ECO lifecycle or append-only history trigger is missing';
+    RAISE EXCEPTION 'ECO lifecycle, immutable impact snapshot, or append-only history trigger is missing';
   END IF;
 
   IF NOT EXISTS (
