@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS utility_meter_source_bindings (
   CONSTRAINT fk_utility_source_binding_approver FOREIGN KEY(approved_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_utility_source_binding_adapter CHECK(vendor_adapter IN ('REST_POLL','OPC_UA','MQTT','MODBUS','FILE_IMPORT','MANUAL_IMPORT')),
   CONSTRAINT chk_utility_source_binding_factor CHECK(factor_to_meter_unit > 0),
-  CONSTRAINT chk_utility_source_binding_poll CHECK((vendor_adapter IN ('REST_POLL','OPC_UA','MODBUS') AND polling_interval_seconds BETWEEN 5 AND 86400) OR (vendor_adapter NOT IN ('REST_POLL','OPC_UA','MODBUS') AND (polling_interval_seconds IS NULL OR polling_interval_seconds BETWEEN 5 AND 86400))),
+  CONSTRAINT chk_utility_source_binding_poll CHECK((vendor_adapter IN ('REST_POLL','OPC_UA','MODBUS') AND polling_interval_seconds IS NOT NULL AND polling_interval_seconds BETWEEN 5 AND 86400) OR (vendor_adapter NOT IN ('REST_POLL','OPC_UA','MODBUS') AND (polling_interval_seconds IS NULL OR polling_interval_seconds BETWEEN 5 AND 86400))),
   CONSTRAINT chk_utility_source_binding_status CHECK(status IN ('DRAFT','ACTIVE','INACTIVE','RETIRED')),
   CONSTRAINT chk_utility_source_binding_metadata CHECK(jsonb_typeof(config_metadata)='object'),
   CONSTRAINT chk_utility_source_binding_approval CHECK(
