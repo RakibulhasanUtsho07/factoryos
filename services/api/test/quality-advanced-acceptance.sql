@@ -23,7 +23,7 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
-    WHERE version='165_quality_sampling_binding_state_guard'
+    WHERE version='167_quality_sampling_binding_state_guard'
   ) THEN RAISE EXCEPTION 'Sampling profile binding state guard migration marker is missing'; END IF;
 
   IF NOT EXISTS (
