@@ -66,14 +66,14 @@ describe('MrpFiniteCapacityService request contracts', () => {
     expect(database.query).not.toHaveBeenCalled();
   });
 
-  it('requires a comparison baseline before requesting a frozen horizon', async () => {
+  it('rejects frozen horizons outside the supported bound before reading an MRP plan', async () => {
     await expect(service.createCapacityPlan(USER, TENANT, FACTORY, SOURCE_PLAN, {
       scenario_name: 'Frozen baseline test',
-      frozen_horizon_days: 3,
+      frozen_horizon_days: 366,
     }, 'capacity-scenario-key', null, null)).rejects.toThrow(
-      'A frozen horizon requires a previous capacity plan to pin and compare against',
+      'frozen_horizon_days must be an integer between 0 and 365',
     );
-    // The service must inspect source/scenario history before it can decide that no baseline exists.
-    expect(database.transaction).toHaveBeenCalledTimes(1);
+    expect(database.transaction).not.toHaveBeenCalled();
+    expect(database.query).not.toHaveBeenCalled();
   });
 });
