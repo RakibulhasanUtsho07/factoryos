@@ -188,6 +188,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-acceptance.sql
 
+          echo "Running populated AQL, fabric roll scoring, hold and authorized-release acceptance fixture"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-workflow.sql
+
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql
