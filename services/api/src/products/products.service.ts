@@ -98,7 +98,7 @@ export class ProductDefinitionsService {
     const styleCode=dto.style_code===undefined?null:this.text(dto.style_code,'style_code',120);
     const sizeCode=dto.size_code===undefined?null:this.text(dto.size_code,'size_code',80);
     const type=dto.product_type??'STANDARD';
-    const key=this.key(keyRaw), hash=this.hash({inventory_item_id:itemId,product_code:code.toLowerCase(),product_name:name,style_code:styleCode,size_code:sizeCode,product_type:type,base_unit:unit});
+    const key=this.key(keyRaw), hash=this.hash({inventory_item_id:itemId,product_code:code.toLowerCase(),product_name:name,...(styleCode===null?{}:{style_code:styleCode}),...(sizeCode===null?{}:{size_code:sizeCode}),product_type:type,base_unit:unit});
     const correlation=this.correlation(requestId,traceId);
     try {
       const result=await this.database.transaction({tenantId,userId},async client=>{
