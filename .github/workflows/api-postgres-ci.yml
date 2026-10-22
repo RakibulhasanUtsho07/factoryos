@@ -30,6 +30,8 @@ on:
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
+      - 'deploy/event-bus/**'
+      - 'scripts/event-bus/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
