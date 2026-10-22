@@ -13,7 +13,6 @@ const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
 const FACTORY_ID = '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 const OPPORTUNITY_ID = 'a9816b59-9f47-4bcb-b594-8ef2b23c0cb8';
 const SOURCE_ID = '139e9b4d-c14f-45ec-a2da-471df53c74c3';
-const OBSERVATION_ID = '2c6e5d9b-8b25-46ae-90cb-a6d9c16f05b1';
 const IDEMPOTENCY_KEY = 'sync-run-2026-10';
 const ADAPTER_VERSION = 'factoryos.growth.source-of-record.v1';
 
@@ -89,7 +88,8 @@ describe('GrowthSourceOfRecordService source KPI synchronization', () => {
     const observationInsert = client.query.mock.calls.find(call =>
       String(call[0]).includes('INSERT INTO growth_kpi_source_observations'));
     expect(observationInsert).toBeDefined();
-    const values = observationInsert?.[1] as unknown[];
+    if (!observationInsert) throw new Error('Expected source observation insert');
+    const values = observationInsert[1] as unknown[];
     const observationId = values[0] as string;
     const evidenceId = values[16] as string;
     expect(observationId).toMatch(/^[0-9a-f-]{36}$/i);
@@ -106,7 +106,8 @@ describe('GrowthSourceOfRecordService source KPI synchronization', () => {
 
     const evidenceInsert = client.query.mock.calls.find(call =>
       String(call[0]).includes('INSERT INTO growth_opportunity_evidence('));
-    expect(evidenceInsert?.[1]).toContain(`factoryos://growth/source-observations/${observationId}`);
+    if (!evidenceInsert) throw new Error('Expected source evidence insert');
+    expect(evidenceInsert[1]).toContain(`factoryos://growth/source-observations/${observationId}`);
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'SOURCE_OF_RECORD_KPI_SYNC',
       payload: expect.objectContaining({ adapterVersion: ADAPTER_VERSION, observationCount: 1 }),
