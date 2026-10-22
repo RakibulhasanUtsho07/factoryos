@@ -19,6 +19,12 @@ DECLARE
   v_source_link UUID := gen_random_uuid();
   v_output_link UUID := gen_random_uuid();
   v_rework UUID := gen_random_uuid();
+  v_cancel_defect UUID := gen_random_uuid();
+  v_cancel_source_link UUID := gen_random_uuid();
+  v_cancel_rework UUID := gen_random_uuid();
+  v_cancel_issue_movement UUID;
+  v_cancel_restore_movement UUID;
+  v_cancel_quantity_after NUMERIC(18,4);
   v_correlation UUID := gen_random_uuid();
   v_request UUID := gen_random_uuid();
   v_movement UUID := gen_random_uuid();
@@ -460,6 +466,219 @@ BEGIN
   );
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_defect,'QUALITY.DEFECT_CHANGED','{"status":"RESOLVED"}'::jsonb);
+
+
+  -- Exercise cancellation separately: a fully issued rework task must return the exact
+  -- source lot quantity to the same bin, rather than creating recovered output.
+  PERFORM set_config('app.user_id',v_actor::text,TRUE);
+  INSERT INTO quality_defects (
+    id,tenant_id,factory_id,inspection_id,defect_code,severity,affected_quantity,description,evidence,
+    status,row_version,idempotency_key,request_hash,reported_by_user_id,updated_by_user_id,correlation_id
+  ) VALUES (
+    v_cancel_defect,v_tenant,v_factory,v_source_inspection,'QWR-CANCEL-DEFECT','MINOR',1,
+    'One additional unit is used to prove cancelled rework restores its source stock',
+    '{"inspection_sheet":"QWR-CANCEL-QC-001","evidence_ref":"cancel-source-lot"}'::jsonb,
+    'OPEN',1,'qwr-cancel-defect',repeat('4',64),v_actor,v_actor,v_correlation
+  );
+  INSERT INTO quality_defect_events (
+    tenant_id,factory_id,defect_id,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_defect,NULL,'OPEN','REPORTED','Cancellation stock-restoration test defect',
+    'qwr-cancel-defect-event',repeat('5',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_DEFECT_REPORTED',
+    '{"defect_code":"QWR-CANCEL-DEFECT","affected_quantity":1,"source_unit_id":"fixture"}'::jsonb,v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_CHANGED','{"status":"OPEN"}'::jsonb);
+
+  INSERT INTO quality_defect_links (
+    id,tenant_id,factory_id,defect_id,link_type,traceability_unit_id,affected_quantity,link_source,
+    notes,evidence,idempotency_key,request_hash,created_by_user_id,correlation_id
+  ) VALUES (
+    v_cancel_source_link,v_tenant,v_factory,v_cancel_defect,'TRACEABILITY_UNIT',v_source_unit,1,'INSPECTION_TARGET',
+    'Cancellation fixture is bound to the same held source lot','{"inspection_sheet":"QWR-CANCEL-QC-001"}'::jsonb,
+    'qwr-cancel-source-link',repeat('6',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'DEFECT_TRACEABILITY_LINKED',
+    jsonb_build_object('link_id',v_cancel_source_link,'link_type','TRACEABILITY_UNIT','target_id',v_source_unit),v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_TRACEABILITY_LINKED',
+    jsonb_build_object('link_id',v_cancel_source_link,'defect_id',v_cancel_defect,'target_id',v_source_unit));
+
+  INSERT INTO quality_rework_orders (
+    id,tenant_id,factory_id,rework_number,defect_id,inspection_id,source_inventory_item_id,source_traceability_unit_id,
+    input_quantity,recovered_quantity,scrap_quantity,status,reason,instructions,row_version,idempotency_key,request_hash,
+    created_by_user_id,updated_by_user_id,correlation_id
+  ) VALUES (
+    v_cancel_rework,v_tenant,v_factory,'QWR-CANCEL-'||upper(substr(v_cancel_rework::text,1,10)),
+    v_cancel_defect,v_source_inspection,v_item,v_source_unit,1,0,0,'DRAFT',
+    'Cancellation must restore held source stock','Cancel before recovery or scrap is recorded',1,
+    'qwr-cancel-rework-order',repeat('7',64),v_actor,v_actor,v_correlation
+  );
+  INSERT INTO quality_rework_events (
+    tenant_id,factory_id,rework_order_id,version,from_status,to_status,command,reason,evidence,payload,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_rework,1,NULL,'DRAFT','CREATED','Cancellation inventory fixture created',
+    '{"work_instruction":"QWR-CANCEL-01"}'::jsonb,'{"input_quantity":1}'::jsonb,
+    'qwr-cancel-rework-created',repeat('8',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+    jsonb_build_object('rework_order_id',v_cancel_rework,'version',1,'to_status','DRAFT'),v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED','{"version":1,"status":"DRAFT"}'::jsonb);
+
+  UPDATE quality_rework_orders SET status='APPROVED',row_version=2,
+    approved_by_user_id=v_actor,approved_at=clock_timestamp(),updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_cancel_rework AND tenant_id=v_tenant AND factory_id=v_factory AND row_version=1;
+  INSERT INTO quality_rework_events (
+    tenant_id,factory_id,rework_order_id,version,from_status,to_status,command,reason,evidence,payload,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_rework,2,'DRAFT','APPROVED','APPROVE','Approve cancellation fixture',
+    '{"approved_instruction":"QWR-CANCEL-01"}'::jsonb,'{"input_quantity":1}'::jsonb,
+    'qwr-cancel-rework-approved',repeat('9',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+    jsonb_build_object('rework_order_id',v_cancel_rework,'version',2,'to_status','APPROVED'),v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED','{"version":2,"status":"APPROVED"}'::jsonb);
+
+  UPDATE quality_rework_orders SET status='IN_PROGRESS',row_version=3,
+    started_by_user_id=v_actor,started_at=clock_timestamp(),updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_cancel_rework AND tenant_id=v_tenant AND factory_id=v_factory AND row_version=2;
+  UPDATE quality_defects SET status='REWORK',row_version=row_version+1,updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_cancel_defect AND tenant_id=v_tenant AND factory_id=v_factory AND status='OPEN';
+  INSERT INTO quality_defect_events (
+    tenant_id,factory_id,defect_id,from_status,to_status,action,reason,idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_defect,'OPEN','REWORK','DISPOSITIONED','Cancellation rework task started',
+    'qwr-cancel-defect-rework',repeat('a',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'DEFECT_REWORK','{"status":"REWORK"}'::jsonb,v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_DEFECT',v_cancel_defect,'QUALITY.DEFECT_CHANGED','{"status":"REWORK"}'::jsonb);
+  INSERT INTO quality_rework_events (
+    tenant_id,factory_id,rework_order_id,version,from_status,to_status,command,reason,evidence,payload,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_rework,3,'APPROVED','IN_PROGRESS','START','Start then cancel controlled rework',
+    '{"source_lot":true}'::jsonb,'{"input_quantity":1}'::jsonb,
+    'qwr-cancel-rework-started',repeat('b',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+    jsonb_build_object('rework_order_id',v_cancel_rework,'version',3,'to_status','IN_PROGRESS'),v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED','{"version":3,"status":"IN_PROGRESS"}'::jsonb);
+
+  PERFORM set_config('app.inventory_location_id',v_location::text,TRUE);
+  UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand-1,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item AND quantity_reserved=0 AND quantity_on_hand>=1
+  RETURNING quantity_on_hand INTO v_cancel_quantity_after;
+  UPDATE inventory_traceability_location_balances SET quantity_on_hand=quantity_on_hand-1,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
+    AND traceability_unit_id=v_source_unit AND location_id=v_location
+    AND quantity_reserved=0 AND quantity_on_hand>=1;
+  IF NOT FOUND OR v_cancel_quantity_after<>3.5 THEN
+    RAISE EXCEPTION 'Cancellation fixture failed to consume one source unit before cancellation';
+  END IF;
+  INSERT INTO inventory_movements (
+    tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,
+    idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_item,v_location,'ISSUE',1,-1,v_cancel_quantity_after,
+    'qwr-cancel-input-issue',repeat('c',64),'QUALITY_REWORK_INPUT',v_cancel_rework,
+    'Held source quantity consumed before cancellation',v_actor,v_correlation
+  ) RETURNING id INTO v_cancel_issue_movement;
+  INSERT INTO audit_events (
+    tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,correlation_id,request_id,data_class,payload
+  ) VALUES (
+    v_tenant,v_factory,v_actor,'INVENTORY','STOCK_ISSUE','INVENTORY_MOVEMENT',v_cancel_issue_movement,
+    v_correlation,v_request,'INTERNAL',
+    jsonb_build_object('rework_order_id',v_cancel_rework,'quantity',1,'quantity_after',v_cancel_quantity_after,'traceability_unit_id',v_source_unit)
+  );
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (
+    v_tenant,v_factory,'INVENTORY_ITEM',v_item,'INVENTORY.STOCK_ISSUED',
+    jsonb_build_object('movement_id',v_cancel_issue_movement,'rework_order_id',v_cancel_rework,'quantity',1,'quantity_after',v_cancel_quantity_after)
+  );
+
+  UPDATE quality_rework_orders SET status='CANCELLED',row_version=4,
+    cancelled_by_user_id=v_actor,cancelled_at=clock_timestamp(),cancellation_reason='Cancel and restore the original source quantity',
+    completed_by_user_id=NULL,completed_at=NULL,completion_reason=NULL,recovered_quantity=0,scrap_quantity=0,
+    output_traceability_unit_id=NULL,follow_up_inspection_id=NULL,verified_by_user_id=NULL,verified_at=NULL,
+    verification_reason=NULL,updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_cancel_rework AND tenant_id=v_tenant AND factory_id=v_factory AND row_version=3;
+  INSERT INTO quality_rework_events (
+    tenant_id,factory_id,rework_order_id,version,from_status,to_status,command,reason,evidence,payload,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_cancel_rework,4,'IN_PROGRESS','CANCELLED','CANCEL','Restore all issued input on cancellation',
+    '{"cancellation_sheet":"QWR-CANCEL-01"}'::jsonb,
+    '{"input_quantity":1,"recovered_quantity":0,"scrap_quantity":0}'::jsonb,
+    'qwr-cancel-rework-cancelled',repeat('d',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (v_tenant,v_factory,v_source_inspection,v_cancel_defect,'QUALITY_REWORK_EVENT',
+    jsonb_build_object('rework_order_id',v_cancel_rework,'version',4,'to_status','CANCELLED','source_restore_required',true),v_actor,v_correlation);
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (v_tenant,v_factory,'QUALITY_REWORK',v_cancel_rework,'QUALITY.REWORK_CHANGED',
+    '{"version":4,"status":"CANCELLED","source_restore_required":true}'::jsonb);
+
+  UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand+1,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
+  RETURNING quantity_on_hand INTO v_cancel_quantity_after;
+  UPDATE inventory_traceability_location_balances SET quantity_on_hand=quantity_on_hand+1,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
+    AND traceability_unit_id=v_source_unit AND location_id=v_location;
+  IF NOT FOUND OR v_cancel_quantity_after<>4.5 THEN
+    RAISE EXCEPTION 'Cancelled rework did not restore the exact quantity to the source lot and aggregate stock';
+  END IF;
+  INSERT INTO inventory_movements (
+    tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,
+    idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_item,v_location,'RECEIPT',1,1,v_cancel_quantity_after,
+    'qwr-cancel-input-restore',repeat('e',64),'QUALITY_REWORK_RESTORE',v_cancel_rework,
+    'Restore the original source lot and bin on rework cancellation',v_actor,v_correlation
+  ) RETURNING id INTO v_cancel_restore_movement;
+  INSERT INTO audit_events (
+    tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,correlation_id,request_id,data_class,payload
+  ) VALUES (
+    v_tenant,v_factory,v_actor,'INVENTORY','STOCK_RECEIPT','INVENTORY_MOVEMENT',v_cancel_restore_movement,
+    v_correlation,v_request,'INTERNAL',
+    jsonb_build_object('rework_order_id',v_cancel_rework,'quantity',1,'quantity_after',v_cancel_quantity_after,'traceability_unit_id',v_source_unit)
+  );
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (
+    v_tenant,v_factory,'INVENTORY_ITEM',v_item,'INVENTORY.STOCK_RECEIVED',
+    jsonb_build_object('movement_id',v_cancel_restore_movement,'rework_order_id',v_cancel_rework,'quantity',1,'quantity_after',v_cancel_quantity_after)
+  );
+  IF (SELECT status FROM quality_rework_orders WHERE id=v_cancel_rework) IS DISTINCT FROM 'CANCELLED'
+    OR (SELECT COALESCE(sum(quantity),0) FROM inventory_movements WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND reference_type='QUALITY_REWORK_INPUT' AND reference_id=v_cancel_rework AND movement_type='ISSUE')<>1
+    OR (SELECT COALESCE(sum(quantity),0) FROM inventory_movements WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND reference_type='QUALITY_REWORK_RESTORE' AND reference_id=v_cancel_rework AND movement_type='RECEIPT')<>1
+    OR EXISTS (SELECT 1 FROM inventory_movements WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=v_cancel_rework AND movement_type='RECEIPT')
+    OR NOT EXISTS (SELECT 1 FROM audit_events WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND resource_type='INVENTORY_MOVEMENT' AND resource_id=v_cancel_restore_movement AND action='STOCK_RECEIPT')
+    OR NOT EXISTS (SELECT 1 FROM outbox_events WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND aggregate_id=v_item AND event_type='INVENTORY.STOCK_RECEIVED'
+      AND payload->>'rework_order_id'=v_cancel_rework::text) THEN
+    RAISE EXCEPTION 'Cancelled rework must restore its full source issue and must never post recovered output';
+  END IF;
+
 
   SET CONSTRAINTS ctr_quality_inspection_evidence, ctr_traceability_unit_evidence,
     ctr_quality_rework_inventory_reconciliation, ctr_quality_defect_link_audit IMMEDIATE;
