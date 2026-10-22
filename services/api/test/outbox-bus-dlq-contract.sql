@@ -55,8 +55,12 @@ BEGIN
     IF NOT has_table_privilege('factoryos_app','public.outbox_bus_dead_letters','SELECT')
       OR NOT has_table_privilege('factoryos_app','public.outbox_bus_dead_letters','INSERT')
       OR NOT has_table_privilege('factoryos_app','public.outbox_bus_dlq_redrive_requests','UPDATE')
-      OR NOT has_table_privilege('factoryos_app','public.outbox_bus_dlq_audit_events','INSERT') THEN
-      RAISE EXCEPTION 'factoryos_app is missing least-privilege Kafka DLQ access required by the runtime';
+      OR NOT has_table_privilege('factoryos_app','public.outbox_bus_dlq_audit_events','SELECT')
+      OR has_table_privilege('factoryos_app','public.outbox_bus_dlq_audit_events','INSERT')
+      OR has_table_privilege('factoryos_app','public.outbox_bus_dlq_audit_events','UPDATE')
+      OR has_table_privilege('factoryos_app','public.outbox_bus_dlq_audit_events','DELETE')
+      OR has_table_privilege('factoryos_app','public.outbox_bus_dlq_audit_events','TRUNCATE') THEN
+      RAISE EXCEPTION 'factoryos_app must read but not directly mutate append-only Kafka DLQ audit history';
     END IF;
   END IF;
 END;
