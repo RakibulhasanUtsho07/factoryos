@@ -38,14 +38,21 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_defect_context_snapshots'::regclass
       AND tgname='trg_quality_defect_context_actor_guard' AND NOT tgisinternal AND tgenabled<>'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_supplier_quality_events'::regclass
-      AND tgname='trg_quality_supplier_event_source_guard' AND NOT tgisinternal AND tgenabled<>'D') THEN
+      AND tgname='trg_quality_supplier_event_source_guard' AND NOT tgisinternal AND tgenabled<>'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_defect_context_snapshots'::regclass
+      AND conname='chk_quality_defect_context_nonempty'
+      AND position('line_code IS NOT NULL OR operation_code IS NOT NULL OR style_code IS NOT NULL OR shift_code IS NOT NULL' IN pg_get_constraintdef(oid))>0) THEN
     RAISE EXCEPTION 'Advanced evidence actor or supplier provenance guards are missing';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
       AND indexname='uq_quality_aql_profile_active')
     OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
-      AND indexname='uq_quality_fabric_profile_active') THEN
+      AND indexname='uq_quality_fabric_profile_active')
+    OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
+      AND indexname='uq_quality_aql_profile_code_revision_ci')
+    OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
+      AND indexname='uq_quality_fabric_profile_code_revision_ci') THEN
     RAISE EXCEPTION 'Only-one-active-profile revision uniqueness indexes are missing';
   END IF;
 
@@ -78,7 +85,10 @@ BEGIN
     OR to_regprocedure('factoryos_guard_quality_aql_sample_run()') IS NULL
     OR to_regprocedure('factoryos_guard_quality_fabric_roll_score()') IS NULL
     OR to_regprocedure('factoryos_require_advanced_quality_evidence()') IS NULL
-    OR to_regprocedure('factoryos_record_quality_supplier_defect()') IS NULL THEN
+    OR to_regprocedure('factoryos_record_quality_supplier_defect()') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_sampling_binding_evidence()') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_defect_context_evidence()') IS NULL
+    OR to_regprocedure('factoryos_guard_quality_supplier_event_source()') IS NULL THEN
     RAISE EXCEPTION 'Advanced quality guard function is missing';
   END IF;
 
