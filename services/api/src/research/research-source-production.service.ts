@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient } from 'pg';
 
@@ -23,7 +23,6 @@ import {
 } from './research-source-adapters';
 
 type DbRow = Record<string, any>;
-type QueryResult = { rows: DbRow[] };
 
 export interface UploadedResearchFile {
   buffer: Buffer;
