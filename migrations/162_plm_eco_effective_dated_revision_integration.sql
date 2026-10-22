@@ -16,7 +16,7 @@ JOIN permissions p ON p.code IN ('products.eco.read', 'products.eco.write', 'pro
 WHERE r.code IN ('ORG_ADMIN', 'FACTORY_MANAGER')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
-CREATE TABLE product_change_orders (
+CREATE TABLE IF NOT EXISTS product_change_orders (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -92,15 +92,15 @@ CREATE TABLE product_change_orders (
   )
 );
 
-CREATE UNIQUE INDEX uq_product_change_order_active_proposed_revision
+CREATE UNIQUE INDEX IF NOT EXISTS uq_product_change_order_active_proposed_revision
   ON product_change_orders (tenant_id, factory_id, proposed_product_version_id)
   WHERE status IN ('DRAFT', 'SUBMITTED', 'APPROVED');
-CREATE INDEX idx_product_change_order_product_history
+CREATE INDEX IF NOT EXISTS idx_product_change_order_product_history
   ON product_change_orders (tenant_id, factory_id, product_id, created_at DESC);
-CREATE INDEX idx_product_change_order_review_queue
+CREATE INDEX IF NOT EXISTS idx_product_change_order_review_queue
   ON product_change_orders (tenant_id, factory_id, status, effective_date, created_at);
 
-CREATE TABLE product_change_order_affected_orders (
+CREATE TABLE IF NOT EXISTS product_change_order_affected_orders (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -131,10 +131,10 @@ CREATE TABLE product_change_order_affected_orders (
   ),
   CONSTRAINT chk_product_change_order_order_dates CHECK (due_date >= planned_start_date)
 );
-CREATE INDEX idx_product_change_order_affected_history
+CREATE INDEX IF NOT EXISTS idx_product_change_order_affected_history
   ON product_change_order_affected_orders (tenant_id, factory_id, change_order_id, planned_start_date, work_order_id);
 
-CREATE TABLE product_change_order_events (
+CREATE TABLE IF NOT EXISTS product_change_order_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -159,23 +159,26 @@ CREATE TABLE product_change_order_events (
   CONSTRAINT chk_product_change_order_event_hash CHECK (request_hash ~ '^[0-9a-f]{64}$'),
   CONSTRAINT chk_product_change_order_event_payload CHECK (jsonb_typeof(payload) = 'object')
 );
-CREATE INDEX idx_product_change_order_event_history
+CREATE INDEX IF NOT EXISTS idx_product_change_order_event_history
   ON product_change_order_events (tenant_id, factory_id, change_order_id, created_at, id);
 
 ALTER TABLE product_change_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE product_change_orders FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS product_change_orders_tenant_isolation ON product_change_orders;
 CREATE POLICY product_change_orders_tenant_isolation ON product_change_orders
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
 ALTER TABLE product_change_order_affected_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE product_change_order_affected_orders FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS product_change_order_affected_orders_tenant_isolation ON product_change_order_affected_orders;
 CREATE POLICY product_change_order_affected_orders_tenant_isolation ON product_change_order_affected_orders
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
 
 ALTER TABLE product_change_order_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE product_change_order_events FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS product_change_order_events_tenant_isolation ON product_change_order_events;
 CREATE POLICY product_change_order_events_tenant_isolation ON product_change_order_events
   USING (tenant_id = factoryos_current_tenant_id())
   WITH CHECK (tenant_id = factoryos_current_tenant_id());
@@ -212,6 +215,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DROP TRIGGER IF EXISTS trg_product_change_order_lifecycle ON product_change_orders;
 CREATE TRIGGER trg_product_change_order_lifecycle
 BEFORE UPDATE OR DELETE ON product_change_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_product_change_order_lifecycle();
@@ -222,6 +226,7 @@ BEGIN
   RAISE EXCEPTION 'engineering change order history is append-only';
 END;
 $$;
+DROP TRIGGER IF EXISTS trg_product_change_order_events_immutable ON product_change_order_events;
 CREATE TRIGGER trg_product_change_order_events_immutable
 BEFORE UPDATE OR DELETE ON product_change_order_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_product_change_order_event_immutable();
@@ -250,12 +255,15 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_product_change_order_freezes_bom ON product_bom_lines;
 CREATE TRIGGER trg_product_change_order_freezes_bom
 BEFORE INSERT OR UPDATE OR DELETE ON product_bom_lines
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_submitted_product_revision_inputs();
+DROP TRIGGER IF EXISTS trg_product_change_order_freezes_alternates ON product_bom_alternates;
 CREATE TRIGGER trg_product_change_order_freezes_alternates
 BEFORE INSERT OR UPDATE OR DELETE ON product_bom_alternates
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_submitted_product_revision_inputs();
+DROP TRIGGER IF EXISTS trg_product_change_order_freezes_routing ON product_routing_steps;
 CREATE TRIGGER trg_product_change_order_freezes_routing
 BEFORE INSERT OR UPDATE OR DELETE ON product_routing_steps
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_submitted_product_revision_inputs();
@@ -277,6 +285,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DROP TRIGGER IF EXISTS trg_product_change_order_freezes_version_metadata ON product_versions;
 CREATE TRIGGER trg_product_change_order_freezes_version_metadata
 BEFORE UPDATE OF effective_from, effective_to, expected_yield_percent, change_summary ON product_versions
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_submitted_product_revision_metadata();
@@ -313,6 +322,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DROP TRIGGER IF EXISTS trg_product_version_eco_release_gate ON product_versions;
 CREATE TRIGGER trg_product_version_eco_release_gate
 BEFORE UPDATE OF state ON product_versions
 FOR EACH ROW EXECUTE FUNCTION factoryos_require_eco_for_submitted_revision_release();
@@ -346,6 +356,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DROP TRIGGER IF EXISTS trg_work_order_effective_product_revision ON work_orders;
 CREATE TRIGGER trg_work_order_effective_product_revision
 BEFORE INSERT OR UPDATE OF product_id, product_version_id, planned_start_date ON work_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_work_order_effective_product_revision();
