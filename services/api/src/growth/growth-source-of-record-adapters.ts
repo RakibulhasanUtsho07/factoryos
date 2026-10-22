@@ -16,6 +16,7 @@ export interface ProductionOutputSourceRow {
   created_at: string;
   good_quantity: string;
   scrap_quantity: string;
+  unit: string;
   yield_percentage: string;
   cumulative_yield_percentage: string;
   request_hash: string;
@@ -45,9 +46,9 @@ const FINANCE_METRICS: Readonly<Record<string, string>> = Object.freeze({
   'finance.bank_balance': 'BANK_BALANCE',
 });
 
-const PRODUCTION_METRICS: Readonly<Record<string, { field: keyof ProductionOutputSourceRow; unit: string }>> = Object.freeze({
-  'production.good_quantity': { field: 'good_quantity', unit: 'pieces' },
-  'production.scrap_quantity': { field: 'scrap_quantity', unit: 'pieces' },
+const PRODUCTION_METRICS: Readonly<Record<string, { field: keyof ProductionOutputSourceRow; unit: 'item_unit' | 'pct' }>> = Object.freeze({
+  'production.good_quantity': { field: 'good_quantity', unit: 'item_unit' },
+  'production.scrap_quantity': { field: 'scrap_quantity', unit: 'item_unit' },
   'production.yield_percentage': { field: 'yield_percentage', unit: 'pct' },
   'production.cumulative_yield_percentage': { field: 'cumulative_yield_percentage', unit: 'pct' },
 });
@@ -101,11 +102,14 @@ export function resolveProductionOutputMetric(
   const definition = PRODUCTION_METRICS[metricKey];
   if (!definition) throw new Error('GROWTH_SOURCE_METRIC_NOT_ALLOWED_FOR_PRODUCTION_OUTPUT');
   if (!/^[a-f0-9]{64}$/.test(row.request_hash)) throw new Error('GROWTH_SOURCE_REVISION_HASH_INVALID');
+  if (definition.unit === 'item_unit' && (!row.unit || !row.unit.trim() || row.unit.length > 40)) {
+    throw new Error('GROWTH_SOURCE_ITEM_UNIT_INVALID');
+  }
   const value = row[definition.field];
   return {
     source_kind: 'PRODUCTION_OUTPUT',
     metric_key: metricKey,
-    unit: definition.unit,
+    unit: definition.unit === 'item_unit' ? row.unit : definition.unit,
     value: normalizeDecimal(value),
     observed_at: normalizeTimestamp(row.created_at),
     source_record_ref: `production-output:${row.id}`,
