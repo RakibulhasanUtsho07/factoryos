@@ -36,7 +36,7 @@ describe('MrpFiniteCapacityService request contracts', () => {
   it('rejects invalid calendar dates before any read or write', async () => {
     await expect(service.listCapacityCalendar(
       USER, TENANT, FACTORY, '2027-02-30', '2027-03-02',
-    )).rejects.toThrow('from_date must be a valid YYYY-MM-DD date');
+    )).rejects.toThrow('from_date must be a valid calendar date');
     expect(database.query).not.toHaveBeenCalled();
     expect(database.transaction).not.toHaveBeenCalled();
   });
@@ -61,7 +61,7 @@ describe('MrpFiniteCapacityService request contracts', () => {
         delta_available_minutes: 1500,
         delta_parallel_lines: 0,
       }],
-    }, 'capacity-scenario-key', null, null)).rejects.toThrow('Capacity scenario deltas are outside the supported range');
+    }, 'capacity-scenario-key', null, null)).rejects.toThrow('Scenario capacity deltas are outside the supported range');
     expect(database.transaction).not.toHaveBeenCalled();
     expect(database.query).not.toHaveBeenCalled();
   });
@@ -71,7 +71,7 @@ describe('MrpFiniteCapacityService request contracts', () => {
       scenario_name: 'Frozen baseline test',
       frozen_horizon_days: 366,
     }, 'capacity-scenario-key', null, null)).rejects.toThrow(
-      'frozen_horizon_days must be an integer between 0 and 365',
+      'frozen_horizon_days must be between 0 and 365',
     );
     expect(database.transaction).not.toHaveBeenCalled();
     expect(database.query).not.toHaveBeenCalled();
