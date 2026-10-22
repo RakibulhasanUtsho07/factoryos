@@ -84,6 +84,18 @@ BEGIN
     RAISE EXCEPTION 'Work-order planned-start effective-revision guard is missing';
   END IF;
 
+  IF position('FOR UPDATE' IN pg_get_functiondef(
+    'factoryos_guard_submitted_product_revision_inputs()'::regprocedure
+  )) = 0 THEN
+    RAISE EXCEPTION 'Submitted ECO revision-input guard must serialize child edits against submission';
+  END IF;
+
+  IF position('proposed revision author' IN pg_get_functiondef(
+    'factoryos_guard_product_change_order_lifecycle()'::regprocedure
+  )) = 0 THEN
+    RAISE EXCEPTION 'Database-level ECO maker-checker protection is missing';
+  END IF;
+
   -- A new ECO may report impact but must not mutate a pinned production definition.
   -- These guards already protect the work-order revision identity and copied operation/material snapshots.
   IF NOT EXISTS (
