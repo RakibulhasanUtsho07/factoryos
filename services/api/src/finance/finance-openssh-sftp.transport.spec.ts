@@ -98,7 +98,7 @@ class FakeSftpRunner implements FinanceSftpCommandRunner {
 
   private unquote(value: string): string {
     if (!value.startsWith('"') || !value.endsWith('"')) throw new Error('expected quoted path');
-    return value.slice(1, -1).replace(/\\("|\\)/g, '$1');
+    return value.slice(1, -1);
   }
 
   private parseTwoQuoted(value: string): [string, string] {
