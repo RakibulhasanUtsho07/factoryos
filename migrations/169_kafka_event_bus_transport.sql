@@ -1,5 +1,11 @@
 BEGIN;
 
+-- factories are keyed by id, but dead-letter records also need tenant ownership
+-- enforced by a composite FK. The unique index is valid because id is already
+-- globally unique and makes that ownership reference enforceable by PostgreSQL.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_factories_id_tenant
+  ON factories(id,tenant_id);
+
 -- WP03 / Task 17: persistent broker-consumer DLQ and idempotent redrive receipts.
 -- The original outbox DLQ continues to represent publisher-side failures.
 -- These tables represent consumer-side failures after broker-confirmed publication.
