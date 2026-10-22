@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS product_change_order_affected_orders (
   factory_id UUID NOT NULL,
   change_order_id UUID NOT NULL,
   work_order_id UUID NOT NULL,
+  product_id UUID NOT NULL,
   pinned_product_version_id UUID NOT NULL,
   status_at_snapshot VARCHAR(24) NOT NULL,
   planned_start_date DATE NOT NULL,
@@ -121,8 +122,8 @@ CREATE TABLE IF NOT EXISTS product_change_order_affected_orders (
     FOREIGN KEY (work_order_id, tenant_id, factory_id)
     REFERENCES work_orders (id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_product_change_order_affected_revision
-    FOREIGN KEY (pinned_product_version_id, tenant_id, factory_id)
-    REFERENCES product_versions (id, tenant_id, factory_id) ON DELETE RESTRICT,
+    FOREIGN KEY (pinned_product_version_id, tenant_id, factory_id, product_id)
+    REFERENCES product_versions (id, tenant_id, factory_id, product_id) ON DELETE RESTRICT,
   CONSTRAINT chk_product_change_order_affected_status CHECK (
     status_at_snapshot IN ('DRAFT', 'RELEASED', 'IN_PROGRESS', 'ON_HOLD')
   ),
