@@ -250,7 +250,7 @@ describe('ResearchSourceProductionService', () => {
       duplicateCandidate:{id:DOCUMENT_ID,similarity:1},
       document:{id:DUPLICATE_ID,duplicate_of_document_id:DOCUMENT_ID,similarity_score:1},
     });
-    expect(result.duplicatePolicy).toContain('not a review hint only');
+    expect(result.duplicatePolicy).toContain('not automatically merged');
     expect(String(client.query.mock.calls[3][0])).toContain('INSERT INTO research_source_documents');
     expect(String(client.query.mock.calls[4][0])).toContain('INSERT INTO research_source_document_content');
   });
