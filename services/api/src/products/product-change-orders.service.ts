@@ -12,10 +12,10 @@ import { DatabaseService } from '../database/database.service';
 import { CreateProductChangeOrderDto } from './dto/create-product-change-order.dto';
 import { ProductChangeOrderActionDto } from './dto/product-change-order-action.dto';
 
-type ChangeOrderStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
-type JsonObject = Record<string, unknown>;
+export type ChangeOrderStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+export type JsonObject = Record<string, unknown>;
 
-interface ChangeOrderRow extends QueryResultRow {
+export interface ChangeOrderRow extends QueryResultRow {
   id: string;
   tenant_id: string;
   factory_id: string;
@@ -62,7 +62,7 @@ interface ProductVersionRow extends QueryResultRow {
   approved_by_user_id: string | null;
 }
 
-interface WorkOrderImpactRow extends QueryResultRow {
+export interface WorkOrderImpactRow extends QueryResultRow {
   id: string;
   work_order_number: string;
   product_version_id: string;
