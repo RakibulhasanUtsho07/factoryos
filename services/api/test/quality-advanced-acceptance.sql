@@ -9,6 +9,7 @@ DECLARE
   required_tables TEXT[] := ARRAY[
     'quality_aql_profiles',
     'quality_fabric_scoring_profiles',
+    'quality_sampling_profile_bindings',
     'quality_aql_sample_runs',
     'quality_fabric_roll_scores',
     'quality_defect_context_snapshots',
@@ -86,6 +87,11 @@ BEGIN
     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_inspections'::regclass
     AND conname='fk_quality_inspection_fabric_profile') THEN
     RAISE EXCEPTION 'Inspection-to-approved-sampling-profile binding is missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_sampling_profile_bindings'::regclass
+    AND tgname='trg_quality_sampling_binding_immutable' AND NOT tgisinternal AND tgenabled<>'D') THEN
+    RAISE EXCEPTION 'Sampling-profile binding evidence must be immutable';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_aql_sample_runs'::regclass
