@@ -2,7 +2,7 @@
 
 **Task:** 19 — Finance costing, profitability and working-capital workbench  
 **Branch:** `rakibul-hasan`  
-**Candidate code/migration/test/workflow SHA:** `05f450212b34b3ebeb9607752147bacedb1aaed4`  
+**Candidate code/migration/test/workflow SHA:** `d3fd811fdacdf99f04eae5ab33bb6fc5e9dff4df`  
 **Implementation status:** Backend and database contracts committed  
 **Automated exact-SHA CI status:** PENDING VERIFICATION — do not mark PASS until the run's API and PostgreSQL jobs conclude successfully  
 **Finance-owner close acceptance:** OPEN
@@ -15,7 +15,7 @@
 - Overdue receivables/payables remain visible and are included in due-date cash horizon totals. Open PO commitments, LC exposure, bank position, inventory value and tax liability are presented by source currency.
 - Added currency/period-specific finance-close snapshots with SHA-256 snapshot binding, expected row versions, append-only history, transactional audit/outbox events, forced tenant RLS, source-readiness submission gate, stale-snapshot approval rejection and independent maker-checker approval.
 - Added migration `170_finance_costing_profitability_close_workbench.sql`, inserted in the ordered `scripts/audit/migration-manifest.txt`.
-- Added `services/api/src/finance/finance-workbench.service.spec.ts` and `services/api/test/finance-workbench-contract.sql`, and wired the PostgreSQL contract in `.github/workflows/api-postgres-ci.yml`. The workflow replays migration 170 after development-role seeding to verify idempotent DDL and role grants.
+- Added `services/api/src/finance/finance-workbench.service.spec.ts` for currency/period output, mismatch visibility, reversed-period validation, stale-snapshot approval refusal, creator self-approval refusal and independent approval audit/history/outbox. Added `services/api/test/finance-workbench-contract.sql` for database-side lifecycle/RLS/role assertions and wired it in `.github/workflows/api-postgres-ci.yml`. The workflow replays migration 170 after development-role seeding to verify idempotent DDL and role grants.
 - Updated the Finance Integration Contract and HLD/Blueprint WP03/WP07 evidence matrix.
 - No journal-posting, payment-execution, bank-write or tax-submission API was added.
 
