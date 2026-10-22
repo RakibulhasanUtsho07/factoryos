@@ -98,7 +98,7 @@ export class UtilitiesClosureService {
       }
       await client.query(
         `UPDATE utility_meter_source_bindings SET status=$4,row_version=row_version+1,
-          approved_by_user_id=CASE WHEN $4='ACTIVE' THEN $5::uuid ELSE NULL END,
+          approved_by_user_id=CASE WHEN $4='ACTIVE' THEN $6::uuid ELSE NULL END,
           approved_at=CASE WHEN $4='ACTIVE' THEN clock_timestamp() ELSE NULL END,
           last_change_reason=$5,updated_by_user_id=$6,updated_at=clock_timestamp()
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$7`,
