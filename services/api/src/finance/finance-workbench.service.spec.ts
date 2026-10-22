@@ -5,14 +5,19 @@ import { financeRequestHash } from './finance-contract';
 import { FinanceWorkbenchService } from './finance-workbench.service';
 
 describe('FinanceWorkbenchService', () => {
-  function setup() {
+  function setup(options: {
+    domainOverrides?: Array<{ domain: string; last_completed_at?: string | null; is_active?: boolean }>;
+    unresolvedCount?: string;
+    includeUnreconciledFact?: boolean;
+  } = {}) {
     const domains = ['AP', 'AR', 'BANK_RECONCILIATION', 'GL', 'TAX_EINVOICE'].map((domain) => ({
       domain,
       connector_code: 'SOURCE-' + domain,
       source_system: 'External accounting',
       status: 'ACTIVE',
-      last_completed_at: '2026-10-01T00:00:00.000Z',
+      last_completed_at: '2026-10-01T00:00:00.000Z' as string | null,
       is_active: true,
+      ...options.domainOverrides?.find((override) => override.domain === domain),
     }));
     const query = jest.fn(async (statement: string, _values?: unknown[]) => {
       void _values;
@@ -62,7 +67,7 @@ describe('FinanceWorkbenchService', () => {
         return { rows: domains };
       }
       if (statement.includes('SELECT f.id::text AS fact_id')) {
-        return { rows: [{
+        return options.includeUnreconciledFact === false ? { rows: [] } : { rows: [{
           fact_id: 'fact-1',
           external_fact_id: 'ERP-INV-1',
           fact_type: 'AP_OPEN',
@@ -73,7 +78,7 @@ describe('FinanceWorkbenchService', () => {
         }] };
       }
       if (statement.includes('SELECT count(*)::text AS count')) {
-        return { rows: [{ count: '1' }] };
+        return { rows: [{ count: options.unresolvedCount ?? '1' }] };
       }
       return { rows: [] };
     });
@@ -145,6 +150,25 @@ describe('FinanceWorkbenchService', () => {
       '2026-10-30T23:59:59.999Z',
       'BDT',
     ]);
+  });
+
+  it('blocks reporting readiness when an active required source has no completed ingestion receipt', async () => {
+    const { service } = setup({
+      domainOverrides: [{ domain: 'GL', last_completed_at: null }],
+      unresolvedCount: '0',
+      includeUnreconciledFact: false,
+    });
+    const result = await service.readWorkbench('user-1', 'tenant-1', 'factory-1', {
+      from: '2026-09-01T00:00:00.000Z',
+      to: '2026-09-30T23:59:59.999Z',
+      currency: 'BDT',
+      horizon_days: 30,
+      unreconciled_limit: 25,
+    });
+
+    expect(result.uninitialized_reporting_domains).toEqual(['GL']);
+    expect(result.unreconciled_fact_count).toBe(0);
+    expect(result.reporting_ready).toBe(false);
   });
 
   it('rejects a reversed reporting period before querying PostgreSQL', async () => {
