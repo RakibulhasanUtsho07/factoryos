@@ -1359,6 +1359,12 @@ export class QualityService {
   private text(value:string|undefined,field:string,max:number){const v=value?.trim()??'';if(!v||v.length>max)throw new BadRequestException(field+' is required and must contain at most '+max+' characters');return v;}
   private quantity(value:number,field:string){if(!Number.isFinite(value)||value<=0||Math.abs(value*10000-Math.round(value*10000))>0.000001)throw new BadRequestException(field+' must be positive with at most four decimal places');return value.toFixed(4);}
   private units(value:string|number){const n=Number(value);if(!Number.isFinite(n)||n<0)throw new BadRequestException('Inventory quantity is invalid');return BigInt(Math.round(n*10000));}
+  private unitsToDecimal(value:bigint){
+    const negative=value<0n,absolute=negative?-value:value;
+    const whole=(absolute/10000n).toString();
+    const fraction=(absolute%10000n).toString().padStart(4,'0');
+    return (negative?'-':'')+whole+'.'+fraction;
+  }
   private jsonObject(value?:Record<string,unknown>){if(value==null)return{};if(typeof value!=='object'||Array.isArray(value))throw new BadRequestException('evidence must be a JSON object');return value;}
   private uuid(value:string,field:string){if(!isUUID(value))throw new BadRequestException(field+' must be a UUID');}
   private uuidValue(value:string,field:string){this.uuid(value,field);return value.toLowerCase();}
