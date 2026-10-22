@@ -73,9 +73,13 @@ export function isFinancePublicAddress(address: string): boolean {
   const normalized = address.toLowerCase();
   if (normalized.includes('%') || normalized.startsWith('::ffff:') ||
       normalized.startsWith('2001:db8:') || normalized.startsWith('2001:10:') ||
+      normalized.startsWith('2002:') || normalized.startsWith('3fff:') ||
       normalized === '::' || normalized === '::1') return false;
-  // 2000::/3 is global-unicast space; deny IPv4-compatible and special-use prefixes above.
-  const firstHextet = Number.parseInt(normalized.split(':')[0] || '0', 16);
+  // 2000::/3 is global-unicast space; reject IETF protocol-assignment space too.
+  const parts = normalized.split(':');
+  const firstHextet = Number.parseInt(parts[0] || '0', 16);
+  const secondHextet = Number.parseInt(parts[1] || '0', 16);
+  if (firstHextet === 0x2001 && secondHextet <= 0x01ff) return false;
   return Number.isInteger(firstHextet) && firstHextet >= 0x2000 && firstHextet <= 0x3fff;
 }
 
@@ -92,7 +96,7 @@ export async function resolveFinancePinnedAddress(
     return answers.map((item) => ({ address: item.address, family: item.family }));
   },
 ): Promise<ResolvedAddress> {
-  const host = hostname.toLowerCase().replace(/\\.$/, '');
+  const host = hostname.toLowerCase().replace(/\.$/, '');
   if (!host || isIP(host) !== 0 || !allowedHosts.has(host)) {
     throw new Error('FINANCE_ERP_HOST_NOT_ALLOWLISTED');
   }
@@ -231,7 +235,7 @@ function endpointBase(value: string): URL {
       isIP(url.hostname) !== 0) {
     throw new Error('FINANCE_BUSINESS_CENTRAL_ENDPOINT_INVALID');
   }
-  url.pathname = url.pathname.replace(/\\/+$/, '');
+  url.pathname = url.pathname.replace(/\/+$/, '');
   return url;
 }
 
