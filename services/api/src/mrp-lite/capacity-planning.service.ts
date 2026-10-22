@@ -25,7 +25,7 @@ interface PlanRow extends QueryResultRow {
 interface DemandRow extends QueryResultRow {
  order_id:string; order_line_id:string; order_number:string; order_line_number:number; product_id:string; product_version_id:string;
  product_version_number:number; product_code:string; need_by_date:string; planned_quantity:string;
- material_status:'READY'|'LATE_SUPPLY'|'UNSUPPLIED'; material_ready_on:string|null;
+ material_status:'READY'|'LATE_SUPPLY'|'UNSUPPLIED'; material_ready_on:string|null; alternate_scenarios:unknown;
 }
 interface RouteRow extends QueryResultRow {
  id:string; product_id:string; product_version_id:string; product_version_number:number; product_code:string;
@@ -150,7 +150,8 @@ export class CapacityPlanningService {
       MAX(r.product_code) AS product_code,MIN(r.need_by_date)::text AS need_by_date,MAX(r.remaining_finished_quantity)::text AS planned_quantity,
       CASE WHEN BOOL_OR(r.shortage_quantity>0 AND r.allocation_status='UNSUPPLIED') THEN 'UNSUPPLIED'
         WHEN BOOL_OR(r.shortage_quantity>0 AND r.allocation_status='LATE_SUPPLY') THEN 'LATE_SUPPLY' ELSE 'READY' END AS material_status,
-      MIN(COALESCE(r.projected_available_date,r.shortage_date)) FILTER(WHERE r.shortage_quantity>0)::text AS material_ready_on
+      MIN(COALESCE(r.projected_available_date,r.shortage_date)) FILTER(WHERE r.shortage_quantity>0)::text AS material_ready_on,
+      COALESCE(jsonb_agg(r.substitute_scenarios ORDER BY r.bom_line_number),'[]'::jsonb) AS alternate_scenarios
       FROM mrp_plan_requirements r WHERE r.plan_id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 AND r.need_by_date BETWEEN $4::date AND $5::date
       GROUP BY r.order_id,r.order_line_id,r.order_number,r.order_line_number,r.product_id,r.product_version_id
       ORDER BY MIN(r.need_by_date),r.order_number,r.order_line_number`,[sourceId,tenantId,factoryId,start,end]);
@@ -170,9 +171,11 @@ export class CapacityPlanningService {
     if(!routings.length){exceptions.push({code:'NO_ROUTING',order_line_id:d.order_line_id,product_version_id:d.product_version_id});continue;}
     for(const route of routings){
      const n=(v:string)=>Number(v);
+     const alternateScenarios=Array.isArray(d.alternate_scenarios)
+      ? d.alternate_scenarios.flatMap((entry)=>Array.isArray(entry)?entry:[]) : [];
      demand.push({order_id:d.order_id,order_line_id:d.order_line_id,order_number:d.order_number,order_line_number:d.order_line_number,
       product_id:d.product_id,product_version_id:d.product_version_id,product_version_number:d.product_version_number,product_code:d.product_code,
-      need_by_date:d.need_by_date,planned_quantity:n(d.planned_quantity),material_status:d.material_status,material_ready_on:d.material_ready_on,
+      need_by_date:d.need_by_date,planned_quantity:n(d.planned_quantity),material_status:d.material_status,material_ready_on:d.material_ready_on,alternate_material_scenarios:alternateScenarios,
       route_step_id:route.id,step_number:route.step_number,operation_code:route.operation_code,operation_name:route.operation_name,
       work_centre_id:route.work_centre_id,required_skill:route.required_skill,setup_minutes:n(route.setup_minutes),sam_smv_minutes_per_unit:n(route.run_minutes_per_unit),
       queue_minutes:n(route.queue_minutes),transfer_minutes:n(route.transfer_minutes)});
@@ -206,13 +209,13 @@ export class CapacityPlanningService {
       order_number,order_line_number,product_code,product_version_number,need_by_date,step_number,operation_code,operation_name,required_skill,
       planned_quantity,setup_minutes,sam_smv_minutes_per_unit,queue_minutes,transfer_minutes,required_minutes,scheduled_minutes,unscheduled_minutes,
       material_ready_on,material_status,capacity_status,scheduled_start_date,scheduled_finish_date,schedule_segments,conflict_codes,
-      frozen_horizon_protected,frozen_revision_snapshot)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::date,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::date,$28,$29,$30::date,$31::date,$32::jsonb,$33::jsonb,$34,$35::jsonb)`,
+      frozen_horizon_protected,frozen_revision_snapshot,alternate_material_scenarios)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::date,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27::date,$28,$29,$30::date,$31::date,$32::jsonb,$33::jsonb,$34,$35::jsonb,$36::jsonb)`,
       [tenantId,factoryId,planId,row.order_id,row.order_line_id,row.product_id,row.product_version_id,row.route_step_id,row.work_centre_id,row.order_number,
        row.order_line_number,row.product_code,row.product_version_number,row.need_by_date,row.step_number,row.operation_code,row.operation_name,row.required_skill,
        row.planned_quantity,row.setup_minutes,row.sam_smv_minutes_per_unit,row.queue_minutes,row.transfer_minutes,row.required_minutes,row.scheduled_minutes,row.unscheduled_minutes,
        row.material_ready_on,row.material_status,row.capacity_status,row.scheduled_start_date,row.scheduled_finish_date,JSON.stringify(row.schedule_segments),JSON.stringify(row.conflict_codes),
-       row.frozen_horizon_protected,JSON.stringify(row.frozen_revision_snapshot)]);
+       row.frozen_horizon_protected,JSON.stringify(row.frozen_revision_snapshot),JSON.stringify(row.alternate_material_scenarios??[])]);
    }
    await this.outbox(client,{tenantId,factoryId,id:planId,event:'MRP.CAPACITY_PLAN_CALCULATED',aggregateType:'MRP_CAPACITY_PLAN',correlation,requestId,userId,
     payload:{source_mrp_plan_id:sourceId,plan_version:planVersion,status,summary}});
@@ -240,7 +243,7 @@ export class CapacityPlanningService {
    sam_smv_minutes_per_unit::text AS sam_smv_minutes_per_unit,queue_minutes::text AS queue_minutes,transfer_minutes::text AS transfer_minutes,
    required_minutes::text AS required_minutes,scheduled_minutes::text AS scheduled_minutes,unscheduled_minutes::text AS unscheduled_minutes,
    material_ready_on::text AS material_ready_on,material_status,capacity_status,scheduled_start_date::text AS scheduled_start_date,
-   scheduled_finish_date::text AS scheduled_finish_date,schedule_segments,conflict_codes,frozen_horizon_protected,frozen_revision_snapshot
+   scheduled_finish_date::text AS scheduled_finish_date,schedule_segments,conflict_codes,frozen_horizon_protected,frozen_revision_snapshot,alternate_material_scenarios
    FROM mrp_capacity_plan_operations WHERE plan_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY need_by_date,order_number,order_line_number,step_number`,
     [planId,tenantId,factoryId],{tenantId,userId});
   return {...q.rows[0],operations:ops.rows};
