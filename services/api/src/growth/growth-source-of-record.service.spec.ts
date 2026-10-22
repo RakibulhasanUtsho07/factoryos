@@ -134,8 +134,8 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
     expect(outcome.realized_metrics).toEqual({ 'production.good_quantity': 950 });
     expect(outcome.observed_at).toBe('2026-10-10T14:00:00.000Z');
     expect(outcome.evidence_refs).toEqual([
-      `factoryos://growth/source-observations/${ACTUAL_ID}`,
       `factoryos://growth/source-observations/${BASELINE_ID}`,
+      `factoryos://growth/source-observations/${ACTUAL_ID}`,
     ]);
     expect(outcome.kpi_measurements).toEqual([expect.objectContaining({
       metric_key: 'production.good_quantity', unit: 'PCS', baseline_value: 900,
