@@ -711,6 +711,63 @@ describe('GrowthService', () => {
     expect(client.query).toHaveBeenCalledTimes(2);
   });
 
+  it('replays the same forecast evaluation across users without including the actor in the request fingerprint', async () => {
+    const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
+    const measurementId = '1e84d4ea-4c73-4a78-8818-59ef865adb22';
+    const sourceEvidenceId = '8f8fba80-9438-481d-9fa9-f20eece93a0c';
+    const evaluationId = 'bccd4a6c-6a67-47c1-83d8-91a2cba52a28';
+    const idempotencyKey = 'forecast-eval-actor-replay-01';
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-01T00:00:00.000Z',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: outcomeId, idempotency_key: idempotencyKey,
+    };
+    const source = { id: sourceEvidenceId };
+    const actual = {
+      id: outcomeId, measurement_id: measurementId, observed_at: '2026-10-05T00:00:00.000Z',
+      actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
+    };
+
+    client.query
+      .mockResolvedValueOnce({ rows: [source] })
+      .mockResolvedValueOnce({ rows: [actual] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        id: evaluationId, input_hash: 'placeholder', model_version: 'ops-v1',
+        metric_key: 'daily_output', unit: 'pieces', idempotency_key: idempotencyKey,
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const first = await service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+    expect(first.replayed).toBe(false);
+    const insertCall = client.query.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO growth_forecast_evaluations'),
+    );
+    const requestHash = insertCall?.[1]?.[26];
+    expect(requestHash).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+
+    client.query.mockReset();
+    client.query
+      .mockResolvedValueOnce({ rows: [source] })
+      .mockResolvedValueOnce({ rows: [actual] })
+      .mockResolvedValueOnce({ rows: [{ id: evaluationId, request_hash: requestHash }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: evaluationId, input_hash: requestHash, model_version: 'ops-v1',
+        metric_key: 'daily_output', unit: 'pieces', idempotency_key: idempotencyKey,
+      }] });
+
+    const second = await service.recordForecastEvaluation(
+      '6c5a2fb2-9f42-45e1-86c8-65cf8d49c9e0', TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+
+    expect(second.id).toBe(evaluationId);
+    expect(second.replayed).toBe(true);
+    expect(client.query).toHaveBeenCalledTimes(4);
+  });
+
   it('rejects a reused idempotency key when the frozen forecast fingerprint differs', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
