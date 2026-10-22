@@ -49,7 +49,8 @@ BEGIN
     'research_release_version_sequence_guard',
     'research_release_channel_guard',
     'research_release_lifecycle_events_guard',
-    'research_source_zzzz_retract_stale_releases'
+    'research_source_zzzz_retract_stale_releases',
+    'research_release_channel_retraction_audit_guard'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger
@@ -66,6 +67,8 @@ BEGIN
     SELECT 1 FROM schema_migrations WHERE version='174_research_release_retraction'
   ) OR NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='175_research_source_change_release_withdrawal'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='176_research_release_retraction_audit_guard'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_RELEASE_LIFECYCLE_MIGRATION_NOT_REGISTERED';
   END IF;
@@ -117,6 +120,11 @@ BEGIN
      OR position('RESEARCH.RELEASE_RETRACTED'
       IN pg_get_functiondef('public.factoryos_research_retract_stale_active_releases()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'RESEARCH_SOURCE_REVISION_RELEASE_WITHDRAWAL_GUARD_MISSING';
+  END IF;
+
+  IF position('RESEARCH_RELEASE_CHANNEL_RETRACTION_REQUIRES_AUDITED_EVENT'
+      IN pg_get_functiondef('public.factoryos_assert_research_release_channel_retraction_audited()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_AUDIT_GUARD_MISSING';
   END IF;
 
   IF NOT EXISTS (
