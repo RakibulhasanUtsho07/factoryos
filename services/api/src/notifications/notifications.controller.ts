@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, Param, ParseUUIDPipe, Post, Query, Req, UnauthorizedException, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Post, Query, Req, UnauthorizedException, Body, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
