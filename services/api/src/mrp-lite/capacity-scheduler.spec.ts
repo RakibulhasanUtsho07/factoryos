@@ -16,8 +16,10 @@ function bucket(overrides:Partial<CapacityBucket>={}):CapacityBucket{
 
 describe('finite-capacity scheduler',()=>{
  it('calculates setup plus SAM/SMV and never allocates more than shift capacity',()=>{
-  const rows=scheduleFiniteCapacity([demand()], [bucket()], day1,day2,day1,day1);
+  const alternates=[{bom_line_id:'bom-1',alternate_item_id:'fabric-alt',status:'APPROVED',quantity_available:120}];
+  const rows=scheduleFiniteCapacity([demand({alternate_material_scenarios:alternates})], [bucket()], day1,day2,day1,day1);
   expect(rows).toHaveLength(1);
+  expect(rows[0].alternate_material_scenarios).toEqual(alternates);
   expect(rows[0].required_minutes).toBe(60);
   expect(rows[0].scheduled_minutes).toBe(60);
   expect(rows[0].unscheduled_minutes).toBe(0);
