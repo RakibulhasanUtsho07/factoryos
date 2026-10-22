@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS utility_meter_source_bindings (
   updated_by_user_id UUID NOT NULL,
   approved_by_user_id UUID,
   approved_at TIMESTAMPTZ,
+  last_change_reason TEXT,
   correlation_id UUID NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS utility_threshold_policies (
   CONSTRAINT uq_utility_threshold_policy_scope UNIQUE(id,tenant_id,factory_id),
   CONSTRAINT uq_utility_threshold_policy_code UNIQUE(tenant_id,factory_id,policy_code),
   CONSTRAINT uq_utility_threshold_policy_key UNIQUE(tenant_id,factory_id,idempotency_key),
+  CONSTRAINT fk_utility_threshold_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_utility_threshold_meter FOREIGN KEY(meter_id,tenant_id,factory_id)
     REFERENCES utility_meters(id,tenant_id,factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_utility_threshold_creator FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
@@ -180,6 +182,7 @@ CREATE TABLE IF NOT EXISTS ehs_emergency_drills (
   CONSTRAINT uq_ehs_drill_scope UNIQUE(id,tenant_id,factory_id),
   CONSTRAINT uq_ehs_drill_number UNIQUE(tenant_id,factory_id,drill_number),
   CONSTRAINT uq_ehs_drill_key UNIQUE(tenant_id,factory_id,idempotency_key),
+  CONSTRAINT fk_ehs_drill_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_drill_owner FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_drill_creator FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_drill_updater FOREIGN KEY(updated_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
@@ -289,6 +292,7 @@ CREATE TABLE IF NOT EXISTS ehs_chemical_sds_registry (
   CONSTRAINT uq_ehs_chemical_scope UNIQUE(id,tenant_id,factory_id),
   CONSTRAINT uq_ehs_chemical_code_revision UNIQUE(tenant_id,factory_id,chemical_code,sds_revision),
   CONSTRAINT uq_ehs_chemical_key UNIQUE(tenant_id,factory_id,idempotency_key),
+  CONSTRAINT fk_ehs_chemical_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_chemical_creator FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_chemical_updater FOREIGN KEY(updated_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_ehs_chemical_status CHECK(status IN ('DRAFT','ACTIVE','INACTIVE','RETIRED')),
@@ -323,6 +327,7 @@ CREATE TABLE IF NOT EXISTS ehs_contractor_inductions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_ehs_contractor_scope UNIQUE(id,tenant_id,factory_id),
   CONSTRAINT uq_ehs_contractor_induction_key UNIQUE(tenant_id,factory_id,idempotency_key),
+  CONSTRAINT fk_ehs_contractor_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_contractor_recorder FOREIGN KEY(recorded_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_ehs_contractor_dates CHECK(expires_at>induction_at),
   CONSTRAINT chk_ehs_contractor_status CHECK(status IN ('ACTIVE','EXPIRED','REVOKED')),
@@ -350,6 +355,7 @@ CREATE TABLE IF NOT EXISTS ehs_lifecycle_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_ehs_lifecycle_event_scope UNIQUE(id,tenant_id,factory_id),
   CONSTRAINT uq_ehs_lifecycle_event_key UNIQUE(tenant_id,factory_id,idempotency_key),
+  CONSTRAINT fk_ehs_lifecycle_event_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_lifecycle_event_actor FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_ehs_lifecycle_event_type CHECK(entity_type IN ('EMERGENCY_DRILL','DRILL_ATTENDANCE','DRILL_RESPONSE','CHEMICAL_SDS','CONTRACTOR_INDUCTION')),
   CONSTRAINT chk_ehs_lifecycle_event_payload CHECK(jsonb_typeof(payload)='object'),
@@ -389,6 +395,7 @@ BEGIN
   RETURN NEW;
  END IF;
  IF NEW.row_version<>OLD.row_version+1 OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+  OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
   OR NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
   OR NEW.source_system_code IS DISTINCT FROM OLD.source_system_code OR NEW.source_meter_code IS DISTINCT FROM OLD.source_meter_code
   OR NEW.vendor_adapter IS DISTINCT FROM OLD.vendor_adapter OR NEW.meter_id IS DISTINCT FROM OLD.meter_id
@@ -438,6 +445,7 @@ BEGIN
   RETURN NEW;
  END IF;
  IF NEW.row_version<>OLD.row_version+1 OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+  OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
   OR NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
   OR NEW.policy_code IS DISTINCT FROM OLD.policy_code OR NEW.name IS DISTINCT FROM OLD.name OR NEW.meter_id IS DISTINCT FROM OLD.meter_id
   OR NEW.utility_type IS DISTINCT FROM OLD.utility_type OR NEW.metric IS DISTINCT FROM OLD.metric OR NEW.comparison IS DISTINCT FROM OLD.comparison
@@ -526,6 +534,54 @@ DROP TRIGGER IF EXISTS trg_utility_create_threshold_alerts ON utility_meter_read
 CREATE TRIGGER trg_utility_create_threshold_alerts AFTER INSERT ON utility_meter_readings
  FOR EACH ROW EXECUTE FUNCTION factoryos_create_utility_threshold_alerts();
 
+CREATE OR REPLACE FUNCTION factoryos_append_utility_config_audit()
+RETURNS trigger LANGUAGE plpgsql AS $
+DECLARE
+ v_type VARCHAR(24);
+ v_id UUID;
+ v_version BIGINT;
+ v_tenant UUID;
+ v_factory UUID;
+ v_action VARCHAR(48);
+ v_reason TEXT;
+ v_payload JSONB;
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Utility source and threshold configuration is retained' USING ERRCODE='55000'; END IF;
+ v_tenant:=(to_jsonb(NEW)->>'tenant_id')::uuid;
+ v_factory:=(to_jsonb(NEW)->>'factory_id')::uuid;
+ v_id:=(to_jsonb(NEW)->>'id')::uuid;
+ v_version:=COALESCE(NULLIF(to_jsonb(NEW)->>'row_version','')::bigint,1);
+ v_action:=CASE WHEN TG_OP='INSERT' THEN 'CREATED' ELSE COALESCE(to_jsonb(NEW)->>'status','UPDATED') END;
+ v_reason:=COALESCE(NULLIF(to_jsonb(NEW)->>'last_change_reason',''),
+   CASE WHEN TG_OP='INSERT' THEN 'Configuration recorded as DRAFT' ELSE 'Configuration lifecycle changed' END);
+ IF TG_OP='UPDATE' AND length(btrim(COALESCE(to_jsonb(NEW)->>'last_change_reason','')))=0 THEN
+  RAISE EXCEPTION 'Utility configuration changes require an auditable reason' USING ERRCODE='23514';
+ END IF;
+ v_type:=CASE WHEN TG_TABLE_NAME='utility_meter_source_bindings' THEN 'METER_SOURCE_BINDING' ELSE 'THRESHOLD_POLICY' END;
+ v_payload:=CASE WHEN TG_TABLE_NAME='utility_meter_source_bindings'
+  THEN jsonb_build_object('source_system_code',to_jsonb(NEW)->>'source_system_code',
+    'source_meter_code',to_jsonb(NEW)->>'source_meter_code','meter_id',to_jsonb(NEW)->>'meter_id',
+    'vendor_adapter',to_jsonb(NEW)->>'vendor_adapter','status',to_jsonb(NEW)->>'status')
+  ELSE jsonb_build_object('policy_code',to_jsonb(NEW)->>'policy_code','metric',to_jsonb(NEW)->>'metric',
+    'comparison',to_jsonb(NEW)->>'comparison','threshold_value',to_jsonb(NEW)->>'threshold_value',
+    'threshold_unit_code',to_jsonb(NEW)->>'threshold_unit_code','severity',to_jsonb(NEW)->>'severity',
+    'status',to_jsonb(NEW)->>'status') END;
+ INSERT INTO utility_audit_events(tenant_id,factory_id,entity_type,entity_id,entity_version,action,actor_user_id,reason,event_data,correlation_id)
+ VALUES(v_tenant,v_factory,v_type,v_id,v_version,v_action,factoryos_current_user_id(),v_reason,
+   jsonb_strip_nulls(v_payload),COALESCE(NULLIF(to_jsonb(NEW)->>'correlation_id','')::uuid,gen_random_uuid()));
+ INSERT INTO outbox_events(tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+ VALUES(v_tenant,v_factory,'UTILITY_CONFIG',v_id,'UTILITIES.CONFIG_CHANGED',
+   jsonb_build_object('entity_type',v_type,'entity_id',v_id,'version',v_version,'action',v_action,'status',to_jsonb(NEW)->>'status'));
+ RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS trg_utility_source_binding_audit ON utility_meter_source_bindings;
+CREATE TRIGGER trg_utility_source_binding_audit AFTER INSERT OR UPDATE ON utility_meter_source_bindings
+ FOR EACH ROW EXECUTE FUNCTION factoryos_append_utility_config_audit();
+DROP TRIGGER IF EXISTS trg_utility_threshold_policy_audit ON utility_threshold_policies;
+CREATE TRIGGER trg_utility_threshold_policy_audit AFTER INSERT OR UPDATE ON utility_threshold_policies
+ FOR EACH ROW EXECUTE FUNCTION factoryos_append_utility_config_audit();
+
 -- EHS append-only event log is both audit evidence and the source for notification workers.
 CREATE OR REPLACE FUNCTION factoryos_guard_ehs_lifecycle_event()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -567,6 +623,7 @@ BEGIN
   RETURN NEW;
  END IF;
  IF NEW.row_version<>OLD.row_version+1 OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+  OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
   OR NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
   OR NEW.drill_number IS DISTINCT FROM OLD.drill_number OR NEW.drill_type IS DISTINCT FROM OLD.drill_type
   OR NEW.title IS DISTINCT FROM OLD.title OR NEW.location IS DISTINCT FROM OLD.location OR NEW.planned_at IS DISTINCT FROM OLD.planned_at
@@ -607,6 +664,7 @@ BEGIN
   RETURN NEW;
  END IF;
  IF NEW.row_version<>OLD.row_version+1 OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+  OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
   OR NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
   OR NEW.chemical_code IS DISTINCT FROM OLD.chemical_code OR NEW.chemical_name IS DISTINCT FROM OLD.chemical_name
   OR NEW.manufacturer IS DISTINCT FROM OLD.manufacturer OR NEW.hazard_class IS DISTINCT FROM OLD.hazard_class
@@ -645,7 +703,8 @@ BEGIN
   IF NEW.expires_at<=clock_timestamp() THEN RAISE EXCEPTION 'Expired contractor induction cannot be registered active' USING ERRCODE='23514'; END IF;
   RETURN NEW;
  END IF;
- IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
+ IF NEW.row_version<>OLD.row_version+1 OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0
+  OR NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
   OR NEW.contractor_code IS DISTINCT FROM OLD.contractor_code OR NEW.company_name IS DISTINCT FROM OLD.company_name
   OR NEW.person_name IS DISTINCT FROM OLD.person_name OR NEW.induction_at IS DISTINCT FROM OLD.induction_at
   OR NEW.expires_at IS DISTINCT FROM OLD.expires_at OR NEW.topics IS DISTINCT FROM OLD.topics OR NEW.evidence IS DISTINCT FROM OLD.evidence
