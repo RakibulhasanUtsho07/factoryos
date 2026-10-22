@@ -1538,12 +1538,16 @@ export class GrowthService {
       if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('KPI direction must be INCREASE, DECREASE or TARGET');
       const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
       if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in experiment result evidence_refs');
+      const baselineEvidenceRef = typeof item.baseline_evidence_ref === 'string' ? item.baseline_evidence_ref.trim() : null;
+      if (baselineEvidenceRef !== null && (!baselineEvidenceRef || !evidenceRefs.includes(baselineEvidenceRef))) {
+        throw new BadRequestException('Each KPI baseline_evidence_ref must be included in experiment result evidence_refs');
+      }
       const baselineValue = dto.pre_measurements[metricKey], actualValue = dto.post_measurements[metricKey];
       if (typeof baselineValue !== 'number' || !Number.isFinite(baselineValue) || Math.abs(baselineValue) > 1e12
         || typeof actualValue !== 'number' || !Number.isFinite(actualValue) || Math.abs(actualValue) > 1e12) throw new BadRequestException('Each KPI metric_key must identify finite numeric values in both pre_measurements and post_measurements');
       const targetValue = item.target_value ?? null;
       if (targetValue !== null && (!Number.isFinite(targetValue) || Math.abs(targetValue) > 1e12)) throw new BadRequestException('KPI target_value must be finite and within supported numeric bounds');
-      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef, baselineEvidenceRef };
     });
     const observedAt = new Date(dto.observed_at);
     if (!Number.isFinite(observedAt.getTime())) throw new BadRequestException('observed_at must be a valid timestamp');
@@ -1575,13 +1579,14 @@ export class GrowthService {
         const saved = await client.query(
           `INSERT INTO growth_experiment_result_kpis (
             tenant_id, factory_id, opportunity_id, experiment_id, experiment_result_id,
-            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            metric_key, baseline_value, actual_value, target_value, unit, direction, baseline_evidence_ref, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
             actual_value::text AS actual_value, target_value::text AS target_value,
-            unit, direction, evidence_ref, created_at::text AS created_at`,
+            unit, direction, baseline_evidence_ref, evidence_ref, created_at::text AS created_at`,
           [tenantId, factoryId, experiment.opportunity_id, experimentId, insertedRow.id, kpi.metricKey,
-            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction,
+            kpi.baselineEvidenceRef, kpi.evidenceRef, userId],
         );
         if (!saved.rows[0]) throw new Error('GROWTH_EXPERIMENT_KPI_INSERT_FAILED');
         savedKpis.push(saved.rows[0]);
