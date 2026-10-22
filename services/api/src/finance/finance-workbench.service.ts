@@ -93,19 +93,22 @@ export class FinanceWorkbenchService {
           WHERE fact_type IN ('ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST')
         ), forecasts AS (
           SELECT DISTINCT ON (connector_id,fact_type,source_fact_key,currency,period_start)
-            connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
+            connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start,
+            customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref
           FROM scoped
           WHERE fact_type IN ('FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST')
           ORDER BY connector_id,fact_type,source_fact_key,currency,period_start,
             created_at DESC,effective_at DESC,id DESC
         ), selected AS (
-          SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
+          SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start,
+            customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref
           FROM actuals
           UNION ALL
-          SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
+          SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start,
+            customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref
           FROM forecasts
         ), totals AS (
-          SELECT period_start,currency,
+          SELECT period_start,currency,customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref,
             count(*) FILTER (WHERE fact_type LIKE 'ACTUAL_%')::int AS actual_fact_count,
             count(*) FILTER (WHERE fact_type LIKE 'FORECAST_%')::int AS forecast_fact_count,
             COALESCE(sum(amount) FILTER(WHERE fact_type='ACTUAL_REVENUE'),0) AS actual_revenue,
@@ -114,9 +117,10 @@ export class FinanceWorkbenchService {
             COALESCE(sum(amount) FILTER(WHERE fact_type='FORECAST_REVENUE'),0) AS forecast_revenue,
             COALESCE(sum(amount) FILTER(WHERE fact_type='FORECAST_COST'),0) AS forecast_cost,
             COALESCE(sum(amount) FILTER(WHERE fact_type='FORECAST_CONTRIBUTION_COST'),0) AS forecast_contribution_cost
-          FROM selected GROUP BY period_start,currency
+          FROM selected GROUP BY period_start,currency,customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref
         )
-        SELECT to_char(period_start,'YYYY-MM') AS period,currency,actual_fact_count,forecast_fact_count,
+        SELECT to_char(period_start,'YYYY-MM') AS period,currency,customer_ref,product_id::text AS product_id,
+          product_ref,order_id::text AS order_id,order_ref,cost_center_ref,actual_fact_count,forecast_fact_count,
           actual_revenue::text,actual_cost::text,actual_contribution_cost::text,
           forecast_revenue::text,forecast_cost::text,forecast_contribution_cost::text,
           (actual_revenue-actual_cost)::text AS actual_gross_margin,
@@ -130,12 +134,15 @@ export class FinanceWorkbenchService {
           (actual_contribution_cost-forecast_contribution_cost)::text AS contribution_cost_variance,
           ((actual_revenue-actual_cost)-(forecast_revenue-forecast_cost))::text AS gross_margin_variance,
           ((actual_revenue-actual_contribution_cost)-(forecast_revenue-forecast_contribution_cost))::text AS contribution_margin_variance
-        FROM totals ORDER BY period_start,currency`,
+        FROM totals ORDER BY period_start,currency,cost_center_ref,product_ref,order_ref`,
         [tenantId, factoryId, from, to, currency],
       );
 
       const operationalVariance = await client.query(
         `SELECT to_char(date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),'YYYY-MM') AS period,f.currency,
+          f.fact_type,f.source_record_type,f.cost_center_ref,
+          COALESCE(f.product_ref,f.product_id::text) AS product_ref,
+          COALESCE(f.order_ref,f.order_id::text) AS order_ref,
           count(*)::int AS reconciled_fact_count,
           count(*) FILTER(WHERE r.match_status='MISMATCH' AND r.review_status='OPEN')::int AS open_mismatch_count,
           count(*) FILTER(WHERE r.review_status='RESOLVED')::int AS resolved_mismatch_count,
@@ -151,8 +158,12 @@ export class FinanceWorkbenchService {
           AND fc.status='ACTIVE' AND fc.is_reporting_source
           AND f.effective_at >= $3 AND f.effective_at <= $4
           AND ($5::char(3) IS NULL OR f.currency=$5)
-        GROUP BY date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),f.currency
-        ORDER BY date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),f.currency`,
+        GROUP BY date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),f.currency,
+          f.fact_type,f.source_record_type,f.cost_center_ref,
+          COALESCE(f.product_ref,f.product_id::text),COALESCE(f.order_ref,f.order_id::text)
+        ORDER BY date_trunc('month',f.effective_at AT TIME ZONE 'UTC'),f.currency,
+          f.cost_center_ref,COALESCE(f.product_ref,f.product_id::text),
+          COALESCE(f.order_ref,f.order_id::text),f.fact_type,f.source_record_type`,
         [tenantId, factoryId, from, to, currency],
       );
 
