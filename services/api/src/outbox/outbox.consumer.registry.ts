@@ -33,12 +33,13 @@ export class OutboxConsumerRegistry {
     >();
 
   constructor(
-    private readonly orderCreatedConsumer:
-      OrderCreatedConsumer,
+    private readonly orderCreatedConsumer: OrderCreatedConsumer,
+    private readonly utilityThresholdNotificationConsumer: UtilityThresholdNotificationConsumer,
+    private readonly ehsLifecycleNotificationConsumer: EhsLifecycleNotificationConsumer,
   ) {
-    this.register(
-      this.orderCreatedConsumer,
-    );
+    this.register(this.orderCreatedConsumer);
+    this.register(this.utilityThresholdNotificationConsumer);
+    this.register(this.ehsLifecycleNotificationConsumer);
   }
 
   private register(
