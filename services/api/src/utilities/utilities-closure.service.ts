@@ -41,6 +41,9 @@ export class UtilitiesClosureService {
       !/^(?:secrets?|vault|kms):\/\/[^\s]+$|^arn:aws:secretsmanager:[^\s]+$/i.test(payload.credential_reference)) {
       throw new BadRequestException('credential_reference must be a non-secret secret-manager reference, not a credential value');
     }
+    if (['REST_POLL','OPC_UA','MODBUS'].includes(dto.vendor_adapter) && payload.polling_interval_seconds === null) {
+      throw new BadRequestException('Polling adapters require polling_interval_seconds between 5 and 86400');
+    }
     const hash = this.hash(payload);
     return this.database.transaction({tenantId:c.tenantId,userId:c.userId,requestId:c.requestId,traceId:c.traceId,
       advisoryLockKey:`utility-source-binding:${c.tenantId}:${c.factoryId}:${key}`}, async client => {
