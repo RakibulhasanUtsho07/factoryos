@@ -396,6 +396,7 @@ BEGIN
     END IF;
     IF NOT (
       (OLD.status IN ('OPEN', 'ON_HOLD') AND NEW.status = 'IN_PROGRESS')
+      OR (OLD.status = 'OPEN' AND NEW.status = 'ON_HOLD')
       OR (OLD.status = 'IN_PROGRESS' AND NEW.status IN ('PASSED', 'FAILED', 'ON_HOLD', 'CANCELLED'))
       OR (OLD.status IN ('FAILED', 'ON_HOLD', 'PASSED') AND NEW.status IN ('DISPOSITIONED', 'ON_HOLD'))
       OR (OLD.status = 'OPEN' AND NEW.status = 'OPEN'
