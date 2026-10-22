@@ -140,7 +140,7 @@ BEGIN
     tenant_id,source_id,authenticity_check_id,source_revision,rights_version,
     decision,reason,reviewed_by
   ) VALUES (
-    tenant_id,source_id,check_id,source_revision_value,rights_version_value,
+    v_tenant_id,v_source_id,v_check_id,source_revision_value,rights_version_value,
     'ACCEPT','Independent review accepts the provider identity match',reviewer_id
   );
 
@@ -178,7 +178,7 @@ BEGIN
     v_duplicate_document_id,v_tenant_id,v_source_id,source_revision_value,rights_version_value,
     'research-production-fixture-2',repeat('c',64),'duplicate-evidence.txt','text/plain',
     octet_length(content_bytes),content_hash,text_hash,text_hash,signature,
-    'factoryos-text-parser.v1',first_document_id,1,actor_id
+    'factoryos-text-parser.v1',v_first_document_id,1,actor_id
   );
   INSERT INTO research_source_document_content (document_id,tenant_id,raw_content,extracted_text)
   VALUES (v_duplicate_document_id,v_tenant_id,content_bytes,content_text);
