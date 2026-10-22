@@ -700,7 +700,10 @@ export function diffMrpCapacityPlans(input: {
         !== JSON.stringify(currentAllocationSignature(after.allocations))) change = 'CHANGED';
     else change = 'UNCHANGED';
     if (change === 'UNCHANGED') continue;
-    const frozen = Boolean(before?.plannedStartDate && before.plannedStartDate < cutoff);
+    const frozen = Boolean(
+      (before?.plannedStartDate && before.plannedStartDate < cutoff)
+      || (after?.plannedStartDate && after.plannedStartDate < cutoff),
+    );
     result.push({
       order_line_id: before?.orderLineId ?? after?.orderLineId,
       step_number: before?.stepNumber ?? after?.stepNumber,
