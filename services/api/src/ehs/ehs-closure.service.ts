@@ -28,8 +28,13 @@ export class EhsClosureService {
       advisoryLockKey:`ehs-drill:${c.tenantId}:${c.factoryId}:${key}`},async client=>{
       const prior=await client.query<Row>('SELECT id::text AS id,request_hash FROM ehs_emergency_drills WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',[c.tenantId,c.factoryId,key]);
       if(prior.rows[0]){this.same(prior.rows[0].request_hash,hash);return {...(await this.drillDetail(client,c,String(prior.rows[0].id))),replayed:true};}
-      const owner=await client.query<Row>('SELECT id FROM users WHERE id=$1',[payload.owner_user_id]);
-      if(!owner.rows[0])throw new NotFoundException('Emergency drill owner user was not found');
+      const owner=await client.query<Row>(
+        `SELECT u.id FROM users u
+         JOIN tenant_memberships tm ON tm.user_id=u.id AND tm.tenant_id=$2 AND tm.status='ACTIVE'
+         JOIN tenants t ON t.id=tm.tenant_id AND t.status='ACTIVE'
+         WHERE u.id=$1 AND u.status='ACTIVE'`,
+        [payload.owner_user_id,c.tenantId]);
+      if(!owner.rows[0])throw new NotFoundException('Emergency drill owner must be an active member of this tenant');
       const r=await client.query<Row>(
         `INSERT INTO ehs_emergency_drills(tenant_id,factory_id,drill_number,drill_type,title,location,planned_at,
           owner_user_id,idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id)
@@ -105,7 +110,15 @@ export class EhsClosureService {
       if(drill.rows[0].status!=='IN_PROGRESS')throw new ConflictException('Attendance can only be recorded during an in-progress drill');
       const ref=await client.query<Row>('SELECT id FROM ehs_drill_attendance WHERE tenant_id=$1 AND factory_id=$2 AND drill_id=$3 AND attendee_ref=$4',[c.tenantId,c.factoryId,drillId,payload.attendee_ref]);
       if(ref.rows[0])throw new ConflictException('This attendee already has a recorded attendance result for the drill');
-      if(payload.user_id){const user=await client.query<Row>('SELECT id FROM users WHERE id=$1',[payload.user_id]);if(!user.rows[0])throw new NotFoundException('Attendee user was not found');}
+      if(payload.user_id){
+        const user=await client.query<Row>(
+          `SELECT u.id FROM users u
+           JOIN tenant_memberships tm ON tm.user_id=u.id AND tm.tenant_id=$2 AND tm.status='ACTIVE'
+           JOIN tenants t ON t.id=tm.tenant_id AND t.status='ACTIVE'
+           WHERE u.id=$1 AND u.status='ACTIVE'`,
+          [payload.user_id,c.tenantId]);
+        if(!user.rows[0])throw new NotFoundException('Attendee must be an active member of this tenant');
+      }
       const inserted=await client.query<Row>(
         `INSERT INTO ehs_drill_attendance(tenant_id,factory_id,drill_id,attendee_ref,attendee_name,user_id,attendance_status,
           notes,evidence,idempotency_key,request_hash,recorded_by_user_id,correlation_id)
@@ -129,10 +142,21 @@ export class EhsClosureService {
       advisoryLockKey:`ehs-response:${c.tenantId}:${c.factoryId}:${key}`},async client=>{
       const replay=await client.query<Row>('SELECT id::text AS id,request_hash FROM ehs_drill_responses WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',[c.tenantId,c.factoryId,key]);
       if(replay.rows[0]){this.same(replay.rows[0].request_hash,hash);return {...(await this.responseDetail(client,c,String(replay.rows[0].id))),replayed:true};}
-      const drill=await client.query<Row>('SELECT status FROM ehs_emergency_drills WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',[drillId,c.tenantId,c.factoryId]);
+      const drill=await client.query<Row>('SELECT status,started_at::text AS started_at FROM ehs_emergency_drills WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',[drillId,c.tenantId,c.factoryId]);
       if(!drill.rows[0])throw new NotFoundException('Emergency drill was not found in this factory');
       if(drill.rows[0].status!=='IN_PROGRESS')throw new ConflictException('Response evidence can only be added during an in-progress drill');
-      if(payload.responder_user_id){const user=await client.query<Row>('SELECT id FROM users WHERE id=$1',[payload.responder_user_id]);if(!user.rows[0])throw new NotFoundException('Responder user was not found');}
+      const startedAt=Date.parse(String(drill.rows[0].started_at));
+      if(!Number.isFinite(startedAt)||Date.parse(payload.occurred_at)<startedAt||Date.parse(payload.occurred_at)>Date.now())
+        throw new BadRequestException('Response timestamp must be between the drill start time and current time');
+      if(payload.responder_user_id){
+        const user=await client.query<Row>(
+          `SELECT u.id FROM users u
+           JOIN tenant_memberships tm ON tm.user_id=u.id AND tm.tenant_id=$2 AND tm.status='ACTIVE'
+           JOIN tenants t ON t.id=tm.tenant_id AND t.status='ACTIVE'
+           WHERE u.id=$1 AND u.status='ACTIVE'`,
+          [payload.responder_user_id,c.tenantId]);
+        if(!user.rows[0])throw new NotFoundException('Responder must be an active member of this tenant');
+      }
       const inserted=await client.query<Row>(
         `INSERT INTO ehs_drill_responses(tenant_id,factory_id,drill_id,response_code,response_action,responder_user_id,
           elapsed_seconds,occurred_at,evidence,idempotency_key,request_hash,recorded_by_user_id,correlation_id)
@@ -185,8 +209,13 @@ export class EhsClosureService {
     this.scope(c);const key=this.key(rawKey);
     const issued=this.instant(dto.sds_issued_at,'sds_issued_at'),review=this.instant(dto.sds_review_due_at,'sds_review_due_at');
     if(Date.parse(review)<Date.parse(issued))throw new BadRequestException('SDS review due date cannot precede its issue date');
-    if(!/^(https:\/\/|s3:\/\/|gs:\/\/)[^\s]+$/i.test(dto.sds_document_uri.trim()))
-      throw new BadRequestException('sds_document_uri must be a controlled https://, s3:// or gs:// document reference');
+    if(Date.parse(issued)>Date.now())throw new BadRequestException('SDS issue date cannot be in the future');
+    let sdsUrl:URL;
+    try{sdsUrl=new URL(dto.sds_document_uri.trim());}
+    catch{throw new BadRequestException('sds_document_uri must be a valid controlled document reference');}
+    if(!['https:','s3:','gs:'].includes(sdsUrl.protocol)||sdsUrl.username||sdsUrl.password||
+      !sdsUrl.hostname||/\s/.test(dto.sds_document_uri.trim()))
+      throw new BadRequestException('sds_document_uri must be a credential-free https://, s3:// or gs:// document reference');
     const payload={chemical_code:this.text(dto.chemical_code,'chemical_code',100).toUpperCase(),
       chemical_name:this.text(dto.chemical_name,'chemical_name',255),manufacturer:this.optionalText(dto.manufacturer,255),
       hazard_class:this.text(dto.hazard_class,'hazard_class',100),storage_location:this.text(dto.storage_location,'storage_location',255),
