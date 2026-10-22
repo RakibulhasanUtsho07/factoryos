@@ -1,6 +1,6 @@
 BEGIN;
 
-CREATE TABLE growth_forecast_calibration_policies (
+CREATE TABLE IF NOT EXISTS growth_forecast_calibration_policies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE growth_forecast_calibration_policies (
       AND length(btrim(COALESCE(decision_reason,''))) BETWEEN 8 AND 1000 AND decided_by<>created_by)
   )
 );
-CREATE INDEX idx_growth_calibration_policy_lookup
+CREATE INDEX IF NOT EXISTS idx_growth_calibration_policy_lookup
  ON growth_forecast_calibration_policies(tenant_id,factory_id,model_version,metric_key,unit,status,domain,policy_version DESC);
 
 CREATE OR REPLACE FUNCTION factoryos_guard_growth_forecast_calibration_policy()
@@ -94,12 +94,14 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS growth_forecast_calibration_policy_guard ON growth_forecast_calibration_policies;
 CREATE TRIGGER growth_forecast_calibration_policy_guard
 BEFORE INSERT OR UPDATE OR DELETE ON growth_forecast_calibration_policies
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_forecast_calibration_policy();
 
 ALTER TABLE growth_forecast_calibration_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE growth_forecast_calibration_policies FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS growth_forecast_calibration_policies_tenant_isolation ON growth_forecast_calibration_policies;
 CREATE POLICY growth_forecast_calibration_policies_tenant_isolation ON growth_forecast_calibration_policies
  USING(tenant_id=factoryos_current_tenant_id())
  WITH CHECK(tenant_id=factoryos_current_tenant_id());
