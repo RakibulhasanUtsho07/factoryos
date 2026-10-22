@@ -83,6 +83,13 @@ BEGIN
     RAISE EXCEPTION 'Advanced quality profile, decision, release or supplier guard is missing';
   END IF;
 
+  IF position('OLD.status = ''OPEN'' AND NEW.status = ''OPEN'''
+       IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0
+    OR position('OLD.aql_profile_id IS NULL AND OLD.fabric_scoring_profile_id IS NULL'
+       IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0 THEN
+    RAISE EXCEPTION 'Quality inspection trigger must allow only the guarded one-time OPEN profile-binding update';
+  END IF;
+
   IF to_regprocedure('factoryos_evaluate_aql_sample(integer,integer,integer)') IS NULL
     OR to_regprocedure('factoryos_guard_quality_advanced_profile()') IS NULL
     OR to_regprocedure('factoryos_guard_quality_aql_sample_run()') IS NULL
