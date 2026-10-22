@@ -304,15 +304,29 @@ export class AdvancedQualityService {
       'FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [inspectionId, c.tenantId, c.factoryId], { tenantId: c.tenantId, userId: c.userId });
     if (!inspection.rows[0]) throw new NotFoundException('Quality inspection was not found in this factory');
-    const [bindings, aqlSamples, rollScores] = await Promise.all([
+    const [bindings, aqlSamples, rollScores, defects, holds, dispositions, reworkOrders, supplierEvents, defectContexts] = await Promise.all([
       this.database.query('SELECT id::text AS id,aql_profile_id::text AS aql_profile_id,fabric_scoring_profile_id::text AS fabric_scoring_profile_id,idempotency_key,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_sampling_profile_bindings WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query('SELECT id::text AS id,profile_id::text AS profile_id,profile_revision,aql_percent_snapshot::text AS aql_percent,inspection_level_snapshot,lot_size,sample_size,accept_number,reject_number,observed_nonconforming,decision,evidence,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_aql_sample_runs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query('SELECT id::text AS id,profile_id::text AS profile_id,profile_revision,roll_code,roll_length_yards::text AS roll_length_yards,roll_width_inches::text AS roll_width_inches,total_defect_points::text AS total_defect_points,points_per_100_square_yards::text AS points_per_100_square_yards,max_points_snapshot::text AS max_points_per_100_square_yards,decision,defects,evidence,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_fabric_roll_scores WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY roll_code,id',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,defect_code,severity,affected_quantity::text AS affected_quantity,status,description,evidence FROM quality_defects WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,status,reason,release_reason,created_at::text AS created_at,released_at::text AS released_at FROM quality_holds WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,action,status,quantity::text AS quantity,reason,inventory_movement_id::text AS inventory_movement_id,completed_at::text AS completed_at FROM quality_dispositions WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,rework_number,defect_id::text AS defect_id,status,input_quantity::text AS input_quantity,recovered_quantity::text AS recovered_quantity,scrap_quantity::text AS scrap_quantity,output_traceability_unit_id::text AS output_traceability_unit_id,follow_up_inspection_id::text AS follow_up_inspection_id FROM quality_rework_orders WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,supplier_id::text AS supplier_id,defect_id::text AS defect_id,goods_receipt_id::text AS goods_receipt_id,goods_receipt_line_id::text AS goods_receipt_line_id,event_type,defect_code,severity,affected_quantity::text AS affected_quantity,evidence,created_at::text AS created_at FROM quality_supplier_quality_events WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT c.id::text AS id,c.defect_id::text AS defect_id,c.line_code,c.operation_code,c.style_code,c.shift_code,c.evidence,c.created_at::text AS created_at FROM quality_defect_context_snapshots c JOIN quality_defects d ON d.id=c.defect_id AND d.tenant_id=c.tenant_id AND d.factory_id=c.factory_id WHERE d.inspection_id=$1 AND c.tenant_id=$2 AND c.factory_id=$3 ORDER BY c.created_at,c.id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
     ]);
-    return {inspection:inspection.rows[0],profile_bindings:bindings.rows,aql_sample_runs:aqlSamples.rows,fabric_roll_scores:rollScores.rows};
+    return {inspection:inspection.rows[0],profile_bindings:bindings.rows,aql_sample_runs:aqlSamples.rows,fabric_roll_scores:rollScores.rows,
+      defects:defects.rows,holds:holds.rows,dispositions:dispositions.rows,rework_orders:reworkOrders.rows,
+      supplier_quality_events:supplierEvents.rows,defect_contexts:defectContexts.rows};
   }
 
   async defectPareto(c: AdvancedQualityContext, query: QualityDefectParetoQueryDto) {
@@ -345,18 +359,24 @@ export class AdvancedQualityService {
     const limit = rawLimit ?? 50;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new BadRequestException('limit must be between 1 and 100');
     const r = await this.database.query(
-      'SELECT s.id::text AS supplier_id,s.code AS supplier_code,s.name AS supplier_name,' +
+      'WITH supplier_events AS (' +
+      ' SELECT s.id AS supplier_id,s.code AS supplier_code,s.name AS supplier_name,' +
       ' count(DISTINCT e.defect_id)::int AS defect_count,count(DISTINCT e.goods_receipt_line_id)::int AS affected_receipt_lines,' +
       ' count(DISTINCT e.goods_receipt_id)::int AS affected_receipts,sum(e.affected_quantity)::numeric(18,4)::text AS reported_affected_quantity,' +
-      ' count(*) FILTER (WHERE e.severity=\'CRITICAL\')::int AS critical_event_count,' +
-      ' count(*) FILTER (WHERE e.severity=\'MAJOR\')::int AS major_event_count,count(*) FILTER (WHERE e.severity=\'MINOR\')::int AS minor_event_count,' +
-      ' count(DISTINCT r.id)::int AS linked_rework_task_count,max(e.created_at)::text AS latest_quality_event_at' +
-      ' FROM quality_supplier_quality_events e JOIN suppliers s ON s.id=e.supplier_id AND s.tenant_id=e.tenant_id' +
-      ' LEFT JOIN quality_rework_orders r ON r.defect_id=e.defect_id AND r.tenant_id=e.tenant_id AND r.factory_id=e.factory_id' +
+      ' count(*) FILTER (WHERE e.severity=\\'CRITICAL\\')::int AS critical_event_count,' +
+      ' count(*) FILTER (WHERE e.severity=\\'MAJOR\\')::int AS major_event_count,count(*) FILTER (WHERE e.severity=\\'MINOR\\')::int AS minor_event_count,' +
+      ' max(e.created_at) AS latest_quality_event_at FROM quality_supplier_quality_events e' +
+      ' JOIN suppliers s ON s.id=e.supplier_id AND s.tenant_id=e.tenant_id' +
       ' WHERE e.tenant_id=$1 AND e.factory_id=$2 GROUP BY s.id,s.code,s.name' +
-      ' ORDER BY critical_event_count DESC,defect_count DESC,s.code LIMIT $3',
+      '), supplier_rework AS (' +
+      ' SELECT e.supplier_id,count(DISTINCT r.id)::int AS linked_rework_task_count FROM quality_supplier_quality_events e' +
+      ' JOIN quality_rework_orders r ON r.defect_id=e.defect_id AND r.tenant_id=e.tenant_id AND r.factory_id=e.factory_id' +
+      ' WHERE e.tenant_id=$1 AND e.factory_id=$2 GROUP BY e.supplier_id' +
+      ')' +
+      ' SELECT e.*,COALESCE(r.linked_rework_task_count,0)::int AS linked_rework_task_count,e.latest_quality_event_at::text AS latest_quality_event_at' +
+      ' FROM supplier_events e LEFT JOIN supplier_rework r ON r.supplier_id=e.supplier_id' +
+      ' ORDER BY e.critical_event_count DESC,e.defect_count DESC,e.supplier_code LIMIT $3',
       [c.tenantId,c.factoryId,limit],{tenantId:c.tenantId,userId:c.userId});
-    return r.rows;
   }
 
   async reworkRepeatAlerts(c: AdvancedQualityContext, query: QualityRepeatAlertsQueryDto) {
