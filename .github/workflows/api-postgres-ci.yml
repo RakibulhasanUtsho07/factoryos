@@ -184,6 +184,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-management-contract.sql
 
+          echo "Checking AQL sampling, fabric roll scoring, supplier quality and Pareto acceptance"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-acceptance.sql
+
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql
@@ -202,6 +206,10 @@ jobs:
           echo "Reapplying finite-capacity planning migration to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
+
+          echo "Reapplying advanced quality migration to verify idempotent profiles, evidence and tenant policies"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
 
 
           # The target importer is tested against a distinct database with the same reviewed schema.
