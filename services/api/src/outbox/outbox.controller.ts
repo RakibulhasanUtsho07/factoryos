@@ -19,6 +19,7 @@ import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   OutboxDlqService,
 } from './outbox-dlq.service';
+import { OutboxBusDlqService } from './outbox-bus-dlq.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
