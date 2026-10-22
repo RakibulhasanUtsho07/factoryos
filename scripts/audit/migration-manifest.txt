@@ -182,3 +182,4 @@ migrations/171_research_source_provider_documents.sql
 migrations/172_research_document_content_integrity.sql
 migrations/173_research_authenticity_identity_guard.sql
 migrations/174_research_release_retraction.sql
+migrations/175_research_source_change_release_withdrawal.sql
