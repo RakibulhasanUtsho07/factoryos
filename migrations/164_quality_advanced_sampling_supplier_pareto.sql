@@ -118,6 +118,7 @@ BEGIN
       (OLD.status = 'OPEN' AND NEW.status = 'OPEN'
         AND OLD.aql_profile_id IS NULL AND OLD.fabric_scoring_profile_id IS NULL
         AND (NEW.aql_profile_id IS NOT NULL OR NEW.fabric_scoring_profile_id IS NOT NULL))
+      OR (OLD.status = 'OPEN' AND NEW.status = 'ON_HOLD')
       OR (OLD.status IN ('OPEN', 'ON_HOLD') AND NEW.status = 'IN_PROGRESS')
       OR (OLD.status = 'IN_PROGRESS' AND NEW.status IN ('PASSED', 'FAILED', 'ON_HOLD', 'CANCELLED'))
       OR (OLD.status IN ('FAILED', 'ON_HOLD', 'PASSED') AND NEW.status IN ('DISPOSITIONED', 'ON_HOLD'))
