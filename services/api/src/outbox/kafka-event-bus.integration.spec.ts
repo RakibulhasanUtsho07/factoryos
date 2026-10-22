@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { jest } from '@jest/globals';
 import { Kafka, logLevel } from 'kafkajs';
 import { Pool } from 'pg';
 import type { OutboxEvent } from './outbox-event.contract';
@@ -132,7 +133,6 @@ describe('Kafka-compatible event-bus integration (Redpanda)', () => {
     await disconnectQuietly(dlqProbe);
     await pool?.end();
     await appPool?.end();
-    await testKafka?.disconnect().catch(() => undefined);
     for (const name of envNames) {
       const old = originalEnv.get(name);
       if (old === undefined) delete process.env[name];
