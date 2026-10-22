@@ -119,6 +119,36 @@ BEGIN
     RAISE EXCEPTION 'Frozen diff, pinned product revision, qualified worker or shift calendar snapshot schema is incomplete';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'product_definitions' AND column_name = 'style_code'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'product_definitions' AND column_name = 'size_code'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'mrp_plan_requirements' AND column_name = 'style_code'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'mrp_plan_requirements' AND column_name = 'size_code'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'mrp_capacity_plan_operations' AND column_name = 'style_code'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'mrp_capacity_plan_operations' AND column_name = 'size_code'
+  ) THEN
+    RAISE EXCEPTION 'Style/size product identity was not snapshotted across MRP demand and capacity operations';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'product_definitions'::regclass
+      AND tgname = 'trg_product_style_size_identity'
+      AND NOT tgisinternal AND tgenabled <> 'D'
+  ) THEN
+    RAISE EXCEPTION 'Style/size identity immutability guard is missing';
+  END IF;
+
   RAISE NOTICE 'Finite-capacity calendar, scenario, worker and immutability contract checks passed';
 END;
 $$;
