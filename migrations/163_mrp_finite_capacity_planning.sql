@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS mrp_capacity_plan_allocations (
   line_code VARCHAR(100) NOT NULL,
   allocated_minutes NUMERIC(12,4) NOT NULL,
   required_skill VARCHAR(120),
+  worker_allocations JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
   CONSTRAINT fk_mrp_capacity_allocation_plan
@@ -218,7 +219,8 @@ CREATE TABLE IF NOT EXISTS mrp_capacity_plan_allocations (
     FOREIGN KEY (work_centre_id, tenant_id, factory_id)
     REFERENCES manufacturing_work_centres (id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT chk_mrp_capacity_allocation_minutes CHECK (allocated_minutes > 0),
-  CONSTRAINT chk_mrp_capacity_allocation_line CHECK (length(btrim(line_code)) BETWEEN 1 AND 100)
+  CONSTRAINT chk_mrp_capacity_allocation_line CHECK (length(btrim(line_code)) BETWEEN 1 AND 100),
+  CONSTRAINT chk_mrp_capacity_allocation_workers CHECK (jsonb_typeof(worker_allocations) = 'array')
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_mrp_capacity_allocation_operation_slot
   ON mrp_capacity_plan_allocations (operation_id, calendar_entry_id);
