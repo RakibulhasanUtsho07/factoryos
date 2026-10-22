@@ -282,6 +282,11 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-quality-manager.sql
+
+          echo "Reapplying finance workbench migration to verify DDL idempotency and post-seed role grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/170_finance_costing_profitability_close_workbench.sql
+
           # OT protocol permission assertions run after development role/permission seeding.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/ot-opcua-read-contract.sql
