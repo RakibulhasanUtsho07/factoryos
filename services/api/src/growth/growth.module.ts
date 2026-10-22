@@ -5,11 +5,13 @@ import { IamModule } from '../iam/iam.module';
 import { GrowthController } from './growth.controller';
 import { GrowthService } from './growth.service';
 import { GrowthSourceOfRecordService } from './growth-source-of-record.service';
+import { GrowthCalibrationPolicyController } from './growth-calibration-policy.controller';
+import { GrowthCalibrationPolicyService } from './growth-calibration-policy.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [GrowthController],
-  providers: [GrowthService, GrowthSourceOfRecordService],
+  controllers: [GrowthController, GrowthCalibrationPolicyController],
+  providers: [GrowthService, GrowthSourceOfRecordService, GrowthCalibrationPolicyService],
   exports: [GrowthService],
 })
 export class GrowthModule {}
