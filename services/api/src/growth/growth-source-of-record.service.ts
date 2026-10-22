@@ -64,7 +64,6 @@ export class GrowthSourceOfRecordService {
     const canonical = {
       schema_version: 1,
       adapter_version: GROWTH_SOURCE_OF_RECORD_ADAPTER_VERSION,
-      user_id: userId,
       tenant_id: tenantId,
       factory_id: factoryId,
       opportunity_id: opportunityId,
