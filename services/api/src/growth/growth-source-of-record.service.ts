@@ -121,14 +121,15 @@ export class GrowthSourceOfRecordService {
           [sourceIds, tenantId, factoryId],
         )).rows
         : (await client.query<ProductionOutputSourceRow>(
-          `SELECT p.id::text AS id,p.created_at::text AS created_at,
+          `SELECT p.id::text AS id,p.created_at::text AS created_at,i.unit,
                   p.good_quantity::text AS good_quantity,p.scrap_quantity::text AS scrap_quantity,
                   p.yield_percentage::text AS yield_percentage,
                   p.cumulative_yield_percentage::text AS cumulative_yield_percentage,
                   p.request_hash
              FROM production_output_postings p
+             JOIN inventory_items i ON i.id=p.finished_item_id AND i.tenant_id=p.tenant_id AND i.factory_id=p.factory_id
             WHERE p.id=ANY($1::uuid[]) AND p.tenant_id=$2 AND p.factory_id=$3
-            ORDER BY p.id FOR SHARE`,
+            ORDER BY p.id FOR SHARE OF p,i`,
           [sourceIds, tenantId, factoryId],
         )).rows;
       if (records.length !== sourceIds.length) {
