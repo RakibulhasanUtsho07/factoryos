@@ -21,8 +21,6 @@ DECLARE
   v_hash CHAR(64):=encode(digest('energy and EHS closure contract','sha256'),'hex');
   v_alert_count INTEGER;
   v_outbox_count INTEGER;
-  v_qty NUMERIC(24,8);
-  v_cost NUMERIC(24,8);
 BEGIN
   INSERT INTO tenants(id,slug,name) VALUES(v_tenant,'energy-ehs-'||v_tenant::text,'Energy and EHS Closure Test Tenant');
   INSERT INTO users(id,display_name) VALUES(v_actor,'Energy EHS Test Actor'),(v_approver,'Energy EHS Independent Approver');
@@ -89,7 +87,7 @@ BEGIN
     id,tenant_id,factory_id,meter_id,reading_at,reading_value,previous_reading_value,consumption_quantity,
     unit_code,unit_cost_snapshot,cost_amount,source_type,source_event_id,notes,idempotency_key,request_hash,
     recorded_by_user_id,correlation_id,request_id
-  ) VALUES(v_reading,v_tenant,v_factory,v_meter,clock_timestamp(),20,NULL,20,'kWh',2.5,50,'METER_GATEWAY',
+  ) VALUES(v_reading,v_tenant,v_factory,v_meter,clock_timestamp()-INTERVAL '5 minutes',20,NULL,20,'kWh',2.5,50,'METER_GATEWAY',
     'EDGE-CI-01:evt-001','Normalized fixture source: 20000 Wh × 0.001','eec-source-reading-001',v_hash,
     v_actor,v_correlation,v_correlation::text);
 
@@ -120,7 +118,7 @@ BEGIN
     tenant_id,factory_id,meter_id,reading_at,reading_value,previous_reading_value,consumption_quantity,
     unit_code,unit_cost_snapshot,cost_amount,source_type,source_event_id,notes,idempotency_key,request_hash,
     recorded_by_user_id,correlation_id,request_id
-  ) VALUES(v_tenant,v_factory,v_meter,clock_timestamp()+INTERVAL '1 second',5,NULL,5,'kWh',2.5,12.5,'METER_GATEWAY',
+  ) VALUES(v_tenant,v_factory,v_meter,clock_timestamp()-INTERVAL '4 minutes',5,NULL,5,'kWh',2.5,12.5,'METER_GATEWAY',
     'EDGE-CI-01:evt-002','Below threshold fixture','eec-source-reading-002',v_hash,v_actor,v_correlation,v_correlation::text);
   SELECT count(*) INTO v_alert_count FROM utility_threshold_alerts WHERE tenant_id=v_tenant AND factory_id=v_factory;
   IF v_alert_count<>2 THEN RAISE EXCEPTION 'A below-threshold reading must not create an alert beyond the consumption and cost alerts already linked to the first reading'; END IF;
