@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
@@ -129,7 +129,7 @@ export class UtilitiesClosureService {
         .filter(Boolean).join(' | ').slice(0,2000),
     };
     const idempotencyKey=`vendor-event:${eventKey}`;
-    const result=await this.utilities.recordReading(c,dtoForReading.meter_id as never,dtoForReading,idempotencyKey).catch(async error=>{
+    const result=await this.utilities.recordReading(c,String(binding.meter_id),dtoForReading,idempotencyKey).catch(async error=>{
       // A mismatched replay must remain a conflict; do not convert a duplicate-key failure into success.
       throw error;
     });
