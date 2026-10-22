@@ -28,6 +28,16 @@ describe('UtilitiesClosureService request validation',()=>{
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects credential material embedded in source metadata before opening a transaction',async()=>{
+    await expect(service.createSourceBinding(context,{
+      source_system_code:'GATEWAY-01',source_meter_code:'METER-02',vendor_adapter:'MQTT',
+      meter_id:METER,source_unit_code:'Wh',factor_to_meter_unit:0.001,
+      credential_reference:'secrets://factory/meter-02',
+      config_metadata:{connection:{api_token:'must-not-be-persisted'}},
+    },'source-metadata-secret-key')).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires a meter or utility-type selector before creating a threshold policy',async()=>{
     await expect(service.createThresholdPolicy(context,{
       policy_code:'ENERGY-HIGH',name:'High energy',metric:'CONSUMPTION',comparison:'GTE',
