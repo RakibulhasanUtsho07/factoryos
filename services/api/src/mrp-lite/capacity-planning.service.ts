@@ -8,7 +8,7 @@ import { CreateCapacityCalendarDto } from './dto/create-capacity-calendar.dto';
 import { UpdateCapacityCalendarDto } from './dto/update-capacity-calendar.dto';
 import { CreateCapacityPlanDto } from './dto/create-capacity-plan.dto';
 import { compareCapacityScenarios, scheduleFiniteCapacity } from './capacity-scheduler';
-import type { CapacityBucket, CapacityDemand, PriorCapacityOperation, ScheduledCapacityOperation } from './capacity-scheduler';
+import type { CapacityBucket, CapacityDemand, PriorCapacityOperation } from './capacity-scheduler';
 
 interface CalendarRow extends QueryResultRow {
  id:string; tenant_id:string; factory_id:string; work_centre_id:string; capacity_date:string; shift_code:string;
