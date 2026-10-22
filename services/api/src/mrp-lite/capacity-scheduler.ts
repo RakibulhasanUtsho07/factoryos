@@ -76,9 +76,10 @@ export function scheduleFiniteCapacity(demand:CapacityDemand[],calendars:Capacit
         earliest=finish&&finish>earliest?finish:earliest;
       }
     }
+    const requiredSkill=op.required_skill;
     const readySlots=slots.filter(c=>c.work_centre_id===op.work_centre_id&&c.capacity_date>=earliest
-      &&(!op.required_skill||c.skill_codes.includes(op.required_skill)));
-    const skillCovered=!op.required_skill||slots.some(c=>c.work_centre_id===op.work_centre_id&&c.capacity_date>=earliest&&c.capacity_date<=horizonEnd&&c.skill_codes.includes(op.required_skill));
+      &&(!requiredSkill||c.skill_codes.includes(requiredSkill)));
+    const skillCovered=!requiredSkill||slots.some(c=>c.work_centre_id===op.work_centre_id&&c.capacity_date>=earliest&&c.capacity_date<=horizonEnd&&c.skill_codes.includes(requiredSkill));
     let left=round4(Math.max(0,required-scheduled));
     for(const slot of readySlots){
       if(left<=0.0001)break;
