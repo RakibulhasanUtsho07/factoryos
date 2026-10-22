@@ -223,6 +223,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
 
+          echo "Reapplying rework inventory ledger migration to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/166_quality_rework_inventory_ledger.sql
+
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
@@ -467,6 +471,10 @@ jobs:
           echo "Reapplying quality disposition inventory balance guard to verify idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
+
+          echo "Reapplying rework inventory ledger migration to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/166_quality_rework_inventory_ledger.sql
 
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
