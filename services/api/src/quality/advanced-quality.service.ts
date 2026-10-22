@@ -363,9 +363,9 @@ export class AdvancedQualityService {
       ' SELECT s.id AS supplier_id,s.code AS supplier_code,s.name AS supplier_name,' +
       ' count(DISTINCT e.defect_id)::int AS defect_count,count(DISTINCT e.goods_receipt_line_id)::int AS affected_receipt_lines,' +
       ' count(DISTINCT e.goods_receipt_id)::int AS affected_receipts,sum(e.affected_quantity)::numeric(18,4)::text AS reported_affected_quantity,' +
-      ' count(*) FILTER (WHERE e.severity=\\'CRITICAL\\')::int AS critical_event_count,' +
-      ' count(*) FILTER (WHERE e.severity=\\'MAJOR\\')::int AS major_event_count,count(*) FILTER (WHERE e.severity=\\'MINOR\\')::int AS minor_event_count,' +
-      ' max(e.created_at) AS latest_quality_event_at FROM quality_supplier_quality_events e' +
+      ' count(*) FILTER (WHERE e.severity=\'CRITICAL\')::int AS critical_event_count,' +
+      ' count(*) FILTER (WHERE e.severity=\'MAJOR\')::int AS major_event_count,count(*) FILTER (WHERE e.severity=\'MINOR\')::int AS minor_event_count,' +
+      ' max(e.created_at)::text AS latest_quality_event_at FROM quality_supplier_quality_events e' +
       ' JOIN suppliers s ON s.id=e.supplier_id AND s.tenant_id=e.tenant_id' +
       ' WHERE e.tenant_id=$1 AND e.factory_id=$2 GROUP BY s.id,s.code,s.name' +
       '), supplier_rework AS (' +
@@ -373,10 +373,11 @@ export class AdvancedQualityService {
       ' JOIN quality_rework_orders r ON r.defect_id=e.defect_id AND r.tenant_id=e.tenant_id AND r.factory_id=e.factory_id' +
       ' WHERE e.tenant_id=$1 AND e.factory_id=$2 GROUP BY e.supplier_id' +
       ')' +
-      ' SELECT e.*,COALESCE(r.linked_rework_task_count,0)::int AS linked_rework_task_count,e.latest_quality_event_at::text AS latest_quality_event_at' +
+      ' SELECT e.*,COALESCE(r.linked_rework_task_count,0)::int AS linked_rework_task_count' +
       ' FROM supplier_events e LEFT JOIN supplier_rework r ON r.supplier_id=e.supplier_id' +
       ' ORDER BY e.critical_event_count DESC,e.defect_count DESC,e.supplier_code LIMIT $3',
       [c.tenantId,c.factoryId,limit],{tenantId:c.tenantId,userId:c.userId});
+    return r.rows;
   }
 
   async reworkRepeatAlerts(c: AdvancedQualityContext, query: QualityRepeatAlertsQueryDto) {
