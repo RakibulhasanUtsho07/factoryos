@@ -70,3 +70,13 @@ The existing Growth scenario/sensitivity path keeps its model version, data vint
 4. For statistically calibrated prediction intervals, choose and validate a suitable method (for example, held-out residual quantiles or conformal calibration) under documented time-series/drift assumptions. This work records and compares declared nominal coverage; it does not itself make forecasts statistically calibrated.
 5. Run final API and PostgreSQL CI on the exact release candidate SHA before merge/release.
 
+
+## Acceptance verification — 2026-10-22 CI evidence
+
+The implemented source-of-record, realized-outcome, pinned scenario-input, calibration-policy and residual-threshold code was validated at commit `f3377cf9f11928a9de1803d29fc7fa5ee38d9c93`. The current branch head adds documentation only on top of that tested code commit.
+
+- [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39835208031) — **success**. API build/lint and tests passed: **138 suites, 1,214 tests**; AI Tool Registry RLS integration check: **7 tests passed**.
+- [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39835208047) — **success**. Full API/PostgreSQL suite: **178 suites, 1,397 tests**. Migrations 177–179 were applied and replayed successfully; all three new source-observation, calibration-policy and baseline-provenance SQL contracts passed. Ordered migration manifest SHA-256: `04fb2a578150583e011ef7f792274cc3f10d7391f896ae535992fbb09110783d`.
+- [Production dependency security audit](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39833832698) — **success** on the preceding dependency-patched commit; Next.js/React lockfile update is included in the tested source ancestry.
+
+These results establish code/test acceptance for the implemented paths, not production deployment of a customer's external ERP connector or approval of domain thresholds. A customer deployment must still activate and validate its actual connector, use authentic out-of-sample observations, and obtain domain-owner approval for metric-specific thresholds.
