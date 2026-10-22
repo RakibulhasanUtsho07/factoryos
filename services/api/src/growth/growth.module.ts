@@ -4,11 +4,12 @@ import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
 import { GrowthController } from './growth.controller';
 import { GrowthService } from './growth.service';
+import { GrowthSourceOfRecordService } from './growth-source-of-record.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [GrowthController],
-  providers: [GrowthService],
+  providers: [GrowthService, GrowthSourceOfRecordService],
   exports: [GrowthService],
 })
 export class GrowthModule {}
