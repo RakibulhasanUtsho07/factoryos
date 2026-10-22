@@ -1,4 +1,4 @@
-import { IsArray, IsDateString, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsArray, IsDateString, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 
 export class CreateCapacityCalendarDto {
   @IsString() @Matches(/^[0-9a-f-]{36}$/i)
