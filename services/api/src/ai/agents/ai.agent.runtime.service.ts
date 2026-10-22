@@ -63,6 +63,7 @@ interface AgentTaskRow extends QueryResultRow {
   tenant_id: string;
   factory_id: string;
   decision_id: string;
+  agent_definition_id: string | null;
   parent_trace_id: string;
   actor_user_id: string;
   goal: string;
@@ -259,6 +260,25 @@ export class AiAgentRuntimeService {
       'contextHash',
       128,
     );
+    const agentDefinitionId = input.agentDefinitionId === undefined || input.agentDefinitionId === null
+      ? null
+      : this.requiredUuid(input.agentDefinitionId, 'agentDefinitionId');
+
+    if (agentDefinitionId) {
+      const definitionResult = await this.database.query<{ id: string; agent_id: string; version: string }>(
+        `SELECT id::text AS id,agent_id,version
+           FROM ai_agent_definitions
+          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+          LIMIT 1`,
+        [agentDefinitionId, tenantId, factoryId],
+        { tenantId, userId: actorUserId },
+      );
+      const definition = definitionResult.rows[0];
+      if (!definition) throw new NotFoundException('Pinned AI agent definition version was not found in this factory');
+      if (input.steps.some(step => step.agentId !== definition.agent_id)) {
+        throw new BadRequestException('Every step in a version-pinned AI agent task must bind to the pinned agent id');
+      }
+    }
 
     for (let index = 0; index < input.steps.length; index += 1) {
       this.validateStepDefinition(input.steps[index]!, index);
@@ -277,6 +297,7 @@ export class AiAgentRuntimeService {
       contextVersion,
       planVersion,
       contextHash,
+      agentDefinitionId,
     });
 
     if (idempotencyKey) {
@@ -326,12 +347,13 @@ export class AiAgentRuntimeService {
               plan_version,
               context_hash,
               idempotency_key,
-              request_hash
+              request_hash,
+              agent_definition_id
             )
             SELECT
               $1, $2, $3, $4, $5, $6, $7,
               $8, $9, $10, $11, $12,
-              $13, $14, $15, $16, $17
+              $13, $14, $15, $16, $17, $18
             WHERE $12::timestamptz > NOW()
             RETURNING ${this.taskSelectColumns()}
             `,
@@ -353,6 +375,7 @@ export class AiAgentRuntimeService {
               contextHash,
               idempotencyKey,
               requestHash,
+              agentDefinitionId,
             ],
           );
 
@@ -3174,6 +3197,7 @@ export class AiAgentRuntimeService {
     contextVersion: string | null;
     planVersion: string | null;
     contextHash: string | null;
+    agentDefinitionId: string | null;
   }): string {
     const {
       tenantId,
@@ -3188,6 +3212,7 @@ export class AiAgentRuntimeService {
       contextVersion,
       planVersion,
       contextHash,
+      agentDefinitionId,
     } = args;
 
     return this.computeHash({
@@ -3204,6 +3229,7 @@ export class AiAgentRuntimeService {
       contextVersion,
       planVersion,
       contextHash,
+      agentDefinitionId,
       steps: input.steps.map((step, index) => ({
         stepKey: step.stepKey.trim(),
         stepIndex: index,
@@ -3479,6 +3505,7 @@ export class AiAgentRuntimeService {
       tenantId: row.tenant_id,
       factoryId: row.factory_id,
       decisionId: row.decision_id,
+      agentDefinitionId: row.agent_definition_id,
       parentTraceId: row.parent_trace_id,
       actorUserId: row.actor_user_id,
       goal: row.goal,
@@ -3578,6 +3605,7 @@ export class AiAgentRuntimeService {
       tenant_id::text AS tenant_id,
       factory_id::text AS factory_id,
       decision_id::text AS decision_id,
+      agent_definition_id::text AS agent_definition_id,
       parent_trace_id::text AS parent_trace_id,
       actor_user_id::text AS actor_user_id,
       goal,
