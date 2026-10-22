@@ -13,6 +13,7 @@ import { OutboxConsumerRegistry } from './outbox.consumer.registry';
 import { OutboxController } from './outbox.controller';
 import { OutboxDlqService } from './outbox-dlq.service';
 import { OutboxDispatcherService } from './outbox.dispatcher.service';
+import { KafkaEventBusAdapter } from './kafka-event-bus.adapter';
 import { OutboxPublisher } from './outbox.publisher';
 
 @Module({
@@ -34,6 +35,7 @@ import { OutboxPublisher } from './outbox.publisher';
     UtilityThresholdNotificationConsumer,
     EhsLifecycleNotificationConsumer,
     OutboxConsumerRegistry,
+    KafkaEventBusAdapter,
     OutboxPublisher,
     OutboxDlqService,
     OutboxDispatcherService,
