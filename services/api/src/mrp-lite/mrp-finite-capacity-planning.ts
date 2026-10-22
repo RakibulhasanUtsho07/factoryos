@@ -18,7 +18,9 @@ export interface MrpCapacityJob {
   orderLineNumber: number;
   productCode: string;
   productName: string;
+  productId: string;
   productVersionId: string;
+  productVersionNumber: number;
   needByDate: string;
   quantity: string;
   materialAvailableDate: string | null;
@@ -87,7 +89,9 @@ export interface MrpCapacityOperationResult {
   orderLineNumber: number;
   productCode: string;
   productName: string;
+  productId: string;
   productVersionId: string;
+  productVersionNumber: number;
   needByDate: string;
   quantity: string;
   routingStepId: string | null;
@@ -113,6 +117,7 @@ export interface MrpCapacityBaselineAllocation {
   workCentreId: string;
   lineCode: string;
   allocatedMinutes: string;
+  workerAllocations: Array<{ workerId: string; allocatedMinutes: string }>;
 }
 
 export interface MrpCapacityBaselineOperation {
@@ -342,7 +347,9 @@ function makeResult(
     orderLineNumber: job.orderLineNumber,
     productCode: job.productCode,
     productName: job.productName,
+    productId: job.productId,
     productVersionId: job.productVersionId,
+    productVersionNumber: job.productVersionNumber,
     needByDate: job.needByDate,
     quantity: job.quantity,
     routingStepId: step?.id ?? null,
@@ -392,7 +399,6 @@ export function scheduleMrpFiniteCapacity(input: MrpCapacityScheduleInput): MrpC
   const workerRemaining = skillCapacity.workerRemaining;
   const workerIdsBySkill = skillCapacity.workerIdsBySkill;
   const jobs = [...input.jobs].sort(jobOrder);
-  const baselines = baselineMap(input.baselineOperations ?? []);
   const outputByKey = new Map<string, MrpCapacityOperationResult>();
   const jobMeta = new Map(jobs.map((job) => [job.orderLineId, job]));
   const pinnedKeys = new Set<string>();
