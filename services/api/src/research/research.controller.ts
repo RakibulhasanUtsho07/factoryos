@@ -23,6 +23,7 @@ import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
 import { DecideResearchSourceAuthenticityDto } from './dto/decide-research-source-authenticity.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
 import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto';
+import { RetractResearchReleaseDto } from './dto/retract-research-release.dto';
 import {
   CompleteResearchExtractionDto,
   CreateResearchIngestionJobDto,
@@ -510,6 +511,21 @@ export class ResearchController {
   ): Promise<unknown> {
     const c = this.context(req);
     return this.research.listReleaseHistory(c.tenantId, releaseId);
+  }
+
+
+  @Post('releases/:releaseId/retract')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  retractRelease(
+    @Req() req: FactoryOsRequest,
+    @Param('releaseId', new ParseUUIDPipe()) releaseId: string,
+    @Body() body: RetractResearchReleaseDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.research.retractRelease(
+      c.userId, c.tenantId, releaseId, body.reason, c.requestId, c.traceId,
+    );
   }
 
   @Post('releases/:releaseId/rollback')
