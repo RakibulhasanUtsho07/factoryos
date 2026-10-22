@@ -60,7 +60,7 @@ The existing Growth scenario/sensitivity path keeps its model version, data vint
 | Calibration sample floors, approved-policy matching, domain ambiguity and heuristic-range semantics | `growth-calibration-policy-report.spec.ts`, `growth-forecast-evaluation.spec.ts` |
 | Baseline revenue pinned to exact source revision, source currency and data vintage in deterministic scenario input hash | `growth.service.spec.ts` (source-pinned scenario tests) |
 | Calibration policy RLS, version constraints, immutable configuration and maker-checker guard | `services/api/test/growth-calibration-policies.sql` |
-| DDL apply/reapply | API PostgreSQL CI replays migrations 177 and 178 and runs both SQL contract files |
+| DDL apply/reapply | API PostgreSQL CI applies and replays migrations 177–179 and runs all three `growth-kpi-source-observations.sql`, `growth-calibration-policies.sql`, and `growth-kpi-baseline-evidence.sql` contract tests |
 
 ## Known deployment gates
 
