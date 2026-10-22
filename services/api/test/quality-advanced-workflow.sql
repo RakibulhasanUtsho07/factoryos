@@ -7,12 +7,18 @@ DECLARE
   v_factory UUID := gen_random_uuid();
   v_actor UUID := gen_random_uuid();
   v_item UUID := gen_random_uuid();
+  v_location UUID;
   v_aql_profile UUID := gen_random_uuid();
   v_fabric_profile UUID := gen_random_uuid();
   v_aql_inspection UUID := gen_random_uuid();
   v_fabric_inspection UUID := gen_random_uuid();
   v_hold UUID := gen_random_uuid();
   v_disposition UUID := gen_random_uuid();
+  v_scrap_disposition UUID := gen_random_uuid();
+  v_scrap_hold UUID := gen_random_uuid();
+  v_receipt_movement UUID := gen_random_uuid();
+  v_issue_movement UUID := gen_random_uuid();
+  v_posted_balance NUMERIC(18,4);
   v_correlation UUID := gen_random_uuid();
   v_request UUID := gen_random_uuid();
   v_pass_blocked BOOLEAN := FALSE;
@@ -261,8 +267,99 @@ BEGIN
     RAISE EXCEPTION 'Fabric-scored inspection must not pass when a roll is on HOLD';
   END IF;
 
+  -- Exercise a full SCRAP through the same stock-balance-before-movement order used by InventoryService.
+  -- A full issue is only completed when the disposition and hold are finalized by the inventory trigger.
+  SELECT id INTO v_location FROM inventory_locations
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND is_default=TRUE AND status='ACTIVE';
+  IF v_location IS NULL THEN RAISE EXCEPTION 'Default inventory location is required for SCRAP fixture'; END IF;
+
+  UPDATE quality_inspections SET status='ON_HOLD',row_version=row_version+1,
+    updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  WHERE id=v_fabric_inspection AND tenant_id=v_tenant AND factory_id=v_factory AND row_version=3;
+  INSERT INTO quality_inspection_events (
+    tenant_id,factory_id,inspection_id,version,from_status,to_status,action,reason,
+    idempotency_key,request_hash,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_fabric_inspection,4,'IN_PROGRESS','ON_HOLD','HOLD',
+    'Fabric roll failed approved point limit; item stock must remain quarantined',
+    'qax-fabric-hold',repeat('1',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,action_type,payload,actor_user_id,correlation_id)
+  VALUES (
+    v_tenant,v_factory,v_fabric_inspection,'QAX_FABRIC_HOLD_CREATED',
+    '{"reason":"roll-score-over-limit"}'::jsonb,v_actor,v_correlation
+  );
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (
+    v_tenant,v_factory,'QUALITY_INSPECTION',v_fabric_inspection,'QUALITY.INSPECTION_CHANGED',
+    '{"status":"ON_HOLD"}'::jsonb
+  );
+  INSERT INTO quality_holds (
+    id,tenant_id,factory_id,inspection_id,inventory_item_id,reason,created_by_user_id,correlation_id
+  ) VALUES (
+    v_scrap_hold,v_tenant,v_factory,v_fabric_inspection,v_item,
+    'Approved scrap hold for failing roll fixture',v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (
+    tenant_id,factory_id,inspection_id,hold_id,action_type,payload,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_fabric_inspection,v_scrap_hold,'QAX_SCRAP_HOLD_RECORDED',
+    '{"status":"ACTIVE"}'::jsonb,v_actor,v_correlation
+  );
+
+  PERFORM set_config('app.inventory_location_id',v_location::text,TRUE);
+  UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand+5,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
+  RETURNING quantity_on_hand INTO v_posted_balance;
+  INSERT INTO inventory_movements (
+    id,tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,
+    idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id
+  ) VALUES (
+    v_receipt_movement,v_tenant,v_factory,v_item,v_location,'RECEIPT',5,5,v_posted_balance,
+    'qax-scrap-fixture-receipt',repeat('4',64),'QAX_FIXTURE_RECEIPT',NULL,
+    'Fixture stock to be scrapped through quality disposition',v_actor,v_correlation
+  );
+
+  INSERT INTO quality_dispositions (
+    id,tenant_id,factory_id,inspection_id,hold_id,inventory_item_id,action,status,quantity,reason,
+    idempotency_key,request_hash,created_by_user_id,correlation_id
+  ) VALUES (
+    v_scrap_disposition,v_tenant,v_factory,v_fabric_inspection,v_scrap_hold,v_item,'SCRAP','PENDING_INVENTORY',5,
+    'Approved full stock scrap after fabric scoring failure',
+    'qax-scrap-disposition',repeat('5',64),v_actor,v_correlation
+  );
+  UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand-5,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
+    AND quantity_on_hand-5>=quantity_reserved
+  RETURNING quantity_on_hand INTO v_posted_balance;
+  IF v_posted_balance IS DISTINCT FROM 0 THEN
+    RAISE EXCEPTION 'SCRAP did not reduce the aggregate inventory balance to zero';
+  END IF;
+  INSERT INTO inventory_movements (
+    id,tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,
+    idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id
+  ) VALUES (
+    v_issue_movement,v_tenant,v_factory,v_item,v_location,'ISSUE',5,-5,v_posted_balance,
+    'qax-scrap-stock-issue',repeat('6',64),'QUALITY_DISPOSITION',v_scrap_disposition,
+    'Actual stock removal for approved quality SCRAP disposition',v_actor,v_correlation
+  );
+
+  IF (SELECT quantity_on_hand FROM inventory_stock_balances
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item)<>0
+    OR (SELECT quantity_on_hand FROM inventory_location_balances
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item AND location_id=v_location)<>0
+    OR (SELECT quantity_reserved FROM inventory_location_balances
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item AND location_id=v_location)<>0
+    OR (SELECT status FROM quality_dispositions WHERE id=v_scrap_disposition)<>'COMPLETED'
+    OR (SELECT inventory_movement_id FROM quality_dispositions WHERE id=v_scrap_disposition) IS DISTINCT FROM v_issue_movement
+    OR (SELECT status FROM quality_holds WHERE id=v_scrap_hold)<>'DISPOSED' THEN
+    RAISE EXCEPTION 'Approved SCRAP must reconcile aggregate/bin balances, movement evidence, completed disposition and disposed hold';
+  END IF;
+
   SET CONSTRAINTS ctr_quality_inspection_evidence IMMEDIATE;
-  RAISE NOTICE 'Populated advanced quality fixture passed: one-time binding, AQL reject/pass barrier, authorized release, stock conservation, fabric scoring and hold/pass barrier';
+  RAISE NOTICE 'Populated advanced quality fixture passed: one-time binding, AQL reject/pass barrier, authorized release, supplier evidence fixture, fabric scoring/pass barrier and SCRAP ledger/hold reconciliation';
 END;
 $advanced_quality_fixture$;
 
