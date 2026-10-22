@@ -14,6 +14,7 @@ describe('FinanceWorkbenchService', () => {
       is_active: true,
     }));
     const query = jest.fn(async (statement: string, _values?: unknown[]) => {
+      void _values;
       if (statement.includes('WITH scoped AS (')) {
         return { rows: [{
           period: '2026-09',
@@ -76,9 +77,10 @@ describe('FinanceWorkbenchService', () => {
       return { rows: [] };
     });
     const client = { query } as unknown as PoolClient;
-    const transaction = jest.fn(async (_context: unknown, callback: (client: PoolClient) => Promise<unknown>) =>
-      callback(client),
-    );
+    const transaction = jest.fn(async (_context: unknown, callback: (client: PoolClient) => Promise<unknown>) => {
+      void _context;
+      return callback(client);
+    });
     const database = { transaction } as unknown as DatabaseService;
     return { service: new FinanceWorkbenchService(database), query, transaction };
   }
