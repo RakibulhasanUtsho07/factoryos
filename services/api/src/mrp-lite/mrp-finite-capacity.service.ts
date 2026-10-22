@@ -126,7 +126,7 @@ export class MrpFiniteCapacityService {
     const correlationId = this.correlationId(traceId, requestId);
     const outcome = await this.database.transaction({
       tenantId, userId, requestId, traceId,
-      advisoryLockKey: 'mrp-capacity-calendar:' + tenantId + ':' + factoryId + ':' + key,
+      advisoryLockKey: 'mrp-capacity-calendar:' + tenantId + ':' + factoryId,
     }, async (client) => {
       const replay = await client.query<{ id: string; request_hash: string }>(
         'SELECT id::text AS id, request_hash FROM mrp_capacity_calendar WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
@@ -201,7 +201,7 @@ export class MrpFiniteCapacityService {
     const correlationId = this.correlationId(traceId, requestId);
     await this.database.transaction({
       tenantId, userId, requestId, traceId,
-      advisoryLockKey: 'mrp-capacity-calendar-update:' + tenantId + ':' + factoryId + ':' + id,
+      advisoryLockKey: 'mrp-capacity-calendar:' + tenantId + ':' + factoryId,
     }, async (client) => {
       const current = await client.query<{ row_version: string; available_minutes: number; parallel_lines: number; status: string }>(
         `SELECT row_version::text AS row_version, available_minutes, parallel_lines, status
