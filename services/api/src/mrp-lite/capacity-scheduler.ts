@@ -9,6 +9,7 @@ export interface CapacityDemand {
   material_ready_on:string|null; route_step_id:string; step_number:number; operation_code:string; operation_name:string;
   work_centre_id:string; required_skill:string|null; setup_minutes:number; sam_smv_minutes_per_unit:number;
   queue_minutes:number; transfer_minutes:number;
+  alternate_material_scenarios?:unknown[];
 }
 export interface CapacitySegment {
   calendar_id:string; work_centre_id:string; capacity_date:string; shift_code:string; minutes:number;
