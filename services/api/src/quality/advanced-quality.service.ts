@@ -307,7 +307,7 @@ export class AdvancedQualityService {
       'FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [inspectionId, c.tenantId, c.factoryId], { tenantId: c.tenantId, userId: c.userId });
     if (!inspection.rows[0]) throw new NotFoundException('Quality inspection was not found in this factory');
-    const [bindings, aqlSamples, rollScores, defects, holds, dispositions, reworkOrders, supplierEvents, defectContexts, inspectionEvents] = await Promise.all([
+    const [bindings, aqlSamples, rollScores, defects, holds, dispositions, reworkOrders, supplierEvents, defectContexts, inspectionEvents, auditEvents, inventoryMovements, outboxEvents] = await Promise.all([
       this.database.query('SELECT id::text AS id,aql_profile_id::text AS aql_profile_id,fabric_scoring_profile_id::text AS fabric_scoring_profile_id,idempotency_key,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_sampling_profile_bindings WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query('SELECT id::text AS id,profile_id::text AS profile_id,profile_revision,aql_percent_snapshot::text AS aql_percent,inspection_level_snapshot,lot_size,sample_size,accept_number,reject_number,observed_nonconforming,decision,evidence,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_aql_sample_runs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
@@ -328,10 +328,17 @@ export class AdvancedQualityService {
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query('SELECT id::text AS id,version,from_status,to_status,action,reason,idempotency_key,created_by_user_id::text AS created_by_user_id,correlation_id::text AS correlation_id,created_at::text AS created_at FROM quality_inspection_events WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY version,id',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,defect_id::text AS defect_id,hold_id::text AS hold_id,disposition_id::text AS disposition_id,action_type,payload,actor_user_id::text AS actor_user_id,correlation_id::text AS correlation_id,created_at::text AS created_at FROM quality_audit_events WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT m.id::text AS id,m.item_id::text AS inventory_item_id,m.location_id::text AS location_id,m.movement_type,m.quantity::text AS quantity,m.quantity_delta::text AS quantity_delta,m.quantity_after::text AS quantity_after,m.reference_type,m.reference_id::text AS reference_id,m.created_by_user_id::text AS created_by_user_id,m.correlation_id::text AS correlation_id,m.created_at::text AS created_at FROM inventory_movements m JOIN quality_dispositions d ON d.inventory_movement_id=m.id AND d.tenant_id=m.tenant_id AND d.factory_id=m.factory_id WHERE d.inspection_id=$1 AND m.tenant_id=$2 AND m.factory_id=$3 ORDER BY m.created_at,m.id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,event_type,payload,created_at::text AS created_at FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type=\'QUALITY_INSPECTION\' AND aggregate_id=$3::uuid ORDER BY created_at,id',
+        [c.tenantId,c.factoryId,inspectionId],{tenantId:c.tenantId,userId:c.userId}),
     ]);
     return {inspection:inspection.rows[0],profile_bindings:bindings.rows,aql_sample_runs:aqlSamples.rows,fabric_roll_scores:rollScores.rows,
       defects:defects.rows,holds:holds.rows,dispositions:dispositions.rows,rework_orders:reworkOrders.rows,
-      supplier_quality_events:supplierEvents.rows,defect_contexts:defectContexts.rows,inspection_events:inspectionEvents.rows};
+      supplier_quality_events:supplierEvents.rows,defect_contexts:defectContexts.rows,inspection_events:inspectionEvents.rows,
+      quality_audit_events:auditEvents.rows,disposition_inventory_movements:inventoryMovements.rows,inspection_outbox_events:outboxEvents.rows};
   }
 
   async defectPareto(c: AdvancedQualityContext, query: QualityDefectParetoQueryDto) {
