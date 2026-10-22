@@ -276,8 +276,12 @@ CREATE TABLE IF NOT EXISTS quality_supplier_quality_events (
 
 CREATE INDEX IF NOT EXISTS idx_quality_aql_profile_selection
   ON quality_aql_profiles (tenant_id, factory_id, profile_code, inspection_type, status, revision DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quality_aql_profile_active
+  ON quality_aql_profiles (tenant_id, factory_id, lower(profile_code), inspection_type) WHERE status='ACTIVE';
 CREATE INDEX IF NOT EXISTS idx_quality_fabric_profile_selection
   ON quality_fabric_scoring_profiles (tenant_id, factory_id, profile_code, inspection_type, status, revision DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quality_fabric_profile_active
+  ON quality_fabric_scoring_profiles (tenant_id, factory_id, lower(profile_code), inspection_type) WHERE status='ACTIVE';
 CREATE INDEX IF NOT EXISTS idx_quality_supplier_event_supplier_time
   ON quality_supplier_quality_events (tenant_id, factory_id, supplier_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_quality_defect_context_dimensions
@@ -373,14 +377,14 @@ BEGIN
   END IF;
   IF NEW.aql_profile_id IS NOT NULL THEN
     SELECT inspection_type INTO v_type FROM quality_aql_profiles
-    WHERE id=NEW.aql_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND status='ACTIVE';
+    WHERE id=NEW.aql_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND status='ACTIVE' FOR SHARE;
     IF NOT FOUND OR v_type IS DISTINCT FROM NEW.inspection_type THEN
       RAISE EXCEPTION 'an ACTIVE AQL profile matching the inspection type is required' USING ERRCODE='23514';
     END IF;
   END IF;
   IF NEW.fabric_scoring_profile_id IS NOT NULL THEN
     SELECT inspection_type INTO v_type FROM quality_fabric_scoring_profiles
-    WHERE id=NEW.fabric_scoring_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND status='ACTIVE';
+    WHERE id=NEW.fabric_scoring_profile_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND status='ACTIVE' FOR SHARE;
     IF NOT FOUND OR v_type IS DISTINCT FROM NEW.inspection_type THEN
       RAISE EXCEPTION 'an ACTIVE fabric scoring profile matching the inspection type is required' USING ERRCODE='23514';
     END IF;
