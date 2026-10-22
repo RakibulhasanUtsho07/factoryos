@@ -15,6 +15,7 @@ DECLARE
   v_pareto_case RECORD;
   v_pareto_matches INTEGER;
   v_cumulative_pct NUMERIC(6,2);
+  v_alert_count INTEGER;
   v_repeat_count INTEGER;
   v_repeat_qty NUMERIC(18,4);
   v_aql_profile UUID := gen_random_uuid();
