@@ -1360,6 +1360,11 @@ export class QualityService {
   private quantity(value:number,field:string){if(!Number.isFinite(value)||value<=0||Math.abs(value*10000-Math.round(value*10000))>0.000001)throw new BadRequestException(field+' must be positive with at most four decimal places');return value.toFixed(4);}
   private units(value:string|number){const n=Number(value);if(!Number.isFinite(n)||n<0)throw new BadRequestException('Inventory quantity is invalid');return BigInt(Math.round(n*10000));}
   private unitsToDecimal(value:bigint){
+    const whole=value/10000n;
+    const fraction=(value%10000n).toString().padStart(4,'0');
+    return whole.toString()+'.'+fraction;
+  }
+  private unitsToDecimal(value:bigint){
     const negative=value<0n,absolute=negative?-value:value;
     const whole=(absolute/10000n).toString();
     const fraction=(absolute%10000n).toString().padStart(4,'0');
