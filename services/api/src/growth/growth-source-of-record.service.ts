@@ -203,8 +203,8 @@ export class GrowthSourceOfRecordService {
             await client.query(
               `INSERT INTO growth_opportunity_evidence(
                  id,tenant_id,factory_id,opportunity_id,evidence_type,origin_class,reference_ref,
-                 description,confidence,evidence_snapshot,created_by
-               ) VALUES($1,$2,$3,$4,'OPERATIONAL_METRIC','OPERATIONAL',$5,$6,0.8,$7::jsonb,$8)`,
+                 description,evidence_snapshot,created_by
+               ) VALUES($1,$2,$3,$4,'OPERATIONAL_METRIC','OPERATIONAL',$5,$6,$7::jsonb,$8)`,
               [evidenceId, tenantId, factoryId, opportunityId,
                 `factoryos://growth/source-observations/${observationId}`,
                 `Version-pinned ${mapped.source_kind} observation for ${mapped.metric_key} from ${mapped.source_record_ref}`,
