@@ -32,6 +32,7 @@ DECLARE
   v_correlation UUID := gen_random_uuid();
   v_request UUID := gen_random_uuid();
   v_pass_blocked BOOLEAN := FALSE;
+  v_cancel_blocked BOOLEAN := FALSE;
   v_score NUMERIC(18,4);
   v_decision TEXT;
 BEGIN
@@ -130,6 +131,17 @@ BEGIN
   END;
   IF NOT v_pass_blocked THEN
     RAISE EXCEPTION 'Inspection must not pass when its AQL sample decision is REJECT';
+  END IF;
+
+  BEGIN
+    UPDATE quality_inspections SET status='CANCELLED',row_version=row_version+1,
+      updated_by_user_id=v_actor,updated_at=clock_timestamp()
+    WHERE id=v_aql_inspection AND tenant_id=v_tenant AND factory_id=v_factory AND row_version=3;
+  EXCEPTION WHEN check_violation THEN
+    v_cancel_blocked := TRUE;
+  END;
+  IF NOT v_cancel_blocked THEN
+    RAISE EXCEPTION 'A rejected AQL sample must not be cancelled to bypass its hold/disposition requirement';
   END IF;
 
   UPDATE quality_inspections SET status='ON_HOLD',row_version=row_version+1,
