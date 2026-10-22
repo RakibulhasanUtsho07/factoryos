@@ -34,11 +34,11 @@ describe('NotificationInboxService outbox integration',()=>{
     expect(result).toEqual({recipients:1,created:1,replayed:false});
     expect(dbClient.query).toHaveBeenCalledTimes(2);
     expect(String(dbClient.query.mock.calls[1][0])).toContain('ON CONFLICT(tenant_id,factory_id,recipient_user_id,source_event_id) DO NOTHING');
-    expect(client.query.mock.calls[1][1]).toContain(EVENT);
+    expect(dbClient.query.mock.calls[1][1]).toContain(EVENT);
   });
 
   it('does not create duplicate inbox rows when the same outbox event is replayed',async()=>{
-    client.query.mockResolvedValueOnce({rows:[{user_id:USER}]} as never)
+    dbClient.query.mockResolvedValueOnce({rows:[{user_id:USER}]} as never)
       .mockResolvedValueOnce({rowCount:0} as never);
     const event:OutboxEvent={
       id:EVENT,tenantId:TENANT,factoryId:FACTORY,aggregateType:'UTILITY_THRESHOLD_ALERT',aggregateId:ALERT,
@@ -49,7 +49,7 @@ describe('NotificationInboxService outbox integration',()=>{
   });
 
   it('resolves EHS lifecycle events to active accountable owners and managers',async()=>{
-    client.query.mockResolvedValueOnce({rows:[{user_id:USER}]} as never)
+    dbClient.query.mockResolvedValueOnce({rows:[{user_id:USER}]} as never)
       .mockResolvedValueOnce({rowCount:1} as never);
     const event:OutboxEvent={
       id:EVENT,tenantId:TENANT,factoryId:FACTORY,aggregateType:'EHS_EMERGENCY_DRILL',aggregateId:ALERT,
@@ -57,8 +57,8 @@ describe('NotificationInboxService outbox integration',()=>{
       payload:{entity_type:'EMERGENCY_DRILL',entity_id:ALERT,action:'COMPLETED',version:3,payload:{status:'COMPLETED'}},
     };
     await expect(service.enqueueEhsLifecycle(event)).resolves.toEqual({recipients:1,created:1,replayed:false});
-    expect(String(client.query.mock.calls[0][0])).toContain('owner_user_id');
-    expect(String(client.query.mock.calls[0][0])).toContain('r.code IN (\'ORG_ADMIN\',\'FACTORY_MANAGER\',\'EHS_MANAGER\')');
+    expect(String(dbClient.query.mock.calls[0][0])).toContain('owner_user_id');
+    expect(String(dbClient.query.mock.calls[0][0])).toContain('r.code IN (\'ORG_ADMIN\',\'FACTORY_MANAGER\',\'EHS_MANAGER\')');
   });
 
   it('fails closed on tenantless or factory-less operational events',async()=>{
