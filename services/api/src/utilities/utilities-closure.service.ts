@@ -32,7 +32,14 @@ export class UtilitiesClosureService {
       config_metadata: this.object(dto.config_metadata),
     };
     if (Buffer.byteLength(JSON.stringify(payload.config_metadata), 'utf8') > 8192) {
-      throw new BadRequestException('config_metadata must be at most 8 KiB and must not contain credentials');
+      throw new BadRequestException('config_metadata must be at most 8 KiB');
+    }
+    if (this.containsSensitiveKey(payload.config_metadata)) {
+      throw new BadRequestException('config_metadata cannot store credentials, tokens, passwords or private keys; use credential_reference');
+    }
+    if (payload.credential_reference &&
+      !/^(?:secrets?|vault|kms):\/\/[^\s]+$|^arn:aws:secretsmanager:[^\s]+$/i.test(payload.credential_reference)) {
+      throw new BadRequestException('credential_reference must be a non-secret secret-manager reference, not a credential value');
     }
     const hash = this.hash(payload);
     return this.database.transaction({tenantId:c.tenantId,userId:c.userId,requestId:c.requestId,traceId:c.traceId,
@@ -60,7 +67,7 @@ export class UtilitiesClosureService {
     const r = await this.database.query<Row>(
       `SELECT b.id::text AS id,b.source_system_code,b.source_meter_code,b.vendor_adapter,b.meter_id::text AS meter_id,
         m.meter_code,m.unit_code AS meter_unit_code,b.source_unit_code,b.factor_to_meter_unit::text AS factor_to_meter_unit,
-        b.polling_interval_seconds,b.credential_reference,b.config_metadata,b.status,b.row_version::int AS row_version,b.last_change_reason,
+        b.polling_interval_seconds,(b.credential_reference IS NOT NULL) AS credential_configured,b.config_metadata,b.status,b.row_version::int AS row_version,b.last_change_reason,
         b.created_by_user_id::text AS created_by_user_id,b.approved_by_user_id::text AS approved_by_user_id,
         b.approved_at::text AS approved_at,b.created_at::text AS created_at,b.updated_at::text AS updated_at
        FROM utility_meter_source_bindings b JOIN utility_meters m
@@ -252,8 +259,8 @@ export class UtilitiesClosureService {
   private async sourceBindingDetail(client:PoolClient,c:UtilityContext,id:string) {
     const r=await client.query<Row>(
       `SELECT id::text AS id,source_system_code,source_meter_code,vendor_adapter,meter_id::text AS meter_id,
-        source_unit_code,factor_to_meter_unit::text AS factor_to_meter_unit,polling_interval_seconds,credential_reference,
-        config_metadata,status,row_version::int AS row_version,last_change_reason,created_by_user_id::text AS created_by_user_id,
+        source_unit_code,factor_to_meter_unit::text AS factor_to_meter_unit,polling_interval_seconds,
+        (credential_reference IS NOT NULL) AS credential_configured,config_metadata,status,row_version::int AS row_version,last_change_reason,created_by_user_id::text AS created_by_user_id,
         approved_by_user_id::text AS approved_by_user_id,approved_at::text AS approved_at,created_at::text AS created_at,
         updated_at::text AS updated_at FROM utility_meter_source_bindings
        WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,[id,c.tenantId,c.factoryId]);
@@ -269,6 +276,16 @@ export class UtilitiesClosureService {
        FROM utility_threshold_policies WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,[id,c.tenantId,c.factoryId]);
     if(!r.rows[0])throw new NotFoundException('Threshold policy was not found in this factory');
     return r.rows[0];
+  }
+  private containsSensitiveKey(value:unknown):boolean{
+    const forbidden=/(?:secret|password|token|credential|private.?key|api.?key|authorization|cookie|client.?secret|access.?key)/i;
+    if(Array.isArray(value))return value.some(item=>this.containsSensitiveKey(item));
+    if(value&&typeof value==='object'){
+      for(const [key,item] of Object.entries(value as Record<string,unknown>)){
+        if(forbidden.test(key)||this.containsSensitiveKey(item))return true;
+      }
+    }
+    return false;
   }
   private scope(c:UtilityContext) { for(const [field,value] of Object.entries({userId:c.userId,tenantId:c.tenantId,factoryId:c.factoryId})) this.uuid(value,field); }
   private key(raw:string|null) { const v=raw?.trim()??'';if(!v||v.length>200)throw new BadRequestException('Idempotency-Key is required and must be at most 200 characters');return v; }
