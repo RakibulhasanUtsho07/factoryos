@@ -49,7 +49,10 @@ BEGIN
         AND tgname='growth_kpi_source_observation_guard' AND NOT tgisinternal)
      OR NOT EXISTS (SELECT 1 FROM pg_trigger
       WHERE tgrelid='public.growth_opportunity_evidence'::regclass
-        AND tgname='growth_source_observation_evidence_link_guard' AND NOT tgisinternal) THEN
+        AND tgname='growth_source_observation_evidence_link_guard' AND NOT tgisinternal)
+     OR NOT EXISTS (SELECT 1 FROM pg_trigger
+      WHERE tgrelid='public.growth_opportunity_evidence'::regclass
+        AND tgname='growth_source_observation_evidence_immutable' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'GROWTH_KPI_SOURCE_EVIDENCE_GUARDS_MISSING';
   END IF;
 
