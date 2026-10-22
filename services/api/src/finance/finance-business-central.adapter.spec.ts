@@ -1,6 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
 import {
-  FINANCE_SECRET_MANAGER,
   isFinancePublicAddress,
   MicrosoftDynamics365BusinessCentralFinanceAdapter,
   PinnedFinanceJsonHttpClient,
