@@ -626,3 +626,4 @@ COMMENT ON TABLE quality_defect_context_snapshots IS
 INSERT INTO schema_migrations (version, checksum)
 VALUES ('164_quality_advanced_sampling_supplier_pareto', NULL)
 ON CONFLICT (version) DO NOTHING;
+COMMIT;
