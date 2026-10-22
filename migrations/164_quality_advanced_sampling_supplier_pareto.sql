@@ -376,7 +376,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_quality_advanced_profile();
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_inspection_target()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $factoryos_quality_guard$
 DECLARE
   v_item UUID;
   v_unit UUID;
@@ -469,7 +469,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$factoryos_quality_guard$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_quality_sampling_profile_binding()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
