@@ -381,6 +381,7 @@ export class GrowthSourceOfRecordService {
         baseline_value: baselineValue,
         actual_value: actualValue,
         ...(pair.target_value === undefined ? {} : { target_value: pair.target_value }),
+        baseline_evidence_ref: baselineRef,
         evidence_ref: actualRef,
       });
     }
@@ -490,6 +491,7 @@ export class GrowthSourceOfRecordService {
       kpis.push({
         metric_key: pair.metric_key, unit: actual.unit, direction: pair.direction,
         ...(pair.target_value === undefined ? {} : { target_value: pair.target_value }),
+        baseline_evidence_ref: baselineRef,
         evidence_ref: actualRef,
       });
     }
