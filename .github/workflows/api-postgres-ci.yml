@@ -444,6 +444,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
 
+          echo "Reapplying advanced quality migration after demo-role seeds to verify quality permission grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
+
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/mrp-finite-capacity-planning-contract.sql
