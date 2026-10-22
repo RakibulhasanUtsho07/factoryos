@@ -20,7 +20,7 @@ describe('UtilitiesClosureService request validation',()=>{
   const utilities={recordReading:jest.fn(),transitionEvent:jest.fn()};
   beforeEach(()=>{
     jest.clearAllMocks();
-    database.transaction.mockImplementation((async (callback:(client:typeof dbClient)=>Promise<unknown>)=>callback(dbClient)) as never);
+    database.transaction.mockImplementation((async (first:unknown,second?:unknown)=>{const callback=(typeof first==='function'?first:second) as ((client:typeof dbClient)=>Promise<unknown>)|undefined;if(!callback)throw new TypeError('transaction callback missing in test mock');return callback(dbClient);}) as never);
     service=new UtilitiesClosureService(database as unknown as DatabaseService,utilities as unknown as UtilitiesService);
   });
 
