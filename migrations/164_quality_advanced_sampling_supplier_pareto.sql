@@ -130,7 +130,10 @@ CREATE TABLE IF NOT EXISTS quality_sampling_profile_bindings (
   CONSTRAINT fk_quality_sampling_binding_actor FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_quality_sampling_binding_nonempty CHECK (aql_profile_id IS NOT NULL OR fabric_scoring_profile_id IS NOT NULL),
   CONSTRAINT chk_quality_sampling_binding_key CHECK (length(btrim(idempotency_key)) BETWEEN 1 AND 255),
-  CONSTRAINT chk_quality_sampling_binding_hash CHECK (request_hash ~ '^[0-9a-f]{64}
+  CONSTRAINT chk_quality_sampling_binding_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
+);
+
+CREATE TABLE IF NOT EXISTS quality_aql_sample_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
