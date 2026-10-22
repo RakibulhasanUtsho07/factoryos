@@ -195,10 +195,6 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/product-change-order-contract.sql
 
-          echo "Checking end-to-end manufacturing lifecycle cross-slice acceptance"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
-            -v ON_ERROR_STOP=1 -f services/api/test/manufacturing-lifecycle-acceptance.sql
-
           echo "Reapplying PLM/ECO migration to verify lifecycle guard idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/162_plm_eco_effective_dated_revision_integration.sql
@@ -426,6 +422,10 @@ jobs:
           # Production lifecycle contract requires the development admin and factory-manager role grants.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/production-work-order-contract.sql
+
+          echo "Checking manufacturing lifecycle cross-slice PostgreSQL acceptance"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/manufacturing-lifecycle-acceptance.sql
 
           # This contract also checks demo-role grants, so run it after the development role seeds.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
