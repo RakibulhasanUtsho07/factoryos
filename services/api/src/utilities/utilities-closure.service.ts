@@ -223,6 +223,15 @@ export class UtilitiesClosureService {
     return {items:r.rows};
   }
 
+  async transitionThresholdAlert(c: UtilityContext, alertId: string, dto: import('./utilities.dto').TransitionUtilityEventDto) {
+    this.scope(c);this.uuid(alertId,'alertId');
+    const q=await this.database.query<Row>(
+      'SELECT utility_event_id::text AS utility_event_id FROM utility_threshold_alerts WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+      [alertId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId});
+    if(!q.rows[0])throw new NotFoundException('Threshold alert was not found in this factory');
+    return this.utilities.transitionEvent(c,String(q.rows[0].utility_event_id),dto);
+  }
+
   private async insertSourceBinding(client:PoolClient,c:UtilityContext,p:Record<string,unknown>,key:string,hash:string) {
     const r=await client.query<Row>(
       `INSERT INTO utility_meter_source_bindings(tenant_id,factory_id,source_system_code,source_meter_code,vendor_adapter,
