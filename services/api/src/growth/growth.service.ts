@@ -2007,13 +2007,17 @@ export class GrowthService {
       if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('Invalid KPI direction');
       const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
       if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in outcome evidence_refs');
+      const baselineEvidenceRef = typeof item.baseline_evidence_ref === 'string' ? item.baseline_evidence_ref.trim() : null;
+      if (baselineEvidenceRef !== null && (!baselineEvidenceRef || !evidenceRefs.includes(baselineEvidenceRef))) {
+        throw new BadRequestException('Each KPI baseline_evidence_ref must be included in outcome evidence_refs');
+      }
       const baselineValue = item.baseline_value, actualValue = item.actual_value, targetValue = item.target_value ?? null;
       if (![baselineValue, actualValue, ...(targetValue === null ? [] : [targetValue])].every(value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12)) {
         throw new BadRequestException('KPI baseline, actual and target values must be finite and within supported numeric bounds');
       }
       if (typeof dto.realized_metrics[metricKey] !== 'number' || !Number.isFinite(dto.realized_metrics[metricKey] as number)
         || dto.realized_metrics[metricKey] !== actualValue) throw new BadRequestException('Each KPI actual_value must match realized_metrics at the same metric_key');
-      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef, baselineEvidenceRef };
     });
 
     const outcome = await this.database.transaction({ tenantId, userId }, async client => {
@@ -2039,7 +2043,7 @@ export class GrowthService {
         );
         if (existing.rows[0]) throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
         const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null }>(
-          `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value
+          `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value, baseline_evidence_ref
            FROM growth_experiment_result_kpis
            WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 AND opportunity_id = $4
            ORDER BY metric_key`,
@@ -2050,6 +2054,7 @@ export class GrowthService {
         for (const sourceKpi of sourceRows.rows) {
           const input = kpis.find(item => item.metricKey === sourceKpi.metric_key);
           if (!input || input.unit !== sourceKpi.unit || input.direction !== sourceKpi.direction
+            || input.baselineEvidenceRef !== (sourceKpi.baseline_evidence_ref ?? null)
             || input.baselineValue !== Number(sourceKpi.baseline_value)
             || input.targetValue !== (sourceKpi.target_value === null ? null : Number(sourceKpi.target_value))) {
             throw new BadRequestException('Outcome KPI key, unit, baseline, target and direction must match its linked experiment result');
@@ -2077,14 +2082,15 @@ export class GrowthService {
         const saved = await client.query(
           `INSERT INTO growth_outcome_kpi_measurements (
             tenant_id, factory_id, opportunity_id, outcome_id, source_experiment_kpi_id,
-            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            metric_key, baseline_value, actual_value, target_value, unit, direction, baseline_evidence_ref, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
             actual_value::text AS actual_value, target_value::text AS target_value,
-            unit, direction, evidence_ref, source_experiment_kpi_id::text AS source_experiment_kpi_id,
+            unit, direction, baseline_evidence_ref, evidence_ref, source_experiment_kpi_id::text AS source_experiment_kpi_id,
             created_at::text AS created_at`,
           [tenantId, factoryId, opportunityId, result.id, sourceKpi?.id ?? null, kpi.metricKey,
-            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction,
+            kpi.baselineEvidenceRef, kpi.evidenceRef, userId],
         );
         if (!saved.rows[0]) throw new Error('GROWTH_OUTCOME_KPI_INSERT_FAILED');
         savedKpis.push(saved.rows[0]);
