@@ -14,7 +14,7 @@ import { ReplaceProductRoutingDto } from './dto/replace-product-routing.dto';
 
 export interface ProductRow extends QueryResultRow {
   id:string; tenant_id:string; factory_id:string; inventory_item_id:string; product_code:string;
-  product_name:string; product_type:string; base_unit:string; status:string; version:string;
+  product_name:string; style_code:string|null; size_code:string|null; product_type:string; base_unit:string; status:string; version:string;
   created_by_user_id:string; updated_by_user_id:string; created_at:string; updated_at:string;
 }
 export interface VersionRow extends QueryResultRow {
@@ -54,7 +54,7 @@ export interface AlternateRow extends QueryResultRow {
   created_at:string; updated_at:string;
 }
 const PRODUCT_COLS=`p.id::text AS id,p.tenant_id::text AS tenant_id,p.factory_id::text AS factory_id,
- p.inventory_item_id::text AS inventory_item_id,p.product_code,p.product_name,p.product_type,p.base_unit,p.status,
+ p.inventory_item_id::text AS inventory_item_id,p.product_code,p.product_name,p.style_code,p.size_code,p.product_type,p.base_unit,p.status,
  p.version::text AS version,p.created_by_user_id::text AS created_by_user_id,p.updated_by_user_id::text AS updated_by_user_id,
  p.created_at::text AS created_at,p.updated_at::text AS updated_at`;
 const VERSION_COLS=`id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,product_id::text AS product_id,
@@ -95,8 +95,10 @@ export class ProductDefinitionsService {
     this.scope(userId,tenantId,factoryId); this.uuid(dto.inventory_item_id,'inventory_item_id');
     const itemId=dto.inventory_item_id.toLowerCase(), code=this.text(dto.product_code,'product_code',120);
     const name=this.text(dto.product_name,'product_name',255), unit=this.text(dto.base_unit,'base_unit',50);
+    const styleCode=dto.style_code===undefined?null:this.text(dto.style_code,'style_code',120);
+    const sizeCode=dto.size_code===undefined?null:this.text(dto.size_code,'size_code',80);
     const type=dto.product_type??'STANDARD';
-    const key=this.key(keyRaw), hash=this.hash({inventory_item_id:itemId,product_code:code.toLowerCase(),product_name:name,product_type:type,base_unit:unit});
+    const key=this.key(keyRaw), hash=this.hash({inventory_item_id:itemId,product_code:code.toLowerCase(),product_name:name,style_code:styleCode,size_code:sizeCode,product_type:type,base_unit:unit});
     const correlation=this.correlation(requestId,traceId);
     try {
       const result=await this.database.transaction({tenantId,userId},async client=>{
@@ -115,22 +117,22 @@ export class ProductDefinitionsService {
         if(!item.rows[0]||item.rows[0].status!=='ACTIVE') throw new NotFoundException('Active inventory item was not found in this factory');
         if(item.rows[0].unit.trim().toUpperCase()!==unit.toUpperCase()) throw new BadRequestException('base_unit must match the finished-good inventory item base unit');
         const r=await client.query<ProductRow>(`INSERT INTO product_definitions(
-          tenant_id,factory_id,inventory_item_id,product_code,product_name,product_type,base_unit,status,version,
+          tenant_id,factory_id,inventory_item_id,product_code,product_name,style_code,size_code,product_type,base_unit,status,version,
           created_by_user_id,updated_by_user_id)
-          VALUES($1,$2,$3,$4,$5,$6,$7,'ACTIVE',1,$8,$8)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'ACTIVE',1,$10,$10)
           RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,
-           inventory_item_id::text AS inventory_item_id,product_code,product_name,product_type,base_unit,status,
+           inventory_item_id::text AS inventory_item_id,product_code,product_name,style_code,size_code,product_type,base_unit,status,
            version::text AS version,created_by_user_id::text AS created_by_user_id,updated_by_user_id::text AS updated_by_user_id,
            created_at::text AS created_at,updated_at::text AS updated_at`,
-          [tenantId,factoryId,itemId,code,name,type,unit,userId]);
+          [tenantId,factoryId,itemId,code,name,styleCode,sizeCode,type,unit,userId]);
         const product=r.rows[0]; if(!product) throw new Error('PRODUCT_DEFINITION_INSERT_FAILED');
         await client.query(`INSERT INTO product_definition_idempotency(tenant_id,factory_id,idempotency_key,request_hash,product_id,created_by_user_id)
           VALUES($1,$2,$3,$4,$5,$6)`,[tenantId,factoryId,key,hash,product.id,userId]);
         await this.outbox(client,{tenantId,factoryId,type:'PRODUCT',id:product.id,event:'PRODUCT.DEFINITION_CREATED',correlation,requestId,userId,
-          payload:{product_id:product.id,product_code:code,inventory_item_id:itemId}});
+          payload:{product_id:product.id,product_code:code,style_code:styleCode,size_code:sizeCode,inventory_item_id:itemId}});
         return {product,replayed:false};
       });
-      if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_DEFINITION_CREATED',resource:'PRODUCT_DEFINITION',id:result.product.id,requestId,traceId,payload:{product_code:code,inventory_item_id:itemId}});
+      if(!result.replayed) await this.auditSafe({tenantId,factoryId,userId,action:'PRODUCT_DEFINITION_CREATED',resource:'PRODUCT_DEFINITION',id:result.product.id,requestId,traceId,payload:{product_code:code,style_code:styleCode,size_code:sizeCode,inventory_item_id:itemId}});
       return result;
     } catch(e) { this.uniqueConflict(e,'Product code, inventory binding or idempotency key already exists in this factory'); throw e; }
   }
