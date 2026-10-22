@@ -50,7 +50,7 @@ export class UtilitiesClosureService {
       if (!meter.rows[0]) throw new NotFoundException('Utility meter was not found in this factory');
       if (String(meter.rows[0].status) !== 'ACTIVE') throw new ConflictException('A vendor source can only bind to an active meter');
       const id = await this.insertSourceBinding(client,c,payload,key,hash);
-      await this.auditUtility(client,c,'METER',id,1,'SOURCE_BINDING_CREATED','Vendor source binding recorded as DRAFT',payload);
+      await this.auditUtility(client,c,'METER_SOURCE_BINDING',id,1,'SOURCE_BINDING_CREATED','Vendor source binding recorded as DRAFT',payload);
       return {...(await this.sourceBindingDetail(client,c,id)),replayed:false};
     });
   }
@@ -94,7 +94,7 @@ export class UtilitiesClosureService {
           updated_by_user_id=$5,updated_at=clock_timestamp()
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$6`,
         [id,c.tenantId,c.factoryId,next,c.userId,dto.expected_version]);
-      await this.auditUtility(client,c,'METER',id,dto.expected_version+1,'SOURCE_BINDING_'+dto.action,reason,{from_status:from,to_status:next});
+      await this.auditUtility(client,c,'METER_SOURCE_BINDING',id,dto.expected_version+1,'SOURCE_BINDING_'+dto.action,reason,{from_status:from,to_status:next});
       return this.sourceBindingDetail(client,c,id);
     });
   }
@@ -161,7 +161,7 @@ export class UtilitiesClosureService {
         if(payload.threshold_unit_code!==expectedUnit)throw new BadRequestException(`Metric ${payload.metric} must use unit ${expectedUnit}`);
       }
       const id=await this.insertPolicy(client,c,payload,key,hash);
-      await this.auditUtility(client,c,'UTILITY_EVENT',id,1,'THRESHOLD_POLICY_CREATED','Threshold policy recorded as DRAFT',payload);
+      await this.auditUtility(client,c,'THRESHOLD_POLICY',id,1,'THRESHOLD_POLICY_CREATED','Threshold policy recorded as DRAFT',payload);
       return {...(await this.policyDetail(client,c,id)),replayed:false};
     });
   }
@@ -196,7 +196,7 @@ export class UtilitiesClosureService {
           last_change_reason=$6,updated_by_user_id=$5,updated_at=clock_timestamp()
          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$7`,
         [id,c.tenantId,c.factoryId,next,c.userId,reason,dto.expected_version]);
-      await this.auditUtility(client,c,'UTILITY_EVENT',id,dto.expected_version+1,'THRESHOLD_POLICY_'+dto.action,reason,{from_status:from,to_status:next});
+      await this.auditUtility(client,c,'THRESHOLD_POLICY',id,dto.expected_version+1,'THRESHOLD_POLICY_'+dto.action,reason,{from_status:from,to_status:next});
       return this.policyDetail(client,c,id);
     });
   }
@@ -274,7 +274,7 @@ export class UtilitiesClosureService {
     if(!r.rows[0])throw new NotFoundException('Threshold policy was not found in this factory');
     return r.rows[0];
   }
-  private async auditUtility(client:PoolClient,c:UtilityContext,entityType:'METER'|'READING'|'UTILITY_EVENT',id:string,version:number,action:string,reason:string,payload:unknown) {
+  private async auditUtility(client:PoolClient,c:UtilityContext,entityType:'METER'|'READING'|'UTILITY_EVENT'|'METER_SOURCE_BINDING'|'THRESHOLD_POLICY',id:string,version:number,action:string,reason:string,payload:unknown) {
     await client.query(
       'INSERT INTO utility_audit_events(tenant_id,factory_id,entity_type,entity_id,entity_version,action,actor_user_id,reason,event_data,correlation_id) VALUES($1,$2,$3,$4::uuid,$5,$6,$7,$8,$9::jsonb,$10::uuid)',
       [c.tenantId,c.factoryId,entityType,id,version,action, c.userId,reason,JSON.stringify(payload),this.correlation(c)]);
