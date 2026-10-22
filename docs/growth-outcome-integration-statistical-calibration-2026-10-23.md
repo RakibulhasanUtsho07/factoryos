@@ -46,7 +46,7 @@ A heuristic `uncertainty_pct`, upside/downside range or sensitivity envelope is 
 
 ## Scenario reproducibility
 
-The existing Growth scenario/sensitivity path keeps its model version, data vintage, baseline source reference, normalized input snapshot, constraint snapshot, output snapshot, canonicalization version and SHA-256 input hash immutable. Replaying the same canonical versioned inputs is deterministic; later evidence or source observations do not rewrite prior scenarios. The newly added source observations provide revision-pinned evidence for future scenario inputs, but existing scenarios remain historical snapshots and should be explicitly rerun when a new vintage is wanted.
+The existing Growth scenario/sensitivity path keeps its model version, data vintage, baseline source reference, normalized input snapshot, constraint snapshot, output snapshot, canonicalization version and SHA-256 input hash immutable. For financial sensitivity, `baseline_source_observation_id` can now pin a `finance.actual_revenue` observation. The service checks tenant/factory/opportunity scope, exact adapter version, unit against opportunity currency, source observation timestamp against `data_vintage`, equality with `baseline_revenue`, and the canonical observation URI; then it embeds the observation ID, source revision hash, observation hash, unit, value and time in the scenario input snapshot covered by SHA-256. This does not silently assign total costs into variable/fixed-cost buckets; cost assumptions remain explicit versioned scenario inputs unless the source model has a sound cost segmentation mapping. Replaying the same canonical versioned inputs is deterministic; later evidence or source observations do not rewrite prior scenarios. Existing scenarios remain historical snapshots and should be explicitly rerun when a new vintage is wanted.
 
 ## Verification map
 
@@ -58,6 +58,7 @@ The existing Growth scenario/sensitivity path keeps its model version, data vint
 | Source observation RLS, canonical row/value/unit/time/revision guard, append-only and evidence cross-link contracts | `services/api/test/growth-kpi-source-observations.sql` |
 | Both baseline and actual refs persisted and guarded against the canonical source observation value, unit, source version and time in experiment/outcome KPI rows | `migrations/179_growth_kpi_baseline_evidence_provenance.sql`; `services/api/test/growth-kpi-baseline-evidence.sql`; source-backed outcome unit tests |
 | Calibration sample floors, approved-policy matching, domain ambiguity and heuristic-range semantics | `growth-calibration-policy-report.spec.ts`, `growth-forecast-evaluation.spec.ts` |
+| Baseline revenue pinned to exact source revision, source currency and data vintage in deterministic scenario input hash | `growth.service.spec.ts` (source-pinned scenario tests) |
 | Calibration policy RLS, version constraints, immutable configuration and maker-checker guard | `services/api/test/growth-calibration-policies.sql` |
 | DDL apply/reapply | API PostgreSQL CI replays migrations 177 and 178 and runs both SQL contract files |
 
