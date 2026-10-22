@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
+import type { PoolClient } from 'pg';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
@@ -166,7 +167,7 @@ export class GrowthCalibrationPolicyService {
     return row;
   }
 
-  private async outbox(client: { query: (sql: string, params?: unknown[]) => Promise<unknown> },
+  private async outbox(client: PoolClient,
     tenantId: string, factoryId: string, userId: string, aggregateId: string, eventType: string,
     correlationId: string, payload: Record<string, unknown>) {
     await client.query(
