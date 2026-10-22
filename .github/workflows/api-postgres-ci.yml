@@ -199,6 +199,14 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/162_plm_eco_effective_dated_revision_integration.sql
 
+          echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/mrp-finite-capacity-planning-contract.sql
+
+          echo "Reapplying finite-capacity planning migration to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
+
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
