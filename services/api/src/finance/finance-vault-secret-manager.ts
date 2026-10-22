@@ -8,6 +8,8 @@ import {
   type FinanceSecretManager,
 } from './finance-business-central.adapter';
 
+type FinanceSecretContext = { tenant_id: string; factory_id: string; connector_id: string };
+
 function commaSeparatedSet(value: string | undefined): Set<string> {
   return new Set((value ?? '').split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean));
 }
@@ -29,11 +31,18 @@ function validateVaultPath(reference: string): string {
   return path;
 }
 
+function validateSingleLineSecret(value: unknown, errorCode: string): string {
+  if (typeof value !== 'string' || value.trim().length < 8 || value.length > 8192 ||
+      /[\r\n\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(errorCode);
+  }
+  return value.trim();
+}
+
 /**
- * HashiCorp Vault KV-v2 resolver. The Vault Agent/workload identity integration
- * writes a short-lived Vault API token to a mounted file; no static Vault token
- * is kept in application configuration. Only the provider access_token value is
- * returned to the ERP adapter. Vault networking uses its own DNS/IP allowlists.
+ * HashiCorp Vault KV-v2 resolver. A short-lived Vault Agent token is mounted
+ * through workload identity. Only specifically named provider credentials are
+ * returned to the appropriate adapter; raw secret documents are never returned.
  */
 @Injectable()
 export class VaultFinanceSecretManager implements FinanceSecretManager {
@@ -44,8 +53,27 @@ export class VaultFinanceSecretManager implements FinanceSecretManager {
 
   async resolveBearerToken(
     secretReference: string,
-    _context: { tenant_id: string; factory_id: string; connector_id: string },
+    _context: FinanceSecretContext,
   ): Promise<string> {
+    const data = await this.readVaultData(secretReference);
+    return validateSingleLineSecret(data.access_token, 'FINANCE_VAULT_PROVIDER_ACCESS_TOKEN_MISSING');
+  }
+
+  async resolveSftpPrivateKey(
+    secretReference: string,
+    _context: FinanceSecretContext,
+  ): Promise<string> {
+    const data = await this.readVaultData(secretReference);
+    const key = data.sftp_private_key_pem;
+    if (typeof key !== 'string' || key.length < 80 || key.length > 64 * 1024 ||
+        key.includes('\u0000') ||
+        !/^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----\r?\n[\s\S]{32,63000}\r?\n-----END (?:OPENSSH |RSA |EC )?PRIVATE KEY-----\r?\n?$/.test(key)) {
+      throw new Error('FINANCE_VAULT_SFTP_PRIVATE_KEY_MISSING_OR_INVALID');
+    }
+    return key.endsWith('\n') ? key : key + '\n';
+  }
+
+  private async readVaultData(secretReference: string): Promise<Record<string, unknown>> {
     const secretPath = validateVaultPath(secretReference);
     const addressValue = process.env.FINANCE_VAULT_ADDR ?? '';
     const tokenFile = process.env.FINANCE_VAULT_TOKEN_FILE ?? '';
@@ -71,10 +99,7 @@ export class VaultFinanceSecretManager implements FinanceSecretManager {
     } catch {
       throw new Error('FINANCE_VAULT_AGENT_TOKEN_UNAVAILABLE');
     }
-    if (vaultToken.length < 8 || vaultToken.length > 8192 ||
-        /[\r\n\u0000-\u001f\u007f]/.test(vaultToken)) {
-      throw new Error('FINANCE_VAULT_AGENT_TOKEN_INVALID');
-    }
+    validateSingleLineSecret(vaultToken, 'FINANCE_VAULT_AGENT_TOKEN_INVALID');
 
     const path = secretPath.split('/').map(encodeURIComponent).join('/');
     const url = new URL('/v1/' + mount + '/data/' + path, address.origin).toString();
@@ -83,17 +108,16 @@ export class VaultFinanceSecretManager implements FinanceSecretManager {
       commaSeparatedSet(process.env.FINANCE_VAULT_ALLOWED_IPS),
     );
     const response = await client.request<{
-      data?: { data?: { access_token?: unknown } };
+      data?: { data?: Record<string, unknown> };
     }>({
       url,
       method: 'GET',
       authHeader: { name: 'X-Vault-Token', value: vaultToken },
     });
-    const accessToken = response?.data?.data?.access_token;
-    if (typeof accessToken !== 'string' || accessToken.trim().length < 8 ||
-        accessToken.length > 8192 || /[\r\n\u0000-\u001f\u007f]/.test(accessToken)) {
-      throw new Error('FINANCE_VAULT_PROVIDER_ACCESS_TOKEN_MISSING');
+    const data = response?.data?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('FINANCE_VAULT_SECRET_DOCUMENT_INVALID');
     }
-    return accessToken.trim();
+    return data;
   }
 }
