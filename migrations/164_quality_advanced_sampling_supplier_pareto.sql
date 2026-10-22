@@ -233,8 +233,8 @@ CREATE TABLE IF NOT EXISTS quality_supplier_quality_events (
     REFERENCES quality_inspections(id, tenant_id, factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_quality_supplier_event_defect FOREIGN KEY (defect_id, tenant_id, factory_id)
     REFERENCES quality_defects(id, tenant_id, factory_id) ON DELETE RESTRICT,
-  CONSTRAINT fk_quality_supplier_event_grn_line FOREIGN KEY (goods_receipt_line_id, tenant_id, factory_id)
-    REFERENCES goods_receipt_lines(id, tenant_id, factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_quality_supplier_event_grn_line FOREIGN KEY (goods_receipt_line_id, tenant_id, factory_id, goods_receipt_id)
+    REFERENCES goods_receipt_lines(id, tenant_id, factory_id, goods_receipt_id) ON DELETE RESTRICT,
   CONSTRAINT fk_quality_supplier_event_actor FOREIGN KEY (recorded_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_quality_supplier_event_type CHECK (event_type IN ('DEFECT_REPORTED')),
   CONSTRAINT chk_quality_supplier_event_severity CHECK (severity IN ('CRITICAL','MAJOR','MINOR')),
