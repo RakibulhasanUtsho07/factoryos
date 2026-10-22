@@ -7,10 +7,10 @@ DECLARE
   required_table TEXT;
   required_trigger TEXT;
   required_policy TEXT;
-  tenant_id UUID := 'faaab63d-c447-46ce-950d-deebdd7f5f30';
+  v_tenant_id UUID := 'faaab63d-c447-46ce-950d-deebdd7f5f30';
   actor_id UUID := '921382b8-e83f-43ab-a576-e3db6a06b70c';
   reviewer_id UUID := '21eaa0e0-e7b8-43a3-9c32-d8a5c6d11110';
-  source_id UUID := gen_random_uuid();
+  v_source_id UUID := gen_random_uuid();
   check_id UUID := gen_random_uuid();
   first_document_id UUID := gen_random_uuid();
   duplicate_document_id UUID := gen_random_uuid();
@@ -55,6 +55,7 @@ BEGIN
 
   FOREACH required_trigger IN ARRAY ARRAY[
     'research_source_authenticity_checks_immutable',
+    'research_source_authenticity_check_guard',
     'research_source_authenticity_reviews_guard',
     'research_source_authenticity_reviews_immutable',
     'research_source_documents_guard',
@@ -71,7 +72,8 @@ BEGIN
   END LOOP;
 
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='171_research_source_provider_documents')
-     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='172_research_document_content_integrity') THEN
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='172_research_document_content_integrity')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='173_research_authenticity_identity_guard') THEN
     RAISE EXCEPTION 'RESEARCH_SOURCE_PRODUCTION_MIGRATION_REGISTRATION_MISSING';
   END IF;
 
@@ -92,12 +94,12 @@ BEGIN
   ON CONFLICT (id) DO UPDATE SET status='ACTIVE';
 
   INSERT INTO research_sources (
-    id,tenant_id,namespace,source_type,title,authors,source_metadata,
+    id,tenant_id,namespace,source_type,title,doi,authors,source_metadata,
     license_status,access_status,rights_basis,license_reference,full_text_storage_allowed,
     untrusted_content,created_by,reviewed_by,reviewed_at,review_reason
   ) VALUES (
-    source_id,tenant_id,'TENANT','CUSTOMER_PROVIDED',
-    'CI customer-provided research evidence', '[]'::jsonb, '{}'::jsonb,
+    v_source_id,v_tenant_id,'TENANT','CUSTOMER_PROVIDED',
+    'CI customer-provided research evidence','10.1234/ci.fixture','[]'::jsonb, '{}'::jsonb,
     'USER_PROVIDED_AUTHORIZED','APPROVED',
     'Disposable CI fixture permits this source document to be stored for contract testing',
     'https://example.test/ci-fixture-rights',TRUE,TRUE,
@@ -106,14 +108,14 @@ BEGIN
 
   SELECT source_revision,rights_version
     INTO source_revision_value,rights_version_value
-    FROM research_sources WHERE id=source_id AND tenant_id=tenant_id;
+    FROM research_sources s WHERE s.id=v_source_id AND s.tenant_id=v_tenant_id;
 
   INSERT INTO research_source_authenticity_checks (
     id,tenant_id,source_id,source_revision,rights_version,provider,verification_status,
     provider_record_id,canonical_doi,canonical_url,provider_title,title_similarity,
     response_sha256,reason_code,evidence,checked_by
   ) VALUES (
-    check_id,tenant_id,source_id,source_revision_value,rights_version_value,
+    v_check_id,v_tenant_id,v_source_id,source_revision_value,rights_version_value,
     'CROSSREF','VERIFIED','10.1234/ci.fixture','10.1234/ci.fixture',
     'https://doi.org/10.1234/ci.fixture','CI customer-provided research evidence',1.0,
     repeat('a',64),'DOI_AND_TITLE_MATCH','{}'::jsonb,actor_id
@@ -124,7 +126,7 @@ BEGIN
       tenant_id,source_id,authenticity_check_id,source_revision,rights_version,
       decision,reason,reviewed_by
     ) VALUES (
-      tenant_id,source_id,check_id,source_revision_value,rights_version_value,
+      v_tenant_id,v_source_id,v_check_id,source_revision_value,rights_version_value,
       'ACCEPT','Same-user review must be rejected',actor_id
     );
   EXCEPTION WHEN insufficient_privilege THEN
@@ -157,14 +159,14 @@ BEGIN
     original_filename,media_type,byte_size,content_sha256,extracted_text_sha256,
     normalized_text_sha256,text_signature,parser_version,similarity_score,created_by
   ) VALUES (
-    first_document_id,tenant_id,source_id,source_revision_value,rights_version_value,
+    v_first_document_id,v_tenant_id,v_source_id,source_revision_value,rights_version_value,
     'research-production-fixture-1',repeat('b',64),'evidence.txt','text/plain',
     octet_length(content_bytes),content_hash,text_hash,text_hash,signature,
     'factoryos-text-parser.v1',0,actor_id
   );
 
   INSERT INTO research_source_document_content (document_id,tenant_id,raw_content,extracted_text)
-  VALUES (first_document_id,tenant_id,content_bytes,content_text);
+  VALUES (v_first_document_id,v_tenant_id,content_bytes,content_text);
 
   -- Same bytes should remain separately traceable and be linked as a duplicate, not merged.
   INSERT INTO research_source_documents (
@@ -173,17 +175,17 @@ BEGIN
     normalized_text_sha256,text_signature,parser_version,duplicate_of_document_id,
     similarity_score,created_by
   ) VALUES (
-    duplicate_document_id,tenant_id,source_id,source_revision_value,rights_version_value,
+    v_duplicate_document_id,v_tenant_id,v_source_id,source_revision_value,rights_version_value,
     'research-production-fixture-2',repeat('c',64),'duplicate-evidence.txt','text/plain',
     octet_length(content_bytes),content_hash,text_hash,text_hash,signature,
     'factoryos-text-parser.v1',first_document_id,1,actor_id
   );
   INSERT INTO research_source_document_content (document_id,tenant_id,raw_content,extracted_text)
-  VALUES (duplicate_document_id,tenant_id,content_bytes,content_text);
+  VALUES (v_duplicate_document_id,v_tenant_id,content_bytes,content_text);
 
   BEGIN
     DELETE FROM research_source_document_content
-    WHERE document_id=first_document_id AND tenant_id=tenant_id;
+    WHERE document_id=v_first_document_id AND tenant_id=v_tenant_id;
   EXCEPTION WHEN insufficient_privilege THEN
     rejected_direct_delete := TRUE;
   END;
@@ -197,17 +199,17 @@ BEGIN
          reviewed_by=reviewer_id,
          reviewed_at=clock_timestamp(),
          review_reason='CI rights revocation exercises the content purge contract'
-   WHERE id=source_id AND tenant_id=tenant_id;
+   WHERE id=v_source_id AND tenant_id=v_tenant_id;
 
   SELECT count(*) INTO stored_content_count
-    FROM research_source_document_content WHERE tenant_id=tenant_id
-      AND document_id IN (first_document_id,duplicate_document_id);
+    FROM research_source_document_content d WHERE d.tenant_id=v_tenant_id
+      AND d.document_id IN (v_first_document_id,v_duplicate_document_id);
   SELECT count(*) INTO purged_document_count
-    FROM research_source_documents WHERE tenant_id=tenant_id AND source_id=source_id
-      AND id IN (first_document_id,duplicate_document_id) AND storage_status='PURGED';
+    FROM research_source_documents d WHERE d.tenant_id=v_tenant_id AND d.source_id=v_source_id
+      AND d.id IN (v_first_document_id,v_duplicate_document_id) AND d.storage_status='PURGED';
   SELECT count(*) INTO purge_receipt_count
-    FROM research_source_document_purges WHERE tenant_id=tenant_id AND source_id=source_id
-      AND document_id IN (first_document_id,duplicate_document_id)
+    FROM research_source_document_purges p WHERE p.tenant_id=v_tenant_id AND p.source_id=v_source_id
+      AND p.document_id IN (v_first_document_id,v_duplicate_document_id)
       AND content_sha256=content_hash AND extracted_text_sha256=text_hash
       AND purge_reason='SOURCE_ACCESS_REVOKED';
 
