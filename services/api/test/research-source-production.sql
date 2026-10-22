@@ -11,9 +11,9 @@ DECLARE
   actor_id UUID := '921382b8-e83f-43ab-a576-e3db6a06b70c';
   reviewer_id UUID := '21eaa0e0-e7b8-43a3-9c32-d8a5c6d11110';
   v_source_id UUID := gen_random_uuid();
-  check_id UUID := gen_random_uuid();
-  first_document_id UUID := gen_random_uuid();
-  duplicate_document_id UUID := gen_random_uuid();
+  v_check_id UUID := gen_random_uuid();
+  v_first_document_id UUID := gen_random_uuid();
+  v_duplicate_document_id UUID := gen_random_uuid();
   content_text TEXT := 'FactoryOS customer evidence proves this text is retained only under current rights.';
   content_bytes BYTEA;
   content_hash CHAR(64);
