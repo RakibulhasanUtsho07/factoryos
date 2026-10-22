@@ -94,7 +94,15 @@ CREATE TABLE IF NOT EXISTS finance_close_period_history (
     REFERENCES finance_close_periods(id,tenant_id,factory_id) ON DELETE RESTRICT,
   CONSTRAINT uq_finance_close_history_version UNIQUE(close_period_id,event_version),
   CONSTRAINT uq_finance_close_history_idempotency UNIQUE(tenant_id,factory_id,close_period_id,idempotency_key),
-  CONSTRAINT chk_finance_close_history_idempotency CHECK(idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199} CHECK(action IN ('CREATED','REFRESHED','SUBMITTED','RECALLED','APPROVED')),
+  CONSTRAINT chk_finance_close_history_idempotency CHECK(
+    length(btrim(idempotency_key)) BETWEEN 1 AND 200
+    AND idempotency_key !~ '[^A-Za-z0-9._:-]'
+    AND left(idempotency_key,1) ~ '[A-Za-z0-9]'
+  ),
+  CONSTRAINT chk_finance_close_history_request_hash CHECK(
+    length(request_hash)=64 AND request_hash !~ '[^a-f0-9]'
+  ),
+  CONSTRAINT chk_finance_close_history_action CHECK(action IN ('CREATED','REFRESHED','SUBMITTED','RECALLED','APPROVED')),
   CONSTRAINT chk_finance_close_history_reason CHECK(length(btrim(reason)) BETWEEN 3 AND 1000),
   CONSTRAINT chk_finance_close_history_hash CHECK(snapshot_hash ~ '^[a-f0-9]{64}$'),
   CONSTRAINT chk_finance_close_history_details CHECK(jsonb_typeof(details)='object')
