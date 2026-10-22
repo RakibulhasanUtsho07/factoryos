@@ -74,7 +74,7 @@ describe('AdvancedQualityService request guardrails',()=>{
   });
 
   it('routes a replayed rejected AQL sample through the existing inspection hold lifecycle',async()=>{
-    database.transaction.mockResolvedValue({id:DEFECT,replayed:true} as never);
+    database.transaction.mockResolvedValue({id:INSPECTION,replayed:true} as never);
     database.query
       .mockResolvedValueOnce({rows:[{decision:'REJECT'}]} as never)
       .mockResolvedValueOnce({rows:[{status:'OPEN',row_version:8}]} as never);
