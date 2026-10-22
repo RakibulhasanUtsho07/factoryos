@@ -1839,7 +1839,7 @@ export class GrowthService {
             actual_value::text AS actual_value, signed_error::text AS signed_error,
             absolute_error::text AS absolute_error, squared_error::text AS squared_error,
             symmetric_percentage_error::text AS symmetric_percentage_error, interval_hit,
-            nominal_coverage_pct::text AS nominal_coverage_pct,
+            nominal_coverage_pct::text AS nominal_coverage_pct,interval_semantics,
             evaluated_at::text AS evaluated_at, COUNT(*) OVER ()::text AS total_count
          FROM growth_forecast_evaluations
          WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
@@ -1882,9 +1882,8 @@ export class GrowthService {
           calibration_policy: null,
           error_threshold_assessment: 'DOMAIN_REQUIRED',
           error_threshold_failures: [],
-          interval_threshold_assessment: bucket.nominal_coverage_pct === null
-            ? (bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED')
-            : 'POLICY_NOT_SELECTED',
+          interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
+            : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED' : 'POLICY_NOT_SELECTED',
         };
       }
       if (!candidates.length) {
@@ -1893,9 +1892,8 @@ export class GrowthService {
           calibration_policy: null,
           error_threshold_assessment: 'NO_APPROVED_POLICY',
           error_threshold_failures: [],
-          interval_threshold_assessment: bucket.nominal_coverage_pct === null
-            ? (bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED')
-            : 'NO_APPROVED_POLICY',
+          interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
+            : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED' : 'NO_APPROVED_POLICY',
         };
       }
       const selected = [...candidates].sort((a, b) => Number(b.policy_version) - Number(a.policy_version))[0];
@@ -1919,9 +1917,9 @@ export class GrowthService {
         return {
           ...bucket, calibration_policy: policySummary,
           error_threshold_assessment: 'INSUFFICIENT_POLICY_SAMPLE', error_threshold_failures: [],
-          interval_threshold_assessment: bucket.nominal_coverage_pct === null
-            ? (bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED')
-            : bucket.interval_sample_count < minSamples ? 'INSUFFICIENT_INTERVAL_SAMPLE' : 'NOT_ASSESSED',
+          interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
+            : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED'
+              : bucket.interval_sample_count < minSamples ? 'INSUFFICIENT_INTERVAL_SAMPLE' : 'NOT_ASSESSED',
         };
       }
       const failures: string[] = [];
@@ -1930,8 +1928,10 @@ export class GrowthService {
       if (Math.abs(bucket.mean_error) > policySummary.thresholds.max_absolute_mean_error) failures.push('ABSOLUTE_BIAS');
       if (bucket.mean_symmetric_percentage_error_pct > policySummary.thresholds.max_mean_symmetric_percentage_error_pct) failures.push('MEAN_SMAPE_PERCENT');
       let intervalAssessment: string;
-      if (bucket.nominal_coverage_pct === null) {
-        intervalAssessment = bucket.interval_sample_count > 0 ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE' : 'NO_INTERVAL_DECLARED';
+      if (bucket.interval_semantics === 'HEURISTIC_RANGE') {
+        intervalAssessment = 'NOT_CALIBRATABLE_HEURISTIC_RANGE';
+      } else if (bucket.interval_semantics === 'NONE') {
+        intervalAssessment = 'NO_INTERVAL_DECLARED';
       } else if (bucket.interval_sample_count < minSamples) {
         intervalAssessment = 'INSUFFICIENT_INTERVAL_SAMPLE';
       } else if (bucket.calibration_gap_pct_points === null) {
