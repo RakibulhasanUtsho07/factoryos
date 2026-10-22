@@ -47,6 +47,7 @@ export interface GrowthForecastCalibrationObservation {
   symmetric_percentage_error: string | number;
   interval_hit: boolean | null;
   nominal_coverage_pct: string | number | null;
+  interval_semantics?: 'NONE' | 'HEURISTIC_RANGE' | 'DECLARED_NOMINAL_COVERAGE';
 }
 
 export interface GrowthForecastCalibrationBucket {
@@ -54,6 +55,7 @@ export interface GrowthForecastCalibrationBucket {
   metric_key: string;
   unit: string;
   nominal_coverage_pct: number | null;
+  interval_semantics: 'NONE' | 'HEURISTIC_RANGE' | 'DECLARED_NOMINAL_COVERAGE';
   sample_count: number;
   mean_error: number;
   mean_absolute_error: number;
@@ -195,14 +197,15 @@ export function summarizeGrowthForecastCalibration(
   const groups = new Map<string, GrowthForecastCalibrationObservation[]>();
   for (const row of observations) {
     const nominal = row.nominal_coverage_pct === null ? null : Number(row.nominal_coverage_pct);
-    const key = JSON.stringify([row.model_version, row.metric_key, row.unit, nominal]);
+    const intervalSemantics = row.interval_semantics ?? (nominal !== null ? 'DECLARED_NOMINAL_COVERAGE' : (row.interval_hit === null ? 'NONE' : 'HEURISTIC_RANGE'));
+    const key = JSON.stringify([row.model_version, row.metric_key, row.unit, nominal, intervalSemantics]);
     const group = groups.get(key) ?? [];
     group.push(row);
     groups.set(key, group);
   }
 
   return [...groups.entries()].map(([key, rows]) => {
-    const [model_version, metric_key, unit, nominal] = JSON.parse(key) as [string, string, string, number | null];
+    const [model_version, metric_key, unit, nominal, interval_semantics] = JSON.parse(key) as [string, string, string, number | null, GrowthForecastCalibrationBucket['interval_semantics']];
     const count = BigInt(rows.length);
     const sumScaled = (field: 'signed_error' | 'absolute_error' | 'squared_error' | 'symmetric_percentage_error') =>
       rows.reduce((sum, row) => sum + parseScaledDecimal(String(row[field])), 0n);
@@ -228,7 +231,7 @@ export function summarizeGrowthForecastCalibration(
     else status = 'ASSESSABLE';
 
     return {
-      model_version, metric_key, unit, nominal_coverage_pct: nominalCoverage,
+      model_version, metric_key, unit, nominal_coverage_pct: nominalCoverage, interval_semantics,
       sample_count: rows.length,
       mean_error: Number(formatScaled(meanError)),
       mean_absolute_error: Number(formatScaled(meanAbsoluteError)),
