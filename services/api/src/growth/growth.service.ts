@@ -26,6 +26,7 @@ import {
   GROWTH_FORECAST_EVALUATION_VERSION,
   GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
   summarizeGrowthForecastCalibration,
+  deriveGrowthEmpiricalResidualThreshold,
   type GrowthForecastCalibrationObservation,
   type GrowthForecastEvaluationMetrics,
 } from './growth-forecast-evaluation';
@@ -1826,11 +1827,14 @@ export class GrowthService {
     return { ...transactionResult.evaluation, replayed: !transactionResult.created };
   }
 
-  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string, domain?: string) {
+  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string, domain?: string, residualCoveragePct = 90) {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
     const allowedDomains = ['FINANCE', 'PRODUCTION', 'QUALITY', 'DELIVERY', 'COMMERCIAL', 'OTHER'];
     if (domain && !allowedDomains.includes(domain)) throw new BadRequestException('Unsupported calibration domain');
+    if (!Number.isFinite(residualCoveragePct) || residualCoveragePct < 50 || residualCoveragePct > 99.99) {
+      throw new BadRequestException('residual_coverage_pct must be between 50 and 99.99');
+    }
     const [result, policiesResult] = await Promise.all([
       this.database.query<GrowthForecastCalibrationObservation & {
         evaluated_at: string; total_count: string;
@@ -1873,12 +1877,18 @@ export class GrowthService {
     const summaries = summarizeGrowthForecastCalibration(observations);
     const policies = policiesResult.rows;
     const calibration = summaries.map(bucket => {
+      const residualRows = observations.filter(row => row.model_version === bucket.model_version
+        && row.metric_key === bucket.metric_key && row.unit === bucket.unit);
+      const residualThreshold = deriveGrowthEmpiricalResidualThreshold(
+        residualRows.map(row => row.absolute_error), residualCoveragePct,
+      );
       const candidates = policies.filter(policy => policy.model_version === bucket.model_version
         && policy.metric_key === bucket.metric_key && policy.unit === bucket.unit);
       const domains = [...new Set(candidates.map(policy => policy.domain))];
       if (!domain && domains.length > 1) {
         return {
           ...bucket,
+          empirical_residual_threshold: residualThreshold,
           calibration_policy: null,
           error_threshold_assessment: 'DOMAIN_REQUIRED',
           error_threshold_failures: [],
@@ -1898,7 +1908,7 @@ export class GrowthService {
       }
       const selected = [...candidates].sort((a, b) => Number(b.policy_version) - Number(a.policy_version))[0];
       if (!selected) {
-        return { ...bucket, calibration_policy: null, error_threshold_assessment: 'NO_APPROVED_POLICY',
+        return { ...bucket, empirical_residual_threshold: residualThreshold, calibration_policy: null, error_threshold_assessment: 'NO_APPROVED_POLICY',
           error_threshold_failures: [], interval_threshold_assessment: 'NO_APPROVED_POLICY' };
       }
       const minSamples = Number(selected.minimum_sample_count);
@@ -1954,12 +1964,13 @@ export class GrowthService {
     return {
       method_version: GROWTH_FORECAST_EVALUATION_VERSION,
       minimum_calibration_sample_size: GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
+      residual_coverage_target_pct: residualCoveragePct,
       observations_included: observations.length,
       total_observations: totalCount,
       sample_window_truncated: totalCount > observations.length,
       policy_domain_filter: domain ?? null,
       approved_policy_count: policies.length,
-      interpretation: 'Observed out-of-sample errors only. An approved domain policy evaluates point-error thresholds; declared interval coverage is evaluated separately. A heuristic range has no nominal coverage and is never described as a confidence or calibrated prediction interval. The 10-observation floor is an operational minimum, not a statistical power guarantee. No model is automatically refit.',
+      interpretation: 'Observed out-of-sample errors only. An approved domain policy evaluates point-error thresholds; declared interval coverage is evaluated separately. A heuristic range has no nominal coverage and is never described as a confidence or calibrated prediction interval. empirical_residual_threshold is a held-out absolute-residual order statistic, not a confidence interval or a guarantee under drift/non-exchangeability; its finite-sample tail rank is withheld when unavailable. The 10-observation floor is an operational minimum, not a statistical power guarantee. No model is automatically refit.',
       calibration,
     };
   }
