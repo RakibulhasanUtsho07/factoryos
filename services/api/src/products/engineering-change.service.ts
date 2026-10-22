@@ -80,9 +80,9 @@ export class EngineeringChangeService {
           JSON.stringify(sourceSnapshot),JSON.stringify(targetSnapshot),JSON.stringify(diff),affectedOrderCount,key,requestHash,userId,correlation]);
       const ecoId=row.rows[0]?.id; if(!ecoId) throw new Error('PRODUCT_ECO_INSERT_FAILED');
       const impacts=await client.query(`INSERT INTO product_eco_order_impacts(
-        tenant_id,factory_id,product_id,eco_id,work_order_id,order_line_id,work_order_number,status_at_assessment,
+        tenant_id,factory_id,product_id,eco_id,work_order_id,source_order_id,order_line_id,work_order_number,status_at_assessment,
         work_order_row_version,pinned_product_version_id,planned_start_date,due_date,target_quantity,impact_type,order_snapshot)
-        SELECT w.tenant_id,w.factory_id,w.product_id,$1::uuid,w.id,w.source_order_line_id,w.work_order_number,w.status,
+        SELECT w.tenant_id,w.factory_id,w.product_id,$1::uuid,w.id,w.source_order_id,w.source_order_line_id,w.work_order_number,w.status,
           w.row_version,w.product_version_id,w.planned_start_date,w.due_date,w.target_quantity,
           CASE WHEN w.status='DRAFT' THEN 'REPLAN_BEFORE_RELEASE' ELSE 'PRESERVE_RELEASED_SNAPSHOT_REVIEW' END,
           jsonb_build_object('work_order_id',w.id,'work_order_number',w.work_order_number,'status',w.status,
