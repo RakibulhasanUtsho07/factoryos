@@ -188,13 +188,16 @@ BEGIN
     clock_timestamp()-INTERVAL '1 month',clock_timestamp()+INTERVAL '6 months','Wear the listed PPE and keep container closed',
     'Flush exposure area and follow the site emergency procedure','DRAFT',1,'eec-sds',v_hash,v_actor,v_actor,v_correlation)
   RETURNING id INTO v_chemical;
-  UPDATE ehs_chemical_sds_registry SET status='ACTIVE',row_version=2,last_change_reason='SDS checked and approved for the test store',
-    updated_by_user_id=v_actor,updated_at=clock_timestamp()
+  PERFORM set_config('app.user_id',v_approver::text,TRUE);
+  UPDATE ehs_chemical_sds_registry SET status='ACTIVE',row_version=2,approved_by_user_id=v_approver,
+    approved_at=clock_timestamp(),last_change_reason='Independent SDS review completed',
+    updated_by_user_id=v_approver,updated_at=clock_timestamp()
   WHERE id=v_chemical AND tenant_id=v_tenant AND factory_id=v_factory AND status='DRAFT' AND row_version=1;
   IF NOT FOUND OR NOT EXISTS(SELECT 1 FROM ehs_lifecycle_events WHERE tenant_id=v_tenant AND factory_id=v_factory
       AND entity_type='CHEMICAL_SDS' AND entity_id=v_chemical AND action='ACTIVE') THEN
-    RAISE EXCEPTION 'SDS activation must preserve revision lifecycle audit evidence';
+    RAISE EXCEPTION 'SDS activation must preserve independent approval and revision lifecycle audit evidence';
   END IF;
+  PERFORM set_config('app.user_id',v_actor::text,TRUE);
 
   INSERT INTO ehs_contractor_inductions(
     tenant_id,factory_id,contractor_code,company_name,person_name,induction_at,expires_at,topics,evidence,status,
