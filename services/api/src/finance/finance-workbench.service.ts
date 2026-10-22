@@ -95,9 +95,11 @@ export class FinanceWorkbenchService {
           FROM scoped
           WHERE fact_type IN ('FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST')
         ), selected AS (
-          SELECT * FROM actuals
+          SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
+          FROM actuals
           UNION ALL
-          SELECT * FROM forecast_ranked WHERE forecast_rank=1
+          SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
+          FROM forecast_ranked WHERE forecast_rank=1
         ), totals AS (
           SELECT period_start,currency,
             count(*) FILTER (WHERE fact_type LIKE 'ACTUAL_%')::int AS actual_fact_count,
