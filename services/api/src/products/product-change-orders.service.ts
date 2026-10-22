@@ -785,10 +785,10 @@ export class ProductChangeOrdersService {
     );
     const inserted = await client.query<WorkOrderImpactRow>(
       `INSERT INTO product_change_order_affected_orders (
-        tenant_id, factory_id, change_order_id, work_order_id, pinned_product_version_id,
+        tenant_id, factory_id, change_order_id, work_order_id, product_id, pinned_product_version_id,
         status_at_snapshot, planned_start_date, due_date, impact_type
       )
-      SELECT wo.tenant_id, wo.factory_id, $1, wo.id, wo.product_version_id,
+      SELECT wo.tenant_id, wo.factory_id, $1, wo.id, wo.product_id, wo.product_version_id,
         wo.status, wo.planned_start_date, wo.due_date,
         CASE WHEN wo.planned_start_date >= $4::date
           THEN 'REVISION_REVIEW_BEFORE_START' ELSE 'SNAPSHOT_CROSSES_EFFECTIVE_DATE' END
