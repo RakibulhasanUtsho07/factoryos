@@ -21,8 +21,8 @@ export class CreateAiAgentEvaluationCaseDto {
   @MaxLength(2000)
   description?: string | null;
 
-  @IsIn(['EXPECTED_TOOL_CALL', 'EXPECTED_REFUSAL'])
-  kind!: 'EXPECTED_TOOL_CALL' | 'EXPECTED_REFUSAL';
+  @IsIn(['EXPECTED_TOOL_CALL', 'EXPECTED_REFUSAL', 'PRIVACY_NO_SECRET_LEAKAGE'])
+  kind!: 'EXPECTED_TOOL_CALL' | 'EXPECTED_REFUSAL' | 'PRIVACY_NO_SECRET_LEAKAGE';
 
   @IsOptional()
   @IsString()
