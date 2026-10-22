@@ -108,6 +108,13 @@ describe('FinanceWorkbenchService', () => {
     expect(result.reporting_ready).toBe(false);
     expect(result.currency_policy).toContain('No implicit FX conversion');
     expect(query).toHaveBeenCalled();
+    const marginCall = query.mock.calls.find(([statement]) => statement.includes('WITH scoped AS ('));
+    const marginSql = marginCall?.[0] ?? '';
+    expect(marginSql).toContain('DISTINCT ON (connector_id,fact_type,source_fact_key,currency,period_start)');
+    expect(marginSql).toContain('GROUP BY period_start,currency,customer_ref,product_id,product_ref,order_id,order_ref,cost_center_ref');
+    const varianceCall = query.mock.calls.find(([statement]) => statement.includes('operational_quantity_variance'));
+    expect(varianceCall?.[0]).toContain('f.source_record_type');
+    expect(varianceCall?.[0]).toContain('COALESCE(f.product_ref,f.product_id::text)');
     const positionCall = query.mock.calls.find(([statement]) => statement.includes('WITH ranked_positions AS'));
     expect(positionCall?.[1]).toEqual(['tenant-1', 'factory-1', '2026-10-01T00:00:00.000Z', '2026-10-31T00:00:00.000Z', 'BDT']);
   });
