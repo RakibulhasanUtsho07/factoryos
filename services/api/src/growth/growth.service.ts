@@ -1755,7 +1755,8 @@ export class GrowthService {
         outcome_kpi_measurement_id: actualRow.measurement_id,
         actual_evidence_ref: actualRow.evidence_ref,
         outcome_observed_at: observedAt.toISOString(),
-        recorded_by: userId,
+        // The submitting actor is audit metadata, not part of the forecast request identity.
+        // Excluding it lets a legitimate retry replay the original idempotent result across users.
         ...metrics,
       };
       const requestHash = createHash('sha256')
