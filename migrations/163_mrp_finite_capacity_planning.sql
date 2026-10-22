@@ -15,6 +15,56 @@ JOIN permissions p ON p.code IN ('mrp.capacity.read', 'mrp.capacity.write', 'mrp
 WHERE r.code IN ('ORG_ADMIN', 'FACTORY_MANAGER')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
+-- A finished-goods product definition represents a style/size identity. MRP and capacity plans
+-- retain those labels alongside the effective product revision so style-size demand stays explainable.
+ALTER TABLE product_definitions
+  ADD COLUMN IF NOT EXISTS style_code VARCHAR(120),
+  ADD COLUMN IF NOT EXISTS size_code VARCHAR(80);
+ALTER TABLE mrp_plan_requirements
+  ADD COLUMN IF NOT EXISTS style_code VARCHAR(120),
+  ADD COLUMN IF NOT EXISTS size_code VARCHAR(80);
+
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'product_definitions'::regclass AND conname = 'chk_product_definition_style_code') THEN
+    ALTER TABLE product_definitions ADD CONSTRAINT chk_product_definition_style_code
+      CHECK (style_code IS NULL OR length(btrim(style_code)) BETWEEN 1 AND 120);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'product_definitions'::regclass AND conname = 'chk_product_definition_size_code') THEN
+    ALTER TABLE product_definitions ADD CONSTRAINT chk_product_definition_size_code
+      CHECK (size_code IS NULL OR length(btrim(size_code)) BETWEEN 1 AND 80);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'mrp_plan_requirements'::regclass AND conname = 'chk_mrp_requirement_style_code') THEN
+    ALTER TABLE mrp_plan_requirements ADD CONSTRAINT chk_mrp_requirement_style_code
+      CHECK (style_code IS NULL OR length(btrim(style_code)) BETWEEN 1 AND 120);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'mrp_plan_requirements'::regclass AND conname = 'chk_mrp_requirement_size_code') THEN
+    ALTER TABLE mrp_plan_requirements ADD CONSTRAINT chk_mrp_requirement_size_code
+      CHECK (size_code IS NULL OR length(btrim(size_code)) BETWEEN 1 AND 80);
+  END IF;
+END;
+$;
+
+CREATE OR REPLACE FUNCTION factoryos_guard_product_style_size_identity()
+RETURNS TRIGGER LANGUAGE plpgsql AS $
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'style/size labels are retained with the product master and cannot be deleted' USING ERRCODE = '55000';
+  END IF;
+  IF OLD.style_code IS NOT NULL AND NEW.style_code IS DISTINCT FROM OLD.style_code THEN
+    RAISE EXCEPTION 'style_code is immutable after it is assigned' USING ERRCODE = '55000';
+  END IF;
+  IF OLD.size_code IS NOT NULL AND NEW.size_code IS DISTINCT FROM OLD.size_code THEN
+    RAISE EXCEPTION 'size_code is immutable after it is assigned' USING ERRCODE = '55000';
+  END IF;
+  RETURN NEW;
+END;
+$;
+DROP TRIGGER IF EXISTS trg_product_style_size_identity ON product_definitions;
+CREATE TRIGGER trg_product_style_size_identity
+BEFORE UPDATE OF style_code, size_code OR DELETE ON product_definitions
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_product_style_size_identity();
+
 CREATE TABLE IF NOT EXISTS mrp_capacity_calendar (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -125,6 +175,8 @@ CREATE TABLE IF NOT EXISTS mrp_capacity_plan_operations (
   order_line_number INTEGER NOT NULL,
   product_code VARCHAR(120) NOT NULL,
   product_name VARCHAR(255) NOT NULL,
+  style_code VARCHAR(120),
+  size_code VARCHAR(80),
   product_version_number INTEGER NOT NULL,
   need_by_date DATE NOT NULL,
   planned_quantity NUMERIC(18,4) NOT NULL,
