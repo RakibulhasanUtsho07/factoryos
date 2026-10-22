@@ -344,9 +344,15 @@ export class EhsClosureService {
     if(!q.rows[0])throw new NotFoundException('Drill response evidence was not found');return q.rows[0];
   }
   private async chemicalDetail(client:PoolClient,c:EhsContext,id:string){
-    const q=await client.query<Row>('SELECT id::text AS id,chemical_code,chemical_name,manufacturer,hazard_class,storage_location,sds_revision,sds_document_uri,sds_issued_at::text AS sds_issued_at,sds_review_due_at::text AS sds_review_due_at,status,approved_by_user_id::text AS approved_by_user_id,approved_at::text AS approved_at,
-        handling_instructions,emergency_instructions,row_version::int AS row_version,last_change_reason,created_at::text AS created_at,updated_at::text AS updated_at FROM ehs_chemical_sds_registry WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[id,c.tenantId,c.factoryId]);
-    if(!q.rows[0])throw new NotFoundException('Chemical/SDS record was not found');return q.rows[0];
+    const q=await client.query<Row>(
+      `SELECT id::text AS id,chemical_code,chemical_name,manufacturer,hazard_class,storage_location,sds_revision,sds_document_uri,
+        sds_issued_at::text AS sds_issued_at,sds_review_due_at::text AS sds_review_due_at,status,
+        approved_by_user_id::text AS approved_by_user_id,approved_at::text AS approved_at,handling_instructions,
+        emergency_instructions,row_version::int AS row_version,last_change_reason,created_at::text AS created_at,
+        updated_at::text AS updated_at FROM ehs_chemical_sds_registry WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [id,c.tenantId,c.factoryId]);
+    if(!q.rows[0])throw new NotFoundException('Chemical/SDS record was not found');
+    return q.rows[0];
   }
   private async contractorDetail(client:PoolClient,c:EhsContext,id:string){
     const q=await client.query<Row>('SELECT id::text AS id,contractor_code,company_name,person_name,induction_at::text AS induction_at,expires_at::text AS expires_at,topics,evidence,status,row_version::int AS row_version,last_change_reason,recorded_by_user_id::text AS recorded_by_user_id,updated_by_user_id::text AS updated_by_user_id,created_at::text AS created_at,updated_at::text AS updated_at FROM ehs_contractor_inductions WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[id,c.tenantId,c.factoryId]);
