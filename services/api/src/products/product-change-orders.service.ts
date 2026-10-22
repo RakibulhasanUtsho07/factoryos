@@ -110,6 +110,33 @@ const VERSION_COLS = `id::text AS id, product_id::text AS product_id, version_nu
   row_version::text AS row_version, created_by_user_id::text AS created_by_user_id,
   approved_by_user_id::text AS approved_by_user_id`;
 
+
+export function diffProductRevisionRows(
+  beforeRows: JsonObject[],
+  afterRows: JsonObject[],
+  key: string,
+  groupKey?: (row: JsonObject) => string,
+): { added: JsonObject[]; removed: JsonObject[]; changed: JsonObject[] } {
+  const makeKey = (row: JsonObject) => (groupKey ? groupKey(row) + ':' : '') + String(row[key]);
+  const before = new Map(beforeRows.map((row) => [makeKey(row), row]));
+  const after = new Map(afterRows.map((row) => [makeKey(row), row]));
+  const added: JsonObject[] = [];
+  const removed: JsonObject[] = [];
+  const changed: JsonObject[] = [];
+  for (const [rowKey, afterRow] of after) {
+    const beforeRow = before.get(rowKey);
+    if (!beforeRow) {
+      added.push({ key: rowKey, after: afterRow });
+    } else if (JSON.stringify(beforeRow) !== JSON.stringify(afterRow)) {
+      changed.push({ key: rowKey, before: beforeRow, after: afterRow });
+    }
+  }
+  for (const [rowKey, beforeRow] of before) {
+    if (!after.has(rowKey)) removed.push({ key: rowKey, before: beforeRow });
+  }
+  return { added, removed, changed };
+}
+
 @Injectable()
 export class ProductChangeOrdersService {
   constructor(
@@ -743,24 +770,7 @@ export class ProductChangeOrdersService {
     key: string,
     groupKey?: (row: JsonObject) => string,
   ): { added: JsonObject[]; removed: JsonObject[]; changed: JsonObject[] } {
-    const makeKey = (row: JsonObject) => (groupKey ? groupKey(row) + ':' : '') + String(row[key]);
-    const before = new Map(beforeRows.map((row) => [makeKey(row), row]));
-    const after = new Map(afterRows.map((row) => [makeKey(row), row]));
-    const added: JsonObject[] = [];
-    const removed: JsonObject[] = [];
-    const changed: JsonObject[] = [];
-    for (const [rowKey, afterRow] of after) {
-      const beforeRow = before.get(rowKey);
-      if (!beforeRow) {
-        added.push({ key: rowKey, after: afterRow });
-      } else if (JSON.stringify(beforeRow) !== JSON.stringify(afterRow)) {
-        changed.push({ key: rowKey, before: beforeRow, after: afterRow });
-      }
-    }
-    for (const [rowKey, beforeRow] of before) {
-      if (!after.has(rowKey)) removed.push({ key: rowKey, before: beforeRow });
-    }
-    return { added, removed, changed };
+    return diffProductRevisionRows(beforeRows, afterRows, key, groupKey);
   }
 
   private async replaceAffectedOrderSnapshot(
