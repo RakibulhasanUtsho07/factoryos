@@ -20,6 +20,7 @@ import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportuni
 import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
 import { SyncGrowthSourceObservationsDto } from './dto/sync-growth-source-observations.dto';
 import { RecordGrowthExperimentResultFromSourceDto } from './dto/record-growth-experiment-result-from-source.dto';
+import { RecordGrowthOpportunityOutcomeFromSourceDto } from './dto/record-growth-opportunity-outcome-from-source.dto';
 import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
 import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
 import { CreateGrowthConstraintDto } from './dto/create-growth-constraint.dto';
@@ -356,6 +357,21 @@ export class GrowthController {
   ): Promise<unknown>  {
     const c = this.context(req);
     return this.growth.recordOpportunityOutcome(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
+  }
+
+  @Post('opportunities/:opportunityId/outcomes/from-source')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  recordOpportunityOutcomeFromSource(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: RecordGrowthOpportunityOutcomeFromSourceDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growthSources.recordOpportunityOutcomeFromSource(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
   }
 
   @Post('opportunities/:opportunityId/forecast-evaluations')
