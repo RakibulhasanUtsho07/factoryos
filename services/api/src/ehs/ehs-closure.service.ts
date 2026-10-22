@@ -243,18 +243,21 @@ export class EhsClosureService {
   async transitionChemicalSds(c:EhsContext,id:string,dto:TransitionEhsChemicalSdsDto){
     this.scope(c);this.uuid(id,'chemicalId');const reason=this.text(dto.reason,'reason',2000);
     return this.database.transaction({tenantId:c.tenantId,userId:c.userId,requestId:c.requestId,traceId:c.traceId},async client=>{
-      const q=await client.query<Row>('SELECT status,row_version::int AS row_version FROM ehs_chemical_sds_registry WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',[id,c.tenantId,c.factoryId]);
+      const q=await client.query<Row>('SELECT status,row_version::int AS row_version,created_by_user_id::text AS created_by_user_id FROM ehs_chemical_sds_registry WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',[id,c.tenantId,c.factoryId]);
       const row=q.rows[0];if(!row)throw new NotFoundException('Chemical/SDS record was not found in this factory');
       if(Number(row.row_version)!==dto.expected_version)throw new ConflictException('Chemical/SDS version is stale');
       const from=String(row.status),next=dto.action==='ACTIVATE'?'ACTIVE':dto.action==='DEACTIVATE'?'INACTIVE':'RETIRED';
       const allowed:Record<string,string[]>={DRAFT:['ACTIVE','RETIRED'],ACTIVE:['INACTIVE','RETIRED'],INACTIVE:['ACTIVE','RETIRED']};
       if(!(allowed[from]??[]).includes(next))throw new ConflictException(`Invalid chemical/SDS transition ${from} -> ${next}`);
       if(dto.action==='ACTIVATE'){
+        if(String(row.created_by_user_id)===c.userId)throw new ConflictException('SDS activation requires an independent approver');
         const due=await client.query<Row>('SELECT sds_review_due_at>=clock_timestamp() AS current FROM ehs_chemical_sds_registry WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',[id,c.tenantId,c.factoryId]);
         if(!due.rows[0]?.current)throw new ConflictException('An expired SDS review cannot be activated');
       }
       await client.query(
         `UPDATE ehs_chemical_sds_registry SET status=$4,row_version=row_version+1,last_change_reason=$5,
+          approved_by_user_id=CASE WHEN $4='ACTIVE' THEN $6::uuid ELSE NULL END,
+          approved_at=CASE WHEN $4='ACTIVE' THEN clock_timestamp() ELSE NULL END,
           updated_by_user_id=$6,updated_at=clock_timestamp() WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND row_version=$7`,
         [id,c.tenantId,c.factoryId,next,reason,c.userId,dto.expected_version]);
       return this.chemicalDetail(client,c,id);
