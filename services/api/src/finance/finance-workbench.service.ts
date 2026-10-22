@@ -533,7 +533,7 @@ export class FinanceWorkbenchService {
         if (prior.rows[0].request_hash.trim() !== requestHash) {
           throw new ConflictException('Idempotency-Key was already used for a different finance-close transition');
         }
-        return { ...this.publicClosePeriod(row), replayed: true } as T & { replayed?: boolean };
+        return { ...this.publicClosePeriod(row), replayed: true } as unknown as T & { replayed?: boolean };
       }
       return await callback(client, row) as T & { replayed?: boolean };
     });
