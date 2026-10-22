@@ -1,8 +1,9 @@
 import {
-  Body, Controller, Get, Param, ParseUUIDPipe, Post, Query,
-  Req, UnauthorizedException, UseGuards,
+  Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Query,
+  Req, UnauthorizedException, UploadedFile, UseGuards, UseInterceptors,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
@@ -19,6 +20,7 @@ import { DecideResearchRelevanceDto } from './dto/decide-research-relevance.dto'
 import { DecideResearchClaimDto } from './dto/decide-research-claim.dto';
 import { DecideResearchEvidenceSafetyDto } from './dto/decide-research-evidence-safety.dto';
 import { DecideResearchSourceDto } from './dto/decide-research-source.dto';
+import { DecideResearchSourceAuthenticityDto } from './dto/decide-research-source-authenticity.dto';
 import { PromoteResearchReleaseDto } from './dto/promote-research-release.dto';
 import { RollbackResearchReleaseDto } from './dto/rollback-research-release.dto';
 import {
@@ -30,6 +32,7 @@ import {
   ResearchIngestionCheckpointDto,
 } from './dto/research-ingestion.dto';
 import { ResearchIngestionService } from './research-ingestion.service';
+import { ResearchSourceProductionService, type UploadedResearchFile } from './research-source-production.service';
 import { ResearchService } from './research.service';
 
 interface FactoryOsRequestContext {
@@ -49,6 +52,7 @@ export class ResearchController {
   constructor(
     private readonly research: ResearchService,
     private readonly ingestion: ResearchIngestionService,
+    private readonly production: ResearchSourceProductionService,
   ) {}
 
   @Post('watchlists')
@@ -279,6 +283,90 @@ export class ResearchController {
     return this.ingestion.listSourceRightsHistory(
       c.userId, c.tenantId, sourceId, rawLimit === undefined ? 100 : Number(rawLimit),
     );
+  }
+
+
+  @Post('sources/:sourceId/authenticity-checks')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  verifySourceAuthenticity(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.production.verifySourceAuthenticity(c.userId, c.tenantId, sourceId, c.requestId, c.traceId);
+  }
+
+  @Get('sources/:sourceId/authenticity-checks')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  listSourceAuthenticityHistory(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.production.listAuthenticityHistory(
+      c.userId, c.tenantId, sourceId, rawLimit === undefined ? 100 : Number(rawLimit),
+    );
+  }
+
+  @Post('sources/:sourceId/authenticity-checks/:checkId/decision')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.review')
+  decideSourceAuthenticity(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Param('checkId', new ParseUUIDPipe()) checkId: string,
+    @Body() body: DecideResearchSourceAuthenticityDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.production.decideAuthenticity(
+      c.userId, c.tenantId, sourceId, checkId, body.decision, body.reason, c.requestId, c.traceId,
+    );
+  }
+
+  @Post('sources/:sourceId/documents')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.write')
+  @UseInterceptors(FileInterceptor('file', { limits: { files: 1, fileSize: 5 * 1024 * 1024 } }))
+  uploadCustomerResearchDocument(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @UploadedFile() file: UploadedResearchFile | undefined,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.production.uploadDocument(
+      c.userId, c.tenantId, sourceId, idempotencyKey ?? null, file as UploadedResearchFile,
+      c.requestId, c.traceId,
+    );
+  }
+
+  @Get('sources/:sourceId/documents')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.read')
+  listCustomerResearchDocuments(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.production.listDocuments(
+      c.userId, c.tenantId, sourceId, rawLimit === undefined ? 100 : Number(rawLimit),
+    );
+  }
+
+  @Get('sources/:sourceId/documents/:documentId/content')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('research.ingest')
+  readCustomerResearchDocumentText(
+    @Req() req: FactoryOsRequest,
+    @Param('sourceId', new ParseUUIDPipe()) sourceId: string,
+    @Param('documentId', new ParseUUIDPipe()) documentId: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.production.readDocumentText(c.userId, c.tenantId, sourceId, documentId);
   }
 
   @Post('sources/:sourceId/claims')
