@@ -284,15 +284,9 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF ROW(NEW.tenant_id,NEW.factory_id,NEW.profile_code,NEW.revision,NEW.inspection_type,
-         NEW.aql_percent,NEW.inspection_level,NEW.lot_size_min,NEW.lot_size_max,NEW.sample_size,
-         NEW.accept_number,NEW.reject_number,NEW.notes,NEW.idempotency_key,NEW.request_hash,
-         NEW.created_by_user_id,NEW.created_at,NEW.correlation_id)
+  IF (to_jsonb(NEW) - ARRAY['status','row_version','updated_by_user_id','updated_at'])
      IS DISTINCT FROM
-     ROW(OLD.tenant_id,OLD.factory_id,OLD.profile_code,OLD.revision,OLD.inspection_type,
-         OLD.aql_percent,OLD.inspection_level,OLD.lot_size_min,OLD.lot_size_max,OLD.sample_size,
-         OLD.accept_number,OLD.reject_number,OLD.notes,OLD.idempotency_key,OLD.request_hash,
-         OLD.created_by_user_id,OLD.created_at,OLD.correlation_id) THEN
+     (to_jsonb(OLD) - ARRAY['status','row_version','updated_by_user_id','updated_at']) THEN
     RAISE EXCEPTION 'advanced quality profile content is immutable; create a new revision' USING ERRCODE='55000';
   END IF;
 
