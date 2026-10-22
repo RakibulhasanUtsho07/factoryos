@@ -287,6 +287,14 @@ BEGIN
     v_product_version_id := NEW.product_version_id;
   END IF;
 
+  -- Child writers and ECO submission take the same revision-row lock so no
+  -- concurrent insert/update can slip across the DRAFT -> SUBMITTED boundary.
+  PERFORM 1 FROM product_versions
+  WHERE id = v_product_version_id
+    AND tenant_id = COALESCE(NEW.tenant_id, OLD.tenant_id)
+    AND factory_id = COALESCE(NEW.factory_id, OLD.factory_id)
+  FOR UPDATE;
+
   IF EXISTS (
     SELECT 1 FROM product_change_orders co
     WHERE co.proposed_product_version_id = v_product_version_id AND co.status = 'SUBMITTED'
