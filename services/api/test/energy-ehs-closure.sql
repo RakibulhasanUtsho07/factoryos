@@ -17,6 +17,8 @@ DECLARE
   v_failed_drill UUID:=gen_random_uuid();
   v_chemical UUID:=gen_random_uuid();
   v_induction UUID:=gen_random_uuid();
+  v_notification_source UUID;
+  v_notification UUID:=gen_random_uuid();
   v_correlation UUID:=gen_random_uuid();
   v_hash CHAR(64):=encode(digest('energy and EHS closure contract','sha256'),'hex');
   v_alert_count INTEGER;
@@ -24,6 +26,8 @@ DECLARE
 BEGIN
   INSERT INTO tenants(id,slug,name) VALUES(v_tenant,'energy-ehs-'||v_tenant::text,'Energy and EHS Closure Test Tenant');
   INSERT INTO users(id,display_name) VALUES(v_actor,'Energy EHS Test Actor'),(v_approver,'Energy EHS Independent Approver');
+  INSERT INTO tenant_memberships(id,tenant_id,user_id,status)
+    VALUES(gen_random_uuid(),v_tenant,v_actor,'ACTIVE'),(gen_random_uuid(),v_tenant,v_approver,'ACTIVE');
   INSERT INTO factories(id,tenant_id,code,name,status)
     VALUES(v_factory,v_tenant,'EEC-'||upper(substr(v_factory::text,1,8)),'Energy EHS Closure Test Factory','ACTIVE');
   PERFORM set_config('app.tenant_id',v_tenant::text,TRUE);
@@ -111,6 +115,35 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM utility_audit_events WHERE tenant_id=v_tenant AND factory_id=v_factory
       AND entity_type='READING' AND entity_id=v_reading AND action='READING_RECORDED') THEN
     RAISE EXCEPTION 'Normalized utility reading did not generate the expected audit record';
+  END IF;
+
+  -- Staged in-app notification inbox and acknowledgement retain the source event and accountable actor.
+  SELECT id INTO v_notification_source FROM outbox_events
+    WHERE tenant_id=v_tenant AND factory_id=v_factory AND event_type='UTILITIES.THRESHOLD_ALERT_RAISED'
+    ORDER BY created_at,id LIMIT 1;
+  IF v_notification_source IS NULL THEN RAISE EXCEPTION 'Threshold outbox source event was not persisted'; END IF;
+  INSERT INTO operational_notifications(
+    id,tenant_id,factory_id,recipient_user_id,source_event_id,source_event_type,aggregate_type,aggregate_id,
+    category,severity,title,body,action_required,status,row_version,payload,correlation_id
+  ) VALUES(v_notification,v_tenant,v_factory,v_actor,v_notification_source,'UTILITIES.THRESHOLD_ALERT_RAISED',
+    'UTILITY_THRESHOLD_ALERT',(SELECT id FROM utility_threshold_alerts WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND reading_id=v_reading AND policy_id=v_policy),'UTILITY_THRESHOLD','HIGH','Energy consumption threshold exceeded',
+    'Observed 20 kWh against the approved 10 kWh limit',TRUE,'UNREAD',1,
+    jsonb_build_object('alert_id',v_notification_source,'policy_id',v_policy,'reading_id',v_reading,'unit_code','kWh'),
+    v_correlation);
+  IF NOT EXISTS(SELECT 1 FROM operational_notification_audit_events WHERE tenant_id=v_tenant AND factory_id=v_factory
+      AND notification_id=v_notification AND action='CREATED' AND to_status='UNREAD') THEN
+    RAISE EXCEPTION 'Notification enqueue did not create an immutable inbox audit record';
+  END IF;
+  UPDATE operational_notifications SET status='ACKNOWLEDGED',row_version=2,acknowledged_by_user_id=v_actor,
+    acknowledged_at=clock_timestamp(),updated_by_user_id=v_actor,last_change_reason='Reviewed source reading and utility event',
+    updated_at=clock_timestamp()
+  WHERE id=v_notification AND tenant_id=v_tenant AND factory_id=v_factory AND recipient_user_id=v_actor
+    AND status='UNREAD' AND row_version=1;
+  IF NOT FOUND OR NOT EXISTS(SELECT 1 FROM operational_notification_audit_events WHERE tenant_id=v_tenant
+      AND factory_id=v_factory AND notification_id=v_notification AND action='ACKNOWLEDGED'
+      AND actor_user_id=v_actor AND to_status='ACKNOWLEDGED') THEN
+    RAISE EXCEPTION 'Notification acknowledgement did not preserve actor and transition audit';
   END IF;
 
   -- A below-threshold reading is normalized and audited but must not create an alert.
