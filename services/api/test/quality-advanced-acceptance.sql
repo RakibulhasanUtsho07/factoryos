@@ -21,6 +21,23 @@ BEGIN
     WHERE version='164_quality_advanced_sampling_supplier_pareto'
   ) THEN RAISE EXCEPTION 'Advanced quality acceptance migration marker is missing'; END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version='165_quality_disposition_inventory_balance_guard'
+  ) THEN RAISE EXCEPTION 'Quality disposition inventory balance guard migration marker is missing'; END IF;
+
+  IF position('v_balance IS DISTINCT FROM NEW.quantity_after'
+       IN pg_get_functiondef('factoryos_quality_guard_inventory_issue()'::regprocedure))=0
+    OR position('NEW.quantity_after <> 0'
+       IN pg_get_functiondef('factoryos_quality_guard_inventory_issue()'::regprocedure))=0 THEN
+    RAISE EXCEPTION 'Quality scrap/return guard does not reconcile the post-issue aggregate balance';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='inventory_movements'::regclass
+    AND tgname='trg_quality_guard_inventory_issue' AND NOT tgisinternal AND tgenabled<>'D') THEN
+    RAISE EXCEPTION 'Quality scrap/return inventory movement guard is not enabled';
+  END IF;
+
   FOREACH t IN ARRAY required_tables LOOP
     SELECT c.relrowsecurity,c.relforcerowsecurity INTO enabled,forced
     FROM pg_class c WHERE c.oid=to_regclass(t);
