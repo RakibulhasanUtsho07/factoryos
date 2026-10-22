@@ -400,6 +400,50 @@ describe('AiAgentEvaluationService', () => {
     expect(JSON.stringify(evaluated)).toContain('evaluator never retries ambiguous side effects');
   });
 
+  it('keeps cancellation-requested live executions inconclusive even when a step appears successful', () => {
+    const service = makeService();
+    const evaluated = (service as any).compareCaseToLiveTrace(
+      caseRow,
+      liveTaskRow({ state: 'CANCELLED', cancel_requested_at: '2026-10-11T00:01:00.000Z' }),
+      [liveTraceRow()],
+    );
+    expect(evaluated.status).toBe('INCONCLUSIVE');
+    expect(evaluated.observedSummary.versionPinBlockers).toContain('TASK_CANCELLATION_REQUESTED');
+  });
+
+  it('rejects a live tool-call pass when the durable executor result finished after the task deadline', () => {
+    const service = makeService();
+    const evaluated = (service as any).compareCaseToLiveTrace(
+      caseRow,
+      liveTaskRow({ state: 'COMPLETED', deadline_at: '2026-10-12T00:00:00.000Z' }),
+      [liveTraceRow({ execution_finished_at: '2026-10-13T00:00:00.000Z' })],
+    );
+    expect(evaluated.status).toBe('FAIL');
+    expect(evaluated.observedSummary.reason).toContain('correlated successful authorization and execution evidence');
+  });
+
+  it('never treats a policy refusal as pre-execution when an action intent was already created', () => {
+    const service = makeService();
+    const refusalCase = {
+      ...caseRow, kind: 'EXPECTED_REFUSAL', expected_refusal_reason_contains: 'not permitted',
+    };
+    const denied = liveTraceRow({
+      step_status: 'BLOCKED',
+      step_error: { code: 'AI_AGENT_AUTHORIZATION_DENIED', message: 'Action not permitted by policy' },
+      step_action_intent_id: liveActionId,
+      step_execution_record_id: null, execution_evidence: null,
+      authorization_status: 'DENIED',
+      action_authorization: { status: 'DENIED', reason: 'Action not permitted by policy' },
+      execution_id: null, execution_status: null, execution_result: null, execution_error: null,
+      claim_status: null, reconciliation_decision: null,
+    });
+    const evaluated = (service as any).compareCaseToLiveTrace(
+      refusalCase, liveTaskRow({ state: 'BLOCKED' }), [denied],
+    );
+    expect(evaluated.status).toBe('FAIL');
+    expect(evaluated.observedSummary.reason).toContain('Execution evidence exists');
+  });
+
   it('passes a policy refusal only when a bound DENIED decision has no step execution, claim or execution record', () => {
     const service = makeService();
     const refusalCase = {
