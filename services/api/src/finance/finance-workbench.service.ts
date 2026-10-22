@@ -248,6 +248,9 @@ export class FinanceWorkbenchService {
         [tenantId, factoryId, from, to, currency],
       );
       const missingDomains = domains.filter((domain) => !domain.is_active).map((domain) => domain.domain);
+      const uninitializedDomains = domains
+        .filter((domain) => domain.is_active && !domain.last_completed_at)
+        .map((domain) => domain.domain);
       const unresolvedCount = Number(count.rows[0]?.count ?? 0);
 
       return {
@@ -261,9 +264,10 @@ export class FinanceWorkbenchService {
         working_capital: workingCapital.rows,
         reporting_domains: domains,
         missing_reporting_domains: missingDomains,
+        uninitialized_reporting_domains: uninitializedDomains,
         unreconciled_fact_count: unresolvedCount,
         unreconciled_facts: unreconciled.rows,
-        reporting_ready: missingDomains.length === 0 && unresolvedCount === 0,
+        reporting_ready: missingDomains.length === 0 && uninitializedDomains.length === 0 && unresolvedCount === 0,
       };
     });
   }
@@ -562,7 +566,7 @@ export class FinanceWorkbenchService {
     currency: string,
     periodStart: string,
     periodEnd: string,
-  ): Promise<Record<string, unknown> & { readiness: { missing_reporting_domains: string[]; unresolved_reconciliation_count: number; can_submit: boolean } }> {
+  ): Promise<Record<string, unknown> & { readiness: { missing_reporting_domains: string[]; uninitialized_reporting_domains: string[]; unresolved_reconciliation_count: number; can_submit: boolean } }> {
     const performance = await client.query(
       `WITH scoped AS (
         SELECT f.* FROM financial_facts f
@@ -650,6 +654,9 @@ export class FinanceWorkbenchService {
     );
     const domains = await this.loadReportingDomains(client, tenantId, factoryId);
     const missingDomains = domains.filter((domain) => !domain.is_active).map((domain) => domain.domain);
+    const uninitializedDomains = domains
+      .filter((domain) => domain.is_active && !domain.last_completed_at)
+      .map((domain) => domain.domain);
     const mismatchResult = await client.query<{ count: string }>(
       `SELECT count(*)::text AS count
       FROM finance_fact_reconciliations r
@@ -664,8 +671,9 @@ export class FinanceWorkbenchService {
     const unresolvedCount = Number(mismatchResult.rows[0]?.count ?? 0);
     const readiness = {
       missing_reporting_domains: missingDomains,
+      uninitialized_reporting_domains: uninitializedDomains,
       unresolved_reconciliation_count: unresolvedCount,
-      can_submit: missingDomains.length === 0 && unresolvedCount === 0,
+      can_submit: missingDomains.length === 0 && uninitializedDomains.length === 0 && unresolvedCount === 0,
     };
     return {
       schema: 'factoryos.finance-close-snapshot/v1',
@@ -710,13 +718,15 @@ export class FinanceWorkbenchService {
   }
 
   private assertSnapshotReady(
-    snapshot: { readiness: { missing_reporting_domains: string[]; unresolved_reconciliation_count: number; can_submit: boolean } },
+    snapshot: { readiness: { missing_reporting_domains: string[]; uninitialized_reporting_domains: string[]; unresolved_reconciliation_count: number; can_submit: boolean } },
   ) {
     if (!snapshot.readiness.can_submit) {
       const missing = snapshot.readiness.missing_reporting_domains.join(', ') || 'none';
+      const uninitialized = snapshot.readiness.uninitialized_reporting_domains.join(', ') || 'none';
       throw new ConflictException(
         'Finance-close cannot be submitted with missing reporting domains (' + missing +
-        ') or open reconciliation mismatches (' + snapshot.readiness.unresolved_reconciliation_count + ')',
+        '), reporting sources without an ingestion receipt (' + uninitialized +
+        '), or open reconciliation mismatches (' + snapshot.readiness.unresolved_reconciliation_count + ')',
       );
     }
   }
