@@ -2,7 +2,7 @@
 
 **Task:** 19 — Finance costing, profitability and working-capital workbench  
 **Branch:** `rakibul-hasan`  
-**Candidate code/migration/test/workflow SHA:** `8bc68043edb06d8f8e76479ef18f8684a9c1411a`  
+**Candidate code/migration/test/workflow SHA:** `de5447776127cb8c3fea15e0ddb92a32da54f468`  
 **Implementation status:** Backend and database contracts committed  
 **Automated exact-SHA CI status:** PENDING VERIFICATION — do not mark PASS until the run's API and PostgreSQL jobs conclude successfully  
 **Finance-owner close acceptance:** OPEN
@@ -15,7 +15,7 @@
 - Overdue receivables/payables remain visible and are included in due-date cash horizon totals. Open PO commitments, LC exposure, bank position, inventory value and tax liability are presented by source currency.
 - Added currency/period-specific finance-close snapshots with SHA-256 snapshot binding, expected row versions, append-only history, transactional audit/outbox events, forced tenant RLS, source-readiness submission gate (active reporting sources must also have at least one completed ingestion receipt), stale-snapshot approval rejection and independent maker-checker approval. Last-ingestion timestamps are exposed, but no arbitrary freshness-age threshold is enforced until a finance owner approves one.
 - Added migration `170_finance_costing_profitability_close_workbench.sql`, inserted in the ordered `scripts/audit/migration-manifest.txt`.
-- Added eight focused Jest cases in `services/api/src/finance/finance-workbench.service.spec.ts` covering currency/period outputs, open mismatch visibility, date-only UTC end bounds, reversed-period validation, stale-snapshot approval refusal, creator self-approval refusal, independent approval audit/history/outbox, and idempotent transition replay/key collision. Added `services/api/test/finance-workbench-contract.sql` for database-side lifecycle/RLS/role assertions and wired it in `.github/workflows/api-postgres-ci.yml`. The workflow replays migration 170 after development-role seeding to verify idempotent DDL and role grants.
+- Added nine focused Jest cases in `services/api/src/finance/finance-workbench.service.spec.ts` covering currency/period outputs, open mismatch visibility, date-only UTC end bounds, missing-ingestion readiness, reversed-period validation, stale-snapshot approval refusal, creator self-approval refusal, independent approval audit/history/outbox, and idempotent transition replay/key collision. Added `services/api/test/finance-workbench-contract.sql` for database-side lifecycle/RLS/role assertions and wired it in `.github/workflows/api-postgres-ci.yml`. The workflow replays migration 170 after development-role seeding to verify idempotent DDL and role grants.
 - Updated the Finance Integration Contract and HLD/Blueprint WP03/WP07 evidence matrix.
 - No journal-posting, payment-execution, bank-write or tax-submission API was added.
 
