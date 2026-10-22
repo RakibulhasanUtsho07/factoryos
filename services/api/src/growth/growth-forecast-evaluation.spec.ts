@@ -1,5 +1,6 @@
 import {
   evaluateGrowthForecast,
+  deriveGrowthEmpiricalResidualThreshold,
   GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
   GROWTH_FORECAST_EVALUATION_VERSION,
   summarizeGrowthForecastCalibration,
@@ -164,4 +165,46 @@ describe('growth forecast evaluation', () => {
     ]);
     expect(summaries).toHaveLength(4);
   });
+  it('derives a deterministic finite-sample residual threshold only when its order statistic exists', () => {
+    const residuals = ['9.00000000', '1.00000000', '7.00000000', '2.00000000', '8.00000000',
+      '3.00000000', '6.00000000', '4.00000000', '5.00000000', '10.00000000'];
+    const first = deriveGrowthEmpiricalResidualThreshold(residuals, 90, 10);
+    const replay = deriveGrowthEmpiricalResidualThreshold([...residuals].reverse(), 90, 10);
+    expect(first).toEqual(replay);
+    expect(first).toMatchObject({
+      method_version: 'factoryos.growth.absolute-residual-order-statistic.v1',
+      requested_coverage_pct: 90,
+      sample_count: 10,
+      minimum_sample_count: 10,
+      required_order_rank: 10,
+      threshold_value: '10.00000000',
+      status: 'ESTIMATED_FROM_HELD_OUT_RESIDUALS',
+    });
+    expect(first.interpretation).toContain('not a confidence interval');
+  });
+
+  it('withholds a tail threshold when the finite-sample order statistic exceeds available observations', () => {
+    const residuals = Array.from({ length: 10 }, (_, index) => String(index + 1));
+    expect(deriveGrowthEmpiricalResidualThreshold(residuals, 95, 10)).toMatchObject({
+      sample_count: 10,
+      required_order_rank: 11,
+      threshold_value: null,
+      status: 'TAIL_RANK_UNAVAILABLE',
+    });
+    expect(deriveGrowthEmpiricalResidualThreshold(residuals.slice(0, 9), 90, 10)).toMatchObject({
+      sample_count: 9,
+      threshold_value: null,
+      status: 'INSUFFICIENT_SAMPLE',
+    });
+  });
+
+  it('rejects invalid residual calibration coverage and sample floors', () => {
+    expect(() => deriveGrowthEmpiricalResidualThreshold(['1.00000000'], 100, 10))
+      .toThrow('FORECAST_RESIDUAL_COVERAGE_TARGET_INVALID');
+    expect(() => deriveGrowthEmpiricalResidualThreshold(['-1.00000000'], 90, 10))
+      .toThrow('FORECAST_RESIDUAL_ERROR_MUST_BE_NONNEGATIVE');
+    expect(() => deriveGrowthEmpiricalResidualThreshold(['1.00000000'], 90, 9))
+      .toThrow('FORECAST_RESIDUAL_MINIMUM_SAMPLE_INVALID');
+  });
+
 });
