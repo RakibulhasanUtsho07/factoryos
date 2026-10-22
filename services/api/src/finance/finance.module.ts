@@ -12,12 +12,15 @@ import { FinanceConnectorsController, FinanceReportingController } from './finan
 import { FINANCE_SFTP_TRANSPORT } from './finance-file-transfer.adapters';
 import { OpenSshFinanceSftpTransport } from './finance-openssh-sftp.transport';
 import { FinanceService } from './finance.service';
+import { FinanceWorkbenchController } from './finance-workbench.controller';
+import { FinanceWorkbenchService } from './finance-workbench.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [FinanceConnectorsController, FinanceReportingController],
+  controllers: [FinanceConnectorsController, FinanceReportingController, FinanceWorkbenchController],
   providers: [
     FinanceService,
+    FinanceWorkbenchService,
     {
       provide: FINANCE_SECRET_MANAGER,
       useClass: VaultFinanceSecretManager,
