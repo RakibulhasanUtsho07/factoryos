@@ -206,6 +206,13 @@ BEGIN
     RAISE EXCEPTION 'One-time sampling binding and direct OPEN-to-ON_HOLD transitions must be permitted by the target guard';
   END IF;
 
+  IF position('OLD.status = ''OPEN'' AND NEW.status = ''OPEN'''
+      IN regexp_replace(pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure), '\s+', ' ', 'g'))=0
+    OR position('OLD.status = ''OPEN'' AND NEW.status = ''ON_HOLD'''
+      IN regexp_replace(pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure), '\s+', ' ', 'g'))=0 THEN
+    RAISE EXCEPTION 'Versioned profile binding and non-accepted sample quarantine transitions are not enabled';
+  END IF;
+
   IF position('AQL-bound inspection cannot pass without an ACCEPT sample decision'
       IN pg_get_functiondef('factoryos_require_advanced_quality_evidence()'::regprocedure))=0
     OR position('AQL rejection/hold cannot be cancelled to bypass quarantine or disposition'
