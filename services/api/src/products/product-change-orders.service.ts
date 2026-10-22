@@ -542,7 +542,7 @@ export class ProductChangeOrdersService {
         );
         if (!retired.rows[0]) throw new ConflictException('The previous revision changed concurrently; reload before approving the ECO');
         await this.outbox(client, {
-          tenantId, factoryId, aggregateId: prior.id, eventType: 'PRODUCT.VERSION_SUPERSEDED', correlationId, requestId, userId,
+          tenantId, factoryId, aggregateType: 'PRODUCT_VERSION', aggregateId: prior.id, eventType: 'PRODUCT.VERSION_SUPERSEDED', correlationId, requestId, userId,
           payload: { product_id: p, product_version_id: prior.id, superseded_by_version_id: proposed.id, effective_to_override: cutoff, row_version: retired.rows[0].row_version },
         });
       }
@@ -576,7 +576,7 @@ export class ProductChangeOrdersService {
         correlationId, requestId, traceId,
       });
       await this.outbox(client, {
-        tenantId, factoryId, aggregateId: proposed.id, eventType: 'PRODUCT.VERSION_APPROVED', correlationId, requestId, userId,
+        tenantId, factoryId, aggregateType: 'PRODUCT_VERSION', aggregateId: proposed.id, eventType: 'PRODUCT.VERSION_APPROVED', correlationId, requestId, userId,
         payload: { product_id: p, product_version_id: proposed.id, version_number: approved.rows[0].version_number, effective_from: proposed.effective_from, effective_to: proposed.effective_to, row_version: approved.rows[0].row_version, approved_via_change_order_id: id, superseded_version_id: prior?.id ?? null },
       });
       return { id, replayed: false, versionId: proposed.id, supersededVersionId: prior?.id ?? null };
@@ -917,7 +917,7 @@ export class ProductChangeOrdersService {
   private async outbox(
     client: PoolClient,
     input: {
-      tenantId: string; factoryId: string; aggregateId: string; eventType: string;
+      tenantId: string; factoryId: string; aggregateType?: string; aggregateId: string; eventType: string;
       correlationId: string; requestId: string | null; userId: string; payload: JsonObject;
     },
   ) {
@@ -926,11 +926,11 @@ export class ProductChangeOrdersService {
         tenant_id, factory_id, aggregate_type, aggregate_id, event_type, event_version,
         occurred_at, correlation_id, causation_id, actor, source, payload
       ) VALUES (
-        $1, $2, 'PRODUCT_CHANGE_ORDER', $3, $4, 1, clock_timestamp(), $5::uuid, $6::uuid,
-        $7::jsonb, $8::jsonb, $9::jsonb
+        $1, $2, $3, $4, $5, 1, clock_timestamp(), $6::uuid, $7::uuid,
+        $8::jsonb, $9::jsonb, $10::jsonb
       )`,
       [
-        input.tenantId, input.factoryId, input.aggregateId, input.eventType,
+        input.tenantId, input.factoryId, input.aggregateType ?? 'PRODUCT_CHANGE_ORDER', input.aggregateId, input.eventType,
         input.correlationId, this.validUuid(input.requestId),
         JSON.stringify({ type: 'user', id: input.userId }),
         JSON.stringify({ system: 'FactoryOS', connector: 'product-change-orders-service', version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0' }),
