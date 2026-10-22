@@ -160,6 +160,14 @@ BEGIN
     RAISE EXCEPTION 'Finance-close approval requires an independent reviewer and reason'
       USING ERRCODE='42501';
   END IF;
+  IF OLD.status='SUBMITTED' AND NEW.status='APPROVED' AND
+     (NEW.snapshot IS DISTINCT FROM OLD.snapshot
+       OR NEW.snapshot_hash IS DISTINCT FROM OLD.snapshot_hash
+       OR NEW.submitted_by_user_id IS DISTINCT FROM OLD.submitted_by_user_id
+       OR NEW.submitted_at IS DISTINCT FROM OLD.submitted_at) THEN
+    RAISE EXCEPTION 'A submitted finance-close snapshot and submitter binding cannot change during approval'
+      USING ERRCODE='55000';
+  END IF;
   NEW.updated_at:=clock_timestamp();
   RETURN NEW;
 END $$;
