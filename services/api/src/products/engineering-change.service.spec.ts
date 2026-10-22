@@ -46,8 +46,8 @@ describe('EngineeringChangeService approval transaction',()=>{
     ],rowCount:2};
    if(text.includes("FROM product_versions")&&text.includes("state='APPROVED'")) return {rows:[],rowCount:0};
    if(text.includes('FROM product_bom_alternates')) return {rows:[{count:'0'}],rowCount:1};
-   if(text.startsWith('UPDATE product_versions SET state=\\'RETIRED\\'')) return {rows:[],rowCount:1};
-   if(text.startsWith('UPDATE product_versions SET state=\\'APPROVED\\'')) return {rows:[],rowCount:1};
+   if(text.startsWith("UPDATE product_versions SET state='RETIRED'")) return {rows:[],rowCount:1};
+   if(text.startsWith("UPDATE product_versions SET state='APPROVED'")) return {rows:[],rowCount:1};
    if(text.startsWith('UPDATE product_engineering_changes SET status=')) return {rows:[],rowCount:1};
    return {rows:[],rowCount:1};
   })};
