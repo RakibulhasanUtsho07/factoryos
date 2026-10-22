@@ -1573,6 +1573,111 @@ export class ResearchService {
     return promoted;
   }
 
+
+  async retractRelease(
+    userId: string,
+    tenantId: string,
+    releaseId: string,
+    reasonInput: string,
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.validateUuid(userId, 'userId');
+    this.validateUuid(tenantId, 'tenantId');
+    this.validateUuid(releaseId, 'releaseId');
+    const reason = reasonInput.trim();
+    if (reason.length < 10 || reason.length > 2000) {
+      throw new BadRequestException('Retraction reason must contain between 10 and 2000 characters');
+    }
+
+    const releaseResult = await this.database.query<{
+      id: string; release_key: string; version: number; status: string;
+    }>(
+      `SELECT id::text AS id,release_key,version,status
+       FROM research_knowledge_releases
+       WHERE id=$1 AND tenant_id=$2 AND namespace='TENANT'`,
+      [releaseId, tenantId],
+      { tenantId, userId },
+    );
+    const release = releaseResult.rows[0];
+    if (!release) throw new NotFoundException('Tenant research release not found');
+    if (release.status !== 'PROMOTED') {
+      throw new ConflictException('Only a previously promoted knowledge release can be retracted');
+    }
+
+    const retraction = await this.database.transaction(
+      { tenantId, userId },
+      async (client) => {
+        const channelResult = await client.query<{
+          active_release_id: string | null; active_version: number | null; revision: number;
+        }>(
+          `SELECT active_release_id::text AS active_release_id,active_version,revision
+           FROM research_release_channels
+           WHERE tenant_id=$1 AND release_key=$2
+           FOR UPDATE`,
+          [tenantId, release.release_key],
+        );
+        const channel = channelResult.rows[0];
+        if (!channel || channel.active_release_id !== releaseId
+            || Number(channel.active_version) !== Number(release.version)) {
+          throw new ConflictException('Only the currently active release version can be retracted; reload release history');
+        }
+
+        const updated = await client.query<{ revision: number }>(
+          `UPDATE research_release_channels
+           SET active_release_id=NULL,active_version=NULL,revision=revision+1,updated_by=$1
+           WHERE tenant_id=$2 AND release_key=$3 AND active_release_id=$4 AND active_version=$5
+           RETURNING revision`,
+          [userId, tenantId, release.release_key, releaseId, release.version],
+        );
+        if (!updated.rows[0]) {
+          throw new ConflictException('Release activation changed concurrently; reload history before retrying');
+        }
+
+        await client.query(
+          `INSERT INTO research_release_lifecycle_events (
+             tenant_id,release_id,release_key,version,event_type,related_release_id,
+             related_version,reason,actor_user_id,request_id,trace_id
+           )
+           VALUES ($1,$2,$3,$4,'RETRACTED',NULL,NULL,$5,$6,$7,$8)`,
+          [tenantId, releaseId, release.release_key, release.version, reason, userId, requestId, traceId],
+        );
+        await this.insertOutbox(client, {
+          tenantId, factoryId: null, userId, aggregateType: 'RESEARCH_RELEASE',
+          aggregateId: releaseId, eventType: 'RESEARCH.RELEASE_RETRACTED',
+          correlationId: this.correlationId(requestId, traceId),
+          payload: {
+            release_id: releaseId,
+            release_key: release.release_key,
+            version: Number(release.version),
+            status: 'RETRACTED_FROM_CHANNEL',
+            reason,
+            active_release_id: null,
+            active_version: null,
+            channel_revision: Number(updated.rows[0].revision),
+          },
+        });
+        return {
+          release_id: releaseId,
+          release_key: release.release_key,
+          version: Number(release.version),
+          status: 'RETRACTED_FROM_CHANNEL',
+          active_release_id: null,
+          active_version: null,
+          reason,
+          channel_revision: Number(updated.rows[0].revision),
+        };
+      },
+    );
+
+    await this.auditSafely({
+      tenantId, userId, factoryId: null, action: 'RELEASE_RETRACT',
+      resourceId: releaseId, requestId, traceId,
+      payload: { ...retraction, reason },
+    });
+    return retraction;
+  }
+
   async rollbackRelease(
     userId: string,
     tenantId: string,
