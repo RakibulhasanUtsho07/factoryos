@@ -3,7 +3,7 @@
 **Current application code SHA:** `6d9dd0e40c3a9d1b38436692744a869ad25be0eb`  
 **Branch:** `rakibul-hasan`  
 **Automated API acceptance:** PASS  
-**Automated PostgreSQL acceptance at exact SHA:** RUNNING (not yet a release pass)  
+**Automated PostgreSQL acceptance at exact SHA:** PASS  
 **External staging acceptance:** OPEN
 
 ## 1. Implementation evidence
@@ -25,7 +25,8 @@ Log summary: **130 test suites passed; 1,161 tests passed**. This includes the B
 ### PostgreSQL CI — exact code SHA
 
 Run: https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39799600720  
-Status at evidence capture: **IN PROGRESS** for the same code SHA. It must finish successfully before marking the exact-SHA database acceptance gate PASS.
+Result: **SUCCESS**, `api-postgres` job completed for `6d9dd0e40c3a9d1b38436692744a869ad25be0eb`.  
+Log summary: **170 test suites passed; 1,344 tests passed**, including PostgreSQL migration/contract checks. The workflow wrapper still reports its overall run as finalizing, but its only `api-postgres` job has conclusion `success`.
 
 ### PostgreSQL CI — previous code-equivalent run
 
@@ -56,4 +57,4 @@ Before closing acceptance, attach a sanitized staging receipt (never secret valu
 4. Egress/TLS/allowlist review and alerts observed; finance/security owner approval that no external accounting transaction is posted by this reporting/exchange connector.
 5. Exact-SHA PostgreSQL CI success and sanitized provider operation IDs, timestamps, response codes, hashes, extension/runtime versions and approval references.
 
-**Release decision:** automated connector implementation is present and API CI passed. Finance/ERP/SFTP production acceptance remains **OPEN** until exact-SHA PostgreSQL CI is green and real staging credentials/configuration plus fault-injection evidence and finance/security sign-off are attached.
+**Release decision:** automated connector implementation is present; exact-SHA API and PostgreSQL jobs passed. Finance/ERP/SFTP production acceptance remains **OPEN** until real staging credentials/configuration plus fault-injection evidence and finance/security sign-off are attached.
