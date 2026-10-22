@@ -193,8 +193,10 @@ BEGIN
   IF position('OLD.status = ''OPEN'' AND NEW.status = ''OPEN'''
       IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0
     OR position('OLD.aql_profile_id IS NULL AND OLD.fabric_scoring_profile_id IS NULL'
+      IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0
+    OR position('OLD.status = ''OPEN'' AND NEW.status = ''ON_HOLD'''
       IN pg_get_functiondef('factoryos_guard_quality_inspection_target()'::regprocedure))=0 THEN
-    RAISE EXCEPTION 'One-time versioned sampling binding on an OPEN inspection is not permitted by the target guard';
+    RAISE EXCEPTION 'One-time sampling binding and direct OPEN-to-ON_HOLD transitions must be permitted by the target guard';
   END IF;
 
   IF position('AQL-bound inspection cannot pass without an ACCEPT sample decision'
