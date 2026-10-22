@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
+import { financeRequestHash } from './finance-contract';
 import { FinanceWorkbenchService } from './finance-workbench.service';
 
 describe('FinanceWorkbenchService', () => {
@@ -121,5 +122,108 @@ describe('FinanceWorkbenchService', () => {
       unreconciled_limit: 25,
     })).rejects.toThrow('from must be earlier than or equal to to');
     expect(transaction).not.toHaveBeenCalled();
+  });
+
+  function setupClose(initialRow: Record<string, unknown>, approvedRow: Record<string, unknown>) {
+    const query = jest.fn(async (statement: string, _values?: unknown[]) => {
+      void _values;
+      if (statement.includes('SELECT * FROM finance_close_periods')) return { rows: [initialRow] };
+      if (statement.includes("UPDATE finance_close_periods SET status='APPROVED'")) return { rows: [approvedRow] };
+      return { rows: [] };
+    });
+    const client = { query } as unknown as PoolClient;
+    const transaction = jest.fn(async (_context: unknown, callback: (client: PoolClient) => Promise<unknown>) => {
+      void _context;
+      return callback(client);
+    });
+    const database = { transaction } as unknown as DatabaseService;
+    return { service: new FinanceWorkbenchService(database), query, transaction };
+  }
+
+  const approvedSnapshot = {
+    schema: 'factoryos.finance-close-snapshot/v1',
+    currency: 'BDT',
+    period_start: '2026-09-01',
+    period_end: '2026-09-30',
+    readiness: { missing_reporting_domains: [], unresolved_reconciliation_count: 0, can_submit: true },
+  };
+
+  function closeRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'close-1',
+      tenant_id: 'tenant-1',
+      factory_id: 'factory-1',
+      currency: 'BDT',
+      period_start: '2026-09-01',
+      period_end: '2026-09-30',
+      status: 'SUBMITTED',
+      row_version: 2,
+      idempotency_key: 'close-2026-09-bdt',
+      request_hash: 'a'.repeat(64),
+      snapshot: approvedSnapshot,
+      snapshot_hash: financeRequestHash(approvedSnapshot),
+      created_by_user_id: 'creator-1',
+      submitted_by_user_id: 'submitter-1',
+      submitted_at: '2026-10-01T00:00:00.000Z',
+      approved_by_user_id: null,
+      approved_at: null,
+      approval_reason: null,
+      created_at: '2026-10-01T00:00:00.000Z',
+      updated_at: '2026-10-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('refuses finance-close approval when source facts changed after submission', async () => {
+    const initial = closeRow({ snapshot_hash: '0'.repeat(64) });
+    const { service, query } = setupClose(initial, closeRow({ status: 'APPROVED', row_version: 3 }));
+    Object.defineProperty(service, 'buildCloseSnapshot', { value: jest.fn(async () => approvedSnapshot) });
+
+    await expect(service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
+      expected_version: 2,
+      reason: 'Reviewed month-end close evidence',
+    }, { requestId: null, traceId: null })).rejects.toThrow(
+      'Source facts or readiness changed after submission; the submitter must recall, refresh and resubmit',
+    );
+    expect(query.mock.calls.some(([statement]) => statement.includes("SET status='APPROVED'"))).toBe(false);
+  });
+
+  it('allows an independent reviewer to approve an unchanged finance-close snapshot', async () => {
+    const initial = closeRow();
+    const approved = closeRow({
+      status: 'APPROVED',
+      row_version: 3,
+      approved_by_user_id: 'reviewer-1',
+      approved_at: '2026-10-02T00:00:00.000Z',
+      approval_reason: 'Independent month-end reconciliation approved',
+    });
+    const { service, query } = setupClose(initial, approved);
+    Object.defineProperty(service, 'buildCloseSnapshot', { value: jest.fn(async () => approvedSnapshot) });
+
+    const result = await service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
+      expected_version: 2,
+      reason: 'Independent month-end reconciliation approved',
+    }, { requestId: null, traceId: null });
+
+    expect(result.status).toBe('APPROVED');
+    expect(result.row_version).toBe(3);
+    expect(result.approved_by_user_id).toBe('reviewer-1');
+    expect(query.mock.calls.some(([statement]) => statement.includes('INSERT INTO finance_close_period_history'))).toBe(true);
+    expect(query.mock.calls.some(([statement]) => statement.includes('INSERT INTO audit_events'))).toBe(true);
+    expect(query.mock.calls.some(([statement]) => statement.includes('INSERT INTO outbox_events'))).toBe(true);
+  });
+
+  it('blocks the close creator from approving their own submitted snapshot', async () => {
+    const initial = closeRow({ created_by_user_id: 'reviewer-1' });
+    const { service, query } = setupClose(initial, closeRow({ status: 'APPROVED', row_version: 3 }));
+    Object.defineProperty(service, 'buildCloseSnapshot', { value: jest.fn(async () => approvedSnapshot) });
+
+    await expect(service.approveClosePeriod('reviewer-1', 'tenant-1', 'factory-1', 'close-1', {
+      expected_version: 2,
+      reason: 'Attempted self approval should fail',
+    }, { requestId: null, traceId: null })).rejects.toThrow(
+      'Finance-close creator/submitter cannot approve their own close',
+    );
+    expect(query.mock.calls.some(([statement]) => statement.includes("SET status='APPROVED'"))).toBe(false);
   });
 });
