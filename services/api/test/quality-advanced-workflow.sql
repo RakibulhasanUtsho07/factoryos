@@ -375,7 +375,7 @@ BEGIN
     id,tenant_id,factory_id,inspection_type,target_type,target_id,inventory_item_id,status,row_version,
     idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
-    v_analytics_inspection,v_tenant,v_factory,'IN_PROCESS','INVENTORY_ITEM',v_item,v_item,'OPEN',1,
+    v_analytics_inspection,v_tenant,v_factory,'INVENTORY','INVENTORY_ITEM',v_item,v_item,'OPEN',1,
     'qax-analytics-inspection',repeat('7',64),v_actor,v_actor,v_correlation
   );
   INSERT INTO quality_inspection_events (
