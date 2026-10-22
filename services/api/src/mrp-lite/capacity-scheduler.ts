@@ -29,7 +29,7 @@ const opKey=(line:string,step:number)=>line+':'+step;
 const bKey=(wc:string,date:string,shift:string)=>wc+'|'+date+'|'+shift;
 
 export function scheduleFiniteCapacity(demand:CapacityDemand[],calendars:CapacityBucket[],horizonStart:string,horizonEnd:string,
-  frozenHorizonEnd:string,prior:PriorCapacityOperation[]=[]):ScheduledCapacityOperation[] {
+  frozenHorizonStart:string,frozenHorizonEnd:string,prior:PriorCapacityOperation[]=[]):ScheduledCapacityOperation[] {
   const slots=calendars.filter(c=>c.capacity_date>=horizonStart&&c.capacity_date<=horizonEnd&&c.available_minutes>=0)
     .slice().sort((a,b)=>a.capacity_date.localeCompare(b.capacity_date)||a.shift_code.localeCompare(b.shift_code)||a.work_centre_id.localeCompare(b.work_centre_id));
   const free=new Map<string,number>();
@@ -53,7 +53,7 @@ export function scheduleFiniteCapacity(demand:CapacityDemand[],calendars:Capacit
     }
     const old=priorMap.get(opKey(op.order_line_id,op.step_number));
     if(old?.scheduled_start_date&&old.scheduled_start_date<=frozenHorizonEnd){
-      const saved=(old.schedule_segments??[]).filter(s=>s.capacity_date<=frozenHorizonEnd);
+      const saved=(old.schedule_segments??[]).filter(s=>s.capacity_date>=frozenHorizonStart&&s.capacity_date<=frozenHorizonEnd);
       if(saved.length){
         frozen=true;
         for(const seg of saved){
