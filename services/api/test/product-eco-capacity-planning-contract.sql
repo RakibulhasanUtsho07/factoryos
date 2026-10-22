@@ -59,7 +59,8 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='product_eco_order_impacts' AND column_name='pinned_product_version_id')
      OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='product_eco_order_impacts' AND column_name='order_snapshot')
      OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='mrp_capacity_plan_operations' AND column_name='frozen_revision_snapshot')
-     OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='mrp_capacity_plan_operations' AND column_name='sam_smv_minutes_per_unit') THEN
+     OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='mrp_capacity_plan_operations' AND column_name='sam_smv_minutes_per_unit')
+     OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='mrp_capacity_plan_operations' AND column_name='alternate_material_scenarios') THEN
     RAISE EXCEPTION 'Order snapshot, frozen-horizon or SAM/SMV capacity evidence is missing';
   END IF;
   IF EXISTS(
