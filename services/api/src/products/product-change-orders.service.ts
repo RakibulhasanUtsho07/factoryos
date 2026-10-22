@@ -348,10 +348,10 @@ export class ProductChangeOrdersService {
       const diff = await this.revisionDiff(client, tenantId, factoryId, p, row.source_product_version_id, row.proposed_product_version_id, row.effective_date);
       const impact = await this.replaceAffectedOrderSnapshot(client, row, tenantId, factoryId);
       const updated = await client.query<ChangeOrderRow>(
-        'UPDATE product_change_orders SET status = \\'SUBMITTED\\', row_version = row_version + 1, ' +
+        'UPDATE product_change_orders SET status = \'SUBMITTED\', row_version = row_version + 1, ' +
           'diff_snapshot = $1::jsonb, affected_order_count = $2, submitted_by_user_id = $3, submitted_at = clock_timestamp(), ' +
           'submit_idempotency_key = $4, submit_request_hash = $5, updated_at = clock_timestamp() ' +
-          'WHERE id = $6 AND tenant_id = $7 AND factory_id = $8 AND status = \\'DRAFT\\' AND row_version = $9 ' +
+          'WHERE id = $6 AND tenant_id = $7 AND factory_id = $8 AND status = \'DRAFT\' AND row_version = $9 ' +
           'RETURNING ' + CHANGE_ORDER_COLS,
         [JSON.stringify(diff), impact.length, userId, key, requestHash, id, tenantId, factoryId, dto.expected_version],
       );
@@ -460,9 +460,9 @@ export class ProductChangeOrdersService {
 
       const priorResult = await client.query<ProductVersionRow>(
         'SELECT ' + VERSION_COLS + ' FROM product_versions ' +
-          'WHERE product_id = $1 AND tenant_id = $2 AND factory_id = $3 AND state = \\'APPROVED\\' AND id <> $4 ' +
-          'AND effective_from < $5::date AND effective_from <= COALESCE($6::date, \\'infinity\\'::date) ' +
-          'AND COALESCE(effective_to_override, effective_to, \\'infinity\\'::date) >= $5::date ' +
+          'WHERE product_id = $1 AND tenant_id = $2 AND factory_id = $3 AND state = \'APPROVED\' AND id <> $4 ' +
+          'AND effective_from < $5::date AND effective_from <= COALESCE($6::date, \'infinity\'::date) ' +
+          'AND COALESCE(effective_to_override, effective_to, \'infinity\'::date) >= $5::date ' +
           'ORDER BY effective_from FOR UPDATE',
         [p, tenantId, factoryId, proposed.id, proposed.effective_from, proposed.effective_to],
       );
@@ -505,7 +505,7 @@ export class ProductChangeOrdersService {
         });
       }
 
-      await client.query('SELECT set_config(\\'app.product_change_order_id\\', $1, TRUE)', [id]);
+      await client.query('SELECT set_config(\'app.product_change_order_id\', $1, TRUE)', [id]);
       const approved = await client.query<{ id: string; version_number: number; row_version: string }>(
         `UPDATE product_versions SET state = 'APPROVED', row_version = row_version + 1,
           updated_by_user_id = $1, updated_at = clock_timestamp(), approved_by_user_id = $1,
