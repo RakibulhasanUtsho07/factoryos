@@ -128,7 +128,7 @@ export class UtilitiesClosureService {
     if(!binding)throw new NotFoundException('No approved active meter-source mapping matches this source event');
     if(binding.meter_status!=='ACTIVE')throw new ConflictException('The mapped meter is not active');
     if(String(binding.source_unit_code)!==sourceUnit)throw new ConflictException('Source event unit does not match the approved meter-source mapping');
-    const normalizedValue=Number((sourceValue*Number(binding.factor_to_meter_unit)).toFixed(8));
+    const normalizedValue=Number((Number(sourceValue)*Number(binding.factor_to_meter_unit)).toFixed(8));
     if(!Number.isFinite(normalizedValue))throw new BadRequestException('Normalized source reading is outside the supported numeric range');
     const eventKey=`${sourceSystem}:${eventId}`;
     if(eventKey.length>187)throw new BadRequestException('source_system_code and source_event_id are too long for a stable idempotency key');
