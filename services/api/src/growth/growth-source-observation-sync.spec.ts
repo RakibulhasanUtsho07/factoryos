@@ -86,14 +86,17 @@ describe('GrowthSourceOfRecordService source KPI synchronization', () => {
       observed_at: '2026-10-18T14:00:00.000Z',
       source_record_ref: `production-output:${SOURCE_ID}`,
       source_revision_hash: 'a'.repeat(64),
-      evidence_id: EVIDENCE_ID,
     });
 
     const observationInsert = client.query.mock.calls.find(call =>
       String(call[0]).includes('INSERT INTO growth_kpi_source_observations'));
     expect(observationInsert).toBeDefined();
     const values = observationInsert?.[1] as unknown[];
-    expect(values[0]).toBe(OBSERVATION_ID);
+    const observationId = values[0] as string;
+    const evidenceId = values[16] as string;
+    expect(observationId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(result.observations[0].id).toBe(observationId);
+    expect(result.observations[0].evidence_id).toBe(evidenceId);
     expect(values[5]).toBe('PRODUCTION_OUTPUT');
     expect(values[6]).toBe(ADAPTER_VERSION);
     expect(values[8]).toBe('PCS');
@@ -105,7 +108,7 @@ describe('GrowthSourceOfRecordService source KPI synchronization', () => {
 
     const evidenceInsert = client.query.mock.calls.find(call =>
       String(call[0]).includes('INSERT INTO growth_opportunity_evidence('));
-    expect(evidenceInsert?.[1]).toContain(`factoryos://growth/source-observations/${OBSERVATION_ID}`);
+    expect(evidenceInsert?.[1]).toContain(`factoryos://growth/source-observations/${observationId}`);
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'SOURCE_OF_RECORD_KPI_SYNC',
       payload: expect.objectContaining({ adapterVersion: ADAPTER_VERSION, observationCount: 1 }),
