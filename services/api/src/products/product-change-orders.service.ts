@@ -235,7 +235,9 @@ export class ProductChangeOrdersService {
     });
     const correlationId = this.correlationId(traceId, requestId);
 
-    const result = await this.database.transaction({ tenantId, userId }, async (client) => {
+    const result = await this.database.transaction({
+      tenantId, userId, advisoryLockKey: `product-change-order:${tenantId}:${factoryId}:${key}`,
+    }, async (client) => {
       const replay = await client.query<ChangeOrderRow>(
         'SELECT ' + CHANGE_ORDER_COLS + ' FROM product_change_orders ' +
           'WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3 FOR UPDATE',
@@ -273,6 +275,17 @@ export class ProductChangeOrdersService {
         [effectiveDate],
       );
       if (!dateCheck.rows[0]?.valid_date) throw new BadRequestException('ECO effective_date cannot be backdated');
+
+      const existingECO = await client.query<{ id: string }>(
+        `SELECT id::text AS id FROM product_change_orders
+        WHERE proposed_product_version_id = $1 AND tenant_id = $2 AND factory_id = $3
+          AND status IN ('DRAFT', 'SUBMITTED', 'APPROVED')
+        LIMIT 1 FOR UPDATE`,
+        [proposedVersionId, tenantId, factoryId],
+      );
+      if (existingECO.rows.length) {
+        throw new ConflictException('An active ECO already exists for this proposed product revision');
+      }
 
       const sourceResult = await client.query<{ id: string }>(
         `SELECT id::text AS id
