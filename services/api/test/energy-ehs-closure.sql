@@ -45,7 +45,7 @@ BEGIN
     factor_to_meter_unit,polling_interval_seconds,credential_reference,config_metadata,status,row_version,
     idempotency_key,request_hash,created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES(v_binding,v_tenant,v_factory,'EDGE-CI-01','METER-17','MQTT',v_meter,'Wh',0.001,30,
-    'secrets://factory/eec/meter-17','{"transport":"fixture-only","credentials":"reference-only"}'::jsonb,
+    'secrets://factory/eec/meter-17','{"transport":"fixture-only","auth_mode":"secret-manager-reference"}'::jsonb,
     'DRAFT',1,'eec-source-binding',v_hash,v_actor,v_actor,v_correlation);
 
   PERFORM set_config('app.user_id',v_approver::text,TRUE);
