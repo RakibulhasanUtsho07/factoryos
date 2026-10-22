@@ -15,7 +15,9 @@ INSERT INTO permissions(code,description) VALUES
  ('ehs.chemicals.read','Read chemical hazard and SDS registry'),
  ('ehs.chemicals.manage','Manage versioned chemical hazard and SDS references'),
  ('ehs.contractors.read','Read contractor induction and validity records'),
- ('ehs.contractors.manage','Record and maintain contractor induction evidence')
+ ('ehs.contractors.manage','Record and maintain contractor induction evidence'),
+ ('notifications.inbox.read','Read assigned utility and EHS operational notifications'),
+ ('notifications.inbox.manage','Acknowledge assigned operational notifications with an accountable reason')
 ON CONFLICT(code) DO NOTHING;
 
 INSERT INTO role_permissions(role_id,permission_id)
@@ -24,7 +26,7 @@ WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER','EHS_MANAGER')
   AND p.code IN (
     'utilities.sources.manage','utilities.alerts.read','utilities.alerts.manage',
     'ehs.drills.read','ehs.drills.manage','ehs.chemicals.read','ehs.chemicals.manage',
-    'ehs.contractors.read','ehs.contractors.manage'
+    'ehs.contractors.read','ehs.contractors.manage','notifications.inbox.read','notifications.inbox.manage'
   )
 ON CONFLICT(role_id,permission_id) DO NOTHING;
 
@@ -353,6 +355,72 @@ CREATE TABLE IF NOT EXISTS ehs_contractor_inductions (
 CREATE INDEX IF NOT EXISTS idx_ehs_contractor_validity
  ON ehs_contractor_inductions(tenant_id,factory_id,status,expires_at);
 
+CREATE TABLE IF NOT EXISTS operational_notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL,
+  factory_id UUID NOT NULL,
+  recipient_user_id UUID NOT NULL,
+  source_event_id UUID NOT NULL,
+  source_event_type VARCHAR(100) NOT NULL,
+  aggregate_type VARCHAR(64) NOT NULL,
+  aggregate_id UUID NOT NULL,
+  category VARCHAR(24) NOT NULL,
+  severity VARCHAR(12) NOT NULL DEFAULT 'MEDIUM',
+  title VARCHAR(255) NOT NULL,
+  body TEXT NOT NULL,
+  action_required BOOLEAN NOT NULL DEFAULT TRUE,
+  status VARCHAR(16) NOT NULL DEFAULT 'UNREAD',
+  row_version BIGINT NOT NULL DEFAULT 1,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  acknowledged_by_user_id UUID,
+  acknowledged_at TIMESTAMPTZ,
+  last_change_reason TEXT,
+  correlation_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT uq_operational_notification_scope UNIQUE(id,tenant_id,factory_id),
+  CONSTRAINT uq_operational_notification_source_recipient UNIQUE(tenant_id,factory_id,recipient_user_id,source_event_id),
+  CONSTRAINT fk_operational_notification_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_operational_notification_recipient FOREIGN KEY(recipient_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_operational_notification_acknowledger FOREIGN KEY(acknowledged_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_operational_notification_category CHECK(category IN ('UTILITY_THRESHOLD','EHS_LIFECYCLE')),
+  CONSTRAINT chk_operational_notification_severity CHECK(severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+  CONSTRAINT chk_operational_notification_status CHECK(status IN ('UNREAD','ACKNOWLEDGED')),
+  CONSTRAINT chk_operational_notification_title CHECK(length(btrim(title)) BETWEEN 1 AND 255),
+  CONSTRAINT chk_operational_notification_body CHECK(length(btrim(body)) BETWEEN 1 AND 4000),
+  CONSTRAINT chk_operational_notification_state CHECK(
+    (status='UNREAD' AND acknowledged_by_user_id IS NULL AND acknowledged_at IS NULL)
+    OR (status='ACKNOWLEDGED' AND acknowledged_by_user_id IS NOT NULL AND acknowledged_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_operational_notification_version CHECK(row_version>0),
+  CONSTRAINT chk_operational_notification_payload CHECK(jsonb_typeof(payload)='object')
+);
+CREATE INDEX IF NOT EXISTS idx_operational_notification_inbox
+ ON operational_notifications(tenant_id,factory_id,recipient_user_id,status,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS operational_notification_audit_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL,
+  factory_id UUID NOT NULL,
+  notification_id UUID NOT NULL,
+  notification_version BIGINT NOT NULL,
+  action VARCHAR(32) NOT NULL,
+  from_status VARCHAR(16),
+  to_status VARCHAR(16) NOT NULL,
+  actor_user_id UUID,
+  reason TEXT NOT NULL,
+  correlation_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT uq_operational_notification_audit_version UNIQUE(tenant_id,factory_id,notification_id,notification_version),
+  CONSTRAINT fk_operational_notification_audit_notification FOREIGN KEY(notification_id,tenant_id,factory_id)
+    REFERENCES operational_notifications(id,tenant_id,factory_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_operational_notification_audit_actor FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_operational_notification_audit_action CHECK(action IN ('CREATED','ACKNOWLEDGED')),
+  CONSTRAINT chk_operational_notification_audit_reason CHECK(length(btrim(reason))>0)
+);
+CREATE INDEX IF NOT EXISTS idx_operational_notification_audit
+ ON operational_notification_audit_events(tenant_id,factory_id,notification_id,created_at DESC);
+
 CREATE TABLE IF NOT EXISTS ehs_lifecycle_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
@@ -386,7 +454,8 @@ BEGIN
  FOREACH t IN ARRAY ARRAY[
   'utility_meter_source_bindings','utility_threshold_policies','utility_threshold_alerts',
   'ehs_emergency_drills','ehs_drill_attendance','ehs_drill_responses',
-  'ehs_chemical_sds_registry','ehs_contractor_inductions','ehs_lifecycle_events'
+  'ehs_chemical_sds_registry','ehs_contractor_inductions','ehs_lifecycle_events',
+  'operational_notifications','operational_notification_audit_events'
  ] LOOP
   EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY',t);
@@ -623,6 +692,42 @@ CREATE TRIGGER trg_utility_threshold_policy_audit AFTER INSERT OR UPDATE ON util
  FOR EACH ROW EXECUTE FUNCTION factoryos_append_utility_config_audit();
 
 -- EHS append-only event log is both audit evidence and the source for notification workers.
+CREATE OR REPLACE FUNCTION factoryos_guard_operational_notification()
+RETURNS trigger LANGUAGE plpgsql AS $notification_guard$
+BEGIN
+ IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Operational notifications are retained for audit' USING ERRCODE='55000'; END IF;
+ IF TG_OP='INSERT' THEN
+  IF NEW.status<>'UNREAD' OR NEW.row_version<>1 OR NEW.acknowledged_by_user_id IS NOT NULL
+    OR NEW.acknowledged_at IS NOT NULL THEN
+   RAISE EXCEPTION 'Operational notifications must be created unread at version 1' USING ERRCODE='23514';
+  END IF;
+  IF NOT EXISTS(
+    SELECT 1 FROM users u JOIN tenant_memberships tm ON tm.user_id=u.id
+      WHERE u.id=NEW.recipient_user_id AND u.status='ACTIVE'
+        AND tm.tenant_id=NEW.tenant_id AND tm.status='ACTIVE'
+  ) THEN RAISE EXCEPTION 'Notification recipient must be an active member of its tenant' USING ERRCODE='23503'; END IF;
+  RETURN NEW;
+ END IF;
+ IF NEW.id IS DISTINCT FROM OLD.id OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+  OR NEW.factory_id IS DISTINCT FROM OLD.factory_id OR NEW.recipient_user_id IS DISTINCT FROM OLD.recipient_user_id
+  OR NEW.source_event_id IS DISTINCT FROM OLD.source_event_id OR NEW.source_event_type IS DISTINCT FROM OLD.source_event_type
+  OR NEW.aggregate_type IS DISTINCT FROM OLD.aggregate_type OR NEW.aggregate_id IS DISTINCT FROM OLD.aggregate_id
+  OR NEW.category IS DISTINCT FROM OLD.category OR NEW.severity IS DISTINCT FROM OLD.severity
+  OR NEW.title IS DISTINCT FROM OLD.title OR NEW.body IS DISTINCT FROM OLD.body
+  OR NEW.action_required IS DISTINCT FROM OLD.action_required OR NEW.payload IS DISTINCT FROM OLD.payload
+  OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+  RAISE EXCEPTION 'Notification source evidence and recipient are immutable' USING ERRCODE='23514';
+ END IF;
+ IF OLD.status<>'UNREAD' OR NEW.status<>'ACKNOWLEDGED' OR NEW.row_version<>OLD.row_version+1
+   OR NEW.acknowledged_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+   OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+   OR NEW.recipient_user_id IS DISTINCT FROM factoryos_current_user_id()
+   OR NEW.acknowledged_at IS NULL OR length(btrim(COALESCE(NEW.last_change_reason,'')))=0 THEN
+  RAISE EXCEPTION 'Only the assigned recipient can acknowledge an unread notification with a reason and one version increment' USING ERRCODE='42501';
+ END IF;
+ RETURN NEW;
+END;
+$notification_guard$;
 CREATE OR REPLACE FUNCTION factoryos_guard_ehs_lifecycle_event()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -829,6 +934,42 @@ BEGIN
  END LOOP;
 END;
 $ehs_triggers$;
+
+CREATE OR REPLACE FUNCTION factoryos_guard_operational_notification_audit()
+RETURNS trigger LANGUAGE plpgsql AS $notification_audit_guard$
+BEGIN
+ IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'Notification audit events are append-only' USING ERRCODE='55000'; END IF;
+ RETURN NEW;
+END;
+$notification_audit_guard$;
+DROP TRIGGER IF EXISTS trg_operational_notification_audit_immutable ON operational_notification_audit_events;
+CREATE TRIGGER trg_operational_notification_audit_immutable
+ BEFORE UPDATE OR DELETE ON operational_notification_audit_events
+ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_operational_notification_audit();
+
+CREATE OR REPLACE FUNCTION factoryos_append_operational_notification_audit()
+RETURNS trigger LANGUAGE plpgsql AS $notification_audit$
+BEGIN
+ IF TG_OP='INSERT' THEN
+  INSERT INTO operational_notification_audit_events(tenant_id,factory_id,notification_id,notification_version,
+    action,from_status,to_status,actor_user_id,reason,correlation_id)
+  VALUES(NEW.tenant_id,NEW.factory_id,NEW.id,NEW.row_version,'CREATED',NULL,NEW.status,NULL,
+    'Operational notification queued from source event',NEW.correlation_id);
+ ELSIF OLD.status IS DISTINCT FROM NEW.status THEN
+  INSERT INTO operational_notification_audit_events(tenant_id,factory_id,notification_id,notification_version,
+    action,from_status,to_status,actor_user_id,reason,correlation_id)
+  VALUES(NEW.tenant_id,NEW.factory_id,NEW.id,NEW.row_version,'ACKNOWLEDGED',OLD.status,NEW.status,
+    factoryos_current_user_id(),NEW.last_change_reason,NEW.correlation_id);
+ END IF;
+ RETURN NEW;
+END;
+$notification_audit$;
+DROP TRIGGER IF EXISTS trg_operational_notification_guard ON operational_notifications;
+CREATE TRIGGER trg_operational_notification_guard BEFORE INSERT OR UPDATE OR DELETE ON operational_notifications
+ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_operational_notification();
+DROP TRIGGER IF EXISTS trg_operational_notification_audit ON operational_notifications;
+CREATE TRIGGER trg_operational_notification_audit AFTER INSERT OR UPDATE ON operational_notifications
+ FOR EACH ROW EXECUTE FUNCTION factoryos_append_operational_notification_audit();
 
 CREATE OR REPLACE FUNCTION factoryos_validate_utility_source_reading()
 RETURNS trigger LANGUAGE plpgsql AS $$
