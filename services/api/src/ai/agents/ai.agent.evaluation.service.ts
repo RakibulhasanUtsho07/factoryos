@@ -328,7 +328,7 @@ export class AiAgentEvaluationService {
       'FROM agent_tasks t JOIN agent_task_steps s ON s.task_id=t.id AND s.tenant_id=t.tenant_id AND s.factory_id=t.factory_id',
       'LEFT JOIN LATERAL (',
       '  SELECT i.* FROM ai_action_intents i WHERE i.tenant_id=t.tenant_id AND i.factory_id=t.factory_id AND i.decision_id=t.decision_id',
-      '    AND (i.id=s.action_intent_id OR (s.action_intent_id IS NULL AND i.authorization_status=\\'DENIED\\'',
+      '    AND (i.id=s.action_intent_id OR (s.action_intent_id IS NULL AND i.authorization_status=\'DENIED\'',
       '      AND i.action_type=s.action_type AND i.tool_id=s.tool_id AND i.tool_version=s.tool_version',
       '      AND i.target=s.target AND i.payload=s.payload AND i.resource_type IS NOT DISTINCT FROM s.resource_type',
       '      AND i.resource_id IS NOT DISTINCT FROM s.resource_id))',
