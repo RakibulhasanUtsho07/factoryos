@@ -13,8 +13,8 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_policies
       WHERE schemaname='public' AND tablename='growth_forecast_calibration_policies'
         AND policyname='growth_forecast_calibration_policies_tenant_isolation'
-        AND qual LIKE '%factoryos_current_tenant_id%'
-        AND with_check LIKE '%factoryos_current_tenant_id%') THEN
+        AND COALESCE(qual,'') LIKE '%factoryos_current_tenant_id%'
+        AND COALESCE(with_check,qual,'') LIKE '%factoryos_current_tenant_id%') THEN
     RAISE EXCEPTION 'GROWTH_CALIBRATION_POLICY_TENANT_POLICY_MISSING';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
