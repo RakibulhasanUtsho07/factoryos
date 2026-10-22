@@ -186,6 +186,17 @@ CREATE POLICY product_change_order_events_tenant_isolation ON product_change_ord
 CREATE OR REPLACE FUNCTION factoryos_guard_product_change_order_lifecycle()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'DRAFT' OR NEW.row_version <> 1
+       OR NEW.submitted_by_user_id IS NOT NULL OR NEW.submitted_at IS NOT NULL
+       OR NEW.reviewer_user_id IS NOT NULL OR NEW.reviewed_at IS NOT NULL
+       OR NEW.submit_idempotency_key IS NOT NULL OR NEW.submit_request_hash IS NOT NULL
+       OR NEW.approval_idempotency_key IS NOT NULL OR NEW.approval_request_hash IS NOT NULL
+       OR NEW.resolution_idempotency_key IS NOT NULL OR NEW.resolution_request_hash IS NOT NULL THEN
+      RAISE EXCEPTION 'engineering change orders must begin as draft version one without review evidence';
+    END IF;
+    RETURN NEW;
+  END IF;
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'engineering change orders are retained as lifecycle evidence';
   END IF;
@@ -217,7 +228,7 @@ END;
 $$;
 DROP TRIGGER IF EXISTS trg_product_change_order_lifecycle ON product_change_orders;
 CREATE TRIGGER trg_product_change_order_lifecycle
-BEFORE UPDATE OR DELETE ON product_change_orders
+BEFORE INSERT OR UPDATE OR DELETE ON product_change_orders
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_product_change_order_lifecycle();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_product_change_order_event_immutable()
@@ -232,30 +243,34 @@ BEFORE UPDATE OR DELETE ON product_change_order_events
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_product_change_order_event_immutable();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_product_change_order_affected_order_snapshot()
-RETURNS TRIGGER LANGUAGE plpgsql AS $
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
-  v_change_order_id UUID;
   v_status TEXT;
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    v_change_order_id := OLD.change_order_id;
-  ELSE
-    v_change_order_id := NEW.change_order_id;
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    SELECT status INTO v_status
+    FROM product_change_orders
+    WHERE id = OLD.change_order_id
+      AND tenant_id = OLD.tenant_id AND factory_id = OLD.factory_id;
+    IF v_status IN ('SUBMITTED', 'APPROVED', 'REJECTED') THEN
+      RAISE EXCEPTION 'submitted ECO affected-order evidence is immutable; reject and create a new ECO to recalculate impact';
+    END IF;
   END IF;
 
-  SELECT status INTO v_status
-  FROM product_change_orders
-  WHERE id = v_change_order_id
-    AND tenant_id = COALESCE(NEW.tenant_id, OLD.tenant_id)
-    AND factory_id = COALESCE(NEW.factory_id, OLD.factory_id);
-
-  IF v_status IN ('SUBMITTED', 'APPROVED', 'REJECTED') THEN
-    RAISE EXCEPTION 'submitted ECO affected-order evidence is immutable; reject and create a new ECO to recalculate impact';
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    SELECT status INTO v_status
+    FROM product_change_orders
+    WHERE id = NEW.change_order_id
+      AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id;
+    IF v_status IN ('SUBMITTED', 'APPROVED', 'REJECTED') THEN
+      RAISE EXCEPTION 'submitted ECO affected-order evidence is immutable; reject and create a new ECO to recalculate impact';
+    END IF;
   END IF;
+
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
   RETURN NEW;
 END;
-$;
+$$;
 DROP TRIGGER IF EXISTS trg_product_change_order_affected_orders_immutable ON product_change_order_affected_orders;
 CREATE TRIGGER trg_product_change_order_affected_orders_immutable
 BEFORE INSERT OR UPDATE OR DELETE ON product_change_order_affected_orders
