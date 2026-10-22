@@ -107,6 +107,31 @@ describe('Vault KV-v2 finance secret-manager integration', () => {
     )).rejects.toThrow('FINANCE_VAULT_RUNTIME_CONFIGURATION_MISSING');
   });
 
+  it('resolves SFTP private-key material only from the explicit Vault field', async () => {
+    await configureVaultEnvironment();
+    const http = new FakeVaultHttp();
+    const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----\n' + 'x'.repeat(120) + '\n-----END OPENSSH PRIVATE KEY-----\n';
+    http.response = { data: { data: { sftp_private_key_pem: privateKey } } };
+    const secrets = new VaultFinanceSecretManager(http);
+    const resolved = await secrets.resolveSftpPrivateKey(
+      'vault://factoryos/prod/sftp',
+      { tenant_id: 't', factory_id: 'f', connector_id: 'c' },
+    );
+    expect(resolved).toBe(privateKey);
+    expect(http.requests[0].url).toBe('https://vault.example.com/v1/secret/data/factoryos/prod/sftp');
+  });
+
+  it('rejects malformed or absent SFTP private-key values', async () => {
+    await configureVaultEnvironment();
+    const http = new FakeVaultHttp();
+    http.response = { data: { data: { sftp_private_key_pem: 'not-a-private-key' } } };
+    const secrets = new VaultFinanceSecretManager(http);
+    await expect(secrets.resolveSftpPrivateKey(
+      'vault://factoryos/prod/sftp',
+      { tenant_id: 't', factory_id: 'f', connector_id: 'c' },
+    )).rejects.toThrow('FINANCE_VAULT_SFTP_PRIVATE_KEY_MISSING_OR_INVALID');
+  });
+
   it('rejects missing or unsafe access-token values from a Vault response', async () => {
     await configureVaultEnvironment();
     const http = new FakeVaultHttp();
