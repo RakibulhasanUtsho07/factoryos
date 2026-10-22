@@ -12,6 +12,7 @@ import { OrderCreatedConsumer } from './order-created.consumer';
 import { OutboxConsumerRegistry } from './outbox.consumer.registry';
 import { OutboxController } from './outbox.controller';
 import { OutboxDlqService } from './outbox-dlq.service';
+import { OutboxBusDlqService } from './outbox-bus-dlq.service';
 import { OutboxDispatcherService } from './outbox.dispatcher.service';
 import { KafkaEventBusAdapter } from './kafka-event-bus.adapter';
 import { OutboxPublisher } from './outbox.publisher';
@@ -38,6 +39,7 @@ import { OutboxPublisher } from './outbox.publisher';
     KafkaEventBusAdapter,
     OutboxPublisher,
     OutboxDlqService,
+    OutboxBusDlqService,
     OutboxDispatcherService,
   ],
 
