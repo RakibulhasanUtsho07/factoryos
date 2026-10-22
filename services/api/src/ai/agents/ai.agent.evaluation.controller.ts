@@ -10,6 +10,7 @@ import { RequirePermission } from '../../iam/require-permission.decorator';
 import { AiAgentEvaluationService } from './ai.agent.evaluation.service';
 import { CreateAiAgentEvaluationCaseDto } from './dto/create-ai-agent-evaluation-case.dto';
 import { EvaluateAiAgentCaseDto } from './dto/evaluate-ai-agent-case.dto';
+import { EvaluateAiAgentLiveCaseDto } from './dto/evaluate-ai-agent-live-case.dto';
 
 interface FactoryOsRequestContext {
   userId: string | null;
@@ -74,6 +75,22 @@ export class AiAgentEvaluationController {
     const context = this.getContext(request);
     return this.evaluationService.evaluateCase(
       context.tenantId, context.factoryId, context.userId, definitionId, caseId, body.simulation_run_id,
+    );
+  }
+
+  @Post(':definitionId/evaluation-cases/:caseId/evaluate-live')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('ai.agents.write')
+  @RequireFactoryScope()
+  async evaluateLiveExecution(
+    @Req() request: FactoryOsRequest,
+    @Param('definitionId', new ParseUUIDPipe()) definitionId: string,
+    @Param('caseId', new ParseUUIDPipe()) caseId: string,
+    @Body() body: EvaluateAiAgentLiveCaseDto,
+  ) {
+    const context = this.getContext(request);
+    return this.evaluationService.evaluateLiveExecution(
+      context.tenantId, context.factoryId, context.userId, definitionId, caseId, body.task_id,
     );
   }
 
