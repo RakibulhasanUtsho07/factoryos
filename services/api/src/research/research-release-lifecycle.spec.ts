@@ -469,4 +469,93 @@ describe('Research release lifecycle', () => {
     expect(audit.record).not.toHaveBeenCalled();
   });
 
+  it('can promote the next version into an empty channel after the previous release was retracted', async () => {
+    const validator = service as unknown as {
+      validateReleaseClaims: (tenantId: string, claimIds: string[]) => Promise<unknown>;
+    };
+    jest.spyOn(validator, 'validateReleaseClaims').mockResolvedValue(passingReport);
+
+    database.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: CURRENT_RELEASE_ID,
+          claim_ids: ['aa2f63c4-dd22-4f10-bf4d-67f091700001'],
+          status: 'DRAFT',
+          release_key: 'quality-research',
+          version: 4,
+          namespace: 'TENANT',
+          evaluation_id: EVALUATION_ID,
+        }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: EVALUATION_ID,
+          evaluation_version: 'research-release-contract.v2',
+          status: 'PASSED',
+          content_fingerprint: 'c'.repeat(64),
+          results: {
+            consistencyPassed: true,
+            citationCoveragePassed: true,
+            rightsPassed: true,
+            safetyPassed: true,
+          },
+        }],
+      });
+
+    client.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: CURRENT_RELEASE_ID,
+          release_key: 'quality-research',
+          version: 4,
+          title: 'Quality research v4',
+          status: 'PROMOTED',
+          claim_ids: ['aa2f63c4-dd22-4f10-bf4d-67f091700001'],
+          source_list: [],
+          evidence_grade: 'B',
+          validation_report: {},
+          regression_evidence_ref: 'https://example.org/regression/release-4',
+          reviewed_by: USER_ID,
+          reviewed_at: '2026-10-22T10:00:00.000Z',
+          effective_at: '2026-10-22T10:00:00.000Z',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ active_release_id: null, active_version: null, revision: 8 }],
+      })
+      .mockResolvedValueOnce({ rows: [{ revision: 9 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const promoted = await service.promoteRelease(
+      USER_ID,
+      TENANT_ID,
+      CURRENT_RELEASE_ID,
+      {
+        evaluation_id: EVALUATION_ID,
+        safety_review_summary: 'Independent safety review approves the corrected knowledge bundle.',
+        regression_evidence_ref: 'https://example.org/regression/release-4',
+        effective_at: '2026-10-22T10:00:00.000Z',
+      },
+      'request-promote-after-retract',
+      'trace-promote-after-retract',
+    );
+
+    expect(promoted).toMatchObject({
+      id: CURRENT_RELEASE_ID,
+      status: 'PROMOTED',
+      supersedes_release_id: null,
+      active_release_id: CURRENT_RELEASE_ID,
+      active_version: 4,
+      channel_revision: 9,
+    });
+    expect(String(client.query.mock.calls[3][0])).toContain('IS NOT DISTINCT FROM $6');
+    expect(String(client.query.mock.calls[4][0])).toContain("'PROMOTED'");
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'RELEASE_PROMOTE',
+      resourceId: CURRENT_RELEASE_ID,
+    }));
+  });
+
 });
