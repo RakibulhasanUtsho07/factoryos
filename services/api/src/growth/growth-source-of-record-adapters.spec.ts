@@ -95,7 +95,13 @@ describe('versioned growth source-of-record adapters', () => {
       id: '139e9b4d-c14f-45ec-a2da-471df53c74c3',
       created_at: '2026-10-18T14:00:00.000Z',
       good_quantity: '970.0000',
+      it('never maps an arbitrary production field or accepts a missing immutable digest', () => {
+    const source: ProductionOutputSourceRow = {
+      id: '139e9b4d-c14f-45ec-a2da-471df53c74c3',
+      created_at: '2026-10-18T14:00:00.000Z',
+      good_quantity: '970.0000',
       scrap_quantity: '30.0000',
+      unit: 'PCS',
       yield_percentage: '97.0000',
       cumulative_yield_percentage: '95.5000',
       request_hash: 'b'.repeat(64),
