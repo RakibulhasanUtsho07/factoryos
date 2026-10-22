@@ -58,6 +58,11 @@ BEGIN
       AND NOT tgisinternal AND tgenabled <> 'D'
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'mrp_capacity_calendar'::regclass
+      AND tgname = 'trg_mrp_capacity_calendar_overlap'
+      AND NOT tgisinternal AND tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger
     WHERE tgrelid = 'mrp_capacity_plans'::regclass
       AND tgname = 'mrp_capacity_plans_immutable'
       AND NOT tgisinternal AND tgenabled <> 'D'
