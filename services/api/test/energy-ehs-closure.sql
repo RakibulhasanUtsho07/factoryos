@@ -63,6 +63,7 @@ BEGIN
     updated_by_user_id,correlation_id
   ) VALUES(v_policy,v_tenant,v_factory,'EEC-HIGH-CONSUMPTION','Energy consumption alert',v_meter,'ELECTRICITY',
     'CONSUMPTION','GTE',10,'kWh','HIGH','DRAFT',1,'eec-threshold-policy',v_hash,v_actor,v_actor,v_correlation);
+  PERFORM set_config('app.user_id',v_approver::text,TRUE);
   UPDATE utility_threshold_policies SET status='ACTIVE',row_version=2,approved_by_user_id=v_approver,
     approved_at=clock_timestamp(),updated_by_user_id=v_approver,updated_at=clock_timestamp(),
     last_change_reason='Approved for staged source-ingestion test'
