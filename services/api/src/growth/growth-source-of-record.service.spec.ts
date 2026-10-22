@@ -86,6 +86,7 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
     ]);
     expect(recorded.kpi_measurements).toEqual([expect.objectContaining({
       metric_key: 'production.good_quantity', unit: 'PCS',
+      baseline_evidence_ref: `factoryos://growth/source-observations/${BASELINE_ID}`,
       evidence_ref: `factoryos://growth/source-observations/${ACTUAL_ID}`,
     })]);
     expect(result).toEqual({ id: 'result-1' });
@@ -140,6 +141,7 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
     expect(outcome.kpi_measurements).toEqual([expect.objectContaining({
       metric_key: 'production.good_quantity', unit: 'PCS', baseline_value: 900,
       actual_value: 950, target_value: 940, direction: 'INCREASE',
+      baseline_evidence_ref: `factoryos://growth/source-observations/${BASELINE_ID}`,
       evidence_ref: `factoryos://growth/source-observations/${ACTUAL_ID}`,
     })]);
   });
