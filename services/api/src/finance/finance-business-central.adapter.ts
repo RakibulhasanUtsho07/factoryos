@@ -312,7 +312,11 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
   async downloadNext(input: Parameters<FinanceErpTransferAdapter['downloadNext']>[0]): Promise<FinanceErpFileDownload | null> {
     const companyId = requireCompanyId(input.configuration);
     const base = endpointBase(input.endpoint_url);
-    const token = await this.accessToken(input.secret_reference, input);
+    const token = await this.accessToken(input.secret_reference, {
+      tenant_id: input.tenant_id,
+      factory_id: input.factory_id,
+      connector_id: input.connector_id,
+    });
     const path = '/api/factoryos/finance/v1.0/companies(' + companyId + ')/financeBatches/next';
     const response = await this.client().request<BusinessCentralResponse>({
       url: joinProviderPath(base, path), method: 'GET', bearerToken: token,
@@ -349,7 +353,11 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
   async acknowledge(input: Parameters<FinanceErpTransferAdapter['acknowledge']>[0]): Promise<void> {
     const companyId = requireCompanyId(input.configuration);
     const base = endpointBase(input.endpoint_url);
-    const token = await this.accessToken(input.secret_reference, input);
+    const token = await this.accessToken(input.secret_reference, {
+      tenant_id: input.tenant_id,
+      factory_id: input.factory_id,
+      connector_id: input.connector_id,
+    });
     const sourceBatchRef = normalizeFinanceErpOpaqueReference(input.source_batch_ref, 'source_batch_ref');
     const providerReference = normalizeFinanceErpOpaqueReference(input.provider_reference, 'provider_reference');
     if (!/^[a-f0-9]{64}$/.test(input.payload_sha256)) throw new Error('FINANCE_BUSINESS_CENTRAL_HASH_INVALID');
@@ -374,7 +382,11 @@ export class MicrosoftDynamics365BusinessCentralFinanceAdapter implements Financ
   async upload(input: Parameters<FinanceErpTransferAdapter['upload']>[0]): Promise<FinanceErpUploadResult> {
     const companyId = requireCompanyId(input.configuration);
     const base = endpointBase(input.endpoint_url);
-    const token = await this.accessToken(input.secret_reference, input);
+    const token = await this.accessToken(input.secret_reference, {
+      tenant_id: input.tenant_id,
+      factory_id: input.factory_id,
+      connector_id: input.connector_id,
+    });
     const fileName = safeProviderFilename(input.file_name);
     if (input.format !== 'CSV' && input.format !== 'JSON') throw new Error('FINANCE_BUSINESS_CENTRAL_FORMAT_INVALID');
     if (!Buffer.isBuffer(input.content) || input.content.length < 1 || input.content.length > 2 * 1024 * 1024 ||
