@@ -191,6 +191,14 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
 
+          echo "Checking PLM/ECO effective-dated revisions and immutable production snapshots"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/product-change-order-contract.sql
+
+          echo "Reapplying PLM/ECO migration to verify lifecycle guard idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/162_plm_eco_effective_dated_revision_integration.sql
+
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
