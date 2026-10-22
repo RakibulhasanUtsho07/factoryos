@@ -1504,7 +1504,12 @@ export class FinanceService {
     factoryId: string,
     query: FinanceMarginInputsQueryDto,
   ) {
-    const to = query.to ? new Date(query.to).toISOString() : new Date().toISOString();
+    const toDate = query.to ? new Date(query.to) : new Date();
+    // Date-only end bounds include the entire UTC calendar day.
+    if (query.to && /^\d{4}-\d{2}-\d{2}$/.test(query.to)) {
+      toDate.setUTCHours(23, 59, 59, 999);
+    }
+    const to = toDate.toISOString();
     const from = query.from ? new Date(query.from).toISOString() : new Date(Date.parse(to) - 90 * 86400000).toISOString();
     if (Date.parse(from) > Date.parse(to)) throw new BadRequestException('from must be earlier than or equal to to');
 
@@ -1585,7 +1590,12 @@ export class FinanceService {
     factoryId: string,
     query: FinanceWorkingCapitalQueryDto,
   ) {
-    const asOf = query.as_of ? new Date(query.as_of).toISOString() : new Date().toISOString();
+    const asOfDate = query.as_of ? new Date(query.as_of) : new Date();
+    // Date-only as-of values represent end-of-day balances.
+    if (query.as_of && /^\d{4}-\d{2}-\d{2}$/.test(query.as_of)) {
+      asOfDate.setUTCHours(23, 59, 59, 999);
+    }
+    const asOf = asOfDate.toISOString();
     const horizon = query.horizon_days ?? 30;
     const horizonEnd = new Date(Date.parse(asOf) + horizon * 86400000).toISOString();
     return this.database.transaction({ tenantId, userId }, async (client) => {
