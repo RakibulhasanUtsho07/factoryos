@@ -18,6 +18,8 @@ export interface MrpCapacityJob {
   orderLineNumber: number;
   productCode: string;
   productName: string;
+  styleCode: string | null;
+  sizeCode: string | null;
   productId: string;
   productVersionId: string;
   productVersionNumber: number;
@@ -89,6 +91,8 @@ export interface MrpCapacityOperationResult {
   orderLineNumber: number;
   productCode: string;
   productName: string;
+  styleCode: string | null;
+  sizeCode: string | null;
   productId: string;
   productVersionId: string;
   productVersionNumber: number;
@@ -347,6 +351,8 @@ function makeResult(
     orderLineNumber: job.orderLineNumber,
     productCode: job.productCode,
     productName: job.productName,
+    styleCode: job.styleCode,
+    sizeCode: job.sizeCode,
     productId: job.productId,
     productVersionId: job.productVersionId,
     productVersionNumber: job.productVersionNumber,
