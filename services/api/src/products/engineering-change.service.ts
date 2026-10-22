@@ -146,7 +146,7 @@ export class EngineeringChangeService {
       if(row.status==='SUBMITTED'&&row.submit_idempotency_key===key&&row.submit_request_hash===hash) return {replayed:true};
       if(row.status!=='DRAFT') throw new ConflictException('Only a DRAFT ECO may be submitted');
       this.expected(row.row_version,dto.expected_version);
-      const u=await client.query('UPDATE product_engineering_changes SET status=\\'SUBMITTED\\',row_version=row_version+1,updated_by_user_id=$1,updated_at=clock_timestamp(),submitted_by_user_id=$1,submitted_at=clock_timestamp(),submit_idempotency_key=$2,submit_request_hash=$3 WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND status=\\'DRAFT\\' AND row_version=$7',
+      const u=await client.query(`UPDATE product_engineering_changes SET status='SUBMITTED',row_version=row_version+1,updated_by_user_id=$1,updated_at=clock_timestamp(),submitted_by_user_id=$1,submitted_at=clock_timestamp(),submit_idempotency_key=$2,submit_request_hash=$3 WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND status='DRAFT' AND row_version=$7`,
         [userId,key,hash,ecoId,tenantId,factoryId,dto.expected_version]);
       if(u.rowCount!==1) throw new ConflictException('ECO changed concurrently; reload before submitting');
       await this.event(client,{tenantId,factoryId,productId,ecoId,event:'SUBMITTED',actor:userId,key:key+':submitted',correlation,payload:{expected_version:dto.expected_version}});
