@@ -33,6 +33,29 @@ BEGIN
     END IF;
   END LOOP;
 
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_sampling_profile_bindings'::regclass
+      AND tgname='trg_quality_sampling_binding_evidence_guard' AND NOT tgisinternal AND tgenabled<>'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_defect_context_snapshots'::regclass
+      AND tgname='trg_quality_defect_context_actor_guard' AND NOT tgisinternal AND tgenabled<>'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_supplier_quality_events'::regclass
+      AND tgname='trg_quality_supplier_event_source_guard' AND NOT tgisinternal AND tgenabled<>'D') THEN
+    RAISE EXCEPTION 'Advanced evidence actor or supplier provenance guards are missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
+      AND indexname='uq_quality_aql_profile_active')
+    OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema()
+      AND indexname='uq_quality_fabric_profile_active') THEN
+    RAISE EXCEPTION 'Only-one-active-profile revision uniqueness indexes are missing';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_aql_sample_runs'::regclass
+      AND conname='chk_quality_aql_run_evidence' AND position('jsonb_object_length' IN pg_get_constraintdef(oid))>0)
+    OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='quality_fabric_roll_scores'::regclass
+      AND conname='chk_quality_fabric_roll_evidence' AND position('jsonb_object_length' IN pg_get_constraintdef(oid))>0) THEN
+    RAISE EXCEPTION 'AQL and roll scoring require non-empty evidence objects';
+  END IF;
+
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_aql_profiles'::regclass
       AND tgname='trg_quality_aql_profile_lifecycle' AND NOT tgisinternal AND tgenabled<>'D')
     OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_fabric_scoring_profiles'::regclass
