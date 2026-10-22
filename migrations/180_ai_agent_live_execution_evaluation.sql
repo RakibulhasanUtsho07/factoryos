@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS ai_agent_live_evaluation_results (
     REFERENCES agent_tasks (id,tenant_id,factory_id)
     ON DELETE RESTRICT,
   CONSTRAINT fk_ai_agent_live_evaluation_creator
-    FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE RESTRICT,
   CONSTRAINT chk_ai_agent_live_evaluation_status
     CHECK (status IN ('PASS','FAIL','INCONCLUSIVE')),
   CONSTRAINT chk_ai_agent_live_evaluation_expected
