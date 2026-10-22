@@ -3,7 +3,7 @@ BEGIN;
 -- Version-pinned read-side observations sourced from approved FactoryOS ledgers.
 -- These tables do not post or mutate Finance or Production source-of-record rows.
 
-CREATE TABLE growth_kpi_source_sync_runs (
+CREATE TABLE IF NOT EXISTS growth_kpi_source_sync_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE growth_kpi_source_sync_runs (
   CONSTRAINT chk_growth_kpi_source_sync_metric_keys CHECK(jsonb_typeof(metric_keys)='array' AND jsonb_array_length(metric_keys) BETWEEN 1 AND 8)
 );
 
-CREATE TABLE growth_kpi_source_observations (
+CREATE TABLE IF NOT EXISTS growth_kpi_source_observations (
   id UUID PRIMARY KEY,
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -73,18 +73,18 @@ CREATE TABLE growth_kpi_source_observations (
   CONSTRAINT chk_growth_kpi_observation_hash CHECK(observation_hash ~ '^[a-f0-9]{64}$')
 );
 
-CREATE UNIQUE INDEX uq_growth_kpi_observation_finance_revision
+CREATE UNIQUE INDEX IF NOT EXISTS uq_growth_kpi_observation_finance_revision
  ON growth_kpi_source_observations(tenant_id,factory_id,opportunity_id,source_financial_fact_id,metric_key,adapter_version)
  WHERE source_kind='FINANCIAL_FACT';
-CREATE UNIQUE INDEX uq_growth_kpi_observation_production_revision
+CREATE UNIQUE INDEX IF NOT EXISTS uq_growth_kpi_observation_production_revision
  ON growth_kpi_source_observations(tenant_id,factory_id,opportunity_id,source_production_output_posting_id,metric_key,adapter_version)
  WHERE source_kind='PRODUCTION_OUTPUT';
-CREATE INDEX idx_growth_kpi_observation_metric_time
+CREATE INDEX IF NOT EXISTS idx_growth_kpi_observation_metric_time
  ON growth_kpi_source_observations(tenant_id,factory_id,opportunity_id,metric_key,unit,observed_at DESC);
-CREATE INDEX idx_growth_kpi_observation_sync
+CREATE INDEX IF NOT EXISTS idx_growth_kpi_observation_sync
  ON growth_kpi_source_observations(tenant_id,factory_id,opportunity_id,sync_run_id,created_at);
 
-CREATE TABLE growth_kpi_source_sync_items (
+CREATE TABLE IF NOT EXISTS growth_kpi_source_sync_items (
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
   opportunity_id UUID NOT NULL,
@@ -211,6 +211,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS growth_kpi_source_observation_guard ON growth_kpi_source_observations;
 CREATE TRIGGER growth_kpi_source_observation_guard
 BEFORE INSERT OR UPDATE OR DELETE ON growth_kpi_source_observations
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_kpi_source_observation();
@@ -223,9 +224,11 @@ BEGIN
   RAISE EXCEPTION '% is append-only source lineage', TG_TABLE_NAME USING ERRCODE='55000';
 END;
 $$;
+DROP TRIGGER IF EXISTS growth_kpi_source_sync_runs_immutable ON growth_kpi_source_sync_runs;
 CREATE TRIGGER growth_kpi_source_sync_runs_immutable
 BEFORE UPDATE OR DELETE ON growth_kpi_source_sync_runs
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_growth_kpi_source_sync_mutation();
+DROP TRIGGER IF EXISTS growth_kpi_source_sync_items_immutable ON growth_kpi_source_sync_items;
 CREATE TRIGGER growth_kpi_source_sync_items_immutable
 BEFORE UPDATE OR DELETE ON growth_kpi_source_sync_items
 FOR EACH ROW EXECUTE FUNCTION factoryos_prevent_growth_kpi_source_sync_mutation();
@@ -248,6 +251,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DROP TRIGGER IF EXISTS growth_source_observation_evidence_immutable ON growth_opportunity_evidence;
 CREATE TRIGGER growth_source_observation_evidence_immutable
 BEFORE UPDATE OR DELETE ON growth_opportunity_evidence
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_growth_source_observation_evidence_mutation();
@@ -272,6 +276,7 @@ BEGIN
   RETURN NULL;
 END;
 $$;
+DROP TRIGGER IF EXISTS growth_source_observation_evidence_link_guard ON growth_opportunity_evidence;
 CREATE CONSTRAINT TRIGGER growth_source_observation_evidence_link_guard
 AFTER INSERT ON growth_opportunity_evidence
 DEFERRABLE INITIALLY DEFERRED
@@ -279,16 +284,19 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_check_growth_source_observation_evidence
 
 ALTER TABLE growth_kpi_source_sync_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE growth_kpi_source_sync_runs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS growth_kpi_source_sync_runs_tenant_isolation ON growth_kpi_source_sync_runs;
 CREATE POLICY growth_kpi_source_sync_runs_tenant_isolation ON growth_kpi_source_sync_runs
   USING (tenant_id=factoryos_current_tenant_id()) WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
 ALTER TABLE growth_kpi_source_observations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE growth_kpi_source_observations FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS growth_kpi_source_observations_tenant_isolation ON growth_kpi_source_observations;
 CREATE POLICY growth_kpi_source_observations_tenant_isolation ON growth_kpi_source_observations
   USING (tenant_id=factoryos_current_tenant_id()) WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
 ALTER TABLE growth_kpi_source_sync_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE growth_kpi_source_sync_items FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS growth_kpi_source_sync_items_tenant_isolation ON growth_kpi_source_sync_items;
 CREATE POLICY growth_kpi_source_sync_items_tenant_isolation ON growth_kpi_source_sync_items
   USING (tenant_id=factoryos_current_tenant_id()) WITH CHECK (tenant_id=factoryos_current_tenant_id());
 
