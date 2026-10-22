@@ -2042,7 +2042,7 @@ export class GrowthService {
           [dto.experiment_result_id, tenantId, factoryId],
         );
         if (existing.rows[0]) throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
-        const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null }>(
+        const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null; baseline_evidence_ref: string | null }>(
           `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value, baseline_evidence_ref
            FROM growth_experiment_result_kpis
            WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 AND opportunity_id = $4
