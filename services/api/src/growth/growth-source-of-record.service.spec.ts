@@ -81,7 +81,7 @@ describe('GrowthSourceOfRecordService experiment result feed', () => {
       `factoryos://growth/source-observations/${ACTUAL_ID}`,
     ]);
     expect(recorded.kpi_measurements).toEqual([expect.objectContaining({
-      metric_key: 'production.good_quantity', unit: 'pieces',
+      metric_key: 'production.good_quantity', unit: 'PCS',
       evidence_ref: `factoryos://growth/source-observations/${ACTUAL_ID}`,
     })]);
     expect(result).toEqual({ id: 'result-1' });
