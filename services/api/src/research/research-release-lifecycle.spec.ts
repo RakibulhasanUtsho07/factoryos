@@ -398,4 +398,75 @@ describe('Research release lifecycle', () => {
       resourceId: CURRENT_RELEASE_ID,
     }));
   });
+  it('retracts only the active release, clears the serving pointer and persists reasoned lifecycle/outbox evidence', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: CURRENT_RELEASE_ID,
+        release_key: 'quality-research',
+        version: 3,
+        status: 'PROMOTED',
+      }],
+    });
+    client.query
+      .mockResolvedValueOnce({
+        rows: [{ active_release_id: CURRENT_RELEASE_ID, active_version: 3, revision: 7 }],
+      })
+      .mockResolvedValueOnce({ rows: [{ revision: 8 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await service.retractRelease(
+      USER_ID,
+      TENANT_ID,
+      CURRENT_RELEASE_ID,
+      'Retract this knowledge bundle because its source evidence is no longer authorized.',
+      'request-release-retract',
+      'trace-release-retract',
+    );
+
+    expect(result).toMatchObject({
+      release_id: CURRENT_RELEASE_ID,
+      release_key: 'quality-research',
+      version: 3,
+      status: 'RETRACTED_FROM_CHANNEL',
+      active_release_id: null,
+      active_version: null,
+      channel_revision: 8,
+    });
+    expect(String(client.query.mock.calls[1][0])).toContain('UPDATE research_release_channels');
+    expect(String(client.query.mock.calls[2][0])).toContain("'RETRACTED'");
+    expect(String(client.query.mock.calls[3][0])).toContain('outbox_events');
+    expect(client.query.mock.calls[3][1][4]).toBe('RESEARCH.RELEASE_RETRACTED');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'RELEASE_RETRACT',
+      resourceId: CURRENT_RELEASE_ID,
+    }));
+  });
+
+  it('rejects release retraction when the requested version is no longer active', async () => {
+    database.query.mockResolvedValueOnce({
+      rows: [{
+        id: CURRENT_RELEASE_ID,
+        release_key: 'quality-research',
+        version: 3,
+        status: 'PROMOTED',
+      }],
+    });
+    client.query.mockResolvedValueOnce({
+      rows: [{ active_release_id: TARGET_RELEASE_ID, active_version: 2, revision: 9 }],
+    });
+
+    await expect(service.retractRelease(
+      USER_ID,
+      TENANT_ID,
+      CURRENT_RELEASE_ID,
+      'The stale release must not remove a newer active bundle.',
+      'request-release-retract-stale',
+      'trace-release-retract-stale',
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
 });
