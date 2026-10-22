@@ -9,14 +9,18 @@ const USER='921382b8-e83f-43ab-a576-e3db6a06b70c';
 const TENANT='faaab63d-c447-46ce-950d-deebdd7f5f30';
 const FACTORY='24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 const METER='27c7247c-1c4f-44eb-8b62-8d1ae4f3ee3a';
+const BINDING='9a60a5a4-5c85-49f1-9f9e-80e68e5d3201';
+const APPROVER='6b3e7c75-a7fc-4624-965a-050d59b4ef36';
 const context={userId:USER,tenantId:TENANT,factoryId:FACTORY,requestId:null,traceId:null};
 
 describe('UtilitiesClosureService request validation',()=>{
   let service:UtilitiesClosureService;
+  const dbClient={query:jest.fn()};
   const database={transaction:jest.fn(),query:jest.fn()};
   const utilities={recordReading:jest.fn(),transitionEvent:jest.fn()};
   beforeEach(()=>{
     jest.clearAllMocks();
+    database.transaction.mockImplementation((async (callback:(client:typeof dbClient)=>Promise<unknown>)=>callback(dbClient)) as never);
     service=new UtilitiesClosureService(database as unknown as DatabaseService,utilities as unknown as UtilitiesService);
   });
 
@@ -44,6 +48,27 @@ describe('UtilitiesClosureService request validation',()=>{
       threshold_value:10,threshold_unit_code:'kWh',severity:'HIGH',
     },'threshold-policy-key')).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('stores the independent approver UUID when activating a source binding',async()=>{
+    const reason='Reviewed meter identity and conversion factor';
+    const approvedContext={...context,userId:APPROVER};
+    dbClient.query.mockResolvedValueOnce({rows:[{
+      status:'DRAFT',row_version:1,created_by_user_id:USER,
+    }]} as never)
+      .mockResolvedValueOnce({rowCount:1} as never)
+      .mockResolvedValueOnce({rows:[{
+        id:BINDING,status:'ACTIVE',row_version:2,approved_by_user_id:APPROVER,
+      }]} as never);
+
+    const result=await service.transitionSourceBinding(approvedContext,BINDING,{
+      expected_version:1,action:'ACTIVATE',reason,
+    });
+    expect(result).toEqual(expect.objectContaining({id:BINDING,status:'ACTIVE',approved_by_user_id:APPROVER}));
+    expect(dbClient.query).toHaveBeenCalledTimes(3);
+    expect(dbClient.query.mock.calls[1][1]).toEqual([
+      BINDING,TENANT,FACTORY,'ACTIVE',reason,APPROVER,1,
+    ]);
   });
 
   it('fails closed when a vendor reading has no approved source mapping',async()=>{
