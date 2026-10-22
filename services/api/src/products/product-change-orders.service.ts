@@ -353,7 +353,7 @@ export class ProductChangeOrdersService {
       if (!product) throw new NotFoundException('Active product definition was not found in this factory');
       const row = await this.lockChangeOrder(client, id, p, tenantId, factoryId);
       if (!row) throw new NotFoundException('Engineering change order was not found in this factory');
-      if (row.status === 'SUBMITTED' && row.submit_idempotency_key === key && row.submit_request_hash === requestHash) {
+      if (row.submit_idempotency_key === key && row.submit_request_hash === requestHash) {
         return { id, replayed: true };
       }
       if (row.status !== 'DRAFT') throw new ConflictException('Only a draft ECO can be submitted');
@@ -371,6 +371,22 @@ export class ProductChangeOrdersService {
         [row.effective_date],
       );
       if (!dateCheck.rows[0]?.valid_date) throw new BadRequestException('ECO effective_date cannot be backdated');
+
+      const sourceResult = await client.query<{ id: string }>(
+        `SELECT id::text AS id
+        FROM product_versions
+        WHERE product_id = $1 AND tenant_id = $2 AND factory_id = $3
+          AND state IN ('APPROVED', 'RETIRED')
+          AND effective_from <= ($4::date - 1)
+          AND COALESCE(effective_to_override, effective_to, 'infinity'::date) >= ($4::date - 1)
+        ORDER BY effective_from DESC, version_number DESC
+        LIMIT 1 FOR UPDATE`,
+        [p, tenantId, factoryId, row.effective_date],
+      );
+      const currentSourceId = sourceResult.rows[0]?.id ?? null;
+      if (currentSourceId !== row.source_product_version_id) {
+        throw new ConflictException('The baseline revision changed after ECO creation; reject this draft and create a new ECO');
+      }
 
       const draftAlternates = await client.query<{ id: string; status: string }>(
         `SELECT id::text AS id, status FROM product_bom_alternates
