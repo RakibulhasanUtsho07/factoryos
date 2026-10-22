@@ -262,6 +262,9 @@ jobs:
           echo "Reapplying source-driven active release withdrawal migration"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/175_research_source_change_release_withdrawal.sql
 
+          echo "Reapplying deferred release retraction audit guard"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/176_research_release_retraction_audit_guard.sql
+
 # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
