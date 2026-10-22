@@ -9,6 +9,8 @@ import {
 import { FINANCE_ERP_TRANSFER } from './finance-erp-transfer.adapters';
 import { VaultFinanceSecretManager } from './finance-vault-secret-manager';
 import { FinanceConnectorsController, FinanceReportingController } from './finance.controller';
+import { FINANCE_SFTP_TRANSPORT } from './finance-file-transfer.adapters';
+import { OpenSshFinanceSftpTransport } from './finance-openssh-sftp.transport';
 import { FinanceService } from './finance.service';
 
 @Module({
@@ -23,6 +25,10 @@ import { FinanceService } from './finance.service';
     {
       provide: FINANCE_ERP_TRANSFER,
       useClass: MicrosoftDynamics365BusinessCentralFinanceAdapter,
+    },
+    {
+      provide: FINANCE_SFTP_TRANSPORT,
+      useClass: OpenSshFinanceSftpTransport,
     },
   ],
   exports: [FinanceService],
