@@ -208,11 +208,15 @@ BEGIN
 
   IF position('AQL-bound inspection cannot pass without an ACCEPT sample decision'
       IN pg_get_functiondef('factoryos_require_advanced_quality_evidence()'::regprocedure))=0
+    OR position('AQL rejection/hold cannot be cancelled to bypass quarantine or disposition'
+      IN pg_get_functiondef('factoryos_require_advanced_quality_evidence()'::regprocedure))=0
     OR position('fabric-scored inspection requires the configured number of passing rolls'
+      IN pg_get_functiondef('factoryos_require_advanced_quality_evidence()'::regprocedure))=0
+    OR position('a held fabric roll cannot be cancelled to bypass quarantine or disposition'
       IN pg_get_functiondef('factoryos_require_advanced_quality_evidence()'::regprocedure))=0
     OR position('SUPPLIER_QUALITY_DEFECT_LINKED'
       IN pg_get_functiondef('factoryos_record_quality_supplier_defect()'::regprocedure))=0 THEN
-    RAISE EXCEPTION 'Hold/release, minimum roll count or supplier audit linkage guard is incomplete';
+    RAISE EXCEPTION 'Hold/release, cancellation prevention, minimum roll count or supplier audit linkage guard is incomplete';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM permissions WHERE code='quality.advanced.read')
