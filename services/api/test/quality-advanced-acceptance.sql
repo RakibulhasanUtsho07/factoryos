@@ -31,6 +31,28 @@ BEGIN
     WHERE version='165_quality_disposition_inventory_balance_guard'
   ) THEN RAISE EXCEPTION 'Quality disposition inventory balance guard migration marker is missing'; END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version='166_quality_rework_inventory_ledger'
+  ) THEN RAISE EXCEPTION 'Quality rework inventory ledger migration marker is missing'; END IF;
+
+  IF to_regprocedure('factoryos_quality_guard_rework_receipt()') IS NULL
+    OR to_regprocedure('factoryos_assert_quality_rework_inventory_reconciliation()') IS NULL THEN
+    RAISE EXCEPTION 'Rework source consumption/recovered receipt reconciliation functions are missing';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='inventory_movements'::regclass
+    AND tgname='trg_quality_rework_receipt_guard' AND NOT tgisinternal AND tgenabled<>'D')
+    OR NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='quality_rework_orders'::regclass
+      AND tgname='ctr_quality_rework_inventory_reconciliation' AND NOT tgisinternal AND tgenabled<>'D') THEN
+    RAISE EXCEPTION 'Rework receipt and deferred inventory reconciliation guards must be active';
+  END IF;
+  IF position('QUALITY_REWORK_INPUT' IN pg_get_functiondef('factoryos_quality_guard_inventory_issue()'::regprocedure))=0
+    OR position('QUALITY_REWORK_INPUT' IN pg_get_functiondef('factoryos_assert_quality_rework_inventory_reconciliation()'::regprocedure))=0
+    OR position('QUALITY_REWORK_OUTPUT' IN pg_get_functiondef('factoryos_assert_quality_rework_inventory_reconciliation()'::regprocedure))=0
+    OR position('QUALITY_REWORK_RESTORE' IN pg_get_functiondef('factoryos_assert_quality_rework_inventory_reconciliation()'::regprocedure))=0 THEN
+    RAISE EXCEPTION 'Rework issue, recovered receipt or cancel-restoration contracts are incomplete';
+  END IF;
+
   IF position('v_balance IS DISTINCT FROM NEW.quantity_after'
        IN pg_get_functiondef('factoryos_quality_guard_inventory_issue()'::regprocedure))=0
     OR position('NEW.quantity_after <> 0'
