@@ -401,25 +401,27 @@ export class OutboxDispatcherService
           );
 
           /*
-           * Local consumers receive the exact same
-           * immutable event snapshot.
+           * In local mode, preserve the original in-process pipeline.
+           * In Kafka mode, the independent consumer group performs
+           * handler work and commits its offset after the handler or
+           * durable broker-consumer DLQ transaction succeeds.
            */
-          const consumerResult =
-            await this.consumerRegistry.dispatch(
-              event,
-            );
+          if (typeof this.publisher.usesBrokerTransport !== 'function'
+            || !this.publisher.usesBrokerTransport()) {
+            const consumerResult =
+              await this.consumerRegistry.dispatch(event);
 
-          if (
-            consumerResult.handled
-          ) {
-            this.logger.log(
-              `Outbox event consumed: event_id=${row.id}, tenant_id=${row.tenant_id}, consumer=${consumerResult.consumerName}`,
-            );
+            if (consumerResult.handled) {
+              this.logger.log(
+                `Outbox event consumed: event_id=${row.id}, tenant_id=${row.tenant_id}, consumer=${consumerResult.consumerName}`,
+              );
+            }
           }
 
           /*
-           * Event becomes PUBLISHED only after publisher
-           * and all local consumers succeed.
+           * Kafka mode marks PUBLISHED only after Kafka returns its
+           * acks=-1 confirmation. Consumer progress has its own manual
+           * offset and DLQ contract; broker acceptance is not consumer completion.
            */
           await this.markPublished(
             row.id,
