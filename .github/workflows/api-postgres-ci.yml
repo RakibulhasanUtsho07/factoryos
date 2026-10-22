@@ -8,6 +8,8 @@ on:
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
+      - 'deploy/event-bus/**'
+      - 'scripts/event-bus/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
@@ -586,7 +588,38 @@ jobs:
         working-directory: services/api
         run: npm run build
 
+      - name: Start isolated Kafka-compatible Redpanda broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name factoryos-redpanda-ci -p 127.0.0.1:19092:19092 \
+            docker.redpanda.com/redpandadata/redpanda:v26.2.5 \
+            redpanda start \
+              --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092 \
+              --advertise-kafka-addr internal://factoryos-redpanda-ci:9092,external://localhost:19092 \
+              --mode dev-container --smp 1 --memory 1G --reserve-memory 0M
+          ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec factoryos-redpanda-ci rpk cluster info --brokers=127.0.0.1:9092 >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != "true" ]]; then
+            docker logs factoryos-redpanda-ci
+            echo "::error::Kafka-compatible broker did not become ready"
+            exit 1
+          fi
+          echo "KAFKA_BROKERS=127.0.0.1:19092" >> "$GITHUB_ENV"
+
       - name: Run full API unit and PostgreSQL integration suite
         working-directory: services/api
+        env:
+          KAFKA_BROKERS: 127.0.0.1:19092
         run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand
+
+      - name: Stop isolated Kafka-compatible broker
+        if: always()
+        run: docker rm -f factoryos-redpanda-ci >/dev/null 2>&1 || true
 
