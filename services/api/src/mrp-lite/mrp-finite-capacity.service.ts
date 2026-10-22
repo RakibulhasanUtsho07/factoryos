@@ -297,7 +297,7 @@ export class MrpFiniteCapacityService {
 
       const demandResult = await client.query<DemandRow>(
         `SELECT r.order_id::text AS order_id,r.order_line_id::text AS order_line_id,r.order_number,
-          r.order_line_number,r.product_id::text AS product_id,r.product_code,r.product_name,
+          r.order_line_number,r.product_id::text AS product_id,r.product_code,r.product_name,r.style_code,r.size_code,
           r.product_version_id::text AS product_version_id,r.product_version_number,
           r.need_by_date::text AS need_by_date,r.remaining_finished_quantity::text AS quantity,
           BOOL_OR(r.shortage_quantity>0 AND r.projected_available_date IS NULL) AS has_unresolved_material_shortage,
