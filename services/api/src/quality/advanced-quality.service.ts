@@ -307,7 +307,7 @@ export class AdvancedQualityService {
       'FROM quality_inspections WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
       [inspectionId, c.tenantId, c.factoryId], { tenantId: c.tenantId, userId: c.userId });
     if (!inspection.rows[0]) throw new NotFoundException('Quality inspection was not found in this factory');
-    const [bindings, aqlSamples, rollScores, defects, holds, dispositions, reworkOrders, supplierEvents, defectContexts] = await Promise.all([
+    const [bindings, aqlSamples, rollScores, defects, holds, dispositions, reworkOrders, supplierEvents, defectContexts, inspectionEvents] = await Promise.all([
       this.database.query('SELECT id::text AS id,aql_profile_id::text AS aql_profile_id,fabric_scoring_profile_id::text AS fabric_scoring_profile_id,idempotency_key,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_sampling_profile_bindings WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query('SELECT id::text AS id,profile_id::text AS profile_id,profile_revision,aql_percent_snapshot::text AS aql_percent,inspection_level_snapshot,lot_size,sample_size,accept_number,reject_number,observed_nonconforming,decision,evidence,created_by_user_id::text AS created_by_user_id,created_at::text AS created_at FROM quality_aql_sample_runs WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY created_at,id',
@@ -326,10 +326,12 @@ export class AdvancedQualityService {
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
       this.database.query('SELECT c.id::text AS id,c.defect_id::text AS defect_id,c.line_code,c.operation_code,c.style_code,c.shift_code,c.evidence,c.created_at::text AS created_at FROM quality_defect_context_snapshots c JOIN quality_defects d ON d.id=c.defect_id AND d.tenant_id=c.tenant_id AND d.factory_id=c.factory_id WHERE d.inspection_id=$1 AND c.tenant_id=$2 AND c.factory_id=$3 ORDER BY c.created_at,c.id',
         [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
+      this.database.query('SELECT id::text AS id,version,from_status,to_status,action,reason,idempotency_key,created_by_user_id::text AS created_by_user_id,correlation_id::text AS correlation_id,created_at::text AS created_at FROM quality_inspection_events WHERE inspection_id=$1 AND tenant_id=$2 AND factory_id=$3 ORDER BY version,id',
+        [inspectionId,c.tenantId,c.factoryId],{tenantId:c.tenantId,userId:c.userId}),
     ]);
     return {inspection:inspection.rows[0],profile_bindings:bindings.rows,aql_sample_runs:aqlSamples.rows,fabric_roll_scores:rollScores.rows,
       defects:defects.rows,holds:holds.rows,dispositions:dispositions.rows,rework_orders:reworkOrders.rows,
-      supplier_quality_events:supplierEvents.rows,defect_contexts:defectContexts.rows};
+      supplier_quality_events:supplierEvents.rows,defect_contexts:defectContexts.rows,inspection_events:inspectionEvents.rows};
   }
 
   async defectPareto(c: AdvancedQualityContext, query: QualityDefectParetoQueryDto) {
