@@ -215,6 +215,10 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
 
+          echo "Reapplying quality disposition inventory balance guard to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
+
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
@@ -451,6 +455,10 @@ jobs:
           echo "Reapplying advanced quality migration after demo-role seeds to verify quality permission grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
+
+          echo "Reapplying quality disposition inventory balance guard to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
 
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
