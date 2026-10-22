@@ -177,3 +177,4 @@ migrations/166_quality_rework_inventory_ledger.sql
 migrations/167_quality_sampling_binding_state_guard.sql
 migrations/168_energy_utility_ehs_lifecycle_closure.sql
 migrations/169_kafka_event_bus_transport.sql
+migrations/170_finance_costing_profitability_close_workbench.sql
