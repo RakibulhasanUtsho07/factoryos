@@ -32,11 +32,11 @@ BEGIN
     btrim(COALESCE(source_row.doi,'')),
     '^(https?://(dx[.])?doi[.]org/|doi:[[:space:]]*)','', 'i'
   ));
-  source_pmid := substring(COALESCE(source_row.source_url,'')
-    from 'https?://(www[.])?pubmed[.]ncbi[.]nlm[.]nih[.]gov/([0-9]+)');
+  source_pmid := (regexp_match(COALESCE(source_row.source_url,''),
+    '^https?://(www[.])?pubmed[.]ncbi[.]nlm[.]nih[.]gov/([0-9]+)'))[2];
   IF source_pmid IS NULL THEN
-    source_pmid := substring(COALESCE(source_row.source_url,'')
-      from 'https?://(www[.])?ncbi[.]nlm[.]nih[.]gov/pubmed/([0-9]+)');
+    source_pmid := (regexp_match(COALESCE(source_row.source_url,''),
+      '^https?://(www[.])?ncbi[.]nlm[.]nih[.]gov/pubmed/([0-9]+)'))[2];
   END IF;
   IF source_pmid IS NULL THEN
     source_pmid := COALESCE(source_row.source_metadata->>'pubmedId','');
@@ -52,7 +52,7 @@ BEGIN
     END IF;
   ELSIF NEW.provider='EUROPE_PMC' THEN
     IF source_pmid !~ '^[0-9]{1,12}$'
-       OR COALESCE(NEW.provider_record_id,'') <> 'PMID:' || source_pmid
+       OR COALESCE(NEW.provider_record_id,'') <> ('PMID:' || source_pmid)
        OR NEW.canonical_url !~ ('^https://pubmed[.]ncbi[.]nlm[.]nih[.]gov/' || source_pmid || '/?$')
        OR NEW.title_similarity < 0.85
        OR NEW.response_sha256 IS NULL THEN
