@@ -58,3 +58,41 @@ Every requirement keeps the order and effective BOM revision IDs, component-unit
 A plan and its requirements are immutable snapshots, protected with forced tenant RLS, factory-scope foreign keys, uniqueness and idempotency constraints. State-change events are written to the transactional outbox, and the audit sink is attempted after the transaction. Recalculate to refresh a plan after order, stock, reservation, GRN, PO or engineering changes.
 
 MRP-lite does **not** create or approve purchase orders, book stock reservations, move inventory, perform finite-capacity scheduling, or promise supplier delivery. Actual reservation and inventory movements remain owned by Inventory/WMS; purchasing remains owned by Procurement. The FIFO proposal is a material-readiness view for planners, not a replacement for operational approvals.
+
+
+## Finite-capacity planning integration
+
+Migration `163_mrp_finite_capacity_planning.sql` adds a dated finite-capacity layer above—not instead of—the immutable MRP material run. First create an MRP material run; it retains the effective product revision/BOM and deterministic four-decimal yield+wastage gross-up, unreserved stock, posted-GRN accepted quantities subtracted from approved open PO lines, shortage date/projected availability, and approved alternate-material what-if evidence.
+
+### Capacity calendar and scenarios API
+
+All routes require the authenticated factory scope. Mutation endpoints require an `Idempotency-Key` and the documented permission. They produce planning evidence only.
+
+| Method and path | Permission | Purpose |
+| --- | --- | --- |
+| `GET /api/mrp-lite/capacity-calendar?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD&limit=500` | `mrp.capacity.read` | Read dated work-centre / named-line / shift slots |
+| `POST /api/mrp-lite/capacity-calendar` | `mrp.capacity.write` | Create a dated capacity entry; duplicate business slots return conflict |
+| `POST /api/mrp-lite/capacity-calendar/:calendarId/update` | `mrp.capacity.write` | Versioned minutes, parallel-line or active-state update |
+| `POST /api/mrp-lite/runs/:runId/capacity-plans` | `mrp.capacity.plan` | Calculate and persist a finite-capacity scenario from an immutable MRP run |
+| `GET /api/mrp-lite/runs/:runId/capacity-plans?limit=50` | `mrp.capacity.read` | List immutable capacity plan versions for that material run |
+| `GET /api/mrp-lite/capacity-plans/:capacityPlanId` | `mrp.capacity.read` | Read the schedule, capacity allocations, conflicts and frozen-horizon diff |
+
+A calendar entry specifies `work_centre_id`, `shift_template_id`, `capacity_date`, `line_code`, `available_minutes` (0–1440) and `parallel_lines` (1–100). Effective shift minutes are the shift's local interval minus unpaid break; the usable slot is bounded by the calendar minutes and the net shift. Date queries are real calendar dates and are bounded to 366 days. Calendar revisions are versioned; historical entries are deactivated, not deleted.
+
+The capacity-plan request contains `scenario_name`, `frozen_horizon_days`, optional `compare_to_capacity_plan_id`, and up to 500 capacity adjustments. An adjustment names an existing work-centre/shift/date/line slot; missing or duplicate slots and invalid capacity totals are rejected. Each new run increments `plan_version` per source MRP run. When a prior scenario exists it is used as the comparison default; a non-zero frozen horizon requires a baseline.
+
+### Deterministic constrained scheduling
+
+The scheduler uses stable due-date/order/line/routing-step and calendar ordering, fixed-point integer arithmetic, and upward rounding to 0.0001 minute/material units. Required operation time is the released routing's setup plus quantity × run minutes per unit (the SAM/SMV input captured in routing), bounded by a configured work-centre capacity rate if that rate is stricter. The engine consumes finite minutes per date/shift/work centre/line and available certified skill-worker minutes. A worker appearing under multiple skills is one resource and cannot be consumed twice in the same shift. Work waits until projected materials become available and any unresolved material shortfall blocks operation scheduling.
+
+Operation statuses explain `SCHEDULED`, `CAPACITY_CONFLICT`, `BLOCKED_MATERIAL`, `BLOCKED_ROUTING`, `BLOCKED_PREDECESSOR` and `FROZEN_HORIZON_CONFLICT`. A scheduled finish after a demand date remains visible with the `FINISH_AFTER_NEED_BY_DATE` conflict code instead of being hidden. Each operation keeps the product/version identity, routing step, required/scheduled minutes, dates, skill, conflicts and its dated line/shift allocations.
+
+### Scenario version and frozen horizon
+
+Capacity-plan headers, operation rows and line/shift/worker allocations are immutable snapshots, with factory-scoped foreign keys, forced tenant RLS, audit/outbox evidence and idempotent requests. Compare-to plans produce a before/after diff for added, removed and changed operations. The frozen window uses the baseline operation date and worker/slot allocations: matching operations are pinned and their capacity consumed before the remaining work is scheduled. If a pinned allocation cannot fit the selected calendar/qualified workforce, the plan reports `FROZEN_HORIZON_CONFLICT`; the diff marks the frozen-horizon violation rather than rewriting the baseline. Review that exception explicitly before using the scenario as a planning recommendation.
+
+### Non-committing boundary and tests
+
+The planner only reads sales/material/engineering/PO/GRN/inventory-reservation/workforce/routing evidence and writes new capacity-plan snapshots plus the transactional outbox. It never inserts inventory reservations, changes stock/consumption, or creates, edits, approves or releases a purchase order. Any actual action remains a separately authorized inventory or procurement workflow.
+
+Regression coverage is in `mrp-finite-capacity-planning.spec.ts` and `services/api/test/mrp-finite-capacity-planning-contract.sql`, run by API CI and API PostgreSQL CI, including migration `163` replay. The arithmetic/scheduling tests cover yield/wastage, SAM/SMV setup/run minutes, work-centre unit-rate caps, finite-capacity conflicts, material blocks, multi-skilled worker non-double-booking, and frozen-horizon scenario differences.
