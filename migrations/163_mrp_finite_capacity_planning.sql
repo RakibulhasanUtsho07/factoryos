@@ -24,7 +24,7 @@ ALTER TABLE mrp_plan_requirements
   ADD COLUMN IF NOT EXISTS style_code VARCHAR(120),
   ADD COLUMN IF NOT EXISTS size_code VARCHAR(80);
 
-DO $
+DO $style_size_constraints$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'product_definitions'::regclass AND conname = 'chk_product_definition_style_code') THEN
     ALTER TABLE product_definitions ADD CONSTRAINT chk_product_definition_style_code
@@ -43,10 +43,10 @@ BEGIN
       CHECK (size_code IS NULL OR length(btrim(size_code)) BETWEEN 1 AND 80);
   END IF;
 END;
-$;
+$style_size_constraints$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_product_style_size_identity()
-RETURNS TRIGGER LANGUAGE plpgsql AS $
+RETURNS TRIGGER LANGUAGE plpgsql AS $style_size_identity$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'style/size labels are retained with the product master and cannot be deleted' USING ERRCODE = '55000';
@@ -59,7 +59,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$style_size_identity$;
 DROP TRIGGER IF EXISTS trg_product_style_size_identity ON product_definitions;
 CREATE TRIGGER trg_product_style_size_identity
 BEFORE UPDATE OF style_code, size_code OR DELETE ON product_definitions
@@ -318,7 +318,7 @@ BEFORE INSERT OR UPDATE OR DELETE ON mrp_capacity_calendar
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_mrp_capacity_calendar();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_mrp_capacity_calendar_overlap()
-RETURNS TRIGGER LANGUAGE plpgsql AS $
+RETURNS TRIGGER LANGUAGE plpgsql AS $capacity_overlap$
 DECLARE
   v_timezone TEXT;
   v_start TIMESTAMPTZ;
@@ -384,7 +384,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$capacity_overlap$;
 DROP TRIGGER IF EXISTS trg_mrp_capacity_calendar_overlap ON mrp_capacity_calendar;
 CREATE TRIGGER trg_mrp_capacity_calendar_overlap
 BEFORE INSERT OR UPDATE OF work_centre_id, shift_template_id, capacity_date, line_code, status
