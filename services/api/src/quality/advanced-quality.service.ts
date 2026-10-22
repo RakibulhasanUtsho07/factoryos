@@ -432,7 +432,7 @@ export class AdvancedQualityService {
       [inspectionId,c.tenantId,c.factoryId], { tenantId:c.tenantId,userId:c.userId });
     const row = state.rows[0];
     if (!row) throw new NotFoundException('Quality inspection was not found in this factory');
-    if (row.status === 'ON_HOLD') return;
+    if (['ON_HOLD','FAILED','DISPOSITIONED'].includes(String(row.status))) return;
     if (!['OPEN','IN_PROGRESS'].includes(String(row.status))) {
       throw new ConflictException('Non-accepted advanced quality evidence requires a hold, but the inspection is already ' + row.status);
     }
