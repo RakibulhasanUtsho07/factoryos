@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS outbox_bus_dlq_audit_events (
     FOREIGN KEY(redrive_request_id,tenant_id)
     REFERENCES outbox_bus_dlq_redrive_requests(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT chk_outbox_bus_dlq_audit_action CHECK(action IN
-    ('QUARANTINED','FAILURE_RECORDED','REDRIVE_REQUESTED','REDRIVE_PUBLISHED','REDRIVE_FAILED')),
+    ('QUARANTINED','FAILURE_RECORDED','REDRIVE_REQUESTED','REDRIVE_STARTED','REDRIVE_PUBLISHED','REDRIVE_FAILED')),
   CONSTRAINT chk_outbox_bus_dlq_audit_reason CHECK(length(btrim(reason))>0),
   CONSTRAINT chk_outbox_bus_dlq_audit_data CHECK(jsonb_typeof(event_data)='object')
 );
@@ -196,7 +196,7 @@ BEGIN
       v_action:='REDRIVE_REQUESTED';
       v_reason:='Authorized broker DLQ redrive requested';
     ELSE
-      v_action:=CASE WHEN NEW.status='PUBLISHED' THEN 'REDRIVE_PUBLISHED' ELSE 'REDRIVE_FAILED' END;
+      v_action:=CASE WHEN NEW.status='PUBLISHED' THEN 'REDRIVE_PUBLISHED' WHEN NEW.status='PROCESSING' THEN 'REDRIVE_STARTED' ELSE 'REDRIVE_FAILED' END;
       v_reason:=COALESCE(NEW.last_error,'Broker publication confirmation recorded');
     END IF;
     INSERT INTO outbox_bus_dlq_audit_events(
@@ -240,6 +240,16 @@ DROP TRIGGER IF EXISTS trg_outbox_bus_dlq_audit_immutable ON outbox_bus_dlq_audi
 CREATE TRIGGER trg_outbox_bus_dlq_audit_immutable
   BEFORE UPDATE OR DELETE ON outbox_bus_dlq_audit_events
   FOR EACH ROW EXECUTE FUNCTION factoryos_guard_outbox_bus_dlq_audit();
+
+DO $bus_grants$
+BEGIN
+  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='factoryos_app') THEN
+    GRANT SELECT,INSERT,UPDATE ON outbox_bus_dead_letters TO factoryos_app;
+    GRANT SELECT,INSERT,UPDATE ON outbox_bus_dlq_redrive_requests TO factoryos_app;
+    GRANT SELECT,INSERT ON outbox_bus_dlq_audit_events TO factoryos_app;
+  END IF;
+END;
+$bus_grants$;
 
 DO $bus_rls$
 DECLARE v_table TEXT;
