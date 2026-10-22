@@ -261,3 +261,12 @@ All paths below are under `/api/growth` and require the authenticated tenant/fac
 | Keep tenant/factory boundaries | Forced RLS, composite foreign keys, owner membership checks and API scope guards | `growth-opportunity-governance.sql` plus full PostgreSQL CI |
 
 `growth_opportunity_decision_history.readiness_snapshot` records what the service checked at decision time. This is the governance record for why an opportunity was accepted; later evidence does not retroactively rewrite that historical decision. Opportunity-level financial sensitivity still requires its own data-vintaged scenario and constraint gate; a `READY` governance response does not automatically mark a scenario decision-ready.
+
+## 2026-10-23 — Growth outcome integration and calibration
+
+The read-side KPI source adapters, pinned source-observation lifecycle, source-backed experiment result feed, and maker-checker calibration-policy APIs are described in the task-specific acceptance record: [Growth outcome integration and statistical calibration](growth-outcome-integration-statistical-calibration-2026-10-23.md).
+
+Supported source-of-records in this slice are the governed `financial_facts` ledger (only approved active reporting connectors) and immutable `production_output_postings` (quantities retain finished-item canonical inventory UOM). Each saved observation pins the adapter version, canonical source reference, unit, source timestamp, source revision digest and observation digest. It cannot mutate the source record or inventory/finance ledger. Source-backed experiment result creation accepts baseline/actual observation IDs and derives values, timestamps and evidence from those records rather than trusting submitted actuals.
+
+Forecast evaluation groups now distinguish `NONE`, `HEURISTIC_RANGE` and `DECLARED_NOMINAL_COVERAGE` cohorts. An approved domain-specific policy is required before threshold assessment; an undersized cohort remains unassessable. A range with no declared nominal coverage is never described as a confidence interval or calibrated prediction interval. This is a source adapter to FactoryOS's already-ingested finance ledger, not a claim that an external customer's ERP poller has already been deployed or activated.
+
