@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS utility_meter_source_bindings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT uq_utility_source_binding_scope UNIQUE(id,tenant_id,factory_id),
   CONSTRAINT uq_utility_source_binding_key UNIQUE(tenant_id,factory_id,idempotency_key),
-  CONSTRAINT uq_utility_source_binding_identity UNIQUE(tenant_id,factory_id,source_system_code,source_meter_code),
   CONSTRAINT fk_utility_source_binding_meter FOREIGN KEY(meter_id,tenant_id,factory_id)
     REFERENCES utility_meters(id,tenant_id,factory_id) ON DELETE RESTRICT,
   CONSTRAINT fk_utility_source_binding_creator FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
@@ -75,6 +74,9 @@ CREATE TABLE IF NOT EXISTS utility_meter_source_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_utility_source_binding_lookup
  ON utility_meter_source_bindings(tenant_id,factory_id,source_system_code,status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_utility_source_binding_active_identity
+ ON utility_meter_source_bindings(tenant_id,factory_id,source_system_code,source_meter_code)
+ WHERE status='ACTIVE';
 
 CREATE TABLE IF NOT EXISTS utility_threshold_policies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -311,6 +313,9 @@ CREATE TABLE IF NOT EXISTS ehs_chemical_sds_registry (
 );
 CREATE INDEX IF NOT EXISTS idx_ehs_chemical_current
  ON ehs_chemical_sds_registry(tenant_id,factory_id,status,sds_review_due_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ehs_chemical_single_active_revision
+ ON ehs_chemical_sds_registry(tenant_id,factory_id,chemical_code)
+ WHERE status='ACTIVE';
 
 CREATE TABLE IF NOT EXISTS ehs_contractor_inductions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -829,7 +834,10 @@ CREATE OR REPLACE FUNCTION factoryos_validate_utility_source_reading()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE v_binding utility_meter_source_bindings%ROWTYPE; v_meter utility_meters%ROWTYPE;
 BEGIN
- IF NEW.source_type<>'METER_GATEWAY' OR NEW.source_event_id IS NULL THEN RETURN NEW; END IF;
+ IF NEW.source_type<>'METER_GATEWAY' THEN RETURN NEW; END IF;
+ IF NEW.source_event_id IS NULL OR length(btrim(NEW.source_event_id))=0 THEN
+  RAISE EXCEPTION 'Vendor-gateway readings require a stable source event identity' USING ERRCODE='23514';
+ END IF;
  IF NEW.recorded_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
   RAISE EXCEPTION 'Normalized vendor reading actor must be authenticated' USING ERRCODE='42501';
  END IF;
