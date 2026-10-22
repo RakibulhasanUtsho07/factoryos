@@ -24,6 +24,11 @@ export interface FinanceSecretManager {
     secretReference: string,
     context: { tenant_id: string; factory_id: string; connector_id: string },
   ): Promise<string>;
+  /** Optional key material for an approved SFTP transport; never logged or returned from APIs. */
+  resolveSftpPrivateKey?(
+    secretReference: string,
+    context: { tenant_id: string; factory_id: string; connector_id: string },
+  ): Promise<string>;
 }
 
 export interface FinanceJsonHttpRequest {
