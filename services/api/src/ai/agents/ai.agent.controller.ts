@@ -83,6 +83,9 @@ export class AiAgentController {
         contextVersion: body.context_version ?? null,
         planVersion: body.plan_version ?? null,
         contextHash: body.context_hash ?? null,
+        ...(body.agent_definition_id !== undefined
+          ? { agentDefinitionId: body.agent_definition_id }
+          : {}),
         idempotencyKey: body.idempotency_key ?? null,
         steps: body.steps.map((step) => ({
           stepKey: step.step_key,
