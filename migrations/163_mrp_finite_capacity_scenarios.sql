@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS mrp_work_centre_capacity_calendar (
  CONSTRAINT chk_mrp_capacity_calendar_skills CHECK(array_position(skill_codes,NULL) IS NULL),
  CONSTRAINT chk_mrp_capacity_calendar_change_key_pair CHECK(
   (last_change_idempotency_key IS NULL AND last_change_request_hash IS NULL)
-  OR (length(btrim(last_change_idempotency_key)) BETWEEN 1 AND 255 AND last_change_request_hash ~ '^[0-9a-f]{64}
+  OR (length(btrim(last_change_idempotency_key)) BETWEEN 1 AND 255 AND last_change_request_hash IS NOT NULL AND last_change_request_hash ~ '^[0-9a-f]{64}
 );
 CREATE INDEX IF NOT EXISTS idx_mrp_capacity_calendar_day
  ON mrp_work_centre_capacity_calendar(tenant_id,factory_id,capacity_date,work_centre_id,shift_code);
