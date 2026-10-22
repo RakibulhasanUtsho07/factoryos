@@ -114,6 +114,7 @@ export class UtilitiesClosureService {
     const eventId=this.text(dto.source_event_id,'source_event_id',160);
     const sourceUnit=this.text(dto.source_unit_code,'source_unit_code',24);
     const readingAt=this.instant(dto.reading_at,'reading_at');
+    if(Date.parse(readingAt)>Date.now()+30_000)throw new BadRequestException('Vendor reading timestamp cannot be more than 30 seconds in the future');
     const sourceValue=this.decimal(dto.reading_value,'reading_value',8,false);
     const production=dto.production_quantity===undefined?undefined:this.decimal(dto.production_quantity,'production_quantity',8,true);
     const bindingResult=await this.database.query<Row>(
