@@ -991,14 +991,14 @@ export class AiAgentEvaluationService {
       'SELECT id,tenant_id,factory_id,case_id,status,created_at FROM ai_agent_live_evaluation_results WHERE tenant_id=$1 AND factory_id=$2',
       ')',
       'SELECT c.id::text AS case_id,c.case_key,c.case_version,c.name,c.kind,c.status AS case_status,',
-      'COUNT(e.id)::text AS evaluation_count,COUNT(e.id) FILTER (WHERE e.status=\\'PASS\\')::text AS pass_count,',
-      'COUNT(e.id) FILTER (WHERE e.status=\\'FAIL\\')::text AS fail_count,',
-      'COUNT(e.id) FILTER (WHERE e.status=\\'INCONCLUSIVE\\')::text AS inconclusive_count,',
+      'COUNT(e.id)::text AS evaluation_count,COUNT(e.id) FILTER (WHERE e.status=\'PASS\')::text AS pass_count,',
+      'COUNT(e.id) FILTER (WHERE e.status=\'FAIL\')::text AS fail_count,',
+      'COUNT(e.id) FILTER (WHERE e.status=\'INCONCLUSIVE\')::text AS inconclusive_count,',
       '(SELECT e2.status FROM all_results e2 WHERE e2.case_id=c.id AND e2.tenant_id=$1 AND e2.factory_id=$2 ORDER BY e2.created_at DESC,e2.id DESC LIMIT 1) AS latest_status,',
       'MAX(e.created_at)::text AS last_evaluated_at',
       'FROM latest_cases c LEFT JOIN all_results e ON e.case_id=c.id AND e.tenant_id=$1 AND e.factory_id=$2',
       'GROUP BY c.id,c.case_key,c.case_version,c.name,c.kind,c.status ORDER BY c.case_key',
-    ].join('\\n');
+    ].join('\n');
     const result = await this.database.query<{
       case_id: string; case_key: string; case_version: number | string; name: string;
       kind: AiAgentEvaluationCaseKind; case_status: 'ACTIVE' | 'DISABLED';
