@@ -221,10 +221,27 @@ END;
 $bus_dlq_audit$;
 
 CREATE OR REPLACE FUNCTION factoryos_guard_outbox_bus_dlq_audit()
-RETURNS trigger LANGUAGE plpgsql AS $bus_dlq_audit_guard$
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $bus_dlq_audit_guard$
+DECLARE
+  v_table_owner NAME;
 BEGIN
   IF TG_OP<>'INSERT' THEN
     RAISE EXCEPTION 'Broker DLQ audit records are append-only' USING ERRCODE='55000';
+  END IF;
+
+  SELECT pg_get_userbyid(c.relowner)
+    INTO v_table_owner
+    FROM pg_class c
+    WHERE c.oid='public.outbox_bus_dlq_audit_events'::regclass;
+
+  -- The audit append function is SECURITY DEFINER and shares table ownership
+  -- with this table. Direct application-role inserts are rejected even if a
+  -- broad role grant is reintroduced by deployment provisioning.
+  IF current_user IS DISTINCT FROM v_table_owner THEN
+    RAISE EXCEPTION 'Only the trusted DLQ audit trigger may append audit records' USING ERRCODE='42501';
   END IF;
   RETURN NEW;
 END;
@@ -249,7 +266,7 @@ CREATE TRIGGER trg_outbox_bus_dlq_redrive_audit
   FOR EACH ROW EXECUTE FUNCTION factoryos_append_outbox_bus_dlq_audit();
 DROP TRIGGER IF EXISTS trg_outbox_bus_dlq_audit_immutable ON outbox_bus_dlq_audit_events;
 CREATE TRIGGER trg_outbox_bus_dlq_audit_immutable
-  BEFORE UPDATE OR DELETE ON outbox_bus_dlq_audit_events
+  BEFORE INSERT OR UPDATE OR DELETE ON outbox_bus_dlq_audit_events
   FOR EACH ROW EXECUTE FUNCTION factoryos_guard_outbox_bus_dlq_audit();
 
 DO $bus_grants$
