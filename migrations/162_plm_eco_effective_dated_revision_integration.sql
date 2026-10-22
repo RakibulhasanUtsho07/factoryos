@@ -74,15 +74,15 @@ CREATE TABLE IF NOT EXISTS product_change_orders (
   CONSTRAINT chk_product_change_order_request_hash CHECK (request_hash ~ '^[0-9a-f]{64}$'),
   CONSTRAINT chk_product_change_order_submit_key_pair CHECK (
     (submit_idempotency_key IS NULL AND submit_request_hash IS NULL)
-    OR (submit_idempotency_key IS NOT NULL AND length(btrim(submit_idempotency_key)) > 0 AND submit_request_hash IS NOT NULL AND submit_request_hash ~ '^[0-9a-f]{64}
+    OR (submit_idempotency_key IS NOT NULL AND length(btrim(submit_idempotency_key)) > 0 AND submit_request_hash IS NOT NULL AND submit_request_hash ~ '^[0-9a-f]{64}$')
   ),
   CONSTRAINT chk_product_change_order_approval_key_pair CHECK (
     (approval_idempotency_key IS NULL AND approval_request_hash IS NULL)
-    OR (approval_idempotency_key IS NOT NULL AND length(btrim(approval_idempotency_key)) > 0 AND approval_request_hash IS NOT NULL AND approval_request_hash ~ '^[0-9a-f]{64}
+    OR (approval_idempotency_key IS NOT NULL AND length(btrim(approval_idempotency_key)) > 0 AND approval_request_hash IS NOT NULL AND approval_request_hash ~ '^[0-9a-f]{64}$')
   ),
   CONSTRAINT chk_product_change_order_resolution_key_pair CHECK (
     (resolution_idempotency_key IS NULL AND resolution_request_hash IS NULL)
-    OR (resolution_idempotency_key IS NOT NULL AND length(btrim(resolution_idempotency_key)) > 0 AND resolution_request_hash IS NOT NULL AND resolution_request_hash ~ '^[0-9a-f]{64}
+    OR (resolution_idempotency_key IS NOT NULL AND length(btrim(resolution_idempotency_key)) > 0 AND resolution_request_hash IS NOT NULL AND resolution_request_hash ~ '^[0-9a-f]{64}$')
   ),
   CONSTRAINT chk_product_change_order_lifecycle_evidence CHECK (
     (status = 'DRAFT' AND submitted_by_user_id IS NULL AND submitted_at IS NULL AND reviewer_user_id IS NULL AND reviewed_at IS NULL)
