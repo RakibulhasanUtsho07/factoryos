@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { isUUID } from 'class-validator';
-import type { PoolClient, QueryResultRow } from 'pg';
+import type { QueryResultRow } from 'pg';
 import type { OutboxEvent } from '../outbox/outbox-event.contract';
 import { DatabaseService } from '../database/database.service';
 import type { AcknowledgeOperationalNotificationDto } from './notifications.dto';
