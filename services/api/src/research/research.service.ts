@@ -1475,7 +1475,7 @@ export class ResearchService {
           [tenantId, row.release_key, releaseId, row.version, userId],
         );
 
-        let previous: { active_release_id: string; active_version: number; revision: number } | null = null;
+        let previous: { active_release_id: string | null; active_version: number | null; revision: number } | null = null;
         let channelRevision = 1;
         if (!initializedChannel.rows[0]) {
           const channelResult = await client.query<{
