@@ -55,11 +55,11 @@ const PRODUCTION_METRICS: Readonly<Record<string, { field: keyof ProductionOutpu
 
 function normalizeDecimal(value: unknown): string {
   const raw = String(value);
-  if (!/^-?\\d+(?:\\.\\d{1,8})?$/.test(raw)) throw new Error('GROWTH_SOURCE_VALUE_PRECISION_INVALID');
+  if (!/^-?\d+(?:\.\d{1,8})?$/.test(raw)) throw new Error('GROWTH_SOURCE_VALUE_PRECISION_INVALID');
   const negative = raw.startsWith('-');
   const unsigned = negative ? raw.slice(1) : raw;
   const [whole, fraction = ''] = unsigned.split('.');
-  const wholeNormalized = whole.replace(/^0+(?=\\d)/, '');
+  const wholeNormalized = whole.replace(/^0+(?=\d)/, '');
   const normalized = `${wholeNormalized}.${fraction.padEnd(8, '0')}`;
   const number = Number(normalized);
   if (!Number.isFinite(number) || Math.abs(number) > 1_000_000_000_000) {
