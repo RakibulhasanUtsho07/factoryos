@@ -30,6 +30,13 @@ WHERE r.code IN ('ORG_ADMIN','FACTORY_MANAGER','EHS_MANAGER')
   )
 ON CONFLICT(role_id,permission_id) DO NOTHING;
 
+-- Inbox permissions are safe for all authenticated roles because reads and acknowledgements
+-- are additionally restricted to the signed-in recipient's own tenant/factory inbox.
+INSERT INTO role_permissions(role_id,permission_id)
+SELECT r.id,p.id FROM roles r CROSS JOIN permissions p
+WHERE p.code IN ('notifications.inbox.read','notifications.inbox.manage')
+ON CONFLICT(role_id,permission_id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS utility_meter_source_bindings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
