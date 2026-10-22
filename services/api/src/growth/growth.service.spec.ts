@@ -658,6 +658,7 @@ describe('GrowthService', () => {
         total_count: '10',
       })),
     });
+    database.query.mockResolvedValueOnce({ rows: [] });
 
     const result = await service.getForecastCalibration(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
 
