@@ -86,20 +86,19 @@ export class FinanceWorkbenchService {
         ), actuals AS (
           SELECT * FROM scoped
           WHERE fact_type IN ('ACTUAL_REVENUE','ACTUAL_COST','ACTUAL_CONTRIBUTION_COST')
-        ), forecast_ranked AS (
-          SELECT scoped.*,
-            row_number() OVER (
-              PARTITION BY connector_id,fact_type,source_fact_key,currency,period_start
-              ORDER BY created_at DESC,effective_at DESC,id DESC
-            ) AS forecast_rank
+        ), forecasts AS (
+          SELECT DISTINCT ON (connector_id,fact_type,source_fact_key,currency,period_start)
+            connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
           FROM scoped
           WHERE fact_type IN ('FORECAST_REVENUE','FORECAST_COST','FORECAST_CONTRIBUTION_COST')
+          ORDER BY connector_id,fact_type,source_fact_key,currency,period_start,
+            created_at DESC,effective_at DESC,id DESC
         ), selected AS (
           SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
           FROM actuals
           UNION ALL
           SELECT connector_id,fact_type,source_fact_key,currency,amount,effective_at,created_at,period_start
-          FROM forecast_ranked WHERE forecast_rank=1
+          FROM forecasts
         ), totals AS (
           SELECT period_start,currency,
             count(*) FILTER (WHERE fact_type LIKE 'ACTUAL_%')::int AS actual_fact_count,
