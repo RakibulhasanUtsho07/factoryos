@@ -285,6 +285,8 @@ CREATE TABLE IF NOT EXISTS ehs_chemical_sds_registry (
   request_hash CHAR(64) NOT NULL,
   created_by_user_id UUID NOT NULL,
   updated_by_user_id UUID NOT NULL,
+  approved_by_user_id UUID,
+  approved_at TIMESTAMPTZ,
   last_change_reason TEXT,
   correlation_id UUID NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -295,7 +297,12 @@ CREATE TABLE IF NOT EXISTS ehs_chemical_sds_registry (
   CONSTRAINT fk_ehs_chemical_factory FOREIGN KEY(factory_id,tenant_id) REFERENCES factories(id,tenant_id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_chemical_creator FOREIGN KEY(created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT fk_ehs_chemical_updater FOREIGN KEY(updated_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_ehs_chemical_approver FOREIGN KEY(approved_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
   CONSTRAINT chk_ehs_chemical_status CHECK(status IN ('DRAFT','ACTIVE','INACTIVE','RETIRED')),
+  CONSTRAINT chk_ehs_chemical_approval CHECK(
+    (status='ACTIVE' AND approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL)
+    OR (status<>'ACTIVE' AND approved_by_user_id IS NULL AND approved_at IS NULL)
+  ),
   CONSTRAINT chk_ehs_chemical_dates CHECK(sds_review_due_at>=sds_issued_at),
   CONSTRAINT chk_ehs_chemical_uri CHECK(length(btrim(sds_document_uri)) BETWEEN 1 AND 2048),
   CONSTRAINT chk_ehs_chemical_handling CHECK(length(btrim(handling_instructions))>0 AND length(btrim(emergency_instructions))>0),
@@ -684,7 +691,8 @@ BEGIN
  IF TG_OP='DELETE' THEN RAISE EXCEPTION 'Chemical/SDS records are retained; use lifecycle transitions' USING ERRCODE='55000'; END IF;
  IF TG_OP='INSERT' THEN
   IF NEW.status<>'DRAFT' OR NEW.row_version<>1 OR NEW.created_by_user_id IS DISTINCT FROM factoryos_current_user_id()
-    OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
+    OR NEW.updated_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+    OR NEW.approved_by_user_id IS NOT NULL OR NEW.approved_at IS NOT NULL THEN
    RAISE EXCEPTION 'Chemical/SDS records must begin DRAFT under the authenticated actor' USING ERRCODE='42501';
   END IF;
   RETURN NEW;
@@ -707,8 +715,16 @@ BEGIN
   (OLD.status='ACTIVE' AND NEW.status IN ('INACTIVE','RETIRED')) OR
   (OLD.status='INACTIVE' AND NEW.status IN ('ACTIVE','RETIRED'))
  ) THEN RAISE EXCEPTION 'Invalid chemical/SDS transition' USING ERRCODE='23514'; END IF;
- IF NEW.status='ACTIVE' AND NEW.sds_review_due_at<clock_timestamp() THEN
-  RAISE EXCEPTION 'An expired SDS review cannot be activated' USING ERRCODE='23514';
+ IF NEW.status='ACTIVE' THEN
+  IF NEW.approved_by_user_id IS DISTINCT FROM factoryos_current_user_id()
+    OR NEW.approved_by_user_id IS NULL OR NEW.approved_by_user_id=NEW.created_by_user_id OR NEW.approved_at IS NULL THEN
+   RAISE EXCEPTION 'Activating an SDS revision requires an independent approver' USING ERRCODE='42501';
+  END IF;
+  IF NEW.sds_review_due_at<clock_timestamp() THEN
+   RAISE EXCEPTION 'An expired SDS review cannot be activated' USING ERRCODE='23514';
+  END IF;
+ ELSIF NEW.approved_by_user_id IS NOT NULL OR NEW.approved_at IS NOT NULL THEN
+  RAISE EXCEPTION 'Only an ACTIVE SDS revision can retain approval evidence' USING ERRCODE='23514';
  END IF;
  RETURN NEW;
 END;
