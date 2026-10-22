@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import { ProjectedGrowthConstraintMetricsDto } from './projected-growth-constraint-metrics.dto';
 import {
-  IsDateString, IsIn, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString,
+  IsDateString, IsIn, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, IsUUID,
   Max, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 
@@ -21,6 +21,10 @@ export class CreateGrowthScenarioDto {
   @IsNotEmpty()
   @MaxLength(2000)
   baseline_source_ref!: string;
+
+  @IsOptional()
+  @IsUUID()
+  baseline_source_observation_id?: string;
 
   @IsNumber()
   @Min(0.0001)
