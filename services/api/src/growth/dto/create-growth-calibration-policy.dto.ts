@@ -45,6 +45,16 @@ export class CreateGrowthCalibrationPolicyDto {
   @Max(100)
   max_absolute_calibration_gap_pct_points!: number;
 
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(50)
+  @Max(99.99)
+  residual_coverage_target_pct!: number;
+
+  @IsNumber({ maxDecimalPlaces: 8 })
+  @Min(0)
+  @Max(1000000000000)
+  max_empirical_absolute_residual!: number;
+
   @IsNumber({ maxDecimalPlaces: 0 })
   @Min(10)
   @Max(1000000)
