@@ -29,7 +29,6 @@ import {
   PhysicalReleaseInput,
   PhysicalRollbackReceipt,
   PhysicalSandboxInput,
-  PhysicalSandboxReceipt,
   SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS,
 } from './saas-physical-infrastructure.adapters';
 
