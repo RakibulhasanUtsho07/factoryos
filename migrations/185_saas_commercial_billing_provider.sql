@@ -175,14 +175,20 @@ CREATE TABLE IF NOT EXISTS saas_billing_close_runs (
     )
     OR
     (
-      subscription_id IS NOT NULL AND subscription_version BETWEEN 1 AND 9223372036854775807
-      AND subscription_status IN ('TRIAL','ACTIVE','SUSPENDED','TERMINATED','EXPIRED')
-      AND subscription_plan_code IS NOT NULL AND subscription_plan_version BETWEEN 1 AND 1000000
+      subscription_id IS NOT NULL
+      AND subscription_version IS NOT NULL AND subscription_version BETWEEN 1 AND 9223372036854775807
+      AND subscription_status IS NOT NULL AND subscription_status IN ('TRIAL','ACTIVE','SUSPENDED','TERMINATED','EXPIRED')
+      AND subscription_plan_code IS NOT NULL
+      AND subscription_plan_version IS NOT NULL AND subscription_plan_version BETWEEN 1 AND 1000000
       AND ((subscription_period_start IS NULL AND subscription_period_end IS NULL)
         OR (subscription_period_start IS NOT NULL AND subscription_period_end IS NOT NULL AND subscription_period_end>subscription_period_start))
       AND jsonb_typeof(subscription_snapshot)='object'
       AND octet_length(subscription_snapshot::text)<=8192
-      AND subscription_snapshot_hash ~ '^[a-f0-9]{64}
+      AND subscription_snapshot_hash ~ '^[a-f0-9]{64}$'
+      AND subscription_snapshot->>'subscriptionId'=subscription_id::text
+      AND subscription_snapshot->>'version'=subscription_version::text
+    )
+  ),
   CONSTRAINT uq_saas_billing_close_period UNIQUE(tenant_id,period_start,period_end,currency),
   CONSTRAINT chk_saas_billing_close_period CHECK(
     period_end>period_start AND period_end-period_start<=INTERVAL '35 days'
