@@ -7,6 +7,7 @@ import { IamModule } from '../iam/iam.module';
 import { InventoryController } from './inventory.controller';
 import { InventoryCycleCountTaskController } from './inventory.cycle-count-task.controller';
 import { InventoryCycleCountSessionController } from './inventory.cycle-count-session.controller';
+import { InventoryCycleCountRecurringPolicyController } from './inventory.cycle-count-recurring-policy.controller';
 import { InventoryAllocationPolicyController } from './inventory.allocation-policy.controller';
 import { InventoryReplenishmentController } from './inventory.replenishment.controller';
 import { InventoryLocationController } from './inventory.location.controller';
@@ -15,6 +16,7 @@ import { InventoryStockReconciliationService } from './inventory.stock-reconcili
 import { InventoryCycleCountService } from './inventory.cycle-count.service';
 import { InventoryCycleCountTaskService } from './inventory.cycle-count-task.service';
 import { InventoryCycleCountSessionService } from './inventory.cycle-count-session.service';
+import { InventoryCycleCountRecurringPolicyService } from './inventory.cycle-count-recurring-policy.service';
 import { InventoryService } from './inventory.service';
 import { InventoryReplenishmentService } from './inventory.replenishment.service';
 import { InventoryLocationService } from './inventory.location.service';
@@ -27,8 +29,8 @@ import { UnitOfMeasureService } from './uom.service';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
-  controllers: [InventoryController, InventoryCycleCountTaskController, InventoryCycleCountSessionController, InventoryAllocationPolicyController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController, WmsMobileController],
-  providers: [InventoryService, InventoryReplenishmentService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryCycleCountTaskService, InventoryCycleCountSessionService, InventoryLocationService, TraceabilityService, UnitOfMeasureService, WmsMobileService],
+  controllers: [InventoryController, InventoryCycleCountTaskController, InventoryCycleCountSessionController, InventoryCycleCountRecurringPolicyController, InventoryAllocationPolicyController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController, WmsMobileController],
+  providers: [InventoryService, InventoryReplenishmentService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryCycleCountTaskService, InventoryCycleCountSessionService, InventoryCycleCountRecurringPolicyService, InventoryLocationService, TraceabilityService, UnitOfMeasureService, WmsMobileService],
   exports: [InventoryService, InventoryReservationService, TraceabilityService, UnitOfMeasureService],
 })
 export class InventoryModule {}
