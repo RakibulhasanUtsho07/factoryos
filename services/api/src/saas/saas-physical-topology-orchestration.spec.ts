@@ -112,12 +112,15 @@ describe('physical deployment profile topology orchestration', () => {
   it('does not attest isolation when any target fails to return namespace, quota, limit, and network-policy identities', async () => {
     const cloudReference = 'cloud-prod-01';
     const edgeReference = 'edge-dhaka-01';
-    const adapter = new KubernetesSaasPhysicalInfrastructureAdapter({
+    const configValues: Record<string, string> = {
       NODE_ENV: 'production',
       ['SAAS_KUBERNETES_TARGET_' + referenceKey(cloudReference) + '_API_SERVER']: 'https://cloud-kube.example.test',
       ['SAAS_KUBERNETES_TARGET_' + referenceKey(cloudReference) + '_BEARER_TOKEN']: 'cloud-cluster-token',
       ['SAAS_KUBERNETES_EDGE_' + referenceKey(edgeReference) + '_API_SERVER']: 'https://edge-kube.example.test',
       ['SAAS_KUBERNETES_EDGE_' + referenceKey(edgeReference) + '_BEARER_TOKEN']: 'edge-cluster-token',
+    };
+    const adapter = new KubernetesSaasPhysicalInfrastructureAdapter({
+      get: (key: string) => configValues[key],
     } as never);
     const internals = adapter as unknown as {
       ensureTenantNamespace: (...args: unknown[]) => Promise<unknown>;
