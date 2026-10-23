@@ -149,8 +149,21 @@ export class GrowthCalibrationPolicyService {
     const status = dto.decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
 
     const row = await this.database.transaction({ tenantId, userId }, async client => {
-      const current = await client.query<{ id: string; status: string; created_by: string }>(
-        `SELECT id::text AS id,status,created_by::text AS created_by
+      const current = await client.query<{
+        id: string; status: string; created_by: string; domain: string; model_version: string;
+        metric_key: string; unit: string; policy_version: number | string; minimum_sample_count: number | string;
+        max_mean_absolute_error: string; max_root_mean_squared_error: string; max_absolute_mean_error: string;
+        max_mean_symmetric_percentage_error_pct: string; max_absolute_calibration_gap_pct_points: string;
+        residual_coverage_target_pct: string | null; max_empirical_absolute_residual: string | null;
+      }>(
+        `SELECT id::text AS id,status,created_by::text AS created_by,domain,model_version,metric_key,unit,
+            policy_version,minimum_sample_count,max_mean_absolute_error::text AS max_mean_absolute_error,
+            max_root_mean_squared_error::text AS max_root_mean_squared_error,
+            max_absolute_mean_error::text AS max_absolute_mean_error,
+            max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
+            max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points,
+            residual_coverage_target_pct::text AS residual_coverage_target_pct,
+            max_empirical_absolute_residual::text AS max_empirical_absolute_residual
            FROM growth_forecast_calibration_policies
           WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE`,
         [policyId, tenantId, factoryId],
@@ -163,19 +176,43 @@ export class GrowthCalibrationPolicyService {
         `UPDATE growth_forecast_calibration_policies
             SET status=$1,decided_by=$2,decided_at=clock_timestamp(),decision_reason=$3
           WHERE id=$4 AND tenant_id=$5 AND factory_id=$6 AND status='PENDING_REVIEW' AND created_by<>$2
-          RETURNING id::text AS id,domain,model_version,metric_key,unit,policy_version,status,
+          RETURNING id::text AS id,domain,model_version,metric_key,unit,policy_version,minimum_sample_count,
+             max_mean_absolute_error::text AS max_mean_absolute_error,
+             max_root_mean_squared_error::text AS max_root_mean_squared_error,
+             max_absolute_mean_error::text AS max_absolute_mean_error,
+             max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
+             max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points,
+             residual_coverage_target_pct::text AS residual_coverage_target_pct,
+             max_empirical_absolute_residual::text AS max_empirical_absolute_residual,status,
              decided_by::text AS decided_by,decided_at::text AS decided_at,decision_reason`,
         [status, userId, reason, policyId, tenantId, factoryId],
       );
       if (!updated.rows[0]) throw new ConflictException('Calibration policy was reviewed concurrently or fails maker-checker policy');
       await this.outbox(client, tenantId, factoryId, userId, policyId,
         status === 'APPROVED' ? 'GROWTH.CALIBRATION_POLICY_APPROVED' : 'GROWTH.CALIBRATION_POLICY_REJECTED',
-        this.correlationId(requestId, traceId), { policy_id: policyId, status, reason });
+        this.correlationId(requestId, traceId), {
+          policy_id: policyId, status, reason,
+          policy_version: updated.rows[0].policy_version,
+          domain: updated.rows[0].domain,
+          model_version: updated.rows[0].model_version,
+          metric_key: updated.rows[0].metric_key,
+          unit: updated.rows[0].unit,
+          minimum_sample_count: updated.rows[0].minimum_sample_count,
+          thresholds: {
+            max_mean_absolute_error: updated.rows[0].max_mean_absolute_error,
+            max_root_mean_squared_error: updated.rows[0].max_root_mean_squared_error,
+            max_absolute_mean_error: updated.rows[0].max_absolute_mean_error,
+            max_mean_symmetric_percentage_error_pct: updated.rows[0].max_mean_symmetric_percentage_error_pct,
+            max_absolute_calibration_gap_pct_points: updated.rows[0].max_absolute_calibration_gap_pct_points,
+            residual_coverage_target_pct: updated.rows[0].residual_coverage_target_pct,
+            max_empirical_absolute_residual: updated.rows[0].max_empirical_absolute_residual,
+          },
+        });
       return updated.rows[0];
     });
     await this.auditSafely(tenantId, factoryId, userId,
       status === 'APPROVED' ? 'CALIBRATION_POLICY_APPROVE' : 'CALIBRATION_POLICY_REJECT',
-      policyId, requestId, traceId, { status, reason });
+      policyId, requestId, traceId, { status, reason, policy: row });
     return row;
   }
 
