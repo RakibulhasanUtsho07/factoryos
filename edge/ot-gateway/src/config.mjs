@@ -80,7 +80,10 @@ export function validateGatewayConfig(config, env = process.env) {
   }
   if (config.security.clientCaFile) config.security.clientCaFile = validatePath(config.security.clientCaFile, 'security.clientCaFile', production);
   ensure(config.api && typeof config.api === 'object', 'api section is required');
+  config.api.tokenFile = validatePath(config.api.tokenFile, 'api.tokenFile', production);
   const apiTarget = configuredEndpoint(config.api.baseUrl, 'https', production);
+  const apiUrl = new URL(config.api.baseUrl);
+  ensure(apiUrl.pathname === '' || apiUrl.pathname === '/', 'api.baseUrl must be an origin without a path');
   ensure(Array.isArray(config.security.approvedTargets), 'security.approvedTargets allow-list is required');
   for (const target of config.security.approvedTargets) ensure(typeof target === 'string' && target.length <= 300, 'approved target entry is invalid');
 
