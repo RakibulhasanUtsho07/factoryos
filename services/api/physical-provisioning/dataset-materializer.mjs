@@ -199,6 +199,7 @@ async function writeMasked(manifest, assessment, destination) {
   const hash = createHash('sha256');
   let bytesWritten = 0;
   let lineFeeds = 0;
+  let currentLineBytes = 0;
   let lastByte = -1;
   const meter = new Transform({
     transform(chunk, _encoding, callback) {
@@ -210,7 +211,20 @@ async function writeMasked(manifest, assessment, destination) {
         return;
       }
       hash.update(chunk);
-      for (const byte of chunk) if (byte === 10) lineFeeds += 1;
+      for (const byte of chunk) {
+        if (byte === 10) {
+          if (currentLineBytes === 0) {
+            callback(Object.assign(new Error('Masked source contains a blank record line'), {
+              code: 'MASKED_SOURCE_BLANK_RECORD',
+            }));
+            return;
+          }
+          lineFeeds += 1;
+          currentLineBytes = 0;
+        } else {
+          currentLineBytes += 1;
+        }
+      }
       if (chunk.length > 0) lastByte = chunk[chunk.length - 1];
       callback(null, chunk);
     },
