@@ -2,6 +2,7 @@ import {
   IsArray,
   IsISO8601,
   IsInt,
+  IsIn,
   IsObject,
   IsOptional,
   IsString,
@@ -9,6 +10,7 @@ import {
   ArrayMinSize,
   Max,
   MaxLength,
+  Matches,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -121,6 +123,80 @@ export class CreateAiAgentStepDto {
   depends_on?: string[];
 }
 
+
+export class AiAgentPlannerAttestationPayloadDto {
+  @IsString()
+  @IsIn(['factoryos.ai-agent-planner-attestation/v1'])
+  schema_version!: string;
+
+  @IsUUID()
+  attestation_id!: string;
+
+  @IsString()
+  @MaxLength(100)
+  key_id!: string;
+
+  @IsString()
+  @MaxLength(200)
+  provider_id!: string;
+
+  @IsString()
+  @MaxLength(100)
+  provider_version!: string;
+
+  @IsString()
+  @MaxLength(100)
+  planner_version!: string;
+
+  @IsString()
+  @MaxLength(100)
+  context_version!: string;
+
+  @IsString()
+  @Matches(/^[a-f0-9]{64}$/)
+  context_hash!: string;
+
+  @IsString()
+  @Matches(/^[a-f0-9]{64}$/)
+  plan_hash!: string;
+
+  @IsString()
+  @Matches(/^[a-f0-9]{64}$/)
+  goal_hash!: string;
+
+  @IsUUID()
+  tenant_id!: string;
+
+  @IsUUID()
+  factory_id!: string;
+
+  @IsUUID()
+  decision_id!: string;
+
+  @IsUUID()
+  parent_trace_id!: string;
+
+  @IsUUID()
+  agent_definition_id!: string;
+
+  @IsISO8601()
+  issued_at!: string;
+
+  @IsISO8601()
+  expires_at!: string;
+}
+
+export class AiAgentPlannerAttestationDto {
+  @IsObject()
+  @ValidateNested()
+  @Type(() => AiAgentPlannerAttestationPayloadDto)
+  payload!: AiAgentPlannerAttestationPayloadDto;
+
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{86}$/)
+  signature!: string;
+}
+
 export class CreateAiAgentTaskDto {
   @IsString()
   @MaxLength(100)
@@ -157,6 +233,11 @@ export class CreateAiAgentTaskDto {
   @IsOptional()
   @IsUUID()
   agent_definition_id?: string | null;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AiAgentPlannerAttestationDto)
+  planner_attestation?: AiAgentPlannerAttestationDto | null;
 
   @IsOptional()
   @IsString()

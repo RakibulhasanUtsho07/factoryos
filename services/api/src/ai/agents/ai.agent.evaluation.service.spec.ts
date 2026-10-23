@@ -1,10 +1,15 @@
 import { jest } from '@jest/globals';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import {
   BadRequestException, ConflictException, ForbiddenException, NotFoundException,
 } from '@nestjs/common';
 
 import { AiAgentEvaluationService } from './ai.agent.evaluation.service';
+import {
+  AI_AGENT_PLANNER_ATTESTATION_SCHEMA,
+  canonicalPlannerJson,
+  computeAiAgentGoalHash,
+} from './ai.agent.planner-attestation';
 
 const tenantId = '11111111-1111-4111-8111-111111111111';
 const factoryId = '22222222-2222-4222-8222-222222222222';
@@ -63,6 +68,39 @@ const liveStepId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const liveActionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const liveExecutionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const liveExecutionKey = 'agent:live-test:step:execution:1';
+const liveGoal = 'Run live planner attestation test';
+const livePlanHash = 'c'.repeat(64);
+const plannerSigningKeys = generateKeyPairSync('ed25519');
+const plannerPublicKeyPem = plannerSigningKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const originalPlannerPublicKey = process.env.AI_AGENT_PLANNER_PUBLIC_KEY;
+const originalPlannerKeyId = process.env.AI_AGENT_PLANNER_KEY_ID;
+
+function makeLivePlannerAttestation() {
+  const now = Date.now();
+  const payload = {
+    schema_version: AI_AGENT_PLANNER_ATTESTATION_SCHEMA,
+    attestation_id: '12345678-1234-4234-8234-123456789abc',
+    key_id: 'evaluation-test-planner-key',
+    provider_id: 'trusted-planner-fixture',
+    provider_version: '1.0.0',
+    planner_version: 'planner-v4',
+    context_version: 'context-v3',
+    context_hash: 'a'.repeat(64),
+    plan_hash: livePlanHash,
+    goal_hash: computeAiAgentGoalHash(liveGoal),
+    tenant_id: tenantId,
+    factory_id: factoryId,
+    decision_id: liveDecisionId,
+    parent_trace_id: liveTraceId,
+    agent_definition_id: definitionId,
+    issued_at: new Date(now - 1000).toISOString(),
+    expires_at: new Date(now + 5 * 60 * 1000).toISOString(),
+  };
+  return {
+    payload,
+    signature: sign(null, Buffer.from(canonicalPlannerJson(payload), 'utf8'), plannerSigningKeys.privateKey).toString('base64url'),
+  };
+}
 
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -77,10 +115,14 @@ function canonicalHash(value: unknown): string {
 }
 function liveTaskRow(overrides: Record<string, unknown> = {}) {
   return {
-    id: liveTaskId, agent_definition_id: definitionId, decision_id: liveDecisionId,
-    parent_trace_id: liveTraceId, state: 'COMPLETED', plan_version: 'planner-v4',
-    context_version: 'context-v3', context_hash: 'a'.repeat(64), request_hash: 'b'.repeat(64),
-    cancel_requested_at: null, deadline_at: '2026-10-12T00:00:00.000Z', ...overrides,
+    id: liveTaskId, tenant_id: tenantId, factory_id: factoryId,
+    agent_definition_id: definitionId, decision_id: liveDecisionId, parent_trace_id: liveTraceId,
+    goal: liveGoal, state: 'COMPLETED', plan_version: 'planner-v4',
+    context_version: 'context-v3', context_hash: 'a'.repeat(64),
+    plan_hash: livePlanHash, planner_attestation: makeLivePlannerAttestation(),
+    planner_attestation_verified_at: new Date().toISOString(), planner_attestation_valid: true,
+    request_hash: 'b'.repeat(64), cancel_requested_at: null,
+    deadline_at: '2026-10-12T00:00:00.000Z', ...overrides,
   };
 }
 function liveTraceRow(overrides: Record<string, unknown> = {}) {
@@ -132,8 +174,17 @@ function makeService() {
 describe('AiAgentEvaluationService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.AI_AGENT_PLANNER_PUBLIC_KEY = plannerPublicKeyPem;
+    process.env.AI_AGENT_PLANNER_KEY_ID = 'evaluation-test-planner-key';
     iamService.authorize.mockResolvedValue(undefined);
     auditService.record.mockResolvedValue('audit-id');
+  });
+
+  afterEach(() => {
+    if (originalPlannerPublicKey === undefined) delete process.env.AI_AGENT_PLANNER_PUBLIC_KEY;
+    else process.env.AI_AGENT_PLANNER_PUBLIC_KEY = originalPlannerPublicKey;
+    if (originalPlannerKeyId === undefined) delete process.env.AI_AGENT_PLANNER_KEY_ID;
+    else process.env.AI_AGENT_PLANNER_KEY_ID = originalPlannerKeyId;
   });
 
 
@@ -483,6 +534,26 @@ describe('AiAgentEvaluationService', () => {
     );
     expect(evaluated.status).toBe('INCONCLUSIVE');
     expect(evaluated.observedSummary.liveExecution).toBe(false);
+  });
+
+  it('keeps live evaluation inconclusive when planner metadata is unsigned or tampered', async () => {
+    const forgedTask = liveTaskRow({
+      planner_attestation: {
+        ...makeLivePlannerAttestation(),
+        payload: { ...makeLivePlannerAttestation().payload, plan_hash: 'd'.repeat(64) },
+      },
+    });
+    database.query
+      .mockResolvedValueOnce({ rows: [caseRow] })
+      .mockResolvedValueOnce({ rows: [forgedTask] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [liveTraceRow()] })
+      .mockResolvedValueOnce({ rows: [liveEvaluationRow({ status: 'INCONCLUSIVE', observed_summary: { evidenceSource: 'LIVE_AGENT_TASK_TRACE', liveExecution: true, rawPayloadsReturned: false, trustedPlannerAttestationVerified: false } })] });
+    const result = await makeService().evaluateLiveExecution(
+      tenantId, factoryId, userId, definitionId, caseId, liveTaskId,
+    );
+    expect(result.status).toBe('INCONCLUSIVE');
+    expect(result.observedSummary.trustedPlannerAttestationVerified).toBe(false);
   });
 
   it('persists live evaluation results idempotently against the pinned task and actual trace', async () => {

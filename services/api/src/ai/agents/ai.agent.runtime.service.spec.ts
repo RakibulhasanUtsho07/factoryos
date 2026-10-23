@@ -338,6 +338,49 @@ describe(
         agentDefinitionId: input.agentDefinitionId ?? null,
       });
 
+    it('blocks execution when the persisted write task has no verified planner provenance', async () => {
+      const task = {
+        id: taskId,
+        agentDefinitionId: '7f1a2222-2222-4222-8222-222222222222',
+        decisionId,
+        parentTraceId: traceId,
+        goal: 'Run deterministic AI agent task',
+        contextVersion: 'cbb-1',
+        planVersion: 'plan-1',
+        contextHash: 'a'.repeat(64),
+      };
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          tenant_id: tenantId, factory_id: factoryId, decision_id: decisionId,
+          parent_trace_id: traceId, goal: task.goal, agent_definition_id: task.agentDefinitionId,
+          context_version: task.contextVersion, plan_version: task.planVersion,
+          context_hash: task.contextHash,
+          plan_hash: null, planner_attestation: null, planner_attestation_verified_at: null,
+        }],
+      });
+
+      await expect(
+        (service as any).assertTrustedPlannerAttestation(tenantId, factoryId, taskId, task),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects a write-capable plan unless it includes a trusted signed planner attestation', async () => {
+      toolRegistry.getTool.mockResolvedValue({
+        ...gatewayOutcome().tool,
+        toolId: 'ORDERS.CREATE',
+        version: '1.0.0',
+        writeCapable: true,
+        idempotencyRequired: true,
+        rollback: { type: 'COMPENSATION', toolId: 'ORDERS.COMPENSATE', toolVersion: '1.0.0', actionType: 'ORDERS.COMPENSATE' },
+      });
+
+      await expect(
+        service.createTask(tenantId, factoryId, userId, buildTaskRequest()),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(database.transaction).not.toHaveBeenCalled();
+    });
+
     it('rejects task creation when the deadline expires before the database insert', async () => {
       const insertQuery = jest
         .fn<(...args: unknown[]) => Promise<unknown>>()

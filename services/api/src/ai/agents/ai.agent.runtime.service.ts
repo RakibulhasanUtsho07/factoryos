@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -37,6 +38,15 @@ import {
 import {
   AiAgentCatalogueService,
 } from './ai.agent.catalogue.service';
+
+import {
+  computeAiAgentPlanHash,
+  verifyAiAgentPlannerAttestation,
+} from './ai.agent.planner-attestation';
+
+import type {
+  AiAgentPlannerAttestationEnvelope,
+} from './ai.agent.planner-attestation';
 
 import {
   AiToolRegistryService,
@@ -80,6 +90,9 @@ interface AgentTaskRow extends QueryResultRow {
   context_version: string | null;
   plan_version: string | null;
   context_hash: string | null;
+  plan_hash: string | null;
+  planner_attestation: AiAgentPlannerAttestationEnvelope | null;
+  planner_attestation_verified_at: string | null;
   cancel_requested_at: string | null;
   failure_code: string | null;
   failure_reason: string | null;
@@ -284,6 +297,52 @@ export class AiAgentRuntimeService {
       this.validateStepDefinition(input.steps[index]!, index);
     }
 
+    // Resolve the registered tool contract before accepting planner metadata. A
+    // write-capable step requires a detached signature from the deployment-trusted
+    // planner key; caller-supplied version strings and hashes alone are insufficient.
+    const registeredTools = await Promise.all(input.steps.map((step) =>
+      this.toolRegistry.getTool(tenantId, factoryId, step.toolId.trim(), step.toolVersion.trim()),
+    ));
+    const requiresPlannerAttestation = registeredTools.some((tool) => tool.writeCapable);
+    let planHash: string | null = null;
+    let plannerAttestation: AiAgentPlannerAttestationEnvelope | null = null;
+    let plannerAttestationVerifiedAt: string | null = null;
+
+    if (requiresPlannerAttestation && !input.plannerAttestation) {
+      throw new ForbiddenException(
+        'Write-capable AI tasks require a valid signed attestation from the trusted planner provider',
+      );
+    }
+    if (input.plannerAttestation) {
+      if (!agentDefinitionId) {
+        throw new ForbiddenException(
+          'Planner-attested tasks must pin an immutable agent definition version',
+        );
+      }
+      planHash = computeAiAgentPlanHash(input.steps);
+      try {
+        const verified = verifyAiAgentPlannerAttestation(input.plannerAttestation, {
+          tenantId,
+          factoryId,
+          decisionId,
+          parentTraceId,
+          agentDefinitionId,
+          goal,
+          contextVersion,
+          planVersion,
+          contextHash,
+          planHash,
+        });
+        plannerAttestation = verified.envelope;
+        plannerAttestationVerifiedAt = verified.verifiedAt;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'PLANNER_ATTESTATION_INVALID';
+        throw new ForbiddenException(
+          `Trusted planner attestation was rejected: ${reason}`,
+        );
+      }
+    }
+
     const requestHash = this.computeTaskRequestHash({
       tenantId,
       factoryId,
@@ -348,12 +407,16 @@ export class AiAgentRuntimeService {
               context_hash,
               idempotency_key,
               request_hash,
-              agent_definition_id
+              agent_definition_id,
+              plan_hash,
+              planner_attestation,
+              planner_attestation_verified_at
             )
             SELECT
               $1, $2, $3, $4, $5, $6, $7,
               $8, $9, $10, $11, $12,
-              $13, $14, $15, $16, $17, $18
+              $13, $14, $15, $16, $17, $18,
+              $19, $20::jsonb, $21
             WHERE $12::timestamptz > NOW()
             RETURNING ${this.taskSelectColumns()}
             `,
@@ -376,6 +439,9 @@ export class AiAgentRuntimeService {
               idempotencyKey,
               requestHash,
               agentDefinitionId,
+              planHash,
+              plannerAttestation ? JSON.stringify(plannerAttestation) : null,
+              plannerAttestationVerifiedAt,
             ],
           );
 
@@ -465,6 +531,13 @@ export class AiAgentRuntimeService {
           ? (error as { code?: unknown; constraint?: unknown })
           : null;
 
+      if (databaseError?.code === '23505'
+        && databaseError.constraint === 'uq_agent_tasks_planner_attestation_id') {
+        throw new ConflictException(
+          'Trusted planner attestation has already been consumed by another task; obtain a fresh attestation',
+        );
+      }
+
       if (
         !idempotencyKey ||
         databaseError?.code !== '23505' ||
@@ -507,6 +580,16 @@ export class AiAgentRuntimeService {
         state: result.state,
         stepCount: input.steps.length,
         limits,
+        plannerAttestation: plannerAttestation && plannerAttestationVerifiedAt ? {
+          verified: true,
+          attestationId: plannerAttestation.payload.attestation_id,
+          keyId: plannerAttestation.payload.key_id,
+          providerId: plannerAttestation.payload.provider_id,
+          providerVersion: plannerAttestation.payload.provider_version,
+          plannerVersion: plannerAttestation.payload.planner_version,
+          planHash,
+          verifiedAt: plannerAttestationVerifiedAt,
+        } : null,
       },
     );
 
@@ -667,6 +750,21 @@ export class AiAgentRuntimeService {
 
     this.assertExecutable(task, step);
     await this.assertDependencies(tenantId, factoryId, task, step);
+
+    // Re-check the signed provenance at the execution boundary for every
+    // write-capable tool. Removing/rotating the configured trust key therefore
+    // blocks new side effects instead of falling back to caller-supplied metadata.
+    const registeredTool = await this.toolRegistry.getTool(
+      tenantId,
+      factoryId,
+      step.tool_id,
+      step.tool_version,
+    );
+    if (registeredTool.writeCapable) {
+      await this.assertTrustedPlannerAttestation(
+        tenantId, factoryId, task.id, task,
+      );
+    }
 
     if (boundAgentId) {
       await this.aiAgentCatalogueService.assertToolEntitled(
@@ -3179,6 +3277,73 @@ export class AiAgentRuntimeService {
     }
   }
 
+  private async assertTrustedPlannerAttestation(
+    tenantId: string,
+    factoryId: string,
+    taskId: string,
+    task: AiAgentTask,
+  ): Promise<void> {
+    const result = await this.database.query<{
+      tenant_id: string;
+      factory_id: string;
+      decision_id: string;
+      parent_trace_id: string;
+      goal: string;
+      agent_definition_id: string | null;
+      context_version: string | null;
+      plan_version: string | null;
+      context_hash: string | null;
+      plan_hash: string | null;
+      planner_attestation: AiAgentPlannerAttestationEnvelope | null;
+      planner_attestation_verified_at: string | null;
+    }>(
+      `SELECT tenant_id::text AS tenant_id,factory_id::text AS factory_id,
+              decision_id::text AS decision_id,parent_trace_id::text AS parent_trace_id,
+              goal,agent_definition_id::text AS agent_definition_id,
+              context_version,plan_version,context_hash,plan_hash,
+              planner_attestation,
+              planner_attestation_verified_at::text AS planner_attestation_verified_at
+         FROM agent_tasks
+        WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+        LIMIT 1`,
+      [taskId, tenantId, factoryId],
+      { tenantId },
+    );
+    const stored = result.rows[0];
+    if (!stored || !stored.planner_attestation || !stored.planner_attestation_verified_at
+      || !stored.plan_hash || stored.agent_definition_id !== task.agentDefinitionId
+      || stored.decision_id !== task.decisionId || stored.parent_trace_id !== task.parentTraceId
+      || stored.goal !== task.goal || stored.context_version !== task.contextVersion
+      || stored.plan_version !== task.planVersion || stored.context_hash !== task.contextHash) {
+      throw new ForbiddenException(
+        'Write-capable AI execution has no immutable verified planner provenance',
+      );
+    }
+
+    try {
+      const verified = verifyAiAgentPlannerAttestation(stored.planner_attestation, {
+        tenantId: stored.tenant_id,
+        factoryId: stored.factory_id,
+        decisionId: stored.decision_id,
+        parentTraceId: stored.parent_trace_id,
+        agentDefinitionId: stored.agent_definition_id,
+        goal: stored.goal,
+        contextVersion: stored.context_version,
+        planVersion: stored.plan_version,
+        contextHash: stored.context_hash,
+        planHash: stored.plan_hash,
+      });
+      if (verified.payload.plan_hash !== stored.plan_hash) {
+        throw new Error('PLANNER_ATTESTATION_STORED_PLAN_HASH_MISMATCH');
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'PLANNER_ATTESTATION_INVALID';
+      throw new ForbiddenException(
+        `Write-capable AI execution blocked by planner provenance verification: ${reason}`,
+      );
+    }
+  }
+
   private computeTaskRequestHash(args: {
     tenantId: string;
     factoryId: string;
@@ -3230,6 +3395,9 @@ export class AiAgentRuntimeService {
       planVersion,
       contextHash,
       agentDefinitionId,
+      plannerAttestationFingerprint: input.plannerAttestation
+        ? this.computeHash(input.plannerAttestation)
+        : null,
       steps: input.steps.map((step, index) => ({
         stepKey: step.stepKey.trim(),
         stepIndex: index,
@@ -3622,6 +3790,9 @@ export class AiAgentRuntimeService {
       context_version,
       plan_version,
       context_hash,
+      plan_hash,
+      planner_attestation,
+      planner_attestation_verified_at::text AS planner_attestation_verified_at,
       cancel_requested_at::text AS cancel_requested_at,
       failure_code,
       failure_reason,

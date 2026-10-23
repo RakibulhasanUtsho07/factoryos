@@ -13,6 +13,14 @@ import { AuditService } from '../../audit/audit.service';
 import { DatabaseService } from '../../database/database.service';
 import { IamService } from '../../iam/iam.service';
 
+import {
+  verifyAiAgentPlannerAttestation,
+} from './ai.agent.planner-attestation';
+
+import type {
+  AiAgentPlannerAttestationEnvelope,
+} from './ai.agent.planner-attestation';
+
 export type AiAgentEvaluationCaseKind = 'EXPECTED_TOOL_CALL' | 'EXPECTED_REFUSAL' | 'PRIVACY_NO_SECRET_LEAKAGE';
 export type AiAgentEvaluationStatus = 'PASS' | 'FAIL' | 'INCONCLUSIVE';
 
@@ -58,7 +66,9 @@ interface EvaluationResultRow extends QueryResultRow {
 
 interface LiveAgentTaskRow extends QueryResultRow {
   id: string; agent_definition_id: string | null; decision_id: string; parent_trace_id: string;
-  state: string; plan_version: string | null; context_version: string | null; context_hash: string | null;
+  state: string; goal: string; plan_version: string | null; context_version: string | null; context_hash: string | null;
+  plan_hash: string | null; planner_attestation: AiAgentPlannerAttestationEnvelope | null;
+  planner_attestation_verified_at: string | null; planner_attestation_valid?: boolean;
   request_hash: string | null; cancel_requested_at: string | null; deadline_at: string;
 }
 interface LiveExecutionTraceRow extends QueryResultRow {
@@ -287,8 +297,10 @@ export class AiAgentEvaluationService {
     if (testCase.status !== 'ACTIVE') throw new ConflictException('Only active evaluation cases can be evaluated');
 
     const taskResult = await this.database.query<LiveAgentTaskRow>(
-      'SELECT id::text AS id,agent_definition_id::text AS agent_definition_id,decision_id::text AS decision_id,' +
-      'parent_trace_id::text AS parent_trace_id,state,plan_version,context_version,context_hash,request_hash,' +
+      'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,' +
+      'agent_definition_id::text AS agent_definition_id,decision_id::text AS decision_id,' +
+      'parent_trace_id::text AS parent_trace_id,goal,state,plan_version,context_version,context_hash,plan_hash,' +
+      'planner_attestation,planner_attestation_verified_at::text AS planner_attestation_verified_at,request_hash,' +
       'cancel_requested_at::text AS cancel_requested_at,deadline_at::text AS deadline_at ' +
       'FROM agent_tasks WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 LIMIT 1',
       [taskId, tenantId, factoryId], { tenantId, userId: actorUserId },
@@ -299,6 +311,31 @@ export class AiAgentEvaluationService {
       || task.agent_definition_id !== testCase.agent_definition_id) {
       throw new ConflictException('Live evaluation requires the exact immutable agent-definition version pin');
     }
+
+    let plannerAttestationValid = false;
+    if (task.planner_attestation && task.planner_attestation_verified_at && task.plan_hash) {
+      try {
+        const verified = verifyAiAgentPlannerAttestation(task.planner_attestation, {
+          tenantId,
+          factoryId,
+          decisionId: task.decision_id,
+          parentTraceId: task.parent_trace_id,
+          agentDefinitionId: task.agent_definition_id,
+          goal: task.goal,
+          contextVersion: task.context_version,
+          planVersion: task.plan_version,
+          contextHash: task.context_hash,
+          planHash: task.plan_hash,
+        });
+        plannerAttestationValid = verified.payload.plan_hash === task.plan_hash;
+      } catch {
+        plannerAttestationValid = false;
+      }
+    }
+    const evaluationTask: LiveAgentTaskRow = {
+      ...task,
+      planner_attestation_valid: plannerAttestationValid,
+    };
 
     const priorQuery = [
       'SELECT id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,',
@@ -349,7 +386,7 @@ export class AiAgentEvaluationService {
     const trace = await this.database.query<LiveExecutionTraceRow>(
       traceQuery, [taskId, tenantId, factoryId], { tenantId, userId: actorUserId },
     );
-    const evaluation = this.compareCaseToLiveTrace(testCase, task, trace.rows);
+    const evaluation = this.compareCaseToLiveTrace(testCase, evaluationTask, trace.rows);
     const insertQuery = [
       'INSERT INTO ai_agent_live_evaluation_results',
       '(tenant_id,factory_id,case_id,agent_task_id,status,expected_summary,observed_summary,created_by)',
@@ -392,6 +429,7 @@ export class AiAgentEvaluationService {
     if (!task.context_version?.trim()) blockers.push('CONTEXT_VERSION_MISSING');
     if (!task.context_hash?.trim()) blockers.push('CONTEXT_HASH_MISSING');
     if (!/^[a-f0-9]{64}$/i.test(task.request_hash ?? '')) blockers.push('TASK_REQUEST_FINGERPRINT_MISSING');
+    if (task.planner_attestation_valid !== true) blockers.push('TRUSTED_PLANNER_ATTESTATION_MISSING_OR_INVALID');
     if (task.cancel_requested_at) blockers.push('TASK_CANCELLATION_REQUESTED');
     if (steps.some(step => step.agent_id !== testCase.agent_id)) blockers.push('STEP_AGENT_BINDING_MISMATCH');
 
@@ -399,6 +437,11 @@ export class AiAgentEvaluationService {
       evidenceSource: 'LIVE_AGENT_TASK_TRACE', liveExecution: true,
       agentDefinitionId: testCase.agent_definition_id, agentVersion: testCase.agent_version,
       plannerVersion: task.plan_version, contextVersion: task.context_version,
+      trustedPlannerAttestationVerified: task.planner_attestation_valid === true,
+      plannerProviderId: task.planner_attestation_valid === true ? task.planner_attestation?.payload?.provider_id ?? null : null,
+      plannerProviderVersion: task.planner_attestation_valid === true ? task.planner_attestation?.payload?.provider_version ?? null : null,
+      plannerAttestationDigest: task.planner_attestation_valid === true && task.planner_attestation
+        ? this.computeEvaluationHash(task.planner_attestation) : null,
       contextHashPresent: Boolean(task.context_hash), taskRequestFingerprint: task.request_hash,
       decisionId: task.decision_id, parentTraceId: task.parent_trace_id, taskState: task.state,
       stepCount: steps.length, versionPinBlockers: blockers, rawPayloadsReturned: false,
@@ -428,7 +471,7 @@ export class AiAgentEvaluationService {
     }
 
     if (blockers.length > 0) return { status: 'INCONCLUSIVE', observedSummary: {
-      ...base, reason: 'Live evaluation requires exact planner/context version pins and a request fingerprint',
+      ...base, reason: 'Live evaluation requires a valid trusted planner attestation and exact version/context/request pins',
     } };
 
     const agentSteps = steps.filter(step => step.agent_id === testCase.agent_id);
