@@ -537,6 +537,7 @@ describe('AiAgentEvaluationService', () => {
     const redTeamCase = {
       ...caseRow, kind: 'RED_TEAM_POLICY_BYPASS',
       expected_tool_id: 'ORDERS.CREATE', expected_tool_version: '1.0.0',
+      expected_action_type: 'ORDERS.CREATE',
       expected_refusal_reason_contains: 'not permitted',
     };
     const denied = liveTraceRow({
