@@ -34,6 +34,7 @@ import { CommercialModule } from './commercial/commercial.module';
 import { ShouldCostModule } from './should-cost/should-cost.module';
 import { FinanceModule } from './finance/finance.module';
 import { WorkforceModule } from './workforce/workforce.module';
+import { EdgeModule } from './edge/edge.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { OtDeviceModule } from './ot/ot-device.module';
 
@@ -133,6 +134,7 @@ import { ObservabilityModule } from './observability/observability.module';
     IntegrationsModule,
 
     OtDeviceModule,
+    EdgeModule,
     ObservabilityModule,
   ],
 
