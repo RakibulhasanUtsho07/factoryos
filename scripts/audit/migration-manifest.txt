@@ -194,3 +194,4 @@ migrations/182_ai_agent_red_team_compensation_evaluation.sql
 migrations/183_ai_agent_executor_case_source_binding.sql
 migrations/184_ai_agent_red_team_action_binding.sql
 migrations/185_saas_commercial_billing_provider.sql
+migrations/186_saas_physical_infrastructure_execution.sql
