@@ -356,9 +356,11 @@ describe('AiAgentStudioPromotionService', () => {
         rows: [{
           missing_active_case: false,
           missing_refusal_case: true,
+          missing_red_team_case: false,
           missing_privacy_case: false,
           missing_active_case_pass: true,
           missing_write_tool_coverage: true,
+          missing_compensation_coverage: false,
           failed_live_case: false,
         }],
       });
@@ -374,7 +376,10 @@ describe('AiAgentStudioPromotionService', () => {
     expect(coverageQuery).toContain('grant_row.version DESC');
     expect(coverageQuery).toContain('write_capable');
     expect(coverageQuery).toContain("c.kind = 'EXPECTED_REFUSAL'");
+    expect(coverageQuery).toContain("c.kind = 'RED_TEAM_POLICY_BYPASS'");
     expect(coverageQuery).toContain("c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'");
+    expect(coverageQuery).toContain("c.kind = 'EXPECTED_COMPENSATION'");
+    expect(coverageQuery).toContain("w.rollback->>'type' = 'COMPENSATION'");
     expect(coverageQuery).toContain('$4::timestamptz');
     expect(database.transaction).not.toHaveBeenCalled();
   });
@@ -392,9 +397,11 @@ describe('AiAgentStudioPromotionService', () => {
         rows: [{
           missing_active_case: false,
           missing_refusal_case: false,
+          missing_red_team_case: false,
           missing_privacy_case: false,
           missing_active_case_pass: false,
           missing_write_tool_coverage: false,
+          missing_compensation_coverage: false,
           failed_live_case: false,
         }],
       })

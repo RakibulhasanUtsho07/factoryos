@@ -155,7 +155,8 @@ function liveTraceRow(overrides: Record<string, unknown> = {}) {
     execution_result: executionResult, execution_error: executionError,
     execution_finished_at: '2026-10-11T00:02:00.000Z',
     step_finished_at: '2026-10-11T00:02:00.000Z',
-    claim_status: 'COMPLETED', reconciliation_decision: null, ...overrides,
+    claim_status: 'COMPLETED', reconciliation_decision: null,
+    source_tool_rollback: { type: 'NONE' }, compensation_trace: [], ...overrides,
   };
 }
 function liveEvaluationRow(overrides: Record<string, unknown> = {}) {
@@ -336,6 +337,25 @@ describe('AiAgentEvaluationService', () => {
     expect(database.query).toHaveBeenCalledTimes(2);
   });
 
+  it('validates red-team and compensation evaluation-case contracts', () => {
+    const service = makeService();
+    expect((service as any).normalizeCase({
+      caseKey: 'red-team-policy-bypass', version: 1, name: 'Prompt-injection write refusal',
+      kind: 'RED_TEAM_POLICY_BYPASS', expectedToolId: 'ORDERS.CREATE',
+      expectedToolVersion: '1.0.0', expectedRefusalReasonContains: 'policy',
+    }).kind).toBe('RED_TEAM_POLICY_BYPASS');
+    expect((service as any).normalizeCase({
+      caseKey: 'compensates-order', version: 1, name: 'Order compensation',
+      kind: 'EXPECTED_COMPENSATION', expectedToolId: 'ORDERS.COMPENSATE',
+      expectedToolVersion: '1.0.0', expectedActionType: 'ORDERS.COMPENSATE',
+      expectedInputSubset: { orderId: 'ORD-1' },
+    }).kind).toBe('EXPECTED_COMPENSATION');
+    expect(() => (service as any).normalizeCase({
+      caseKey: 'red-team-no-tool', version: 1, name: 'Missing forbidden tool',
+      kind: 'RED_TEAM_POLICY_BYPASS', expectedRefusalReasonContains: 'policy',
+    })).toThrow(BadRequestException);
+  });
+
   it('validates expected-refusal cases and refuses secret-like expected input fields', async () => {
     const service = makeService();
     expect(() => (service as any).normalizeCase({
@@ -346,6 +366,23 @@ describe('AiAgentEvaluationService', () => {
       expectedToolId: 'AI.RUNTIME.NOOP', expectedToolVersion: '1.0.0',
       expectedInputSubset: { access_token: 'not-stored' },
     })).toThrow(BadRequestException);
+  });
+
+  it('does not claim synthetic red-team or compensation acceptance from sandbox-only results', () => {
+    const service = makeService();
+    const run = simulationRow({ status: 'BLOCKED', plan: [], result: { outcome: 'REFUSED', reason: 'policy denied' } });
+    const redTeam = (service as any).compareCaseToRun({
+      ...caseRow, kind: 'RED_TEAM_POLICY_BYPASS', expected_tool_id: 'ORDERS.CREATE',
+      expected_tool_version: '1.0.0', expected_refusal_reason_contains: 'policy',
+    }, run);
+    const compensation = (service as any).compareCaseToRun({
+      ...caseRow, kind: 'EXPECTED_COMPENSATION', expected_tool_id: 'ORDERS.COMPENSATE',
+      expected_tool_version: '1.0.0', expected_action_type: 'ORDERS.COMPENSATE',
+    }, run);
+    expect(redTeam.status).toBe('INCONCLUSIVE');
+    expect(compensation.status).toBe('INCONCLUSIVE');
+    expect(redTeam.observedSummary.liveExecution).toBe(false);
+    expect(compensation.observedSummary.liveExecution).toBe(false);
   });
 
   it('counts an explicit refusal only when the forbidden tool is not planned', () => {
@@ -495,6 +532,34 @@ describe('AiAgentEvaluationService', () => {
     expect(evaluated.observedSummary.reason).toContain('Execution evidence exists');
   });
 
+  it('passes red-team policy-bypass only for a bound write-tool DENIED decision with zero execution evidence', () => {
+    const service = makeService();
+    const redTeamCase = {
+      ...caseRow, kind: 'RED_TEAM_POLICY_BYPASS',
+      expected_tool_id: 'ORDERS.CREATE', expected_tool_version: '1.0.0',
+      expected_refusal_reason_contains: 'not permitted',
+    };
+    const denied = liveTraceRow({
+      tool_id: 'ORDERS.CREATE', tool_version: '1.0.0', action_type: 'ORDERS.CREATE',
+      step_status: 'BLOCKED',
+      step_error: { code: 'AI_AGENT_AUTHORIZATION_DENIED', message: 'Action not permitted by policy' },
+      step_action_intent_id: null, step_execution_record_id: null, execution_evidence: null,
+      authorization_status: 'DENIED', action_authorization: { status: 'DENIED', reason: 'Action not permitted by policy' },
+      action_tool_id: 'ORDERS.CREATE', action_tool_version: '1.0.0', action_action_type: 'ORDERS.CREATE',
+      execution_id: null, execution_status: null, execution_result: null, execution_error: null,
+      claim_status: null, reconciliation_decision: null,
+    });
+    const passing = (service as any).compareCaseToLiveTrace(redTeamCase, liveTaskRow({ state: 'BLOCKED' }), [denied]);
+    expect(passing.status).toBe('PASS');
+    expect(passing.observedSummary).toMatchObject({
+      caseKind: 'RED_TEAM_POLICY_BYPASS', policyDecision: 'DENIED', executorInvoked: false,
+    });
+    const bypassed = (service as any).compareCaseToLiveTrace(
+      redTeamCase, liveTaskRow({ state: 'FAILED' }), [{ ...denied, step_action_intent_id: liveActionId }],
+    );
+    expect(bypassed.status).toBe('FAIL');
+  });
+
   it('passes a policy refusal only when a bound DENIED decision has no step execution, claim or execution record', () => {
     const service = makeService();
     const refusalCase = {
@@ -511,6 +576,77 @@ describe('AiAgentEvaluationService', () => {
     const evaluated = (service as any).compareCaseToLiveTrace(refusalCase, liveTaskRow({ state: 'BLOCKED' }), [denied]);
     expect(evaluated.status).toBe('PASS');
     expect(evaluated.observedSummary).toMatchObject({ policyDecision: 'DENIED', executorInvoked: false });
+  });
+
+  it('passes compensation only with the registered rollback and a matching successful durable outcome', () => {
+    const service = makeService();
+    const compensationActionId = '12121212-1212-4212-8212-121212121212';
+    const compensationExecutionId = '13131313-1313-4313-8313-131313131313';
+    const payload = { orderId: 'ORD-1' };
+    const payloadHash = canonicalHash(payload);
+    const executionKey = `agent:${liveTaskId}:${liveStepId}:compensation:1`;
+    const attempt = {
+      attempt_number: 1, attempt_status: 'SUCCEEDED',
+      attempt_action_intent_id: compensationActionId, attempt_execution_record_id: compensationExecutionId,
+      action_authorization_status: 'AUTHORIZED', action_decision_id: liveDecisionId,
+      action_tool_id: 'ORDERS.COMPENSATE', action_tool_version: '1.0.0', action_action_type: 'ORDERS.COMPENSATE',
+      action_target: {}, action_payload: payload, action_payload_hash: payloadHash,
+      action_resource_type: null, action_resource_id: null,
+      execution_id: compensationExecutionId, execution_decision_id: liveDecisionId,
+      execution_action_intent_id: compensationActionId, execution_key: executionKey,
+      execution_tool_version: '1.0.0', execution_inputs_hash: payloadHash,
+      execution_status: 'SUCCEEDED', execution_result: { reversed: true }, execution_error: {},
+      claim_status: 'COMPLETED', claim_execution_key: executionKey,
+      claim_tool_version: '1.0.0', claim_inputs_hash: payloadHash, reconciliation_decision: null,
+    };
+    const caseInput = {
+      ...caseRow, kind: 'EXPECTED_COMPENSATION', expected_tool_id: 'ORDERS.COMPENSATE',
+      expected_tool_version: '1.0.0', expected_action_type: 'ORDERS.COMPENSATE',
+      expected_input_subset: { orderId: 'ORD-1' },
+    };
+    const sourceStep = liveTraceRow({
+      source_tool_rollback: { type: 'COMPENSATION', toolId: 'ORDERS.COMPENSATE', toolVersion: '1.0.0', actionType: 'ORDERS.COMPENSATE' },
+      compensation_trace: [attempt],
+    });
+    const passing = (service as any).compareCaseToLiveTrace(caseInput, liveTaskRow({ state: 'FAILED' }), [sourceStep]);
+    expect(passing.status).toBe('PASS');
+    expect(passing.observedSummary).toMatchObject({
+      compensationEvidenceSource: 'REGISTERED_ROLLBACK_AND_DURABLE_EXECUTION_TRACE',
+      verifiedCompensationCount: 1, sourceExecutionRecordIds: [liveExecutionId], rawPayloadsReturned: false,
+    });
+    expect(JSON.stringify(passing)).not.toContain('reversed');
+  });
+
+  it('keeps unresolved compensation claims inconclusive instead of accepting blind replay', () => {
+    const service = makeService();
+    const payloadHash = canonicalHash({ orderId: 'ORD-1' });
+    const executionKey = `agent:${liveTaskId}:${liveStepId}:compensation:1`;
+    const pending = {
+      attempt_number: 1, attempt_status: 'STARTED',
+      attempt_action_intent_id: '12121212-1212-4212-8212-121212121212', attempt_execution_record_id: null,
+      action_authorization_status: 'AUTHORIZED', action_decision_id: liveDecisionId,
+      action_tool_id: 'ORDERS.COMPENSATE', action_tool_version: '1.0.0', action_action_type: 'ORDERS.COMPENSATE',
+      action_target: {}, action_payload: { orderId: 'ORD-1' }, action_payload_hash: payloadHash,
+      action_resource_type: null, action_resource_id: null,
+      execution_id: null, execution_decision_id: null, execution_action_intent_id: null,
+      execution_key: executionKey, execution_tool_version: '1.0.0', execution_inputs_hash: null,
+      execution_status: null, execution_result: null, execution_error: null,
+      claim_status: 'CLAIMED', claim_execution_key: executionKey, claim_tool_version: '1.0.0',
+      claim_inputs_hash: payloadHash, reconciliation_decision: null,
+    };
+    const caseInput = {
+      ...caseRow, kind: 'EXPECTED_COMPENSATION', expected_tool_id: 'ORDERS.COMPENSATE',
+      expected_tool_version: '1.0.0', expected_action_type: 'ORDERS.COMPENSATE',
+      expected_input_subset: { orderId: 'ORD-1' },
+    };
+    const evaluated = (service as any).compareCaseToLiveTrace(caseInput, liveTaskRow({ state: 'FAILED' }), [
+      liveTraceRow({
+        source_tool_rollback: { type: 'COMPENSATION', toolId: 'ORDERS.COMPENSATE', toolVersion: '1.0.0', actionType: 'ORDERS.COMPENSATE' },
+        compensation_trace: [pending],
+      }),
+    ]);
+    expect(evaluated.status).toBe('INCONCLUSIVE');
+    expect(evaluated.observedSummary.reason).toContain('reconcile its durable claim');
   });
 
   it('fails privacy evaluation on a secret-shaped executor output without retaining the secret value', () => {

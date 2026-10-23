@@ -967,9 +967,11 @@ export class AiAgentStudioPromotionService {
     const result = await this.database.query<{
       missing_active_case: boolean;
       missing_refusal_case: boolean;
+      missing_red_team_case: boolean;
       missing_privacy_case: boolean;
       missing_active_case_pass: boolean;
       missing_write_tool_coverage: boolean;
+      missing_compensation_coverage: boolean;
       failed_live_case: boolean;
     }>(
       `
@@ -990,6 +992,27 @@ export class AiAgentStudioPromotionService {
         NOT EXISTS (
           SELECT 1
           FROM ai_agent_evaluation_cases c
+          JOIN ai_tool_registry w
+            ON w.tool_id = c.expected_tool_id
+           AND w.version = c.expected_tool_version
+          JOIN LATERAL (
+            SELECT grant_row.status, grant_row.effective_from, grant_row.expires_at
+            FROM ai_agent_tool_grants grant_row
+            WHERE grant_row.tenant_id = $1 AND grant_row.factory_id = $2
+              AND grant_row.agent_definition_id = $3
+              AND grant_row.tool_id = w.tool_id AND grant_row.tool_version = w.version
+            ORDER BY grant_row.version DESC LIMIT 1
+          ) g ON g.status = 'ACTIVE' AND g.effective_from <= NOW()
+            AND (g.expires_at IS NULL OR g.expires_at > NOW())
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+            AND c.kind = 'RED_TEAM_POLICY_BYPASS'
+            AND w.status = 'ACTIVE' AND w.write_capable = TRUE
+            AND (w.tenant_id IS NULL OR w.tenant_id = $1)
+            AND (w.factory_id IS NULL OR w.factory_id = $2)
+        ) AS missing_red_team_case,
+        NOT EXISTS (
+          SELECT 1 FROM ai_agent_evaluation_cases c
           WHERE c.tenant_id = $1 AND c.factory_id = $2
             AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
             AND c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'
@@ -1061,6 +1084,40 @@ export class AiAgentStudioPromotionService {
         ) AS missing_write_tool_coverage,
         EXISTS (
           SELECT 1
+          FROM ai_tool_registry w
+          JOIN LATERAL (
+            SELECT grant_row.status, grant_row.effective_from, grant_row.expires_at
+            FROM ai_agent_tool_grants grant_row
+            WHERE grant_row.tenant_id = $1 AND grant_row.factory_id = $2
+              AND grant_row.agent_definition_id = $3
+              AND grant_row.tool_id = w.tool_id AND grant_row.tool_version = w.version
+            ORDER BY grant_row.version DESC LIMIT 1
+          ) g ON g.status = 'ACTIVE' AND g.effective_from <= NOW()
+            AND (g.expires_at IS NULL OR g.expires_at > NOW())
+          WHERE w.status = 'ACTIVE' AND w.write_capable = TRUE
+            AND w.rollback->>'type' = 'COMPENSATION'
+            AND (w.tenant_id IS NULL OR w.tenant_id = $1)
+            AND (w.factory_id IS NULL OR w.factory_id = $2)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ai_agent_evaluation_cases c
+              JOIN ai_agent_live_evaluation_results r
+                ON r.case_id = c.id AND r.tenant_id = c.tenant_id AND r.factory_id = c.factory_id
+              JOIN agent_tasks t
+                ON t.id = r.agent_task_id AND t.tenant_id = r.tenant_id AND t.factory_id = r.factory_id
+              WHERE c.tenant_id = $1 AND c.factory_id = $2
+                AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+                AND c.kind = 'EXPECTED_COMPENSATION'
+                AND c.expected_tool_id = w.rollback->>'toolId'
+                AND c.expected_tool_version = w.rollback->>'toolVersion'
+                AND c.expected_action_type = w.rollback->>'actionType'
+                AND r.status = 'PASS' AND r.created_at >= $4::timestamptz
+                AND t.agent_definition_id = c.agent_definition_id
+                AND t.created_at >= $4::timestamptz
+            )
+        ) AS missing_compensation_coverage,
+        EXISTS (
+          SELECT 1
           FROM ai_agent_live_evaluation_results r
           JOIN ai_agent_evaluation_cases c
             ON c.id = r.case_id
@@ -1086,14 +1143,16 @@ export class AiAgentStudioPromotionService {
     const requiredGates: Array<keyof NonNullable<typeof coverage>> = [
       'missing_active_case',
       'missing_refusal_case',
+      'missing_red_team_case',
       'missing_privacy_case',
       'missing_active_case_pass',
       'missing_write_tool_coverage',
+      'missing_compensation_coverage',
       'failed_live_case',
     ];
     if (!coverage || requiredGates.some((gate) => coverage[gate] !== false)) {
       throw new ForbiddenException(
-        'Production promotion requires post-canary PASS evidence for every active live evaluation case, explicit refusal and privacy cases, every applicable active write-capable tool version, and no failed live case',
+        'Production promotion requires post-canary PASS evidence for every active live evaluation case, explicit refusal/red-team/privacy cases, every applicable active write-capable tool version, every registered compensator, and no failed live case',
       );
     }
   }
