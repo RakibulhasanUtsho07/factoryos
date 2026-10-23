@@ -257,20 +257,28 @@ export class InventoryCycleCountService {
             return this.replaySubmitOrConflict(duplicateAfterLock, requestHash, userId);
           }
 
+          let taskPolicy: {
+            id: string; item_id: string; location_id: string | null;
+            assigned_to_user_id: string | null; status: string;
+            blind_count: boolean; variance_escalation_threshold: string | null;
+          } | null = null;
           if (taskId) {
             const taskResult = await client.query<{
               id: string; item_id: string; location_id: string | null;
               assigned_to_user_id: string | null; status: string;
+              blind_count: boolean; variance_escalation_threshold: string | null;
             }>(
               `SELECT id::text AS id, item_id::text AS item_id,
                       location_id::text AS location_id,
-                      assigned_to_user_id::text AS assigned_to_user_id, status
+                      assigned_to_user_id::text AS assigned_to_user_id, status,
+                      blind_count, variance_escalation_threshold::text AS variance_escalation_threshold
                FROM inventory_cycle_count_tasks
                WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
                FOR UPDATE`,
               [taskId, tenantId, factoryId],
             );
             const task = taskResult.rows[0];
+            taskPolicy = task;
             if (!task) throw new NotFoundException('Cycle-count task not found in this factory');
             if (task.status !== 'IN_PROGRESS') throw new ConflictException('Cycle-count task must be started before a count is submitted');
             if (task.item_id !== normalizedItemId || task.location_id !== locationId) {
@@ -278,6 +286,20 @@ export class InventoryCycleCountService {
             }
             if (task.assigned_to_user_id !== userId) {
               throw new ConflictException('Cycle-count task must be started by its assigned counter');
+            }
+          } else {
+            const activeBlindTask = await client.query<{ id: string }>(
+              `SELECT id::text AS id
+               FROM inventory_cycle_count_tasks
+               WHERE tenant_id = $1 AND factory_id = $2 AND item_id = $3
+                 AND location_id IS NOT DISTINCT FROM $4::uuid
+                 AND assigned_to_user_id = $5 AND status = 'IN_PROGRESS'
+                 AND blind_count = TRUE
+               LIMIT 1 FOR UPDATE`,
+              [tenantId, factoryId, normalizedItemId, locationId, userId],
+            );
+            if (activeBlindTask.rows[0]) {
+              throw new ConflictException('Submit this count with task_id so the blind-count policy is enforced');
             }
           }
 
