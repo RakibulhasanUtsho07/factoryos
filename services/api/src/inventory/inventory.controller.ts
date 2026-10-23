@@ -166,7 +166,7 @@ export class InventoryController {
   ) {
     const context = this.requireContext(request);
     return this.cycleCountService.listCycleCounts(
-      context.tenantId, context.factoryId, itemId,
+      context.userId, context.tenantId, context.factoryId, itemId,
       { status, limit: rawLimit === undefined ? 50 : Number(rawLimit) },
     );
   }
