@@ -26,8 +26,8 @@ BEGIN
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM pg_policies p
-      WHERE p.schemaname='public' AND p.tablename=relation_name
-        AND p.policyname=relation_name || '_tenant_isolation'
+      WHERE p.schemaname='public' AND p.tablename=v_relation_name
+        AND p.policyname=v_relation_name || '_tenant_isolation'
         AND COALESCE(p.qual,'') ILIKE '%factoryos_current_tenant_id%'
         AND COALESCE(p.with_check,'') ILIKE '%factoryos_current_tenant_id%'
     ) THEN
@@ -35,7 +35,7 @@ BEGIN
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM pg_policies p
-      WHERE p.schemaname='public' AND p.tablename=relation_name
+      WHERE p.schemaname='public' AND p.tablename=v_relation_name
         AND p.policyname='fo_privacy_scope_enforce' AND p.permissive='RESTRICTIVE'
         AND COALESCE(p.qual,'') ILIKE '%factoryos_current_tenant_id%'
         AND COALESCE(p.with_check,'') ILIKE '%factoryos_current_tenant_id%'
