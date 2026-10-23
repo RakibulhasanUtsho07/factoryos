@@ -525,7 +525,7 @@ describe('SaasBillingService', () => {
     expect(stripe.sendInvoice).not.toHaveBeenCalled();
     expect(appended).toContainEqual(expect.objectContaining({
       eventType: 'ISSUE_FAILED',
-      providerInvoiceId: null,
+      providerInvoiceId: 'in_123abc',
       errorCode: expect.any(String),
     }));
   });
