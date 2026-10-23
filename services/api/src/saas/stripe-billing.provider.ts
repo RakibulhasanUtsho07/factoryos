@@ -266,8 +266,7 @@ export class StripeBillingProvider {
     parameters: Record<string, unknown> = {},
     idempotencyKey?: string,
   ): Promise<unknown> {
-    const secret = this.config.get<string>('STRIPE_SECRET_KEY')?.trim();
-    if (!secret) throw new ServiceUnavailableException('Stripe billing provider is not configured');
+    const { secret } = this.configuredSecretKey();
     if (idempotencyKey && (idempotencyKey.length < 1 || idempotencyKey.length > 255)) {
       throw new BadGatewayException('Stripe idempotency key is outside the provider limit');
     }
@@ -318,6 +317,21 @@ export class StripeBillingProvider {
     return body;
   }
 
+  private configuredSecretKey(): { secret: string; mode: 'test' | 'live' } {
+    const secret = this.config.get<string>('STRIPE_SECRET_KEY')?.trim();
+    if (!secret) throw new ServiceUnavailableException('Stripe billing provider is not configured');
+
+    const mode = /^(?:sk|rk)_test_/.test(secret) ? 'test'
+      : /^(?:sk|rk)_live_/.test(secret) ? 'live' : null;
+    if (!mode) {
+      throw new ServiceUnavailableException('Stripe secret key must use a recognizable test/live key prefix so invoice mode can be verified');
+    }
+    if (mode === 'test' && this.config.get<string>('NODE_ENV')?.trim().toLowerCase() === 'production') {
+      throw new ServiceUnavailableException('Stripe test-mode credentials are forbidden in production');
+    }
+    return { secret, mode };
+  }
+
   private normalizeInvoice(value: unknown): StripeInvoice {
     if (!isRecord(value) || typeof value.id !== 'string' || !/^in_[A-Za-z0-9]+$/.test(value.id)) {
       throw new BadGatewayException('Stripe returned an invalid invoice object');
@@ -359,6 +373,10 @@ export class StripeBillingProvider {
       for (const [key, item] of Object.entries(value.metadata)) if (typeof item === 'string') metadata[key] = item;
     }
     if (typeof value.livemode !== 'boolean') throw new BadGatewayException('Stripe invoice is missing live-mode state');
+    const { mode } = this.configuredSecretKey();
+    if (value.livemode !== (mode === 'live')) {
+      throw new BadGatewayException('Stripe invoice live-mode state does not match the configured credential mode');
+    }
     if (typeof value.currency !== 'string' || !/^[a-z]{3}$/i.test(value.currency)) {
       throw new BadGatewayException('Stripe invoice currency is invalid');
     }
