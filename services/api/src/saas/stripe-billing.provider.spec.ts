@@ -60,6 +60,32 @@ describe('StripeBillingProvider', () => {
       .toThrow(UnauthorizedException);
   });
 
+  it('rejects a malformed provider invoice instead of assuming automatic collection or zero tax', () => {
+    const provider = new StripeBillingProvider(config({ STRIPE_SECRET_KEY: 'sk_test_only' }) as never);
+    const invoice = {
+      id: 'in_123abc',
+      customer: 'cus_123abc',
+      currency: 'usd',
+      status: 'draft',
+      subtotal: 125,
+      total: 125,
+      amount_due: 125,
+      amount_paid: 0,
+      amount_remaining: 125,
+      automatic_tax: { enabled: false, status: null },
+      total_taxes: [],
+      total_discount_amounts: [],
+      metadata: {},
+      livemode: false,
+      created: 1,
+    };
+    expect(() => (provider as any).normalizeInvoice(invoice))
+      .toThrow('supported collection method');
+    expect(() => (provider as any).normalizeInvoice({
+      ...invoice, collection_method: 'charge_automatically', total_taxes: undefined, total_tax_amounts: undefined,
+    })).toThrow('omitted both supported tax-total fields');
+  });
+
   it('uses server-side credentials and a stable provider idempotency key for invoice creation', async () => {
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       id: 'in_123abc',

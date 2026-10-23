@@ -67,11 +67,11 @@ describe('SaasBillingService', () => {
     const { service } = mocks();
     expect(() => (service as any).assertInvoiceTaxReady(
       { automatic_tax_enabled: true },
-      { status: 'open', automaticTaxStatus: 'failed' },
+      { status: 'open', automaticTaxStatus: 'failed', automaticTaxEnabled: true },
     )).toThrow(ConflictException);
     expect(() => (service as any).assertInvoiceTaxReady(
       { automatic_tax_enabled: true },
-      { status: 'open', automaticTaxStatus: 'requires_location_inputs' },
+      { status: 'open', automaticTaxStatus: 'requires_location_inputs', automaticTaxEnabled: true },
     )).toThrow(ConflictException);
     expect(() => (service as any).assertInvoiceTaxReady(
       { automatic_tax_enabled: true },
@@ -83,7 +83,7 @@ describe('SaasBillingService', () => {
     )).not.toThrow();
     expect(() => (service as any).assertInvoiceTaxReady(
       { automatic_tax_enabled: false },
-      { status: 'open', automaticTaxStatus: null },
+      { status: 'open', automaticTaxStatus: null, automaticTaxEnabled: false },
     )).not.toThrow();
   });
 

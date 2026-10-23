@@ -319,9 +319,17 @@ export class StripeBillingProvider {
     if (status !== 'draft' && status !== 'open' && status !== 'paid' && status !== 'void' && status !== 'uncollectible') {
       throw new BadGatewayException('Stripe invoice has an unsupported lifecycle status');
     }
-    if (!isRecord(value.automatic_tax)) throw new BadGatewayException('Stripe invoice is missing automatic-tax state');
+    if (!isRecord(value.automatic_tax) || typeof value.automatic_tax.enabled !== 'boolean') {
+      throw new BadGatewayException('Stripe invoice is missing a valid automatic-tax state');
+    }
+    if (value.collection_method !== 'charge_automatically' && value.collection_method !== 'send_invoice') {
+      throw new BadGatewayException('Stripe invoice is missing a supported collection method');
+    }
     const totalTaxes = Array.isArray(value.total_taxes) ? value.total_taxes
-      : Array.isArray(value.total_tax_amounts) ? value.total_tax_amounts : [];
+      : Array.isArray(value.total_tax_amounts) ? value.total_tax_amounts : null;
+    if (totalTaxes === null) {
+      throw new BadGatewayException('Stripe invoice response omitted both supported tax-total fields');
+    }
     const taxMinor = totalTaxes.reduce((sum: number, entry: unknown) => {
       if (!isRecord(entry)) throw new BadGatewayException('Stripe invoice contains invalid tax detail');
       const amount = safeInteger(entry.amount, 'invoice tax amount');
@@ -354,7 +362,7 @@ export class StripeBillingProvider {
       amountRemainingMinor: safeInteger(value.amount_remaining, 'invoice amount remaining'),
       automaticTaxStatus: typeof value.automatic_tax.status === 'string' ? value.automatic_tax.status : null,
       automaticTaxEnabled: value.automatic_tax.enabled === true,
-      collectionMethod: value.collection_method === 'send_invoice' ? 'send_invoice' : 'charge_automatically',
+      collectionMethod: value.collection_method,
       metadata,
       livemode: value.livemode,
       createdAt: typeof value.created === 'number' && Number.isSafeInteger(value.created) ? value.created : null,
