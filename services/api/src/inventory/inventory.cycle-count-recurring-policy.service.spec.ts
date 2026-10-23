@@ -163,7 +163,7 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
       updated_at: scheduledFor,
       version: '1',
     };
-    const client = { query: jest.fn() };
+    const client = { query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>>() };
     client.query
       .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [policy], rowCount: 1 })
@@ -178,7 +178,10 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
       .mockResolvedValueOnce({ rows: [{ next_run_at: nextRunAt }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
-    databaseMock.transaction.mockImplementation(async (_config, work) => work(client as never) as never);
+    databaseMock.transaction.mockImplementation(async (...args: unknown[]) => {
+      const work = args[1] as (transactionClient: unknown) => Promise<unknown>;
+      return work(client);
+    });
 
     const result = await service.materializeDue(
       USER_ID, TENANT_ID, FACTORY_ID, 50, null, null,
