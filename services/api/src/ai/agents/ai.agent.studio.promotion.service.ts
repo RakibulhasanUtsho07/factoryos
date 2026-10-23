@@ -419,6 +419,15 @@ export class AiAgentStudioPromotionService {
           'Production promotion requires the same agent version to be active in canary',
         );
       }
+
+      // A same-version canary is necessary but not sufficient. Production promotion
+      // also requires fresh live evaluation evidence observed after that canary began.
+      await this.assertLiveAcceptanceCoverageBeforeProduction(
+        tenantId,
+        factoryId,
+        current.agentDefinitionId,
+        canary.createdAt,
+      );
     }
 
     const deployment = await this.createDeployment(
@@ -941,6 +950,138 @@ export class AiAgentStudioPromotionService {
     }
 
     return simulation;
+  }
+
+  private async assertLiveAcceptanceCoverageBeforeProduction(
+    tenantId: string,
+    factoryId: string,
+    agentDefinitionId: string,
+    canaryCreatedAt: string,
+  ): Promise<void> {
+    if (!Number.isFinite(Date.parse(canaryCreatedAt))) {
+      throw new ForbiddenException(
+        'Production promotion requires a valid activation timestamp for the same-version canary',
+      );
+    }
+
+    const result = await this.database.query<{
+      missing_active_case: boolean;
+      missing_refusal_case: boolean;
+      missing_privacy_case: boolean;
+      missing_active_case_pass: boolean;
+      missing_write_tool_coverage: boolean;
+      failed_live_case: boolean;
+    }>(
+      `
+      SELECT
+        NOT EXISTS (
+          SELECT 1
+          FROM ai_agent_evaluation_cases c
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+        ) AS missing_active_case,
+        NOT EXISTS (
+          SELECT 1
+          FROM ai_agent_evaluation_cases c
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+            AND c.kind = 'EXPECTED_REFUSAL'
+        ) AS missing_refusal_case,
+        NOT EXISTS (
+          SELECT 1
+          FROM ai_agent_evaluation_cases c
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+            AND c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'
+        ) AS missing_privacy_case,
+        EXISTS (
+          SELECT 1
+          FROM ai_agent_evaluation_cases c
+          WHERE c.tenant_id = $1 AND c.factory_id = $2
+            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ai_agent_live_evaluation_results r
+              JOIN agent_tasks t
+                ON t.id = r.agent_task_id
+               AND t.tenant_id = r.tenant_id
+               AND t.factory_id = r.factory_id
+              WHERE r.case_id = c.id
+                AND r.tenant_id = c.tenant_id
+                AND r.factory_id = c.factory_id
+                AND r.status = 'PASS'
+                AND r.created_at >= $4::timestamptz
+                AND t.agent_definition_id = c.agent_definition_id
+                AND t.created_at >= $4::timestamptz
+            )
+        ) AS missing_active_case_pass,
+        EXISTS (
+          SELECT 1
+          FROM ai_tool_registry w
+          WHERE w.status = 'ACTIVE'
+            AND w.write_capable = TRUE
+            AND (w.tenant_id IS NULL OR w.tenant_id = $1)
+            AND (w.factory_id IS NULL OR w.factory_id = $2)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ai_agent_evaluation_cases c
+              JOIN ai_agent_live_evaluation_results r
+                ON r.case_id = c.id
+               AND r.tenant_id = c.tenant_id
+               AND r.factory_id = c.factory_id
+              JOIN agent_tasks t
+                ON t.id = r.agent_task_id
+               AND t.tenant_id = r.tenant_id
+               AND t.factory_id = r.factory_id
+              WHERE c.tenant_id = $1 AND c.factory_id = $2
+                AND c.agent_definition_id = $3
+                AND c.status = 'ACTIVE'
+                AND c.kind = 'EXPECTED_TOOL_CALL'
+                AND c.expected_tool_id = w.tool_id
+                AND c.expected_tool_version = w.version
+                AND r.status = 'PASS'
+                AND r.created_at >= $4::timestamptz
+                AND t.agent_definition_id = c.agent_definition_id
+                AND t.created_at >= $4::timestamptz
+            )
+        ) AS missing_write_tool_coverage,
+        EXISTS (
+          SELECT 1
+          FROM ai_agent_live_evaluation_results r
+          JOIN ai_agent_evaluation_cases c
+            ON c.id = r.case_id
+           AND c.tenant_id = r.tenant_id
+           AND c.factory_id = r.factory_id
+          JOIN agent_tasks t
+            ON t.id = r.agent_task_id
+           AND t.tenant_id = r.tenant_id
+           AND t.factory_id = r.factory_id
+          WHERE r.tenant_id = $1 AND r.factory_id = $2
+            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+            AND r.status = 'FAIL'
+            AND r.created_at >= $4::timestamptz
+            AND t.agent_definition_id = c.agent_definition_id
+            AND t.created_at >= $4::timestamptz
+        ) AS failed_live_case
+      `,
+      [tenantId, factoryId, agentDefinitionId, canaryCreatedAt],
+      { tenantId },
+    );
+
+    const coverage = result.rows[0];
+    const requiredGates: Array<keyof NonNullable<typeof coverage>> = [
+      'missing_active_case',
+      'missing_refusal_case',
+      'missing_privacy_case',
+      'missing_active_case_pass',
+      'missing_write_tool_coverage',
+      'failed_live_case',
+    ];
+    if (!coverage || requiredGates.some((gate) => coverage[gate] !== false)) {
+      throw new ForbiddenException(
+        'Production promotion requires post-canary PASS evidence for every active live evaluation case, explicit refusal and privacy cases, every applicable active write-capable tool version, and no failed live case',
+      );
+    }
   }
 
   private async getLatestDeploymentByAgentKey(
