@@ -127,7 +127,6 @@ export class AiToolGatewayService {
     // tool version and digest. Explicit local dev/test are the only bypasses.
     // The admission service re-reads current DB state for each request.
     const enforceArtifactAdmission =
-      workloadClass === 'PRODUCTION' &&
       !['development', 'test'].includes(process.env.NODE_ENV ?? 'production');
 
     if (enforceArtifactAdmission) {
