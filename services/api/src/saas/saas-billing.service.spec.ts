@@ -24,6 +24,7 @@ function mocks() {
     createInvoice: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     createInvoiceItem: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     retrieveInvoice: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    findInvoicesForClose: jest.fn<(...args: unknown[]) => Promise<unknown[]>>(),
     finalizeInvoice: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     sendInvoice: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
     payInvoice: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
@@ -255,6 +256,139 @@ describe('SaasBillingService', () => {
       ...providerInvoice,
       metadata: { ...providerInvoice.metadata, factoryos_subscription_version: '2' },
     }, close)).rejects.toThrow('subscription/plan metadata');
+  });
+
+  it('recovers one existing provider invoice for the immutable close without creating duplicate invoice or line items', async () => {
+    const { service, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const marker = 'FO33333333-bbbbbbbbbbbb';
+    const snapshotHash = 'a'.repeat(64);
+    const close = {
+      id: closeId,
+      tenant_id: tenant,
+      provider_customer_id: 'cus_123abc',
+      currency: 'USD',
+      collection_method: 'send_invoice',
+      days_until_due: 30,
+      automatic_tax_enabled: false,
+      tax_behavior: null,
+      expected_subtotal_minor: '125',
+      snapshot_hash: snapshotHash,
+      request_hash: 'b'.repeat(64),
+      subscription_id: null,
+      lines: [{
+        key: 'usage:AI_INPUT_TOKEN',
+        marker,
+        kind: 'USAGE',
+        description: 'AI input usage',
+        quantity: '1',
+        eventCount: 1,
+        amountMinor: '125',
+        metricCode: 'AI_INPUT_TOKEN',
+      }],
+    };
+    const metadata = {
+      factoryos_tenant_id: tenant,
+      factoryos_billing_close_id: closeId,
+      factoryos_billing_snapshot_hash: snapshotHash,
+    };
+    const draftInvoice = {
+      id: 'in_123abc',
+      customerId: 'cus_123abc',
+      currency: 'USD',
+      status: 'draft',
+      subtotalMinor: 125,
+      taxMinor: 0,
+      discountMinor: 0,
+      totalMinor: 125,
+      amountDueMinor: 125,
+      amountPaidMinor: 0,
+      amountRemainingMinor: 125,
+      automaticTaxStatus: null,
+      automaticTaxEnabled: false,
+      collectionMethod: 'send_invoice',
+      metadata,
+      livemode: false,
+      createdAt: 1790902800,
+    };
+    const openInvoice = { ...draftInvoice, status: 'open' };
+    const appended: Array<Record<string, unknown>> = [];
+    const internal = service as unknown as {
+      loadClose: (...args: unknown[]) => Promise<unknown>;
+      loadCloseEvents: (...args: unknown[]) => Promise<unknown[]>;
+      appendCloseEvent: (input: Record<string, unknown>) => Promise<void>;
+      closeResponse: (...args: unknown[]) => Promise<unknown>;
+    };
+    internal.loadClose = jest.fn(async () => close);
+    internal.loadCloseEvents = jest.fn(async () => []);
+    internal.appendCloseEvent = jest.fn(async (input: Record<string, unknown>) => {
+      appended.push(input);
+    });
+    internal.closeResponse = jest.fn(async () => ({ close: { id: closeId, status: 'ISSUED' } }));
+
+    stripe.findInvoicesForClose.mockResolvedValueOnce([draftInvoice] as never);
+    stripe.listInvoiceLines.mockResolvedValueOnce([{
+      id: 'ii_existing',
+      amountMinor: 125,
+      currency: 'USD',
+      description: 'AI input usage [ref ' + marker + ']',
+    }] as never);
+    stripe.finalizeInvoice.mockResolvedValueOnce(openInvoice as never);
+    stripe.sendInvoice.mockResolvedValueOnce(openInvoice as never);
+
+    const result = await service.issueInvoice(tenant, factoryUser, closeId);
+
+    expect(result).toEqual({ close: { id: closeId, status: 'ISSUED' } });
+    expect(stripe.findInvoicesForClose).toHaveBeenCalledWith(closeId);
+    expect(stripe.createInvoice).not.toHaveBeenCalled();
+    expect(stripe.createInvoiceItem).not.toHaveBeenCalled();
+    expect(stripe.finalizeInvoice).toHaveBeenCalledWith('in_123abc', 'fo-billing-' + closeId + '-finalize-v1');
+    expect(stripe.sendInvoice).toHaveBeenCalledWith('in_123abc', 'fo-billing-' + closeId + '-send-v1');
+    expect(appended.map((event) => event.eventType)).toEqual(['INVOICE_DRAFTED', 'INVOICE_ISSUED']);
+    expect(appended.every((event) => event.providerInvoiceId === 'in_123abc')).toBe(true);
+  });
+
+  it('blocks invoice issuance when recovery search finds multiple invoices for the same close marker', async () => {
+    const { service, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const close = {
+      id: closeId,
+      tenant_id: tenant,
+      provider_customer_id: 'cus_123abc',
+      currency: 'USD',
+      collection_method: 'send_invoice',
+      days_until_due: 30,
+      automatic_tax_enabled: false,
+      tax_behavior: null,
+      expected_subtotal_minor: '125',
+      snapshot_hash: 'a'.repeat(64),
+      request_hash: 'b'.repeat(64),
+      subscription_id: null,
+      lines: [],
+    };
+    const appended: Array<Record<string, unknown>> = [];
+    const internal = service as unknown as {
+      loadClose: (...args: unknown[]) => Promise<unknown>;
+      loadCloseEvents: (...args: unknown[]) => Promise<unknown[]>;
+      appendCloseEvent: (input: Record<string, unknown>) => Promise<void>;
+    };
+    internal.loadClose = jest.fn(async () => close);
+    internal.loadCloseEvents = jest.fn(async () => []);
+    internal.appendCloseEvent = jest.fn(async (input: Record<string, unknown>) => {
+      appended.push(input);
+    });
+    stripe.findInvoicesForClose.mockResolvedValueOnce([{}, {}] as never);
+
+    await expect(service.issueInvoice(tenant, factoryUser, closeId))
+      .rejects.toThrow('More than one Stripe invoice carries this billing-close marker');
+
+    expect(stripe.findInvoicesForClose).toHaveBeenCalledWith(closeId);
+    expect(stripe.createInvoice).not.toHaveBeenCalled();
+    expect(stripe.createInvoiceItem).not.toHaveBeenCalled();
+    expect(appended).toContainEqual(expect.objectContaining({
+      eventType: 'ISSUE_FAILED',
+      errorCode: expect.any(String),
+    }));
   });
 
   it('reconciles provider discounts as an explicit variance against the immutable usage close', async () => {
