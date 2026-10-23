@@ -173,6 +173,7 @@ export class InventoryStockReconciliationService {
         { tenantId, userId },
         async (client) => {
           let cycleCountSnapshot: {
+            task_id: string | null;
             ledger_quantity_at_count: string;
             balance_version_at_count: string;
             counted_quantity: string;
@@ -184,6 +185,7 @@ export class InventoryStockReconciliationService {
           if (cycleCountReview) {
             const workflowResult = await client.query<{
               id: string;
+              task_id: string | null;
               status: 'PENDING_REVIEW' | 'REJECTED' | 'APPLIED';
               created_by_user_id: string;
               ledger_quantity_at_count: string;
@@ -201,6 +203,7 @@ export class InventoryStockReconciliationService {
               `
               SELECT
                 id::text AS id,
+                task_id::text AS task_id,
                 status,
                 created_by_user_id::text AS created_by_user_id,
                 ledger_quantity_at_count::text AS ledger_quantity_at_count,
@@ -226,6 +229,7 @@ export class InventoryStockReconciliationService {
               throw new NotFoundException('Cycle-count proposal not found in this factory');
             }
             cycleCountSnapshot = {
+              task_id: proposal.task_id,
               ledger_quantity_at_count: proposal.ledger_quantity_at_count,
               balance_version_at_count: proposal.balance_version_at_count,
               counted_quantity: proposal.counted_quantity,
@@ -596,6 +600,44 @@ export class InventoryStockReconciliationService {
             }
             if (!cycleCountSnapshot) {
               throw new ConflictException('Cycle-count approval snapshot is missing');
+            }
+            if (cycleCountSnapshot?.task_id) {
+              const completedTask = await client.query<{ id: string }>(
+                `UPDATE inventory_cycle_count_tasks
+                 SET status = 'COMPLETED', completed_at = clock_timestamp(), version = version + 1
+                 WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+                   AND status = 'AWAITING_REVIEW' AND current_proposal_id = $4
+                 RETURNING id::text AS id`,
+                [cycleCountSnapshot.task_id, tenantId, factoryId, cycleCountReview.proposalId],
+              );
+              if (!completedTask.rows[0]) {
+                throw new ConflictException('Approved count could not complete its scheduled task');
+              }
+              await client.query(
+                `INSERT INTO outbox_events (
+                   tenant_id, factory_id, aggregate_type, aggregate_id,
+                   event_type, event_version, occurred_at, correlation_id, causation_id,
+                   actor, source, payload
+                 ) VALUES (
+                   $1, $2, 'INVENTORY_CYCLE_COUNT_TASK', $3,
+                   'INVENTORY.CYCLE_COUNT_TASK_COMPLETED', 1,
+                   clock_timestamp(), $4::uuid, NULL, $5::jsonb, $6::jsonb, $7::jsonb
+                 )`,
+                [
+                  tenantId, factoryId, cycleCountSnapshot.task_id, correlationId,
+                  JSON.stringify({ type: 'user', id: userId }),
+                  JSON.stringify({
+                    system: 'FactoryOS', connector: 'inventory-cycle-count-task',
+                    version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0',
+                  }),
+                  JSON.stringify({
+                    task_id: cycleCountSnapshot.task_id,
+                    proposal_id: cycleCountReview.proposalId,
+                    reconciliation_id: reconciliation.id,
+                    item_id: normalizedItemId,
+                  }),
+                ],
+              );
             }
             await this.insertCycleCountApprovedEvent(client, {
               tenantId,
