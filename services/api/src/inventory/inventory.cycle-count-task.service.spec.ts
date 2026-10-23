@@ -88,4 +88,54 @@ describe('InventoryCycleCountTaskService', () => {
 
     expect(databaseMock.transaction).not.toHaveBeenCalled();
   });
+
+  it('rejects non-boolean blind-count policy before opening a transaction', async () => {
+    await expect(service.createTask(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      {
+        item_id: ITEM_ID,
+        due_at: '2026-10-24T10:00:00.000Z',
+        blind_count: 'yes' as unknown as boolean,
+      },
+      'count-task-blind-1', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a variance threshold with more than four decimal places', async () => {
+    await expect(service.createTask(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      {
+        item_id: ITEM_ID,
+        due_at: '2026-10-24T10:00:00.000Z',
+        variance_escalation_threshold: 1.23456,
+      },
+      'count-task-threshold-precision', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a zero variance threshold before opening a transaction', async () => {
+    await expect(service.createTask(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      {
+        item_id: ITEM_ID,
+        due_at: '2026-10-24T10:00:00.000Z',
+        variance_escalation_threshold: 0,
+      },
+      'count-task-threshold-zero', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires a resolution note before opening an escalation-resolution transaction', async () => {
+    await expect(service.resolveVarianceEscalation(
+      USER_ID, TENANT_ID, FACTORY_ID, TASK_ID, '  ', 'escalation-resolve-1', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
 });
