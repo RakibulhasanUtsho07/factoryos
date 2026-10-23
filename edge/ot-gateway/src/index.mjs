@@ -235,10 +235,17 @@ class ProtocolSupervisor {
   }
 
   health() {
+    const mqttHealth = this.mqtt?.health() ?? null;
+    const opcuaHealth = this.opcua.map((driver, index) => ({ device_id: this.config.opcua[index]?.device_id, ...driver.health() }));
+    const modbusHealth = this.modbus.map((driver, index) => ({ device_id: this.config.modbus[index]?.device_id, ...driver.health() }));
+    const ready = (!mqttHealth || mqttHealth.ready)
+      && opcuaHealth.every((driver) => driver.ready)
+      && modbusHealth.every((driver) => driver.ready);
     return {
-      mqtt: this.mqtt?.health() ?? null,
-      opcua: this.opcua.map((driver, index) => ({ device_id: this.config.opcua[index]?.device_id, ...driver.health() })),
-      modbus: this.modbus.map((driver, index) => ({ device_id: this.config.modbus[index]?.device_id, ...driver.health() })),
+      ready,
+      mqtt: mqttHealth,
+      opcua: opcuaHealth,
+      modbus: modbusHealth,
       lastRotationAt: this.lastRotationAt,
       errorCode: this.lastError,
     };
@@ -314,12 +321,16 @@ export async function startGateway(config) {
   });
   await spool.pendingCount(); // decrypt/recovery validation before declaring the gateway live
   const supervisor = new ProtocolSupervisor(config, spool);
-  await supervisor.start();
   const [cert, key] = await Promise.all([
     readSecretFile(config.security.serverCertFile, 'gateway TLS certificate'),
     readSecretFile(config.security.serverKeyFile, 'gateway TLS private key'),
   ]);
   validateCertificatePair(cert, key, 'gateway HTTPS');
+  const initialApiToken = (await readSecretFile(config.api.tokenFile, 'OT API token')).toString('utf8').trim();
+  if (!validateBearerToken(initialApiToken)) throw new Error('OT API token is invalid');
+  const initialGatewayToken = (await readSecretFile(config.security.bearerTokenFile, 'gateway bearer token')).toString('utf8').trim();
+  if (!validateBearerToken(initialGatewayToken)) throw new Error('gateway bearer token is invalid');
+  await supervisor.start();
   const tlsOptions = { cert, key };
   if (config.security.clientCaFile) {
     tlsOptions.ca = await readSecretFile(config.security.clientCaFile, 'gateway client CA');
@@ -334,15 +345,15 @@ export async function startGateway(config) {
     const url = new URL(request.url ?? '/', 'https://gateway.invalid');
     try {
       if (request.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/readyz')) {
+        const driverHealth = supervisor.health();
+        const ready = httpReady && !shuttingDown && driverHealth.ready;
         const health = {
-          status: shuttingDown ? 'stopping' : 'ok',
+          status: shuttingDown ? 'stopping' : (ready ? 'ready' : 'not_ready'),
           gateway_id: config.gatewayId,
-          protocol_drivers: supervisor.health(),
+          protocol_drivers: driverHealth,
           spool: await spool.stats(),
           observed_at: new Date().toISOString(),
         };
-        const driverHealth = supervisor.health();
-        const ready = httpReady && !shuttingDown && driverHealth.ready;
         return jsonResponse(response, url.pathname === '/readyz' && !ready ? 503 : 200, health);
       }
       if (request.method !== 'POST' || url.pathname !== '/api/v1/modbus/read') {
