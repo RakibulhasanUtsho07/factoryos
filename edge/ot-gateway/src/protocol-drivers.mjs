@@ -391,12 +391,14 @@ export class ModbusTcpReadDriver extends EventEmitter {
       throw new Error('Modbus read requests are limited to 1-10 registered streams');
     }
     const mapped = registers.map((requested) => {
+      if (requested.function_code !== 3 && requested.function_code !== 4) {
+        throw new Error('Only Modbus holding/input register reads (function codes 3/4) are supported; writes are disabled');
+      }
       const registered = this.device.register_map.find((item) => item.stream_key === requested.stream_key);
       if (!registered || registered.function_code !== requested.function_code
           || registered.address !== requested.address || registered.quantity !== requested.quantity) {
         throw new Error('Modbus read request does not match the immutable registered register map');
       }
-      if (requested.function_code !== 3 && requested.function_code !== 4) throw new Error('Modbus writes are not supported');
       return registered;
     });
     if (new Set(mapped.map((item) => item.stream_key)).size !== mapped.length) throw new Error('duplicate Modbus stream keys are not allowed');
