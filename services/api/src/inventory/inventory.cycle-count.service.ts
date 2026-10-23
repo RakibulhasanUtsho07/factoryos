@@ -135,7 +135,7 @@ export class InventoryCycleCountService {
       itemId: normalizedItemId,
       countedQuantity,
       locationId,
-      taskId,
+      ...(taskId ? { taskId } : {}),
       varianceReasonCode,
       reasonCode: 'CYCLE_COUNT',
       notes,
