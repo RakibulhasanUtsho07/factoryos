@@ -9,6 +9,8 @@ import {
   createHash,
 } from 'node:crypto';
 
+import { AiArtifactProvenanceService } from '../artifacts/ai.artifact.provenance.service';
+
 import {
   IamService,
 } from '../../iam/iam.service';
@@ -47,6 +49,9 @@ export class AiToolGatewayService {
 
     private readonly saasSubscriptionService:
       SaasSubscriptionService,
+
+    private readonly artifactProvenance?:
+      AiArtifactProvenanceService,
   ) {}
 
   /* ==========================================================
@@ -115,6 +120,33 @@ export class AiToolGatewayService {
       throw new ConflictException(
         'Registered AI tool workloadClass metadata is unsupported',
       );
+    }
+
+    // FR-MSO-03 / FR-MSO-05: a production executor requires an approved,
+    // unexpired, signature-verified artifact bound to the exact registered
+    // tool version and digest. Explicit local dev/test are the only bypasses.
+    // The admission service re-reads current DB state for each request.
+    const enforceArtifactAdmission =
+      !['development', 'test'].includes(process.env.NODE_ENV ?? 'production');
+
+    if (enforceArtifactAdmission) {
+      if (!this.artifactProvenance) {
+        throw new ForbiddenException('AI artifact admission service is unavailable');
+      }
+
+      await this.artifactProvenance.assertAdmissible({
+        tenantId: action.tenantId,
+        factoryId: action.factoryId,
+        actorUserId: action.actorUserId,
+        artifactType: 'TOOL',
+        artifactKey: tool.toolId,
+        version: tool.version,
+        expectedSha256:
+          typeof tool.metadata?.artifactSha256 === 'string'
+            ? tool.metadata.artifactSha256
+            : null,
+        requestRef: action.actionIntentId,
+      });
     }
 
     await this.saasUsageService.recordAiToolCall(
