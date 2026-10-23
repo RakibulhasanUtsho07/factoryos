@@ -1,0 +1,17 @@
+import { Module } from '@nestjs/common';
+
+import { AuditModule } from '../audit/audit.module';
+import { DatabaseModule } from '../database/database.module';
+import { IamModule } from '../iam/iam.module';
+import { EdgeDeviceGatewayController } from './edge-device-gateway.controller';
+import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
+import { EdgeDeviceCredentialService } from './edge-device-credential.service';
+import { EdgeDeviceHealthService } from './edge-device-health.service';
+
+@Module({
+  imports: [AuditModule, DatabaseModule, IamModule],
+  controllers: [EdgeDeviceGatewayController],
+  providers: [EdgeDeviceGatewayService, EdgeDeviceCredentialService, EdgeDeviceHealthService],
+  exports: [EdgeDeviceGatewayService],
+})
+export class EdgeModule {}
