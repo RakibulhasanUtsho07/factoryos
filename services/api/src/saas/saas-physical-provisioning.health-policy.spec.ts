@@ -98,7 +98,7 @@ function setup(policy: SaasPhysicalFailurePolicy) {
   );
   const internals = service as unknown as Record<string, (...args: unknown[]) => unknown>;
   internals.loadLatestRelease = jest.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue(currentRelease);
-  internals.activeProfile = jest.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue(profile);
+  internals.activeProfile = jest.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue({\n    id: profile.id, profile_type: profile.profileType, deployment_reference: profile.deploymentReference,\n    region_code: profile.regionCode, residency_domain: profile.residencyDomain, edge_site_code: profile.edgeSiteCode,\n  });
   internals.startRun = jest.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue({
     id: runId, replayed: false, status: 'REQUESTED',
   });
