@@ -25,14 +25,26 @@ BEGIN
         AND conname='chk_growth_calibration_policy_sample')
      OR NOT EXISTS (SELECT 1 FROM pg_constraint
       WHERE conrelid='public.growth_forecast_calibration_policies'::regclass
-        AND conname='chk_growth_calibration_policy_decision') THEN
+        AND conname='chk_growth_calibration_policy_decision')
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint
+      WHERE conrelid='public.growth_forecast_calibration_policies'::regclass
+        AND conname='chk_growth_calibration_policy_residual_configuration')
+     OR NOT EXISTS (SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='growth_forecast_calibration_policies'
+        AND column_name='residual_coverage_target_pct')
+     OR NOT EXISTS (SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='growth_forecast_calibration_policies'
+        AND column_name='max_empirical_absolute_residual') THEN
     RAISE EXCEPTION 'GROWTH_CALIBRATION_POLICY_VERSION_OR_REVIEW_CONSTRAINTS_MISSING';
   END IF;
   SELECT pg_get_functiondef('public.factoryos_guard_growth_forecast_calibration_policy()'::regprocedure) INTO definition;
   IF definition NOT LIKE '%GROWTH_CALIBRATION_POLICY_CONFIGURATION_IMMUTABLE%'
      OR definition NOT LIKE '%GROWTH_CALIBRATION_POLICY_REQUIRES_INDEPENDENT_REASONED_REVIEW%'
      OR definition NOT LIKE '%GROWTH_CALIBRATION_POLICY_APPEND_ONLY%'
-     OR definition NOT LIKE '%GROWTH_CALIBRATION_POLICY_FINAL_DECISION_IMMUTABLE%' THEN
+     OR definition NOT LIKE '%GROWTH_CALIBRATION_POLICY_FINAL_DECISION_IMMUTABLE%'
+     OR definition NOT LIKE '%GROWTH_CALIBRATION_POLICY_RESIDUAL_CONFIGURATION_REQUIRED%'
+     OR definition NOT LIKE '%residual_coverage_target_pct%'
+     OR definition NOT LIKE '%max_empirical_absolute_residual%' THEN
     RAISE EXCEPTION 'GROWTH_CALIBRATION_POLICY_GUARD_INCOMPLETE';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_trigger
@@ -40,7 +52,8 @@ BEGIN
         AND tgname='growth_forecast_calibration_policy_guard' AND NOT tgisinternal) THEN
     RAISE EXCEPTION 'GROWTH_CALIBRATION_POLICY_TRIGGER_MISSING';
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='178_growth_forecast_calibration_policies') THEN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='178_growth_forecast_calibration_policies')
+     OR NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='180_growth_calibration_residual_threshold_policy') THEN
     RAISE EXCEPTION 'GROWTH_CALIBRATION_POLICY_MIGRATION_NOT_REGISTERED';
   END IF;
 END;
