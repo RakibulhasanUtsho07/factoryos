@@ -23,6 +23,7 @@ interface CycleCountProposalRow extends QueryResultRow {
   tenant_id: string;
   factory_id: string;
   item_id: string;
+  task_id: string | null;
   counted_quantity: string;
   ledger_quantity_at_count: string;
   balance_version_at_count: string;
@@ -63,6 +64,7 @@ const CYCLE_COUNT_COLUMNS = `
   tenant_id::text AS tenant_id,
   factory_id::text AS factory_id,
   item_id::text AS item_id,
+  task_id::text AS task_id,
   counted_quantity::text AS counted_quantity,
   ledger_quantity_at_count::text AS ledger_quantity_at_count,
   balance_version_at_count::text AS balance_version_at_count,
@@ -102,6 +104,7 @@ export class InventoryCycleCountService {
       counted_quantity: number;
       notes?: string;
       location_id?: string;
+      task_id?: string;
       variance_reason_code?: InventoryCycleCountVarianceReasonCode;
     },
     rawIdempotencyKey: string | null,
@@ -114,6 +117,8 @@ export class InventoryCycleCountService {
     const notes = dto.notes?.trim() || null;
     const locationId = dto.location_id?.trim().toLowerCase() || null;
     if (locationId) this.validateUuid(locationId, 'location_id');
+    const taskId = dto.task_id?.trim().toLowerCase() || null;
+    if (taskId) this.validateUuid(taskId, 'task_id');
     const varianceReasonCode = dto.variance_reason_code ?? null;
     if (
       varianceReasonCode !== null
@@ -130,6 +135,7 @@ export class InventoryCycleCountService {
       itemId: normalizedItemId,
       countedQuantity,
       locationId,
+      taskId,
       varianceReasonCode,
       reasonCode: 'CYCLE_COUNT',
       notes,
@@ -235,6 +241,30 @@ export class InventoryCycleCountService {
             }
           }
 
+          if (taskId) {
+            const taskResult = await client.query<{
+              id: string; item_id: string; location_id: string | null;
+              assigned_to_user_id: string | null; status: string;
+            }>(
+              `SELECT id::text AS id, item_id::text AS item_id,
+                      location_id::text AS location_id,
+                      assigned_to_user_id::text AS assigned_to_user_id, status
+               FROM inventory_cycle_count_tasks
+               WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+               FOR UPDATE`,
+              [taskId, tenantId, factoryId],
+            );
+            const task = taskResult.rows[0];
+            if (!task) throw new NotFoundException('Cycle-count task not found in this factory');
+            if (task.status !== 'IN_PROGRESS') throw new ConflictException('Cycle-count task must be started before a count is submitted');
+            if (task.item_id !== normalizedItemId || task.location_id !== locationId) {
+              throw new ConflictException('Cycle-count submission item/bin does not match the scheduled task');
+            }
+            if (task.assigned_to_user_id !== userId) {
+              throw new ConflictException('Cycle-count task must be started by its assigned counter');
+            }
+          }
+
           const duplicateAfterLock = await this.findBySubmitKey(
             client, tenantId, factoryId, idempotencyKey,
           );
@@ -245,16 +275,16 @@ export class InventoryCycleCountService {
           const inserted = await client.query<CycleCountProposalRow>(
             `
             INSERT INTO inventory_cycle_count_proposals (
-              tenant_id, factory_id, item_id, counted_quantity,
+              tenant_id, factory_id, item_id, task_id, counted_quantity,
               ledger_quantity_at_count, balance_version_at_count,
               location_id, location_quantity_at_count, location_version_at_count,
               variance_reason_code, status, idempotency_key, request_hash, notes,
               created_by_user_id
             )
             VALUES (
-              $1, $2, $3, $4::numeric, $5::numeric, $6::bigint,
-              $7::uuid, $8::numeric, $9::bigint, $10,
-              'PENDING_REVIEW', $11, $12, $13, $14
+              $1, $2, $3, $4::uuid, $5::numeric, $6::numeric, $7::bigint,
+              $8::uuid, $9::numeric, $10::bigint, $11,
+              'PENDING_REVIEW', $12, $13, $14, $15
             )
             RETURNING ${CYCLE_COUNT_COLUMNS}
             `,
@@ -262,6 +292,7 @@ export class InventoryCycleCountService {
               tenantId,
               factoryId,
               normalizedItemId,
+              taskId,
               countedQuantity,
               balance.quantity_on_hand,
               balance.version,
@@ -277,6 +308,19 @@ export class InventoryCycleCountService {
           );
           const proposal = inserted.rows[0];
           if (!proposal) throw new Error('INVENTORY_CYCLE_COUNT_SUBMISSION_FAILED');
+          if (taskId) {
+            const taskUpdate = await client.query<{ id: string }>(
+              `UPDATE inventory_cycle_count_tasks
+               SET status = 'AWAITING_REVIEW', current_proposal_id = $1::uuid,
+                   submitted_by_user_id = $2::uuid, submitted_at = clock_timestamp(),
+                   version = version + 1
+               WHERE id = $3 AND tenant_id = $4 AND factory_id = $5
+                 AND status = 'IN_PROGRESS' AND assigned_to_user_id = $2::uuid
+               RETURNING id::text AS id`,
+              [proposal.id, userId, taskId, tenantId, factoryId],
+            );
+            if (!taskUpdate.rows[0]) throw new ConflictException('Cycle-count task lost its active state during submission');
+          }
 
           await this.insertOutboxEvent(client, {
             tenantId,
@@ -289,6 +333,7 @@ export class InventoryCycleCountService {
               cycle_count: {
                 id: proposal.id,
                 item_id: proposal.item_id,
+                task_id: proposal.task_id,
                 counted_quantity: proposal.counted_quantity,
                 ledger_quantity_at_count: proposal.ledger_quantity_at_count,
                 balance_version_at_count: proposal.balance_version_at_count,
@@ -572,6 +617,17 @@ export class InventoryCycleCountService {
           const reviewed = updated.rows[0];
           if (!reviewed) {
             throw new ConflictException('Cycle-count review could not be completed');
+          }
+          if (reviewed.task_id) {
+            const taskUpdate = await client.query<{ id: string }>(
+              `UPDATE inventory_cycle_count_tasks
+               SET status = 'IN_PROGRESS', current_proposal_id = NULL, version = version + 1
+               WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+                 AND status = 'AWAITING_REVIEW' AND current_proposal_id = $4
+               RETURNING id::text AS id`,
+              [reviewed.task_id, tenantId, factoryId, reviewed.id],
+            );
+            if (!taskUpdate.rows[0]) throw new ConflictException('Rejected count could not reopen its scheduled task');
           }
 
           await this.insertOutboxEvent(client, {
