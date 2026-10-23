@@ -374,6 +374,69 @@ describe('SaasBillingService', () => {
     expect(client.query).toHaveBeenCalledTimes(6);
   });
 
+  it('rejects Stripe webhook event-ID replay when the payload digest changes', async () => {
+    const { service, database, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const snapshotHash = 'a'.repeat(64);
+    const close = {
+      id: closeId,
+      tenant_id: tenant,
+      provider_customer_id: 'cus_123abc',
+      snapshot_hash: snapshotHash,
+    };
+    const originalBody = Buffer.from(
+      '{"id":"evt_123abc","type":"invoice.paid","data":{"object":{"id":"in_123abc","status":"paid","amount_paid":100}}}',
+      'utf8',
+    );
+    const replayBody = Buffer.from(
+      '{"id":"evt_123abc","type":"invoice.paid","data":{"object":{"id":"in_123abc","status":"paid","amount_paid":999}}}',
+      'utf8',
+    );
+    stripe.verifyWebhook.mockReturnValue({
+      id: 'evt_123abc',
+      type: 'invoice.paid',
+      created: 1790902800,
+      signatureTimestamp: 1790902800,
+      data: { object: {
+        id: 'in_123abc',
+        customer: 'cus_123abc',
+        status: 'paid',
+        amount_paid: 999,
+        metadata: {
+          factoryos_tenant_id: tenant,
+          factoryos_billing_close_id: closeId,
+          factoryos_billing_snapshot_hash: snapshotHash,
+        },
+      } },
+    } as never);
+    database.query.mockResolvedValue({ rows: [close] });
+
+    const client = {
+      query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>>()
+        .mockImplementation(async (...args: unknown[]) => {
+          const sql = String(args[0]);
+          if (sql.startsWith('SELECT payload_hash')) {
+            return {
+              rows: [{ payload_hash: (service as any).sha(originalBody) }],
+              rowCount: 1,
+            };
+          }
+          return { rows: [], rowCount: 0 };
+        }),
+    };
+    database.transaction.mockImplementation(async (...args: unknown[]) => {
+      const callback = args[0] as (client: unknown) => Promise<unknown>;
+      return callback(client);
+    });
+
+    await expect(service.receiveStripeWebhook('verified-signature', replayBody))
+      .rejects.toThrow('Stripe webhook event ID was replayed with a different payload digest');
+    expect(database.transaction).toHaveBeenCalledTimes(1);
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(String(client.query.mock.calls[0]?.[0])).toContain('SELECT payload_hash');
+    expect(String(client.query.mock.calls[0]?.[0])).not.toContain('INSERT INTO saas_billing_provider_webhook_events');
+  });
+
   it('preserves immutable failure evidence and records recovery under a distinct idempotency receipt', async () => {
     const { service, database, stripe } = mocks();
     const closeId = '33333333-3333-4333-8333-333333333333';
