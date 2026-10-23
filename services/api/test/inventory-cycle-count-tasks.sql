@@ -98,6 +98,7 @@ BEGIN
     OR position('awaiting-review task must reference its pending count proposal' IN v_function_definition) = 0
     OR position('completed task must reference an applied count proposal' IN v_function_definition) = 0
     OR position('task updates must advance the lifecycle' IN v_function_definition) = 0
+    OR position('active cycle-count task must have an assigned counter' IN v_function_definition) = 0
   THEN
     RAISE EXCEPTION 'cycle-count task lifecycle guard is incomplete';
   END IF;
