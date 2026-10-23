@@ -5,6 +5,7 @@ on:
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
+      - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
@@ -27,6 +28,7 @@ on:
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'services/api/**'
+      - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
@@ -94,6 +96,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test durable Edge agent spool and replay contract
+        run: node --test services/edge-agent/test/durable-observation-spool.test.mjs
 
       - name: Build candidate API for restored-database smoke test
         run: npm --workspace services/api run build
