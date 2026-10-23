@@ -595,9 +595,14 @@ export class SaasBillingService {
     this.requireUuid(closeId, 'closeId');
     const idempotencyKey = this.idem(input.idempotency_key);
     const requestHash = this.hash({ tenantId, closeId, idempotencyKey });
+    const replayKeys = [
+      'payment-retry:' + idempotencyKey,
+      'payment-retry-attempt:' + idempotencyKey,
+      'payment-retry-paid:' + idempotencyKey,
+    ];
     const replay = await this.database.query<CloseEventRow>(
-      'SELECT ' + EVENT_COLUMNS + ' FROM saas_billing_close_events WHERE tenant_id=$1 AND idempotency_key=$2 LIMIT 1',
-      [tenantId, 'payment-retry:' + idempotencyKey],
+      'SELECT ' + EVENT_COLUMNS + ' FROM saas_billing_close_events WHERE tenant_id=$1 AND idempotency_key = ANY($2::text[]) ORDER BY created_at DESC LIMIT 1',
+      [tenantId, replayKeys],
       { tenantId, userId: actorUserId },
     );
     const replayedRequest = Boolean(replay.rows[0]);
@@ -621,7 +626,8 @@ export class SaasBillingService {
     if (invoice.status === 'paid') {
       await this.appendCloseEvent({
         tenantId, closeId, eventType: 'INVOICE_PAID', providerInvoiceId: invoiceId,
-        providerInvoiceStatus: 'paid', idempotencyKey: 'payment-retry-paid-observed:' + this.sha(idempotencyKey).slice(0, 32),
+        providerInvoiceStatus: 'paid', idempotencyKey: 'payment-retry-paid:' + idempotencyKey,
+        requestHash,
         evidenceHash: this.hash({ invoiceId, amountPaidMinor: invoice.amountPaidMinor }), actorUserId,
       });
       return this.closeResponse(close, tenantId, actorUserId, replayedRequest);
@@ -641,7 +647,8 @@ export class SaasBillingService {
       await this.appendCloseEvent({
         tenantId, closeId, eventType: paidInvoice.status === 'paid' ? 'INVOICE_PAID' : 'PAYMENT_RETRY_ATTEMPTED',
         providerInvoiceId: invoiceId, providerInvoiceStatus: paidInvoice.status,
-        idempotencyKey: 'payment-retry:' + idempotencyKey, requestHash,
+        idempotencyKey: (paidInvoice.status === 'paid' ? 'payment-retry-paid:' : 'payment-retry-attempt:') + idempotencyKey,
+        requestHash,
         evidenceHash: this.hash({ invoiceId, status: paidInvoice.status, amountPaidMinor: paidInvoice.amountPaidMinor }),
         actorUserId,
       });
