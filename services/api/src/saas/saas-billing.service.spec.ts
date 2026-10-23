@@ -176,6 +176,123 @@ describe('SaasBillingService', () => {
     expect(database.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_billing_close_runs'))).toBe(false);
   });
 
+  it('reconciles provider discounts as an explicit variance against the immutable usage close', async () => {
+    const { service, database, stripe, audit } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const snapshotHash = 'a'.repeat(64);
+    const marker = 'FO33333333-bbbbbbbbbbbb';
+    const close = {
+      id: closeId, tenant_id: tenant, provider_account_id: '44444444-4444-4444-8444-444444444444',
+      provider_account_version: 1, provider_code: 'stripe', provider_customer_id: 'cus_123abc',
+      collection_method: 'charge_automatically', days_until_due: null, automatic_tax_enabled: false,
+      tax_behavior: null, currency: 'USD', period_start: '2026-10-01T00:00:00.000Z',
+      period_end: '2026-10-02T00:00:00.000Z', usage_event_count: '1', adjustment_count: '0',
+      usage_amount_minor: '225', adjustment_amount_minor: '0', expected_subtotal_minor: '225',
+      lines: [{ key: 'usage:AI_INPUT_TOKEN:ai.runtime:PRODUCTION', marker, kind: 'USAGE',
+        description: 'AI input usage', quantity: '1', eventCount: 1, amountMinor: '225', metricCode: 'AI_INPUT_TOKEN' }],
+      snapshot_hash: snapshotHash, request_hash: 'b'.repeat(64), idempotency_key: 'close-1',
+      closed_by: factoryUser, created_at: '2026-10-02T00:00:00Z',
+    };
+    const closeEvents = [{
+      id: 'e1', tenant_id: tenant, close_id: closeId, event_type: 'INVOICE_ISSUED',
+      provider_invoice_id: 'in_123abc', provider_invoice_status: 'open',
+      idempotency_key: 'invoice-issued:' + closeId, request_hash: close.request_hash,
+      error_code: null, evidence_hash: null, actor_user_id: factoryUser, created_at: '2026-10-02T01:00:00Z',
+    }];
+    const invoice = {
+      id: 'in_123abc', customerId: 'cus_123abc', currency: 'USD', status: 'open',
+      subtotalMinor: 225, taxMinor: 0, discountMinor: 10, totalMinor: 215,
+      amountDueMinor: 215, amountPaidMinor: 0, amountRemainingMinor: 215,
+      automaticTaxStatus: null, automaticTaxEnabled: false, collectionMethod: 'charge_automatically',
+      metadata: { factoryos_tenant_id: tenant, factoryos_billing_close_id: closeId,
+        factoryos_billing_snapshot_hash: snapshotHash },
+      livemode: false, createdAt: 1790902800,
+    };
+    const reconciliation = {
+      id: 'r1', tenant_id: tenant, close_id: closeId, provider_invoice_id: invoice.id,
+      provider_invoice_status: 'open', provider_customer_id: invoice.customerId, currency: 'USD',
+      expected_subtotal_minor: '225', provider_subtotal_minor: '225', provider_tax_minor: '0',
+      provider_discount_minor: '10', provider_total_minor: '215', amount_due_minor: '215',
+      amount_paid_minor: '0', automatic_tax_status: null, line_binding_valid: true, status: 'VARIANCE',
+      provider_snapshot_hash: 'c'.repeat(64), report_hash: 'd'.repeat(64), request_hash: 'e'.repeat(64),
+      idempotency_key: 'reconcile-discount-1', recorded_by: factoryUser, created_at: '2026-10-02T02:00:00Z',
+    };
+
+    database.query
+      .mockResolvedValueOnce({ rows: [] }) // idempotency replay lookup
+      .mockResolvedValueOnce({ rows: [close] })
+      .mockResolvedValueOnce({ rows: closeEvents })
+      .mockResolvedValueOnce({ rows: [reconciliation] })
+      .mockResolvedValueOnce({ rows: [] }); // append-only RECONCILED receipt
+    stripe.retrieveInvoice.mockResolvedValueOnce(invoice as never);
+    stripe.listInvoiceLines.mockResolvedValueOnce([{
+      id: 'ii_123abc', amountMinor: 225, currency: 'USD', description: 'AI input usage [ref ' + marker + ']',
+    }] as never);
+
+    const result = await service.reconcileInvoice(tenant, factoryUser, closeId, {
+      idempotency_key: 'reconcile-discount-1',
+    } as never);
+
+    expect(result.idempotent).toBe(false);
+    expect(result.reconciliation.status).toBe('VARIANCE');
+    expect(result.reconciliation.providerDiscountMinor).toBe('10');
+    expect(result.reconciliation.expectedSubtotalMinor).toBe('225');
+    expect(result.reconciliation.providerTotalMinor).toBe('215');
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'RECONCILE_PROVIDER_INVOICE',
+      payload: expect.objectContaining({ status: 'VARIANCE', providerDiscountMinor: '10' }),
+    }));
+  });
+
+  it('deduplicates Stripe webhook redelivery by provider event ID and payload digest', async () => {
+    const { service, database, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const snapshotHash = 'a'.repeat(64);
+    const close = {
+      id: closeId, tenant_id: tenant, provider_customer_id: 'cus_123abc', snapshot_hash: snapshotHash,
+    };
+    const rawBody = Buffer.from('{"id":"evt_123abc","type":"invoice.paid"}', 'utf8');
+    const webhook = {
+      id: 'evt_123abc', type: 'invoice.paid', created: 1790902800, signatureTimestamp: 1790902800,
+      data: { object: {
+        id: 'in_123abc', customer: 'cus_123abc', status: 'paid',
+        metadata: { factoryos_tenant_id: tenant, factoryos_billing_close_id: closeId,
+          factoryos_billing_snapshot_hash: snapshotHash },
+      } },
+    };
+    stripe.verifyWebhook.mockReturnValue(webhook as never);
+    database.query.mockResolvedValue({ rows: [close] });
+
+    let webhookInserted = false;
+    const client = {
+      query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>>()
+        .mockImplementation(async (...args: unknown[]) => {
+          const sql = String(args[0]);
+          if (sql.startsWith('SELECT payload_hash')) {
+            return { rows: webhookInserted ? [{ payload_hash: (service as any).sha(rawBody) }] : [], rowCount: 0 };
+          }
+          if (sql.startsWith('INSERT INTO saas_billing_provider_webhook_events')) {
+            if (webhookInserted) return { rows: [], rowCount: 0 };
+            webhookInserted = true;
+            return { rows: [{ id: 'webhook-receipt-1' }], rowCount: 1 };
+          }
+          return { rows: [], rowCount: 0 };
+        }),
+    };
+    database.transaction.mockImplementation(async (...args: unknown[]) => {
+      const callback = args[0] as (client: unknown) => Promise<unknown>;
+      return callback(client);
+    });
+
+    const first = await service.receiveStripeWebhook('verified-signature', rawBody);
+    const replay = await service.receiveStripeWebhook('verified-signature', rawBody);
+
+    expect(first).toEqual({ accepted: true, duplicate: false });
+    expect(replay).toEqual({ accepted: true, duplicate: true });
+    expect(database.transaction).toHaveBeenCalledTimes(2);
+    expect(client.query).toHaveBeenCalledTimes(6);
+  });
+
   it('labels close estimates as not an issued invoice and keeps reconciliation separate', () => {
     const { service } = mocks();
     const row = {
