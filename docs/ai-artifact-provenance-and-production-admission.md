@@ -26,9 +26,9 @@ The source, artifact and lifecycle records are tenant-scoped and protected by fo
 
 ## Production gate
 
-Before a PRODUCTION Tool Gateway execution, the API re-reads the tenant's exact TOOL artifact identity, checks the registered digest against tool.metadata.artifactSha256, verifies that the artifact and source are active and unexpired, checks the source-key fingerprint, and cryptographically verifies the stored signature again. Missing digest/registration, mismatched digest, expired or revoked artifact/source, malformed identity, or signature/key-integrity failure is denied before usage metering and executor invocation. Every allow/deny decision creates an append-only database receipt tied to tenant, factory, actor and action-intent reference. The gate does not rely on an in-memory positive cache.
+Before any Tool Gateway execution outside explicit development/test environments, the API re-reads the tenant's exact TOOL artifact identity, checks the registered digest against tool.metadata.artifactSha256, verifies that the artifact and source are active and unexpired, checks the source-key fingerprint, and cryptographically verifies the stored signature again. Missing digest/registration, mismatched digest, expired or revoked artifact/source, malformed identity, or signature/key-integrity failure is denied before usage metering and executor invocation. Every allow/deny decision creates an append-only database receipt tied to tenant, factory, actor and action-intent reference. The gate does not rely on an in-memory positive cache.
 
-For local development and automated test environments, the Tool Gateway deliberately does not enforce the production-only gate so engineers can run tests without live signing keys. Any other environment name (including an unset NODE_ENV) is fail-closed for production-class workloads.
+For local development and automated test environments, the Tool Gateway deliberately does not enforce the production-only gate so engineers can run tests without live signing keys. Any other environment name (including an unset NODE_ENV) is fail-closed for all Tool Gateway workloads.
 
 ## Explicit acceptance boundaries
 
