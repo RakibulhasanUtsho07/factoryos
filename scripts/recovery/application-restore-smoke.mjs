@@ -19,7 +19,7 @@ function safeApiStartupDiagnostics(stdout, stderr) {
   const candidates = [...stdout.split(/\r?\n/), ...stderr.split(/\r?\n/)]
     .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
     .filter(Boolean)
-    .slice(-10);
+    .slice(-40);
   return candidates.map((line) => line
     .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, '[REDACTED_DATABASE_URL]')
     .replace(/https?:\/\/[^\s'"]+/gi, '[REDACTED_URL]')
