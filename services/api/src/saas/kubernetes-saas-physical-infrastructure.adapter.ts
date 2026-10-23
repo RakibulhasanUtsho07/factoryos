@@ -693,6 +693,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     const receipt = await this.call(target, logPath, 'GET');
     if (receipt.status !== 'SUCCEEDED' || receipt.sandboxId !== context.resourceId ||
       receipt.runId !== context.runId || receipt.mode !== input.dataMode ||
+      receipt.datasetFile !== (input.dataMode === 'SYNTHETIC' ? 'dataset.jsonl' : 'dataset.masked') ||
       receipt.schemaVersion !== input.datasetManifest.schema_version ||
       receipt.datasetManifestDigest !== this.hash(input.datasetManifest) ||
       Number(receipt.recordCount) !== Number(input.datasetManifest.record_count) ||
@@ -706,6 +707,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       sandboxId: receipt.sandboxId,
       runId: receipt.runId,
       mode: receipt.mode,
+      datasetFile: receipt.datasetFile,
       schemaVersion: receipt.schemaVersion,
       datasetManifestDigest: receipt.datasetManifestDigest,
       datasetChecksumSha256: receipt.datasetChecksumSha256,
