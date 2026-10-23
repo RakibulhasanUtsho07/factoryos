@@ -320,6 +320,12 @@ export class InventoryCycleCountService {
               [proposal.id, userId, taskId, tenantId, factoryId],
             );
             if (!taskUpdate.rows[0]) throw new ConflictException('Cycle-count task lost its active state during submission');
+            await this.insertOutboxEvent(client, {
+              tenantId, factoryId, aggregateId: taskId,
+              correlationId: this.correlationId(requestId, traceId), userId,
+              eventType: 'INVENTORY.CYCLE_COUNT_TASK_SUBMITTED',
+              payload: { task_id: taskId, proposal_id: proposal.id, item_id: proposal.item_id },
+            });
           }
 
           await this.insertOutboxEvent(client, {
@@ -628,6 +634,12 @@ export class InventoryCycleCountService {
               [reviewed.task_id, tenantId, factoryId, reviewed.id],
             );
             if (!taskUpdate.rows[0]) throw new ConflictException('Rejected count could not reopen its scheduled task');
+            await this.insertOutboxEvent(client, {
+              tenantId, factoryId, aggregateId: reviewed.task_id,
+              correlationId: this.correlationId(requestId, traceId), userId,
+              eventType: 'INVENTORY.CYCLE_COUNT_TASK_REOPENED',
+              payload: { task_id: reviewed.task_id, proposal_id: reviewed.id, item_id: reviewed.item_id },
+            });
           }
 
           await this.insertOutboxEvent(client, {
@@ -790,7 +802,11 @@ export class InventoryCycleCountService {
       aggregateId: string;
       correlationId: string;
       userId: string;
-      eventType: 'INVENTORY.CYCLE_COUNT_SUBMITTED' | 'INVENTORY.CYCLE_COUNT_REJECTED';
+      eventType:
+        | 'INVENTORY.CYCLE_COUNT_SUBMITTED'
+        | 'INVENTORY.CYCLE_COUNT_REJECTED'
+        | 'INVENTORY.CYCLE_COUNT_TASK_SUBMITTED'
+        | 'INVENTORY.CYCLE_COUNT_TASK_REOPENED';
       payload: Record<string, unknown>;
     },
   ): Promise<void> {
