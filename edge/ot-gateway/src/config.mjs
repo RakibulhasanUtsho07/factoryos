@@ -84,8 +84,16 @@ export function validateGatewayConfig(config, env = process.env) {
   const apiTarget = configuredEndpoint(config.api.baseUrl, 'https', production);
   const apiUrl = new URL(config.api.baseUrl);
   ensure(apiUrl.pathname === '' || apiUrl.pathname === '/', 'api.baseUrl must be an origin without a path');
-  ensure(Array.isArray(config.security.approvedTargets), 'security.approvedTargets allow-list is required');
+  ensure(Array.isArray(config.security.approvedTargets) && config.security.approvedTargets.length >= 1
+    && config.security.approvedTargets.length <= 1000, 'security.approvedTargets allow-list is required');
+  ensure(new Set(config.security.approvedTargets).size === config.security.approvedTargets.length, 'approvedTargets must be unique');
   for (const target of config.security.approvedTargets) ensure(typeof target === 'string' && target.length <= 300, 'approved target entry is invalid');
+  config.spoolFile ??= '/var/lib/factoryos-ot/spool.enc';
+  ensure(typeof config.spoolFile === 'string' && config.spoolFile.startsWith('/'), 'spoolFile must be an absolute path');
+  if (production) ensure(config.spoolFile.startsWith('/var/lib/factoryos-ot/'), 'production spoolFile must be under /var/lib/factoryos-ot');
+  config.spool ??= {};
+  if (config.spool.maxEntries !== undefined) ensure(Number.isInteger(config.spool.maxEntries) && config.spool.maxEntries >= 1 && config.spool.maxEntries <= 100000, 'spool.maxEntries must be between 1 and 100000');
+  if (config.spool.maxPlaintextBytes !== undefined) ensure(Number.isInteger(config.spool.maxPlaintextBytes) && config.spool.maxPlaintextBytes >= 4096 && config.spool.maxPlaintextBytes <= 1073741824, 'spool.maxPlaintextBytes must be 4096 bytes to 1 GiB');
 
   config.opcua ??= [];
   config.mqtt ??= null;
@@ -105,6 +113,7 @@ export function validateGatewayConfig(config, env = process.env) {
   };
 
   if (config.mqtt) {
+    const allTopics = new Set();
     const brokerTarget = configuredEndpoint(config.mqtt.url, config.mqtt.url.startsWith('mqtts:') ? 'mqtts' : 'mqtt', production);
     validateApprovedTarget(brokerTarget, config.security.approvedTargets);
     ensure(typeof config.mqtt.clientId === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(config.mqtt.clientId), 'MQTT clientId is invalid');
@@ -121,7 +130,9 @@ export function validateGatewayConfig(config, env = process.env) {
         ensure(typeof item.stream_key === 'string' && STREAM.test(item.stream_key), 'MQTT stream_key is invalid');
         ensure(item.qos === 1, 'MQTT QoS 1 is required to permit durable acknowledgement');
         ensure(!topics.has(item.topic), 'duplicate exact MQTT topic');
+        ensure(!allTopics.has(item.topic), 'an exact MQTT topic may only be assigned to one registered device');
         topics.add(item.topic);
+        allTopics.add(item.topic);
       }
     }
   }
