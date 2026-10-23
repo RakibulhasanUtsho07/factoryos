@@ -245,6 +245,29 @@ Migration 160 defines the contracts and state machine; `services/api/src/saas/sa
 Acceptance evidence: `services/api/test/saas-tenant-propagation-contract.sql`, `services/api/test/saas-data-retention-contract.sql`, the tenant ownership review gate, and the SaaS retention/propagation service tests. For an incident or partial provider failure, inspect per-target immutable receipts and residual manifests, keep the request in `PROPAGATION_PENDING`, restore provider credentials/configuration, and retry with the same run/idempotency key. Never represent a PostgreSQL-only run receipt as whole-tenant deletion proof.
 
 
+## Task 23 — Physical sandbox provisioning, deployment orchestration and guarded rollout
+
+Migration 186 adds an immutable execution ledger and tenant-isolated event state machine for physical infrastructure operations. This extends the pre-existing sandbox, deployment-profile and staged-release control-plane records; those older records alone never prove that infrastructure has been provisioned.
+
+### Execution API and lifecycle evidence
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /v2/saas/physical-provisioning/sandboxes/:id/provision | saas.sandboxes.control | Provision isolated storage and materialize the exact synthetic/approved masked dataset manifest |
+| POST /v2/saas/physical-provisioning/deployment-profiles/:id/provision | saas.deployment_profiles.control | Ask a topology-specific provider to provision the selected deployment-profile version |
+| POST /v2/saas/physical-provisioning/releases/:rolloutKey/deploy | saas.releases.promote | Deploy a version-pinned artifact and run the provider health check |
+| GET /v2/saas/physical-provisioning/runs and GET /runs/:id | saas.physical_provisioning.read | Inspect provider operation state, health evidence, provisioning receipts, halt and rollback history |
+
+Every request pins the resource version, topology, artifact digest or dataset-manifest digest, idempotency key, failure policy and bounded health-check timeout. The run record is immutable; the event stream permits only REQUESTED → IN_PROGRESS → SUCCEEDED/FAILED/HALTED or IN_PROGRESS → ROLLBACK_IN_PROGRESS → ROLLED_BACK/ROLLBACK_FAILED. Forced RLS, a restrictive tenant policy, an idempotency constraint, a versioned event sequence, privacy-inventory classification and mutation-rejection triggers protect the records.
+
+The provider SPI in `services/api/src/saas/saas-physical-infrastructure.adapters.ts` requires topology-aware support, provider idempotency, storage and dataset-materialization evidence, a SHA-256 manifest digest, an isolation attestation, health-check receipts and a verifiable rollback receipt. Dataset payloads, cloud credentials and bearer tokens must never be placed in request bodies, the run ledger or audit metadata. The application rejects receipts that fail to match the requested topology, artifact or dataset digest. For `ROLLBACK`, the target must be a prior production artifact with the same release scope; the rollback itself must be confirmed healthy. For `HALT`, the provider must confirm that the failed deployment was halted. Unknown provider outcomes remain failed/recovery-required, not successful.
+
+### Explicit production boundary
+
+The SaaS module intentionally registers an empty physical-adapter list by default. With no reviewed adapter registered, each request records a failed closed operation and does **not** report synthetic provisioning or deployment success. This repo change provides the orchestration/evidence contract; it does not claim that a live cloud, storage backend, VPC, edge cluster or runtime deployment has been provisioned.
+
+Before Task 23 can be marked fully accepted, deployment must register and test actual provider adapter(s) for every enabled topology: shared namespaced storage/compute isolation, dedicated single-tenant infrastructure, dedicated VPC/cluster, and hybrid cloud/edge; provisioner contract for synthetic generation and approved masked-data materialization; actual workload/image deployment; real readiness/health checks; provider-side halt and rollback; and environment credentials held in a secret manager. CI verifies migration replay, event guards, tenant RLS, input/receipt checks and fail-closed behavior. It cannot prove that external infrastructure was provisioned without those provider adapters and test-environment credentials.
+
 ## Task 24 — Commercial billing and provider-issued invoices
 
 Migration 185 adds a separate commercial billing boundary around the usage/rate ledger above. The saas_usage_events, rate-card, adjustment and usage reconciliation tables remain metering/estimate evidence; they are **not issued invoices**. A commercial invoice exists only after a provider invoice has been created/finalized and its external ID/lifecycle evidence has been recorded in a billing-close event.
