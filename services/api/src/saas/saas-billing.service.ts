@@ -512,7 +512,7 @@ export class SaasBillingService {
         });
       }
 
-      this.assertInvoiceBelongsToClose(invoice, close);
+      await this.assertInvoiceBelongsToClose(invoice, close);
       if (invoice.status === 'draft') {
         const providerLines = await this.stripe.listInvoiceLines(invoice.id);
         for (const line of close.lines ?? []) {
@@ -554,11 +554,11 @@ export class SaasBillingService {
         }
       }
 
-      this.assertInvoiceBelongsToClose(invoice, close);
+      await this.assertInvoiceBelongsToClose(invoice, close);
       this.assertInvoiceTaxReady(close, invoice);
       if (invoice.status === 'open' && close.collection_method === 'send_invoice') {
         invoice = await this.stripe.sendInvoice(invoice.id, 'fo-billing-' + closeId + '-send-v1');
-        this.assertInvoiceBelongsToClose(invoice, close);
+        await this.assertInvoiceBelongsToClose(invoice, close);
       } else if (invoice.status === 'open' && close.collection_method === 'charge_automatically') {
         // Keep auto_advance disabled while FactoryOS is binding line receipts to the immutable close.
         // Collection is an explicit, stable provider request, so failures can be reconciled and retried.
@@ -680,7 +680,7 @@ export class SaasBillingService {
     const invoiceId = this.latestInvoiceId(events);
     if (!invoiceId) throw new ConflictException('No provider invoice exists for this billing close');
     const invoice = await this.stripe.retrieveInvoice(invoiceId);
-    this.assertInvoiceBelongsToClose(invoice, close);
+    await this.assertInvoiceBelongsToClose(invoice, close);
     if (invoice.status === 'paid') {
       await this.appendCloseEvent({
         tenantId, closeId, eventType: 'INVOICE_PAID', providerInvoiceId: invoiceId,
@@ -751,7 +751,7 @@ export class SaasBillingService {
     const invoiceId = this.latestInvoiceId(events);
     if (!invoiceId) throw new ConflictException('The billing close has no provider invoice to reconcile');
     const invoice = await this.stripe.retrieveInvoice(invoiceId);
-    this.assertInvoiceBelongsToClose(invoice, close);
+    await this.assertInvoiceBelongsToClose(invoice, close);
     const providerLines = await this.stripe.listInvoiceLines(invoice.id);
     const lineBindingValid = this.checkInvoiceLines(close, providerLines);
     const expectedSubtotal = BigInt(String(close.expected_subtotal_minor));
