@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/spool.mjs && node --check src/protocol-drivers.mjs && node --check src/config.mjs"
+    "check": "for file in src/*.mjs test/*.mjs; do node --check \"$file\" || exit 1; done"
   },
   "dependencies": {
     "modbus-serial": "8.0.25",
