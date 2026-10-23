@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS inventory_cycle_count_tasks (
       (started_at IS NULL AND started_by_user_id IS NULL AND current_proposal_id IS NULL))
     AND
     (status NOT IN ('IN_PROGRESS', 'AWAITING_REVIEW', 'COMPLETED')
-      OR (started_at IS NOT NULL AND started_by_user_id IS NOT NULL))
+      OR (started_at IS NOT NULL AND started_by_user_id IS NOT NULL AND assigned_to_user_id IS NOT NULL))
     AND
     (status <> 'AWAITING_REVIEW' OR
       (current_proposal_id IS NOT NULL AND submitted_by_user_id IS NOT NULL AND submitted_at IS NOT NULL))
