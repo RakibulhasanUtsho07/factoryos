@@ -102,6 +102,10 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='uq_saas_billing_close_idempotency'
+      AND conrelid='public.saas_billing_close_runs'::regclass
+  ) OR NOT EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname='public' AND indexname='uq_saas_billing_webhook_event'
   ) OR NOT EXISTS (
