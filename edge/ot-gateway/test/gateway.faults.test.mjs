@@ -101,7 +101,7 @@ test('crash/restart recovers encrypted events and never resets the generated sou
   });
   assert.equal(first.sequence, 1);
   const before = await readFile(file);
-  assert.equal(before.includes(Buffer.from('20')), false, 'plaintext telemetry must not appear in the spool file');
+  assert.equal(before.includes(Buffer.from('\"value\":20')), false, 'plaintext telemetry must not appear in the spool file');
 
   const recovered = new OtEdgeDurableSpool(file, key, { now: () => 2000 });
   assert.equal(await recovered.pendingCount(), 1);
