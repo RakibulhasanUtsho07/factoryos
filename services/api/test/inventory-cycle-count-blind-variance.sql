@@ -63,6 +63,23 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'public.inventory_cycle_count_tasks'::regclass
+      AND tgname = 'inventory_cycle_count_task_policy_guard' AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'task policy immutability guard is missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.inventory_cycle_count_tasks'::regclass
+      AND conname = 'chk_inventory_cycle_count_task_variance_threshold'
+      AND contype = 'c'
+  ) THEN
+    RAISE EXCEPTION 'positive variance-threshold constraint is missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
     WHERE tgrelid = 'public.inventory_cycle_count_proposals'::regclass
       AND tgname = 'inventory_cycle_count_variance_decision_guard' AND NOT tgisinternal
   ) THEN
@@ -83,6 +100,12 @@ BEGIN
     OR position('blind-count snapshot are immutable' IN v_definition) = 0
   THEN
     RAISE EXCEPTION 'blind-count proposal snapshot guard is incomplete';
+  END IF;
+
+  SELECT pg_get_functiondef('public.factoryos_guard_inventory_cycle_count_task_policy()'::regprocedure)
+    INTO v_definition;
+  IF position('policies are immutable after scheduling' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'blind-count and threshold policy immutability guard is incomplete';
   END IF;
 
   SELECT pg_get_functiondef('public.factoryos_guard_cycle_count_variance_decision()'::regprocedure)
