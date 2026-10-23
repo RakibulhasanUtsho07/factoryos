@@ -9769,13 +9769,20 @@
     {
       "requirementId": "FR-MSO-03",
       "sourcePriority": "P1",
-      "matrixAssessment": "Not verified / gap",
+      "matrixAssessment": "Partial",
       "provisionalOwnerRole": "Product domain owner — determine from authoritative requirement",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/ai/artifacts/ai.artifact.provenance.service.ts"
+      ],
+      "migrationReferences": [
+        "migrations/195_ai_artifact_provenance_admission.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/src/ai/artifacts/ai.artifact.provenance.service.spec.ts",
+        "services/api/test/ai-artifact-provenance.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -9783,7 +9790,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Direct implementation and test pointers now exist. Acceptance remains NOT_ACCEPTED until exact-head CI passes, source/build-signing custody and artifact-byte verification are evidenced, and named owner/reviewer approval is recorded.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -9813,13 +9820,22 @@
     {
       "requirementId": "FR-MSO-05",
       "sourcePriority": "P0",
-      "matrixAssessment": "Not verified / gap",
+      "matrixAssessment": "Partial",
       "provisionalOwnerRole": "Product domain owner — determine from authoritative requirement",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
-      "migrationReferences": [],
-      "automatedTestReferences": [],
+      "directCodeReferences": [
+        "services/api/src/ai/tools/ai.tool.gateway.service.ts",
+        "services/api/src/ai/artifacts/ai.artifact.provenance.service.ts"
+      ],
+      "migrationReferences": [
+        "migrations/195_ai_artifact_provenance_admission.sql"
+      ],
+      "automatedTestReferences": [
+        "services/api/src/ai/tools/ai.tool.gateway.service.spec.ts",
+        "services/api/src/ai/artifacts/ai.artifact.provenance.service.spec.ts",
+        "services/api/test/ai-artifact-provenance.sql"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -9827,7 +9843,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "Production Tool Gateway artifact checks are implemented with denial receipts, but requirement remains NOT_ACCEPTED until exact-head CI passes and live model-provider inference adapters are wired and verified, with named owner/reviewer approval.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
