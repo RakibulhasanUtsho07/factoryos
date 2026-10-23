@@ -278,8 +278,8 @@ export class InventoryCycleCountService {
               [taskId, tenantId, factoryId],
             );
             const task = taskResult.rows[0];
-            taskPolicy = task;
             if (!task) throw new NotFoundException('Cycle-count task not found in this factory');
+            taskPolicy = task;
             if (task.status !== 'IN_PROGRESS') throw new ConflictException('Cycle-count task must be started before a count is submitted');
             if (task.item_id !== normalizedItemId || task.location_id !== locationId) {
               throw new ConflictException('Cycle-count submission item/bin does not match the scheduled task');
@@ -357,6 +357,36 @@ export class InventoryCycleCountService {
               eventType: 'INVENTORY.CYCLE_COUNT_TASK_SUBMITTED',
               payload: { task_id: taskId, proposal_id: proposal.id, item_id: proposal.item_id },
             });
+            if (taskPolicy?.variance_escalation_threshold !== null && taskPolicy?.variance_escalation_threshold !== undefined) {
+              const expectedQuantity = locationSnapshot?.quantity_on_hand ?? balance.quantity_on_hand;
+              const escalationInsert = await client.query<{ id: string }>(
+                `INSERT INTO inventory_cycle_count_variance_escalations (
+                   tenant_id, factory_id, task_id, proposal_id, item_id,
+                   expected_quantity, counted_quantity, variance_quantity, threshold_quantity
+                 )
+                 SELECT $1, $2, t.id, $4, $5, $6::numeric, $7::numeric,
+                        $7::numeric - $6::numeric, t.variance_escalation_threshold
+                 FROM inventory_cycle_count_tasks t
+                 WHERE t.id = $3 AND t.tenant_id = $1 AND t.factory_id = $2
+                   AND t.current_proposal_id = $4 AND t.status = 'AWAITING_REVIEW'
+                   AND t.variance_escalation_threshold IS NOT NULL
+                   AND abs($7::numeric - $6::numeric) >= t.variance_escalation_threshold
+                 ON CONFLICT (tenant_id, factory_id, proposal_id) DO NOTHING
+                 RETURNING id::text AS id`,
+                [tenantId, factoryId, taskId, proposal.id, normalizedItemId, expectedQuantity, countedQuantity],
+              );
+              if (escalationInsert.rows[0]) {
+                await this.insertOutboxEvent(client, {
+                  tenantId, factoryId, aggregateId: proposal.id,
+                  correlationId: this.correlationId(requestId, traceId), userId,
+                  eventType: 'INVENTORY.CYCLE_COUNT_VARIANCE_ESCALATED',
+                  payload: {
+                    task_id: taskId, proposal_id: proposal.id,
+                    escalation_id: escalationInsert.rows[0].id, status: 'OPEN',
+                  },
+                });
+              }
+            }
           }
 
           await this.insertOutboxEvent(client, {
@@ -372,11 +402,13 @@ export class InventoryCycleCountService {
                 item_id: proposal.item_id,
                 task_id: proposal.task_id,
                 counted_quantity: proposal.counted_quantity,
-                ledger_quantity_at_count: proposal.ledger_quantity_at_count,
-                balance_version_at_count: proposal.balance_version_at_count,
+                ...(proposal.blind_count_snapshot ? {} : {
+                  ledger_quantity_at_count: proposal.ledger_quantity_at_count,
+                  balance_version_at_count: proposal.balance_version_at_count,
+                  location_quantity_at_count: proposal.location_quantity_at_count,
+                  location_version_at_count: proposal.location_version_at_count,
+                }),
                 location_id: proposal.location_id,
-                location_quantity_at_count: proposal.location_quantity_at_count,
-                location_version_at_count: proposal.location_version_at_count,
                 variance_reason_code: proposal.variance_reason_code,
                 status: proposal.status,
               },
