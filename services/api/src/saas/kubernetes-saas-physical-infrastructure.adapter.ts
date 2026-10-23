@@ -115,7 +115,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       const storageClass = this.config.get<string>('SAAS_KUBERNETES_STORAGE_CLASS')?.trim();
       if (storageClass) pvcSpec.storageClassName = storageClass;
 
-      const pvc = await this.ensureObject(
+      await this.ensureObject(
         target,
         '/api/v1/namespaces/' + namespace.namespace + '/persistentvolumeclaims',
         '/api/v1/namespaces/' + namespace.namespace + '/persistentvolumeclaims/' + pvcName,
@@ -128,8 +128,8 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
 
       const manifestConfigMapName = this.datasetConfigMapName(context.runId);
       const configMapData = {
-        dataset_manifest.json: JSON.stringify(input.datasetManifest),
-        privacy_assessment.json: JSON.stringify(input.privacyAssessment),
+        'dataset_manifest.json': JSON.stringify(input.datasetManifest),
+        'privacy_assessment.json': JSON.stringify(input.privacyAssessment),
       };
       const configMap = await this.ensureObject(
         target,
@@ -316,6 +316,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     context: PhysicalOperationContext,
     deploymentReference: string,
     timeoutSeconds: number,
+    expectedArtifactDigest?: string,
   ): Promise<PhysicalHealthCheckReceipt> {
     const parsed = this.parseDeploymentReference(deploymentReference);
     const targets = this.targets(context.profile);
@@ -335,9 +336,12 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
           );
           const desired = Number(deployment.spec?.replicas ?? 1);
           const observed = Number(deployment.status?.observedGeneration ?? 0) >= Number(deployment.metadata?.generation ?? 0);
+          const artifactDigest = deployment.metadata?.annotations?.['factoryos.io/artifact-digest'];
+          const artifactMatches = !expectedArtifactDigest || artifactDigest === expectedArtifactDigest;
           const ready = observed && Number(deployment.status?.readyReplicas ?? 0) >= desired &&
             Number(deployment.status?.availableReplicas ?? 0) >= desired &&
-            deployment.metadata?.labels?.['factoryos.io/tenant-id'] === context.tenantId;
+            deployment.metadata?.labels?.['factoryos.io/tenant-id'] === context.tenantId &&
+            artifactMatches;
           allReady = allReady && ready;
           lastStates.push({
             target: target.code, deploymentUid: deployment.metadata?.uid,
@@ -345,7 +349,8 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
             desiredReplicas: desired, readyReplicas: Number(deployment.status?.readyReplicas ?? 0),
             availableReplicas: Number(deployment.status?.availableReplicas ?? 0),
             tenantBindingValid: deployment.metadata?.labels?.['factoryos.io/tenant-id'] === context.tenantId,
-            artifactDigest: deployment.metadata?.annotations?.['factoryos.io/artifact-digest'] ?? null,
+            artifactDigest,
+            artifactMatches,
           });
         } catch (error) {
           allReady = false;
@@ -458,7 +463,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
         targetArtifactDigest: targetRelease.artifactDigest });
     }
 
-    const health = await this.checkReleaseHealth(context, deploymentReferenceOut, timeoutSeconds);
+    const health = await this.checkReleaseHealth(context, deploymentReferenceOut, timeoutSeconds, targetRelease.artifactDigest);
     const evidenceDigest = this.hash({
       runId: context.runId, operation: 'ROLLBACK', deploymentReference: deploymentReferenceOut,
       targetArtifactDigest: targetRelease.artifactDigest, health, receipts,
@@ -657,6 +662,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       },
       spec,
     };
+    if (kind !== 'ConfigMap' && kind !== 'Secret') body.spec = spec;
     if (data) body.data = data;
     return body;
   }
@@ -721,9 +727,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     const existing = await this.maybeGet(
       target, '/apis/apps/v1/namespaces/' + namespace + '/deployments/' + deploymentName,
     );
-    if (existing && !this.ownedByTenant(existing, context.tenantId)) {
-      throw new ConflictException('Existing Kubernetes deployment belongs to another tenant');
-    }
+    if (existing) this.assertDeploymentOwned(existing, context);
     if (existing && existing.metadata?.labels?.['factoryos.io/release-scope-hash'] !== scopeHash) {
       throw new ConflictException('Existing Kubernetes deployment is bound to a different tenant release scope');
     }
@@ -848,48 +852,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     );
   }
 
-  private async applyReleaseServiceAfterRollback(
-    target: KubernetesTarget,
-    namespace: string,
-    context: PhysicalOperationContext,
-    currentLabels: Record<string, string>,
-    deploymentName: string,
-  ) {
-    const serviceName = this.releaseServiceName(deploymentName);
-    const path = '/api/v1/namespaces/' + namespace + '/services/' + serviceName;
-    const current = await this.getRequired(target, path);
-    if (!this.ownedByTenant(current, context.tenantId)) throw new ConflictException('Rollback service is outside tenant scope');
-    const desired = {
-      ...current,
-      spec: {
-        ...current.spec,
-        selector: {
-          'factoryos.io/tenant-id': context.tenantId,
-          'factoryos.io/release-key-hash': currentLabels['factoryos.io/release-key-hash'],
-        },
-      },
-    };
-    return this.call(target, path, 'PUT', desired);
-  }
-
-  private async applyReleaseDeploymentForRollback(
-    target: KubernetesTarget,
-    namespace: string,
-    context: PhysicalOperationContext,
-    deploymentName: string,
-    targetRelease: PhysicalReleaseInput,
-  ) {
-    const path = '/apis/apps/v1/namespaces/' + namespace + '/deployments/' + deploymentName;
-    const current = await this.getRequired(target, path);
-    this.assertDeploymentOwned(current, context);
-    const currentLabels = current.metadata?.labels ?? {};
-    const updated = await this.applyReleaseDeployment(target, namespace, context, targetRelease,
-      deploymentName, { artifactDigest: targetRelease.artifactDigest, rolloutKey: targetRelease.rolloutKey });
-    await this.applyReleaseServiceAfterRollback(target, namespace, context, currentLabels, deploymentName);
-    return updated;
-  }
-
-  private async getRequired(target: KubernetesTarget, path: string): Promise<JsonRecord> {
+remove unused rollback helpers  private async getRequired(target: KubernetesTarget, path: string): Promise<JsonRecord> {
     const result = await this.call(target, path, 'GET');
     if (!isRecord(result) || !isRecord(result.metadata)) {
       throw new KubernetesProviderError(502, 'INVALID_PROVIDER_OBJECT');
@@ -964,17 +927,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     throw new KubernetesProviderError(504, this.safeCodeFromMessage(failureMessage));
   }
 
-  private async ensureOwnedResource(
-    target: KubernetesTarget,
-    path: string,
-    context: PhysicalOperationContext,
-  ) {
-    const object = await this.getRequired(target, path);
-    this.assertDeploymentOwned(object, context);
-    return object;
-  }
-
-  private assertDeploymentOwned(resource: JsonRecord, context: PhysicalOperationContext) {
+remove unused ensureOwnedResource  private assertDeploymentOwned(resource: JsonRecord, context: PhysicalOperationContext) {
     if (!this.ownedByTenant(resource, context.tenantId) ||
       resource.metadata?.labels?.['factoryos.io/topology'] !== context.profile.profileType ||
       resource.metadata?.labels?.['app.kubernetes.io/managed-by'] !== 'factoryos') {
