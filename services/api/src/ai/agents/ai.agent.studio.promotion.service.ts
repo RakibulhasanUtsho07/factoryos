@@ -1018,6 +1018,20 @@ export class AiAgentStudioPromotionService {
         EXISTS (
           SELECT 1
           FROM ai_tool_registry w
+          JOIN LATERAL (
+            SELECT grant_row.status, grant_row.effective_from, grant_row.expires_at
+            FROM ai_agent_tool_grants grant_row
+            WHERE grant_row.tenant_id = $1
+              AND grant_row.factory_id = $2
+              AND grant_row.agent_definition_id = $3
+              AND grant_row.tool_id = w.tool_id
+              AND grant_row.tool_version = w.version
+            ORDER BY grant_row.version DESC
+            LIMIT 1
+          ) g
+            ON g.status = 'ACTIVE'
+           AND g.effective_from <= NOW()
+           AND (g.expires_at IS NULL OR g.expires_at > NOW())
           WHERE w.status = 'ACTIVE'
             AND w.write_capable = TRUE
             AND (w.tenant_id IS NULL OR w.tenant_id = $1)

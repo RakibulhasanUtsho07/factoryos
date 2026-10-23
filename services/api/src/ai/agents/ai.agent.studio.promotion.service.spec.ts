@@ -370,6 +370,8 @@ describe('AiAgentStudioPromotionService', () => {
     const coverageQuery = String(database.query.mock.calls[5]?.[0]);
     expect(coverageQuery).toContain('ai_agent_live_evaluation_results');
     expect(coverageQuery).toContain('ai_tool_registry');
+    expect(coverageQuery).toContain('ai_agent_tool_grants');
+    expect(coverageQuery).toContain('grant_row.version DESC');
     expect(coverageQuery).toContain('write_capable');
     expect(coverageQuery).toContain("c.kind = 'EXPECTED_REFUSAL'");
     expect(coverageQuery).toContain("c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'");
