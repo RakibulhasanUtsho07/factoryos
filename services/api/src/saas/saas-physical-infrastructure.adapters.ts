@@ -116,6 +116,7 @@ export interface PhysicalInfrastructureAdapter {
     context: PhysicalOperationContext,
     deploymentReference: string,
     timeoutSeconds: number,
+    expectedArtifactDigest?: string,
   ): Promise<PhysicalHealthCheckReceipt>;
 
   haltRelease(
