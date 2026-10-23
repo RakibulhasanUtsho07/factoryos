@@ -1,7 +1,7 @@
 -- Task 24: commercial billing is isolated from usage estimates and all evidence is tenant-scoped/immutable.
 DO $billing_contract$
 DECLARE
-  table_name text;
+  billing_relation_name text;
   rel_oid oid;
   trigger_name text;
   required_tables text[] := ARRAY[
@@ -20,49 +20,49 @@ BEGIN
     RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_MIGRATION_MARKER_MISSING';
   END IF;
 
-  FOREACH table_name IN ARRAY required_tables LOOP
-    rel_oid := to_regclass('public.' || quote_ident(table_name));
+  FOREACH billing_relation_name IN ARRAY required_tables LOOP
+    rel_oid := to_regclass('public.' || quote_ident(billing_relation_name));
     IF rel_oid IS NULL THEN
-      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_TABLE_MISSING: %', table_name;
+      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_TABLE_MISSING: %', billing_relation_name;
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM pg_class c WHERE c.oid=rel_oid AND c.relrowsecurity AND c.relforcerowsecurity
     ) THEN
-      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_RLS_NOT_FORCED: %', table_name;
+      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_RLS_NOT_FORCED: %', billing_relation_name;
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM pg_policies p
-      WHERE p.schemaname='public' AND p.tablename=table_name
-        AND p.policyname=table_name || '_tenant_isolation'
+      WHERE p.schemaname='public' AND p.tablename=billing_relation_name
+        AND p.policyname=billing_relation_name || '_tenant_isolation'
         AND COALESCE(p.qual,'') ILIKE '%factoryos_current_tenant_id%'
         AND COALESCE(p.with_check,'') ILIKE '%factoryos_current_tenant_id%'
     ) THEN
-      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_TENANT_POLICY_MISSING: %', table_name;
+      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_TENANT_POLICY_MISSING: %', billing_relation_name;
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM pg_policies p
-      WHERE p.schemaname='public' AND p.tablename=table_name
+      WHERE p.schemaname='public' AND p.tablename=billing_relation_name
         AND p.policyname='fo_privacy_scope_enforce' AND p.permissive='RESTRICTIVE'
         AND COALESCE(p.qual,'') ILIKE '%factoryos_current_tenant_id%'
         AND COALESCE(p.with_check,'') ILIKE '%factoryos_current_tenant_id%'
     ) THEN
-      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_RESTRICTIVE_PRIVACY_FENCE_MISSING: %', table_name;
+      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_RESTRICTIVE_PRIVACY_FENCE_MISSING: %', billing_relation_name;
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM factoryos_governance.tenant_relation_inventory i
-      WHERE i.schema_name='public' AND i.relation_name=table_name
+      WHERE i.schema_name='public' AND i.relation_name=billing_relation_name
         AND i.scope_model='DIRECT_TENANT_ID' AND i.export_disposition='EXCLUDED'
         AND i.erasure_disposition='BLOCKED_FINANCE_REVIEW'
     ) THEN
-      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_PRIVACY_INVENTORY_MISSING: %', table_name;
+      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_PRIVACY_INVENTORY_MISSING: %', billing_relation_name;
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM factoryos_governance.tenant_relation_ownership_reviews r
-      WHERE r.schema_name='public' AND r.relation_name=table_name
+      WHERE r.schema_name='public' AND r.relation_name=billing_relation_name
         AND r.ownership_class='DIRECT_TENANT' AND r.review_status='VERIFIED'
         AND r.erasure_disposition='BLOCKED_FINANCE_REVIEW'
     ) THEN
-      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_OWNERSHIP_REVIEW_MISSING: %', table_name;
+      RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_OWNERSHIP_REVIEW_MISSING: %', billing_relation_name;
     END IF;
   END LOOP;
 
