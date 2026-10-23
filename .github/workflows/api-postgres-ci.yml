@@ -310,6 +310,12 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/189_inventory_cycle_count_sessions.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-sessions.sql
 
+          echo "Reapplying recurring cycle-count policy migration and validating calendar cursor contracts"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/190_inventory_cycle_count_recurring_policies.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-recurring-policies.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/190_inventory_cycle_count_recurring_policies.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-recurring-policies.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
