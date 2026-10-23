@@ -461,7 +461,7 @@ export class SaasPhysicalProvisioningService {
         return { status: 'HALTED' as const, providerCode: adapter.providerCode };
       }
 
-      if (!previousRelease) throw new ConflictException('Verified rollback target is missing');
+      if (!previous || !previousRelease) throw new ConflictException('Verified rollback target is missing');
       await this.appendEvent(tenantId, actorUserId, run.id, 'ROLLBACK_IN_PROGRESS', {
         providerCode: adapter.providerCode, providerReference: deployed.deploymentReference,
         evidenceDigest: health.evidenceDigest, reasonCode: 'HEALTH_CHECK_FAILED',
