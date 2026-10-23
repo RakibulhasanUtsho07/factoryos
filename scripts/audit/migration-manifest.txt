@@ -199,3 +199,6 @@ migrations/187_inventory_cycle_count_tasks.sql
 migrations/188_inventory_blind_count_variance_escalation.sql
 migrations/189_inventory_cycle_count_sessions.sql
 migrations/190_inventory_cycle_count_recurring_policies.sql
+migrations/191_edge_ot_device_gateway.sql
+migrations/192_edge_device_credentials.sql
+migrations/193_edge_device_health_and_stream_metadata.sql
