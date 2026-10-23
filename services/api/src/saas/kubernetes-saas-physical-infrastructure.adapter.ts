@@ -128,8 +128,10 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
 
       const manifestConfigMapName = this.datasetConfigMapName(context.runId);
       const configMapData = {
-        'dataset_manifest.json': JSON.stringify(input.datasetManifest),
-        'privacy_assessment.json': JSON.stringify(input.privacyAssessment),
+        // The bytes the materializer hashes must match the canonical digest
+        // recorded by FactoryOS and in the provider receipt.
+        'dataset_manifest.json': JSON.stringify(canonicalize(input.datasetManifest)),
+        'privacy_assessment.json': JSON.stringify(canonicalize(input.privacyAssessment)),
       };
       const configMap = await this.ensureObject(
         target,
