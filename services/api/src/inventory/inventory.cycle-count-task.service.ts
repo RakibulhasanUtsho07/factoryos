@@ -286,7 +286,7 @@ export class InventoryCycleCountTaskService {
           tenantId, factoryId, aggregateId: task.id,
           correlationId: this.correlationId(requestId, traceId),
           userId, eventType: 'INVENTORY.CYCLE_COUNT_TASK_SCHEDULED',
-          payload: { task: this.eventShape(task), variance_escalation_threshold: varianceThreshold },
+          payload: { task: this.eventShape(task) },
         });
         return this.toTask(task, false);
       });
