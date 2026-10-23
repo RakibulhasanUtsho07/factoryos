@@ -1,6 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import {
   PhysicalDeploymentProfile,
   PhysicalDeploymentProfileInput,
@@ -104,9 +105,14 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     const receipts: Array<Record<string, unknown>> = [];
     const manifestDigest = this.hash(input.datasetManifest);
     const datasetImage = this.pinnedDatasetProvisionerImage();
+    const maskedAllowedHosts = input.dataMode === 'MASKED' ? this.maskedDatasetAllowedHosts() : [];
+    const maskedAllowedCidrs = input.dataMode === 'MASKED' ? this.maskedDatasetAllowedCidrs() : [];
 
     for (const target of targets) {
       const namespace = await this.ensureTenantNamespace(target, context);
+      if (input.dataMode === 'MASKED') {
+        await this.ensureMaskedDatasetEgressPolicy(target, namespace.namespace, context, maskedAllowedCidrs);
+      }
       const pvcName = this.sandboxPvcName(context.resourceId);
       const pvcSpec: JsonRecord = {
         accessModes: ['ReadWriteOnce'],
@@ -165,7 +171,8 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
         { name: 'dataset-storage', mountPath: '/data', readOnly: false },
       ];
       if (maskedSecretName) {
-        volumes.push({ name: 'masked-source', secret: { secretName: maskedSecretName, defaultMode: 256 } });
+        // 0440 is group-readable by the non-root materializer through fsGroup=10001.
+        volumes.push({ name: 'masked-source', secret: { secretName: maskedSecretName, defaultMode: 288 } });
         mounts.push({ name: 'masked-source', mountPath: '/source', readOnly: true });
       }
       const jobSpec = {
@@ -173,7 +180,10 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
         activeDeadlineSeconds: this.provisionTimeoutSeconds(),
         ttlSecondsAfterFinished: 86400,
         template: {
-          metadata: { labels: this.resourceLabels(context, { 'factoryos.io/run-id-hash': this.sha(context.runId).slice(0, 16) }) },
+          metadata: { labels: this.resourceLabels(context, {
+            'factoryos.io/run-id-hash': this.sha(context.runId).slice(0, 16),
+            'factoryos.io/workload-role': 'dataset-materializer',
+          }) },
           spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,
@@ -192,6 +202,13 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
               env: [
                 { name: 'FACTORYOS_EXPECTED_DATASET_MANIFEST_SHA256', value: manifestDigest },
                 { name: 'FACTORYOS_SANDBOX_ID', value: context.resourceId },
+                { name: 'FACTORYOS_RUN_ID', value: context.runId },
+                { name: 'FACTORYOS_DATASET_MATERIALIZER_MAX_RECORDS', value: this.datasetMaterializerMaxRecords() },
+                { name: 'FACTORYOS_DATASET_MATERIALIZER_MAX_BYTES', value: this.datasetMaterializerMaxBytes() },
+                ...(input.dataMode === 'MASKED' ? [
+                  { name: 'FACTORYOS_MASKED_DATASET_ALLOWED_HOSTS', value: maskedAllowedHosts.join(',') },
+                  { name: 'FACTORYOS_MASKED_DATASET_DOWNLOAD_TIMEOUT_SECONDS', value: String(this.maskedDatasetDownloadTimeout()) },
+                ] : []),
               ],
               volumeMounts: mounts,
               securityContext: {
@@ -238,6 +255,9 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
         this.provisionTimeoutSeconds(),
         'Dataset materializer job did not complete before the provisioning deadline',
       );
+      const materializationReceipt = await this.readMaterializationReceipt(
+        target, namespace.namespace, jobName, context, input,
+      );
       const boundPvc = await this.getRequired(
         target, '/api/v1/namespaces/' + namespace.namespace + '/persistentvolumeclaims/' + pvcName,
       );
@@ -251,6 +271,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
         configMapUid: configMap.metadata?.uid,
         jobUid: completedJob.metadata?.uid ?? job.metadata?.uid,
         jobSucceeded: true,
+        materializationReceipt,
         manifestDigest,
         mode: input.dataMode,
       });
@@ -265,7 +286,8 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       isolationVerified: receipts.length === targets.length && receipts.every((receipt) =>
         Boolean(receipt.namespaceUid && receipt.resourceQuotaUid && receipt.networkPolicyUid)),
       storageProvisioned: receipts.length === targets.length && receipts.every((receipt) => receipt.pvcPhase === 'Bound'),
-      datasetMaterialized: receipts.length === targets.length && receipts.every((receipt) => receipt.jobSucceeded === true),
+      datasetMaterialized: receipts.length === targets.length && receipts.every((receipt) =>
+        receipt.jobSucceeded === true && Boolean(receipt.materializationReceipt)),
       datasetMode: input.dataMode,
       datasetManifestDigest: manifestDigest,
       maskingPolicyVersion,
@@ -545,6 +567,152 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     }
     const safe = reference.toUpperCase().replace(/[^A-Z0-9]/g, '_').slice(0, 32);
     return safe + '_' + this.sha(reference).slice(0, 8).toUpperCase();
+  }
+
+  private maskedDatasetAllowedHosts(): string[] {
+    const hosts = (this.config.get<string>('SAAS_KUBERNETES_MASKED_DATASET_ALLOWED_HOSTS') ?? '')
+      .split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
+    if (hosts.length === 0 || hosts.length > 100 ||
+      hosts.some((host) => !/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host))) {
+      throw new ConflictException('SAAS_KUBERNETES_MASKED_DATASET_ALLOWED_HOSTS must explicitly allow approved HTTPS dataset hosts');
+    }
+    return [...new Set(hosts)].sort();
+  }
+
+  private maskedDatasetAllowedCidrs(): string[] {
+    const cidrs = (this.config.get<string>('SAAS_KUBERNETES_MASKED_DATASET_ALLOWED_CIDRS') ?? '')
+      .split(',').map((item) => item.trim()).filter(Boolean);
+    if (cidrs.length === 0 || cidrs.length > 200) {
+      throw new ConflictException('SAAS_KUBERNETES_MASKED_DATASET_ALLOWED_CIDRS must allowlist the approved dataset egress CIDRs');
+    }
+    for (const cidr of cidrs) {
+      const pieces = cidr.split('/');
+      if (pieces.length !== 2 || isIP(pieces[0]) === 0 ||
+        !/^\\d{1,3}$/.test(pieces[1])) {
+        throw new ConflictException('Masked dataset egress CIDR is invalid');
+      }
+      const prefix = Number(pieces[1]);
+      const maxPrefix = isIP(pieces[0]) === 4 ? 32 : 128;
+      if (!Number.isInteger(prefix) || prefix < 1 || prefix > maxPrefix) {
+        throw new ConflictException('Masked dataset egress CIDR prefix must not be an unrestricted 0/0 route');
+      }
+      if (isIP(pieces[0]) === 4 &&
+        pieces[0].split('.').some((part) => String(Number(part)) !== part || Number(part) < 0 || Number(part) > 255)) {
+        throw new ConflictException('Masked dataset IPv4 CIDR address is invalid');
+      }
+    }
+    return [...new Set(cidrs)].sort();
+  }
+
+  private async ensureMaskedDatasetEgressPolicy(
+    target: KubernetesTarget,
+    namespace: string,
+    context: PhysicalOperationContext,
+    cidrs: string[],
+  ) {
+    const name = 'factoryos-masked-dataset-egress';
+    const spec = {
+      podSelector: { matchLabels: { 'factoryos.io/workload-role': 'dataset-materializer' } },
+      policyTypes: ['Egress'],
+      egress: [
+        { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': namespace } } }] },
+        {
+          to: [{
+            namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+            podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+          }],
+          ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
+        },
+        {
+          to: cidrs.map((cidr) => ({ ipBlock: { cidr } })),
+          ports: [{ protocol: 'TCP', port: 443 }],
+        },
+      ],
+    };
+    return this.ensureObject(
+      target,
+      '/apis/networking.k8s.io/v1/namespaces/' + namespace + '/networkpolicies',
+      '/apis/networking.k8s.io/v1/namespaces/' + namespace + '/networkpolicies/' + name,
+      this.namespacedObject('NetworkPolicy', name, namespace, context, spec, {
+        'factoryos.io/egress-allowlist-hash': this.hash(cidrs),
+      }),
+      context,
+    );
+  }
+
+  private datasetMaterializerMaxRecords() {
+    const value = this.config.get<string>('SAAS_DATASET_MATERIALIZER_MAX_RECORDS')?.trim() || '100000';
+    if (!/^[1-9][0-9]{0,8}$/.test(value) || Number(value) > 100000000) {
+      throw new ConflictException('SAAS_DATASET_MATERIALIZER_MAX_RECORDS must be an integer from 1 to 100000000');
+    }
+    return value;
+  }
+
+  private datasetMaterializerMaxBytes() {
+    const value = this.config.get<string>('SAAS_DATASET_MATERIALIZER_MAX_BYTES')?.trim() || String(1024 * 1024 * 1024);
+    const bytes = Number(value);
+    if (!Number.isSafeInteger(bytes) || bytes < 1024 || bytes > 10 * 1024 * 1024 * 1024) {
+      throw new ConflictException('SAAS_DATASET_MATERIALIZER_MAX_BYTES must be between 1024 and 10 GiB');
+    }
+    return String(bytes);
+  }
+
+  private maskedDatasetDownloadTimeout() {
+    const value = Number(this.config.get<string>('SAAS_MASKED_DATASET_DOWNLOAD_TIMEOUT_SECONDS') ?? '120');
+    if (!Number.isSafeInteger(value) || value < 5 || value > 300) {
+      throw new ConflictException('SAAS_MASKED_DATASET_DOWNLOAD_TIMEOUT_SECONDS must be between 5 and 300');
+    }
+    return value;
+  }
+
+  private async readMaterializationReceipt(
+    target: KubernetesTarget,
+    namespace: string,
+    jobName: string,
+    context: PhysicalOperationContext,
+    input: PhysicalSandboxInput,
+  ): Promise<Record<string, unknown>> {
+    const encodedSelector = encodeURIComponent('job-name=' + jobName);
+    const podList = await this.call(
+      target,
+      '/api/v1/namespaces/' + namespace + '/pods?labelSelector=' + encodedSelector,
+      'GET',
+    );
+    const pods = Array.isArray(podList.items) ? podList.items as JsonRecord[] : [];
+    const successfulPod = pods.find((pod) =>
+      pod.status?.phase === 'Succeeded' &&
+      Array.isArray(pod.status?.containerStatuses) &&
+      (pod.status.containerStatuses as JsonRecord[]).some((container) =>
+        container.name === 'dataset-materializer' && container.state?.terminated?.exitCode === 0),
+    );
+    if (!successfulPod || !this.providerReferenceValid(String(successfulPod.metadata?.name ?? ''))) {
+      throw new ConflictException('Successful materializer pod and completion receipt were not found');
+    }
+    const logPath = '/api/v1/namespaces/' + namespace + '/pods/' +
+      encodeURIComponent(String(successfulPod.metadata.name)) + '/log?container=dataset-materializer&timestamps=false';
+    const receipt = await this.call(target, logPath, 'GET');
+    if (receipt.status !== 'SUCCEEDED' || receipt.sandboxId !== context.resourceId ||
+      receipt.runId !== context.runId || receipt.mode !== input.dataMode ||
+      receipt.schemaVersion !== input.datasetManifest.schema_version ||
+      receipt.datasetManifestDigest !== this.hash(input.datasetManifest) ||
+      Number(receipt.recordCount) !== Number(input.datasetManifest.record_count) ||
+      !Number.isSafeInteger(receipt.bytesWritten) || Number(receipt.bytesWritten) < 0 ||
+      !this.isDigest(receipt.datasetChecksumSha256) ||
+      (input.dataMode === 'MASKED' && receipt.datasetChecksumSha256 !== input.datasetManifest.checksum_sha256)) {
+      throw new ConflictException('Materializer completion receipt does not match the approved dataset, run and record-count contract');
+    }
+    return {
+      status: receipt.status,
+      sandboxId: receipt.sandboxId,
+      runId: receipt.runId,
+      mode: receipt.mode,
+      schemaVersion: receipt.schemaVersion,
+      datasetManifestDigest: receipt.datasetManifestDigest,
+      datasetChecksumSha256: receipt.datasetChecksumSha256,
+      recordCount: Number(receipt.recordCount),
+      bytesWritten: Number(receipt.bytesWritten),
+      completedAt: receipt.completedAt,
+    };
   }
 
   private async ensureTenantNamespace(target: KubernetesTarget, context: PhysicalOperationContext): Promise<NamespaceEvidence> {
