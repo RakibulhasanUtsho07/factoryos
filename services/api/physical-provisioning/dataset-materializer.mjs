@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { lstat, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -263,7 +263,13 @@ async function main(argv) {
   }
   const inputFile = (value, fallback) => {
     const candidate = value || fallback;
-    const relative = candidate.startsWith(inputDirectory + '/') ? candidate.slice(inputDirectory.length + 1) : candidate;
+    let relative = candidate;
+    if (candidate.startsWith('/input/')) {
+      // Kubernetes job arguments always name the fixed read-only input mount.
+      relative = candidate.slice('/input/'.length);
+    } else if (candidate.startsWith(inputDirectory + '/')) {
+      relative = candidate.slice(inputDirectory.length + 1);
+    }
     if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) {
       throw Object.assign(new Error('Dataset input path must stay inside the configured input mount'), {
         code: 'INVALID_DATASET_INPUT_PATH',
