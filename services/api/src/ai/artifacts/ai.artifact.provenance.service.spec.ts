@@ -25,7 +25,7 @@ describe('AI artifact provenance', () => {
     version: '1.2.0',
     sha256: 'a'.repeat(64),
     sourceId,
-    expiresAt: '2027-10-23T00:00:00.000Z',
+    expiresAt: '2099-10-23T00:00:00.000Z',
   };
   const signatureBase64 = sign(
     null,
@@ -101,7 +101,7 @@ describe('AI artifact provenance', () => {
       source_status: 'APPROVED',
       source_key_fingerprint: aiArtifactKeyFingerprint(publicKeyPem),
       source_public_key_pem: publicKeyPem,
-      source_valid_until: '2028-01-01T00:00:00.000Z',
+      source_valid_until: '2100-01-01T00:00:00.000Z',
     }] });
     database.query.mockResolvedValueOnce({ rows: [] });
     const service = new AiArtifactProvenanceService(database as never, iam as never);
@@ -145,7 +145,7 @@ describe('AI artifact provenance', () => {
       source_status: 'REVOKED',
       source_key_fingerprint: aiArtifactKeyFingerprint(publicKeyPem),
       source_public_key_pem: publicKeyPem,
-      source_valid_until: '2028-01-01T00:00:00.000Z',
+      source_valid_until: '2100-01-01T00:00:00.000Z',
     }] });
     database.query.mockResolvedValueOnce({ rows: [] });
     const service = new AiArtifactProvenanceService(database as never, iam as never);
@@ -188,7 +188,7 @@ describe('AI artifact provenance', () => {
       source_status: 'APPROVED',
       source_key_fingerprint: aiArtifactKeyFingerprint(publicKeyPem),
       source_public_key_pem: publicKeyPem,
-      source_valid_until: '2028-01-01T00:00:00.000Z',
+      source_valid_until: '2100-01-01T00:00:00.000Z',
     }] });
     database.query.mockResolvedValueOnce({ rows: [] });
     const service = new AiArtifactProvenanceService(database as never, iam as never);
