@@ -5,10 +5,12 @@ on:
     paths:
       - "edge/ot-gateway/**"
       - ".github/workflows/ot-gateway-ci.yml"
+      - ".github/workflows/ot-gateway-release.yml"
   pull_request:
     paths:
       - "edge/ot-gateway/**"
       - ".github/workflows/ot-gateway-ci.yml"
+      - ".github/workflows/ot-gateway-release.yml"
   workflow_dispatch:
 
 permissions:

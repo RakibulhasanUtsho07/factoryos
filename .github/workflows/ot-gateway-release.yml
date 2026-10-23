@@ -1,0 +1,122 @@
+name: OT Gateway Signed Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "edge/ot-gateway/**"
+      - ".github/workflows/ot-gateway-release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ot-gateway-signed-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: build-sign-attest-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      IMAGE_NAME: ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway
+    steps:
+      - name: Checkout trusted main source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Test gateway before publishing
+        working-directory: edge/ot-gateway
+        run: |
+          npm install --no-audit --no-fund
+          npm run check
+          npm test
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push source-SHA-tagged image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: edge/ot-gateway
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.sha }}
+
+      - name: Publish SLSA build provenance for the exact image digest
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign the immutable image digest using GitHub OIDC
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_NAME@$IMAGE_DIGEST"
+
+      - name: Verify signature identity, issuer and exact digest
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          EXPECTED_IDENTITY: https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity "$EXPECTED_IDENTITY" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE_NAME@$IMAGE_DIGEST"
+
+      - name: Write release digest receipt
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image_ref="$IMAGE_NAME@$IMAGE_DIGEST"
+          {
+            echo "## Signed OT gateway release"
+            echo
+            echo "- Source commit: \`$GITHUB_SHA\`"
+            echo "- Immutable image: \`$image_ref\`"
+            echo "- Signature verified: \`true\`"
+            echo "- SLSA provenance attestation: \`published to GHCR\`"
+            echo "- Trusted identity: \`https://github.com/$GITHUB_REPOSITORY/.github/workflows/ot-gateway-release.yml@refs/heads/main\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p release-evidence
+          printf '{\n  "repository": "%s",\n  "sourceCommit": "%s",\n  "image": "%s",\n  "signatureVerified": true,\n  "provenanceAttested": true,\n  "signingWorkflow": "https://github.com/%s/.github/workflows/ot-gateway-release.yml@refs/heads/main"\n}\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$image_ref" "$GITHUB_REPOSITORY" \
+            > release-evidence/ot-gateway-release.json
+
+      - name: Upload signed release digest receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: ot-gateway-release-${{ github.sha }}
+          path: release-evidence/ot-gateway-release.json
+          if-no-files-found: error
+          retention-days: 90
