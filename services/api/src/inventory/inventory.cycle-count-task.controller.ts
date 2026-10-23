@@ -19,6 +19,7 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import { CancelInventoryCycleCountTaskDto } from './dto/cancel-inventory-cycle-count-task.dto';
 import { CreateInventoryCycleCountTaskDto } from './dto/create-inventory-cycle-count-task.dto';
+import { ResolveInventoryCycleCountVarianceEscalationDto } from './dto/resolve-inventory-cycle-count-variance-escalation.dto';
 import { InventoryCycleCountTaskService } from './inventory.cycle-count-task.service';
 
 interface CycleCountTaskRequestContext {
@@ -102,6 +103,37 @@ export class InventoryCycleCountTaskController {
     return this.taskService.cancelTask(
       context.userId, context.tenantId, context.factoryId, taskId, body.cancellation_reason,
       context.requestId, context.traceId,
+    );
+  }
+
+  @Get(':taskId/variance-escalation')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.cycle-count.review')
+  @RequireFactoryScope()
+  async getVarianceEscalation(
+    @Req() request: CycleCountTaskRequest,
+    @Param('taskId', new ParseUUIDPipe()) taskId: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.taskService.getVarianceEscalation(
+      context.userId, context.tenantId, context.factoryId, taskId,
+    );
+  }
+
+  @Post(':taskId/variance-escalation/resolve')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.cycle-count.review')
+  @RequireFactoryScope()
+  async resolveVarianceEscalation(
+    @Req() request: CycleCountTaskRequest,
+    @Param('taskId', new ParseUUIDPipe()) taskId: string,
+    @Body() body: ResolveInventoryCycleCountVarianceEscalationDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.taskService.resolveVarianceEscalation(
+      context.userId, context.tenantId, context.factoryId, taskId,
+      body.resolution_note, idempotencyKey ?? null, context.requestId, context.traceId,
     );
   }
 
