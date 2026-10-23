@@ -48,7 +48,9 @@ BEGIN
   FOREACH required_trigger IN ARRAY ARRAY[
     'research_release_version_sequence_guard',
     'research_release_channel_guard',
-    'research_release_lifecycle_events_guard'
+    'research_release_lifecycle_events_guard',
+    'research_source_zzzz_retract_stale_releases',
+    'research_release_channel_retraction_audit_guard'
   ] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_trigger
@@ -61,6 +63,12 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
     WHERE version = '142_research_release_lifecycle'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='174_research_release_retraction'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='175_research_source_change_release_withdrawal'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='176_research_release_retraction_audit_guard'
   ) THEN
     RAISE EXCEPTION 'RESEARCH_RELEASE_LIFECYCLE_MIGRATION_NOT_REGISTERED';
   END IF;
@@ -77,6 +85,27 @@ BEGIN
     RAISE EXCEPTION 'RESEARCH_RELEASE_ACTIVE_POINTER_GUARD_MISSING';
   END IF;
 
+  IF position('RESEARCH_RELEASE_CHANNEL_EMPTY_TARGET_REQUIRES_RETRACTION'
+      IN pg_get_functiondef('public.factoryos_guard_research_release_channel()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_CHANNEL_GUARD_MISSING';
+  END IF;
+
+  IF position('RETRACTED' IN pg_get_constraintdef((
+      SELECT oid FROM pg_constraint WHERE conname='chk_research_release_lifecycle_event_type'
+    ))) = 0
+     OR position('RESEARCH_RELEASE_RETRACTION_CHANNEL_NOT_EMPTY'
+      IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0
+     OR position('RESEARCH_RELEASE_RETRACTION_REQUIRES_RECENT_ACTIVE_EVENT'
+      IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_HISTORY_GUARDS_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations WHERE version='174_research_release_retraction'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_MIGRATION_NOT_REGISTERED';
+  END IF;
+
   IF position('RESEARCH_RELEASE_LIFECYCLE_EVENTS_ARE_APPEND_ONLY'
       IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0
      OR position('RESEARCH_RELEASE_LIFECYCLE_EVENT_TARGET_IS_NOT_ACTIVE'
@@ -84,6 +113,38 @@ BEGIN
      OR position('RESEARCH_RELEASE_LIFECYCLE_EVENT_SUCCESSOR_IS_NOT_ACTIVE'
       IN pg_get_functiondef('public.factoryos_guard_research_release_lifecycle_event()'::regprocedure)) = 0 THEN
     RAISE EXCEPTION 'RESEARCH_RELEASE_LIFECYCLE_IMMUTABILITY_OR_POINTER_GUARD_MISSING';
+  END IF;
+
+  IF position('RESEARCH_SOURCE_REVISION_CHANGE_REQUIRES_AUTHENTICATED_TENANT_ACTOR'
+      IN pg_get_functiondef('public.factoryos_research_retract_stale_active_releases()'::regprocedure)) = 0
+     OR position('RESEARCH.RELEASE_RETRACTED'
+      IN pg_get_functiondef('public.factoryos_research_retract_stale_active_releases()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_SOURCE_REVISION_RELEASE_WITHDRAWAL_GUARD_MISSING';
+  END IF;
+
+  IF position('RESEARCH_RELEASE_CHANNEL_RETRACTION_REQUIRES_AUDITED_EVENT'
+      IN pg_get_functiondef('public.factoryos_assert_research_release_channel_retraction_audited()'::regprocedure)) = 0 THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_AUDIT_GUARD_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='research_release_channels'
+      AND column_name='active_release_id' AND is_nullable='YES'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='research_release_channels'
+      AND column_name='active_version' AND is_nullable='YES'
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_ACTIVE_POINTER_NOT_NULLABLE';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname='research_release_channel_retraction_audit_guard'
+      AND tgdeferrable AND tginitdeferred AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'RESEARCH_RELEASE_RETRACTION_DEFERRED_GUARD_MISSING';
   END IF;
 
   IF NOT EXISTS (

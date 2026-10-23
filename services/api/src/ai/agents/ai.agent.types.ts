@@ -1,4 +1,8 @@
 import type {
+  AiAgentPlannerAttestationEnvelope,
+} from './ai.agent.planner-attestation';
+
+import type {
   AiAgentHandoff,
   AiAgentState,
   AiToolActionContext,
@@ -64,6 +68,10 @@ export interface CreateAiAgentTaskInput {
   contextVersion?: string | null;
   planVersion?: string | null;
   contextHash?: string | null;
+  /** Exact immutable agent definition version that produced this task plan. */
+  agentDefinitionId?: string | null;
+  /** Detached signature issued by the trusted planner provider for write-capable plans. */
+  plannerAttestation?: AiAgentPlannerAttestationEnvelope | null;
 
   idempotencyKey?: string | null;
 
@@ -81,6 +89,8 @@ export interface AiAgentTask {
   factoryId: string;
 
   decisionId: string;
+  /** Version-pinned agent definition; null for legacy/unbound tasks. */
+  agentDefinitionId: string | null;
   parentTraceId: string;
   actorUserId: string;
 

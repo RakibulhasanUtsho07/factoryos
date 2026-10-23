@@ -21,8 +21,8 @@ export class CreateAiAgentEvaluationCaseDto {
   @MaxLength(2000)
   description?: string | null;
 
-  @IsIn(['EXPECTED_TOOL_CALL', 'EXPECTED_REFUSAL'])
-  kind!: 'EXPECTED_TOOL_CALL' | 'EXPECTED_REFUSAL';
+  @IsIn(['EXPECTED_TOOL_CALL', 'EXPECTED_REFUSAL', 'RED_TEAM_POLICY_BYPASS', 'EXPECTED_COMPENSATION', 'PRIVACY_NO_SECRET_LEAKAGE'])
+  kind!: 'EXPECTED_TOOL_CALL' | 'EXPECTED_REFUSAL' | 'RED_TEAM_POLICY_BYPASS' | 'EXPECTED_COMPENSATION' | 'PRIVACY_NO_SECRET_LEAKAGE';
 
   @IsOptional()
   @IsString()
@@ -38,6 +38,16 @@ export class CreateAiAgentEvaluationCaseDto {
   @IsString()
   @MaxLength(200)
   expected_action_type?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  source_tool_id?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  source_tool_version?: string | null;
 
   @IsOptional()
   @IsObject()

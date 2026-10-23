@@ -12,6 +12,9 @@ DECLARE
   v_po_line UUID := gen_random_uuid();
   v_grn_line UUID;
   v_traceability_lot UUID := gen_random_uuid();
+  v_quality_inspection UUID := gen_random_uuid();
+  v_quality_defect UUID := gen_random_uuid();
+  v_quality_defect_link UUID := gen_random_uuid();
   v_grn_lot_overflow_rejected BOOLEAN := FALSE;
   v_receipt_one UUID := gen_random_uuid();
   v_receipt_two UUID := gen_random_uuid();
@@ -181,6 +184,116 @@ BEGIN
       AND quantity = 5 AND unit = 'PCS'
   ) THEN
     RAISE EXCEPTION 'GRN-linked material lot did not preserve accepted item/supplier/source provenance';
+  END IF;
+
+  -- A supplier inspection defect linked to this posted GRN line must produce a supplier-quality event
+  -- whose supplier is derived from the PO, never accepted from the defect-link request.
+  INSERT INTO quality_inspections (
+    id, tenant_id, factory_id, inspection_type, target_type, target_id, inventory_item_id,
+    status, row_version, idempotency_key, request_hash, created_by_user_id,
+    updated_by_user_id, correlation_id
+  ) VALUES (
+    v_quality_inspection, v_tenant, v_factory, 'SUPPLIER', 'GOODS_RECEIPT_LINE', v_grn_line, v_item,
+    'OPEN', 1, 'grn-quality-inspection-' || v_receipt_one::text, repeat('7',64),
+    v_approver, v_approver, v_trace
+  );
+  INSERT INTO quality_inspection_events (
+    tenant_id, factory_id, inspection_id, version, from_status, to_status, action, reason,
+    idempotency_key, request_hash, actor_user_id, correlation_id
+  ) VALUES (
+    v_tenant, v_factory, v_quality_inspection, 1, NULL, 'OPEN', 'CREATED', 'Supplier quality fixture',
+    'grn-quality-inspection-event-' || v_receipt_one::text, repeat('8',64), v_approver, v_trace
+  );
+  INSERT INTO quality_audit_events (
+    tenant_id, factory_id, inspection_id, action_type, payload, actor_user_id, correlation_id
+  ) VALUES (
+    v_tenant, v_factory, v_quality_inspection, 'SUPPLIER_QUALITY_INSPECTION_CREATED',
+    jsonb_build_object('goods_receipt_id',v_receipt_one,'goods_receipt_line_id',v_grn_line),
+    v_approver, v_trace
+  );
+  INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
+  VALUES (
+    v_tenant, v_factory, 'QUALITY_INSPECTION', v_quality_inspection, 'QUALITY.INSPECTION_CHANGED',
+    jsonb_build_object('inspection_id',v_quality_inspection,'status','OPEN')
+  );
+
+  INSERT INTO quality_defects (
+    id, tenant_id, factory_id, inspection_id, defect_code, severity, affected_quantity, description,
+    evidence, status, row_version, idempotency_key, request_hash, reported_by_user_id,
+    updated_by_user_id, correlation_id
+  ) VALUES (
+    v_quality_defect, v_tenant, v_factory, v_quality_inspection, 'SUPPLIER-FABRIC-DEFECT', 'MAJOR', 1,
+    'Incoming fabric surface defect found during supplier inspection',
+    '{"sample_sheet":"GRN-QA-001","evidence_ref":"fabric-roll-photo-001"}'::jsonb, 'OPEN', 1,
+    'grn-quality-defect-' || v_receipt_one::text, repeat('9',64), v_approver, v_approver, v_trace
+  );
+  INSERT INTO quality_defect_events (
+    tenant_id, factory_id, defect_id, from_status, to_status, action, reason,
+    idempotency_key, request_hash, actor_user_id, correlation_id
+  ) VALUES (
+    v_tenant, v_factory, v_quality_defect, NULL, 'OPEN', 'REPORTED', 'Supplier quality defect reported',
+    'grn-quality-defect-event-' || v_receipt_one::text, repeat('a',64), v_approver, v_trace
+  );
+  INSERT INTO quality_audit_events (
+    tenant_id, factory_id, inspection_id, defect_id, action_type, payload, actor_user_id, correlation_id
+  ) VALUES (
+    v_tenant, v_factory, v_quality_inspection, v_quality_defect, 'QUALITY_DEFECT_REPORTED',
+    jsonb_build_object('defect_code','SUPPLIER-FABRIC-DEFECT','severity','MAJOR','affected_quantity',1),
+    v_approver, v_trace
+  );
+  INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
+  VALUES (
+    v_tenant, v_factory, 'QUALITY_DEFECT', v_quality_defect, 'QUALITY.DEFECT_CHANGED',
+    jsonb_build_object('defect_id',v_quality_defect,'status','OPEN')
+  );
+
+  INSERT INTO quality_defect_links (
+    id, tenant_id, factory_id, defect_id, link_type, goods_receipt_id, goods_receipt_line_id,
+    affected_quantity, link_source, notes, evidence, idempotency_key, request_hash,
+    created_by_user_id, correlation_id
+  ) VALUES (
+    v_quality_defect_link, v_tenant, v_factory, v_quality_defect, 'GOODS_RECEIPT_LINE',
+    v_receipt_one, v_grn_line, 1, 'OPERATOR', 'Supplier incoming inspection source link',
+    '{"inspection_sheet":"GRN-QA-001","roll_code":"GRN-MATERIAL-LOT-001"}'::jsonb,
+    'grn-quality-defect-link-' || v_receipt_one::text, repeat('b',64), v_approver, v_trace
+  );
+  INSERT INTO quality_audit_events (
+    tenant_id, factory_id, inspection_id, defect_id, action_type, payload, actor_user_id, correlation_id
+  ) VALUES (
+    v_tenant, v_factory, v_quality_inspection, v_quality_defect, 'DEFECT_TRACEABILITY_LINKED',
+    jsonb_build_object('link_id',v_quality_defect_link,'link_type','GOODS_RECEIPT_LINE'),
+    v_approver, v_trace
+  );
+  INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
+  VALUES (
+    v_tenant, v_factory, 'QUALITY_DEFECT', v_quality_defect, 'QUALITY.DEFECT_TRACEABILITY_LINKED',
+    jsonb_build_object('link_id',v_quality_defect_link,'defect_id',v_quality_defect)
+  );
+
+  SET CONSTRAINTS ctr_quality_inspection_evidence, ctr_quality_defect_traceability, ctr_quality_defect_link_audit IMMEDIATE;
+  IF (SELECT count(*) FROM quality_supplier_quality_events
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND source_link_id=v_quality_defect_link) <> 1
+    OR NOT EXISTS (
+      SELECT 1 FROM quality_supplier_quality_events e
+      WHERE e.tenant_id=v_tenant AND e.factory_id=v_factory AND e.source_link_id=v_quality_defect_link
+        AND e.supplier_id=v_supplier AND e.goods_receipt_id=v_receipt_one
+        AND e.goods_receipt_line_id=v_grn_line AND e.inspection_id=v_quality_inspection
+        AND e.defect_id=v_quality_defect AND e.severity='MAJOR' AND e.affected_quantity=1
+        AND e.evidence->>'source_link_id'=v_quality_defect_link::text
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM quality_audit_events
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND defect_id=v_quality_defect
+        AND action_type='SUPPLIER_QUALITY_DEFECT_LINKED'
+        AND payload->>'supplier_quality_event_id' IS NOT NULL
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM outbox_events
+      WHERE tenant_id=v_tenant AND factory_id=v_factory AND aggregate_type='SUPPLIER_QUALITY'
+        AND aggregate_id=v_supplier AND event_type='QUALITY.SUPPLIER_DEFECT_RECORDED'
+        AND payload->>'event_id' IS NOT NULL
+    ) THEN
+    RAISE EXCEPTION 'GRN-derived supplier quality event, provenance, audit or outbox evidence is inconsistent';
   END IF;
   BEGIN
     INSERT INTO traceability_units (

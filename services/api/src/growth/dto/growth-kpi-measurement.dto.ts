@@ -26,6 +26,12 @@ export class GrowthExperimentKpiDto {
   @IsNotEmpty()
   @MaxLength(2000)
   evidence_ref!: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  baseline_evidence_ref?: string;
 }
 
 export class GrowthOutcomeKpiDto extends GrowthExperimentKpiDto {

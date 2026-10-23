@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factoryos-ot-edge-gateway
+  namespace: factoryos-edge
+  labels:
+    app.kubernetes.io/name: factoryos-ot-edge-gateway
+    app.kubernetes.io/component: edge
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: factoryos-ot-edge-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factoryos-ot-edge-gateway
+        app.kubernetes.io/component: edge
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: registry.example.test/factoryos/ot-edge-gateway:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: https
+              containerPort: 8443
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: FACTORYOS_OT_GATEWAY_CONFIG
+              value: /etc/factoryos/gateway.json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpsGet:
+              path: /healthz
+              port: https
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpsGet:
+              path: /healthz
+              port: https
+            periodSeconds: 20
+            timeoutSeconds: 4
+            failureThreshold: 3
+          readinessProbe:
+            httpsGet:
+              path: /readyz
+              port: https
+            periodSeconds: 10
+            timeoutSeconds: 4
+            failureThreshold: 3
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/factoryos
+              readOnly: true
+            - name: gateway-secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: gateway-state
+              mountPath: /var/lib/factoryos-ot
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: factoryos-ot-gateway-config
+            items:
+              - key: gateway.json
+                path: gateway.json
+        - name: gateway-secrets
+          secret:
+            secretName: factoryos-ot-gateway-secrets
+            defaultMode: 288
+        - name: gateway-state
+          persistentVolumeClaim:
+            claimName: factoryos-ot-gateway-state
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: factoryos-ot-gateway-state
+  namespace: factoryos-edge
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: factoryos-ot-edge-gateway
+  namespace: factoryos-edge
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: factoryos-ot-edge-gateway
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https

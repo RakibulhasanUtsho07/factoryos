@@ -92,6 +92,74 @@ Regression coverage:
 
 **Current boundary:** the workflow supports reusable versioned inspection plans, per-criterion acceptance rules/measurement records, defect evidence, hold/release/disposition and NCR/CAPA. Physical QR/barcode rendering, RFID capture, offline mobile sync and lot-aware partial stock consumption remain separate integration capabilities.
 
+
+## Advanced quality acceptance: AQL, fabric rolls, supplier linkage and Pareto
+
+Migration `164_quality_advanced_sampling_supplier_pareto.sql` adds factory-scoped, versioned AQL and fabric scoring profiles. These are explicit factory-approved sampling rules; the runtime does not pretend that the AQL percentage alone selects an industry-standard sample size or acceptance number. The approved profile records the lot-size range, sample size, accept number and reject number used by the inspection, and every sample run snapshots the profile revision and decision evidence.
+
+| Method and path | Permission | Purpose |
+|---|---|---|
+| `POST /api/quality/aql-profiles`, `GET /api/quality/aql-profiles` | `quality.advanced.manage` / `quality.advanced.read` | Create/list AQL profile revisions |
+| `POST /api/quality/aql-profiles/:profileId/transition` | `quality.advanced.manage` | Activate or retire a profile with `expected_version` |
+| `POST /api/quality/fabric-scoring-profiles`, `GET /api/quality/fabric-scoring-profiles` | `quality.advanced.manage` / `quality.advanced.read` | Create/list roll-scoring revisions |
+| `POST /api/quality/fabric-scoring-profiles/:profileId/transition` | `quality.advanced.manage` | Activate or retire a scoring revision |
+| `POST /api/quality/inspections/:inspectionId/sampling-profile` | `quality.advanced.manage` | Bind an ACTIVE profile of the same inspection type |
+| `POST /api/quality/inspections/:inspectionId/aql-samples` | `quality.advanced.manage` | Record lot/sample size, nonconforming count and evidence |
+| `POST /api/quality/inspections/:inspectionId/fabric-roll-scores` | `quality.advanced.manage` | Record roll dimensions, point breakdown and evidence |
+| `GET /api/quality/inspections/:inspectionId/advanced-evidence` | `quality.advanced.read` | Read pinned profiles, sampling/roll records, defects, holds, dispositions, supplier events and rework links |
+| `POST /api/quality/defects/:defectId/context` | `quality.advanced.manage` | Capture immutable line/operation/style/shift dimensions for a defect |
+| `GET /api/quality/analytics/defect-pareto?dimension=DEFECT` | `quality.advanced.read` | Ranked defect counts, affected quantity, critical/unresolved counts and cumulative percent |
+| `GET /api/quality/analytics/supplier-quality` | `quality.advanced.read` | Aggregate receipt lines, supplier defect severities and linked rework tasks |
+| `GET /api/quality/analytics/rework-repeat-alerts` | `quality.advanced.read` | Repeated defect-code/style/supplier clusters in a bounded lookback window |
+
+### AQL sampling and release rules
+
+Create a DRAFT profile with `POST /api/quality/aql-profiles`, then activate it through the versioned transition route. Supply `{"action":"ACTIVATE","expected_version":1,"reason":"Quality-approved sampling plan" }` with an `Idempotency-Key`. Use `inspection_type`, `aql_percent`, `inspection_level`, `lot_size_min`, `lot_size_max`, `sample_size`, `accept_number` and `reject_number` in the profile. The sample size must fit the configured lot-size range, and the rejection number must be greater than the acceptance number and no greater than sample size.
+
+Bind the ACTIVE profile to an OPEN inspection with `{"expected_version":1,"aql_profile_code":"INCOMING-FABRIC-AQL"}`. Record the sample using `{"lot_size":120,"observed_nonconforming":2,"evidence":{"sample_sheet":"QC-LOT-2026-001","inspector_note":"Random samples across the lot"}}`. The database determines the result: count at or below accept number is `ACCEPT`, at or above reject number is `REJECT`, and a count between them is `HOLD`. Profile binding and sample evidence are immutable, factory scoped and idempotent. An AQL `REJECT` or `HOLD` records the sample first and then routes the inspection through the existing hold lifecycle; retrying the same sample key retries reconciliation of its hold if needed. A `PASSED` transition is blocked unless the bound AQL run is `ACCEPT`. Do not bypass the regular quality disposition to release a rejected lot.
+
+### Fabric roll point scoring
+
+Activate a factory-approved fabric scoring profile with `max_points_per_100_square_yards` and `minimum_roll_count`, then bind it to an OPEN `INCOMING` or `SUPPLIER` inspection as appropriate. Each roll request includes a stable `roll_code`, `roll_length_yards`, `roll_width_inches`, `total_defect_points`, a `defects` array where each entry contains a non-negative numeric `points` value, and evidence (for example, inspection-sheet reference and roll photos). The sum of the point breakdown must equal `total_defect_points`; repeat requests with the same key and same payload replay, while reusing the key for a different payload conflicts.
+
+The database derives the four-point score as:
+
+`points_per_100_square_yards = total_defect_points * 3600 / (roll_length_yards * roll_width_inches)`
+
+The denominator conversion uses yards for roll length and inches for width. A roll passes only when its score is at or below the bound profile's threshold. A held roll moves the inspection into the normal ON_HOLD flow. Passing the inspection requires at least the profile's minimum number of PASS roll records and no non-PASS roll. The accepted revision, computed score, threshold snapshot and defect breakdown remain append-only evidence.
+
+### Defect Pareto, supplier quality and repeated alerts
+
+Defect reports derived from a GRN-line inspection already carry a scoped `GOODS_RECEIPT_LINE` source link. The database derives its supplier through that line's purchase order; callers cannot nominate an arbitrary supplier. A supplier-quality event is emitted once per source-link/event type, with receipt, defect, severity and affected-quantity evidence, plus transactional quality audit and outbox records. The supplier analytics keeps quality quantity aggregation separate from rework-task aggregation so one defect with multiple rework tasks cannot multiply its reported affected quantity.
+
+For operational Pareto, submit `dimension=DEFECT`, `LINE`, `OPERATION`, `STYLE` or `SHIFT`, optional ISO date filters `from`/`to`, and a bounded `limit`. Non-defect dimensions require an immutable dimension snapshot from the context route; missing labels are omitted rather than inferred. The response includes total defects, ranking and cumulative defect percentage as well as critical, unresolved and affected-quantity counts.
+
+Repeat alerts accept `lookback_days` (1–365), `minimum_occurrences` and a bounded `limit`. Alerts group repeated defect codes by captured style and linked supplier and expose critical/unresolved volume, rework task counts, latest occurrence and a deterministic `HIGH`/`MEDIUM`/`WATCH` level. These are triage alerts, not autonomous defect disposition or supplier suspension.
+
+### Inventory, disposition and rework reconciliation
+
+Advanced sampling never writes inventory balances itself. A rejected/held quality inspection uses the established quality hold so issue/reservation guards remain active. Release, use-as-is, rework, scrap and supplier-return still require their authorized disposition lifecycle. Rework quantities must reconcile as `recovered_quantity + scrap_quantity = input_quantity`.
+
+For a rework order with an item-scoped source, the rework service now posts the approved source input as an idempotent inventory `ISSUE` (`reference_type=QUALITY_REWORK_INPUT`) when the task starts. It rejects new reservations and issues that do not match an active source hold, source item/lot, eligible bin balance, and unreserved aggregate stock. A tracked source lot's `inventory_traceability_location_balances` is consumed with its bin balance in the same transaction; when lot/serial tracking is enabled, an untracked fallback is forbidden.
+
+Recovered output is not available to pick while rework is merely COMPLETED. It must have a new active traceability lot/serial with exact recovered quantity, a follow-up inspection on that same output identity, a successful PASS, and an independent verifier. The VERIFIED transition posts the recovered quantity as a single idempotent `RECEIPT` (`reference_type=QUALITY_REWORK_OUTPUT`) to an active put-away bin and seeds the output lot's traceability-location balance in the same transaction. Its inventory movement, audit and outbox are returned in the rework evidence response. The deferred database reconciliation guard requires: a verified task's input issue equals `input_quantity`, recovered receipt equals `recovered_quantity`, and an in-progress/completed task cannot make output stock available early.
+
+Cancelling an in-progress rework must restore the exact previously issued quantity to the source bin (and source lot/serial balance) through `QUALITY_REWORK_RESTORE`; it cannot restore more per bin than was originally consumed. A cancelled task with prior stock movement is accepted only when the entire input is restored. This is a source-stock restoration, not recovered production output. Scrap output quantity is the input remainder after recovery, so no scrapped quantity is reintroduced as available stock.
+
+For item-level `SCRAP` or `RETURN_TO_SUPPLIER`, the matching approved disposition and inventory `ISSUE` movement remain required. The quality disposition stays pending and the hold stays active until that stock movement posts. Migration `165_quality_disposition_inventory_balance_guard.sql` validates the *post-movement* stock balance because the inventory service decrements the aggregate balance before inserting the immutable ISSUE row. Migration `166_quality_rework_inventory_ledger.sql` guards input consume, verified output receipt, cancellation restoration and deferred conservation. The populated `services/api/test/quality-rework-inventory.sql` fixture checks the tracked source/output lots, bins, aggregate balance, movement references, audit/outbox and final quantity: input 2.0000 = recovered 1.5000 + scrap 0.5000, so stock is 4.5000 from an initial 5.0000.
+
+### Advanced quality acceptance evidence
+
+`services/api/test/quality-advanced-acceptance.sql` is wired into PostgreSQL CI and checks migration registration, forced RLS, immutable revision/evidence triggers, uniqueness/idempotency constraints, decision guards, supplier provenance and deterministic AQL/roll arithmetic. The populated `services/api/test/quality-advanced-workflow.sql` fixture exercises the real PostgreSQL profile-binding trigger, AQL reject/pass barrier, authorized hold release, fabric roll pass/hold calculations, PASS blocking for a held roll, and an approved full SCRAP movement. It asserts that aggregate and location balances reach zero and that the linked disposition/hold close with the inventory movement ID. The same fixture adds three evidenced defects with line/operation/style/shift snapshots and asserts the top-two ranking and cumulative Pareto percentage across all five dimensions, plus repeated-defect alert count and affected quantity.
+
+The existing `services/api/test/goods-receipt.sql` fixture links an incoming defect to its posted GRN line and verifies the PO-derived supplier identity, supplier-quality event provenance, transactional quality audit/outbox, rejected quantity handling and one-event idempotency.
+
+Migration `165_quality_disposition_inventory_balance_guard.sql` aligns the SCRAP/RETURN guard with the inventory transaction order: the aggregate balance is decremented before the immutable ISSUE movement is inserted, so validation matches the movement's post-balance. Migration `166_quality_rework_inventory_ledger.sql` adds guarded source issues, recovered-output receipts and cancellation restoration. `services/api/src/quality/quality.service.ts` posts split source issues to the inventory ledger when rework starts, restores the original location quantities when a started rework task is cancelled, and posts recovered output only after independent verification plus a PASSED follow-up inspection. The recovered output receipt also creates its lot/location balance, movement audit and transactional outbox evidence. Migration `167_quality_sampling_binding_state_guard.sql` allows the one-time versioned AQL/fabric profile bind on an OPEN inspection without weakening the normal inspection lifecycle transitions.
+
+The populated `services/api/test/quality-rework-inventory.sql` fixture covers two separate paths: (1) tracked source consumption followed by a same-lot recovered output, passing follow-up inspection, independent verification, recovered receipt and a scrap remainder; and (2) cancellation after the full input ISSUE, which must restore the exact quantity to the original source lot/bin through `QUALITY_REWORK_RESTORE`. The cancellation path asserts full ISSUE/RESTORE equality, no recovered-output receipt, final aggregate/location/traceability balances, and inventory audit/outbox evidence. Both paths force the deferred inventory reconciliation constraint before the fixture rolls back. These are PostgreSQL fixture checks; candidate-specific CI must still pass on the exact commit used for release.
+
+**Historical acceptance evidence:** the prior implementation was VERIFIED on source revision `dcbf358c1a270063f61fb0968ac0ae7702193eb3`; its API CI and PostgreSQL CI runs are listed in `docs/requirement-evidence-register.md`. Those runs predate the added rework-cancellation fixture. The cancellation extension is implemented and documented, but the current code candidate is **not marked verified** until API CI and PostgreSQL CI both pass on the exact candidate SHA and the run links are recorded.
+
 ## External inspection and quality event reconciliation
 
 External QMS/MES event streams use the signed integration contract described in [operational event reconciliation](./operational-event-reconciliation.md). Stable reconciliation keys allow the system to surface duplicate or conflicting inspection evidence across connectors, while source event IDs and sequence/watermark fields expose delivery gaps. Reconciliation cases are review evidence only: resolving a mismatch does not change inspection results, NCR/CAPA status, disposition or active quality holds. Those decisions must still pass the quality endpoints, permissions and lifecycle guards documented above.

@@ -28,11 +28,15 @@ The dispatcher uses an initial five-second retry delay, exponential backoff (5, 
 
 ## Automated verification
 
-The PostgreSQL CI migration list includes migrations 001–122 and fails closed when a migration file is omitted. The SQL contract test verifies the replay ledger, forced RLS, tenant policy, uniqueness constraint and migration registration. Integration coverage verifies concurrent outbox claims, stale lease recovery, restart after consumer success but before publish-state commit, inbox duplicate suppression and rollback-on-handler-failure, maximum-attempt quarantine, factory/tenant-scoped DLQ access, and replay receipt idempotency/conflict behavior.
+The PostgreSQL CI applies the explicit ordered migration manifest (currently through migration 169) and fails closed when a SQL migration is omitted. The WP03/Kafka DLQ contract is checked by `services/api/test/outbox-bus-dlq-contract.sql` and the broker-backed integration suite; exact run links and the staging limitation are recorded in [Kafka event-bus acceptance evidence](kafka-event-bus-acceptance-evidence-2026-10-22.md). The SQL contract test verifies the replay ledger, forced RLS, tenant policy, uniqueness constraint and migration registration. Integration coverage verifies concurrent outbox claims, stale lease recovery, restart after consumer success but before publish-state commit, inbox duplicate suppression and rollback-on-handler-failure, maximum-attempt quarantine, factory/tenant-scoped DLQ access, and replay receipt idempotency/conflict behavior.
 
 ## Transport boundary
 
-The current \`OutboxPublisher\` is the local transport boundary and emits a validated event log; it is not yet a Kafka, RabbitMQ, NATS or cloud event-bus adapter. The queue, inbox, retry, lease and DLQ controls are implemented and testable. Production transport delivery guarantees must be revalidated with the selected broker adapter, including broker acknowledgements, publisher confirms and consumer acknowledgement behavior.
+The KafkaJS adapter is selected when \`OUTBOX_TRANSPORT=kafka\`. It publishes through an idempotent producer with \`acks=-1\`, sends stable aggregate keys, validates the envelope and schema version, and uses manual consumer offset commits after handler success or durable dead-letter recording. The log-only \`OutboxPublisher\` path is local development/test behavior; production startup fails closed if it is selected.
+
+Valid consumer failures enter the tenant-scoped PostgreSQL broker DLQ before the Kafka offset is committed. Invalid/malformed envelopes are written to the configured Kafka DLQ topic before their offset is committed. Redrive uses a tenant/key-idempotent receipt, a state/version guard and append-only audit history. At-least-once delivery remains the contract: a crash after broker acceptance but before state/receipt commit can yield a duplicate; downstream effects must use the inbox/event-ID idempotency boundary.
+
+CI now starts an ephemeral Redpanda broker and runs Kafka adapter integration tests, while migration 169 and its SQL schema contract are applied/replayed in PostgreSQL CI. This proves only the automated scenarios in that job. Deployed staging broker fault injection, multi-node/quorum and leader-transition behavior, actual topic ACL/TLS rotation, schema rollout policy, production load/retention, external alert delivery and release owner sign-off remain release gates. See [Kafka event-bus transport operations](kafka-event-bus-transport-operations.md) for deployment and fault-injection procedures.
 
 
 ## Signed webhook connectors

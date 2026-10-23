@@ -8,6 +8,8 @@ on:
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
+      - 'deploy/event-bus/**'
+      - 'scripts/event-bus/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
@@ -101,6 +103,8 @@ jobs:
           node --check scripts/performance/api-soak-test.test.mjs
           node --check scripts/performance/observability-config.test.mjs
           node --check scripts/security/production-security-config.test.mjs
+          node --check scripts/event-bus/provision-kafka-topics.mjs
+          node --check scripts/event-bus/staging-fault-injection.mjs
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api

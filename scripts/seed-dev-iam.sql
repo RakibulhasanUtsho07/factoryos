@@ -139,7 +139,12 @@ VALUES
   (
     'growth.review',
     'Accept or reject growth hypotheses and review validation decisions'
-  )
+  ),
+  ('finance.workbench.read', 'Read currency- and period-scoped finance workbench inputs'),
+  ('finance.close.read', 'Read finance-close periods and snapshots'),
+  ('finance.close.write', 'Create and refresh draft finance-close snapshots'),
+  ('finance.close.submit', 'Submit and recall finance-close snapshots'),
+  ('finance.close.approve', 'Approve finance-close snapshots independently')
 ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO role_permissions (
@@ -168,6 +173,11 @@ WHERE r.code = 'ORG_ADMIN'
     'growth.read',
     'growth.write',
     'growth.review',
+    'finance.workbench.read',
+    'finance.close.read',
+    'finance.close.write',
+    'finance.close.submit',
+    'finance.close.approve',
     'mrp.read',
     'mrp.write',
     'production.workorders.read',

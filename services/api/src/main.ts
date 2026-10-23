@@ -23,7 +23,8 @@ async function bootstrap() {
     verify: (request: Request, _response: Response, body: Buffer) => {
       // Signature verification must use the original bytes, not re-serialized JSON.
       // Avoid retaining raw bodies on non-webhook endpoints.
-      if (request.originalUrl?.split('?')[0]?.startsWith('/api/integrations/webhooks/')) {
+      if (request.originalUrl?.split('?')[0]?.startsWith('/api/integrations/webhooks/')
+        || request.originalUrl?.split('?')[0]?.startsWith('/api/v2/saas/billing/webhooks/stripe')) {
         (request as Request & { rawBody?: Buffer }).rawBody = Buffer.from(body);
       }
     },

@@ -38,16 +38,22 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
   afterAll(async () => {
     if (adminPool) {
       try {
-        // The registry is immutable in production; disable only its mutation
-        // trigger while cleaning fixtures from the dedicated CI database.
+        // Production evidence is immutable; disable only the evidence guards while
+        // deleting fixtures from the isolated CI database.
+        await adminPool.query('ALTER TABLE saas_physical_provisioning_events DISABLE TRIGGER saas_physical_provisioning_events_immutable');
+        await adminPool.query('ALTER TABLE saas_physical_provisioning_runs DISABLE TRIGGER saas_physical_provisioning_runs_immutable');
         await adminPool.query('ALTER TABLE saas_release_rollouts DISABLE TRIGGER saas_release_rollouts_immutable');
         for (const tenantId of tenantIds) {
+          await adminPool.query('DELETE FROM saas_physical_provisioning_events WHERE tenant_id = $1', [tenantId]);
+          await adminPool.query('DELETE FROM saas_physical_provisioning_runs WHERE tenant_id = $1', [tenantId]);
           await adminPool.query('DELETE FROM saas_release_rollouts WHERE tenant_id = $1', [tenantId]);
         }
         if (userIds.length) await adminPool.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [userIds]);
         if (tenantIds.length) await adminPool.query('DELETE FROM tenants WHERE id = ANY($1::uuid[])', [tenantIds]);
       } finally {
         await adminPool.query('ALTER TABLE saas_release_rollouts ENABLE TRIGGER saas_release_rollouts_immutable');
+        await adminPool.query('ALTER TABLE saas_physical_provisioning_runs ENABLE TRIGGER saas_physical_provisioning_runs_immutable');
+        await adminPool.query('ALTER TABLE saas_physical_provisioning_events ENABLE TRIGGER saas_physical_provisioning_events_immutable');
         await adminPool.end();
       }
     }
@@ -109,18 +115,110 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
     });
   }
 
+  async function recordPhysicalDeployment(tenantId: string, userId: string, rollout: {
+    id: string; rolloutKey: string; version: number; artifactDigest: string;
+  }) {
+    const runId = randomUUID();
+    const requestHash = digest(JSON.stringify({
+      operation: 'RELEASE_DEPLOY', tenantId, rolloutKey: rollout.rolloutKey,
+      resourceVersion: rollout.version, artifactDigest: rollout.artifactDigest, runId,
+    }));
+    const evidenceDigest = digest(JSON.stringify({ runId, provider: 'test-fixture', artifactDigest: rollout.artifactDigest }));
+    await adminPool.query(
+      `INSERT INTO saas_physical_provisioning_runs
+        (id,tenant_id,operation,resource_type,resource_id,resource_key,resource_version,topology,
+         deployment_reference,failure_policy,health_timeout_seconds,artifact_digest,dataset_manifest_digest,
+         idempotency_key,request_hash,actor_user_id)
+       VALUES ($1,$2,'RELEASE_DEPLOY','RELEASE',$3,$4,$5,'SHARED_SAAS',$6,'HALT',60,$7,NULL,$8,$9,$10)`,
+      [runId, tenantId, rollout.id, rollout.rolloutKey, rollout.version,
+        'ci-target-' + rollout.rolloutKey.toLowerCase(), rollout.artifactDigest,
+        'integration-physical-' + runId, requestHash, userId],
+    );
+    const events = [
+      { version: 1, status: 'REQUESTED', evidence: { fixture: 'provider receipt contract' } },
+      { version: 2, status: 'IN_PROGRESS', evidence: { providerCode: 'integration-fixture' } },
+      { version: 3, status: 'SUCCEEDED', evidence: {
+        artifactDigest: rollout.artifactDigest, healthCheck: { healthy: true }, isolationVerified: true,
+      } },
+    ];
+    for (const event of events) {
+      await adminPool.query(
+        `INSERT INTO saas_physical_provisioning_events
+          (tenant_id,run_id,event_version,event_status,provider_code,provider_reference,evidence_digest,
+           reason_code,evidence,actor_user_id,idempotency_key)
+         VALUES ($1,$2,$3,$4,'integration-fixture',$5,$6,NULL,$7::jsonb,$8,$9)`,
+        [tenantId, runId, event.version, event.status,
+          'deployment:ci/' + rollout.rolloutKey.toLowerCase(), evidenceDigest,
+          JSON.stringify(event.evidence), userId, 'physical:' + runId + ':' + event.status],
+      );
+    }
+    return runId;
+  }
+
+  async function recordPhysicalRollbackReceipt(
+    tenantId: string,
+    userId: string,
+    failedRollout: { id: string; rolloutKey: string; version: number; artifactDigest: string },
+    restoredRollout: { version: number; artifactDigest: string; rolloutKey: string },
+  ) {
+    const runId = randomUUID();
+    const requestHash = digest(JSON.stringify({
+      operation: 'RELEASE_DEPLOY', tenantId, rolloutKey: failedRollout.rolloutKey,
+      resourceVersion: failedRollout.version, artifactDigest: failedRollout.artifactDigest, runId,
+    }));
+    const evidenceDigest = digest(JSON.stringify({
+      runId, rolledBack: true, targetArtifactDigest: restoredRollout.artifactDigest,
+    }));
+    await adminPool.query(
+      `INSERT INTO saas_physical_provisioning_runs
+        (id,tenant_id,operation,resource_type,resource_id,resource_key,resource_version,topology,
+         deployment_reference,failure_policy,health_timeout_seconds,artifact_digest,dataset_manifest_digest,
+         idempotency_key,request_hash,actor_user_id)
+       VALUES ($1,$2,'RELEASE_DEPLOY','RELEASE',$3,$4,$5,'SHARED_SAAS',$6,'ROLLBACK',60,$7,NULL,$8,$9,$10)`,
+      [runId, tenantId, failedRollout.id, failedRollout.rolloutKey, failedRollout.version,
+        'ci-target-' + failedRollout.rolloutKey.toLowerCase(), failedRollout.artifactDigest,
+        'integration-rollback-' + runId, requestHash, userId],
+    );
+    const events = [
+      { version: 1, status: 'REQUESTED', evidence: { fixture: 'provider receipt contract' } },
+      { version: 2, status: 'IN_PROGRESS', evidence: { providerCode: 'integration-fixture' } },
+      { version: 3, status: 'ROLLBACK_IN_PROGRESS', evidence: { reasonCode: 'HEALTH_CHECK_FAILED' } },
+      { version: 4, status: 'ROLLED_BACK', evidence: {
+        rolledBack: true, healthy: true,
+        controlPlaneRolloutVersion: String(restoredRollout.version),
+        targetRolloutKey: restoredRollout.rolloutKey,
+        targetArtifactDigest: restoredRollout.artifactDigest,
+      } },
+    ];
+    for (const event of events) {
+      await adminPool.query(
+        `INSERT INTO saas_physical_provisioning_events
+          (tenant_id,run_id,event_version,event_status,provider_code,provider_reference,evidence_digest,
+           reason_code,evidence,actor_user_id,idempotency_key)
+         VALUES ($1,$2,$3,$4,'integration-fixture',$5,$6,$7,$8::jsonb,$9,$10)`,
+        [tenantId, runId, event.version, event.status,
+          'deployment:ci/' + failedRollout.rolloutKey.toLowerCase(), evidenceDigest,
+          event.status === 'ROLLBACK_IN_PROGRESS' ? 'HEALTH_CHECK_FAILED' : null,
+          JSON.stringify(event.evidence), userId, 'physical:' + runId + ':' + event.status],
+      );
+    }
+  }
+
   it('routes canary cohorts, promotes safely, rolls back to a prior artifact and retains immutable history', async () => {
     const { tenantId, userId } = await seedTenantAndUser();
 
     await createOrganizationRelease(tenantId, userId, 'ORG-BASE', '1.0.0');
     const orgCanary = await promote(tenantId, userId, 'ORG-BASE', 1, 'CANARY', 20);
+    await recordPhysicalDeployment(tenantId, userId, orgCanary.rollout);
     const orgProduction = await promote(tenantId, userId, 'ORG-BASE', 2, 'PRODUCTION', 100);
+    await recordPhysicalDeployment(tenantId, userId, orgProduction.rollout);
     expect(orgProduction.rollout.stage).toBe('PRODUCTION');
     expect(orgProduction.rollout.version).toBe(3);
     expect(orgCanary.rollout.stage).toBe('CANARY');
 
     const moduleV2 = await createModuleRelease(tenantId, userId, 'MOD-V2', '2.0.0');
     const moduleV2Canary = await promote(tenantId, userId, 'MOD-V2', 1, 'CANARY', 25);
+    await recordPhysicalDeployment(tenantId, userId, moduleV2Canary.rollout);
     expect(moduleV2.rollout.stage).toBe('DRAFT');
     expect(moduleV2Canary.rollout.version).toBe(2);
 
@@ -147,7 +245,9 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
 
     const moduleV1 = await createModuleRelease(tenantId, userId, 'MOD-V1', '1.0.0');
     const moduleV1Canary = await promote(tenantId, userId, 'MOD-V1', 1, 'CANARY', 10);
+    await recordPhysicalDeployment(tenantId, userId, moduleV1Canary.rollout);
     const moduleV1Production = await promote(tenantId, userId, 'MOD-V1', 2, 'PRODUCTION', 100);
+    await recordPhysicalDeployment(tenantId, userId, moduleV1Production.rollout);
     expect(moduleV1.rollout.artifactVersion).toBe('1.0.0');
     expect(moduleV1Canary.rollout.stage).toBe('CANARY');
     expect(moduleV1Production.rollout.stage).toBe('PRODUCTION');
@@ -161,6 +261,7 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
     expect(fallbackAtModuleScope.matchedScope).toBe('MODULE');
 
     const moduleV2Production = await promote(tenantId, userId, 'MOD-V2', 2, 'PRODUCTION', 100);
+    await recordPhysicalDeployment(tenantId, userId, moduleV2Production.rollout);
     expect(moduleV2Production.rollout.artifactVersion).toBe('2.0.0');
     expect(moduleV2Production.rollout.version).toBe(3);
 
@@ -183,6 +284,7 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
     expect(rolledBack.rollout.stage).toBe('PRODUCTION');
     expect(rolledBack.rollout.artifactVersion).toBe('1.0.0');
     expect(rolledBack.rollout.rollbackTargetKey).toBe('MOD-V1');
+    await recordPhysicalRollbackReceipt(tenantId, userId, moduleV2Production.rollout, rolledBack.rollout);
 
     const safeResolution = await service.resolveEffectiveRelease(tenantId, userId, {
       channel: SaasReleaseChannel.STABLE,

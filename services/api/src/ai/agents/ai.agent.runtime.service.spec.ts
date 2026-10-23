@@ -61,6 +61,7 @@ function taskRow(
     tenant_id: tenantId,
     factory_id: factoryId,
     decision_id: decisionId,
+    agent_definition_id: null,
     parent_trace_id: traceId,
     actor_user_id: userId,
     goal: 'Run deterministic AI agent task',
@@ -293,6 +294,7 @@ describe(
       decisionId,
       parentTraceId: traceId,
       goal,
+      agentDefinitionId: null,
       idempotencyKey: 'task-001',
       steps: [
         {
@@ -333,7 +335,51 @@ describe(
         contextVersion: null,
         planVersion: null,
         contextHash: null,
+        agentDefinitionId: input.agentDefinitionId ?? null,
       });
+
+    it('blocks execution when the persisted write task has no verified planner provenance', async () => {
+      const task = {
+        id: taskId,
+        agentDefinitionId: '7f1a2222-2222-4222-8222-222222222222',
+        decisionId,
+        parentTraceId: traceId,
+        goal: 'Run deterministic AI agent task',
+        contextVersion: 'cbb-1',
+        planVersion: 'plan-1',
+        contextHash: 'a'.repeat(64),
+      };
+      database.query.mockResolvedValueOnce({
+        rows: [{
+          tenant_id: tenantId, factory_id: factoryId, decision_id: decisionId,
+          parent_trace_id: traceId, goal: task.goal, agent_definition_id: task.agentDefinitionId,
+          context_version: task.contextVersion, plan_version: task.planVersion,
+          context_hash: task.contextHash,
+          plan_hash: null, planner_attestation: null, planner_attestation_verified_at: null,
+        }],
+      });
+
+      await expect(
+        (service as any).assertTrustedPlannerAttestation(tenantId, factoryId, taskId, task),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects a write-capable plan unless it includes a trusted signed planner attestation', async () => {
+      toolRegistry.getTool.mockResolvedValue({
+        ...gatewayOutcome().tool,
+        toolId: 'ORDERS.CREATE',
+        version: '1.0.0',
+        writeCapable: true,
+        idempotencyRequired: true,
+        rollback: { type: 'COMPENSATION', toolId: 'ORDERS.COMPENSATE', toolVersion: '1.0.0', actionType: 'ORDERS.COMPENSATE' },
+      });
+
+      await expect(
+        service.createTask(tenantId, factoryId, userId, buildTaskRequest()),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(database.transaction).not.toHaveBeenCalled();
+    });
 
     it('rejects task creation when the deadline expires before the database insert', async () => {
       const insertQuery = jest
@@ -945,6 +991,73 @@ describe(
           }),
         }),
       }));
+    });
+
+    it('re-verifies planner provenance immediately before a write executor and finalizes blocked attempts', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+      const runningStep = stepRow({
+        status: 'RUNNING',
+        action_intent_id: actionIntentId,
+      });
+      const provenanceGuard = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValueOnce({ verifiedAt: '2026-10-23T00:00:00.000Z' })
+        .mockRejectedValueOnce(new ForbiddenException('planner attestation expired'));
+
+      (service as any).assertTrustedPlannerAttestation = provenanceGuard;
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
+      (service as any).failTask = jest.fn<() => Promise<unknown>>().mockResolvedValue({});
+      (service as any).updateStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(runningStep);
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
+      toolRegistry.getTool.mockResolvedValue({
+        ...gatewayOutcome().tool,
+        writeCapable: true,
+        idempotencyRequired: true,
+        rollback: {
+          type: 'COMPENSATION',
+          toolId: 'ORDERS.COMPENSATE',
+          toolVersion: '1.0.0',
+          actionType: 'ORDERS.COMPENSATE',
+        },
+      });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action(),
+        actionToken: 'short-lived-token',
+      });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(provenanceGuard).toHaveBeenCalledTimes(2);
+      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledTimes(1);
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+      expect((service as any).recordAttempt).toHaveBeenNthCalledWith(
+        2,
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'EXECUTION',
+        'FAILED',
+        expect.objectContaining({ code: 'AI_AGENT_EXECUTION_FAILURE' }),
+      );
+      expect((service as any).failTask).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        'AI_AGENT_EXECUTION_FAILURE',
+        'planner attestation expired',
+        stepId,
+      );
     });
 
     it('rejects an execution record that does not match the authorized action binding', async () => {

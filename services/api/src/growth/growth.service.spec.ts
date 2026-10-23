@@ -128,6 +128,94 @@ describe('GrowthService', () => {
     expect(result.impact.upperBound).toBe(150.2);
   });
 
+
+  it('pins the exact source revision into a reproducible finance scenario input hash', async () => {
+    const observationId = 'e6a20b27-1920-4cf0-9f8c-82c0f9d5e132';
+    const sourceRef = `factoryos://growth/source-observations/${observationId}`;
+    const sourceRow = {
+      id: observationId, source_kind: 'FINANCIAL_FACT',
+      adapter_version: 'factoryos.growth.source-of-record.v1',
+      metric_key: 'finance.actual_revenue', unit: 'BDT', value: '1000.00000000',
+      observed_at: '2026-10-05T12:00:00.000Z', source_record_ref: 'finance-fact:1234',
+      source_revision_hash: 'a'.repeat(64), observation_hash: 'b'.repeat(64),
+      evidence_id: 'bf0f335f-57f3-4b8c-8f64-167e50717d46',
+    };
+    client.query
+      .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED', currency: 'BDT', constraints_snapshot: {} }] })
+      .mockResolvedValueOnce({ rows: [sourceRow] })
+      .mockResolvedValueOnce({ rows: [{ reference_ref: sourceRef, citation_url: null }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: 'ac3f38e5-3e3c-44d8-86f4-3a9ad7ec96ec',
+        scenario_name: 'Source pinned base', scenario_type: 'BASE',
+        model_version: 'factoryos.growth.financial-sensitivity.v1',
+        data_vintage: '2026-10-10T00:00:00.000Z', baseline_source_ref: sourceRef,
+        inputs: {}, output_snapshot: {}, input_hash: 'c'.repeat(64), decision_ready: false,
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const dto: CreateGrowthScenarioDto = {
+      scenario_name: 'Source pinned base',
+      scenario_type: 'BASE',
+      data_vintage: '2026-10-10T00:00:00.000Z',
+      baseline_source_ref: sourceRef,
+      baseline_source_observation_id: observationId,
+      baseline_revenue: 1000,
+      baseline_variable_cost: 400,
+      baseline_fixed_cost: 200,
+      price_change_pct: 0,
+      volume_change_pct: 0,
+      variable_cost_change_pct: 0,
+      fixed_cost_change_pct: 0,
+      investment: 0,
+      uncertainty_pct: 0,
+    };
+    const result = await service.createScenario(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+    expect(result.id).toBe('ac3f38e5-3e3c-44d8-86f4-3a9ad7ec96ec');
+    const insert = client.query.mock.calls.find(call => String(call[0]).includes('INSERT INTO growth_scenarios'));
+    expect(insert).toBeDefined();
+    const values = insert?.[1] as unknown[];
+    const inputs = JSON.parse(String(values[8])) as Record<string, unknown>;
+    expect(inputs.baseline_source_observation).toEqual(expect.objectContaining({
+      id: observationId,
+      adapter_version: 'factoryos.growth.source-of-record.v1',
+      metric_key: 'finance.actual_revenue',
+      unit: 'BDT',
+      value: '1000.00000000',
+      source_revision_hash: 'a'.repeat(64),
+      observation_hash: 'b'.repeat(64),
+    }));
+    expect(String(values[10])).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('rejects a scenario when its revenue baseline differs from the pinned source observation', async () => {
+    const observationId = 'e6a20b27-1920-4cf0-9f8c-82c0f9d5e132';
+    const sourceRef = `factoryos://growth/source-observations/${observationId}`;
+    client.query
+      .mockResolvedValueOnce({ rows: [{ status: 'ACCEPTED', currency: 'BDT', constraints_snapshot: {} }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: observationId, source_kind: 'FINANCIAL_FACT',
+        adapter_version: 'factoryos.growth.source-of-record.v1',
+        metric_key: 'finance.actual_revenue', unit: 'BDT', value: '1000.00000000',
+        observed_at: '2026-10-05T12:00:00.000Z', source_record_ref: 'finance-fact:1234',
+        source_revision_hash: 'a'.repeat(64), observation_hash: 'b'.repeat(64),
+        evidence_id: 'bf0f335f-57f3-4b8c-8f64-167e50717d46',
+      }] });
+
+    await expect(service.createScenario(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID,
+      {
+        scenario_name: 'Invalid pinned base', scenario_type: 'BASE',
+        data_vintage: '2026-10-10T00:00:00.000Z', baseline_source_ref: sourceRef,
+        baseline_source_observation_id: observationId, baseline_revenue: 999,
+        baseline_variable_cost: 400, baseline_fixed_cost: 200,
+        price_change_pct: 0, volume_change_pct: 0, variable_cost_change_pct: 0,
+        fixed_cost_change_pct: 0, investment: 0, uncertainty_pct: 0,
+      }, null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('will not run scenarios for an unapproved hypothesis', async () => {
     client.query.mockResolvedValueOnce({ rows: [{ status: 'PROPOSED' }] });
     const dto: CreateGrowthScenarioDto = {
@@ -151,7 +239,7 @@ describe('GrowthService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
 
     expect(client.query).toHaveBeenCalledTimes(1);
-    expect(client.query.mock.calls[0][0]).toContain('SELECT status, constraints_snapshot FROM growth_opportunities');
+    expect(client.query.mock.calls[0][0]).toContain('SELECT status, currency, constraints_snapshot FROM growth_opportunities');
   });
 
   it('keeps a sensitivity scenario exploratory when constraint snapshots or projections are missing', () => {
@@ -623,6 +711,63 @@ describe('GrowthService', () => {
     expect(client.query).toHaveBeenCalledTimes(2);
   });
 
+  it('replays the same forecast evaluation across users without including the actor in the request fingerprint', async () => {
+    const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
+    const measurementId = '1e84d4ea-4c73-4a78-8818-59ef865adb22';
+    const sourceEvidenceId = '8f8fba80-9438-481d-9fa9-f20eece93a0c';
+    const evaluationId = 'bccd4a6c-6a67-47c1-83d8-91a2cba52a28';
+    const idempotencyKey = 'forecast-eval-actor-replay-01';
+    const dto: RecordGrowthForecastEvaluationDto = {
+      model_version: 'ops-v1', metric_key: 'daily_output', unit: 'pieces',
+      forecast_origin_at: '2026-10-01T00:00:00.000Z',
+      forecast_source_ref: 'forecast-report:2026-10', forecast_value: 100,
+      outcome_id: outcomeId, idempotency_key: idempotencyKey,
+    };
+    const source = { id: sourceEvidenceId };
+    const actual = {
+      id: outcomeId, measurement_id: measurementId, observed_at: '2026-10-05T00:00:00.000Z',
+      actual_value: '90.00000000', unit: 'pieces', evidence_ref: 'actual-report:2026-10',
+    };
+
+    client.query
+      .mockResolvedValueOnce({ rows: [source] })
+      .mockResolvedValueOnce({ rows: [actual] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        id: evaluationId, input_hash: 'placeholder', model_version: 'ops-v1',
+        metric_key: 'daily_output', unit: 'pieces', idempotency_key: idempotencyKey,
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const first = await service.recordForecastEvaluation(
+      USER_ID, TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+    expect(first.replayed).toBe(false);
+    const insertCall = client.query.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO growth_forecast_evaluations'),
+    );
+    const requestHash = insertCall?.[1]?.[26];
+    expect(requestHash).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+
+    client.query.mockReset();
+    client.query
+      .mockResolvedValueOnce({ rows: [source] })
+      .mockResolvedValueOnce({ rows: [actual] })
+      .mockResolvedValueOnce({ rows: [{ id: evaluationId, request_hash: requestHash }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: evaluationId, input_hash: requestHash, model_version: 'ops-v1',
+        metric_key: 'daily_output', unit: 'pieces', idempotency_key: idempotencyKey,
+      }] });
+
+    const second = await service.recordForecastEvaluation(
+      '6c5a2fb2-9f42-45e1-86c8-65cf8d49c9e0', TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, dto, null, null,
+    );
+
+    expect(second.id).toBe(evaluationId);
+    expect(second.replayed).toBe(true);
+    expect(client.query).toHaveBeenCalledTimes(4);
+  });
+
   it('rejects a reused idempotency key when the frozen forecast fingerprint differs', async () => {
     const outcomeId = '8f4074fc-07b4-4983-8cf9-a3afabf8b2e1';
     client.query
@@ -653,11 +798,12 @@ describe('GrowthService', () => {
         forecast_value: '100.00000000', actual_value: '101.00000000',
         signed_error: '-1.00000000', absolute_error: '1.00000000',
         squared_error: '1.00000000', symmetric_percentage_error: '0.99502488',
-        interval_hit: index < 8, nominal_coverage_pct: '90.00',
+        interval_hit: index < 8, nominal_coverage_pct: '90.00', interval_semantics: 'DECLARED_NOMINAL_COVERAGE',
         evaluated_at: `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
         total_count: '10',
       })),
     });
+    database.query.mockResolvedValueOnce({ rows: [] });
 
     const result = await service.getForecastCalibration(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
 
