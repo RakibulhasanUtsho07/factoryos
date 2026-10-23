@@ -77,6 +77,16 @@ export async function persistMqttPacket(spool, devices, packet) {
   return { device_id: device.device_id, source_event_id: event.source_event_id, duplicate: result.duplicate };
 }
 
+export function handleMqttDelivery(spool, devices, packet, callback, onFault = () => {}) {
+  return persistMqttPacket(spool, devices, packet)
+    .then(() => callback())
+    .catch(() => {
+      onFault('MQTT_DURABLE_SPOOL_REJECTED');
+      // MQTT.js closes the connection instead of sending PUBACK when callback has an error.
+      callback(new Error('OT durable spool rejected MQTT delivery'));
+    });
+}
+
 export class MqttBrokerLoop extends EventEmitter {
   constructor(config, spool, secretReader) {
     super();
@@ -144,13 +154,10 @@ export class MqttBrokerLoop extends EventEmitter {
     // MQTT.js calls handleMessage after parsing PUBLISH and before acknowledging
     // QoS 1. An error withholds PUBACK and forces broker redelivery.
     client.handleMessage = (packet, callback) => {
-      const task = persistMqttPacket(this.spool, this.config.devices, packet)
-        .then(() => callback())
-        .catch(() => {
-          this.lastError = 'MQTT_DURABLE_SPOOL_REJECTED';
-          this.emit('fault', this.lastError);
-          callback(new Error('OT durable spool rejected MQTT delivery'));
-        });
+      const task = handleMqttDelivery(this.spool, this.config.devices, packet, callback, (code) => {
+        this.lastError = code;
+        this.emit('fault', code);
+      });
       this.pending.add(task);
       void task.finally(() => this.pending.delete(task));
     };
