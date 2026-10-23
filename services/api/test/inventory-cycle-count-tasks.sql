@@ -64,6 +64,15 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_trigger t
+    WHERE t.tgrelid = 'public.inventory_cycle_count_tasks'::regclass
+      AND t.tgname = 'inventory_cycle_count_task_insert_guard'
+      AND NOT t.tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'cycle-count task insert guard is missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
     WHERE t.tgrelid = 'public.inventory_cycle_count_proposals'::regclass
       AND t.tgname = 'inventory_cycle_count_task_proposal_guard'
       AND NOT t.tgisinternal
@@ -88,8 +97,17 @@ BEGIN
   IF position('invalid cycle-count task lifecycle transition' IN v_function_definition) = 0
     OR position('awaiting-review task must reference its pending count proposal' IN v_function_definition) = 0
     OR position('completed task must reference an applied count proposal' IN v_function_definition) = 0
+    OR position('task updates must advance the lifecycle' IN v_function_definition) = 0
   THEN
     RAISE EXCEPTION 'cycle-count task lifecycle guard is incomplete';
+  END IF;
+
+  SELECT pg_get_functiondef('public.factoryos_validate_inventory_cycle_count_task_insert()'::regprocedure)
+    INTO v_function_definition;
+  IF position('cycle-count task assignee must be an active member of this tenant' IN v_function_definition) = 0
+    OR position('active bin under an active warehouse or staging location' IN v_function_definition) = 0
+  THEN
+    RAISE EXCEPTION 'cycle-count task insert guard is incomplete';
   END IF;
 
   SELECT pg_get_functiondef('public.factoryos_validate_inventory_cycle_count_task_proposal()'::regprocedure)
