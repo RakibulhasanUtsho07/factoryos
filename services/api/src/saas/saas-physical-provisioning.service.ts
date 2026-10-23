@@ -469,7 +469,7 @@ export class SaasPhysicalProvisioningService {
           targetRolloutKey: previousRelease.rolloutKey, targetArtifactDigest: previousRelease.artifactDigest },
       });
       const rollback = await adapter.rollbackRelease(
-        context, deployed.deploymentReference, previousRelease, healthTimeoutSeconds,
+        context, deployed.deploymentReference, currentRelease, previousRelease, healthTimeoutSeconds,
         'fo-physical-' + run.id + '-rollback',
       );
       this.assertRollbackReceipt(rollback, previousRelease, profile);
