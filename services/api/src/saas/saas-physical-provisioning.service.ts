@@ -14,6 +14,9 @@ import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import { SaasDeploymentProfile } from './dto/create-saas-subscription-plan.dto';
+import { SaasDeploymentProfileScopeType } from './dto/create-saas-deployment-profile.dto';
+import { SaasDeploymentProfileTransitionAction } from './dto/transition-saas-deployment-profile.dto';
+import { SaasDeploymentProfileService } from './saas-deployment-profile.service';
 import { ExecuteSaasPhysicalOperationDto, SaasPhysicalFailurePolicy } from './dto/execute-saas-physical-operation.dto';
 import { RollbackSaasReleaseRolloutDto } from './dto/rollback-saas-release-rollout.dto';
 import { SaasReleaseTransitionAction } from './dto/transition-saas-release-rollout.dto';
@@ -136,6 +139,8 @@ export class SaasPhysicalProvisioningService {
     private readonly adapters: PhysicalInfrastructureAdapter[] = [],
     @Optional()
     private readonly releaseRolloutService?: SaasReleaseRolloutService,
+    @Optional()
+    private readonly deploymentProfileService?: SaasDeploymentProfileService,
   ) {}
 
   async provisionSandbox(
@@ -232,8 +237,11 @@ export class SaasPhysicalProvisioningService {
     if (Number(row.version) !== input?.expected_version) {
       throw new ConflictException('Deployment profile version changed; reload and retry with the latest expected_version');
     }
-    if (row.status !== 'PLANNED' && row.status !== 'PROVISIONING') {
-      throw new ConflictException('Only a planned or provisioning deployment profile can be physically provisioned');
+    if (!['PLANNED', 'PROVISIONING', 'FAILED'].includes(row.status)) {
+      throw new ConflictException('Only a planned, failed or provisioning deployment profile can be physically provisioned');
+    }
+    if (!this.deploymentProfileService) {
+      throw new ServiceUnavailableException('Deployment-profile lifecycle service is not available; physical provisioning is blocked');
     }
     const profile = this.mapProfile(row);
     const key = this.idempotency(input?.idempotency_key);
@@ -254,15 +262,70 @@ export class SaasPhysicalProvisioningService {
       status: row.status, version: Number(row.version),
     };
     return this.executePreparedRun(run, profile, actorUserId, async (adapter, context) => {
-      const receipt = await adapter.provisionDeploymentProfile(context, profileInput, 'fo-physical-' + run.id);
-      this.assertProvisioningReceipt(receipt, profile, adapter.providerCode);
-      await this.appendEvent(tenantId, actorUserId, run.id, 'SUCCEEDED', {
-        providerCode: adapter.providerCode, providerReference: receipt.providerReference,
-        evidenceDigest: receipt.evidenceDigest,
-        evidence: { topology: receipt.topology, isolationVerified: receipt.isolationVerified,
-          profileVersion: Number(row.version), scopeType: row.scope_type, scopeKey: row.scope_key },
-      });
-      return { status: 'SUCCEEDED' as const, providerCode: adapter.providerCode };
+      let provisioningVersion = Number(row.version);
+      if (row.status === 'PLANNED' || row.status === 'FAILED') {
+        const started = await this.deploymentProfileService!.transition(
+          tenantId,
+          actorUserId,
+          row.scope_type === 'TENANT'
+            ? SaasDeploymentProfileScopeType.TENANT
+            : SaasDeploymentProfileScopeType.FACTORY,
+          row.factory_id ?? undefined,
+          {
+            action: SaasDeploymentProfileTransitionAction.START_PROVISIONING,
+            expected_version: Number(row.version),
+            reason: 'Physical Kubernetes provisioner accepted this topology-scoped operation',
+            idempotency_key: 'physical-start-' + run.id,
+          },
+        );
+        provisioningVersion = started.profile.version;
+      }
+
+      try {
+        const receipt = await adapter.provisionDeploymentProfile(context, profileInput, 'fo-physical-' + run.id);
+        this.assertProvisioningReceipt(receipt, profile, adapter.providerCode);
+        const activated = await this.deploymentProfileService!.transition(
+          tenantId,
+          actorUserId,
+          row.scope_type === 'TENANT'
+            ? SaasDeploymentProfileScopeType.TENANT
+            : SaasDeploymentProfileScopeType.FACTORY,
+          row.factory_id ?? undefined,
+          {
+            action: SaasDeploymentProfileTransitionAction.ACTIVATE,
+            expected_version: provisioningVersion,
+            reason: 'Provider returned verified namespace, quota, storage boundary and isolation evidence',
+            idempotency_key: 'physical-activate-' + run.id,
+          },
+        );
+        await this.appendEvent(tenantId, actorUserId, run.id, 'SUCCEEDED', {
+          providerCode: adapter.providerCode, providerReference: receipt.providerReference,
+          evidenceDigest: receipt.evidenceDigest,
+          evidence: {
+            topology: receipt.topology, isolationVerified: receipt.isolationVerified,
+            requestedProfileVersion: Number(row.version), provisioningVersion,
+            activeProfileVersion: activated.profile.version,
+            scopeType: row.scope_type, scopeKey: row.scope_key,
+          },
+        });
+        return { status: 'SUCCEEDED' as const, providerCode: adapter.providerCode };
+      } catch (error) {
+        await this.deploymentProfileService!.transition(
+          tenantId,
+          actorUserId,
+          row.scope_type === 'TENANT'
+            ? SaasDeploymentProfileScopeType.TENANT
+            : SaasDeploymentProfileScopeType.FACTORY,
+          row.factory_id ?? undefined,
+          {
+            action: SaasDeploymentProfileTransitionAction.FAIL,
+            expected_version: provisioningVersion,
+            reason: 'Physical provisioning or verified activation failed; inspect physical run evidence before retry',
+            idempotency_key: 'physical-fail-' + run.id,
+          },
+        ).catch(() => undefined);
+        throw error;
+      }
     }, (runId) => ({
       tenantId, actorUserId, runId, resourceId: row.id, resourceVersion: Number(row.version), profile,
     }));
