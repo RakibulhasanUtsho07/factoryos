@@ -439,6 +439,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
   async rollbackRelease(
     context: PhysicalOperationContext,
     deploymentReference: string,
+    currentRelease: PhysicalReleaseInput,
     targetRelease: PhysicalReleaseInput,
     timeoutSeconds: number,
     _idempotencyKey: string,
@@ -454,9 +455,29 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       this.assertDeploymentOwned(current, context);
       const repository = this.releaseImageRepository();
       const image = repository + '@sha256:' + targetRelease.artifactDigest;
+      const rollbackEnv = [
+        { name: 'FACTORYOS_RELEASE_ROLLOUT_KEY', value: currentRelease.rolloutKey },
+        { name: 'FACTORYOS_RELEASE_SCOPE_TYPE', value: currentRelease.scopeType },
+        { name: 'FACTORYOS_FACTORY_ID', value: currentRelease.factoryId ?? '' },
+        { name: 'FACTORYOS_MODULE_KEY', value: currentRelease.moduleKey ?? '' },
+        { name: 'FACTORYOS_AGENT_KEY', value: currentRelease.agentKey ?? '' },
+        { name: 'FACTORYOS_RELEASE_CHANNEL', value: currentRelease.releaseChannel },
+        { name: 'FACTORYOS_ROLLOUT_PERCENTAGE', value: String(targetRelease.rolloutPercentage) },
+      ];
       const containers = Array.isArray(current.spec?.template?.spec?.containers)
-        ? current.spec.template.spec.containers.map((container: JsonRecord, index: number) =>
-          index === 0 ? { ...container, image } : container)
+        ? current.spec.template.spec.containers.map((container: JsonRecord, index: number) => {
+          if (index !== 0) return container;
+          const existingEnv = Array.isArray(container.env) ? container.env as JsonRecord[] : [];
+          const replacedNames = new Set(rollbackEnv.map((variable) => variable.name));
+          return {
+            ...container,
+            image,
+            env: [
+              ...existingEnv.filter((variable) => !replacedNames.has(String(variable.name))),
+              ...rollbackEnv,
+            ],
+          };
+        })
         : [];
       if (containers.length === 0) throw new ConflictException('Rollback deployment has no container image to restore');
       const annotations = {
