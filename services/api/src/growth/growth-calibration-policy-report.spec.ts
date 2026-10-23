@@ -40,6 +40,8 @@ const approvedPolicy = {
   max_absolute_mean_error: '5.00000000',
   max_mean_symmetric_percentage_error_pct: '10.0000',
   max_absolute_calibration_gap_pct_points: '10.0000',
+  residual_coverage_target_pct: '90.00',
+  max_empirical_absolute_residual: '15.00000000',
 };
 
 describe('GrowthService domain-specific calibration policy reporting', () => {
@@ -64,6 +66,14 @@ describe('GrowthService domain-specific calibration policy reporting', () => {
       'MEAN_ABSOLUTE_ERROR', 'ROOT_MEAN_SQUARED_ERROR', 'ABSOLUTE_BIAS',
     ]);
     expect(cohort.interval_threshold_assessment).toBe('NOT_CALIBRATABLE_HEURISTIC_RANGE');
+    expect(cohort.uncertainty_threshold_assessment).toBe('WITHIN_APPROVED_RESIDUAL_THRESHOLD');
+    expect(cohort.empirical_residual_threshold).toMatchObject({
+      requested_coverage_pct: 90, minimum_sample_count: 10,
+      threshold_value: '10.00000000', status: 'ESTIMATED_FROM_HELD_OUT_RESIDUALS',
+    });
+    expect(cohort.calibration_policy).toMatchObject({ thresholds: {
+      residual_coverage_target_pct: 90, max_empirical_absolute_residual: 15,
+    } });
     expect(report.interpretation).toContain('never described as a confidence or calibrated prediction interval');
   });
 
@@ -73,6 +83,10 @@ describe('GrowthService domain-specific calibration policy reporting', () => {
       .mockResolvedValueOnce({ rows: [] });
     const withoutPolicy = await service.getForecastCalibration(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID);
     expect((withoutPolicy.calibration[0] as Record<string, unknown>).error_threshold_assessment).toBe('NO_APPROVED_POLICY');
+    expect((withoutPolicy.calibration[0] as Record<string, unknown>).uncertainty_threshold_assessment).toBe('NO_APPROVED_POLICY');
+    expect((withoutPolicy.calibration[0] as Record<string, unknown>).empirical_residual_threshold).toMatchObject({
+      threshold_value: null, status: 'NO_APPROVED_POLICY',
+    });
 
     database.query.mockReset();
     database.query
@@ -92,5 +106,9 @@ describe('GrowthService domain-specific calibration policy reporting', () => {
     const report = await service.getForecastCalibration(TENANT_ID, FACTORY_ID, OPPORTUNITY_ID, 'FINANCE');
     const cohort = report.calibration[0] as Record<string, unknown>;
     expect(cohort.error_threshold_assessment).toBe('INSUFFICIENT_POLICY_SAMPLE');
+    expect(cohort.empirical_residual_threshold).toMatchObject({
+      sample_count: 9, minimum_sample_count: 10, threshold_value: null, status: 'INSUFFICIENT_SAMPLE',
+    });
+    expect(cohort.uncertainty_threshold_assessment).toBe('INSUFFICIENT_SAMPLE');
   });
 });
