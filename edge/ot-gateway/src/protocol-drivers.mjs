@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { readFile } from 'node:fs/promises';
+
 import mqtt from 'mqtt';
+import { validateCertificatePair } from './config.mjs';
 import ModbusRTU from 'modbus-serial';
 import {
   AttributeIds,
@@ -107,6 +108,7 @@ export class MqttBrokerLoop extends EventEmitter {
       this.secretReader(this.config.clientCertFile, 'MQTT client certificate'),
       this.secretReader(this.config.clientKeyFile, 'MQTT client key'),
     ]);
+    validateCertificatePair(cert, key, 'MQTT client');
     const client = mqtt.connect(this.config.url, {
       clientId: this.config.clientId,
       protocolVersion: 5,
@@ -242,6 +244,11 @@ export class OpcUaSessionDriver extends EventEmitter {
           rootFolder: this.pkiRoot,
           automaticallyAcceptUnknownCertificate: false,
         });
+        const [clientCert, clientKey] = await Promise.all([
+          this.secretReader(this.device.clientCertFile, 'OPC UA client certificate'),
+          this.secretReader(this.device.clientKeyFile, 'OPC UA client key'),
+        ]);
+        validateCertificatePair(clientCert, clientKey, 'OPC UA client');
         await certificateManager.initialize();
         await certificateManager.trustCertificate(await this.secretReader(this.device.serverCaFile, 'OPC UA server trust certificate'));
         const client = OPCUAClient.create({
