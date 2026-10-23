@@ -993,6 +993,73 @@ describe(
       }));
     });
 
+    it('re-verifies planner provenance immediately before a write executor and finalizes blocked attempts', async () => {
+      const task = taskRow({ state: 'EXECUTING' });
+      const step = stepRow();
+      const runningStep = stepRow({
+        status: 'RUNNING',
+        action_intent_id: actionIntentId,
+      });
+      const provenanceGuard = jest
+        .fn<() => Promise<unknown>>()
+        .mockResolvedValueOnce({ verifiedAt: '2026-10-23T00:00:00.000Z' })
+        .mockRejectedValueOnce(new ForbiddenException('planner attestation expired'));
+
+      (service as any).assertTrustedPlannerAttestation = provenanceGuard;
+      (service as any).requireTask = jest.fn<() => Promise<unknown>>().mockResolvedValue(task);
+      (service as any).requireStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(step);
+      (service as any).assertDependencies = jest.fn<() => Promise<unknown>>();
+      (service as any).claimToolCall = jest.fn<() => Promise<unknown>>();
+      (service as any).failTask = jest.fn<() => Promise<unknown>>().mockResolvedValue({});
+      (service as any).updateStep = jest.fn<() => Promise<unknown>>().mockResolvedValue(runningStep);
+      (service as any).recordAttempt = jest.fn<() => Promise<unknown>>();
+      toolRegistry.getTool.mockResolvedValue({
+        ...gatewayOutcome().tool,
+        writeCapable: true,
+        idempotencyRequired: true,
+        rollback: {
+          type: 'COMPENSATION',
+          toolId: 'ORDERS.COMPENSATE',
+          toolVersion: '1.0.0',
+          actionType: 'ORDERS.COMPENSATE',
+        },
+      });
+      database.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      aiRuntimeService.authorizeAction.mockResolvedValue({
+        action: action(),
+        actionToken: 'short-lived-token',
+      });
+
+      await expect(
+        service.executeStep(tenantId, factoryId, userId, taskId, stepId),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(provenanceGuard).toHaveBeenCalledTimes(2);
+      expect(aiRuntimeService.authorizeAction).toHaveBeenCalledTimes(1);
+      expect(aiRuntimeService.executeAgentAction).not.toHaveBeenCalled();
+      expect((service as any).recordAttempt).toHaveBeenNthCalledWith(
+        2,
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        stepId,
+        1,
+        'EXECUTION',
+        'FAILED',
+        expect.objectContaining({ code: 'AI_AGENT_EXECUTION_FAILURE' }),
+      );
+      expect((service as any).failTask).toHaveBeenCalledWith(
+        tenantId,
+        factoryId,
+        userId,
+        taskId,
+        'AI_AGENT_EXECUTION_FAILURE',
+        'planner attestation expired',
+        stepId,
+      );
+    });
+
     it('rejects an execution record that does not match the authorized action binding', async () => {
       const task = taskRow({ state: 'EXECUTING' });
       const step = stepRow();

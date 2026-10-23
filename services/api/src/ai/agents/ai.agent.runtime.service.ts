@@ -828,6 +828,12 @@ export class AiAgentRuntimeService {
       );
     }
 
+    // If a gate fails after STARTED was recorded, finalize it as FAILED only
+    // while the executor has definitely not been invoked. Once invoked, preserve
+    // the conservative ambiguous-outcome recovery path.
+    let executionAttemptNumber: number | null = null;
+    let executorInvocationStarted = false;
+
     try {
       const authorization =
         await this.aiRuntimeService.authorizeAction(
@@ -959,6 +965,7 @@ export class AiAgentRuntimeService {
       );
 
       const attemptNumber = step.retry_count + 1;
+      executionAttemptNumber = attemptNumber;
       const executionKey = `agent:${task.id}:${step.id}:${attemptNumber}`;
 
       step = await this.updateStep(
@@ -1002,6 +1009,19 @@ export class AiAgentRuntimeService {
         );
       }
 
+      // The first provenance check happens before authorization. Re-verify
+      // after the final entitlement check so expiry/key rotation between
+      // authorization and the side-effect boundary fails closed.
+      if (registeredTool.writeCapable) {
+        await this.assertTrustedPlannerAttestation(
+          tenantId,
+          factoryId,
+          task.id,
+          this.mapTask(task),
+        );
+      }
+
+      executorInvocationStarted = true;
       const { outcome, executionRecordId } =
         await this.executeGovernedTool(
           tenantId,
@@ -1142,6 +1162,24 @@ export class AiAgentRuntimeService {
         code: 'AI_AGENT_EXECUTION_FAILURE',
         message: this.errorMessage(error),
       };
+
+      if (executionAttemptNumber !== null && !executorInvocationStarted) {
+        try {
+          await this.recordAttempt(
+            tenantId,
+            factoryId,
+            actorUserId,
+            task.id,
+            step.id,
+            executionAttemptNumber,
+            'EXECUTION',
+            'FAILED',
+            failure,
+          );
+        } catch {
+          // Do not skip terminal task failure if attempt finalization itself fails.
+        }
+      }
 
       await this.failTask(
         tenantId,
