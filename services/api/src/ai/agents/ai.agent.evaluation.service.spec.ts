@@ -574,6 +574,7 @@ describe('AiAgentEvaluationService', () => {
       liveTaskRow({ state: 'BLOCKED' }), [denied],
     );
     expect(wrongAction.status).toBe('FAIL');
+  });
 
   it('passes a policy refusal only when a bound DENIED decision has no step execution, claim or execution record', () => {
     const service = makeService();
