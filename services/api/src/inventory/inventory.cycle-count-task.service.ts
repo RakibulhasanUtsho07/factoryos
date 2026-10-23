@@ -28,6 +28,8 @@ interface CycleCountTaskRow extends QueryResultRow {
   due_at: string;
   priority: number;
   status: InventoryCycleCountTaskStatus;
+  blind_count: boolean;
+  variance_escalation_status?: 'OPEN' | 'RESOLVED' | null;
   current_proposal_id: string | null;
   idempotency_key: string;
   request_hash: string;
@@ -64,6 +66,7 @@ const TASK_COLUMNS = `
   due_at::text AS due_at,
   priority,
   status,
+  blind_count,
   current_proposal_id::text AS current_proposal_id,
   idempotency_key,
   request_hash,
@@ -91,6 +94,7 @@ const TASK_COLUMNS_T = `
   t.due_at::text AS due_at,
   t.priority,
   t.status,
+  t.blind_count,
   t.current_proposal_id::text AS current_proposal_id,
   t.idempotency_key,
   t.request_hash,
@@ -125,6 +129,8 @@ export class InventoryCycleCountTaskService {
       assigned_to_user_id?: string;
       due_at: string;
       priority?: number;
+      blind_count?: boolean;
+      variance_escalation_threshold?: number;
       notes?: string;
     },
     rawIdempotencyKey: string | null,
@@ -146,10 +152,25 @@ export class InventoryCycleCountTaskService {
     if (!Number.isInteger(priority) || priority < 0 || priority > 10000) {
       throw new BadRequestException('priority must be an integer between 0 and 10000');
     }
+    const blindCount = dto.blind_count ?? true;
+    if (typeof blindCount !== 'boolean') throw new BadRequestException('blind_count must be true or false');
+    const rawThreshold = dto.variance_escalation_threshold;
+    let varianceThreshold: number | null = null;
+    if (rawThreshold !== undefined && rawThreshold !== null) {
+      if (!Number.isFinite(rawThreshold) || rawThreshold <= 0 || rawThreshold > 99999999999999) {
+        throw new BadRequestException('variance_escalation_threshold must be greater than zero and within the supported quantity range');
+      }
+      const fixedThreshold = rawThreshold.toFixed(4);
+      if (Number(fixedThreshold) <= 0 || Number(fixedThreshold) !== rawThreshold) {
+        throw new BadRequestException('variance_escalation_threshold supports at most 4 decimal places');
+      }
+      varianceThreshold = Number(fixedThreshold);
+    }
     const notes = dto.notes?.trim() || null;
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const requestHash = this.hash({
-      itemId, locationId, assignedToUserId, dueAt, priority, notes,
+      itemId, locationId, assignedToUserId, dueAt, priority, blindCount,
+      varianceThreshold, notes,
     });
 
     let result: InventoryCycleCountTask;
@@ -203,12 +224,13 @@ export class InventoryCycleCountTaskService {
         const inserted = await client.query<CycleCountTaskRow>(
           `INSERT INTO inventory_cycle_count_tasks (
              tenant_id, factory_id, item_id, location_id, assigned_to_user_id,
-             due_at, priority, status, idempotency_key, request_hash, notes, created_by_user_id
-           ) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, 'SCHEDULED', $8, $9, $10, $11)
+             due_at, priority, status, blind_count, variance_escalation_threshold,
+             idempotency_key, request_hash, notes, created_by_user_id
+           ) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, 'SCHEDULED', $8, $9::numeric, $10, $11, $12, $13)
            RETURNING ${TASK_COLUMNS}`,
           [
             tenantId, factoryId, itemId, locationId, assignedToUserId,
-            dueAt, priority, idempotencyKey, requestHash, notes, userId,
+            dueAt, priority, blindCount, varianceThreshold, idempotencyKey, requestHash, notes, userId,
           ],
         );
         const task = inserted.rows[0];
@@ -217,7 +239,7 @@ export class InventoryCycleCountTaskService {
           tenantId, factoryId, aggregateId: task.id,
           correlationId: this.correlationId(requestId, traceId),
           userId, eventType: 'INVENTORY.CYCLE_COUNT_TASK_SCHEDULED',
-          payload: { task: this.eventShape(task) },
+          payload: { task: this.eventShape(task), variance_escalation_threshold: varianceThreshold },
         });
         return this.toTask(task, false);
       });
@@ -241,6 +263,7 @@ export class InventoryCycleCountTaskService {
           item_id: result.item_id, location_id: result.location_id,
           assigned_to_user_id: result.assigned_to_user_id, due_at: result.due_at,
           priority: result.priority, status: result.status,
+          blind_count: result.blind_count, variance_escalation_threshold: varianceThreshold,
         },
       });
     }
@@ -267,10 +290,14 @@ export class InventoryCycleCountTaskService {
       `SELECT ${TASK_COLUMNS_T},
               i.sku AS item_sku, i.name AS item_name,
               l.location_code AS location_code,
+              e.status AS variance_escalation_status,
               (t.status IN ('SCHEDULED', 'IN_PROGRESS') AND t.due_at < clock_timestamp()) AS overdue
        FROM inventory_cycle_count_tasks t
        JOIN inventory_items i ON i.id = t.item_id AND i.tenant_id = t.tenant_id AND i.factory_id = t.factory_id
        LEFT JOIN inventory_locations l ON l.id = t.location_id AND l.tenant_id = t.tenant_id AND l.factory_id = t.factory_id
+       LEFT JOIN inventory_cycle_count_variance_escalations e
+         ON e.task_id = t.id AND e.tenant_id = t.tenant_id AND e.factory_id = t.factory_id
+        AND e.proposal_id = t.current_proposal_id
        WHERE t.tenant_id = $1 AND t.factory_id = $2
          AND ($3::text IS NULL OR t.status = $3)
          AND (NOT $4::boolean OR t.assigned_to_user_id = $5)
@@ -440,7 +467,7 @@ export class InventoryCycleCountTaskService {
     return {
       id: task.id, item_id: task.item_id, location_id: task.location_id,
       assigned_to_user_id: task.assigned_to_user_id, due_at: task.due_at,
-      priority: task.priority, status: task.status, current_proposal_id: task.current_proposal_id,
+      priority: task.priority, blind_count: task.blind_count, status: task.status, current_proposal_id: task.current_proposal_id,
       version: task.version,
     };
   }
