@@ -229,7 +229,7 @@ export class InventoryStockReconciliationService {
               throw new NotFoundException('Cycle-count proposal not found in this factory');
             }
             cycleCountSnapshot = {
-              task_id: proposal.task_id,
+              task_id: cycleCountSnapshot.task_id,
               ledger_quantity_at_count: proposal.ledger_quantity_at_count,
               balance_version_at_count: proposal.balance_version_at_count,
               counted_quantity: proposal.counted_quantity,
@@ -601,14 +601,14 @@ export class InventoryStockReconciliationService {
             if (!cycleCountSnapshot) {
               throw new ConflictException('Cycle-count approval snapshot is missing');
             }
-            if (proposal.task_id) {
+            if (cycleCountSnapshot?.task_id) {
               const completedTask = await client.query<{ id: string }>(
                 `UPDATE inventory_cycle_count_tasks
                  SET status = 'COMPLETED', completed_at = clock_timestamp(), version = version + 1
                  WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
                    AND status = 'AWAITING_REVIEW' AND current_proposal_id = $4
                  RETURNING id::text AS id`,
-                [proposal.task_id, tenantId, factoryId, cycleCountReview.proposalId],
+                [cycleCountSnapshot.task_id, tenantId, factoryId, cycleCountReview.proposalId],
               );
               if (!completedTask.rows[0]) {
                 throw new ConflictException('Approved count could not complete its scheduled task');
@@ -624,7 +624,7 @@ export class InventoryStockReconciliationService {
                    clock_timestamp(), $4::uuid, NULL, $5::jsonb, $6::jsonb, $7::jsonb
                  )`,
                 [
-                  tenantId, factoryId, proposal.task_id, correlationId,
+                  tenantId, factoryId, cycleCountSnapshot.task_id, correlationId,
                   JSON.stringify({ type: 'user', id: userId }),
                   JSON.stringify({
                     system: 'FactoryOS', connector: 'inventory-cycle-count-task',
