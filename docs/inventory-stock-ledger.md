@@ -152,7 +152,7 @@ Migration 188 adds a frozen `blind_count` policy to each task (default `true` fo
 
 A task may also set `variance_escalation_threshold`, a positive quantity difference with four-decimal precision. Task-linked count submission compares the count against the immutable aggregate or bin snapshot using PostgreSQL `NUMERIC`; when `ABS(counted - expected) >= threshold`, an immutable escalation record and transactional outbox event are created. The existing approve/reject path fails closed while an escalation is open, and the escalation must be resolved with a required review note by someone other than the counter. A second reviewer must then make the final approval/rejection; the resolver cannot make that same stock decision. The database enforces this gate even if a caller bypasses the API layer. Migration 188's schema contract checks blind snapshot immutability, threshold-policy immutability, RLS, escalation evidence guards and the independent-review decision gate.
 
-Multi-bin count sessions and threshold-based escalation scheduling across recurring calendar runs remain separate WMS follow-on scope.
+Multi-bin count sessions are implemented in migration 189: one immutable session binds a single item, 2–50 distinct active bins, one assigned counter, a common due/priority/blind-count policy and a shared optional escalation threshold to existing per-bin count tasks. Threshold-based recurring count scheduling across calendar runs remains follow-on WMS scope.
 
 ## Explicitly out of scope
 
