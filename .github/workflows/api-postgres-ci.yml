@@ -316,6 +316,14 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/190_inventory_cycle_count_recurring_policies.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-recurring-policies.sql
 
+          echo "Reapplying Edge device registry and telemetry migration; verify tenant RLS and idempotent DDL"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/191_edge_ot_device_gateway.sql
+          echo "Reapplying Edge credential migration; verify hash-only storage and single-active guard"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/192_edge_device_credentials.sql
+          echo "Reapplying Edge health/stream metadata migration and checking tenant RLS/governance contract"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/193_edge_device_health_and_stream_metadata.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/edge-device-gateway-contract.sql
+
           echo "Reapplying recurring multi-bin session migration and validating target bindings"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/194_inventory_cycle_count_recurring_sessions.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-recurring-sessions.sql
