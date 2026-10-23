@@ -1,0 +1,20 @@
+{
+  "name": "@factoryos/ot-edge-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deployable read-only OT edge gateway for FactoryOS OPC UA, MQTT and Modbus TCP collection",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/index.mjs && node --check src/spool.mjs && node --check src/protocol-drivers.mjs && node --check src/config.mjs"
+  },
+  "dependencies": {
+    "modbus-serial": "8.0.25",
+    "mqtt": "5.16.1",
+    "node-opcua": "2.187.12"
+  }
+}
