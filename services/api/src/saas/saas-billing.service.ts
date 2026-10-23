@@ -225,6 +225,15 @@ export class SaasBillingService {
       return this.closeResponse(existingPeriod.rows[0], tenantId, actorUserId, true);
     }
 
+    const overlappingPeriod = await this.database.query<CloseRow>(
+      'SELECT ' + CLOSE_COLUMNS + ' FROM saas_billing_close_runs WHERE tenant_id=$1 AND period_start < $3 AND period_end > $2 LIMIT 1',
+      [tenantId, period.start, period.end],
+      { tenantId, userId: actorUserId },
+    );
+    if (overlappingPeriod.rows[0]) {
+      throw new ConflictException('Billing period overlaps an existing close; overlapping periods could double-invoice the same usage and are not permitted');
+    }
+
     const account = await this.loadAccount(tenantId, actorUserId);
     if (account.currency !== currency) {
       throw new BadRequestException('Billing-close currency must match the configured provider account currency');
@@ -698,8 +707,10 @@ export class SaasBillingService {
     else if (invoice.currency !== close.currency) status = 'CURRENCY_MISMATCH';
     else if (invoice.status === 'void') status = 'VOIDED';
     else if (invoice.status === 'uncollectible') status = 'UNCOLLECTIBLE';
-    else if (!lineBindingValid || BigInt(invoice.subtotalMinor) !== expectedSubtotal) status = 'VARIANCE';
+    else if (!lineBindingValid || BigInt(invoice.subtotalMinor) !== expectedSubtotal
+      || BigInt(invoice.discountMinor) !== 0n) status = 'VARIANCE';
     else if (close.automatic_tax_enabled && invoice.automaticTaxStatus !== 'complete') status = 'TAX_REVIEW';
+    else if (!close.automatic_tax_enabled && BigInt(invoice.taxMinor) !== 0n) status = 'TAX_REVIEW';
     else if (invoice.status === 'paid') status = 'MATCHED_PAID';
     else status = 'MATCHED_OPEN';
 
@@ -863,6 +874,10 @@ export class SaasBillingService {
   }
 
   private closeState(events: CloseEventRow[]): string {
+    // Provider webhooks may arrive out of order. Once the append-only evidence
+    // contains a paid receipt, a delayed invoice.finalized/open event cannot
+    // regress the customer-facing close state back to "issued".
+    if (events.some((event) => event.event_type === 'INVOICE_PAID')) return 'PAID';
     for (const event of events) {
       if (event.event_type === 'NO_CHARGE') return 'NO_CHARGE';
       if (event.event_type === 'INVOICE_PAID') return 'PAID';

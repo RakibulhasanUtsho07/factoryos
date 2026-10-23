@@ -205,6 +205,11 @@ describe('SaasBillingService', () => {
       created_at: '2026-10-02T00:00:00.000Z',
     };
     expect((service as any).closeState([{ event_type: 'CLOSE_PREPARED' }])).toBe('PREPARED');
+    expect((service as any).closeState([
+      { event_type: 'INVOICE_ISSUED' },
+      { event_type: 'INVOICE_PAID' },
+      { event_type: 'INVOICE_ISSUED' },
+    ])).toBe('PAID');
     expect((service as any).mapReconciliation({
       id: 'r', close_id: row.id, provider_invoice_id: 'in_123abc', provider_invoice_status: 'paid',
       provider_customer_id: row.provider_customer_id, currency: row.currency, expected_subtotal_minor: '225',
