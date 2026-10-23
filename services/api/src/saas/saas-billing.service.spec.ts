@@ -146,6 +146,26 @@ describe('SaasBillingService', () => {
     expect(database.query).toHaveBeenCalledTimes(1);
   });
 
+  it('blocks a new commercial close when legacy usage has already been reconciled to an external invoice', async () => {
+    const { service, database, stripe } = mocks();
+    database.query
+      .mockResolvedValueOnce({ rows: [] }) // idempotency lookup
+      .mockResolvedValueOnce({ rows: [] }) // no commercial close for the exact range
+      .mockResolvedValueOnce({ rows: [] }) // no overlapping commercial close
+      .mockResolvedValueOnce({ rows: [{ id: 'legacy-reconciliation-id' }] }); // prior manual/provider invoice
+
+    await expect(service.createBillingClose(tenant, factoryUser, {
+      period_start: '2026-10-01T00:00:00.000Z',
+      period_end: '2026-10-02T00:00:00.000Z',
+      currency: 'USD',
+      idempotency_key: 'close-over-existing-manual-invoice',
+    } as never)).rejects.toThrow('existing external invoice reconciliation');
+
+    expect(database.query).toHaveBeenCalledTimes(4);
+    expect(stripe.createInvoice).not.toHaveBeenCalled();
+    expect(database.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_billing_close_runs'))).toBe(false);
+  });
+
   it('blocks billing close when any in-period usage event remains unpriced', async () => {
     const { service, database, stripe } = mocks();
     const account = {
@@ -158,6 +178,8 @@ describe('SaasBillingService', () => {
     database.query
       .mockResolvedValueOnce({ rows: [] }) // idempotency lookup
       .mockResolvedValueOnce({ rows: [] }) // period/currency uniqueness lookup
+      .mockResolvedValueOnce({ rows: [] }) // no overlapping commercial close
+      .mockResolvedValueOnce({ rows: [] }) // no overlapping legacy provider invoice reconciliation
       .mockResolvedValueOnce({ rows: [account] }) // provider account
       .mockResolvedValueOnce({ rows: [{
         metric_code: 'AI_INPUT_TOKEN',
@@ -176,7 +198,7 @@ describe('SaasBillingService', () => {
       currency: 'USD',
       idempotency_key: 'close-unpriced-event',
     } as never)).rejects.toThrow(ConflictException);
-    expect(database.query).toHaveBeenCalledTimes(3);
+    expect(database.query).toHaveBeenCalledTimes(6);
     expect(stripe.createInvoice).not.toHaveBeenCalled();
     expect(database.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_billing_close_runs'))).toBe(false);
   });

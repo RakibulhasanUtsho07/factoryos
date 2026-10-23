@@ -232,6 +232,19 @@ export class SaasBillingService {
       throw new ConflictException('Billing period overlaps an existing close; overlapping periods could double-invoice the same usage and are not permitted');
     }
 
+    // Earlier versions of FactoryOS could reconcile an external invoice against
+    // the same usage ledger without creating a commercial close. Until finance
+    // explicitly migrates that invoice history, do not issue a second invoice
+    // for any period that overlaps an existing source-of-record reconciliation.
+    const legacyInvoice = await this.database.query<QueryResultRow & { id: string }>(
+      'SELECT id::text AS id FROM saas_usage_reconciliations WHERE tenant_id=$1 AND period_start < $3 AND period_end > $2 LIMIT 1',
+      [tenantId, period.start, period.end],
+      { tenantId, userId: actorUserId },
+    );
+    if (legacyInvoice.rows[0]) {
+      throw new ConflictException('Billing period overlaps an existing external invoice reconciliation; migrate/close the legacy invoice with finance before issuing a new commercial invoice');
+    }
+
     const account = await this.loadAccount(tenantId, actorUserId);
     if (account.currency !== currency) {
       throw new BadRequestException('Billing-close currency must match the configured provider account currency');
