@@ -327,6 +327,32 @@ export class SaasReleaseRolloutService {
        FROM latest r
        WHERE r.release_channel = $2
          AND r.stage IN ('CANARY','PRODUCTION')
+         -- A provider-declared unhealthy/halted rollout must never remain eligible
+         -- because the failed deployment's control-plane pause/rollback sync failed.
+         AND NOT EXISTS (
+           SELECT 1
+           FROM saas_physical_provisioning_runs failed_run
+           WHERE failed_run.tenant_id = r.tenant_id
+             AND failed_run.operation = 'RELEASE_DEPLOY'
+             AND failed_run.resource_id = r.id
+             AND failed_run.id = (
+               SELECT newest_run.id
+               FROM saas_physical_provisioning_runs newest_run
+               WHERE newest_run.tenant_id = r.tenant_id
+                 AND newest_run.operation = 'RELEASE_DEPLOY'
+                 AND newest_run.resource_id = r.id
+               ORDER BY newest_run.created_at DESC,newest_run.id DESC
+               LIMIT 1
+             )
+             AND (
+               SELECT newest_event.event_status
+               FROM saas_physical_provisioning_events newest_event
+               WHERE newest_event.tenant_id = failed_run.tenant_id
+                 AND newest_event.run_id = failed_run.id
+               ORDER BY newest_event.event_version DESC
+               LIMIT 1
+             ) IN ('HALTED','FAILED','ROLLBACK_FAILED')
+         )
          AND (
            r.scope_type = 'ORGANIZATION'
            OR (r.scope_type = 'FACTORY' AND r.factory_id = $3::uuid)
