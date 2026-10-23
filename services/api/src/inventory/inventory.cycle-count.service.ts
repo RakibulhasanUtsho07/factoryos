@@ -241,6 +241,13 @@ export class InventoryCycleCountService {
             }
           }
 
+          const duplicateAfterLock = await this.findBySubmitKey(
+            client, tenantId, factoryId, idempotencyKey,
+          );
+          if (duplicateAfterLock) {
+            return this.replaySubmitOrConflict(duplicateAfterLock, requestHash);
+          }
+
           if (taskId) {
             const taskResult = await client.query<{
               id: string; item_id: string; location_id: string | null;
@@ -263,13 +270,6 @@ export class InventoryCycleCountService {
             if (task.assigned_to_user_id !== userId) {
               throw new ConflictException('Cycle-count task must be started by its assigned counter');
             }
-          }
-
-          const duplicateAfterLock = await this.findBySubmitKey(
-            client, tenantId, factoryId, idempotencyKey,
-          );
-          if (duplicateAfterLock) {
-            return this.replaySubmitOrConflict(duplicateAfterLock, requestHash);
           }
 
           const inserted = await client.query<CycleCountProposalRow>(
