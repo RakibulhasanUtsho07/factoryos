@@ -798,7 +798,7 @@ describe('GrowthService', () => {
         forecast_value: '100.00000000', actual_value: '101.00000000',
         signed_error: '-1.00000000', absolute_error: '1.00000000',
         squared_error: '1.00000000', symmetric_percentage_error: '0.99502488',
-        interval_hit: index < 8, nominal_coverage_pct: '90.00',
+        interval_hit: index < 8, nominal_coverage_pct: '90.00', interval_semantics: 'DECLARED_NOMINAL_COVERAGE',
         evaluated_at: `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
         total_count: '10',
       })),
