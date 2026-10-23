@@ -432,8 +432,23 @@ export class ModbusTcpReadDriver extends EventEmitter {
       this.emit('fault', this.lastError);
       throw new Error('Modbus TCP read failed; no write operation was attempted');
     } finally {
+      // Some modbus-serial TCP close paths do not invoke the callback after
+      // a socket fault. Bound cleanup time so one failed device cannot stall
+      // the gateway's polling loop or keep the process alive indefinitely.
       await new Promise((resolve) => {
-        try { client.close(() => resolve()); } catch { resolve(); }
+        let settled = false;
+        let cleanupTimer;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (cleanupTimer) clearTimeout(cleanupTimer);
+          resolve();
+        };
+        cleanupTimer = setTimeout(() => {
+          try { client.destroy(); } catch { /* socket may already be closed */ }
+          finish();
+        }, Math.min(1000, Math.max(100, this.device.timeoutMs)));
+        try { client.close(finish); } catch { finish(); }
       });
       this.connected = false;
     }
