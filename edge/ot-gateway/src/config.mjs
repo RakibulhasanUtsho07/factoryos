@@ -100,6 +100,7 @@ export function validateGatewayConfig(config, env = process.env) {
   config.modbus ??= [];
   ensure(Array.isArray(config.opcua) && config.opcua.length <= 100, 'opcua must be an array of at most 100 profiles');
   ensure(Array.isArray(config.modbus) && config.modbus.length <= 100, 'modbus must be an array of at most 100 profiles');
+  ensure(Boolean(config.mqtt) || config.opcua.length > 0 || config.modbus.length > 0, 'at least one protocol driver must be configured');
 
   const registered = new Set();
   const checkIdentity = (device, protocol) => {
