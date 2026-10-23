@@ -42,7 +42,7 @@ BEGIN
     IF NOT EXISTS (
       SELECT 1 FROM pg_policies p
       WHERE p.schemaname='public' AND p.tablename=table_name
-        AND p.policyname='fo_privacy_scope_enforce' AND NOT p.permissive
+        AND p.policyname='fo_privacy_scope_enforce' AND p.permissive='RESTRICTIVE'
         AND COALESCE(p.qual,'') ILIKE '%factoryos_current_tenant_id%'
         AND COALESCE(p.with_check,'') ILIKE '%factoryos_current_tenant_id%'
     ) THEN
