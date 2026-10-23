@@ -163,20 +163,35 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
       updated_at: scheduledFor,
       version: '1',
     };
-    const client = { query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>>() };
-    client.query
-      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [policy], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-      .mockResolvedValueOnce({ rows: [{ id: sessionId }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ id: taskA }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ id: taskB }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ next_run_at: nextRunAt }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    let childTaskIndex = 0;
+    const client = {
+      query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>>()
+        .mockImplementation(async (...args: unknown[]) => {
+          const sql = String(args[0]);
+          if (sql.includes('SELECT count(*)::text AS count')) {
+            return { rows: [{ count: '0' }], rowCount: 1 };
+          }
+          if (sql.includes('FROM inventory_cycle_count_recurring_policies p')
+            && sql.includes('FOR UPDATE OF p SKIP LOCKED')) {
+            return { rows: [policy], rowCount: 1 };
+          }
+          if (sql.includes('FROM inventory_cycle_count_recurring_policy_occurrences')
+            && sql.startsWith('SELECT')) {
+            return { rows: [], rowCount: 0 };
+          }
+          if (sql.includes('INSERT INTO inventory_cycle_count_sessions')) {
+            return { rows: [{ id: sessionId }], rowCount: 1 };
+          }
+          if (sql.includes('INSERT INTO inventory_cycle_count_tasks')) {
+            childTaskIndex += 1;
+            return { rows: [{ id: childTaskIndex === 1 ? taskA : taskB }], rowCount: 1 };
+          }
+          if (sql.includes('UPDATE inventory_cycle_count_recurring_policies')) {
+            return { rows: [{ next_run_at: nextRunAt }], rowCount: 1 };
+          }
+          return { rows: [], rowCount: 1 };
+        }),
+    };
 
     databaseMock.transaction.mockImplementation(async (...args: unknown[]) => {
       const work = args[1] as (transactionClient: unknown) => Promise<unknown>;
@@ -196,14 +211,19 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
       scheduled_for: scheduledFor,
       next_run_at: nextRunAt,
     }]);
-    const queries = client.query.mock.calls.map(([sql]) => String(sql));
+    const calls = client.query.mock.calls;
+    const queries = calls.map(([sql]) => String(sql));
     expect(queries.filter((sql) => sql.includes('INSERT INTO inventory_cycle_count_sessions'))).toHaveLength(1);
     expect(queries.filter((sql) => sql.includes('INSERT INTO inventory_cycle_count_tasks'))).toHaveLength(2);
-    const occurrenceCall = client.query.mock.calls.find(([sql]) =>
+    const occurrenceCall = calls.find(([sql]) =>
       String(sql).includes('INSERT INTO inventory_cycle_count_recurring_policy_occurrences'),
     );
     expect(occurrenceCall?.[1]).toEqual(expect.arrayContaining([null, sessionId]));
-    expect(queries.some((sql) => sql.includes('INVENTORY.CYCLE_COUNT_SESSION_SCHEDULED'))).toBe(true);
+    const outboxParams = calls
+      .filter(([sql]) => String(sql).includes('INSERT INTO outbox_events'))
+      .map(([, params]) => params as unknown[]);
+    expect(outboxParams.some((params) => params[4] === 'INVENTORY.CYCLE_COUNT_SESSION_SCHEDULED')).toBe(true);
+    expect(outboxParams.some((params) => params[4] === 'INVENTORY.CYCLE_COUNT_RECURRING_OCCURRENCE_MATERIALIZED')).toBe(true);
   });
 
   it('rejects an invalid list limit before querying', async () => {
