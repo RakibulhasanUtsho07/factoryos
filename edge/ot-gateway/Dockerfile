@@ -16,5 +16,5 @@ USER node
 EXPOSE 8443
 VOLUME ["/var/lib/factoryos-ot"]
 HEALTHCHECK --interval=20s --timeout=4s --start-period=30s --retries=3 \
-  CMD node -e "fetch('https://127.0.0.1:8443/healthz',{rejectUnauthorized:false,signal:AbortSignal.timeout(2500)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "const https=require('node:https');const req=https.get('https://127.0.0.1:8443/healthz',{rejectUnauthorized:false,timeout:2500},res=>{res.resume();process.exit(res.statusCode===200?0:1)});req.on('error',()=>process.exit(1));req.on('timeout',()=>{req.destroy();process.exit(1)})"
 CMD ["node", "src/index.mjs"]
