@@ -12,6 +12,17 @@ function fail(message) {
   process.exitCode = 1;
 }
 
+function safeApiStartupDiagnostics(stdout, stderr) {
+  const candidates = [...stdout.split(/\r?\n/), ...stderr.split(/\r?\n/)]
+    .filter((line) => /\[Nest\].*(?:ERROR|Exception)|\b(?:Error|TypeError|ReferenceError|SyntaxError|RangeError|UnknownDependenciesException|QueryFailedError):|Cannot find module|Cannot resolve dependencies|Error: Nest can't resolve/i.test(line))
+    .slice(-3);
+  return candidates.map((line) => line
+    .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, '[REDACTED_DATABASE_URL]')
+    .replace(/Bearer\s+[^\s'"]+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:password|secret|token|credential|api[_-]?key|authorization)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 500));
+}
+
 async function findFreePort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -119,7 +130,13 @@ try {
   // Deliberately avoid logging the database URL, raw request data or application logs.
   console.error(message);
   if (child && (stdoutTail || stderrTail)) {
-    console.error('candidate API emitted diagnostic output; full logs are intentionally not printed to avoid disclosing runtime configuration');
+    const safeDiagnostics = safeApiStartupDiagnostics(stdoutTail, stderrTail);
+    if (safeDiagnostics.length) {
+      console.error('candidate API sanitized startup diagnostics:');
+      for (const line of safeDiagnostics) console.error(line);
+    } else {
+      console.error('candidate API emitted startup output without a recognized safe error signature; full logs are intentionally suppressed');
+    }
   }
   process.exitCode = 1;
 } finally {
