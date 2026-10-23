@@ -13,13 +13,13 @@ function fail(message) {
 }
 
 function safeApiStartupDiagnostics(stdout, stderr) {
-  // Startup failures can originate in Nest, pg or a native dependency. Keep
-  // only the bounded output tail and redact connection strings and common
-  // credential forms before exposing any diagnostic in CI logs.
+  // Keep only a bounded startup tail and redact connection strings and common
+  // credential forms. Do not filter for guessed exception keywords: clean
+  // process exits and DI bootstrap failures may not contain a known signature.
   const candidates = [...stdout.split(/\r?\n/), ...stderr.split(/\r?\n/)]
     .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
-    .filter((line) => /error|exception|unknown|cannot|dependenc|AuditService|IamService|moduleRef|Nest|stack/i.test(line))
-    .slice(-16);
+    .filter((line) => line.length > 0)
+    .slice(-24);
   return candidates.map((line) => line
     .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, '[REDACTED_DATABASE_URL]')
     .replace(/https?:\/\/[^\s'"]+/gi, '[REDACTED_URL]')
