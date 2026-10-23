@@ -795,8 +795,14 @@ export class SaasBillingService {
     const tenantId = typeof metadata.factoryos_tenant_id === 'string' ? metadata.factoryos_tenant_id : '';
     const closeId = typeof metadata.factoryos_billing_close_id === 'string' ? metadata.factoryos_billing_close_id : '';
     const invoiceId = typeof invoice.id === 'string' ? invoice.id : '';
-    if (!isUUID(tenantId) || !isUUID(closeId) || !/^in_[A-Za-z0-9]+$/.test(invoiceId)) {
+    const hasFactoryOsBillingMetadata = [
+      'factoryos_tenant_id', 'factoryos_billing_close_id', 'factoryos_billing_snapshot_hash',
+    ].some((key) => Object.prototype.hasOwnProperty.call(metadata, key));
+    if (!hasFactoryOsBillingMetadata) {
       return { accepted: true, ignored: true, reason: 'Invoice is not linked to a FactoryOS billing close' };
+    }
+    if (!isUUID(tenantId) || !isUUID(closeId) || !/^in_[A-Za-z0-9]+$/.test(invoiceId)) {
+      throw new ConflictException('Stripe invoice contains incomplete FactoryOS billing metadata; webhook delivery is rejected for reconciliation');
     }
     const close = await this.database.query<CloseRow>(
       'SELECT ' + CLOSE_COLUMNS + ' FROM saas_billing_close_runs WHERE tenant_id=$1 AND id=$2 LIMIT 1',
@@ -804,14 +810,14 @@ export class SaasBillingService {
       { tenantId },
     );
     if (!close.rows[0]) {
-      return { accepted: true, ignored: true, reason: 'Invoice close binding was not found' };
+      throw new ConflictException('Stripe invoice references a FactoryOS billing close that was not found; webhook must be reconciled before acknowledgement');
     }
     const closeRow = close.rows[0];
     const eventCustomer = typeof invoice.customer === 'string' ? invoice.customer
       : isRecord(invoice.customer) && typeof invoice.customer.id === 'string' ? invoice.customer.id : '';
     if (metadata.factoryos_billing_snapshot_hash !== closeRow.snapshot_hash
       || eventCustomer !== closeRow.provider_customer_id) {
-      return { accepted: true, ignored: true, reason: 'Invoice snapshot or customer binding mismatch' };
+      throw new ConflictException('Stripe invoice snapshot or customer binding does not match the immutable close; webhook delivery is rejected for reconciliation');
     }
 
     const status = typeof invoice.status === 'string' ? invoice.status : null;
@@ -984,6 +990,12 @@ export class SaasBillingService {
     if (invoice.customerId !== close.provider_customer_id) {
       throw new ConflictException('Stripe returned an invoice for a different customer than the immutable billing close');
     }
+    if (invoice.currency !== close.currency) {
+      throw new ConflictException('Stripe invoice currency does not match the immutable billing-close currency');
+    }
+    if (invoice.collectionMethod !== close.collection_method) {
+      throw new ConflictException('Stripe invoice collection method does not match the immutable billing-close configuration');
+    }
     if (invoice.metadata.factoryos_billing_close_id !== close.id
       || invoice.metadata.factoryos_tenant_id !== close.tenant_id
       || invoice.metadata.factoryos_billing_snapshot_hash !== close.snapshot_hash) {
@@ -992,6 +1004,9 @@ export class SaasBillingService {
   }
 
   private assertInvoiceTaxReady(close: CloseRow, invoice: StripeInvoice): void {
+    if (invoice.automaticTaxEnabled !== close.automatic_tax_enabled) {
+      throw new ConflictException('Stripe automatic-tax configuration does not match the immutable billing-close tax snapshot');
+    }
     if (close.automatic_tax_enabled && invoice.status !== 'draft' && invoice.automaticTaxStatus !== 'complete') {
       throw new ConflictException('Provider automatic-tax calculation is not complete; do not send or charge this invoice until tax status is complete');
     }

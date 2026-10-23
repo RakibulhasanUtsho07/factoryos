@@ -75,7 +75,11 @@ describe('SaasBillingService', () => {
     )).toThrow(ConflictException);
     expect(() => (service as any).assertInvoiceTaxReady(
       { automatic_tax_enabled: true },
-      { status: 'open', automaticTaxStatus: 'complete' },
+      { status: 'open', automaticTaxStatus: 'complete', automaticTaxEnabled: false },
+    )).toThrow(ConflictException);
+    expect(() => (service as any).assertInvoiceTaxReady(
+      { automatic_tax_enabled: true },
+      { status: 'open', automaticTaxStatus: 'complete', automaticTaxEnabled: true },
     )).not.toThrow();
     expect(() => (service as any).assertInvoiceTaxReady(
       { automatic_tax_enabled: false },
@@ -374,6 +378,71 @@ describe('SaasBillingService', () => {
       .map((call) => call[1] as unknown[]);
     expect(receipts.some((values) => values[2] === 'PAYMENT_FAILED' && values[5] === 'payment-retry:' + idempotencyKey)).toBe(true);
     expect(receipts.some((values) => values[2] === 'INVOICE_PAID' && values[5] === 'payment-retry-paid:' + idempotencyKey)).toBe(true);
+  });
+
+  it('rejects provider invoice currency or collection method drift from a saved billing close', async () => {
+    const { service } = mocks();
+    const close = {
+      id: '33333333-3333-4333-8333-333333333333',
+      tenant_id: tenant,
+      provider_customer_id: 'cus_123abc',
+      provider_code: 'stripe',
+      collection_method: 'send_invoice',
+      currency: 'USD',
+      snapshot_hash: 'a'.repeat(64),
+    };
+    const invoice = {
+      id: 'in_123abc', customerId: 'cus_123abc', currency: 'EUR',
+      collectionMethod: 'charge_automatically',
+      metadata: {
+        factoryos_tenant_id: tenant,
+        factoryos_billing_close_id: close.id,
+        factoryos_billing_snapshot_hash: close.snapshot_hash,
+      },
+    };
+    await expect((service as any).assertInvoiceBelongsToClose(invoice, close))
+      .rejects.toThrow('currency does not match');
+    await expect((service as any).assertInvoiceBelongsToClose({
+      ...invoice, currency: 'USD',
+    }, close)).rejects.toThrow('collection method does not match');
+  });
+
+  it('does not silently acknowledge a malformed FactoryOS-linked invoice webhook', async () => {
+    const { service, database, stripe } = mocks();
+    stripe.verifyWebhook.mockReturnValueOnce({
+      id: 'evt_123abc', type: 'invoice.paid', created: 1, signatureTimestamp: 1,
+      data: { object: { id: 'in_123abc', metadata: { factoryos_tenant_id: tenant } } },
+    });
+    await expect(service.receiveStripeWebhook('sig', Buffer.from('{}')))
+      .rejects.toThrow(ConflictException);
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('ignores unrelated Stripe invoice webhooks but rejects a missing linked close', async () => {
+    const { service, database, stripe } = mocks();
+    stripe.verifyWebhook.mockReturnValueOnce({
+      id: 'evt_unrelated', type: 'invoice.paid', created: 1, signatureTimestamp: 1,
+      data: { object: { id: 'in_unrelated', metadata: {} } },
+    });
+    await expect(service.receiveStripeWebhook('sig', Buffer.from('{}')))
+      .resolves.toMatchObject({ accepted: true, ignored: true });
+    expect(database.query).not.toHaveBeenCalled();
+
+    stripe.verifyWebhook.mockReturnValueOnce({
+      id: 'evt_linked', type: 'invoice.paid', created: 1, signatureTimestamp: 1,
+      data: { object: {
+        id: 'in_123abc',
+        customer: 'cus_123abc',
+        metadata: {
+          factoryos_tenant_id: tenant,
+          factoryos_billing_close_id: '33333333-3333-4333-8333-333333333333',
+          factoryos_billing_snapshot_hash: 'a'.repeat(64),
+        },
+      } },
+    });
+    database.query.mockResolvedValueOnce({ rows: [] });
+    await expect(service.receiveStripeWebhook('sig', Buffer.from('{}')))
+      .rejects.toThrow('billing close that was not found');
   });
 
   it('labels close estimates as not an issued invoice and keeps reconciliation separate', () => {
