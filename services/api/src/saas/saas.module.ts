@@ -32,6 +32,7 @@ import { StripeBillingProvider } from './stripe-billing.provider';
 import { SaasPhysicalProvisioningController } from './saas-physical-provisioning.controller';
 import { SaasPhysicalProvisioningService } from './saas-physical-provisioning.service';
 import { SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS } from './saas-physical-infrastructure.adapters';
+import { KubernetesSaasPhysicalInfrastructureAdapter } from './kubernetes-saas-physical-infrastructure.adapter';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
@@ -51,9 +52,12 @@ import { SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS } from './saas-physical-infrastru
     SaasBillingService,
     StripeBillingProvider,
     SaasPhysicalProvisioningService,
-    // Production must explicitly register a reviewed provider implementation for each topology.
-    // Empty by default so physical operations fail closed rather than returning simulated success.
-    { provide: SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS, useValue: [] },
+    KubernetesSaasPhysicalInfrastructureAdapter,
+    {
+      provide: SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS,
+      useFactory: (adapter: KubernetesSaasPhysicalInfrastructureAdapter) => [adapter],
+      inject: [KubernetesSaasPhysicalInfrastructureAdapter],
+    },
     SaasSubscriptionService,
     SaasSandboxService,
     SaasReleaseRolloutService,
