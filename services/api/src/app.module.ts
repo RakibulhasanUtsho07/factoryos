@@ -34,9 +34,9 @@ import { CommercialModule } from './commercial/commercial.module';
 import { ShouldCostModule } from './should-cost/should-cost.module';
 import { FinanceModule } from './finance/finance.module';
 import { WorkforceModule } from './workforce/workforce.module';
-import { EdgeModule } from './edge/edge.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { OtDeviceModule } from './ot/ot-device.module';
+import { EdgeModule } from './edge/edge.module';
 
 import { PolicyModule } from './policy/policy.module';
 import { CbbModule } from './cbb/cbb.module';
