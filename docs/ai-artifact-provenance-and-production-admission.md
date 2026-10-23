@@ -17,10 +17,10 @@ This implementation slice targets SRS v2.1 **FR-MSO-03** (artifact provenance, s
 
 All endpoints require factory scope and ai.agents.publish:
 
-1. POST /v2/ai/artifacts/sources creates a pending source with source_key, label, public_key_pem and valid_until.
-2. POST /v2/ai/artifacts/sources/:sourceId/approve independently approves it with a reason.
-3. POST /v2/ai/artifacts registers an artifact using artifact_type (MODEL, TOOL, PROMPT or POLICY), artifact_key, version, sha256, source_id, expires_at and signature_base64. Registration verifies the signature before persistence.
-4. POST /v2/ai/artifacts/:artifactId/revoke and POST /v2/ai/artifacts/sources/:sourceId/revoke revoke a registry identity or its entire signing authority with a mandatory reason.
+1. POST /api/v2/ai/artifacts/sources creates a pending source with source_key, label, public_key_pem and valid_until.
+2. POST /api/v2/ai/artifacts/sources/:sourceId/approve independently approves it with a reason.
+3. POST /api/v2/ai/artifacts registers an artifact using artifact_type (MODEL, TOOL, PROMPT or POLICY), artifact_key, version, sha256, source_id, expires_at and signature_base64. Registration verifies the signature before persistence.
+4. POST /api/v2/ai/artifacts/:artifactId/revoke and POST /api/v2/ai/artifacts/sources/:sourceId/revoke revoke a registry identity or its entire signing authority with a mandatory reason.
 
 The source, artifact and lifecycle records are tenant-scoped and protected by forced PostgreSQL RLS. Their immutable identity, explicit approval/revocation transitions and append-only provenance/admission receipts are database guarded. A caller-supplied verified=true flag is not accepted as signature evidence.
 
