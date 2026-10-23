@@ -29,12 +29,16 @@ import { SaasUsageService } from './saas-usage.service';
 import { SaasBillingController } from './saas-billing.controller';
 import { SaasBillingService } from './saas-billing.service';
 import { StripeBillingProvider } from './stripe-billing.provider';
+import { SaasPhysicalProvisioningController } from './saas-physical-provisioning.controller';
+import { SaasPhysicalProvisioningService } from './saas-physical-provisioning.service';
+import { SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS } from './saas-physical-infrastructure.adapters';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [
     SaasUsageController,
     SaasBillingController,
+    SaasPhysicalProvisioningController,
     SaasSubscriptionController,
     SaasSandboxController,
     SaasReleaseRolloutController,
@@ -46,6 +50,10 @@ import { StripeBillingProvider } from './stripe-billing.provider';
     SaasUsageService,
     SaasBillingService,
     StripeBillingProvider,
+    SaasPhysicalProvisioningService,
+    // Production must explicitly register a reviewed provider implementation for each topology.
+    // Empty by default so physical operations fail closed rather than returning simulated success.
+    { provide: SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS, useValue: [] },
     SaasSubscriptionService,
     SaasSandboxService,
     SaasReleaseRolloutService,
