@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { createHash } from 'node:crypto';
 import { KubernetesSaasPhysicalInfrastructureAdapter } from './kubernetes-saas-physical-infrastructure.adapter';
 import { SaasDeploymentProfile } from './dto/create-saas-subscription-plan.dto';
