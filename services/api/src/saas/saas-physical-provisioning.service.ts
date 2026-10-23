@@ -243,6 +243,16 @@ export class SaasPhysicalProvisioningService {
     if (!this.deploymentProfileService) {
       throw new ServiceUnavailableException('Deployment-profile lifecycle service is not available; physical provisioning is blocked');
     }
+    const latestProfileResult = await this.database.query<QueryResultRow & { id: string; version: string | number }>(
+      `SELECT id::text AS id,version FROM saas_deployment_profile_versions
+       WHERE tenant_id=$1 AND scope_key=$2 ORDER BY version DESC LIMIT 1`,
+      [tenantId, row.scope_key],
+      { tenantId, userId: actorUserId },
+    );
+    const latestProfile = latestProfileResult.rows[0];
+    if (!latestProfile || latestProfile.id !== row.id || Number(latestProfile.version) !== Number(row.version)) {
+      throw new ConflictException('Deployment profile version is stale; provision only the latest lifecycle snapshot');
+    }
     const profile = this.mapProfile(row);
     const key = this.idempotency(input?.idempotency_key);
     const requestHash = this.hash({
