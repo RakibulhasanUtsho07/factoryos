@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { SaasBillingService } from './saas-billing.service';
+import { StripeBillingProviderError } from './stripe-billing.provider';
 
 const tenant = '11111111-1111-4111-8111-111111111111';
 const factoryUser = '22222222-2222-4222-8222-222222222222';
@@ -291,6 +292,88 @@ describe('SaasBillingService', () => {
     expect(replay).toEqual({ accepted: true, duplicate: true });
     expect(database.transaction).toHaveBeenCalledTimes(2);
     expect(client.query).toHaveBeenCalledTimes(6);
+  });
+
+  it('preserves immutable failure evidence and records recovery under a distinct idempotency receipt', async () => {
+    const { service, database, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const invoiceId = 'in_123abc';
+    const idempotencyKey = 'payment-retry-recover-1';
+    const requestHash = (service as any).hash({ tenantId: tenant, closeId, idempotencyKey });
+    const close = {
+      id: closeId, tenant_id: tenant, provider_account_id: '44444444-4444-4444-8444-444444444444',
+      provider_account_version: 1, provider_code: 'stripe', provider_customer_id: 'cus_123abc',
+      collection_method: 'charge_automatically', days_until_due: null, automatic_tax_enabled: false,
+      tax_behavior: null, currency: 'USD', period_start: '2026-10-01T00:00:00.000Z',
+      period_end: '2026-10-02T00:00:00.000Z', usage_event_count: '1', adjustment_count: '0',
+      usage_amount_minor: '125', adjustment_amount_minor: '0', expected_subtotal_minor: '125',
+      lines: [], snapshot_hash: 'a'.repeat(64), request_hash: 'b'.repeat(64),
+      idempotency_key: 'billing-close-1', closed_by: factoryUser, created_at: '2026-10-02T00:00:00.000Z',
+    };
+    const issuedEvent = {
+      id: 'event-issued', tenant_id: tenant, close_id: closeId, event_type: 'INVOICE_ISSUED',
+      provider_invoice_id: invoiceId, provider_invoice_status: 'open', idempotency_key: 'invoice-issued:' + closeId,
+      request_hash: close.request_hash, error_code: null, evidence_hash: 'c'.repeat(64),
+      actor_user_id: factoryUser, created_at: '2026-10-02T00:00:00.000Z',
+    };
+    const failureEvent = {
+      id: 'event-failed', tenant_id: tenant, close_id: closeId, event_type: 'PAYMENT_FAILED',
+      provider_invoice_id: invoiceId, provider_invoice_status: 'open', idempotency_key: 'payment-retry:' + idempotencyKey,
+      request_hash: requestHash, error_code: 'STRIPE_card_declined', evidence_hash: null,
+      actor_user_id: factoryUser, created_at: '2026-10-02T00:01:00.000Z',
+    };
+    const paidEvent = {
+      ...failureEvent, id: 'event-paid', event_type: 'INVOICE_PAID',
+      idempotency_key: 'payment-retry-paid:' + idempotencyKey,
+      provider_invoice_status: 'paid', error_code: null,
+    };
+    const priorRows = [issuedEvent, failureEvent];
+    database.query
+      .mockResolvedValueOnce({ rows: [] }) // first request: no previous retry receipt
+      .mockResolvedValueOnce({ rows: [close] }) // load immutable billing close
+      .mockResolvedValueOnce({ rows: priorRows }) // invoice issue + previously failed payment
+      .mockResolvedValueOnce({ rows: [] }) // append immutable failure receipt
+      .mockResolvedValueOnce({ rows: [failureEvent] }) // replay sees previous failed request
+      .mockResolvedValueOnce({ rows: [close] }) // reload close
+      .mockResolvedValueOnce({ rows: priorRows }) // reload provider invoice history
+      .mockResolvedValueOnce({ rows: [] }) // append paid recovery receipt
+      .mockResolvedValueOnce({ rows: [paidEvent, ...priorRows] }); // response reads recovered state
+
+    stripe.retrieveInvoice
+      .mockResolvedValueOnce({
+        id: invoiceId, customerId: 'cus_123abc', currency: 'USD', status: 'open',
+        subtotalMinor: 125, taxMinor: 0, discountMinor: 0, totalMinor: 125,
+        amountDueMinor: 125, amountPaidMinor: 0, amountRemainingMinor: 125,
+        automaticTaxStatus: null, automaticTaxEnabled: false, collectionMethod: 'charge_automatically',
+        metadata: { factoryos_tenant_id: tenant, factoryos_billing_close_id: closeId, factoryos_billing_snapshot_hash: close.snapshot_hash },
+        livemode: false, createdAt: 1,
+      })
+      .mockResolvedValueOnce({
+        id: invoiceId, customerId: 'cus_123abc', currency: 'USD', status: 'paid',
+        subtotalMinor: 125, taxMinor: 0, discountMinor: 0, totalMinor: 125,
+        amountDueMinor: 0, amountPaidMinor: 125, amountRemainingMinor: 0,
+        automaticTaxStatus: null, automaticTaxEnabled: false, collectionMethod: 'charge_automatically',
+        metadata: { factoryos_tenant_id: tenant, factoryos_billing_close_id: closeId, factoryos_billing_snapshot_hash: close.snapshot_hash },
+        livemode: false, createdAt: 1,
+      });
+    stripe.payInvoice.mockRejectedValueOnce(new StripeBillingProviderError(402, 'card_declined'));
+
+    await expect(service.retryPayment(tenant, factoryUser, closeId, {
+      idempotency_key: idempotencyKey,
+    } as never)).rejects.toThrow('Stripe payment retry failed with code card_declined');
+
+    const recovered = await service.retryPayment(tenant, factoryUser, closeId, {
+      idempotency_key: idempotencyKey,
+    } as never);
+    expect(recovered.idempotent).toBe(true);
+    expect(recovered.close.status).toBe('PAID');
+    expect(stripe.payInvoice).toHaveBeenCalledTimes(1);
+
+    const receipts = database.query.mock.calls
+      .filter((call) => String(call[0]).includes('INSERT INTO saas_billing_close_events'))
+      .map((call) => call[1] as unknown[]);
+    expect(receipts.some((values) => values[2] === 'PAYMENT_FAILED' && values[5] === 'payment-retry:' + idempotencyKey)).toBe(true);
+    expect(receipts.some((values) => values[2] === 'INVOICE_PAID' && values[5] === 'payment-retry-paid:' + idempotencyKey)).toBe(true);
   });
 
   it('labels close estimates as not an issued invoice and keeps reconciliation separate', () => {
