@@ -3,6 +3,7 @@ BEGIN;
 DO $$
 DECLARE
   case_kind_constraint TEXT;
+  case_expectation_constraint TEXT;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -74,8 +75,21 @@ BEGIN
   FROM pg_constraint
   WHERE conrelid='public.ai_agent_evaluation_cases'::regclass
     AND conname='chk_ai_agent_evaluation_case_kind';
-  IF case_kind_constraint IS NULL OR case_kind_constraint NOT LIKE '%PRIVACY_NO_SECRET_LEAKAGE%' THEN
-    RAISE EXCEPTION 'AI_PRIVACY_EVALUATION_CASE_KIND_NOT_ALLOWED';
+  IF case_kind_constraint IS NULL
+     OR case_kind_constraint NOT LIKE '%PRIVACY_NO_SECRET_LEAKAGE%'
+     OR case_kind_constraint NOT LIKE '%RED_TEAM_POLICY_BYPASS%'
+     OR case_kind_constraint NOT LIKE '%EXPECTED_COMPENSATION%' THEN
+    RAISE EXCEPTION 'AI_REFUSAL_PRIVACY_REDTEAM_COMPENSATION_CASE_KINDS_NOT_ALLOWED';
+  END IF;
+
+  SELECT pg_get_constraintdef(oid) INTO case_expectation_constraint
+  FROM pg_constraint
+  WHERE conrelid='public.ai_agent_evaluation_cases'::regclass
+    AND conname='chk_ai_agent_evaluation_case_expectation';
+  IF case_expectation_constraint IS NULL
+     OR case_expectation_constraint NOT LIKE '%RED_TEAM_POLICY_BYPASS%'
+     OR case_expectation_constraint NOT LIKE '%EXPECTED_COMPENSATION%' THEN
+    RAISE EXCEPTION 'AI_RED_TEAM_COMPENSATION_EXPECTATION_CONSTRAINT_MISSING';
   END IF;
 
   IF NOT EXISTS (
@@ -83,6 +97,13 @@ BEGIN
     WHERE version='180_ai_agent_live_execution_evaluation'
   ) THEN
     RAISE EXCEPTION 'AI_LIVE_EVALUATION_MIGRATION_MARKER_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version='182_ai_agent_red_team_compensation_evaluation'
+  ) THEN
+    RAISE EXCEPTION 'AI_RED_TEAM_COMPENSATION_EVALUATION_MIGRATION_MARKER_MISSING';
   END IF;
 END $$;
 ROLLBACK;
