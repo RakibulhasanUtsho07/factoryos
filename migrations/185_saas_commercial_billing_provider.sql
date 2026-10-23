@@ -354,6 +354,60 @@ BEGIN
   END LOOP;
 END $$;
 
+-- Serialize usage/adjustment writes with billing close using one tenant-scoped
+-- advisory-lock key. The close service holds the session lock while it snapshots
+-- all aggregates; ledger INSERT triggers take the matching xact lock and reject
+-- late usage or adjustments if the period has already been closed.
+CREATE OR REPLACE FUNCTION factoryos_guard_saas_billing_closed_period()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+DECLARE
+  already_closed BOOLEAN;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('saas-billing-ledger:' || NEW.tenant_id::text, 0));
+
+  IF TG_TABLE_NAME='saas_usage_events' THEN
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.saas_billing_close_runs c
+      WHERE c.tenant_id=NEW.tenant_id
+        AND NEW.occurred_at >= c.period_start
+        AND NEW.occurred_at < c.period_end
+        AND (NEW.currency IS NULL OR c.currency=NEW.currency)
+    ) INTO already_closed;
+    IF already_closed THEN
+      RAISE EXCEPTION 'SaaS usage arrived in an already closed billing period; record an approved correction after finance review'
+        USING ERRCODE='55000';
+    END IF;
+  ELSIF TG_TABLE_NAME='saas_usage_adjustments' THEN
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.saas_billing_close_runs c
+      WHERE c.tenant_id=NEW.tenant_id
+        AND NEW.period_start < c.period_end
+        AND NEW.period_end > c.period_start
+        AND c.currency=NEW.currency
+    ) INTO already_closed;
+    IF already_closed THEN
+      RAISE EXCEPTION 'SaaS adjustment overlaps an already closed billing period; use an approved provider credit-note/tax-correction process'
+        USING ERRCODE='55000';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS saas_usage_events_billing_close_fence ON public.saas_usage_events;
+CREATE TRIGGER saas_usage_events_billing_close_fence
+BEFORE INSERT ON public.saas_usage_events
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_billing_closed_period();
+
+DROP TRIGGER IF EXISTS saas_usage_adjustments_billing_close_fence ON public.saas_usage_adjustments;
+CREATE TRIGGER saas_usage_adjustments_billing_close_fence
+BEFORE INSERT ON public.saas_usage_adjustments
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_billing_closed_period();
+
 INSERT INTO schema_migrations(version,checksum)
 VALUES('185_saas_commercial_billing_provider',NULL)
 ON CONFLICT(version) DO NOTHING;

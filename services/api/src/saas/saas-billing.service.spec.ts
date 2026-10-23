@@ -6,9 +6,15 @@ const tenant = '11111111-1111-4111-8111-111111111111';
 const factoryUser = '22222222-2222-4222-8222-222222222222';
 
 function mocks() {
+  const defaultLockClient = {
+    query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>()
+      .mockResolvedValue({ rows: [{ pg_advisory_unlock: true }] }),
+    release: jest.fn<(...args: unknown[]) => void>(),
+  };
   const database = {
     query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>(),
     transaction: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    getClient: jest.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue(defaultLockClient as never),
   };
   const iam = { authorize: jest.fn<(...args: unknown[]) => Promise<void>>() };
   const audit = { record: jest.fn<(...args: unknown[]) => Promise<string>>() };
@@ -30,6 +36,32 @@ function mocks() {
 }
 
 describe('SaasBillingService', () => {
+  it('holds a tenant ledger advisory lock for a billing snapshot and always releases the connection', async () => {
+    const { service, database } = mocks();
+    const client = {
+      query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ pg_advisory_unlock: true }] }),
+      release: jest.fn<(...args: unknown[]) => void>(),
+    };
+    database.getClient.mockResolvedValueOnce(client as never);
+
+    await expect((service as any).withTenantLedgerLock(tenant, async () => 'snapshot'))
+      .resolves.toBe('snapshot');
+
+    expect(client.query).toHaveBeenNthCalledWith(
+      1,
+      'SELECT pg_advisory_lock(hashtextextended($1, 0))',
+      ['saas-billing-ledger:' + tenant],
+    );
+    expect(client.query).toHaveBeenNthCalledWith(
+      2,
+      'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+      ['saas-billing-ledger:' + tenant],
+    );
+    expect(client.release).toHaveBeenCalledWith(false);
+  });
+
   it('validates provider account tax and collection boundaries before touching the database', () => {
     const { service, database } = mocks();
     expect(() => (service as any).normalizeAccount({

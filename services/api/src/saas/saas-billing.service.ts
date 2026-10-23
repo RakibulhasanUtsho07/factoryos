@@ -198,6 +198,11 @@ export class SaasBillingService {
   async createBillingClose(tenantId: string, actorUserId: string, input: CreateSaasBillingCloseDto) {
     this.scope(tenantId, actorUserId);
     await this.authorize(actorUserId, tenantId, 'saas.billing.close');
+    return this.withTenantLedgerLock(tenantId, () =>
+      this.createBillingCloseLocked(tenantId, actorUserId, input));
+  }
+
+  private async createBillingCloseLocked(tenantId: string, actorUserId: string, input: CreateSaasBillingCloseDto) {
     const period = this.normalizePeriod(input.period_start, input.period_end, 35);
     const currency = this.pattern(input.currency, 'currency', /^[A-Z]{3}$/);
     const idempotencyKey = this.idem(input.idempotency_key);
@@ -869,6 +874,32 @@ export class SaasBillingService {
       if (event.event_type === 'CLOSE_PREPARED') return 'PREPARED';
     }
     return 'PREPARED';
+  }
+
+  private async withTenantLedgerLock<T>(tenantId: string, callback: () => Promise<T>): Promise<T> {
+    const client = await this.database.getClient();
+    const lockKey = 'saas-billing-ledger:' + tenantId;
+    let locked = false;
+    let discardClient = false;
+    try {
+      await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+      locked = true;
+      return await callback();
+    } finally {
+      if (locked) {
+        try {
+          const result = await client.query<{ pg_advisory_unlock: boolean }>(
+            'SELECT pg_advisory_unlock(hashtextextended($1, 0))',
+            [lockKey],
+          );
+          discardClient = result.rows[0]?.pg_advisory_unlock !== true;
+        } catch {
+          // Never return a pooled connection that could still hold the session lock.
+          discardClient = true;
+        }
+      }
+      client.release(discardClient);
+    }
   }
 
   private async loadAccount(tenantId: string, actorUserId: string): Promise<AccountRow> {

@@ -115,6 +115,18 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM permissions WHERE code='saas.billing.reconcile') THEN
     RAISE EXCEPTION 'SAAS_COMMERCIAL_BILLING_PERMISSIONS_MISSING';
   END IF;
-END $$;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgname='saas_usage_events_billing_close_fence' AND NOT t.tgisinternal
+      AND t.tgrelid='public.saas_usage_events'::regclass
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgname='saas_usage_adjustments_billing_close_fence' AND NOT t.tgisinternal
+      AND t.tgrelid='public.saas_usage_adjustments'::regclass
+  ) THEN
+    RAISE EXCEPTION 'SAAS_BILLING_CLOSE_LEDGER_CONCURRENCY_FENCE_MISSING';
+  END IF;
+END $;
 
 SELECT 'SaaS commercial billing provider, RLS, immutable evidence and idempotency contract passed' AS result;
