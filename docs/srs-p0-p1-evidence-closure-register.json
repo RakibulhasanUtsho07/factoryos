@@ -2491,9 +2491,16 @@
       "provisionalOwnerRole": "AI Platform / Safety",
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
-      "directCodeReferences": [],
+      "directCodeReferences": [
+        "services/api/src/ai/ai.model.inference.controller.ts",
+        "services/api/src/ai/ai.openai-compatible.provider.service.ts",
+        "services/api/src/ai/ai.model.provider.gateway.service.ts"
+      ],
       "migrationReferences": [],
-      "automatedTestReferences": [],
+      "automatedTestReferences": [
+        "services/api/src/ai/ai.openai-compatible.provider.service.spec.ts",
+        "services/api/src/ai/ai.model.provider.gateway.service.spec.ts"
+      ],
       "ciRunUrls": [],
       "stagingOperationalEvidence": [],
       "namedOwner": null,
@@ -2501,7 +2508,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Repository matrix assessment is not requirement-level acceptance. Populate direct evidence and obtain owner review; do not infer PASS.",
+      "closureNote": "A tenant/factory-scoped authenticated prompt-only inference route now uses a signed provider-route manifest and fails closed before outbound inference. FR-AIN-01 remains NOT_ACCEPTED because the endpoint does not replace the complete retrieval/context/policy/decision gateway and broader provider-route coverage plus operational acceptance remain open.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -9774,13 +9781,15 @@
       "ownerAssignmentStatus": "UNASSIGNED",
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
       "directCodeReferences": [
-        "services/api/src/ai/artifacts/ai.artifact.provenance.service.ts"
+        "services/api/src/ai/artifacts/ai.artifact.provenance.service.ts",
+        "services/api/src/ai/ai.openai-compatible.provider.service.ts"
       ],
       "migrationReferences": [
         "migrations/195_ai_artifact_provenance_admission.sql"
       ],
       "automatedTestReferences": [
         "services/api/src/ai/artifacts/ai.artifact.provenance.service.spec.ts",
+        "services/api/src/ai/ai.openai-compatible.provider.service.spec.ts",
         "services/api/test/ai-artifact-provenance.sql"
       ],
       "ciRunUrls": [],
@@ -9790,7 +9799,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Direct implementation and test pointers now exist. Acceptance remains NOT_ACCEPTED until exact-head CI passes, source/build-signing custody and artifact-byte verification are evidenced, and named owner/reviewer approval is recorded.",
+      "closureNote": "Ed25519 source registration and artifact-envelope verification are implemented; the live OpenAI-compatible route now signs/admit-checks a canonical route-manifest digest binding endpoint, provider model ID and route version. Remote model weight-byte verification, signing custody and deployment release evidence remain open.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"
@@ -9826,6 +9835,8 @@
       "sourcePriorityReview": "EXTRACTED_NOT_OWNER_ATTESTED",
       "directCodeReferences": [
         "services/api/src/ai/ai.model.provider.gateway.service.ts",
+        "services/api/src/ai/ai.openai-compatible.provider.service.ts",
+        "services/api/src/ai/ai.model.inference.controller.ts",
         "services/api/src/ai/tools/ai.tool.gateway.service.ts",
         "services/api/src/ai/artifacts/ai.artifact.provenance.service.ts"
       ],
@@ -9834,6 +9845,7 @@
       ],
       "automatedTestReferences": [
         "services/api/src/ai/ai.model.provider.gateway.service.spec.ts",
+        "services/api/src/ai/ai.openai-compatible.provider.service.spec.ts",
         "services/api/src/ai/tools/ai.tool.gateway.service.spec.ts",
         "services/api/src/ai/artifacts/ai.artifact.provenance.service.spec.ts",
         "services/api/test/ai-artifact-provenance.sql"
@@ -9845,7 +9857,7 @@
       "acceptedCandidateSha": null,
       "disposition": "OPEN",
       "acceptanceResult": "NOT_ACCEPTED",
-      "closureNote": "Production Tool Gateway artifact checks and a shared model-provider admission boundary are implemented with fail-closed callback ordering and append-only admission receipts. Requirement remains NOT_ACCEPTED until concrete live model-provider adapters are wired and verified on the exact candidate, plus named owner/reviewer and production rollout evidence.",
+      "closureNote": "Production Tool Gateway and the authenticated OpenAI-compatible inference route now deny invalid signed tool/model route artifacts before metering or provider network I/O and persist admission receipts. Requirement remains NOT_ACCEPTED until exact-head CI, a deployed immutable provider route, provider data-residency/egress review and named owner/reviewer acceptance are recorded.",
       "requirementMatrixPath": "docs/srs-v2.1-requirement-evidence-matrix.md",
       "activeScopeStatus": "UNVERIFIED_ACTIVE_V21_SCOPE",
       "priorityProvenance": "EXTRACTED_FROM_FULL_PDF_TEXT_INDEX_NOT_OWNER_ATTESTED"

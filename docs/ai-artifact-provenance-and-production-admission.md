@@ -38,6 +38,24 @@ Outside explicit `development` and `test` modes—including staging and an unset
 
 The gateway is a reusable enforcement boundary, not evidence that a provider is already integrated. This repository still has no concrete live provider adapter routed through it; FR-MSO-05 model-inference coverage therefore remains **partial** until each real adapter uses this gateway and passes provider-level tests against the exact model digest.
 
+## OpenAI-compatible inference route
+
+The authenticated `POST /api/v2/ai/inference/chat-completions` route is the first concrete provider adapter wired through `AiModelProviderGatewayService`. It accepts a bounded user prompt, a bounded completion-token limit and temperature; caller-provided model names, endpoints, API keys and system messages are not accepted. The provider credential and endpoint come only from deployment configuration, the API key is sent only in the Authorization header, and upstream error bodies are never returned to callers.
+
+Configuration:
+- `AI_MODEL_PROVIDER_CHAT_COMPLETIONS_URL`: full `https://.../chat/completions` endpoint; production/staging require HTTPS with no embedded credentials, query or fragment.
+- `AI_MODEL_PROVIDER_API_KEY`: provider secret, held by the deployment secret store.
+- `AI_MODEL_PROVIDER_MODEL_ID`: exact version-pinned model/deployment identifier; response model identity must equal this value exactly.
+- `AI_MODEL_PROVIDER_ARTIFACT_VERSION`: immutable FactoryOS route release version.
+- `AI_MODEL_PROVIDER_EGRESS_APPROVED=true`: required outside explicit development/test environments after data-residency, provider-contract and outbound-network approval.
+- `AI_MODEL_PROVIDER_TIMEOUT_MS`: optional bounded timeout from 1 to 60000 ms (default 15000).
+
+For remote inference, the MODEL artifact SHA-256 is computed from `canonicalizeAiModelProviderRouteManifest` in `services/api/src/ai/ai.openai-compatible.provider.service.ts`. That canonical JSON binds schema version, adapter/provider code, normalized endpoint URL, exact provider model ID and route artifact version. The trusted signer registers the SHA-256 of those exact UTF-8 bytes as the MODEL artifact digest, using `artifact_key = AI_MODEL_PROVIDER_MODEL_ID` and `version = AI_MODEL_PROVIDER_ARTIFACT_VERSION`, then signs the normal FactoryOS artifact envelope. Changing the endpoint, model ID or route version changes the manifest digest and therefore fails admission until a new signed version is approved.
+
+The canonical route-manifest digest also includes the SHA-256 of the exact built-in system prompt bytes; changing that prompt changes the manifest digest and requires a newly signed/approved route artifact. The API revalidates the tenant-scoped MODEL registry on every request before checking subscription entitlement, recording AI call usage, or sending inference traffic. After admission it checks the current AI subscription, persists an AI gateway call meter before outbound network I/O, and records provider-reported input/output tokens when present. Failed admission, missing/revoked/expired signatures, absent production egress approval, invalid configuration, or usage-write failure prevents the outbound request. Token details are only recorded when the provider response supplies valid non-negative token counts. Model identity substitution is rejected; upstream response content is not returned on that failure.
+
+This digest is a signed route/deployment manifest digest, **not a cryptographic measurement of a remote vendor's private model weights**. The route cannot independently prove the vendor executed those exact weights, and provider-specific deployment immutability/data-residency remains a release acceptance check. The endpoint is prompt-only: it does not retrieve tenant records, execute tools, authorize writes or mark an AI planner's output as trusted. Existing decision/runtime policy integration and provider-specific production acceptance remain separate requirements.
+
 ## Explicit acceptance boundaries
 
 - The registry cryptographically verifies the signer's binding between artifact identity, SHA-256 and expiry. It does not download arbitrary artifacts or prove that remote storage bytes match that signed digest. The trusted build/deployment pipeline must compute the digest from the actual model/package/container and place the same verified digest into the immutable tool definition's metadata.artifactSha256.
