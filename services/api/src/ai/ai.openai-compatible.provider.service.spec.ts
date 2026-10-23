@@ -10,6 +10,7 @@ import { AiModelProviderGatewayService } from './ai.model.provider.gateway.servi
 import {
   AiOpenAiCompatibleProviderService,
   sha256AiModelProviderRouteManifest,
+  sha256AiModelProviderSystemPrompt,
 } from './ai.openai-compatible.provider.service';
 import { SaasSubscriptionService } from '../saas/saas-subscription.service';
 import { SaasUsageService } from '../saas/saas-usage.service';
@@ -141,6 +142,7 @@ describe('AI OpenAI-compatible provider adapter', () => {
       version: artifactVersion,
       expectedSha256: sha256AiModelProviderRouteManifest({
         endpointUrl, modelId, artifactVersion,
+        systemPromptSha256: sha256AiModelProviderSystemPrompt(),
       }),
       requestRef,
     });

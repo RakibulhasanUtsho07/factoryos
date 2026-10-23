@@ -19,6 +19,8 @@ import type { AiModelArtifactReference } from './ai.model.provider.gateway.servi
 
 const ROUTE_MANIFEST_SCHEMA = 'factoryos.ai-model-provider-route-manifest/v1';
 const PROVIDER_CODE = 'openai-compatible-chat-completions';
+export const AI_MODEL_PROVIDER_SYSTEM_PROMPT =
+  'You are an informational assistant. Your output is untrusted text: do not claim you executed tools, changed production systems, or performed external actions. Do not request passwords, API keys, or other secrets.';
 const DEFAULT_MAX_TOKENS = 512;
 const MAX_ALLOWED_COMPLETION_TOKENS = 2048;
 const MAX_RESPONSE_BYTES_AS_TEXT = 1_048_576;
@@ -28,6 +30,7 @@ export interface AiModelProviderRouteManifest {
   endpointUrl: string;
   modelId: string;
   artifactVersion: string;
+  systemPromptSha256: string;
 }
 
 /**
@@ -36,15 +39,25 @@ export interface AiModelProviderRouteManifest {
  * downloaded or measured a vendor's private model weights. Signing binds the
  * configured HTTPS endpoint, exact provider model ID and route version.
  */
+export function sha256AiModelProviderSystemPrompt(): string {
+  return createHash('sha256')
+    .update(AI_MODEL_PROVIDER_SYSTEM_PROMPT, 'utf8')
+    .digest('hex');
+}
+
 export function canonicalizeAiModelProviderRouteManifest(
   manifest: AiModelProviderRouteManifest,
 ): string {
+  if (!/^[a-f0-9]{64}$/.test(manifest.systemPromptSha256)) {
+    throw new BadRequestException('Provider route manifest system prompt hash must be a SHA-256 digest');
+  }
   return JSON.stringify({
     schema_version: ROUTE_MANIFEST_SCHEMA,
     provider_code: PROVIDER_CODE,
     endpoint_url: new URL(manifest.endpointUrl).href,
     model_id: manifest.modelId,
     artifact_version: manifest.artifactVersion,
+    system_prompt_sha256: manifest.systemPromptSha256,
   });
 }
 
@@ -289,6 +302,7 @@ export class AiOpenAiCompatibleProviderService {
       endpointUrl,
       modelId,
       artifactVersion,
+      systemPromptSha256: sha256AiModelProviderSystemPrompt(),
     };
     const artifact: AiModelArtifactReference = Object.freeze({
       artifactKey: modelId,
@@ -337,8 +351,7 @@ export class AiOpenAiCompatibleProviderService {
           messages: [
             {
               role: 'system',
-              content:
-                'You are an informational assistant. Your output is untrusted text: do not claim you executed tools, changed production systems, or performed external actions. Do not request passwords, API keys, or other secrets.',
+              content: AI_MODEL_PROVIDER_SYSTEM_PROMPT,
             },
             { role: 'user', content: prompt },
           ],
