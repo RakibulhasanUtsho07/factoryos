@@ -3,7 +3,7 @@ kind: ImageValidatingPolicy
 metadata:
   name: factoryos-ot-gateway-signed-release
   annotations:
-    factoryos.io/srs-requirements: "FR-SAAS2-05,FR-MSO-03,NFR-AIF2-13"
+    factoryos.io/srs-requirements: "FR-SAAS2-05"
     factoryos.io/enforcement-boundary: "Kubernetes admission; install in the target cluster"
 spec:
   validationActions:
