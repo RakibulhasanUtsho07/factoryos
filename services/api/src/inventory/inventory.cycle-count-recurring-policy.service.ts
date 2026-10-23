@@ -45,7 +45,7 @@ export type InventoryCycleCountRecurringPolicy = Omit<
   'idempotency_key' | 'request_hash'
 > & { replayed: boolean };
 
-interface MaterializedOccurrence {
+export interface MaterializedOccurrence {
   policy_id: string;
   task_id: string;
   occurrence_number: number;
