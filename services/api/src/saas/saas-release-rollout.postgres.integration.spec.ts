@@ -131,7 +131,7 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
          idempotency_key,request_hash,actor_user_id)
        VALUES ($1,$2,'RELEASE_DEPLOY','RELEASE',$3,$4,$5,'SHARED_SAAS',$6,'HALT',60,$7,NULL,$8,$9,$10)`,
       [runId, tenantId, rollout.id, rollout.rolloutKey, rollout.version,
-        'deployment:ci/' + rollout.rolloutKey.toLowerCase(), rollout.artifactDigest,
+        'ci-target-' + rollout.rolloutKey.toLowerCase(), rollout.artifactDigest,
         'integration-physical-' + runId, requestHash, userId],
     );
     const events = [
@@ -176,7 +176,7 @@ describeWithPostgres('SaasReleaseRolloutService PostgreSQL integration', () => {
          idempotency_key,request_hash,actor_user_id)
        VALUES ($1,$2,'RELEASE_DEPLOY','RELEASE',$3,$4,$5,'SHARED_SAAS',$6,'ROLLBACK',60,$7,NULL,$8,$9,$10)`,
       [runId, tenantId, failedRollout.id, failedRollout.rolloutKey, failedRollout.version,
-        'deployment:ci/' + failedRollout.rolloutKey.toLowerCase(), failedRollout.artifactDigest,
+        'ci-target-' + failedRollout.rolloutKey.toLowerCase(), failedRollout.artifactDigest,
         'integration-rollback-' + runId, requestHash, userId],
     );
     const events = [
