@@ -86,6 +86,46 @@ describe('StripeBillingProvider', () => {
     })).toThrow('omitted both supported tax-total fields');
   });
 
+  it('blocks production use of test credentials and rejects invoice credential-mode drift', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    try {
+      const productionProvider = new StripeBillingProvider(config({
+        STRIPE_SECRET_KEY: 'sk_test_only',
+        NODE_ENV: 'production',
+      }) as never);
+      await expect(productionProvider.verifyCustomer('cus_123abc'))
+        .rejects.toThrow('test-mode credentials are forbidden in production');
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      const testProvider = new StripeBillingProvider(config({
+        STRIPE_SECRET_KEY: 'sk_test_only',
+        NODE_ENV: 'test',
+      }) as never);
+      const validTestInvoice = {
+        id: 'in_123abc',
+        customer: 'cus_123abc',
+        currency: 'usd',
+        status: 'draft',
+        subtotal: 125,
+        total: 125,
+        amount_due: 125,
+        amount_paid: 0,
+        amount_remaining: 125,
+        automatic_tax: { enabled: false, status: null },
+        total_taxes: [],
+        total_discount_amounts: [],
+        collection_method: 'charge_automatically',
+        metadata: {},
+        livemode: true,
+        created: 1,
+      };
+      expect(() => (testProvider as any).normalizeInvoice(validTestInvoice))
+        .toThrow('does not match the configured credential mode');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('uses server-side credentials and a stable provider idempotency key for invoice creation', async () => {
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       id: 'in_123abc',
