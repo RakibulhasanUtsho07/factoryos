@@ -42,6 +42,36 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
     expect(databaseMock.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects recurring multi-bin targets with duplicate bins before opening a transaction', async () => {
+    const binId = '9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2';
+    await expect(service.createPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { ...validDto(), location_ids: [binId, binId] },
+      'recurring-duplicate-bins', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects combining single-bin and multi-bin recurrence targets', async () => {
+    const binA = '9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2';
+    const binB = 'b4de8386-ea38-4695-a2b9-2fa86e0e0d91';
+    await expect(service.createPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { ...validDto(), location_id: binA, location_ids: [binA, binB] },
+      'recurring-conflicting-bins', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a multi-bin recurring target with fewer than two bins', async () => {
+    await expect(service.createPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { ...validDto(), location_ids: ['9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2'] },
+      'recurring-one-bin-array', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects a cadence interval that exceeds the weekly calendar bound', async () => {
     await expect(service.createPolicy(
       USER_ID, TENANT_ID, FACTORY_ID,
