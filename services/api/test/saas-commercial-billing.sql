@@ -1,5 +1,5 @@
 -- Task 24: commercial billing is isolated from usage estimates and all evidence is tenant-scoped/immutable.
-DO $$
+DO $billing_contract$
 DECLARE
   table_name text;
   rel_oid oid;
@@ -127,6 +127,6 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'SAAS_BILLING_CLOSE_LEDGER_CONCURRENCY_FENCE_MISSING';
   END IF;
-END $;
+END $billing_contract$;
 
 SELECT 'SaaS commercial billing provider, RLS, immutable evidence and idempotency contract passed' AS result;
