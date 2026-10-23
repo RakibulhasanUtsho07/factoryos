@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
@@ -14,6 +15,9 @@ import { DatabaseService } from '../database/database.service';
 import { IamService } from '../iam/iam.service';
 import { SaasDeploymentProfile } from './dto/create-saas-subscription-plan.dto';
 import { ExecuteSaasPhysicalOperationDto, SaasPhysicalFailurePolicy } from './dto/execute-saas-physical-operation.dto';
+import { RollbackSaasReleaseRolloutDto } from './dto/rollback-saas-release-rollout.dto';
+import { SaasReleaseTransitionAction } from './dto/transition-saas-release-rollout.dto';
+import { SaasReleaseRolloutService } from './saas-release-rollout.service';
 import {
   PhysicalDeploymentProfile,
   PhysicalDeploymentProfileInput,
@@ -131,6 +135,8 @@ export class SaasPhysicalProvisioningService {
     private readonly auditService: AuditService,
     @Inject(SAAS_PHYSICAL_INFRASTRUCTURE_ADAPTERS)
     private readonly adapters: PhysicalInfrastructureAdapter[] = [],
+    @Optional()
+    private readonly releaseRolloutService?: SaasReleaseRolloutService,
   ) {}
 
   async provisionSandbox(
@@ -288,6 +294,16 @@ export class SaasPhysicalProvisioningService {
     if (!Object.values(SaasPhysicalFailurePolicy).includes(failurePolicy)) {
       throw new BadRequestException('failure_policy must be HALT or ROLLBACK');
     }
+    // A rollout failure policy must be able to change control-plane state as well
+    // as the physical deployment; verify that authority before touching a cluster.
+    await this.authorize(
+      actorUserId,
+      tenantId,
+      failurePolicy === SaasPhysicalFailurePolicy.HALT ? 'saas.releases.control' : 'saas.releases.rollback',
+    );
+    if (!this.releaseRolloutService) {
+      throw new ServiceUnavailableException('Release rollout lifecycle service is not available; physical deployment is blocked');
+    }
     const healthTimeoutSeconds = this.healthTimeout(input);
     const previous = failurePolicy === SaasPhysicalFailurePolicy.ROLLBACK
       ? await this.previousProductionRelease(tenantId, actorUserId, current)
@@ -335,11 +351,40 @@ export class SaasPhysicalProvisioningService {
         if (!halted.halted || !this.isDigest(halted.evidenceDigest)) {
           throw new ServiceUnavailableException('Provider could not prove the failed rollout was halted; manual incident handling is required');
         }
+        let controlPlanePaused = false;
+        try {
+          const paused = await this.releaseRolloutService!.transition(tenantId, actorUserId, rolloutKey, {
+            action: SaasReleaseTransitionAction.PAUSE,
+            expected_version: Number(current.version),
+            reason: 'Physical release health check failed; infrastructure provider confirmed halt',
+            idempotency_key: 'physical-halt-' + run.id,
+          });
+          controlPlanePaused = paused.rollout.stage === 'PAUSED';
+        } catch {
+          await this.appendEvent(tenantId, actorUserId, run.id, 'HALTED', {
+            providerCode: adapter.providerCode, providerReference: deployed.deploymentReference,
+            evidenceDigest: halted.evidenceDigest,
+            reasonCode: 'CONTROL_PLANE_PAUSE_FAILED',
+            evidence: {
+              artifactDigest: deployed.artifactDigest, healthCheck: health, failurePolicy, halted: true,
+              controlPlanePaused: false,
+            },
+          });
+          throw new ServiceUnavailableException('Infrastructure was halted, but the release could not be paused in the control plane; inspect the run receipt and recover the rollout state');
+        }
+        if (!controlPlanePaused) {
+          await this.appendEvent(tenantId, actorUserId, run.id, 'HALTED', {
+            providerCode: adapter.providerCode, providerReference: deployed.deploymentReference,
+            evidenceDigest: halted.evidenceDigest, reasonCode: 'CONTROL_PLANE_PAUSE_NOT_CONFIRMED',
+            evidence: { artifactDigest: deployed.artifactDigest, healthCheck: health, failurePolicy, halted: true, controlPlanePaused: false },
+          });
+          throw new ServiceUnavailableException('Infrastructure was halted but the control-plane release state could not be confirmed as PAUSED');
+        }
         await this.appendEvent(tenantId, actorUserId, run.id, 'HALTED', {
           providerCode: adapter.providerCode, providerReference: deployed.deploymentReference,
           evidenceDigest: halted.evidenceDigest,
           reasonCode: 'HEALTH_CHECK_FAILED',
-          evidence: { artifactDigest: deployed.artifactDigest, healthCheck: health, failurePolicy, halted: true },
+          evidence: { artifactDigest: deployed.artifactDigest, healthCheck: health, failurePolicy, halted: true, controlPlanePaused: true },
         });
         return { status: 'HALTED' as const, providerCode: adapter.providerCode };
       }
@@ -361,15 +406,43 @@ export class SaasPhysicalProvisioningService {
           providerCode: adapter.providerCode, providerReference: rollback.deploymentReference,
           evidenceDigest: rollback.evidenceDigest, reasonCode: 'ROLLBACK_NOT_HEALTHY',
           evidence: { failedArtifactDigest: deployed.artifactDigest, targetArtifactDigest: previousRelease.artifactDigest,
-            rolledBack: rollback.rolledBack, healthy: rollback.healthy, healthCheck: health },
+            rolledBack: rollback.rolledBack, healthy: rollback.healthy, healthCheck: health, controlPlaneRollbackApplied: false },
+        });
+        return { status: 'ROLLBACK_FAILED' as const, providerCode: adapter.providerCode };
+      }
+      let controlPlaneRollbackVersion: number;
+      try {
+        const rollbackRequest: RollbackSaasReleaseRolloutDto = {
+          expected_version: Number(current.version),
+          target_rollout_key: previousRelease.rolloutKey,
+          target_version: Number(previous.version),
+          reason: 'Physical rollout health check failed; provider restored and verified the prior production artifact',
+          idempotency_key: 'physical-rollback-' + run.id,
+        };
+        const controlPlaneRollback = await this.releaseRolloutService!.rollback(
+          tenantId, actorUserId, rolloutKey, rollbackRequest,
+        );
+        controlPlaneRollbackVersion = controlPlaneRollback.rollout.version;
+      } catch {
+        await this.appendEvent(tenantId, actorUserId, run.id, 'ROLLBACK_FAILED', {
+          providerCode: adapter.providerCode, providerReference: rollback.deploymentReference,
+          evidenceDigest: rollback.evidenceDigest, reasonCode: 'CONTROL_PLANE_ROLLBACK_SYNC_FAILED',
+          evidence: {
+            failedArtifactDigest: deployed.artifactDigest, targetArtifactDigest: previousRelease.artifactDigest,
+            targetRolloutKey: previousRelease.rolloutKey, rolledBack: true, healthy: true,
+            controlPlaneRollbackApplied: false,
+          },
         });
         return { status: 'ROLLBACK_FAILED' as const, providerCode: adapter.providerCode };
       }
       await this.appendEvent(tenantId, actorUserId, run.id, 'ROLLED_BACK', {
         providerCode: adapter.providerCode, providerReference: rollback.deploymentReference,
         evidenceDigest: rollback.evidenceDigest,
-        evidence: { failedArtifactDigest: deployed.artifactDigest, targetArtifactDigest: previousRelease.artifactDigest,
-          targetRolloutKey: previousRelease.rolloutKey, rolledBack: true, healthy: true, healthCheck: health },
+        evidence: {
+          failedArtifactDigest: deployed.artifactDigest, targetArtifactDigest: previousRelease.artifactDigest,
+          targetRolloutKey: previousRelease.rolloutKey, targetRolloutVersion: controlPlaneRollbackVersion,
+          rolledBack: true, healthy: true, controlPlaneRollbackApplied: true, healthCheck: health,
+        },
       });
       return { status: 'ROLLED_BACK' as const, providerCode: adapter.providerCode };
     }, contextBase);
