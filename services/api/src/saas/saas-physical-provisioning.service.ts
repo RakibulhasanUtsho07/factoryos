@@ -406,12 +406,9 @@ export class SaasPhysicalProvisioningService {
     profile: PhysicalDeploymentProfile,
     actorUserId: string,
     action: (adapter: PhysicalInfrastructureAdapter, context: PhysicalOperationContext) => Promise<{ status: PhysicalRunStatus; providerCode: string }>,
-    contextFactory?: (runId: string) => PhysicalOperationContext,
+    contextFactory: (runId: string) => PhysicalOperationContext,
   ) {
-    const runContext = contextFactory ?? ((runId: string): PhysicalOperationContext => ({
-      tenantId: '', actorUserId, runId, resourceId: '', resourceVersion: 1, profile,
-    }));
-    const context = runContext(run.id);
+    const context = contextFactory(run.id);
     if (run.replayed) {
       if (run.status === 'REQUESTED' || run.status === 'IN_PROGRESS' || run.status === 'ROLLBACK_IN_PROGRESS' || !run.status) {
         throw new ConflictException('A physical operation with this idempotency key is still in progress; inspect its immutable run evidence before retrying');
@@ -577,6 +574,15 @@ export class SaasPhysicalProvisioningService {
          AND module_key IS NOT DISTINCT FROM $5::text
          AND agent_key IS NOT DISTINCT FROM $6::text
          AND release_channel=$7
+         AND EXISTS (
+           SELECT 1 FROM saas_physical_provisioning_runs pr
+           WHERE pr.tenant_id=$1 AND pr.operation='RELEASE_DEPLOY' AND pr.resource_id=latest.id
+             AND (
+               SELECT ev.event_status FROM saas_physical_provisioning_events ev
+               WHERE ev.tenant_id=pr.tenant_id AND ev.run_id=pr.id
+               ORDER BY ev.event_version DESC LIMIT 1
+             )='SUCCEEDED'
+         )
        ORDER BY rollout_key DESC LIMIT 1`,
       [tenantId, current.rollout_key, current.scope_type, current.factory_id,
         current.module_key, current.agent_key, current.release_channel],
