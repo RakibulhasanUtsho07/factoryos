@@ -219,6 +219,13 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
+  IF NEW.status IN ('IN_PROGRESS', 'AWAITING_REVIEW', 'COMPLETED')
+    AND NEW.assigned_to_user_id IS NULL
+  THEN
+    RAISE EXCEPTION 'active cycle-count task must have an assigned counter'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF NEW.status = 'AWAITING_REVIEW' THEN
     IF NEW.current_proposal_id IS NULL OR NOT EXISTS (
       SELECT 1 FROM inventory_cycle_count_proposals p
