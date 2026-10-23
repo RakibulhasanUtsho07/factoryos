@@ -976,7 +976,15 @@ export class SaasPhysicalProvisioningService {
   }
 
   private safeErrorCode(error: unknown): string {
-    const candidate = error instanceof Error ? error.name : 'PROVIDER_ERROR';
+    const providerCode = error !== null && typeof error === 'object'
+      ? (error as { providerCode?: unknown }).providerCode
+      : undefined;
+    const errorCode = error !== null && typeof error === 'object'
+      ? (error as { code?: unknown }).code
+      : undefined;
+    const candidate = typeof providerCode === 'string' ? providerCode
+      : typeof errorCode === 'string' ? errorCode
+        : error instanceof Error ? error.name : 'PROVIDER_ERROR';
     return /^[A-Za-z][A-Za-z0-9_]{0,49}$/.test(candidate) ? candidate.toUpperCase() : 'PROVIDER_ERROR';
   }
 
