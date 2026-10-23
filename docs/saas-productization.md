@@ -243,3 +243,41 @@ The usage/metering, adjustment, budget, reconciliation, rate-card and provider-c
 Migration 160 defines the contracts and state machine; `services/api/src/saas/saas-tenant-propagation.adapters.ts` is the provider adapter SPI. This repository does not select a specific cloud object store, cache, search engine, vector database, external SaaS provider or backup platform, and the module registers no production external adapters by default. This is fail-closed: a real tenant erasure cannot become `VERIFIED` until deployment supplies and reviews an implementation for every required target. The finance adapter likewise fails closed until its configured provider-specific implementation is registered. CI exercises schema, RLS, state-machine and fake-adapter contract evidence; it is not a claim that a live provider, replica or backup has already been purged.
 
 Acceptance evidence: `services/api/test/saas-tenant-propagation-contract.sql`, `services/api/test/saas-data-retention-contract.sql`, the tenant ownership review gate, and the SaaS retention/propagation service tests. For an incident or partial provider failure, inspect per-target immutable receipts and residual manifests, keep the request in `PROPAGATION_PENDING`, restore provider credentials/configuration, and retry with the same run/idempotency key. Never represent a PostgreSQL-only run receipt as whole-tenant deletion proof.
+
+
+## Task 24 — Commercial billing and provider-issued invoices
+
+Migration 185 adds a separate commercial billing boundary around the usage/rate ledger above. The saas_usage_events, rate-card, adjustment and usage reconciliation tables remain metering/estimate evidence; they are **not issued invoices**. A commercial invoice exists only after a provider invoice has been created/finalized and its external ID/lifecycle evidence has been recorded in a billing-close event.
+
+### Billing lifecycle
+
+1. Configure one versioned Stripe customer account per tenant. The caller supplies a verified Stripe Customer ID, currency, collection method and tax setting. The API retrieves the customer from the configured Stripe account before accepting it; secrets never enter the request or database.
+2. Prepare a bounded billing close (at most 35 days). It snapshots the tenant usage and reason-coded adjustments for the selected currency, rejects unpriced usage, mixed currencies and adjustments that cross the selected time boundaries, and stores exact minor-unit aggregates, line markers, a canonical digest and the provider-account version.
+3. Issue a provider invoice from the immutable close snapshot. Each invoice and line-item operation has a stable Stripe idempotency key. Retries retrieve and inspect the existing invoice and line markers first; they do not deliberately create a second invoice or duplicate a line.
+4. Finalize/send the invoice or attempt automatic payment according to the saved collection method. Payment failures get append-only receipts and can be recovered with a distinct caller idempotency key. Send-invoice collections do not trigger an automatic charge retry.
+5. Reconcile the provider invoice back to the saved close: exact customer/currency, provider subtotal, tax, discount, total, amount due/paid, automatic-tax result, and all expected line markers. Each provider snapshot and result hash is persisted immutably. Variance and tax review are explicit statuses, not silent write-offs.
+6. Stripe webhook delivery is the only unauthenticated route in this billing controller. It verifies the signature over the original request bytes using STRIPE_WEBHOOK_SECRET, enforces a five-minute timestamp window, verifies tenant/close/snapshot/customer binding, and de-duplicates the provider event ID and payload digest transactionally. The public route must not be bypassed with JSON re-serialization or a caller-supplied tenant ID.
+
+### Endpoints and permissions
+
+| Route | Permission | Purpose |
+|---|---|---|
+| POST /api/v2/saas/billing/provider-account | saas.billing.account.write | Configure/update provider customer and collection/tax settings using expected-version concurrency |
+| GET /api/v2/saas/billing/provider-account | saas.billing.read | Read the current provider-account configuration |
+| POST /api/v2/saas/billing/closes | saas.billing.close | Create an immutable period/currency billing-close snapshot |
+| GET /api/v2/saas/billing/closes and GET /closes/:id | saas.billing.read | Read close status and append-only event history |
+| POST /api/v2/saas/billing/closes/:id/issue | saas.billing.issue | Create/recover provider invoice issue operations |
+| POST /api/v2/saas/billing/closes/:id/retry-payment | saas.billing.issue | Retry a previously failed automatic payment with an explicit idempotency key |
+| POST /api/v2/saas/billing/closes/:id/reconcile | saas.billing.reconcile | Pull the provider invoice and save a versioned reconciliation result |
+| GET /api/v2/saas/billing/closes/:id/reconciliations | saas.billing.read | Read reconciliation history |
+| POST /api/v2/saas/billing/webhooks/stripe | Stripe signature | Verify and persist provider invoice lifecycle events |
+
+### Configuration and accounting boundary
+
+Configure STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET through the deployment's secret manager, never in source, request bodies, audit payloads or database tables. Optionally pin STRIPE_API_VERSION to the version approved for the connected account. Configure a matching webhook endpoint in Stripe and subscribe to invoice lifecycle/payment events. Use Stripe test-mode customers and endpoint secrets in a non-production environment before the production secret is installed.
+
+Amounts are stored and reconciled in integer currency minor units using exact PostgreSQL NUMERIC aggregates and JavaScript BigInt; the provider adapter rejects amounts outside its safe integer contract. Stripe is the commercial provider invoice/payment source of record; FactoryOS is the source of record for usage, rates, adjustments, billing-close snapshot and reconciliation evidence. This integration does not create general-ledger journal entries, declare tax treatment for a jurisdiction, or replace an accounting system. Finance must approve currency, inclusive/exclusive tax behaviour, customer tax registrations, invoice numbering/legal language, revenue recognition and close cut-off policy.
+
+A negative net close is blocked and requires a separately approved provider credit-note/tax-correction workflow. For automatic-tax invoices, negative adjustment lines are blocked because that provider/tax combination is not safe to infer. This task therefore provides audited adjustments in billing closes but does not claim automatic credit-note issuance. Unpriced usage, currency mismatches, stale account/version data, unbound provider lines, tax calculation failures and reconciliation variances must be resolved rather than silently invoiced or written off.
+
+**Production release gates:** successful migration-185 replay and PostgreSQL contract test; reviewed Stripe API version; verified test-mode invoice/paid/failure/webhook rehearsal; production webhook delivery/signature verification; configured real account/customer and secret rotation; sample provider-vs-close reconciliation and a failed-payment recovery receipt; finance/tax owner approval and independent close evidence. A green CI run validates code/contracts, not that the user's Stripe account has been activated.

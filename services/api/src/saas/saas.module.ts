@@ -26,11 +26,15 @@ import { SaasSubscriptionController } from './saas-subscription.controller';
 import { SaasSubscriptionService } from './saas-subscription.service';
 import { SaasUsageController } from './saas-usage.controller';
 import { SaasUsageService } from './saas-usage.service';
+import { SaasBillingController } from './saas-billing.controller';
+import { SaasBillingService } from './saas-billing.service';
+import { StripeBillingProvider } from './stripe-billing.provider';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [
     SaasUsageController,
+    SaasBillingController,
     SaasSubscriptionController,
     SaasSandboxController,
     SaasReleaseRolloutController,
@@ -40,6 +44,8 @@ import { SaasUsageService } from './saas-usage.service';
   ],
   providers: [
     SaasUsageService,
+    SaasBillingService,
+    StripeBillingProvider,
     SaasSubscriptionService,
     SaasSandboxService,
     SaasReleaseRolloutService,
@@ -61,6 +67,7 @@ import { SaasUsageService } from './saas-usage.service';
   ],
   exports: [
     SaasUsageService,
+    SaasBillingService,
     SaasSubscriptionService,
     SaasSandboxService,
     SaasReleaseRolloutService,
