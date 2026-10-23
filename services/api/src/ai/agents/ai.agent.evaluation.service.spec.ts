@@ -156,7 +156,7 @@ function liveTraceRow(overrides: Record<string, unknown> = {}) {
     execution_finished_at: '2026-10-11T00:02:00.000Z',
     step_finished_at: '2026-10-11T00:02:00.000Z',
     claim_status: 'COMPLETED', reconciliation_decision: null,
-    source_tool_rollback: { type: 'NONE' }, compensation_trace: [], ...overrides,
+    source_tool_rollback: { type: 'NONE' }, source_tool_write_capable: false, compensation_trace: [], ...overrides,
   };
 }
 function liveEvaluationRow(overrides: Record<string, unknown> = {}) {
@@ -542,6 +542,7 @@ describe('AiAgentEvaluationService', () => {
     };
     const denied = liveTraceRow({
       tool_id: 'ORDERS.CREATE', tool_version: '1.0.0', action_type: 'ORDERS.CREATE',
+      source_tool_write_capable: true,
       step_status: 'BLOCKED',
       step_error: { code: 'AI_AGENT_AUTHORIZATION_DENIED', message: 'Action not permitted by policy' },
       step_action_intent_id: null, step_execution_record_id: null, execution_evidence: null,

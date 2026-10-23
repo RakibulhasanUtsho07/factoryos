@@ -377,6 +377,8 @@ describe('AiAgentStudioPromotionService', () => {
     expect(coverageQuery).toContain('write_capable');
     expect(coverageQuery).toContain("c.kind = 'EXPECTED_REFUSAL'");
     expect(coverageQuery).toContain("c.kind = 'RED_TEAM_POLICY_BYPASS'");
+    expect(coverageQuery).toContain('c.expected_tool_id = w.tool_id');
+    expect(coverageQuery).toContain("r.status = 'PASS' AND r.created_at >= $4::timestamptz");
     expect(coverageQuery).toContain("c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'");
     expect(coverageQuery).toContain("c.kind = 'EXPECTED_COMPENSATION'");
     expect(coverageQuery).toContain("w.rollback->>'type' = 'COMPENSATION'");

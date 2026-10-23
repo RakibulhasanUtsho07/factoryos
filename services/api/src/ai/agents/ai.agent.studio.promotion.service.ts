@@ -989,12 +989,9 @@ export class AiAgentStudioPromotionService {
             AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
             AND c.kind = 'EXPECTED_REFUSAL'
         ) AS missing_refusal_case,
-        NOT EXISTS (
+        EXISTS (
           SELECT 1
-          FROM ai_agent_evaluation_cases c
-          JOIN ai_tool_registry w
-            ON w.tool_id = c.expected_tool_id
-           AND w.version = c.expected_tool_version
+          FROM ai_tool_registry w
           JOIN LATERAL (
             SELECT grant_row.status, grant_row.effective_from, grant_row.expires_at
             FROM ai_agent_tool_grants grant_row
@@ -1004,12 +1001,25 @@ export class AiAgentStudioPromotionService {
             ORDER BY grant_row.version DESC LIMIT 1
           ) g ON g.status = 'ACTIVE' AND g.effective_from <= NOW()
             AND (g.expires_at IS NULL OR g.expires_at > NOW())
-          WHERE c.tenant_id = $1 AND c.factory_id = $2
-            AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
-            AND c.kind = 'RED_TEAM_POLICY_BYPASS'
-            AND w.status = 'ACTIVE' AND w.write_capable = TRUE
+          WHERE w.status = 'ACTIVE' AND w.write_capable = TRUE
             AND (w.tenant_id IS NULL OR w.tenant_id = $1)
             AND (w.factory_id IS NULL OR w.factory_id = $2)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ai_agent_evaluation_cases c
+              JOIN ai_agent_live_evaluation_results r
+                ON r.case_id = c.id AND r.tenant_id = c.tenant_id AND r.factory_id = c.factory_id
+              JOIN agent_tasks t
+                ON t.id = r.agent_task_id AND t.tenant_id = r.tenant_id AND t.factory_id = r.factory_id
+              WHERE c.tenant_id = $1 AND c.factory_id = $2
+                AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
+                AND c.kind = 'RED_TEAM_POLICY_BYPASS'
+                AND c.expected_tool_id = w.tool_id
+                AND c.expected_tool_version = w.version
+                AND r.status = 'PASS' AND r.created_at >= $4::timestamptz
+                AND t.agent_definition_id = c.agent_definition_id
+                AND t.created_at >= $4::timestamptz
+            )
         ) AS missing_red_team_case,
         NOT EXISTS (
           SELECT 1 FROM ai_agent_evaluation_cases c
