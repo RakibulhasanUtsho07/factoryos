@@ -28,6 +28,8 @@ import { AiController } from './ai.controller';
 import { AiRuntimeService } from './ai.runtime.service';
 import { AiOperationalEvaluationService } from './ai.operational.evaluation.service';
 import { AiToolModule } from './ai.tool.module';
+import { AiArtifactProvenanceController } from './artifacts/ai.artifact.provenance.controller';
+import { AiModelInferenceController } from './ai.model.inference.controller';
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { AiToolModule } from './ai.tool.module';
     AiToolModule,
   ],
   controllers: [
+    AiArtifactProvenanceController,
+    AiModelInferenceController,
     AiController,
     AiAgentController,
     AiAgentCatalogueController,
