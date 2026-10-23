@@ -108,7 +108,7 @@ BEGIN
     RAISE EXCEPTION 'recurring calendar arithmetic must support daily, weekly and monthly periods';
   END IF;
 
-  SELECT pg_get_functiondef('public.factoryos_guard_inventory_cycle_count_recurring_policy_occurrences()'::regprocedure)
+  SELECT pg_get_functiondef('public.factoryos_guard_cycle_count_recurring_occurrence()'::regprocedure)
     INTO v_definition;
   IF position('evidence is immutable' IN v_definition) = 0 THEN
     RAISE EXCEPTION 'recurring cycle-count occurrence ledger is not immutable';
