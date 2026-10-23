@@ -650,6 +650,53 @@ describe(
     );
 
     it(
+      'blocks a production tool before metering when artifact admission denies it',
+      async () => {
+        const previousNodeEnv = process.env.NODE_ENV;
+        process.env.NODE_ENV = 'production';
+        try {
+          registry.getTool.mockResolvedValue(
+            buildTool({
+              metadata: {
+                workloadClass: 'PRODUCTION',
+                artifactSha256: 'a'.repeat(64),
+              },
+            }),
+          );
+          const artifactProvenance = {
+            assertAdmissible: jest.fn<(...args: unknown[]) => Promise<void>>()
+              .mockRejectedValue(new ForbiddenException('artifact rejected')),
+          };
+          const guardedGateway = new AiToolGatewayService(
+            registry as never,
+            iamService as never,
+            saasUsageService as never,
+            saasSubscriptionService as never,
+            artifactProvenance as never,
+          );
+
+          await expect(guardedGateway.execute(buildAction()))
+            .rejects.toBeInstanceOf(ForbiddenException);
+
+          expect(artifactProvenance.assertAdmissible).toHaveBeenCalledWith({
+            tenantId,
+            factoryId,
+            actorUserId,
+            artifactType: 'TOOL',
+            artifactKey: 'AI.RUNTIME.NOOP',
+            version: '1.0.0',
+            expectedSha256: 'a'.repeat(64),
+            requestRef: actionIntentId,
+          });
+          expect(saasUsageService.recordAiToolCall).not.toHaveBeenCalled();
+        } finally {
+          if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+          else process.env.NODE_ENV = previousNodeEnv;
+        }
+      },
+    );
+
+    it(
       'rejects an unauthorized action before tool execution',
       async () => {
         registry.getTool.mockResolvedValue(
