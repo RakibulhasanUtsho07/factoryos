@@ -1881,14 +1881,12 @@ export class GrowthService {
     return { ...transactionResult.evaluation, replayed: !transactionResult.created };
   }
 
-  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string, domain?: string, residualCoveragePct = 90) {
+  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string, domain?: string) {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
     const allowedDomains = ['FINANCE', 'PRODUCTION', 'QUALITY', 'DELIVERY', 'COMMERCIAL', 'OTHER'];
     if (domain && !allowedDomains.includes(domain)) throw new BadRequestException('Unsupported calibration domain');
-    if (!Number.isFinite(residualCoveragePct) || residualCoveragePct < 50 || residualCoveragePct > 99.99) {
-      throw new BadRequestException('residual_coverage_pct must be between 50 and 99.99');
-    }
+
     const [result, policiesResult] = await Promise.all([
       this.database.query<GrowthForecastCalibrationObservation & {
         evaluated_at: string; total_count: string;
@@ -1911,13 +1909,17 @@ export class GrowthService {
         max_mean_absolute_error: string; max_root_mean_squared_error: string;
         max_absolute_mean_error: string; max_mean_symmetric_percentage_error_pct: string;
         max_absolute_calibration_gap_pct_points: string;
+        residual_coverage_target_pct: string | null;
+        max_empirical_absolute_residual: string | null;
       }>(
         `SELECT id::text AS id,domain,model_version,metric_key,unit,policy_version,minimum_sample_count,
             max_mean_absolute_error::text AS max_mean_absolute_error,
             max_root_mean_squared_error::text AS max_root_mean_squared_error,
             max_absolute_mean_error::text AS max_absolute_mean_error,
             max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
-            max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points
+            max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points,
+            residual_coverage_target_pct::text AS residual_coverage_target_pct,
+            max_empirical_absolute_residual::text AS max_empirical_absolute_residual
            FROM growth_forecast_calibration_policies
           WHERE tenant_id=$1 AND factory_id=$2 AND status='APPROVED'
             AND ($3::text IS NULL OR domain=$3)
@@ -1933,16 +1935,28 @@ export class GrowthService {
     const calibration = summaries.map(bucket => {
       const residualRows = observations.filter(row => row.model_version === bucket.model_version
         && row.metric_key === bucket.metric_key && row.unit === bucket.unit);
-      const residualThreshold = deriveGrowthEmpiricalResidualThreshold(
-        residualRows.map(row => row.absolute_error), residualCoveragePct,
-      );
       const candidates = policies.filter(policy => policy.model_version === bucket.model_version
         && policy.metric_key === bucket.metric_key && policy.unit === bucket.unit);
       const domains = [...new Set(candidates.map(policy => policy.domain))];
+      const unavailableResidualThreshold = (status: string, minimumSamples: number | null = null) => ({
+        method_version: 'factoryos.growth.absolute-residual-order-statistic.v1',
+        requested_coverage_pct: null,
+        sample_count: residualRows.length,
+        minimum_sample_count: minimumSamples,
+        required_order_rank: null,
+        threshold_value: null,
+        status,
+        interpretation: status === 'NO_APPROVED_POLICY'
+          ? 'No approved domain policy authorizes a residual coverage target and maximum residual threshold.'
+          : status === 'DOMAIN_REQUIRED'
+            ? 'Multiple approved policy domains match this cohort; select one domain before evaluating its residual threshold.'
+            : 'An older approved policy has no residual-threshold criteria. Propose and independently approve a new policy version before reporting this threshold.',
+      });
       if (!domain && domains.length > 1) {
         return {
           ...bucket,
-          empirical_residual_threshold: residualThreshold,
+          empirical_residual_threshold: unavailableResidualThreshold('DOMAIN_REQUIRED'),
+          uncertainty_threshold_assessment: 'DOMAIN_REQUIRED',
           calibration_policy: null,
           error_threshold_assessment: 'DOMAIN_REQUIRED',
           error_threshold_failures: [],
@@ -1953,7 +1967,8 @@ export class GrowthService {
       if (!candidates.length) {
         return {
           ...bucket,
-          empirical_residual_threshold: residualThreshold,
+          empirical_residual_threshold: unavailableResidualThreshold('NO_APPROVED_POLICY'),
+          uncertainty_threshold_assessment: 'NO_APPROVED_POLICY',
           calibration_policy: null,
           error_threshold_assessment: 'NO_APPROVED_POLICY',
           error_threshold_failures: [],
@@ -1963,10 +1978,34 @@ export class GrowthService {
       }
       const selected = [...candidates].sort((a, b) => Number(b.policy_version) - Number(a.policy_version))[0];
       if (!selected) {
-        return { ...bucket, empirical_residual_threshold: residualThreshold, calibration_policy: null, error_threshold_assessment: 'NO_APPROVED_POLICY',
-          error_threshold_failures: [], interval_threshold_assessment: 'NO_APPROVED_POLICY' };
+        return {
+          ...bucket,
+          empirical_residual_threshold: unavailableResidualThreshold('NO_APPROVED_POLICY'),
+          uncertainty_threshold_assessment: 'NO_APPROVED_POLICY',
+          calibration_policy: null,
+          error_threshold_assessment: 'NO_APPROVED_POLICY',
+          error_threshold_failures: [],
+          interval_threshold_assessment: 'NO_APPROVED_POLICY',
+        };
       }
       const minSamples = Number(selected.minimum_sample_count);
+      const hasResidualPolicy = selected.residual_coverage_target_pct !== null
+        && selected.max_empirical_absolute_residual !== null;
+      const residualThreshold = hasResidualPolicy
+        ? deriveGrowthEmpiricalResidualThreshold(
+          residualRows.map(row => row.absolute_error),
+          Number(selected.residual_coverage_target_pct),
+          minSamples,
+        )
+        : unavailableResidualThreshold('RESIDUAL_POLICY_NOT_CONFIGURED', minSamples);
+      const residualValue = residualThreshold.threshold_value === null ? null : Number(residualThreshold.threshold_value);
+      const uncertaintyAssessment = !hasResidualPolicy
+        ? 'RESIDUAL_POLICY_NOT_CONFIGURED'
+        : residualThreshold.status !== 'ESTIMATED_FROM_HELD_OUT_RESIDUALS'
+          ? residualThreshold.status
+          : residualValue !== null && residualValue > Number(selected.max_empirical_absolute_residual)
+            ? 'EXCEEDS_APPROVED_RESIDUAL_THRESHOLD'
+            : 'WITHIN_APPROVED_RESIDUAL_THRESHOLD';
       const policySummary = {
         id: selected.id, domain: selected.domain, policy_version: Number(selected.policy_version),
         minimum_sample_count: minSamples,
@@ -1976,14 +2015,18 @@ export class GrowthService {
           max_absolute_mean_error: Number(selected.max_absolute_mean_error),
           max_mean_symmetric_percentage_error_pct: Number(selected.max_mean_symmetric_percentage_error_pct),
           max_absolute_calibration_gap_pct_points: Number(selected.max_absolute_calibration_gap_pct_points),
+          residual_coverage_target_pct: hasResidualPolicy ? Number(selected.residual_coverage_target_pct) : null,
+          max_empirical_absolute_residual: hasResidualPolicy ? Number(selected.max_empirical_absolute_residual) : null,
         },
       };
       if (bucket.sample_count < minSamples) {
         return {
           ...bucket,
           empirical_residual_threshold: residualThreshold,
+          uncertainty_threshold_assessment: uncertaintyAssessment,
           calibration_policy: policySummary,
-          error_threshold_assessment: 'INSUFFICIENT_POLICY_SAMPLE', error_threshold_failures: [],
+          error_threshold_assessment: 'INSUFFICIENT_POLICY_SAMPLE',
+          error_threshold_failures: [],
           interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
             : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED'
               : bucket.interval_sample_count < minSamples ? 'INSUFFICIENT_INTERVAL_SAMPLE' : 'NOT_ASSESSED',
@@ -2012,6 +2055,7 @@ export class GrowthService {
       return {
         ...bucket,
         empirical_residual_threshold: residualThreshold,
+        uncertainty_threshold_assessment: uncertaintyAssessment,
         calibration_policy: policySummary,
         error_threshold_assessment: failures.some(failure => failure !== 'ABSOLUTE_CALIBRATION_GAP')
           ? 'EXCEEDS_APPROVED_ERROR_THRESHOLDS' : 'WITHIN_APPROVED_ERROR_THRESHOLDS',
@@ -2022,13 +2066,12 @@ export class GrowthService {
     return {
       method_version: GROWTH_FORECAST_EVALUATION_VERSION,
       minimum_calibration_sample_size: GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
-      residual_coverage_target_pct: residualCoveragePct,
       observations_included: observations.length,
       total_observations: totalCount,
       sample_window_truncated: totalCount > observations.length,
       policy_domain_filter: domain ?? null,
       approved_policy_count: policies.length,
-      interpretation: 'Observed out-of-sample errors only. An approved domain policy evaluates point-error thresholds; declared interval coverage is evaluated separately. A heuristic range has no nominal coverage and is never described as a confidence or calibrated prediction interval. empirical_residual_threshold is a held-out absolute-residual order statistic, not a confidence interval or a guarantee under drift/non-exchangeability; its finite-sample tail rank is withheld when unavailable. The 10-observation floor is an operational minimum, not a statistical power guarantee. No model is automatically refit.',
+      interpretation: 'Observed out-of-sample errors only. Only an approved domain policy authorizes empirical residual thresholds and point-error checks. Residual thresholds are absolute-error order statistics from held-out forecast evaluations; they are not confidence intervals and do not guarantee future coverage under drift/non-exchangeability. A heuristic range has no nominal coverage and is never described as a confidence or calibrated prediction interval. An interval with declared nominal coverage is assessed separately from point-error and residual thresholds. No model is automatically refit.',
       calibration,
     };
   }
