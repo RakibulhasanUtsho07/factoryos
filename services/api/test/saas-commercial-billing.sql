@@ -124,6 +124,10 @@ BEGIN
     SELECT 1 FROM pg_trigger t
     WHERE t.tgname='saas_usage_adjustments_billing_close_fence' AND NOT t.tgisinternal
       AND t.tgrelid='public.saas_usage_adjustments'::regclass
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgname='saas_usage_reconciliations_billing_close_fence' AND NOT t.tgisinternal
+      AND t.tgrelid='public.saas_usage_reconciliations'::regclass
   ) THEN
     RAISE EXCEPTION 'SAAS_BILLING_CLOSE_LEDGER_CONCURRENCY_FENCE_MISSING';
   END IF;

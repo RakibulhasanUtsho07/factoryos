@@ -393,6 +393,21 @@ BEGIN
       RAISE EXCEPTION 'SaaS adjustment overlaps an already closed billing period; use an approved provider credit-note/tax-correction process'
         USING ERRCODE='55000';
     END IF;
+  ELSIF TG_TABLE_NAME='saas_usage_reconciliations' THEN
+    -- A legacy invoice reconciliation is also a customer-facing billing fact.
+    -- Serialize it against new close creation and reject it once a commercial
+    -- close owns any overlapping part of the tenant's usage period.
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.saas_billing_close_runs c
+      WHERE c.tenant_id=NEW.tenant_id
+        AND NEW.period_start < c.period_end
+        AND NEW.period_end > c.period_start
+    ) INTO already_closed;
+    IF already_closed THEN
+      RAISE EXCEPTION 'Legacy invoice reconciliation overlaps an existing commercial billing close; duplicate invoice evidence is rejected'
+        USING ERRCODE='55000';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -406,6 +421,11 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_billing_closed_period();
 DROP TRIGGER IF EXISTS saas_usage_adjustments_billing_close_fence ON public.saas_usage_adjustments;
 CREATE TRIGGER saas_usage_adjustments_billing_close_fence
 BEFORE INSERT ON public.saas_usage_adjustments
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_billing_closed_period();
+
+DROP TRIGGER IF EXISTS saas_usage_reconciliations_billing_close_fence ON public.saas_usage_reconciliations;
+CREATE TRIGGER saas_usage_reconciliations_billing_close_fence
+BEFORE INSERT ON public.saas_usage_reconciliations
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_saas_billing_closed_period();
 
 INSERT INTO schema_migrations(version,checksum)
