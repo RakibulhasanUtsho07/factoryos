@@ -62,6 +62,26 @@ describe('SaasBillingService', () => {
     expect(client.release).toHaveBeenCalledWith(false);
   });
 
+  it('blocks invoice sending and charging until provider automatic tax is complete', () => {
+    const { service } = mocks();
+    expect(() => (service as any).assertInvoiceTaxReady(
+      { automatic_tax_enabled: true },
+      { status: 'open', automaticTaxStatus: 'failed' },
+    )).toThrow(ConflictException);
+    expect(() => (service as any).assertInvoiceTaxReady(
+      { automatic_tax_enabled: true },
+      { status: 'open', automaticTaxStatus: 'requires_location_inputs' },
+    )).toThrow(ConflictException);
+    expect(() => (service as any).assertInvoiceTaxReady(
+      { automatic_tax_enabled: true },
+      { status: 'open', automaticTaxStatus: 'complete' },
+    )).not.toThrow();
+    expect(() => (service as any).assertInvoiceTaxReady(
+      { automatic_tax_enabled: false },
+      { status: 'open', automaticTaxStatus: null },
+    )).not.toThrow();
+  });
+
   it('validates provider account tax and collection boundaries before touching the database', () => {
     const { service, database } = mocks();
     expect(() => (service as any).normalizeAccount({

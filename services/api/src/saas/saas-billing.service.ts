@@ -490,6 +490,7 @@ export class SaasBillingService {
       }
 
       this.assertInvoiceBelongsToClose(invoice, close);
+      this.assertInvoiceTaxReady(close, invoice);
       if (invoice.status === 'open' && close.collection_method === 'send_invoice') {
         invoice = await this.stripe.sendInvoice(invoice.id, 'fo-billing-' + closeId + '-send-v1');
         this.assertInvoiceBelongsToClose(invoice, close);
@@ -967,6 +968,12 @@ export class SaasBillingService {
       || invoice.metadata.factoryos_tenant_id !== close.tenant_id
       || invoice.metadata.factoryos_billing_snapshot_hash !== close.snapshot_hash) {
       throw new ConflictException('Stripe invoice metadata does not match the immutable billing-close snapshot');
+    }
+  }
+
+  private assertInvoiceTaxReady(close: CloseRow, invoice: StripeInvoice): void {
+    if (close.automatic_tax_enabled && invoice.status !== 'draft' && invoice.automaticTaxStatus !== 'complete') {
+      throw new ConflictException('Provider automatic-tax calculation is not complete; do not send or charge this invoice until tax status is complete');
     }
   }
 
