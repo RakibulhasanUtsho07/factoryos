@@ -464,7 +464,7 @@ export class ResearchSourceProductionService {
 
   private safeFilename(input: string): string {
     const basename = String(input ?? '').split(/[\\/]/).pop() ?? '';
-    const cleaned = basename.normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 255);
+    const cleaned = basename.normalize('NFKC').replace(/\p{Cc}/gu, '').trim().slice(0, 255);
     if (!cleaned || cleaned === '.' || cleaned === '..') {
       throw new BadRequestException('Uploaded filename is invalid');
     }
