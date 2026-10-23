@@ -27,7 +27,8 @@ const caseRow = {
   agent_id: 'AGENT.TEST', agent_version: '1.0.0', case_key: 'calls-noop', case_version: 1,
   name: 'Calls noop', description: null, kind: 'EXPECTED_TOOL_CALL',
   expected_tool_id: 'AI.RUNTIME.NOOP', expected_tool_version: '1.0.0',
-  expected_action_type: 'AI.RUNTIME.NOOP', expected_input_subset: { orderId: 'ORD-1' },
+  expected_action_type: 'AI.RUNTIME.NOOP', source_tool_id: null, source_tool_version: null,
+  expected_input_subset: { orderId: 'ORD-1' },
   expected_refusal_reason_contains: null, status: 'ACTIVE', created_by: userId,
   created_at: '2026-10-11T00:00:00.000Z',
 };
@@ -348,6 +349,7 @@ describe('AiAgentEvaluationService', () => {
       caseKey: 'compensates-order', version: 1, name: 'Order compensation',
       kind: 'EXPECTED_COMPENSATION', expectedToolId: 'ORDERS.COMPENSATE',
       expectedToolVersion: '1.0.0', expectedActionType: 'ORDERS.COMPENSATE',
+      sourceToolId: 'ORDERS.CREATE', sourceToolVersion: '1.0.0',
       expectedInputSubset: { orderId: 'ORD-1' },
     }).kind).toBe('EXPECTED_COMPENSATION');
     expect(() => (service as any).normalizeCase({
@@ -378,6 +380,7 @@ describe('AiAgentEvaluationService', () => {
     const compensation = (service as any).compareCaseToRun({
       ...caseRow, kind: 'EXPECTED_COMPENSATION', expected_tool_id: 'ORDERS.COMPENSATE',
       expected_tool_version: '1.0.0', expected_action_type: 'ORDERS.COMPENSATE',
+      source_tool_id: 'AI.RUNTIME.NOOP', source_tool_version: '1.0.0',
     }, run);
     expect(redTeam.status).toBe('INCONCLUSIVE');
     expect(compensation.status).toBe('INCONCLUSIVE');
@@ -604,6 +607,7 @@ describe('AiAgentEvaluationService', () => {
     const caseInput = {
       ...caseRow, kind: 'EXPECTED_COMPENSATION', expected_tool_id: 'ORDERS.COMPENSATE',
       expected_tool_version: '1.0.0', expected_action_type: 'ORDERS.COMPENSATE',
+      source_tool_id: 'AI.RUNTIME.NOOP', source_tool_version: '1.0.0',
       expected_input_subset: { orderId: 'ORD-1' },
     };
     const sourceStep = liveTraceRow({
@@ -639,6 +643,7 @@ describe('AiAgentEvaluationService', () => {
     const caseInput = {
       ...caseRow, kind: 'EXPECTED_COMPENSATION', expected_tool_id: 'ORDERS.COMPENSATE',
       expected_tool_version: '1.0.0', expected_action_type: 'ORDERS.COMPENSATE',
+      source_tool_id: 'AI.RUNTIME.NOOP', source_tool_version: '1.0.0',
       expected_input_subset: { orderId: 'ORD-1' },
     };
     const evaluated = (service as any).compareCaseToLiveTrace(caseInput, liveTaskRow({ state: 'FAILED' }), [

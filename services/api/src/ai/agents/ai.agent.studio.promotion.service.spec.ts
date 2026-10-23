@@ -381,6 +381,9 @@ describe('AiAgentStudioPromotionService', () => {
     expect(coverageQuery).toContain("r.status = 'PASS' AND r.created_at >= $4::timestamptz");
     expect(coverageQuery).toContain("c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'");
     expect(coverageQuery).toContain("c.kind = 'EXPECTED_COMPENSATION'");
+    expect(coverageQuery).toContain('c.source_tool_id = w.tool_id');
+    expect(coverageQuery).toContain('c.source_tool_version = w.version');
+    expect(coverageQuery).toContain("c.expected_tool_id = w.rollback->>'toolId'");
     expect(coverageQuery).toContain("w.rollback->>'type' = 'COMPENSATION'");
     expect(coverageQuery).toContain('$4::timestamptz');
     expect(database.transaction).not.toHaveBeenCalled();

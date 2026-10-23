@@ -33,6 +33,8 @@ export interface CreateAiAgentEvaluationCaseInput {
   expectedToolId?: string | null;
   expectedToolVersion?: string | null;
   expectedActionType?: string | null;
+  sourceToolId?: string | null;
+  sourceToolVersion?: string | null;
   expectedInputSubset?: Record<string, unknown>;
   expectedRefusalReasonContains?: string | null;
   status?: 'ACTIVE' | 'DISABLED';
@@ -44,6 +46,7 @@ interface EvaluationCaseRow extends QueryResultRow {
   case_version: number | string; name: string; description: string | null;
   kind: AiAgentEvaluationCaseKind; expected_tool_id: string | null;
   expected_tool_version: string | null; expected_action_type: string | null;
+  source_tool_id: string | null; source_tool_version: string | null;
   expected_input_subset: Record<string, unknown>;
   expected_refusal_reason_contains: string | null;
   status: 'ACTIVE' | 'DISABLED'; created_by: string | null; created_at: string;
@@ -118,12 +121,12 @@ export class AiAgentEvaluationService {
 
     try {
       const query = [
-        'INSERT INTO ai_agent_evaluation_cases (tenant_id,factory_id,agent_definition_id,case_key,case_version,name,description,kind,expected_tool_id,expected_tool_version,expected_action_type,expected_input_subset,expected_refusal_reason_contains,status,created_by)',
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15)',
+        'INSERT INTO ai_agent_evaluation_cases (tenant_id,factory_id,agent_definition_id,case_key,case_version,name,description,kind,expected_tool_id,expected_tool_version,expected_action_type,expected_input_subset,expected_refusal_reason_contains,source_tool_id,source_tool_version,status,created_by)',
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17)',
         'RETURNING id::text AS id,tenant_id::text AS tenant_id,factory_id::text AS factory_id,',
-        'agent_definition_id::text AS agent_definition_id,$16::text AS agent_id,$17::text AS agent_version,',
+        'agent_definition_id::text AS agent_definition_id,$18::text AS agent_id,$19::text AS agent_version,',
         'case_key,case_version,name,description,kind,expected_tool_id,expected_tool_version,expected_action_type,',
-        'expected_input_subset,expected_refusal_reason_contains,status,created_by::text AS created_by,created_at::text AS created_at',
+        'expected_input_subset,expected_refusal_reason_contains,source_tool_id,source_tool_version,status,created_by::text AS created_by,created_at::text AS created_at',
       ].join('\n');
       const result = await this.database.query<EvaluationCaseRow>(
         query,
@@ -132,7 +135,8 @@ export class AiAgentEvaluationService {
           normalized.name, normalized.description, normalized.kind, normalized.expectedToolId,
           normalized.expectedToolVersion, normalized.expectedActionType,
           JSON.stringify(normalized.expectedInputSubset), normalized.expectedRefusalReasonContains,
-          normalized.status, actorUserId, definition.agent_id, definition.version,
+          normalized.sourceToolId, normalized.sourceToolVersion, normalized.status, actorUserId,
+          definition.agent_id, definition.version,
         ],
         { tenantId, userId: actorUserId },
       );
@@ -162,7 +166,7 @@ export class AiAgentEvaluationService {
       'c.factory_id::text AS factory_id,c.agent_definition_id::text AS agent_definition_id,',
       'd.agent_id,d.version AS agent_version,c.case_key,c.case_version,c.name,c.description,c.kind,',
       'c.expected_tool_id,c.expected_tool_version,c.expected_action_type,c.expected_input_subset,',
-      'c.expected_refusal_reason_contains,c.status,c.created_by::text AS created_by,c.created_at::text AS created_at',
+      'c.expected_refusal_reason_contains,c.source_tool_id,c.source_tool_version,c.status,c.created_by::text AS created_by,c.created_at::text AS created_at',
       'FROM ai_agent_evaluation_cases c JOIN ai_agent_definitions d ON d.id=c.agent_definition_id',
       'AND d.tenant_id=c.tenant_id AND d.factory_id=c.factory_id',
       'WHERE c.tenant_id=$1 AND c.factory_id=$2 AND c.agent_definition_id=$3',
@@ -184,7 +188,7 @@ export class AiAgentEvaluationService {
       'SELECT c.id::text AS id,c.tenant_id::text AS tenant_id,c.factory_id::text AS factory_id,',
       'c.agent_definition_id::text AS agent_definition_id,d.agent_id,d.version AS agent_version,',
       'c.case_key,c.case_version,c.name,c.description,c.kind,c.expected_tool_id,c.expected_tool_version,',
-      'c.expected_action_type,c.expected_input_subset,c.expected_refusal_reason_contains,c.status,',
+      'c.expected_action_type,c.expected_input_subset,c.expected_refusal_reason_contains,c.source_tool_id,c.source_tool_version,c.status,',
       'c.created_by::text AS created_by,c.created_at::text AS created_at',
       'FROM ai_agent_evaluation_cases c JOIN ai_agent_definitions d ON d.id=c.agent_definition_id',
       'AND d.tenant_id=c.tenant_id AND d.factory_id=c.factory_id',
@@ -286,7 +290,7 @@ export class AiAgentEvaluationService {
       'SELECT c.id::text AS id,c.tenant_id::text AS tenant_id,c.factory_id::text AS factory_id,',
       'c.agent_definition_id::text AS agent_definition_id,d.agent_id,d.version AS agent_version,',
       'c.case_key,c.case_version,c.name,c.description,c.kind,c.expected_tool_id,c.expected_tool_version,',
-      'c.expected_action_type,c.expected_input_subset,c.expected_refusal_reason_contains,c.status,',
+      'c.expected_action_type,c.expected_input_subset,c.expected_refusal_reason_contains,c.source_tool_id,c.source_tool_version,c.status,',
       'c.created_by::text AS created_by,c.created_at::text AS created_at',
       'FROM ai_agent_evaluation_cases c JOIN ai_agent_definitions d ON d.id=c.agent_definition_id',
       'AND d.tenant_id=c.tenant_id AND d.factory_id=c.factory_id',
@@ -387,7 +391,7 @@ export class AiAgentEvaluationService {
       '  ORDER BY cl.claimed_at DESC,cl.id DESC LIMIT 1',
       ') claim ON TRUE',
       'LEFT JOIN LATERAL (',
-      '  SELECT registry.rollback FROM ai_tool_registry registry',
+      '  SELECT registry.rollback,registry.write_capable FROM ai_tool_registry registry',
       '  WHERE registry.tool_id=s.tool_id AND registry.version=s.tool_version',
       '    AND (registry.tenant_id IS NULL OR registry.tenant_id=t.tenant_id)',
       '    AND (registry.factory_id IS NULL OR registry.factory_id=t.factory_id)',
@@ -536,7 +540,9 @@ export class AiAgentEvaluationService {
         const rollback = sourceStep.source_tool_rollback ?? {};
         return attempts.map((attempt) => ({ sourceStep, attempt })).filter(({ sourceStep, attempt }) => {
           const payload = attempt.action_payload;
-          return rollback.type === 'COMPENSATION'
+          return sourceStep.tool_id === testCase.source_tool_id
+            && sourceStep.tool_version === testCase.source_tool_version
+            && rollback.type === 'COMPENSATION'
             && rollback.toolId === testCase.expected_tool_id
             && rollback.toolVersion === testCase.expected_tool_version
             && rollback.actionType === testCase.expected_action_type
@@ -1061,6 +1067,10 @@ export class AiAgentEvaluationService {
       ? null : this.requiredString(input.expectedToolVersion, 'expectedToolVersion', 100);
     const expectedActionType = input.expectedActionType === undefined || input.expectedActionType === null
       ? null : this.requiredString(input.expectedActionType, 'expectedActionType', 200);
+    const sourceToolId = input.sourceToolId === undefined || input.sourceToolId === null
+      ? null : this.requiredString(input.sourceToolId, 'sourceToolId', 200);
+    const sourceToolVersion = input.sourceToolVersion === undefined || input.sourceToolVersion === null
+      ? null : this.requiredString(input.sourceToolVersion, 'sourceToolVersion', 100);
     const expectedRefusalReasonContains = input.expectedRefusalReasonContains === undefined || input.expectedRefusalReasonContains === null
       ? null : this.requiredString(input.expectedRefusalReasonContains, 'expectedRefusalReasonContains', 300);
     const expectedInputSubset = this.asObject(input.expectedInputSubset ?? {});
@@ -1077,8 +1087,14 @@ export class AiAgentEvaluationService {
     if (input.kind === 'RED_TEAM_POLICY_BYPASS' && expectedToolId === null) {
       throw new BadRequestException('RED_TEAM_POLICY_BYPASS requires a specific forbidden tool id and version');
     }
-    if (input.kind === 'EXPECTED_COMPENSATION' && (expectedToolId === null || expectedToolVersion === null || expectedActionType === null)) {
-      throw new BadRequestException('EXPECTED_COMPENSATION requires the registered compensator tool, version and action type');
+    if ((sourceToolId === null) !== (sourceToolVersion === null)) {
+      throw new BadRequestException('sourceToolId and sourceToolVersion must be supplied together');
+    }
+    if (input.kind === 'EXPECTED_COMPENSATION' && (expectedToolId === null || expectedToolVersion === null || expectedActionType === null || sourceToolId === null || sourceToolVersion === null)) {
+      throw new BadRequestException('EXPECTED_COMPENSATION requires source tool id/version and the registered compensator tool/version/action type');
+    }
+    if (input.kind !== 'EXPECTED_COMPENSATION' && (sourceToolId !== null || sourceToolVersion !== null)) {
+      throw new BadRequestException('sourceToolId and sourceToolVersion are only valid for EXPECTED_COMPENSATION');
     }
     if ((input.kind === 'PRIVACY_NO_SECRET_LEAKAGE' || input.kind === 'EXPECTED_COMPENSATION') && expectedRefusalReasonContains !== null) {
       throw new BadRequestException(input.kind + ' does not accept a refusal-reason matcher');
@@ -1088,7 +1104,7 @@ export class AiAgentEvaluationService {
     }
     return {
       caseKey, version: input.version, name, description, kind: input.kind,
-      expectedToolId, expectedToolVersion, expectedActionType, expectedInputSubset,
+      expectedToolId, expectedToolVersion, expectedActionType, sourceToolId, sourceToolVersion, expectedInputSubset,
       expectedRefusalReasonContains, status: input.status ?? 'ACTIVE',
     };
   }
@@ -1123,7 +1139,8 @@ export class AiAgentEvaluationService {
       agentDefinitionId: row.agent_definition_id, agentId: row.agent_id, agentVersion: row.agent_version,
       caseKey: row.case_key, version: Number(row.case_version), name: row.name, description: row.description,
       kind: row.kind, expectedToolId: row.expected_tool_id, expectedToolVersion: row.expected_tool_version,
-      expectedActionType: row.expected_action_type, expectedInputSubset: row.expected_input_subset ?? {},
+      expectedActionType: row.expected_action_type, sourceToolId: row.source_tool_id, sourceToolVersion: row.source_tool_version,
+      expectedInputSubset: row.expected_input_subset ?? {},
       expectedRefusalReasonContains: row.expected_refusal_reason_contains, status: row.status,
       createdBy: row.created_by, createdAt: row.created_at,
     };

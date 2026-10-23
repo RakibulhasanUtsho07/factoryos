@@ -41,6 +41,8 @@ export class AiAgentEvaluationController {
         expectedToolId: body.expected_tool_id ?? null,
         expectedToolVersion: body.expected_tool_version ?? null,
         expectedActionType: body.expected_action_type ?? null,
+        sourceToolId: body.source_tool_id ?? null,
+        sourceToolVersion: body.source_tool_version ?? null,
         expectedInputSubset: body.expected_input_subset ?? {},
         expectedRefusalReasonContains: body.expected_refusal_reason_contains ?? null,
         status: body.status,

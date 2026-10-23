@@ -40,6 +40,16 @@ export class CreateAiAgentEvaluationCaseDto {
   expected_action_type?: string | null;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  source_tool_id?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  source_tool_version?: string | null;
+
+  @IsOptional()
   @IsObject()
   expected_input_subset?: Record<string, unknown>;
 

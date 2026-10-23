@@ -1118,6 +1118,8 @@ export class AiAgentStudioPromotionService {
               WHERE c.tenant_id = $1 AND c.factory_id = $2
                 AND c.agent_definition_id = $3 AND c.status = 'ACTIVE'
                 AND c.kind = 'EXPECTED_COMPENSATION'
+                AND c.source_tool_id = w.tool_id
+                AND c.source_tool_version = w.version
                 AND c.expected_tool_id = w.rollback->>'toolId'
                 AND c.expected_tool_version = w.rollback->>'toolVersion'
                 AND c.expected_action_type = w.rollback->>'actionType'
