@@ -851,7 +851,7 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
     );
   }
 
-remove unused rollback helpers  private async getRequired(target: KubernetesTarget, path: string): Promise<JsonRecord> {
+private async getRequired(target: KubernetesTarget, path: string): Promise<JsonRecord> {
     const result = await this.call(target, path, 'GET');
     if (!isRecord(result) || !isRecord(result.metadata)) {
       throw new KubernetesProviderError(502, 'INVALID_PROVIDER_OBJECT');
@@ -926,7 +926,7 @@ remove unused rollback helpers  private async getRequired(target: KubernetesTarg
     throw new KubernetesProviderError(504, this.safeCodeFromMessage(failureMessage));
   }
 
-remove unused ensureOwnedResource  private assertDeploymentOwned(resource: JsonRecord, context: PhysicalOperationContext) {
+private assertDeploymentOwned(resource: JsonRecord, context: PhysicalOperationContext) {
     if (!this.ownedByTenant(resource, context.tenantId) ||
       resource.metadata?.labels?.['factoryos.io/topology'] !== context.profile.profileType ||
       resource.metadata?.labels?.['app.kubernetes.io/managed-by'] !== 'factoryos') {
