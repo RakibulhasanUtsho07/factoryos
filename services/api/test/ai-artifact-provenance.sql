@@ -8,6 +8,7 @@ DECLARE
   rls_enabled BOOLEAN;
   rls_forced BOOLEAN;
   trigger_count INTEGER;
+  trigger_definition TEXT;
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
     'ai_artifact_trusted_sources',
@@ -37,6 +38,14 @@ BEGIN
   IF trigger_count <> 1 THEN
     RAISE EXCEPTION 'Trusted source lifecycle guard trigger is missing';
   END IF;
+  SELECT pg_get_triggerdef(t.oid) INTO trigger_definition
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'ai_artifact_trusted_sources'
+     AND t.tgname = 'ai_artifact_trusted_sources_guard'
+     AND NOT t.tgisinternal;
+  IF trigger_definition NOT ILIKE '%INSERT%' THEN
+    RAISE EXCEPTION 'Trusted sources must reject privileged initial states on INSERT';
+  END IF;
 
   SELECT COUNT(*) INTO trigger_count
     FROM pg_trigger t
@@ -46,6 +55,14 @@ BEGIN
      AND NOT t.tgisinternal;
   IF trigger_count <> 1 THEN
     RAISE EXCEPTION 'Artifact immutability/revocation guard trigger is missing';
+  END IF;
+  SELECT pg_get_triggerdef(t.oid) INTO trigger_definition
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'ai_artifact_registry'
+     AND t.tgname = 'ai_artifact_registry_guard'
+     AND NOT t.tgisinternal;
+  IF trigger_definition NOT ILIKE '%INSERT%' THEN
+    RAISE EXCEPTION 'Artifacts must reject privileged initial states on INSERT';
   END IF;
 
   SELECT COUNT(*) INTO trigger_count
