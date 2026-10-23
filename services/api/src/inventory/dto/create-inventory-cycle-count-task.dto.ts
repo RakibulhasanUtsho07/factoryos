@@ -1,0 +1,39 @@
+import {
+  IsDateString,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
+
+export class CreateInventoryCycleCountTaskDto {
+  @IsUUID()
+  item_id!: string;
+
+  @IsOptional()
+  @IsUUID()
+  location_id?: string;
+
+  @IsOptional()
+  @IsUUID()
+  assigned_to_user_id?: string;
+
+  @IsDateString()
+  due_at!: string;
+
+  /** Smaller numbers are scheduled first. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10000)
+  priority?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
+}
