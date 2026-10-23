@@ -762,7 +762,7 @@ export class AiAgentRuntimeService {
     );
     if (registeredTool.writeCapable) {
       await this.assertTrustedPlannerAttestation(
-        tenantId, factoryId, task.id, task,
+        tenantId, factoryId, task.id, this.mapTask(task),
       );
     }
 

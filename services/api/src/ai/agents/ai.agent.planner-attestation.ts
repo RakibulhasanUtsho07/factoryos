@@ -14,6 +14,7 @@ const MAX_FUTURE_ISSUED_AT_SKEW_MS = 30 * 1000;
 
 export interface AiAgentPlannerAttestationPayload {
   schema_version: string;
+  attestation_id: string;
   key_id: string;
   provider_id: string;
   provider_version: string;
