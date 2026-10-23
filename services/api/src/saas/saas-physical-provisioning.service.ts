@@ -439,7 +439,8 @@ export class SaasPhysicalProvisioningService {
         evidenceDigest: rollback.evidenceDigest,
         evidence: {
           failedArtifactDigest: deployed.artifactDigest, targetArtifactDigest: previousRelease.artifactDigest,
-          targetRolloutKey: previousRelease.rolloutKey, targetRolloutVersion: controlPlaneRollbackVersion,
+          targetRolloutKey: previousRelease.rolloutKey, controlPlaneRolloutVersion: controlPlaneRollbackVersion,
+          targetArtifactDigest: previousRelease.artifactDigest,
           rolledBack: true, healthy: true, controlPlaneRollbackApplied: true, healthCheck: health,
         },
       });
