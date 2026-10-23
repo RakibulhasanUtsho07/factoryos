@@ -135,6 +135,58 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
+  -- Every accepted UPDATE is one explicit lifecycle transition. Prevent
+  -- same-state writes from rewriting who started/submitted/cancelled the task.
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
+    RAISE EXCEPTION 'cycle-count task updates must advance the lifecycle'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF (NEW.started_by_user_id IS DISTINCT FROM OLD.started_by_user_id
+      OR NEW.started_at IS DISTINCT FROM OLD.started_at)
+    AND NOT (OLD.status = 'SCHEDULED' AND NEW.status = 'IN_PROGRESS')
+  THEN
+    RAISE EXCEPTION 'cycle-count task start evidence is immutable'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF (NEW.submitted_by_user_id IS DISTINCT FROM OLD.submitted_by_user_id
+      OR NEW.submitted_at IS DISTINCT FROM OLD.submitted_at)
+    AND NOT (OLD.status = 'IN_PROGRESS' AND NEW.status = 'AWAITING_REVIEW')
+  THEN
+    RAISE EXCEPTION 'cycle-count task submission evidence is immutable outside proposal submission'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF NEW.current_proposal_id IS DISTINCT FROM OLD.current_proposal_id
+    AND NOT (
+      (OLD.status = 'IN_PROGRESS' AND NEW.status = 'AWAITING_REVIEW'
+        AND OLD.current_proposal_id IS NULL AND NEW.current_proposal_id IS NOT NULL)
+      OR
+      (OLD.status = 'AWAITING_REVIEW' AND NEW.status = 'IN_PROGRESS'
+        AND OLD.current_proposal_id IS NOT NULL AND NEW.current_proposal_id IS NULL)
+    )
+  THEN
+    RAISE EXCEPTION 'cycle-count task proposal pointer may change only during submit or rejection'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF NEW.completed_at IS DISTINCT FROM OLD.completed_at
+    AND NOT (OLD.status = 'AWAITING_REVIEW' AND NEW.status = 'COMPLETED')
+  THEN
+    RAISE EXCEPTION 'cycle-count task completion evidence is immutable'
+      USING ERRCODE = '55000';
+  END IF;
+
+  IF (NEW.cancelled_by_user_id IS DISTINCT FROM OLD.cancelled_by_user_id
+      OR NEW.cancelled_at IS DISTINCT FROM OLD.cancelled_at
+      OR NEW.cancellation_reason IS DISTINCT FROM OLD.cancellation_reason)
+    AND NOT (OLD.status IN ('SCHEDULED', 'IN_PROGRESS') AND NEW.status = 'CANCELLED')
+  THEN
+    RAISE EXCEPTION 'cycle-count task cancellation evidence is immutable'
+      USING ERRCODE = '55000';
+  END IF;
+
   IF NEW.assigned_to_user_id IS DISTINCT FROM OLD.assigned_to_user_id
     AND NOT (
       OLD.status = 'SCHEDULED' AND NEW.status = 'IN_PROGRESS'
@@ -189,6 +241,55 @@ DROP TRIGGER IF EXISTS inventory_cycle_count_task_guard ON inventory_cycle_count
 CREATE TRIGGER inventory_cycle_count_task_guard
 BEFORE UPDATE OR DELETE ON inventory_cycle_count_tasks
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_cycle_count_task();
+
+CREATE OR REPLACE FUNCTION factoryos_validate_inventory_cycle_count_task_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM inventory_items i
+    WHERE i.id = NEW.item_id AND i.tenant_id = NEW.tenant_id
+      AND i.factory_id = NEW.factory_id AND i.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'cycle-count task requires an active item in this factory'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.location_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM inventory_locations l
+    JOIN inventory_locations p
+      ON p.id = l.parent_location_id AND p.tenant_id = l.tenant_id
+      AND p.factory_id = l.factory_id
+    WHERE l.id = NEW.location_id AND l.tenant_id = NEW.tenant_id
+      AND l.factory_id = NEW.factory_id
+      AND l.location_type = 'BIN' AND l.status = 'ACTIVE'
+      AND p.location_type IN ('WAREHOUSE', 'STAGING') AND p.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'cycle-count task location must be an active bin under an active warehouse or staging location'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF NEW.assigned_to_user_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+    FROM users u
+    JOIN tenant_memberships tm ON tm.user_id = u.id
+    WHERE u.id = NEW.assigned_to_user_id AND u.status = 'ACTIVE'
+      AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+  ) THEN
+    RAISE EXCEPTION 'cycle-count task assignee must be an active member of this tenant'
+      USING ERRCODE = '23514';
+  END IF;
+
+  RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS inventory_cycle_count_task_insert_guard ON inventory_cycle_count_tasks;
+CREATE TRIGGER inventory_cycle_count_task_insert_guard
+BEFORE INSERT ON inventory_cycle_count_tasks
+FOR EACH ROW EXECUTE FUNCTION factoryos_validate_inventory_cycle_count_task_insert();
 
 CREATE OR REPLACE FUNCTION factoryos_validate_inventory_cycle_count_task_proposal()
 RETURNS trigger
