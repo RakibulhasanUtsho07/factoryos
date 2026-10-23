@@ -511,7 +511,7 @@ export class SaasPhysicalProvisioningService {
         providerCode: adapter.providerCode, providerReference: rollback.deploymentReference,
         evidenceDigest: rollback.evidenceDigest,
         evidence: {
-          failedArtifactDigest: deployed.artifactDigest, targetArtifactDigest: previousRelease.artifactDigest,
+          failedArtifactDigest: deployed.artifactDigest,
           targetRolloutKey: previousRelease.rolloutKey, controlPlaneRolloutVersion: controlPlaneRollbackVersion,
           targetArtifactDigest: previousRelease.artifactDigest,
           rolledBack: true, healthy: true, controlPlaneRollbackApplied: true, healthCheck: health,
