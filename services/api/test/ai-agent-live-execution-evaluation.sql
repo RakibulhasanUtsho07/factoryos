@@ -4,6 +4,7 @@ DO $$
 DECLARE
   case_kind_constraint TEXT;
   case_expectation_constraint TEXT;
+  source_tool_columns_present BOOLEAN;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -88,8 +89,18 @@ BEGIN
     AND conname='chk_ai_agent_evaluation_case_expectation';
   IF case_expectation_constraint IS NULL
      OR case_expectation_constraint NOT LIKE '%RED_TEAM_POLICY_BYPASS%'
-     OR case_expectation_constraint NOT LIKE '%EXPECTED_COMPENSATION%' THEN
-    RAISE EXCEPTION 'AI_RED_TEAM_COMPENSATION_EXPECTATION_CONSTRAINT_MISSING';
+     OR case_expectation_constraint NOT LIKE '%EXPECTED_COMPENSATION%'
+     OR case_expectation_constraint NOT LIKE '%source_tool_id%'
+     OR case_expectation_constraint NOT LIKE '%source_tool_version%' THEN
+    RAISE EXCEPTION 'AI_RED_TEAM_COMPENSATION_SOURCE_BINDING_CONSTRAINT_MISSING';
+  END IF;
+
+  SELECT COUNT(*) = 2 INTO source_tool_columns_present
+  FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='ai_agent_evaluation_cases'
+    AND column_name IN ('source_tool_id','source_tool_version');
+  IF source_tool_columns_present IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'AI_EVALUATION_SOURCE_TOOL_COLUMNS_MISSING';
   END IF;
 
   IF NOT EXISTS (
@@ -104,6 +115,13 @@ BEGIN
     WHERE version='182_ai_agent_red_team_compensation_evaluation'
   ) THEN
     RAISE EXCEPTION 'AI_RED_TEAM_COMPENSATION_EVALUATION_MIGRATION_MARKER_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version='183_ai_agent_executor_case_source_binding'
+  ) THEN
+    RAISE EXCEPTION 'AI_EXECUTOR_SOURCE_BINDING_MIGRATION_MARKER_MISSING';
   END IF;
 END $$;
 ROLLBACK;
