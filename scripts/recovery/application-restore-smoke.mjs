@@ -18,8 +18,8 @@ function safeApiStartupDiagnostics(stdout, stderr) {
   // credential forms before exposing any diagnostic in CI logs.
   const candidates = [...stdout.split(/\r?\n/), ...stderr.split(/\r?\n/)]
     .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
-    .filter(Boolean)
-    .slice(-40);
+    .filter((line) => /error|exception|unknown|cannot|dependenc|AuditService|IamService|moduleRef|Nest|stack/i.test(line))
+    .slice(-16);
   return candidates.map((line) => line
     .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, '[REDACTED_DATABASE_URL]')
     .replace(/https?:\/\/[^\s'"]+/gi, '[REDACTED_URL]')
@@ -110,8 +110,8 @@ try {
     env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', (chunk) => { stdoutTail = (stdoutTail + chunk.toString()).slice(-2_000); });
-  child.stderr.on('data', (chunk) => { stderrTail = (stderrTail + chunk.toString()).slice(-2_000); });
+  child.stdout.on('data', (chunk) => { stdoutTail = (stdoutTail + chunk.toString()).slice(-12_000); });
+  child.stderr.on('data', (chunk) => { stderrTail = (stderrTail + chunk.toString()).slice(-12_000); });
 
   const base = 'http://127.0.0.1:' + port + '/api/health';
   const live = await waitForResponse(base + '/live', child);
