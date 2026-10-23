@@ -1084,8 +1084,9 @@ export class AiAgentEvaluationService {
     if (input.kind === 'EXPECTED_REFUSAL' && expectedToolId === null && expectedRefusalReasonContains === null) {
       throw new BadRequestException('EXPECTED_REFUSAL requires a forbidden tool reference or refusal reason');
     }
-    if (input.kind === 'RED_TEAM_POLICY_BYPASS' && expectedToolId === null) {
-      throw new BadRequestException('RED_TEAM_POLICY_BYPASS requires a specific forbidden tool id and version');
+    if (input.kind === 'RED_TEAM_POLICY_BYPASS'
+      && (expectedToolId === null || expectedToolVersion === null || expectedActionType === null)) {
+      throw new BadRequestException('RED_TEAM_POLICY_BYPASS requires a specific forbidden tool id, version, and action type');
     }
     if ((sourceToolId === null) !== (sourceToolVersion === null)) {
       throw new BadRequestException('sourceToolId and sourceToolVersion must be supplied together');

@@ -91,7 +91,8 @@ BEGIN
      OR case_expectation_constraint NOT LIKE '%RED_TEAM_POLICY_BYPASS%'
      OR case_expectation_constraint NOT LIKE '%EXPECTED_COMPENSATION%'
      OR case_expectation_constraint NOT LIKE '%source_tool_id%'
-     OR case_expectation_constraint NOT LIKE '%source_tool_version%' THEN
+     OR case_expectation_constraint NOT LIKE '%source_tool_version%'
+     OR case_expectation_constraint NOT LIKE '%expected_action_type%' THEN
     RAISE EXCEPTION 'AI_RED_TEAM_COMPENSATION_SOURCE_BINDING_CONSTRAINT_MISSING';
   END IF;
 
@@ -122,6 +123,13 @@ BEGIN
     WHERE version='183_ai_agent_executor_case_source_binding'
   ) THEN
     RAISE EXCEPTION 'AI_EXECUTOR_SOURCE_BINDING_MIGRATION_MARKER_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
+    WHERE version='184_ai_agent_red_team_action_binding'
+  ) THEN
+    RAISE EXCEPTION 'AI_RED_TEAM_ACTION_BINDING_MIGRATION_MARKER_MISSING';
   END IF;
 END $$;
 ROLLBACK;
