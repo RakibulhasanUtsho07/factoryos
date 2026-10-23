@@ -274,6 +274,9 @@ jobs:
           echo "Reapplying growth KPI baseline evidence provenance migration"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/179_growth_kpi_baseline_evidence_provenance.sql
 
+          echo "Reapplying approved Growth residual threshold policy migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/180_growth_calibration_residual_threshold_policy.sql
+
           echo "Reapplying AI live execution evaluation migration"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/180_ai_agent_live_execution_evaluation.sql
 
