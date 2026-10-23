@@ -651,7 +651,15 @@ export class SaasPhysicalProvisioningService {
          AND release_channel=$7
          AND EXISTS (
            SELECT 1 FROM saas_physical_provisioning_runs pr
-           WHERE pr.tenant_id=$1 AND pr.operation='RELEASE_DEPLOY' AND pr.resource_id=latest.id
+           WHERE pr.tenant_id=$1 AND pr.operation='RELEASE_DEPLOY'
+             AND pr.resource_id=latest.id AND pr.resource_key=latest.rollout_key
+             AND pr.resource_version=latest.version AND pr.artifact_digest=latest.artifact_digest
+             AND pr.id=(
+               SELECT newest.id FROM saas_physical_provisioning_runs newest
+               WHERE newest.tenant_id=$1 AND newest.operation='RELEASE_DEPLOY'
+                 AND newest.resource_key=latest.rollout_key AND newest.resource_version=latest.version
+               ORDER BY newest.created_at DESC,newest.id DESC LIMIT 1
+             )
              AND (
                SELECT ev.event_status FROM saas_physical_provisioning_events ev
                WHERE ev.tenant_id=pr.tenant_id AND ev.run_id=pr.id
