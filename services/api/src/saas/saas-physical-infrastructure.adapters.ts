@@ -129,6 +129,7 @@ export interface PhysicalInfrastructureAdapter {
   rollbackRelease(
     context: PhysicalOperationContext,
     deploymentReference: string,
+    currentRelease: PhysicalReleaseInput,
     target: PhysicalReleaseInput,
     timeoutSeconds: number,
     idempotencyKey: string,
