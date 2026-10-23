@@ -348,6 +348,119 @@ describe('SaasBillingService', () => {
     expect(appended.every((event) => event.providerInvoiceId === 'in_123abc')).toBe(true);
   });
 
+  it('recovers the invoice created before an ambiguous timeout on the first billing-close retry', async () => {
+    const { service, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const marker = 'FO33333333-bbbbbbbbbbbb';
+    const snapshotHash = 'a'.repeat(64);
+    const close = {
+      id: closeId,
+      tenant_id: tenant,
+      provider_customer_id: 'cus_123abc',
+      currency: 'USD',
+      collection_method: 'send_invoice',
+      days_until_due: 30,
+      automatic_tax_enabled: false,
+      tax_behavior: null,
+      expected_subtotal_minor: '125',
+      snapshot_hash: snapshotHash,
+      request_hash: 'b'.repeat(64),
+      subscription_id: null,
+      lines: [{
+        key: 'usage:AI_INPUT_TOKEN',
+        marker,
+        kind: 'USAGE',
+        description: 'AI input usage',
+        quantity: '1',
+        eventCount: 1,
+        amountMinor: '125',
+        metricCode: 'AI_INPUT_TOKEN',
+      }],
+    };
+    const metadata = {
+      factoryos_tenant_id: tenant,
+      factoryos_billing_close_id: closeId,
+      factoryos_billing_snapshot_hash: snapshotHash,
+    };
+    const draftInvoice = {
+      id: 'in_123abc',
+      customerId: 'cus_123abc',
+      currency: 'USD',
+      status: 'draft',
+      subtotalMinor: 125,
+      taxMinor: 0,
+      discountMinor: 0,
+      totalMinor: 125,
+      amountDueMinor: 125,
+      amountPaidMinor: 0,
+      amountRemainingMinor: 125,
+      automaticTaxStatus: null,
+      automaticTaxEnabled: false,
+      collectionMethod: 'send_invoice',
+      metadata,
+      livemode: false,
+      createdAt: 1790902800,
+    };
+    const openInvoice = { ...draftInvoice, status: 'open' };
+    const issueFailedEvent = {
+      event_type: 'ISSUE_FAILED',
+      provider_invoice_id: null,
+      idempotency_key: 'issue-failed:' + closeId + ':previous-attempt',
+      provider_invoice_status: null,
+    };
+    const appended: Array<Record<string, unknown>> = [];
+    const internal = service as unknown as {
+      loadClose: (...args: unknown[]) => Promise<unknown>;
+      loadCloseEvents: (...args: unknown[]) => Promise<unknown[]>;
+      appendCloseEvent: (input: Record<string, unknown>) => Promise<void>;
+      closeResponse: (...args: unknown[]) => Promise<unknown>;
+    };
+    internal.loadClose = jest.fn(async () => close);
+    internal.loadCloseEvents = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([issueFailedEvent]);
+    internal.appendCloseEvent = jest.fn(async (input: Record<string, unknown>) => {
+      appended.push(input);
+    });
+    internal.closeResponse = jest.fn(async () => ({ close: { id: closeId, status: 'ISSUED' } }));
+
+    // Stripe may have created the invoice even if the response was lost.
+    // The first response is ambiguous; retry must search the close marker.
+    stripe.findInvoicesForClose
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([draftInvoice] as never);
+    stripe.createInvoice.mockRejectedValueOnce(new StripeBillingProviderError(503, 'TIMEOUT'));
+    stripe.listInvoiceLines.mockResolvedValueOnce([{
+      id: 'ii_existing',
+      amountMinor: 125,
+      currency: 'USD',
+      description: 'AI input usage [ref ' + marker + ']',
+    }] as never);
+    stripe.finalizeInvoice.mockResolvedValueOnce(openInvoice as never);
+    stripe.sendInvoice.mockResolvedValueOnce(openInvoice as never);
+
+    await expect(service.issueInvoice(tenant, factoryUser, closeId))
+      .rejects.toThrow('Stripe invoice operation failed with code TIMEOUT');
+
+    const recovered = await service.issueInvoice(tenant, factoryUser, closeId);
+
+    expect(recovered).toEqual({ close: { id: closeId, status: 'ISSUED' } });
+    expect(stripe.createInvoice).toHaveBeenCalledTimes(1);
+    expect(stripe.findInvoicesForClose).toHaveBeenCalledTimes(2);
+    expect(stripe.findInvoicesForClose).toHaveBeenNthCalledWith(1, closeId);
+    expect(stripe.findInvoicesForClose).toHaveBeenNthCalledWith(2, closeId);
+    expect(stripe.createInvoiceItem).not.toHaveBeenCalled();
+    expect(stripe.finalizeInvoice).toHaveBeenCalledTimes(1);
+    expect(stripe.sendInvoice).toHaveBeenCalledTimes(1);
+    expect(appended.map((event) => event.eventType)).toEqual([
+      'ISSUE_FAILED',
+      'INVOICE_DRAFTED',
+      'INVOICE_ISSUED',
+    ]);
+    expect(appended.filter((event) => event.eventType !== 'ISSUE_FAILED')
+      .every((event) => event.providerInvoiceId === 'in_123abc')).toBe(true);
+  });
+
   it('blocks invoice issuance when recovery search finds multiple invoices for the same close marker', async () => {
     const { service, stripe } = mocks();
     const closeId = '33333333-3333-4333-8333-333333333333';
