@@ -1283,6 +1283,10 @@ private assertDeploymentOwned(resource: JsonRecord, context: PhysicalOperationCo
     return error instanceof KubernetesProviderError ? error.providerCode : 'KUBERNETES_PROVIDER_ERROR';
   }
 
+  private isDigest(value: unknown): value is string {
+    return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  }
+
   private sha(value: string) {
     return createHash('sha256').update(value, 'utf8').digest('hex');
   }
