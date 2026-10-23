@@ -42,6 +42,36 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
     expect(databaseMock.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects recurring multi-bin targets with duplicate bins before opening a transaction', async () => {
+    const binId = '9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2';
+    await expect(service.createPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { ...validDto(), location_ids: [binId, binId] },
+      'recurring-duplicate-bins', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects combining single-bin and multi-bin recurrence targets', async () => {
+    const binA = '9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2';
+    const binB = 'b4de8386-ea38-4695-a2b9-2fa86e0e0d91';
+    await expect(service.createPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { ...validDto(), location_id: binA, location_ids: [binA, binB] },
+      'recurring-conflicting-bins', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects a multi-bin recurring target with fewer than two bins', async () => {
+    await expect(service.createPolicy(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { ...validDto(), location_ids: ['9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2'] },
+      'recurring-one-bin-array', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects a cadence interval that exceeds the weekly calendar bound', async () => {
     await expect(service.createPolicy(
       USER_ID, TENANT_ID, FACTORY_ID,
@@ -97,6 +127,103 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
       USER_ID, TENANT_ID, FACTORY_ID, 0, null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('materializes a recurring multi-bin occurrence as one session and complete child task set atomically', async () => {
+    const binA = '9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2';
+    const binB = 'b4de8386-ea38-4695-a2b9-2fa86e0e0d91';
+    const sessionId = '6f24a321-1bd2-4c78-a194-0ed0c8b2a187';
+    const taskA = 'bce92ca6-dd53-4e7b-9d7f-43f6717071f1';
+    const taskB = 'd00eb5ee-1ee0-4224-b9b6-72fb06a2e5a2';
+    const nextRunAt = '2026-10-31T10:00:00.000Z';
+    const scheduledFor = '2026-10-24T10:00:00.000Z';
+    const policy = {
+      id: 'cb7c4679-1bf4-40b2-a3f4-810c5fb219a9',
+      tenant_id: TENANT_ID,
+      factory_id: FACTORY_ID,
+      item_id: ITEM_ID,
+      location_id: null,
+      session_location_ids: [binA, binB],
+      assigned_to_user_id: ASSIGNEE_ID,
+      cadence_unit: 'WEEKLY',
+      cadence_interval: 1,
+      anchor_at: scheduledFor,
+      next_occurrence_number: '0',
+      next_run_at: scheduledFor,
+      last_run_at: null,
+      priority: 5,
+      blind_count: true,
+      variance_escalation_threshold: '2.0000',
+      status: 'ACTIVE',
+      idempotency_key: 'recurring-create',
+      request_hash: 'a'.repeat(64),
+      notes: 'inventory count',
+      created_by_user_id: USER_ID,
+      created_at: scheduledFor,
+      updated_at: scheduledFor,
+      version: '1',
+    };
+    let childTaskIndex = 0;
+    const client = {
+      query: jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[]; rowCount: number }>>()
+        .mockImplementation(async (...args: unknown[]) => {
+          const sql = String(args[0]);
+          if (sql.includes('SELECT count(*)::text AS count')) {
+            return { rows: [{ count: '0' }], rowCount: 1 };
+          }
+          if (sql.includes('FROM inventory_cycle_count_recurring_policies p')
+            && sql.includes('FOR UPDATE OF p SKIP LOCKED')) {
+            return { rows: [policy], rowCount: 1 };
+          }
+          if (sql.includes('FROM inventory_cycle_count_recurring_policy_occurrences')
+            && sql.startsWith('SELECT')) {
+            return { rows: [], rowCount: 0 };
+          }
+          if (sql.includes('INSERT INTO inventory_cycle_count_sessions')) {
+            return { rows: [{ id: sessionId }], rowCount: 1 };
+          }
+          if (sql.includes('INSERT INTO inventory_cycle_count_tasks')) {
+            childTaskIndex += 1;
+            return { rows: [{ id: childTaskIndex === 1 ? taskA : taskB }], rowCount: 1 };
+          }
+          if (sql.includes('UPDATE inventory_cycle_count_recurring_policies')) {
+            return { rows: [{ next_run_at: nextRunAt }], rowCount: 1 };
+          }
+          return { rows: [], rowCount: 1 };
+        }),
+    };
+
+    databaseMock.transaction.mockImplementation(async (...args: unknown[]) => {
+      const work = args[1] as (transactionClient: unknown) => Promise<unknown>;
+      return work(client);
+    });
+
+    const result = await service.materializeDue(
+      USER_ID, TENANT_ID, FACTORY_ID, 50, null, null,
+    );
+
+    expect(result.materialized_count).toBe(1);
+    expect(result.occurrences).toEqual([{
+      policy_id: policy.id,
+      task_id: null,
+      session_id: sessionId,
+      occurrence_number: 0,
+      scheduled_for: scheduledFor,
+      next_run_at: nextRunAt,
+    }]);
+    const calls = client.query.mock.calls;
+    const queries = calls.map(([sql]) => String(sql));
+    expect(queries.filter((sql) => sql.includes('INSERT INTO inventory_cycle_count_sessions'))).toHaveLength(1);
+    expect(queries.filter((sql) => sql.includes('INSERT INTO inventory_cycle_count_tasks'))).toHaveLength(2);
+    const occurrenceCall = calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO inventory_cycle_count_recurring_policy_occurrences'),
+    );
+    expect(occurrenceCall?.[1]).toEqual(expect.arrayContaining([null, sessionId]));
+    const outboxParams = calls
+      .filter(([sql]) => String(sql).includes('INSERT INTO outbox_events'))
+      .map(([, params]) => params as unknown[]);
+    expect(outboxParams.some((params) => params[4] === 'INVENTORY.CYCLE_COUNT_SESSION_SCHEDULED')).toBe(true);
+    expect(outboxParams.some((params) => params[4] === 'INVENTORY.CYCLE_COUNT_RECURRING_OCCURRENCE_MATERIALIZED')).toBe(true);
   });
 
   it('rejects an invalid list limit before querying', async () => {

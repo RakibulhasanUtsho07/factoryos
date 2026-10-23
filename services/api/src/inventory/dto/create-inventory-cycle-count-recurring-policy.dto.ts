@@ -1,4 +1,8 @@
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
   IsBoolean,
   IsDateString,
   IsIn,
@@ -19,6 +23,15 @@ export class CreateInventoryCycleCountRecurringPolicyDto {
   @IsOptional()
   @IsUUID()
   location_id?: string;
+
+  /** Optional 2–50-bin target for a recurring multi-bin session. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsUUID('all', { each: true })
+  location_ids?: string[];
 
   @IsUUID()
   assigned_to_user_id!: string;

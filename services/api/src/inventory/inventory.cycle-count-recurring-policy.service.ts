@@ -20,6 +20,7 @@ interface RecurringPolicyRow extends QueryResultRow {
   factory_id: string;
   item_id: string;
   location_id: string | null;
+  session_location_ids: string[];
   assigned_to_user_id: string;
   cadence_unit: InventoryCycleCountCadenceUnit;
   cadence_interval: number;
@@ -42,12 +43,13 @@ interface RecurringPolicyRow extends QueryResultRow {
 
 export type InventoryCycleCountRecurringPolicy = Omit<
   RecurringPolicyRow,
-  'idempotency_key' | 'request_hash'
-> & { replayed: boolean };
+  'idempotency_key' | 'request_hash' | 'session_location_ids'
+> & { replayed: boolean; location_ids: string[] };
 
 export interface MaterializedOccurrence {
   policy_id: string;
-  task_id: string;
+  task_id: string | null;
+  session_id: string | null;
   occurrence_number: number;
   scheduled_for: string;
   next_run_at: string;
@@ -59,6 +61,7 @@ const POLICY_COLUMNS = `
   factory_id::text AS factory_id,
   item_id::text AS item_id,
   location_id::text AS location_id,
+  session_location_ids,
   assigned_to_user_id::text AS assigned_to_user_id,
   cadence_unit,
   cadence_interval,
@@ -104,6 +107,7 @@ export class InventoryCycleCountRecurringPolicyService {
     dto: {
       item_id: string;
       location_id?: string;
+      location_ids?: string[];
       assigned_to_user_id: string;
       cadence_unit: InventoryCycleCountCadenceUnit;
       cadence_interval?: number;
@@ -125,6 +129,23 @@ export class InventoryCycleCountRecurringPolicyService {
     const locationId = dto.location_id?.toLowerCase() ?? null;
     const assignedToUserId = dto.assigned_to_user_id.toLowerCase();
     if (locationId) this.validateUuid(locationId, 'location_id');
+    const rawLocationIds = dto.location_ids ?? [];
+    if (!Array.isArray(rawLocationIds)) {
+      throw new BadRequestException('location_ids must contain between 2 and 50 active bins');
+    }
+    const sessionLocationIds = rawLocationIds.map((id, index) => {
+      this.validateUuid(id, `location_ids[${index}]`);
+      return id.toLowerCase();
+    }).sort();
+    if (sessionLocationIds.length > 0 && (sessionLocationIds.length < 2 || sessionLocationIds.length > 50)) {
+      throw new BadRequestException('location_ids must contain between 2 and 50 active bins');
+    }
+    if (new Set(sessionLocationIds).size !== sessionLocationIds.length) {
+      throw new BadRequestException('location_ids must not contain duplicate bins');
+    }
+    if (locationId && sessionLocationIds.length > 0) {
+      throw new BadRequestException('location_id and location_ids cannot be combined');
+    }
 
     const cadenceUnit = dto.cadence_unit;
     if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(cadenceUnit)) {
@@ -166,7 +187,9 @@ export class InventoryCycleCountRecurringPolicyService {
     const notes = dto.notes?.trim() || null;
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const requestHash = this.hash({
-      itemId, locationId, assignedToUserId, cadenceUnit, cadenceInterval,
+      itemId, locationId,
+      ...(sessionLocationIds.length > 0 ? { sessionLocationIds } : {}),
+      assignedToUserId, cadenceUnit, cadenceInterval,
       firstRunAt, priority, blindCount, varianceThreshold, notes,
     });
 
@@ -226,6 +249,25 @@ export class InventoryCycleCountRecurringPolicyService {
             throw new NotFoundException('Active bin not found in this factory');
           }
         }
+        if (sessionLocationIds.length > 0) {
+          const bins = await client.query<{ id: string }>(
+            `SELECT l.id::text AS id
+             FROM inventory_locations l
+             JOIN inventory_locations p
+               ON p.id = l.parent_location_id AND p.tenant_id = l.tenant_id
+              AND p.factory_id = l.factory_id
+             WHERE l.tenant_id = $1 AND l.factory_id = $2
+               AND l.id = ANY($3::uuid[])
+               AND l.location_type = 'BIN' AND l.status = 'ACTIVE'
+               AND p.location_type IN ('WAREHOUSE', 'STAGING') AND p.status = 'ACTIVE'
+             ORDER BY l.id
+             FOR UPDATE OF l`,
+            [tenantId, factoryId, sessionLocationIds],
+          );
+          if (bins.rows.length !== sessionLocationIds.length) {
+            throw new BadRequestException('Every location_id must identify a distinct active bin in this factory');
+          }
+        }
 
         const duplicateAfterLock = await client.query<RecurringPolicyRow>(
           `SELECT ${POLICY_COLUMNS}
@@ -240,18 +282,18 @@ export class InventoryCycleCountRecurringPolicyService {
 
         const inserted = await client.query<RecurringPolicyRow>(
           `INSERT INTO inventory_cycle_count_recurring_policies (
-             tenant_id, factory_id, item_id, location_id, assigned_to_user_id,
+             tenant_id, factory_id, item_id, location_id, session_location_ids, assigned_to_user_id,
              cadence_unit, cadence_interval, anchor_at, next_occurrence_number,
              next_run_at, priority, blind_count, variance_escalation_threshold,
              status, idempotency_key, request_hash, notes, created_by_user_id
            ) VALUES (
-             $1, $2, $3, $4, $5, $6, $7, $8::timestamptz, 0,
-             $8::timestamptz, $9, $10, $11::numeric,
-             'ACTIVE', $12, $13, $14, $15
+             $1, $2, $3, $4, $5::uuid[], $6, $7, $8, $9::timestamptz, 0,
+             $9::timestamptz, $10, $11, $12::numeric,
+             'ACTIVE', $13, $14, $15, $16
            )
            RETURNING ${POLICY_COLUMNS}`,
           [
-            tenantId, factoryId, itemId, locationId, assignedToUserId,
+            tenantId, factoryId, itemId, locationId, sessionLocationIds, assignedToUserId,
             cadenceUnit, cadenceInterval, firstRunAt, priority, blindCount,
             varianceThreshold, idempotencyKey, requestHash, notes, userId,
           ],
@@ -265,6 +307,7 @@ export class InventoryCycleCountRecurringPolicyService {
           userId, eventType: 'INVENTORY.CYCLE_COUNT_RECURRING_POLICY_CREATED',
           payload: {
             policy_id: policy.id, item_id: itemId, location_id: locationId,
+            location_ids: sessionLocationIds,
             assigned_to_user_id: assignedToUserId, cadence_unit: cadenceUnit,
             cadence_interval: cadenceInterval, first_run_at: firstRunAt,
             priority, blind_count: blindCount, variance_escalation_threshold: varianceThreshold,
@@ -295,6 +338,7 @@ export class InventoryCycleCountRecurringPolicyService {
         action: 'CYCLE_COUNT_RECURRING_POLICY_CREATE',
         payload: {
           item_id: result.item_id, location_id: result.location_id,
+          location_ids: result.location_ids,
           assigned_to_user_id: result.assigned_to_user_id, cadence_unit: result.cadence_unit,
           cadence_interval: result.cadence_interval, anchor_at: result.anchor_at,
           next_run_at: result.next_run_at, priority: result.priority,
@@ -419,6 +463,19 @@ export class InventoryCycleCountRecurringPolicyService {
                  AND l.status = 'ACTIVE' AND parent.location_type IN ('WAREHOUSE', 'STAGING')
                  AND parent.status = 'ACTIVE'
              ))
+             OR (cardinality(p.session_location_ids) > 0 AND EXISTS (
+               SELECT 1 FROM unnest(p.session_location_ids) requested(location_id)
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM inventory_locations l
+                 JOIN inventory_locations parent
+                   ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id
+                  AND parent.factory_id = l.factory_id
+                 WHERE l.id = requested.location_id AND l.tenant_id = p.tenant_id
+                   AND l.factory_id = p.factory_id AND l.location_type = 'BIN'
+                   AND l.status = 'ACTIVE'
+                   AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE'
+               )
+             ))
            )`,
         [tenantId, factoryId],
       );
@@ -442,6 +499,22 @@ export class InventoryCycleCountRecurringPolicyService {
          WHERE p.tenant_id = $1 AND p.factory_id = $2
            AND p.status = 'ACTIVE' AND p.next_run_at <= clock_timestamp()
            AND (p.location_id IS NULL OR parent.id IS NOT NULL)
+           AND (
+             cardinality(p.session_location_ids) = 0
+             OR NOT EXISTS (
+               SELECT 1 FROM unnest(p.session_location_ids) requested(location_id)
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM inventory_locations l
+                 JOIN inventory_locations parent
+                   ON parent.id = l.parent_location_id AND parent.tenant_id = l.tenant_id
+                  AND parent.factory_id = l.factory_id
+                 WHERE l.id = requested.location_id AND l.tenant_id = p.tenant_id
+                   AND l.factory_id = p.factory_id AND l.location_type = 'BIN'
+                   AND l.status = 'ACTIVE'
+                   AND parent.location_type IN ('WAREHOUSE', 'STAGING') AND parent.status = 'ACTIVE'
+               )
+             )
+           )
          ORDER BY p.next_run_at ASC, p.id ASC
          LIMIT $3
          FOR UPDATE OF p SKIP LOCKED`,
@@ -456,51 +529,66 @@ export class InventoryCycleCountRecurringPolicyService {
           throw new ConflictException('Recurring policy occurrence cursor reached its supported limit');
         }
 
-        const taskKey = `recurring-cycle-count:${policy.id}:${occurrenceNumber}`;
+        const sessionLocationIds = policy.session_location_ids ?? [];
         const requestHash = this.hash({
           policyId: policy.id, occurrenceNumber, scheduledFor,
           itemId: policy.item_id, locationId: policy.location_id,
-          assignedToUserId: policy.assigned_to_user_id, priority: policy.priority,
-          blindCount: policy.blind_count,
+          sessionLocationIds, assignedToUserId: policy.assigned_to_user_id,
+          priority: policy.priority, blindCount: policy.blind_count,
           varianceEscalationThreshold: policy.variance_escalation_threshold,
         });
 
-        const existing = await client.query<{ id: string }>(
-          `SELECT id::text AS id
-           FROM inventory_cycle_count_recurring_policy_occurrences
-           WHERE tenant_id = $1 AND factory_id = $2
-             AND policy_id = $3 AND occurrence_number = $4
-           LIMIT 1`,
-          [tenantId, factoryId, policy.id, occurrenceNumber],
-        );
-        if (existing.rows[0]) {
-          throw new ConflictException('Recurring policy cursor points to an already materialized occurrence');
-        }
+        let taskId: string | null = null;
+        let sessionId: string | null = null;
+        if (sessionLocationIds.length >= 2) {
+          const created = await this.createRecurringSessionOccurrence(
+            client, userId, tenantId, factoryId, policy, occurrenceNumber,
+            scheduledFor, requestId, traceId,
+          );
+          sessionId = created.sessionId;
+        } else {
+          const taskKey = `recurring-cycle-count:${policy.id}:${occurrenceNumber}`;
+          const task = await client.query<{ id: string }>(
+            `INSERT INTO inventory_cycle_count_tasks (
+               tenant_id, factory_id, item_id, location_id, assigned_to_user_id,
+               due_at, priority, status, blind_count, variance_escalation_threshold,
+               idempotency_key, request_hash, notes, created_by_user_id
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6::timestamptz, $7, 'SCHEDULED', $8, $9::numeric,
+               $10, $11, $12, $13
+             )
+             RETURNING id::text AS id`,
+            [
+              tenantId, factoryId, policy.item_id, policy.location_id, policy.assigned_to_user_id,
+              scheduledFor, policy.priority, policy.blind_count, policy.variance_escalation_threshold,
+              taskKey, requestHash, policy.notes, policy.created_by_user_id,
+            ],
+          );
+          taskId = task.rows[0]?.id ?? null;
+          if (!taskId) throw new Error('INVENTORY_CYCLE_COUNT_RECURRING_TASK_CREATE_FAILED');
 
-        const task = await client.query<{ id: string }>(
-          `INSERT INTO inventory_cycle_count_tasks (
-             tenant_id, factory_id, item_id, location_id, assigned_to_user_id,
-             due_at, priority, status, blind_count, variance_escalation_threshold,
-             idempotency_key, request_hash, notes, created_by_user_id
-           ) VALUES (
-             $1, $2, $3, $4, $5, $6::timestamptz, $7, 'SCHEDULED', $8, $9::numeric,
-             $10, $11, $12, $13
-           )
-           RETURNING id::text AS id`,
-          [
-            tenantId, factoryId, policy.item_id, policy.location_id, policy.assigned_to_user_id,
-            scheduledFor, policy.priority, policy.blind_count, policy.variance_escalation_threshold,
-            taskKey, requestHash, policy.notes, policy.created_by_user_id,
-          ],
-        );
-        const taskId = task.rows[0]?.id;
-        if (!taskId) throw new Error('INVENTORY_CYCLE_COUNT_RECURRING_TASK_CREATE_FAILED');
+          await this.insertOutboxEvent(client, {
+            tenantId, factoryId, aggregateType: 'INVENTORY_CYCLE_COUNT_TASK', aggregateId: taskId,
+            correlationId: this.correlationId(requestId, traceId), userId,
+            eventType: 'INVENTORY.CYCLE_COUNT_TASK_SCHEDULED',
+            payload: {
+              task_id: taskId, recurring_policy_id: policy.id,
+              recurring_occurrence_number: occurrenceNumber, recurring_occurrence_at: scheduledFor,
+              item_id: policy.item_id, location_id: policy.location_id,
+              assigned_to_user_id: policy.assigned_to_user_id, due_at: scheduledFor,
+              priority: policy.priority, blind_count: policy.blind_count,
+              variance_escalation_threshold: policy.variance_escalation_threshold,
+              status: 'SCHEDULED',
+            },
+          });
+        }
 
         await client.query(
           `INSERT INTO inventory_cycle_count_recurring_policy_occurrences (
-             tenant_id, factory_id, policy_id, task_id, occurrence_number, scheduled_for, request_hash
-           ) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7)`,
-          [tenantId, factoryId, policy.id, taskId, occurrenceNumber, scheduledFor, requestHash],
+             tenant_id, factory_id, policy_id, task_id, session_id,
+             occurrence_number, scheduled_for, request_hash
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8)`,
+          [tenantId, factoryId, policy.id, taskId, sessionId, occurrenceNumber, scheduledFor, requestHash],
         );
 
         const cursor = await client.query<{
@@ -524,32 +612,20 @@ export class InventoryCycleCountRecurringPolicyService {
         }
 
         await this.insertOutboxEvent(client, {
-          tenantId, factoryId, aggregateType: 'INVENTORY_CYCLE_COUNT_TASK', aggregateId: taskId,
-          correlationId: this.correlationId(requestId, traceId), userId,
-          eventType: 'INVENTORY.CYCLE_COUNT_TASK_SCHEDULED',
-          payload: {
-            task_id: taskId, recurring_policy_id: policy.id,
-            recurring_occurrence_number: occurrenceNumber, recurring_occurrence_at: scheduledFor,
-            item_id: policy.item_id, location_id: policy.location_id,
-            assigned_to_user_id: policy.assigned_to_user_id, due_at: scheduledFor,
-            priority: policy.priority, blind_count: policy.blind_count,
-            variance_escalation_threshold: policy.variance_escalation_threshold,
-            status: 'SCHEDULED',
-          },
-        });
-        await this.insertOutboxEvent(client, {
           tenantId, factoryId, aggregateType: 'INVENTORY_CYCLE_COUNT_RECURRING_POLICY',
           aggregateId: policy.id, correlationId: this.correlationId(requestId, traceId),
           userId, eventType: 'INVENTORY.CYCLE_COUNT_RECURRING_OCCURRENCE_MATERIALIZED',
           payload: {
-            policy_id: policy.id, task_id: taskId, occurrence_number: occurrenceNumber,
-            scheduled_for: scheduledFor, next_run_at: cursor.rows[0].next_run_at,
+            policy_id: policy.id, task_id: taskId, session_id: sessionId,
+            occurrence_number: occurrenceNumber, scheduled_for: scheduledFor,
+            next_run_at: cursor.rows[0].next_run_at,
           },
         });
 
         occurrences.push({
-          policy_id: policy.id, task_id: taskId, occurrence_number: occurrenceNumber,
-          scheduled_for: scheduledFor, next_run_at: cursor.rows[0].next_run_at,
+          policy_id: policy.id, task_id: taskId, session_id: sessionId,
+          occurrence_number: occurrenceNumber, scheduled_for: scheduledFor,
+          next_run_at: cursor.rows[0].next_run_at,
         });
       }
 
@@ -574,6 +650,105 @@ export class InventoryCycleCountRecurringPolicyService {
       });
     }
     return result;
+  }
+
+
+  private async createRecurringSessionOccurrence(
+    client: PoolClient,
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    policy: RecurringPolicyRow,
+    occurrenceNumber: number,
+    scheduledFor: string,
+    requestId: string | null,
+    traceId: string | null,
+  ): Promise<{ sessionId: string; taskIds: string[] }> {
+    const locationIds = [...(policy.session_location_ids ?? [])].map((id) => id.toLowerCase()).sort();
+    if (locationIds.length < 2 || locationIds.length > 50 || new Set(locationIds).size !== locationIds.length) {
+      throw new ConflictException('Recurring multi-bin policy has an invalid immutable bin set');
+    }
+
+    const sessionKey = `recurring-cycle-count-session:${policy.id}:${occurrenceNumber}`;
+    const sessionHash = this.hash({
+      policyId: policy.id, occurrenceNumber, scheduledFor, itemId: policy.item_id,
+      locationIds, assignedToUserId: policy.assigned_to_user_id, dueAt: scheduledFor,
+      priority: policy.priority, blindCount: policy.blind_count,
+      varianceThreshold: policy.variance_escalation_threshold, notes: policy.notes,
+    });
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO inventory_cycle_count_sessions (
+         tenant_id, factory_id, item_id, assigned_to_user_id, due_at, priority,
+         expected_bin_count, blind_count, variance_escalation_threshold,
+         idempotency_key, request_hash, notes, created_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5::timestamptz, $6, $7, $8, $9::numeric, $10, $11, $12, $13)
+       RETURNING id::text AS id`,
+      [
+        tenantId, factoryId, policy.item_id, policy.assigned_to_user_id, scheduledFor,
+        policy.priority, locationIds.length, policy.blind_count,
+        policy.variance_escalation_threshold, sessionKey, sessionHash, policy.notes,
+        policy.created_by_user_id,
+      ],
+    );
+    const sessionId = inserted.rows[0]?.id;
+    if (!sessionId) throw new Error('INVENTORY_CYCLE_COUNT_RECURRING_SESSION_CREATE_FAILED');
+
+    const taskIds: string[] = [];
+    for (const locationId of locationIds) {
+      const childKey = `session-${sessionId}-${locationId}`;
+      const childHash = this.hash({
+        sessionId, itemId: policy.item_id, locationId,
+        assignedToUserId: policy.assigned_to_user_id, dueAt: scheduledFor,
+        priority: policy.priority, blindCount: policy.blind_count,
+        varianceThreshold: policy.variance_escalation_threshold, notes: policy.notes,
+      });
+      const task = await client.query<{ id: string }>(
+        `INSERT INTO inventory_cycle_count_tasks (
+           tenant_id, factory_id, item_id, location_id, session_id, assigned_to_user_id,
+           due_at, priority, status, blind_count, variance_escalation_threshold,
+           idempotency_key, request_hash, notes, created_by_user_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, 'SCHEDULED', $9, $10::numeric, $11, $12, $13, $14)
+         RETURNING id::text AS id`,
+        [
+          tenantId, factoryId, policy.item_id, locationId, sessionId,
+          policy.assigned_to_user_id, scheduledFor, policy.priority, policy.blind_count,
+          policy.variance_escalation_threshold, childKey, childHash, policy.notes,
+          policy.created_by_user_id,
+        ],
+      );
+      const taskId = task.rows[0]?.id;
+      if (!taskId) throw new Error('INVENTORY_CYCLE_COUNT_RECURRING_SESSION_TASK_CREATE_FAILED');
+      taskIds.push(taskId);
+      await this.insertOutboxEvent(client, {
+        tenantId, factoryId, aggregateType: 'INVENTORY_CYCLE_COUNT_TASK', aggregateId: taskId,
+        correlationId: this.correlationId(requestId, traceId), userId,
+        eventType: 'INVENTORY.CYCLE_COUNT_TASK_SCHEDULED',
+        payload: {
+          id: taskId, session_id: sessionId, recurring_policy_id: policy.id,
+          recurring_occurrence_number: occurrenceNumber, recurring_occurrence_at: scheduledFor,
+          item_id: policy.item_id, location_id: locationId,
+          assigned_to_user_id: policy.assigned_to_user_id, due_at: scheduledFor,
+          priority: policy.priority, blind_count: policy.blind_count,
+          variance_escalation_threshold: policy.variance_escalation_threshold,
+          status: 'SCHEDULED',
+        },
+      });
+    }
+
+    await this.insertOutboxEvent(client, {
+      tenantId, factoryId, aggregateType: 'INVENTORY_CYCLE_COUNT_SESSION', aggregateId: sessionId,
+      correlationId: this.correlationId(requestId, traceId), userId,
+      eventType: 'INVENTORY.CYCLE_COUNT_SESSION_SCHEDULED',
+      payload: {
+        session_id: sessionId, recurring_policy_id: policy.id,
+        recurring_occurrence_number: occurrenceNumber, recurring_occurrence_at: scheduledFor,
+        item_id: policy.item_id, assigned_to_user_id: policy.assigned_to_user_id,
+        bin_count: locationIds.length, task_ids: taskIds, due_at: scheduledFor,
+        priority: policy.priority, blind_count: policy.blind_count,
+        variance_escalation_threshold: policy.variance_escalation_threshold,
+      },
+    });
+    return { sessionId, taskIds };
   }
 
   private async transitionPolicy(
@@ -649,10 +824,10 @@ export class InventoryCycleCountRecurringPolicyService {
     row: RecurringPolicyRow,
     replayed: boolean,
   ): InventoryCycleCountRecurringPolicy {
-    const { idempotency_key, request_hash, ...policy } = row;
+    const { idempotency_key, request_hash, session_location_ids, ...policy } = row;
     void idempotency_key;
     void request_hash;
-    return { ...policy, replayed };
+    return { ...policy, location_ids: session_location_ids ?? [], replayed };
   }
 
   private async insertOutboxEvent(
