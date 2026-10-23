@@ -570,4 +570,31 @@ describe('SaasBillingService', () => {
       providerTaxMinor: '0',
     });
   });
+  it('keeps payment failure visible when non-terminal Stripe webhooks arrive out of order', () => {
+    const { service } = mocks();
+    const updatedEvent = {
+      id: 'evt_updated',
+      type: 'invoice.updated',
+      created: 1790902800,
+      signatureTimestamp: 1790902800,
+      data: { object: { id: 'in_123abc', status: 'open' } },
+    };
+    const finalizedEvent = { ...updatedEvent, type: 'invoice.finalized' };
+
+    expect((service as any).webhookCloseEventType(updatedEvent, 'open')).toBe('WEBHOOK_OBSERVED');
+    expect((service as any).webhookCloseEventType(finalizedEvent, 'open')).toBe('INVOICE_ISSUED');
+    expect((service as any).closeState([
+      { event_type: 'INVOICE_ISSUED', idempotency_key: 'stripe-webhook:evt_finalized' },
+      { event_type: 'PAYMENT_FAILED', idempotency_key: 'payment-retry:attempt-1' },
+    ])).toBe('PAYMENT_FAILED');
+    expect((service as any).closeState([
+      { event_type: 'INVOICE_VOIDED', idempotency_key: 'stripe-webhook:evt_voided' },
+      { event_type: 'PAYMENT_FAILED', idempotency_key: 'payment-retry:attempt-1' },
+    ])).toBe('VOIDED');
+    expect((service as any).closeState([
+      { event_type: 'PAYMENT_FAILED', idempotency_key: 'payment-retry:attempt-1' },
+      { event_type: 'INVOICE_PAID', idempotency_key: 'stripe-webhook:evt_paid' },
+    ])).toBe('PAID');
+  });
+
 });
