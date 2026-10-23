@@ -4,6 +4,7 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { lstat, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
+import { once } from 'node:events';
 import { pipeline } from 'node:stream/promises';
 
 const inputDirectory = process.env.FACTORYOS_DATASET_INPUT_DIRECTORY || '/input';
@@ -76,12 +77,16 @@ async function writeSynthetic(manifest, destination) {
           synthetic_code: entropy.slice(26, 38),
         },
       }) + '\n', 'utf8');
+      const maxBytes = Number(process.env.FACTORYOS_DATASET_MATERIALIZER_MAX_BYTES || String(1024 * 1024 * 1024));
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 10 * 1024 * 1024 * 1024 ||
+          bytesWritten + line.length > maxBytes) {
+        throw Object.assign(new Error('Synthetic dataset exceeds the configured materializer byte limit'), {
+          code: 'SYNTHETIC_DATASET_TOO_LARGE',
+        });
+      }
       hash.update(line);
       bytesWritten += line.length;
-      if (!output.write(line)) await new Promise((resolve, reject) => {
-        output.once('drain', resolve);
-        output.once('error', reject);
-      });
+      if (!output.write(line)) await once(output, 'drain');
       created += 1;
     }
     output.end();
@@ -134,7 +139,8 @@ async function writeMasked(manifest, assessment, destination) {
     });
   }
 
-  const sourceText = await readFile(path.join(inputDirectory, 'source', 'source.json'), 'utf8');
+  const sourceDirectory = process.env.FACTORYOS_MASKED_SOURCE_DIRECTORY || '/source';
+  const sourceText = await readFile(path.join(sourceDirectory, 'source.json'), 'utf8');
   let source;
   try {
     source = JSON.parse(sourceText);
@@ -255,8 +261,24 @@ async function main(argv) {
   if (!['SYNTHETIC', 'MASKED'].includes(mode)) {
     throw Object.assign(new Error('Dataset mode must be SYNTHETIC or MASKED'), { code: 'INVALID_DATASET_MODE' });
   }
-  const manifestPath = path.join(inputDirectory, options.manifest || 'dataset_manifest.json');
-  const assessmentPath = path.join(inputDirectory, options['privacy-assessment'] || 'privacy_assessment.json');
+  const inputFile = (value, fallback) => {
+    const candidate = value || fallback;
+    const relative = candidate.startsWith(inputDirectory + '/') ? candidate.slice(inputDirectory.length + 1) : candidate;
+    if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) {
+      throw Object.assign(new Error('Dataset input path must stay inside the configured input mount'), {
+        code: 'INVALID_DATASET_INPUT_PATH',
+      });
+    }
+    return path.join(inputDirectory, relative);
+  };
+  const manifestPath = inputFile(options.manifest, 'dataset_manifest.json');
+  const assessmentPath = inputFile(options['privacy-assessment'], 'privacy_assessment.json');
+  const requestedOutput = path.resolve(options.output || outputDirectory);
+  if (requestedOutput !== path.resolve(outputDirectory)) {
+    throw Object.assign(new Error('Dataset output path must match the configured PVC mount'), {
+      code: 'INVALID_DATASET_OUTPUT_PATH',
+    });
+  }
   const manifestText = await readFile(manifestPath, 'utf8');
   const assessmentText = await readFile(assessmentPath, 'utf8');
   const manifest = JSON.parse(manifestText);
