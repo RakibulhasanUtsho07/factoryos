@@ -1,7 +1,6 @@
 import {
   BadGatewayException,
   BadRequestException,
-  ForbiddenException,
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -323,8 +322,8 @@ export class AiOpenAiCompatibleProviderService {
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), config.timeoutMs);
 
-    let bodyText: string;
-    let responseStatus: number;
+    let bodyText = '';
+    let responseStatus = 0;
     try {
       const response = await fetch(config.endpointUrl, {
         method: 'POST',

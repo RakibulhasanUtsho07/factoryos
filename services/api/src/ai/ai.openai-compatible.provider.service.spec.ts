@@ -37,15 +37,15 @@ describe('AI OpenAI-compatible provider adapter', () => {
     assertAdmissible: jest.fn<AiArtifactProvenanceService['assertAdmissible']>(),
   };
   const subscriptions = {
-    assertAiCapabilityAvailable: jest.fn< S aasSubscriptionService['assertAiCapabilityAvailable'] >(),
+    assertAiCapabilityAvailable: jest.fn<SaasSubscriptionService['assertAiCapabilityAvailable']>(),
   };
   const usage = {
-    recordUsageEvent: jest.fn< S aasUsageService['recordUsageEvent'] >(),
+    recordUsageEvent: jest.fn<SaasUsageService['recordUsageEvent']>(),
   };
 
   let gateway: AiModelProviderGatewayService;
   let service: AiOpenAiCompatibleProviderService;
-  let fetchMock: ReturnType<typeof jest.spyOn>;
+  let fetchMock: jest.SpiedFunction<typeof globalThis.fetch>;
 
   beforeEach(() => {
     process.env.NODE_ENV = 'production';
