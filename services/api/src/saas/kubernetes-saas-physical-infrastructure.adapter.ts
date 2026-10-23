@@ -685,8 +685,12 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       (pod.status.containerStatuses as JsonRecord[]).some((container) =>
         container.name === 'dataset-materializer' && container.state?.terminated?.exitCode === 0),
     );
-    if (!successfulPod || !this.providerReferenceValid(String(successfulPod.metadata?.name ?? ''))) {
-      throw new ConflictException('Successful materializer pod and completion receipt were not found');
+    if (!successfulPod || !this.providerReferenceValid(String(successfulPod.metadata?.name ?? '')) ||
+      successfulPod.metadata?.labels?.['factoryos.io/tenant-id'] !== context.tenantId ||
+      successfulPod.metadata?.labels?.['factoryos.io/topology'] !== context.profile.profileType ||
+      successfulPod.metadata?.labels?.['factoryos.io/workload-role'] !== 'dataset-materializer' ||
+      successfulPod.metadata?.labels?.['factoryos.io/run-id-hash'] !== this.sha(context.runId).slice(0, 16)) {
+      throw new ConflictException('Successful materializer pod ownership or run identity did not match the requested tenant operation');
     }
     const logPath = '/api/v1/namespaces/' + namespace + '/pods/' +
       encodeURIComponent(String(successfulPod.metadata.name)) + '/log?container=dataset-materializer&timestamps=false';
@@ -698,6 +702,8 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
       receipt.datasetManifestDigest !== this.hash(input.datasetManifest) ||
       Number(receipt.recordCount) !== Number(input.datasetManifest.record_count) ||
       !Number.isSafeInteger(receipt.bytesWritten) || Number(receipt.bytesWritten) < 0 ||
+      typeof receipt.completedAt !== 'string' || Number.isNaN(Date.parse(receipt.completedAt)) ||
+      Date.parse(receipt.completedAt) > Date.now() + 60_000 ||
       !this.isDigest(receipt.datasetChecksumSha256) ||
       (input.dataMode === 'MASKED' && receipt.datasetChecksumSha256 !== input.datasetManifest.checksum_sha256)) {
       throw new ConflictException('Materializer completion receipt does not match the approved dataset, run and record-count contract');
