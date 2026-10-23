@@ -119,7 +119,11 @@ describe('GrowthCalibrationPolicyService', () => {
       }] })
       .mockResolvedValueOnce({ rows: [{
         id: POLICY_ID, domain: 'FINANCE', model_version: 'revenue-forecast-v3',
-        metric_key: 'finance.actual_revenue', unit: 'BDT', policy_version: 3,
+        metric_key: 'finance.actual_revenue', unit: 'BDT', policy_version: 4, minimum_sample_count: 40,
+        max_mean_absolute_error: '15000.00000000', max_root_mean_squared_error: '22000.00000000',
+        max_absolute_mean_error: '5000.00000000', max_mean_symmetric_percentage_error_pct: '12.0000',
+        max_absolute_calibration_gap_pct_points: '8.0000', residual_coverage_target_pct: '90.00',
+        max_empirical_absolute_residual: '35000.00000000',
         status: 'APPROVED', decided_by: REVIEWER_ID,
         decision_reason: 'Reviewed against 24 months of reconciled actuals',
       }] })
@@ -131,7 +135,16 @@ describe('GrowthCalibrationPolicyService', () => {
 
     expect(result).toMatchObject({ id: POLICY_ID, status: 'APPROVED', decided_by: REVIEWER_ID });
     expect(client.query.mock.calls[1][0]).toContain("status='PENDING_REVIEW'");
-    expect(client.query.mock.calls.some(call => String(call[0]).includes('INSERT INTO outbox_events'))).toBe(true);
-    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'CALIBRATION_POLICY_APPROVE' }));
+    const outbox = client.query.mock.calls.find(call => String(call[0]).includes('INSERT INTO outbox_events'));
+    expect(outbox).toBeDefined();
+    const eventPayload = JSON.parse(String((outbox?.[1] as unknown[])[7])) as Record<string, unknown>;
+    expect(eventPayload).toMatchObject({
+      policy_id: POLICY_ID, status: 'APPROVED', policy_version: 4,
+      thresholds: { residual_coverage_target_pct: '90.00', max_empirical_absolute_residual: '35000.00000000' },
+    });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'CALIBRATION_POLICY_APPROVE',
+      payload: expect.objectContaining({ policy: expect.objectContaining({ policy_version: 4 }) }),
+    }));
   });
 });
