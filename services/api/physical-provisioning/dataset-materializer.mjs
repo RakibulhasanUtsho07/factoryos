@@ -301,7 +301,10 @@ async function main(argv) {
   }
 
   await mkdir(outputDirectory, { recursive: true });
-  const destination = path.join(outputDirectory, 'dataset.jsonl');
+  // Synthetic records have a defined JSONL encoding. Masked source bytes
+  // retain their approved encoding, so use a format-neutral filename.
+  const datasetFile = mode === 'SYNTHETIC' ? 'dataset.jsonl' : 'dataset.masked';
+  const destination = path.join(outputDirectory, datasetFile);
   const temporaryPath = path.join(outputDirectory, '.dataset.jsonl.' + randomBytes(8).toString('hex') + '.partial');
   try {
     const materialized = mode === 'SYNTHETIC'
@@ -317,6 +320,7 @@ async function main(argv) {
       sandboxId,
       runId,
       mode,
+      datasetFile,
       schemaVersion: manifest.schema_version,
       datasetManifestDigest,
       datasetChecksumSha256: materialized.datasetChecksumSha256,
