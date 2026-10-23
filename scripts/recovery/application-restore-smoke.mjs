@@ -13,14 +13,19 @@ function fail(message) {
 }
 
 function safeApiStartupDiagnostics(stdout, stderr) {
+  // Startup failures can originate in Nest, pg or a native dependency. Keep
+  // only the bounded output tail and redact connection strings and common
+  // credential forms before exposing any diagnostic in CI logs.
   const candidates = [...stdout.split(/\r?\n/), ...stderr.split(/\r?\n/)]
-    .filter((line) => /\[Nest\].*(?:ERROR|Exception)|\b(?:Error|TypeError|ReferenceError|SyntaxError|RangeError|UnknownDependenciesException|QueryFailedError):|Cannot find module|Cannot resolve dependencies|Error: Nest can't resolve/i.test(line))
-    .slice(-3);
+    .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
+    .filter(Boolean)
+    .slice(-10);
   return candidates.map((line) => line
     .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, '[REDACTED_DATABASE_URL]')
+    .replace(/https?:\/\/[^\s'"]+/gi, '[REDACTED_URL]')
     .replace(/Bearer\s+[^\s'"]+/gi, 'Bearer [REDACTED]')
-    .replace(/((?:password|secret|token|credential|api[_-]?key|authorization)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
-    .slice(0, 500));
+    .replace(/((?:password|secret|token|credential|api[_-]?key|authorization|connectionstring|dsn)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 400));
 }
 
 async function findFreePort() {
