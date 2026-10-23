@@ -1,0 +1,48 @@
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: factoryos-ot-gateway-signed-release
+  annotations:
+    factoryos.io/srs-requirements: "FR-SAAS2-05,FR-MSO-03,NFR-AIF2-13"
+    factoryos.io/enforcement-boundary: "Kubernetes admission; install in the target cluster"
+spec:
+  validationActions:
+    - Deny
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 30
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchImageReferences:
+    - glob: "ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway*"
+  attestors:
+    - name: factoryosMainRelease
+      cosign:
+        keyless:
+          identities:
+            - subject: "https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main"
+              issuer: "https://token.actions.githubusercontent.com"
+        ctlog:
+          url: "https://rekor.sigstore.dev"
+  attestations:
+    - name: slsaProvenance
+      intoto:
+        type: "https://slsa.dev/provenance/v1"
+  validations:
+    - expression: >-
+        images.containers.map(image,
+          verifyImageSignatures(image, [attestors.factoryosMainRelease])).all(result, result > 0)
+      message: "OT gateway images must have a valid Sigstore signature from the trusted FactoryOS main release workflow."
+    - expression: >-
+        images.containers.map(image,
+          verifyAttestationSignatures(image, attestations.slsaProvenance, [attestors.factoryosMainRelease])).all(result, result > 0)
+      message: "OT gateway images must carry valid SLSA build provenance for the verified digest."
