@@ -31,12 +31,15 @@ export class GrowthCalibrationPolicyService {
     const thresholds = [
       dto.max_mean_absolute_error, dto.max_root_mean_squared_error, dto.max_absolute_mean_error,
       dto.max_mean_symmetric_percentage_error_pct, dto.max_absolute_calibration_gap_pct_points,
+      dto.residual_coverage_target_pct, dto.max_empirical_absolute_residual,
     ];
     if (!thresholds.every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0)
       || dto.max_mean_absolute_error > 1e12 || dto.max_root_mean_squared_error > 1e12
       || dto.max_absolute_mean_error > 1e12
       || dto.max_mean_symmetric_percentage_error_pct > 200
-      || dto.max_absolute_calibration_gap_pct_points > 100) {
+      || dto.max_absolute_calibration_gap_pct_points > 100
+      || dto.residual_coverage_target_pct < 50 || dto.residual_coverage_target_pct > 99.99
+      || dto.max_empirical_absolute_residual > 1e12) {
       throw new BadRequestException('Calibration thresholds must be finite, non-negative and within supported metric bounds');
     }
     if (!Number.isInteger(dto.minimum_sample_count) || dto.minimum_sample_count < 10 || dto.minimum_sample_count > 1_000_000) {
@@ -66,28 +69,35 @@ export class GrowthCalibrationPolicyService {
         `INSERT INTO growth_forecast_calibration_policies(
            tenant_id,factory_id,domain,model_version,metric_key,unit,policy_version,minimum_sample_count,
            max_mean_absolute_error,max_root_mean_squared_error,max_absolute_mean_error,
-           max_mean_symmetric_percentage_error_pct,max_absolute_calibration_gap_pct_points,created_by
-         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           max_mean_symmetric_percentage_error_pct,max_absolute_calibration_gap_pct_points,
+           residual_coverage_target_pct,max_empirical_absolute_residual,created_by
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
          RETURNING id::text AS id,domain,model_version,metric_key,unit,policy_version,minimum_sample_count,
            max_mean_absolute_error::text AS max_mean_absolute_error,
            max_root_mean_squared_error::text AS max_root_mean_squared_error,
            max_absolute_mean_error::text AS max_absolute_mean_error,
            max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
            max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points,
+           residual_coverage_target_pct::text AS residual_coverage_target_pct,
+           max_empirical_absolute_residual::text AS max_empirical_absolute_residual,
            status,created_by::text AS created_by,created_at::text AS created_at`,
         [tenantId, factoryId, domain, modelVersion, metricKey, unit, policyVersion, dto.minimum_sample_count,
           dto.max_mean_absolute_error, dto.max_root_mean_squared_error, dto.max_absolute_mean_error,
-          dto.max_mean_symmetric_percentage_error_pct, dto.max_absolute_calibration_gap_pct_points, userId],
+          dto.max_mean_symmetric_percentage_error_pct, dto.max_absolute_calibration_gap_pct_points,
+          dto.residual_coverage_target_pct, dto.max_empirical_absolute_residual, userId],
       );
       const policy = inserted.rows[0];
       if (!policy) throw new Error('GROWTH_CALIBRATION_POLICY_INSERT_FAILED');
       await this.outbox(client, tenantId, factoryId, userId, policy.id, 'GROWTH.CALIBRATION_POLICY_PROPOSED',
         this.correlationId(requestId, traceId), { policy_id: policy.id, domain, model_version: modelVersion,
-          metric_key: metricKey, unit, policy_version: policyVersion, status: 'PENDING_REVIEW' });
+          metric_key: metricKey, unit, policy_version: policyVersion, residual_coverage_target_pct: dto.residual_coverage_target_pct,
+          max_empirical_absolute_residual: dto.max_empirical_absolute_residual, status: 'PENDING_REVIEW' });
       return policy;
     });
     await this.auditSafely(tenantId, factoryId, userId, 'CALIBRATION_POLICY_PROPOSE', String(row.id), requestId, traceId,
-      { domain, model_version: modelVersion, metric_key: metricKey, unit, policy_version: row.policy_version });
+      { domain, model_version: modelVersion, metric_key: metricKey, unit, policy_version: row.policy_version,
+        residual_coverage_target_pct: dto.residual_coverage_target_pct,
+        max_empirical_absolute_residual: dto.max_empirical_absolute_residual });
     return row;
   }
 
@@ -110,6 +120,8 @@ export class GrowthCalibrationPolicyService {
           max_absolute_mean_error::text AS max_absolute_mean_error,
           max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
           max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points,
+          residual_coverage_target_pct::text AS residual_coverage_target_pct,
+          max_empirical_absolute_residual::text AS max_empirical_absolute_residual,
           status,created_by::text AS created_by,decided_by::text AS decided_by,
           decided_at::text AS decided_at,decision_reason,created_at::text AS created_at
          FROM growth_forecast_calibration_policies
