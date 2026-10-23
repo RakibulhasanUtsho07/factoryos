@@ -24,6 +24,7 @@ interface CycleCountProposalRow extends QueryResultRow {
   factory_id: string;
   item_id: string;
   task_id: string | null;
+  blind_count_snapshot: boolean;
   counted_quantity: string;
   ledger_quantity_at_count: string;
   balance_version_at_count: string;
@@ -48,8 +49,15 @@ interface CycleCountProposalRow extends QueryResultRow {
 
 export type InventoryCycleCountProposal = Omit<
   CycleCountProposalRow,
-  'idempotency_key' | 'request_hash' | 'review_idempotency_key' | 'review_request_hash'
->;
+  | 'idempotency_key' | 'request_hash' | 'review_idempotency_key' | 'review_request_hash'
+  | 'blind_count_snapshot' | 'ledger_quantity_at_count' | 'balance_version_at_count'
+  | 'location_quantity_at_count' | 'location_version_at_count'
+> & {
+  ledger_quantity_at_count: string | null;
+  balance_version_at_count: string | null;
+  location_quantity_at_count: string | null;
+  location_version_at_count: string | null;
+};
 
 export type InventoryCycleCountSubmitResult = InventoryCycleCountProposal & {
   replayed: boolean;
@@ -65,6 +73,7 @@ const CYCLE_COUNT_COLUMNS = `
   factory_id::text AS factory_id,
   item_id::text AS item_id,
   task_id::text AS task_id,
+  blind_count_snapshot,
   counted_quantity::text AS counted_quantity,
   ledger_quantity_at_count::text AS ledger_quantity_at_count,
   balance_version_at_count::text AS balance_version_at_count,
@@ -149,7 +158,7 @@ export class InventoryCycleCountService {
           const existing = await this.findBySubmitKey(
             client, tenantId, factoryId, idempotencyKey,
           );
-          if (existing) return this.replaySubmitOrConflict(existing, requestHash);
+          if (existing) return this.replaySubmitOrConflict(existing, requestHash, userId);
 
           const item = await client.query<{ status: 'ACTIVE' | 'DISABLED' }>(
             `
@@ -245,7 +254,7 @@ export class InventoryCycleCountService {
             client, tenantId, factoryId, idempotencyKey,
           );
           if (duplicateAfterLock) {
-            return this.replaySubmitOrConflict(duplicateAfterLock, requestHash);
+            return this.replaySubmitOrConflict(duplicateAfterLock, requestHash, userId);
           }
 
           if (taskId) {
@@ -351,7 +360,7 @@ export class InventoryCycleCountService {
               },
             },
           });
-          return this.toSubmitResult(proposal, false);
+          return this.toSubmitResult(proposal, false, userId);
         },
       );
     } catch (error) {
@@ -369,7 +378,7 @@ export class InventoryCycleCountService {
       if (!stored.rows[0]) {
         throw new ConflictException('Cycle-count request conflicts with an existing record');
       }
-      result = this.replaySubmitOrConflict(stored.rows[0], requestHash);
+      result = this.replaySubmitOrConflict(stored.rows[0], requestHash, userId);
     }
 
     if (!result.replayed) {
@@ -394,6 +403,7 @@ export class InventoryCycleCountService {
   }
 
   async listCycleCounts(
+    userId: string,
     tenantId: string,
     factoryId: string,
     itemId: string,
@@ -424,7 +434,7 @@ export class InventoryCycleCountService {
       [tenantId, factoryId, itemId, status, limit],
       { tenantId },
     );
-    return result.rows.map((row) => this.toProposal(row));
+    return result.rows.map((row) => this.toProposal(row, userId));
   }
 
   async approveCycleCount(
@@ -472,6 +482,11 @@ export class InventoryCycleCountService {
     }
     if (proposal.status === 'REJECTED') {
       throw new ConflictException('A rejected cycle count cannot be approved');
+    }
+    if (proposal.status === 'PENDING_REVIEW' && proposal.task_id) {
+      await this.assertVarianceEscalationResolvedForDecision(
+        userId, tenantId, factoryId, proposal.id,
+      );
     }
     if (proposal.status === 'APPLIED') {
       // Delegate to the reconciliation idempotency path, which only permits
@@ -598,6 +613,24 @@ export class InventoryCycleCountService {
           }
           if (proposal.status !== 'PENDING_REVIEW') {
             throw new ConflictException('An applied cycle count cannot be rejected');
+          }
+          if (proposal.task_id) {
+            const escalationResult = await client.query<{
+              status: 'OPEN' | 'RESOLVED'; resolved_by_user_id: string | null;
+            }>(
+              `SELECT status, resolved_by_user_id::text AS resolved_by_user_id
+               FROM inventory_cycle_count_variance_escalations
+               WHERE tenant_id = $1 AND factory_id = $2 AND proposal_id = $3
+               FOR UPDATE`,
+              [tenantId, factoryId, proposal.id],
+            );
+            const escalation = escalationResult.rows[0];
+            if (escalation?.status === 'OPEN') {
+              throw new ConflictException('Variance escalation must be resolved before rejecting this count');
+            }
+            if (escalation?.status === 'RESOLVED' && escalation.resolved_by_user_id === userId) {
+              throw new ConflictException('A different reviewer must reject the escalated cycle count');
+            }
           }
 
           const updated = await client.query<CycleCountProposalRow>(
@@ -758,18 +791,20 @@ export class InventoryCycleCountService {
   private replaySubmitOrConflict(
     row: CycleCountProposalRow,
     requestHash: string,
+    viewerUserId: string,
   ): InventoryCycleCountSubmitResult {
     if (row.request_hash !== requestHash) {
       throw new ConflictException('Idempotency-Key was reused for a different cycle-count submission');
     }
-    return this.toSubmitResult(row, true);
+    return this.toSubmitResult(row, true, viewerUserId);
   }
 
   private toSubmitResult(
     row: CycleCountProposalRow,
     replayed: boolean,
+    viewerUserId: string,
   ): InventoryCycleCountSubmitResult {
-    return { ...this.toProposal(row), replayed };
+    return { ...this.toProposal(row, viewerUserId), replayed };
   }
 
   private toRejectResult(
@@ -779,19 +814,34 @@ export class InventoryCycleCountService {
     return { ...this.toProposal(row), replayed };
   }
 
-  private toProposal(row: CycleCountProposalRow): InventoryCycleCountProposal {
+  private toProposal(
+    row: CycleCountProposalRow,
+    viewerUserId?: string,
+  ): InventoryCycleCountProposal {
     const {
       idempotency_key,
       request_hash,
       review_idempotency_key,
       review_request_hash,
+      blind_count_snapshot,
+      ledger_quantity_at_count,
+      balance_version_at_count,
+      location_quantity_at_count,
+      location_version_at_count,
       ...proposal
     } = row;
     void idempotency_key;
     void request_hash;
     void review_idempotency_key;
     void review_request_hash;
-    return proposal;
+    const hideExpectedBalance = blind_count_snapshot && viewerUserId === row.created_by_user_id;
+    return {
+      ...proposal,
+      ledger_quantity_at_count: hideExpectedBalance ? null : ledger_quantity_at_count,
+      balance_version_at_count: hideExpectedBalance ? null : balance_version_at_count,
+      location_quantity_at_count: hideExpectedBalance ? null : location_quantity_at_count,
+      location_version_at_count: hideExpectedBalance ? null : location_version_at_count,
+    };
   }
 
   private async insertOutboxEvent(
@@ -806,7 +856,8 @@ export class InventoryCycleCountService {
         | 'INVENTORY.CYCLE_COUNT_SUBMITTED'
         | 'INVENTORY.CYCLE_COUNT_REJECTED'
         | 'INVENTORY.CYCLE_COUNT_TASK_SUBMITTED'
-        | 'INVENTORY.CYCLE_COUNT_TASK_REOPENED';
+        | 'INVENTORY.CYCLE_COUNT_TASK_REOPENED'
+        | 'INVENTORY.CYCLE_COUNT_VARIANCE_ESCALATED';
       payload: Record<string, unknown>;
     },
   ): Promise<void> {
