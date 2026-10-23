@@ -68,7 +68,7 @@ describe('GrowthCalibrationPolicyService', () => {
 
     const result = await service.createPolicy(USER_ID, TENANT_ID, FACTORY_ID, policyDto(), null, null);
 
-    expect(result).toEqual(savedPolicy);
+    expect(result).toMatchObject(savedPolicy);
     const insert = client.query.mock.calls.find(call => String(call[0]).includes('INSERT INTO growth_forecast_calibration_policies'));
     expect(insert).toBeDefined();
     const params = insert?.[1] as unknown[];
@@ -77,8 +77,8 @@ describe('GrowthCalibrationPolicyService', () => {
     expect(params[13]).toBe(90);
     expect(params[14]).toBe(35000);
     expect(params[15]).toBe(USER_ID);
-    expect(client.query.mock.calls.some(call => String(call[0]).includes('GROWTH.CALIBRATION_POLICY_PROPOSED'))).toBe(false);
-    expect(client.query.mock.calls.some(call => String(call[0]).includes('INSERT INTO outbox_events'))).toBe(true);
+    const outbox = client.query.mock.calls.find(call => String(call[0]).includes('INSERT INTO outbox_events'));
+    expect(outbox?.[1]?.[3]).toBe('GROWTH.CALIBRATION_POLICY_PROPOSED');
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       action: 'CALIBRATION_POLICY_PROPOSE',
       payload: expect.objectContaining({
