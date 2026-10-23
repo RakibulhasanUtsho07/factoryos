@@ -68,6 +68,13 @@ export class StripeBillingProvider {
     tenantId: string;
     closeId: string;
     snapshotHash: string;
+    subscription?: {
+      id: string;
+      version: number;
+      planCode: string;
+      planVersion: number;
+      snapshotHash: string;
+    } | null;
   }, idempotencyKey: string): Promise<StripeInvoice> {
     const params: Record<string, unknown> = {
       customer: input.customerId,
@@ -80,6 +87,13 @@ export class StripeBillingProvider {
         factoryos_tenant_id: input.tenantId,
         factoryos_billing_close_id: input.closeId,
         factoryos_billing_snapshot_hash: input.snapshotHash,
+        ...(input.subscription ? {
+          factoryos_subscription_id: input.subscription.id,
+          factoryos_subscription_version: String(input.subscription.version),
+          factoryos_subscription_plan_code: input.subscription.planCode,
+          factoryos_subscription_plan_version: String(input.subscription.planVersion),
+          factoryos_subscription_snapshot_hash: input.subscription.snapshotHash,
+        } : {}),
       },
     };
     if (input.collectionMethod === 'send_invoice') params.days_until_due = input.daysUntilDue;

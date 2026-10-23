@@ -39,6 +39,10 @@ type AccountEventRow = QueryResultRow & {
 };
 type CloseRow = QueryResultRow & {
   id: string; tenant_id: string; provider_account_id: string; provider_account_version: number | string;
+  subscription_id: string | null; subscription_version: number | string | null; subscription_status: string | null;
+  subscription_plan_code: string | null; subscription_plan_version: number | string | null;
+  subscription_period_start: string | null; subscription_period_end: string | null;
+  subscription_snapshot: Record<string, unknown>; subscription_snapshot_hash: string | null;
   provider_code: string; provider_customer_id: string; collection_method: 'charge_automatically' | 'send_invoice';
   days_until_due: number | null; automatic_tax_enabled: boolean; tax_behavior: 'exclusive' | 'inclusive' | null;
   currency: string; period_start: string; period_end: string; usage_event_count: string | number;
@@ -76,7 +80,7 @@ type AdjustmentAggregateRow = QueryResultRow & {
 
 const ACCOUNT_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,provider_code,provider_customer_id,currency,collection_method,days_until_due,automatic_tax_enabled,tax_behavior,version,idempotency_key,request_hash,created_by::text AS created_by,updated_by::text AS updated_by,created_at::text AS created_at,updated_at::text AS updated_at';
 const ACCOUNT_EVENT_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,provider_account_id::text AS provider_account_id,account_version,action,provider_code,provider_customer_id,currency,collection_method,days_until_due,automatic_tax_enabled,tax_behavior,idempotency_key,request_hash,actor_user_id::text AS actor_user_id,created_at::text AS created_at';
-const CLOSE_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,provider_account_id::text AS provider_account_id,provider_account_version,provider_code,provider_customer_id,collection_method,days_until_due,automatic_tax_enabled,tax_behavior,currency,period_start::text AS period_start,period_end::text AS period_end,usage_event_count,adjustment_count,usage_amount_minor::text AS usage_amount_minor,adjustment_amount_minor::text AS adjustment_amount_minor,expected_subtotal_minor::text AS expected_subtotal_minor,lines,snapshot_hash,request_hash,idempotency_key,closed_by::text AS closed_by,created_at::text AS created_at';
+const CLOSE_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,provider_account_id::text AS provider_account_id,provider_account_version,subscription_id::text AS subscription_id,subscription_version,subscription_status,subscription_plan_code,subscription_plan_version,subscription_period_start::text AS subscription_period_start,subscription_period_end::text AS subscription_period_end,subscription_snapshot,subscription_snapshot_hash,provider_code,provider_customer_id,collection_method,days_until_due,automatic_tax_enabled,tax_behavior,currency,period_start::text AS period_start,period_end::text AS period_end,usage_event_count,adjustment_count,usage_amount_minor::text AS usage_amount_minor,adjustment_amount_minor::text AS adjustment_amount_minor,expected_subtotal_minor::text AS expected_subtotal_minor,lines,snapshot_hash,request_hash,idempotency_key,closed_by::text AS closed_by,created_at::text AS created_at';
 const EVENT_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,close_id::text AS close_id,event_type,provider_invoice_id,provider_invoice_status,idempotency_key,request_hash,error_code,evidence_hash,actor_user_id::text AS actor_user_id,created_at::text AS created_at';
 const RECON_COLUMNS = 'id::text AS id,tenant_id::text AS tenant_id,close_id::text AS close_id,provider_invoice_id,provider_invoice_status,provider_customer_id,currency,expected_subtotal_minor::text AS expected_subtotal_minor,provider_subtotal_minor::text AS provider_subtotal_minor,provider_tax_minor::text AS provider_tax_minor,provider_discount_minor::text AS provider_discount_minor,provider_total_minor::text AS provider_total_minor,amount_due_minor::text AS amount_due_minor,amount_paid_minor::text AS amount_paid_minor,automatic_tax_status,line_binding_valid,status,provider_snapshot_hash,report_hash,request_hash,idempotency_key,recorded_by::text AS recorded_by,created_at::text AS created_at';
 
@@ -250,6 +254,35 @@ export class SaasBillingService {
       throw new BadRequestException('Billing-close currency must match the configured provider account currency');
     }
 
+    // Pin the optional internal subscription/plan version into the commercial
+    // invoice evidence. Legacy tenants remain eligible, but a close must never
+    // silently acquire a different plan after this snapshot is created.
+    const subscriptionResult = await this.database.query<QueryResultRow & {
+      id: string; version: number | string; status: string; plan_code: string;
+      plan_version: number | string; plan_status: string;
+      current_period_start: string | null; current_period_end: string | null;
+    }>(
+      'SELECT s.id::text AS id,s.version,s.status,s.plan_code,s.plan_version,p.status AS plan_status,' +
+      's.current_period_start::text AS current_period_start,s.current_period_end::text AS current_period_end ' +
+      'FROM saas_subscriptions s JOIN saas_subscription_plans p ON p.tenant_id=s.tenant_id ' +
+      'AND p.plan_code=s.plan_code AND p.version=s.plan_version WHERE s.tenant_id=$1 ' +
+      'ORDER BY s.created_at DESC,s.id DESC LIMIT 1',
+      [tenantId],
+      { tenantId, userId: actorUserId },
+    );
+    const currentSubscription = subscriptionResult.rows[0] ?? null;
+    const subscriptionSnapshot = currentSubscription ? {
+      subscriptionId: currentSubscription.id,
+      version: Number(currentSubscription.version),
+      status: currentSubscription.status,
+      planCode: currentSubscription.plan_code,
+      planVersion: Number(currentSubscription.plan_version),
+      planStatus: currentSubscription.plan_status,
+      currentPeriodStart: currentSubscription.current_period_start,
+      currentPeriodEnd: currentSubscription.current_period_end,
+    } : {};
+    const subscriptionSnapshotHash = currentSubscription ? this.hash(subscriptionSnapshot) : null;
+
     const usage = await this.database.query<UsageAggregateRow>(
       'SELECT metric_code,capability_code,workload_class,currency,COUNT(*)::text AS event_count,' +
       'COALESCE(SUM(quantity),0)::text AS total_quantity,COALESCE(SUM(estimated_cost_minor),0)::text AS total_cost_minor,' +
@@ -336,6 +369,7 @@ export class SaasBillingService {
     const snapshotHash = this.hash({
       tenantId, providerAccountId: account.id, providerAccountVersion: Number(account.version),
       providerCustomerId: account.provider_customer_id, currency, periodStart: period.start, periodEnd: period.end,
+      subscriptionSnapshotHash, subscriptionSnapshot,
       usageEventCount, adjustmentCount: totalAdjustmentCount, usageAmountMinor: usageAmount.toString(),
       adjustmentAmountMinor: adjustmentAmount.toString(), expectedSubtotalMinor: expectedSubtotal.toString(), lines,
     });
@@ -350,13 +384,17 @@ export class SaasBillingService {
         return { row: priorByKey.rows[0], inserted: false };
       }
       const rowResult = await client.query<CloseRow>(
-        'INSERT INTO saas_billing_close_runs(id,tenant_id,provider_account_id,provider_account_version,provider_code,provider_customer_id,collection_method,days_until_due,automatic_tax_enabled,tax_behavior,currency,period_start,period_end,usage_event_count,adjustment_count,usage_amount_minor,adjustment_amount_minor,expected_subtotal_minor,lines,snapshot_hash,request_hash,idempotency_key,closed_by) ' +
-        'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21,$22,$23) ON CONFLICT DO NOTHING RETURNING ' + CLOSE_COLUMNS,
+        'INSERT INTO saas_billing_close_runs(id,tenant_id,provider_account_id,provider_account_version,provider_code,provider_customer_id,collection_method,days_until_due,automatic_tax_enabled,tax_behavior,currency,period_start,period_end,usage_event_count,adjustment_count,usage_amount_minor,adjustment_amount_minor,expected_subtotal_minor,lines,snapshot_hash,request_hash,idempotency_key,subscription_id,subscription_version,subscription_status,subscription_plan_code,subscription_plan_version,subscription_period_start,subscription_period_end,subscription_snapshot,subscription_snapshot_hash,closed_by) ' +
+        'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::jsonb,$31,$32) ON CONFLICT DO NOTHING RETURNING ' + CLOSE_COLUMNS,
         [closeId, tenantId, account.id, account.version, account.provider_code, account.provider_customer_id,
           account.collection_method, account.days_until_due, account.automatic_tax_enabled, account.tax_behavior,
           currency, period.start, period.end, usageEventCount, totalAdjustmentCount, usageAmount.toString(),
           adjustmentAmount.toString(), expectedSubtotal.toString(), JSON.stringify(lines), snapshotHash, requestHash,
-          idempotencyKey, actorUserId],
+          idempotencyKey, currentSubscription?.id ?? null, currentSubscription?.version ?? null,
+          currentSubscription?.status ?? null, currentSubscription?.plan_code ?? null,
+          currentSubscription?.plan_version ?? null, currentSubscription?.current_period_start ?? null,
+          currentSubscription?.current_period_end ?? null, JSON.stringify(subscriptionSnapshot),
+          subscriptionSnapshotHash, actorUserId],
       );
       if (rowResult.rows[0]) {
         await client.query(
@@ -458,6 +496,13 @@ export class SaasBillingService {
           daysUntilDue: close.days_until_due === null ? null : Number(close.days_until_due),
           automaticTaxEnabled: close.automatic_tax_enabled,
           tenantId, closeId, snapshotHash: close.snapshot_hash,
+          subscription: close.subscription_id ? {
+            id: close.subscription_id,
+            version: Number(close.subscription_version),
+            planCode: String(close.subscription_plan_code),
+            planVersion: Number(close.subscription_plan_version),
+            snapshotHash: String(close.subscription_snapshot_hash),
+          } : null,
         }, 'fo-billing-' + closeId + '-invoice-v1');
         invoiceId = invoice.id;
         await this.appendCloseEvent({
@@ -832,6 +877,16 @@ export class SaasBillingService {
       || eventCustomer !== closeRow.provider_customer_id) {
       throw new ConflictException('Stripe invoice snapshot or customer binding does not match the immutable close; webhook delivery is rejected for reconciliation');
     }
+    const subscriptionMetadataMatches = closeRow.subscription_id
+      ? metadata.factoryos_subscription_id === closeRow.subscription_id
+        && metadata.factoryos_subscription_version === String(closeRow.subscription_version)
+        && metadata.factoryos_subscription_plan_code === closeRow.subscription_plan_code
+        && metadata.factoryos_subscription_plan_version === String(closeRow.subscription_plan_version)
+        && metadata.factoryos_subscription_snapshot_hash === closeRow.subscription_snapshot_hash
+      : !Object.prototype.hasOwnProperty.call(metadata, 'factoryos_subscription_id');
+    if (!subscriptionMetadataMatches) {
+      throw new ConflictException('Stripe invoice subscription/plan metadata does not match the immutable billing-close snapshot');
+    }
 
     const status = typeof invoice.status === 'string' ? invoice.status : null;
     const eventType = this.webhookCloseEventType(webhook, status);
@@ -887,7 +942,19 @@ export class SaasBillingService {
         usageAmountMinor: String(close.usage_amount_minor), adjustmentAmountMinor: String(close.adjustment_amount_minor),
         expectedSubtotalMinor: String(close.expected_subtotal_minor), lines: close.lines,
         snapshotHash: close.snapshot_hash, providerInvoiceId: lastInvoiceId, status: state,
-        automaticTaxEnabled: close.automatic_tax_enabled, createdAt: close.created_at,
+        automaticTaxEnabled: close.automatic_tax_enabled,
+        subscription: close.subscription_id ? {
+          id: close.subscription_id,
+          version: Number(close.subscription_version),
+          status: close.subscription_status,
+          planCode: close.subscription_plan_code,
+          planVersion: Number(close.subscription_plan_version),
+          currentPeriodStart: close.subscription_period_start,
+          currentPeriodEnd: close.subscription_period_end,
+          snapshot: close.subscription_snapshot,
+          snapshotHash: close.subscription_snapshot_hash,
+        } : null,
+        createdAt: close.created_at,
       },
       events: events.map((event) => ({
         id: event.id, type: event.event_type, providerInvoiceId: event.provider_invoice_id,
@@ -1013,6 +1080,16 @@ export class SaasBillingService {
       || invoice.metadata.factoryos_tenant_id !== close.tenant_id
       || invoice.metadata.factoryos_billing_snapshot_hash !== close.snapshot_hash) {
       throw new ConflictException('Stripe invoice metadata does not match the immutable billing-close snapshot');
+    }
+    const subscriptionMetadataMatches = close.subscription_id
+      ? invoice.metadata.factoryos_subscription_id === close.subscription_id
+        && invoice.metadata.factoryos_subscription_version === String(close.subscription_version)
+        && invoice.metadata.factoryos_subscription_plan_code === close.subscription_plan_code
+        && invoice.metadata.factoryos_subscription_plan_version === String(close.subscription_plan_version)
+        && invoice.metadata.factoryos_subscription_snapshot_hash === close.subscription_snapshot_hash
+      : !Object.prototype.hasOwnProperty.call(invoice.metadata, 'factoryos_subscription_id');
+    if (!subscriptionMetadataMatches) {
+      throw new ConflictException('Stripe invoice subscription/plan metadata does not match the immutable billing-close snapshot');
     }
   }
 

@@ -181,6 +181,7 @@ describe('SaasBillingService', () => {
       .mockResolvedValueOnce({ rows: [] }) // no overlapping commercial close
       .mockResolvedValueOnce({ rows: [] }) // no overlapping legacy provider invoice reconciliation
       .mockResolvedValueOnce({ rows: [account] }) // provider account
+      .mockResolvedValueOnce({ rows: [] }) // no subscription: legacy metering-only tenant
       .mockResolvedValueOnce({ rows: [{
         metric_code: 'AI_INPUT_TOKEN',
         capability_code: 'ai.runtime.inference',
@@ -198,9 +199,62 @@ describe('SaasBillingService', () => {
       currency: 'USD',
       idempotency_key: 'close-unpriced-event',
     } as never)).rejects.toThrow(ConflictException);
-    expect(database.query).toHaveBeenCalledTimes(6);
+    expect(database.query).toHaveBeenCalledTimes(7);
     expect(stripe.createInvoice).not.toHaveBeenCalled();
     expect(database.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_billing_close_runs'))).toBe(false);
+  });
+
+  it('pins internal subscription and plan versions into the immutable commercial close', async () => {
+    const { service } = mocks();
+    const closeId = '55555555-5555-4555-8555-555555555555';
+    const snapshot = {
+      subscriptionId: '66666666-6666-4666-8666-666666666666',
+      version: 3,
+      status: 'ACTIVE',
+      planCode: 'GROWTH',
+      planVersion: 2,
+      planStatus: 'ACTIVE',
+      currentPeriodStart: '2026-10-01T00:00:00.000Z',
+      currentPeriodEnd: '2026-11-01T00:00:00.000Z',
+    };
+    const close = {
+      id: closeId, tenant_id: tenant, provider_account_id: '33333333-3333-4333-8333-333333333333',
+      provider_account_version: 1, subscription_id: snapshot.subscriptionId, subscription_version: 3,
+      subscription_status: 'ACTIVE', subscription_plan_code: 'GROWTH', subscription_plan_version: 2,
+      subscription_period_start: snapshot.currentPeriodStart, subscription_period_end: snapshot.currentPeriodEnd,
+      subscription_snapshot: snapshot, subscription_snapshot_hash: (service as any).hash(snapshot),
+      provider_code: 'stripe', provider_customer_id: 'cus_123abc', collection_method: 'send_invoice',
+      days_until_due: 30, automatic_tax_enabled: false, tax_behavior: null, currency: 'USD',
+      period_start: '2026-10-01T00:00:00.000Z', period_end: '2026-10-02T00:00:00.000Z',
+      usage_event_count: '1', adjustment_count: '0', usage_amount_minor: '125',
+      adjustment_amount_minor: '0', expected_subtotal_minor: '125', lines: [],
+      snapshot_hash: 'a'.repeat(64), request_hash: 'b'.repeat(64),
+      idempotency_key: 'subscription-bound-close', closed_by: factoryUser,
+      created_at: '2026-10-02T00:00:00.000Z',
+    };
+    const providerInvoice = {
+      id: 'in_123abc', customerId: 'cus_123abc', currency: 'USD', status: 'open',
+      subtotalMinor: 125, taxMinor: 0, discountMinor: 0, totalMinor: 125,
+      amountDueMinor: 125, amountPaidMinor: 0, amountRemainingMinor: 125,
+      automaticTaxStatus: null, automaticTaxEnabled: false, collectionMethod: 'send_invoice',
+      metadata: {
+        factoryos_tenant_id: tenant,
+        factoryos_billing_close_id: closeId,
+        factoryos_billing_snapshot_hash: close.snapshot_hash,
+        factoryos_subscription_id: snapshot.subscriptionId,
+        factoryos_subscription_version: '3',
+        factoryos_subscription_plan_code: 'GROWTH',
+        factoryos_subscription_plan_version: '2',
+        factoryos_subscription_snapshot_hash: close.subscription_snapshot_hash,
+      },
+      livemode: false, createdAt: 1,
+    };
+    await expect((service as any).assertInvoiceBelongsToClose(providerInvoice, close))
+      .resolves.toBeUndefined();
+    await expect((service as any).assertInvoiceBelongsToClose({
+      ...providerInvoice,
+      metadata: { ...providerInvoice.metadata, factoryos_subscription_version: '2' },
+    }, close)).rejects.toThrow('subscription/plan metadata');
   });
 
   it('reconciles provider discounts as an explicit variance against the immutable usage close', async () => {

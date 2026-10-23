@@ -90,6 +90,18 @@ BEGIN
   END LOOP;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='fk_saas_billing_close_subscription'
+      AND conrelid='public.saas_billing_close_runs'::regclass
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='chk_saas_billing_close_subscription_snapshot'
+      AND conrelid='public.saas_billing_close_runs'::regclass
+  ) THEN
+    RAISE EXCEPTION 'SAAS_BILLING_SUBSCRIPTION_SNAPSHOT_CONTRACT_MISSING';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname='public' AND indexname='uq_saas_billing_webhook_event'
   ) OR NOT EXISTS (
