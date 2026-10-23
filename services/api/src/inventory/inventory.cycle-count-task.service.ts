@@ -28,6 +28,8 @@ interface CycleCountTaskRow extends QueryResultRow {
   due_at: string;
   priority: number;
   status: InventoryCycleCountTaskStatus;
+  blind_count: boolean;
+  variance_escalation_status?: 'OPEN' | 'RESOLVED' | null;
   current_proposal_id: string | null;
   idempotency_key: string;
   request_hash: string;
@@ -54,6 +56,53 @@ export type InventoryCycleCountTask = Omit<
   'idempotency_key' | 'request_hash'
 > & { overdue: boolean; replayed: boolean };
 
+interface CycleCountVarianceEscalationRow extends QueryResultRow {
+  id: string;
+  tenant_id: string;
+  factory_id: string;
+  task_id: string;
+  proposal_id: string;
+  item_id: string;
+  expected_quantity: string;
+  counted_quantity: string;
+  variance_quantity: string;
+  threshold_quantity: string;
+  status: 'OPEN' | 'RESOLVED';
+  detected_at: string;
+  resolved_by_user_id: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  resolution_idempotency_key: string | null;
+  resolution_request_hash: string | null;
+  version: string;
+}
+
+export type InventoryCycleCountVarianceEscalation = Omit<
+  CycleCountVarianceEscalationRow,
+  'resolution_idempotency_key' | 'resolution_request_hash'
+> & { replayed: boolean };
+
+const VARIANCE_ESCALATION_COLUMNS = `
+  id::text AS id,
+  tenant_id::text AS tenant_id,
+  factory_id::text AS factory_id,
+  task_id::text AS task_id,
+  proposal_id::text AS proposal_id,
+  item_id::text AS item_id,
+  expected_quantity::text AS expected_quantity,
+  counted_quantity::text AS counted_quantity,
+  variance_quantity::text AS variance_quantity,
+  threshold_quantity::text AS threshold_quantity,
+  status,
+  detected_at::text AS detected_at,
+  resolved_by_user_id::text AS resolved_by_user_id,
+  resolved_at::text AS resolved_at,
+  resolution_note,
+  resolution_idempotency_key,
+  resolution_request_hash,
+  version::text AS version
+`;
+
 const TASK_COLUMNS = `
   id::text AS id,
   tenant_id::text AS tenant_id,
@@ -64,6 +113,7 @@ const TASK_COLUMNS = `
   due_at::text AS due_at,
   priority,
   status,
+  blind_count,
   current_proposal_id::text AS current_proposal_id,
   idempotency_key,
   request_hash,
@@ -91,6 +141,7 @@ const TASK_COLUMNS_T = `
   t.due_at::text AS due_at,
   t.priority,
   t.status,
+  t.blind_count,
   t.current_proposal_id::text AS current_proposal_id,
   t.idempotency_key,
   t.request_hash,
@@ -125,6 +176,8 @@ export class InventoryCycleCountTaskService {
       assigned_to_user_id?: string;
       due_at: string;
       priority?: number;
+      blind_count?: boolean;
+      variance_escalation_threshold?: number;
       notes?: string;
     },
     rawIdempotencyKey: string | null,
@@ -146,10 +199,25 @@ export class InventoryCycleCountTaskService {
     if (!Number.isInteger(priority) || priority < 0 || priority > 10000) {
       throw new BadRequestException('priority must be an integer between 0 and 10000');
     }
+    const blindCount = dto.blind_count ?? true;
+    if (typeof blindCount !== 'boolean') throw new BadRequestException('blind_count must be true or false');
+    const rawThreshold = dto.variance_escalation_threshold;
+    let varianceThreshold: number | null = null;
+    if (rawThreshold !== undefined && rawThreshold !== null) {
+      if (!Number.isFinite(rawThreshold) || rawThreshold <= 0 || rawThreshold > 99999999999999) {
+        throw new BadRequestException('variance_escalation_threshold must be greater than zero and within the supported quantity range');
+      }
+      const fixedThreshold = rawThreshold.toFixed(4);
+      if (Number(fixedThreshold) <= 0 || Number(fixedThreshold) !== rawThreshold) {
+        throw new BadRequestException('variance_escalation_threshold supports at most 4 decimal places');
+      }
+      varianceThreshold = Number(fixedThreshold);
+    }
     const notes = dto.notes?.trim() || null;
     const idempotencyKey = this.requiredIdempotencyKey(rawIdempotencyKey);
     const requestHash = this.hash({
-      itemId, locationId, assignedToUserId, dueAt, priority, notes,
+      itemId, locationId, assignedToUserId, dueAt, priority, blindCount,
+      varianceThreshold, notes,
     });
 
     let result: InventoryCycleCountTask;
@@ -203,12 +271,13 @@ export class InventoryCycleCountTaskService {
         const inserted = await client.query<CycleCountTaskRow>(
           `INSERT INTO inventory_cycle_count_tasks (
              tenant_id, factory_id, item_id, location_id, assigned_to_user_id,
-             due_at, priority, status, idempotency_key, request_hash, notes, created_by_user_id
-           ) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, 'SCHEDULED', $8, $9, $10, $11)
+             due_at, priority, status, blind_count, variance_escalation_threshold,
+             idempotency_key, request_hash, notes, created_by_user_id
+           ) VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, 'SCHEDULED', $8, $9::numeric, $10, $11, $12, $13)
            RETURNING ${TASK_COLUMNS}`,
           [
             tenantId, factoryId, itemId, locationId, assignedToUserId,
-            dueAt, priority, idempotencyKey, requestHash, notes, userId,
+            dueAt, priority, blindCount, varianceThreshold, idempotencyKey, requestHash, notes, userId,
           ],
         );
         const task = inserted.rows[0];
@@ -241,6 +310,7 @@ export class InventoryCycleCountTaskService {
           item_id: result.item_id, location_id: result.location_id,
           assigned_to_user_id: result.assigned_to_user_id, due_at: result.due_at,
           priority: result.priority, status: result.status,
+          blind_count: result.blind_count, variance_escalation_threshold: varianceThreshold,
         },
       });
     }
@@ -267,10 +337,14 @@ export class InventoryCycleCountTaskService {
       `SELECT ${TASK_COLUMNS_T},
               i.sku AS item_sku, i.name AS item_name,
               l.location_code AS location_code,
+              e.status AS variance_escalation_status,
               (t.status IN ('SCHEDULED', 'IN_PROGRESS') AND t.due_at < clock_timestamp()) AS overdue
        FROM inventory_cycle_count_tasks t
        JOIN inventory_items i ON i.id = t.item_id AND i.tenant_id = t.tenant_id AND i.factory_id = t.factory_id
        LEFT JOIN inventory_locations l ON l.id = t.location_id AND l.tenant_id = t.tenant_id AND l.factory_id = t.factory_id
+       LEFT JOIN inventory_cycle_count_variance_escalations e
+         ON e.task_id = t.id AND e.tenant_id = t.tenant_id AND e.factory_id = t.factory_id
+        AND e.proposal_id = t.current_proposal_id
        WHERE t.tenant_id = $1 AND t.factory_id = $2
          AND ($3::text IS NULL OR t.status = $3)
          AND (NOT $4::boolean OR t.assigned_to_user_id = $5)
@@ -404,6 +478,174 @@ export class InventoryCycleCountTaskService {
     return result;
   }
 
+  async getVarianceEscalation(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    taskId: string,
+  ): Promise<InventoryCycleCountVarianceEscalation> {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(taskId, 'taskId');
+    const taskResult = await this.database.query<{
+      id: string;
+      current_proposal_id: string | null;
+    }>(
+      `SELECT id::text AS id, current_proposal_id::text AS current_proposal_id
+       FROM inventory_cycle_count_tasks
+       WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+       LIMIT 1`,
+      [taskId, tenantId, factoryId],
+      { tenantId, userId },
+    );
+    const task = taskResult.rows[0];
+    if (!task) throw new NotFoundException('Cycle-count task not found in this factory');
+    if (!task.current_proposal_id) {
+      throw new NotFoundException('Cycle-count task has no submitted proposal');
+    }
+    const result = await this.database.query<CycleCountVarianceEscalationRow>(
+      `SELECT ${VARIANCE_ESCALATION_COLUMNS}
+       FROM inventory_cycle_count_variance_escalations
+       WHERE tenant_id = $1 AND factory_id = $2 AND task_id = $3
+         AND proposal_id = $4
+       LIMIT 1`,
+      [tenantId, factoryId, taskId, task.current_proposal_id],
+      { tenantId, userId },
+    );
+    if (!result.rows[0]) throw new NotFoundException('No threshold-based variance escalation exists for the current count');
+    return this.toVarianceEscalation(result.rows[0], false);
+  }
+
+  async resolveVarianceEscalation(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    taskId: string,
+    resolutionNote: string,
+    rawIdempotencyKey: string | null,
+    requestId: string | null,
+    traceId: string | null,
+  ): Promise<InventoryCycleCountVarianceEscalation> {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(taskId, 'taskId');
+    const note = resolutionNote.trim();
+    if (!note || note.length > 1000) {
+      throw new BadRequestException('resolution_note must contain 1–1000 characters');
+    }
+    const key = rawIdempotencyKey?.trim() ?? '';
+    if (!key) throw new BadRequestException('Idempotency-Key is required to resolve a variance escalation');
+    if (key.length > 255) throw new BadRequestException('Idempotency-Key must be at most 255 characters');
+    const requestHash = this.hash({ taskId: taskId.toLowerCase(), resolutionNote: note });
+
+    const result = await this.database.transaction({ tenantId, userId }, async (client) => {
+      const replay = await client.query<CycleCountVarianceEscalationRow>(
+        `SELECT ${VARIANCE_ESCALATION_COLUMNS}
+         FROM inventory_cycle_count_variance_escalations
+         WHERE tenant_id = $1 AND factory_id = $2 AND resolution_idempotency_key = $3
+         LIMIT 1`,
+        [tenantId, factoryId, key],
+      );
+      if (replay.rows[0]) {
+        const existing = replay.rows[0];
+        if (
+          existing.resolution_request_hash !== requestHash
+          || existing.resolved_by_user_id !== userId
+          || existing.status !== 'RESOLVED'
+        ) {
+          throw new ConflictException('Idempotency-Key was reused for a different variance escalation resolution');
+        }
+        return this.toVarianceEscalation(existing, true);
+      }
+
+      const taskResult = await client.query<{
+        id: string;
+        status: string;
+        current_proposal_id: string | null;
+        submitted_by_user_id: string | null;
+      }>(
+        `SELECT id::text AS id, status,
+                current_proposal_id::text AS current_proposal_id,
+                submitted_by_user_id::text AS submitted_by_user_id
+         FROM inventory_cycle_count_tasks
+         WHERE id = $1 AND tenant_id = $2 AND factory_id = $3
+         LIMIT 1`,
+        [taskId, tenantId, factoryId],
+      );
+      const task = taskResult.rows[0];
+      if (!task) throw new NotFoundException('Cycle-count task not found in this factory');
+      if (task.status !== 'AWAITING_REVIEW' || !task.current_proposal_id) {
+        throw new ConflictException('Variance escalation can only be resolved while the count is awaiting review');
+      }
+      if (task.submitted_by_user_id === userId) {
+        throw new ConflictException('The counter who submitted the count cannot resolve its variance escalation');
+      }
+
+      const escalationResult = await client.query<CycleCountVarianceEscalationRow>(
+        `SELECT ${VARIANCE_ESCALATION_COLUMNS}
+         FROM inventory_cycle_count_variance_escalations
+         WHERE tenant_id = $1 AND factory_id = $2 AND task_id = $3
+           AND proposal_id = $4
+         FOR UPDATE`,
+        [tenantId, factoryId, taskId, task.current_proposal_id],
+      );
+      const escalation = escalationResult.rows[0];
+      if (!escalation) throw new NotFoundException('No variance escalation exists for the current count');
+      if (escalation.status !== 'OPEN') {
+        throw new ConflictException('Variance escalation has already been resolved; use the original Idempotency-Key to replay it');
+      }
+
+      const updated = await client.query<CycleCountVarianceEscalationRow>(
+        `UPDATE inventory_cycle_count_variance_escalations
+         SET status = 'RESOLVED',
+             resolved_by_user_id = $1::uuid,
+             resolved_at = clock_timestamp(),
+             resolution_note = $2,
+             resolution_idempotency_key = $3,
+             resolution_request_hash = $4,
+             version = version + 1
+         WHERE id = $5 AND tenant_id = $6 AND factory_id = $7 AND status = 'OPEN'
+         RETURNING ${VARIANCE_ESCALATION_COLUMNS}`,
+        [userId, note, key, requestHash, escalation.id, tenantId, factoryId],
+      );
+      const resolved = updated.rows[0];
+      if (!resolved) throw new ConflictException('Variance escalation could not be resolved');
+
+      await this.insertOutboxEvent(client, {
+        tenantId, factoryId, aggregateId: taskId,
+        correlationId: this.correlationId(requestId, traceId),
+        userId,
+        eventType: 'INVENTORY.CYCLE_COUNT_VARIANCE_ESCALATION_RESOLVED',
+        payload: {
+          task_id: taskId, proposal_id: resolved.proposal_id, escalation_id: resolved.id,
+          status: resolved.status, resolution_note: note,
+        },
+      });
+      return this.toVarianceEscalation(resolved, false);
+    });
+
+    if (!result.replayed) {
+      await this.recordAuditSafely({
+        tenantId, factoryId, userId, requestId, traceId, resourceId: result.id,
+        action: 'CYCLE_COUNT_VARIANCE_ESCALATION_RESOLVE',
+        payload: {
+          task_id: result.task_id, proposal_id: result.proposal_id,
+          item_id: result.item_id, variance_quantity: result.variance_quantity,
+          threshold_quantity: result.threshold_quantity, resolution_note: note,
+        },
+      });
+    }
+    return result;
+  }
+
+  private toVarianceEscalation(
+    row: CycleCountVarianceEscalationRow,
+    replayed: boolean,
+  ): InventoryCycleCountVarianceEscalation {
+    const { resolution_idempotency_key, resolution_request_hash, ...escalation } = row;
+    void resolution_idempotency_key;
+    void resolution_request_hash;
+    return { ...escalation, replayed };
+  }
+
   private async findByKey(
     client: PoolClient,
     tenantId: string,
@@ -440,7 +682,7 @@ export class InventoryCycleCountTaskService {
     return {
       id: task.id, item_id: task.item_id, location_id: task.location_id,
       assigned_to_user_id: task.assigned_to_user_id, due_at: task.due_at,
-      priority: task.priority, status: task.status, current_proposal_id: task.current_proposal_id,
+      priority: task.priority, blind_count: task.blind_count, status: task.status, current_proposal_id: task.current_proposal_id,
       version: task.version,
     };
   }
@@ -456,7 +698,8 @@ export class InventoryCycleCountTaskService {
       eventType:
         | 'INVENTORY.CYCLE_COUNT_TASK_SCHEDULED'
         | 'INVENTORY.CYCLE_COUNT_TASK_STARTED'
-        | 'INVENTORY.CYCLE_COUNT_TASK_CANCELLED';
+        | 'INVENTORY.CYCLE_COUNT_TASK_CANCELLED'
+        | 'INVENTORY.CYCLE_COUNT_VARIANCE_ESCALATION_RESOLVED';
       payload: Record<string, unknown>;
     },
   ): Promise<void> {
