@@ -461,6 +461,75 @@ describe('SaasBillingService', () => {
       .every((event) => event.providerInvoiceId === 'in_123abc')).toBe(true);
   });
 
+  it('rejects a recovered invoice whose customer differs from the immutable billing close', async () => {
+    const { service, stripe } = mocks();
+    const closeId = '33333333-3333-4333-8333-333333333333';
+    const close = {
+      id: closeId,
+      tenant_id: tenant,
+      provider_customer_id: 'cus_expected123',
+      currency: 'USD',
+      collection_method: 'send_invoice',
+      days_until_due: 30,
+      automatic_tax_enabled: false,
+      tax_behavior: null,
+      expected_subtotal_minor: '125',
+      snapshot_hash: 'a'.repeat(64),
+      request_hash: 'b'.repeat(64),
+      subscription_id: null,
+      lines: [],
+    };
+    const mismatchedInvoice = {
+      id: 'in_123abc',
+      customerId: 'cus_wrong123',
+      currency: 'USD',
+      status: 'draft',
+      subtotalMinor: 125,
+      taxMinor: 0,
+      discountMinor: 0,
+      totalMinor: 125,
+      amountDueMinor: 125,
+      amountPaidMinor: 0,
+      amountRemainingMinor: 125,
+      automaticTaxStatus: null,
+      automaticTaxEnabled: false,
+      collectionMethod: 'send_invoice',
+      metadata: {
+        factoryos_tenant_id: tenant,
+        factoryos_billing_close_id: closeId,
+        factoryos_billing_snapshot_hash: close.snapshot_hash,
+      },
+      livemode: false,
+      createdAt: 1790902800,
+    };
+    const appended: Array<Record<string, unknown>> = [];
+    const internal = service as unknown as {
+      loadClose: (...args: unknown[]) => Promise<unknown>;
+      loadCloseEvents: (...args: unknown[]) => Promise<unknown[]>;
+      appendCloseEvent: (input: Record<string, unknown>) => Promise<void>;
+    };
+    internal.loadClose = jest.fn(async () => close);
+    internal.loadCloseEvents = jest.fn(async () => []);
+    internal.appendCloseEvent = jest.fn(async (input: Record<string, unknown>) => {
+      appended.push(input);
+    });
+    stripe.findInvoicesForClose.mockResolvedValueOnce([mismatchedInvoice] as never);
+
+    await expect(service.issueInvoice(tenant, factoryUser, closeId))
+      .rejects.toThrow('different customer than the immutable billing close');
+
+    expect(stripe.findInvoicesForClose).toHaveBeenCalledWith(closeId);
+    expect(stripe.createInvoice).not.toHaveBeenCalled();
+    expect(stripe.createInvoiceItem).not.toHaveBeenCalled();
+    expect(stripe.finalizeInvoice).not.toHaveBeenCalled();
+    expect(stripe.sendInvoice).not.toHaveBeenCalled();
+    expect(appended).toContainEqual(expect.objectContaining({
+      eventType: 'ISSUE_FAILED',
+      providerInvoiceId: null,
+      errorCode: expect.any(String),
+    }));
+  });
+
   it('blocks invoice issuance when recovery search finds multiple invoices for the same close marker', async () => {
     const { service, stripe } = mocks();
     const closeId = '33333333-3333-4333-8333-333333333333';
