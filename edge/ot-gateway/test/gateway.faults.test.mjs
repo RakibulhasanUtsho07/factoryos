@@ -191,7 +191,7 @@ test('approved target allow-list and Modbus function codes fail closed for write
       bearerTokenFile: '/tmp/gateway-token', spoolKeyFile: '/tmp/spool-key',
       approvedTargets: ['https://factoryos-api.example.test:443', 'modbus.tcp://10.42.1.10:502'],
     },
-    api: { baseUrl: 'https://factoryos-api.example.test' },
+    api: { baseUrl: 'https://factoryos-api.example.test', tokenFile: '/tmp/api-token' },
     mqtt: null,
     opcua: [],
     modbus: [{
