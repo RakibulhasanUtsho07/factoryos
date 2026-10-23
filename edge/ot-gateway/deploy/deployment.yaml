@@ -19,6 +19,8 @@ spec:
         app.kubernetes.io/name: factoryos-ot-edge-gateway
         app.kubernetes.io/component: edge
     spec:
+      imagePullSecrets:
+        - name: factoryos-ghcr-pull
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
       securityContext:
@@ -30,7 +32,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          image: registry.example.test/factoryos/ot-edge-gateway:0.1.0
+          image: ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway:REPLACE_WITH_RELEASE_SHA
           imagePullPolicy: IfNotPresent
           ports:
             - name: https

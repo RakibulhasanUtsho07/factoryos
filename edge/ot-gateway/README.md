@@ -56,6 +56,18 @@ The automated fault suite exercises encrypted spool restart, wrong-key rejection
 
 The CI job also builds the container. It is suitable for simulator/fault-injection acceptance, but is not evidence of a commissioned PLC site by itself.
 
+## Signed container release and admission
+
+The signed release workflow runs only when trusted `main` receives a change under `edge/ot-gateway/` (or the release workflow itself). It reruns the gateway syntax and fault suite, pushes an image tagged with the source commit SHA to `ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway`, publishes SLSA build provenance for the pushed OCI digest, keylessly signs that exact digest through GitHub OIDC/Sigstore, verifies the certificate identity/issuer, and uploads a release receipt containing the immutable `image@sha256:digest`. Do not deploy the mutable/default tag or guess a digest: use the image reference from that successful release receipt.
+
+### Admission enforcement
+
+`deploy/verify-image-signature.policy.yaml` is a Kyverno `ImageValidatingPolicy`. It denies matching pods unless both the Cosign signature and SLSA provenance verify, and it fails closed if the policy engine cannot complete verification. Its trust identity is deliberately restricted to `https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main` with issuer `https://token.actions.githubusercontent.com`; it does not trust a signature from an arbitrary branch or workflow.
+
+The policy must be installed first by a cluster administrator on a Kyverno version which supports `ImageValidatingPolicy`; then apply `kubectl apply -f edge/ot-gateway/deploy/verify-image-signature.policy.yaml`. Create the namespace's `factoryos-ghcr-pull` image-pull secret through the approved secret manager with read-only access to the GHCR package; no registry credential belongs in this repository. Render `deploy/deployment.yaml` with the exact `image@sha256:digest` recorded by the successful release job before applying it. If admission policy/CRDs or registry credentials are absent, production deployment is not accepted.
+
+This is an image supply-chain gate for the OT gateway binary and a deployment prerequisite aligned with staged release control (SRS FR-SAAS2-05). It does not by itself close AI model/tool-specific FR-MSO-03/FR-MSO-05, establish that every application resolves effective releases, or prove a rollout actually happened in a customer cluster. The existing physical SaaS provisioner owns runtime deploy/health-check/HALT-or-ROLLBACK receipts. Actual cluster enforcement and hardware-in-the-loop (HIL) commissioning remain environment/site acceptance gates; this repository does not claim those external gates have passed.
+
 ## Secure deployment sequence
 
 1. Provision a dedicated OT subnet/VLAN and firewall rules first. Permit only the reviewed broker, OPC UA server, Modbus meter, DNS and FactoryOS API target. Keep all PLC write-capable ports outside this gateway's contract.
