@@ -197,3 +197,4 @@ migrations/185_saas_commercial_billing_provider.sql
 migrations/186_saas_physical_infrastructure_execution.sql
 migrations/187_inventory_cycle_count_tasks.sql
 migrations/188_inventory_blind_count_variance_escalation.sql
+migrations/189_inventory_cycle_count_sessions.sql
