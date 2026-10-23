@@ -920,12 +920,15 @@ export class SaasBillingService {
   }
 
   private webhookCloseEventType(event: StripeWebhookEvent, status: string | null): string {
+    // Only explicit provider lifecycle events may advance a non-terminal state.
+    // A generic invoice.updated event can be delivered late with status=open and
+    // must not erase a previously observed payment failure.
     if (event.type === 'invoice.paid' || status === 'paid') return 'INVOICE_PAID';
-    if (event.type === 'invoice.payment_failed') return 'PAYMENT_FAILED';
     if (event.type === 'invoice.voided' || status === 'void') return 'INVOICE_VOIDED';
     if (event.type === 'invoice.marked_uncollectible' || status === 'uncollectible') return 'INVOICE_UNCOLLECTIBLE';
-    if (event.type === 'invoice.finalized' || status === 'open') return 'INVOICE_ISSUED';
-    if (status === 'draft') return 'INVOICE_DRAFTED';
+    if (event.type === 'invoice.payment_failed') return 'PAYMENT_FAILED';
+    if (event.type === 'invoice.finalized') return 'INVOICE_ISSUED';
+    if (event.type === 'invoice.created' && status === 'draft') return 'INVOICE_DRAFTED';
     return 'WEBHOOK_OBSERVED';
   }
 
@@ -965,16 +968,19 @@ export class SaasBillingService {
   }
 
   private closeState(events: CloseEventRow[]): string {
-    // Provider webhooks may arrive out of order. Once the append-only evidence
-    // contains a paid receipt, a delayed invoice.finalized/open event cannot
-    // regress the customer-facing close state back to "issued".
+    // Resolve terminal provider outcomes before considering arrival order.
+    // Webhooks are append-only and may be delivered out of order, so a late
+    // "open"/finalized observation must never hide a payment failure or paid receipt.
     if (events.some((event) => event.event_type === 'INVOICE_PAID')) return 'PAID';
+    if (events.some((event) => event.event_type === 'NO_CHARGE')) return 'NO_CHARGE';
+    if (events.some((event) => event.event_type === 'INVOICE_VOIDED')) return 'VOIDED';
+    if (events.some((event) => event.event_type === 'INVOICE_UNCOLLECTIBLE')) return 'UNCOLLECTIBLE';
+    if (events.some((event) => event.event_type === 'PAYMENT_FAILED')) return 'PAYMENT_FAILED';
+
     for (const event of events) {
-      if (event.event_type === 'NO_CHARGE') return 'NO_CHARGE';
-      if (event.event_type === 'INVOICE_PAID') return 'PAID';
-      if (event.event_type === 'INVOICE_VOIDED') return 'VOIDED';
-      if (event.event_type === 'INVOICE_UNCOLLECTIBLE') return 'UNCOLLECTIBLE';
-      if (event.event_type === 'PAYMENT_FAILED') return 'PAYMENT_FAILED';
+      // A raw webhook observation is evidence, not an authoritative ordering
+      // signal for the locally persisted issue/retry workflow.
+      if (event.idempotency_key?.startsWith('stripe-webhook:')) continue;
       if (event.event_type === 'ISSUE_FAILED') return 'RETRY_REQUIRED';
       if (event.event_type === 'INVOICE_ISSUED') return 'ISSUED';
       if (event.event_type === 'INVOICE_DRAFTED' || event.event_type === 'LINE_ITEM_ATTACHED') return 'ISSUING';
