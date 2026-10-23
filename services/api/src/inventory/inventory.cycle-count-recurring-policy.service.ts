@@ -824,10 +824,10 @@ export class InventoryCycleCountRecurringPolicyService {
     row: RecurringPolicyRow,
     replayed: boolean,
   ): InventoryCycleCountRecurringPolicy {
-    const { idempotency_key, request_hash, ...policy } = row;
+    const { idempotency_key, request_hash, session_location_ids, ...policy } = row;
     void idempotency_key;
     void request_hash;
-    return { ...policy, replayed };
+    return { ...policy, location_ids: session_location_ids ?? [], replayed };
   }
 
   private async insertOutboxEvent(
