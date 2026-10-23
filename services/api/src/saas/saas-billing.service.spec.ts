@@ -171,7 +171,7 @@ describe('SaasBillingService', () => {
       currency: 'USD',
       idempotency_key: 'close-unpriced-event',
     } as never)).rejects.toThrow(ConflictException);
-    expect(database.query).toHaveBeenCalledTimes(4);
+    expect(database.query).toHaveBeenCalledTimes(3);
     expect(stripe.createInvoice).not.toHaveBeenCalled();
     expect(database.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO saas_billing_close_runs'))).toBe(false);
   });

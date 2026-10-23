@@ -1,11 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { isUUID } from 'class-validator';
