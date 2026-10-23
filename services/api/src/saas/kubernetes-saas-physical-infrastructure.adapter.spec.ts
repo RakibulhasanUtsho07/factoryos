@@ -154,6 +154,47 @@ describe('KubernetesSaasPhysicalInfrastructureAdapter', () => {
       .toEqual(['UDP', 'TCP']);
   });
 
+  it('limits masked materializer egress to reviewed HTTPS destination CIDRs', async () => {
+    const adapter = new KubernetesSaasPhysicalInfrastructureAdapter(config({}) as never);
+    let applied: Record<string, unknown> | null = null;
+    const internals = adapter as unknown as {
+      ensureMaskedDatasetEgressPolicy: (
+        target: unknown, namespace: string, context: unknown, cidrs: string[],
+      ) => Promise<unknown>;
+      ensureObject: (...args: unknown[]) => Promise<Record<string, unknown>>;
+    };
+    internals.ensureObject = jest.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async (...args) => {
+      applied = args[3] as Record<string, unknown>;
+      return { ...applied, metadata: { ...((applied.metadata as Record<string, unknown>) ?? {}), uid: 'network-policy-uid' } };
+    });
+    await internals.ensureMaskedDatasetEgressPolicy(
+      { code: 'shared', apiServer: 'https://kubernetes.example.test', bearerToken: 'never-record-this' },
+      'fo-faaab63dc44746ce950ddeeb',
+      {
+        tenantId: 'faaab63d-c447-46ce-950d-deebdd7f5f30',
+        actorUserId: '5e8d2d2b-4a11-4ac7-8db9-cda1eafaf001',
+        runId: '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+        resourceId: '456f2b7f-8c46-4d9a-8b44-18eae66a4450',
+        resourceVersion: 1,
+        profile: sharedProfile,
+      },
+      ['203.0.113.14/32', '198.51.100.0/24'],
+    );
+    expect(applied).not.toBeNull();
+    const desired = applied as Record<string, unknown>;
+    const spec = desired.spec as Record<string, unknown>;
+    expect(spec.policyTypes).toEqual(['Egress']);
+    expect((spec.podSelector as Record<string, unknown>).matchLabels).toEqual({
+      'factoryos.io/workload-role': 'dataset-materializer',
+    });
+    const egress = spec.egress as Array<Record<string, unknown>>;
+    expect(egress).toHaveLength(3);
+    expect((egress[2].to as Array<Record<string, unknown>>).map((entry) =>
+      (entry.ipBlock as Record<string, unknown>).cidr)).toEqual(['203.0.113.14/32', '198.51.100.0/24']);
+    expect((egress[2].ports as Array<Record<string, unknown>>)).toEqual([{ protocol: 'TCP', port: 443 }]);
+    expect(JSON.stringify(desired)).not.toContain('never-record-this');
+  });
+
   it('rejects invalid pinned dataset-provisioner and workload image settings before provider requests', () => {
     const adapter = new KubernetesSaasPhysicalInfrastructureAdapter(config({
       NODE_ENV: 'production',
