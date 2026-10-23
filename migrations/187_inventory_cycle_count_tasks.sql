@@ -197,6 +197,19 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
+  IF NEW.assigned_to_user_id IS DISTINCT FROM OLD.assigned_to_user_id
+    AND NEW.assigned_to_user_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM users u
+      JOIN tenant_memberships tm ON tm.user_id = u.id
+      WHERE u.id = NEW.assigned_to_user_id AND u.status = 'ACTIVE'
+        AND tm.tenant_id = NEW.tenant_id AND tm.status = 'ACTIVE'
+    )
+  THEN
+    RAISE EXCEPTION 'cycle-count task assignee must be an active member of this tenant'
+      USING ERRCODE = '23514';
+  END IF;
+
   IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
     (OLD.status = 'SCHEDULED' AND NEW.status IN ('IN_PROGRESS', 'CANCELLED'))
     OR (OLD.status = 'IN_PROGRESS' AND NEW.status IN ('AWAITING_REVIEW', 'CANCELLED'))
