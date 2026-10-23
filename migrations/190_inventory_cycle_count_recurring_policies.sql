@@ -283,6 +283,22 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION factoryos_guard_inventory_cycle_count_recurring_policy_occurrences()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $
+BEGIN
+  RAISE EXCEPTION 'recurring cycle-count occurrence evidence is immutable and cannot be changed or deleted'
+    USING ERRCODE = '55000';
+END;
+$;
+
+DROP TRIGGER IF EXISTS inventory_cycle_count_recurring_occurrences_immutable
+  ON inventory_cycle_count_recurring_policy_occurrences;
+CREATE TRIGGER inventory_cycle_count_recurring_occurrences_immutable
+BEFORE UPDATE OR DELETE ON inventory_cycle_count_recurring_policy_occurrences
+FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_cycle_count_recurring_policy_occurrences();
+
 CREATE OR REPLACE FUNCTION factoryos_guard_inventory_cycle_count_recurring_policy_events()
 RETURNS trigger
 LANGUAGE plpgsql

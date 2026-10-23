@@ -85,8 +85,12 @@ BEGIN
     SELECT 1 FROM pg_trigger
     WHERE tgrelid = 'public.inventory_cycle_count_recurring_policy_events'::regclass
       AND tgname = 'inventory_cycle_count_recurring_policy_events_immutable' AND NOT tgisinternal
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'public.inventory_cycle_count_recurring_policy_occurrences'::regclass
+      AND tgname = 'inventory_cycle_count_recurring_occurrences_immutable' AND NOT tgisinternal
   ) THEN
-    RAISE EXCEPTION 'recurring policy guard or append-only event trigger is missing';
+    RAISE EXCEPTION 'recurring policy, occurrence and append-only event guards are missing';
   END IF;
 
   SELECT pg_get_functiondef('public.factoryos_guard_inventory_cycle_count_recurring_policy()'::regprocedure)
@@ -102,6 +106,12 @@ BEGIN
     OR position('WEEKLY' IN v_definition) = 0
     OR position('DAILY' IN v_definition) = 0 THEN
     RAISE EXCEPTION 'recurring calendar arithmetic must support daily, weekly and monthly periods';
+  END IF;
+
+  SELECT pg_get_functiondef('public.factoryos_guard_inventory_cycle_count_recurring_policy_occurrences()'::regprocedure)
+    INTO v_definition;
+  IF position('evidence is immutable' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'recurring cycle-count occurrence ledger is not immutable';
   END IF;
 
   SELECT pg_get_functiondef('public.factoryos_guard_inventory_cycle_count_recurring_policy_events()'::regprocedure)
