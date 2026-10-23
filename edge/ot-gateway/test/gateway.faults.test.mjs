@@ -7,6 +7,8 @@ import { OtEdgeDurableSpool } from '../src/spool.mjs';
 import { handleMqttDelivery } from '../src/protocol-drivers.mjs';
 import { replayOnce } from '../src/index.mjs';
 import { secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
+import { ModbusTcpReadDriver } from '../src/protocol-drivers.mjs';
+import { startModbusTcpSimulator } from './modbus-tcp-simulator.mjs';
 
 const scope = {
   tenant_id: 'faaab63d-c447-46ce-950d-deebdd7f5f30',
@@ -215,4 +217,69 @@ test('secret rotation fingerprint changes on certificate/token rotation without 
   const after = await secretFingerprint([cert, key]);
   assert.notEqual(before, after);
   assert.match(after, /^[a-f0-9]{64}$/);
+});
+
+test('Modbus TCP driver reads registered holding/input registers from a real simulator socket', async (t) => {
+  const simulator = await startModbusTcpSimulator({
+    unitId: 7,
+    registers: new Map([
+      ['4:10', [0x4228, 0x0000]],
+      ['3:30', [0x0000, 0x0064]],
+    ]),
+  });
+  t.after(() => simulator.close());
+  const device = {
+    ...scope,
+    device_key: 'ENERGY-METER-01',
+    connection_reference: 'ENERGY-METER-01-TRUSTED',
+    host: simulator.host,
+    port: simulator.port,
+    unit_id: 7,
+    pollIntervalMs: 5000,
+    timeoutMs: 500,
+    register_map: [
+      { stream_key: 'ACTIVE_POWER', function_code: 4, address: 10, quantity: 2 },
+      { stream_key: 'ENERGY_TOTAL', function_code: 3, address: 30, quantity: 2 },
+    ],
+  };
+  const driver = new ModbusTcpReadDriver(device, null);
+  const results = await driver.read([
+    { stream_key: 'ACTIVE_POWER', function_code: 4, address: 10, quantity: 2 },
+    { stream_key: 'ENERGY_TOTAL', function_code: 3, address: 30, quantity: 2 },
+  ]);
+  assert.deepEqual(results.map((row) => row.registers), [[0x4228, 0x0000], [0x0000, 0x0064]]);
+  assert.equal(simulator.metrics.reads, 2);
+  assert.equal(simulator.metrics.writeAttempts, 0);
+});
+
+test('Modbus response loss and wrong unit ID fail closed without attempting a write', async (t) => {
+  const simulator = await startModbusTcpSimulator({ unitId: 7 });
+  t.after(() => simulator.close());
+  const device = {
+    ...scope,
+    device_key: 'ENERGY-METER-01',
+    connection_reference: 'ENERGY-METER-01-TRUSTED',
+    host: simulator.host,
+    port: simulator.port,
+    unit_id: 7,
+    pollIntervalMs: 5000,
+    timeoutMs: 300,
+    register_map: [{ stream_key: 'ACTIVE_POWER', function_code: 4, address: 10, quantity: 2 }],
+  };
+  const driver = new ModbusTcpReadDriver(device, null);
+  simulator.faults.dropNextResponse = true;
+  await assert.rejects(
+    () => driver.read([{ stream_key: 'ACTIVE_POWER', function_code: 4, address: 10, quantity: 2 }]),
+    /Modbus TCP read failed/,
+  );
+  simulator.faults.wrongUnitId = true;
+  await assert.rejects(
+    () => driver.read([{ stream_key: 'ACTIVE_POWER', function_code: 4, address: 10, quantity: 2 }]),
+    /Modbus TCP read failed/,
+  );
+  await assert.rejects(
+    () => driver.read([{ stream_key: 'ACTIVE_POWER', function_code: 6, address: 10, quantity: 2 }]),
+    /Only Modbus holding\/input register reads/,
+  );
+  assert.equal(simulator.metrics.writeAttempts, 0);
 });
