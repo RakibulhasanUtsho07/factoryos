@@ -315,7 +315,9 @@ export class SaasPhysicalProvisioningService {
     return this.executePreparedRun(run, profile, actorUserId, async (adapter, context) => {
       const deployed = await adapter.deployRelease(context, currentRelease, 'fo-physical-' + run.id + '-deploy');
       this.assertReleaseReceipt(deployed, currentRelease, profile, adapter.providerCode);
-      const health = await adapter.checkReleaseHealth(context, deployed.deploymentReference, healthTimeoutSeconds);
+      const health = await adapter.checkReleaseHealth(
+        context, deployed.deploymentReference, healthTimeoutSeconds, deployed.artifactDigest,
+      );
       this.assertHealthReceipt(health);
       if (health.healthy) {
         await this.appendEvent(tenantId, actorUserId, run.id, 'SUCCEEDED', {
