@@ -111,6 +111,49 @@ describe('KubernetesSaasPhysicalInfrastructureAdapter', () => {
     })).toBe(false);
   });
 
+  it('applies cross-tenant default-deny ingress/egress and only opens same-namespace traffic plus DNS', async () => {
+    const adapter = new KubernetesSaasPhysicalInfrastructureAdapter(config({}) as never);
+    const captured: Record<string, unknown>[] = [];
+    const internals = adapter as unknown as {
+      ensureTenantNamespace: (target: unknown, context: unknown) => Promise<unknown>;
+      ensureObject: (...args: unknown[]) => Promise<Record<string, unknown>>;
+    };
+    internals.ensureObject = jest.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(async (...args) => {
+      const desired = args[3] as Record<string, unknown>;
+      captured.push(desired);
+      const metadata = desired.metadata as Record<string, unknown>;
+      const kind = desired.kind;
+      return {
+        ...desired,
+        metadata: { ...metadata, uid: String(kind).toLowerCase() + '-uid' },
+        ...(kind === 'Namespace' ? { status: { phase: 'Active' } } : {}),
+      };
+    });
+    await internals.ensureTenantNamespace(
+      { code: 'shared', apiServer: 'https://kubernetes.example.test', bearerToken: 'not-persisted' },
+      {
+        tenantId: 'faaab63d-c447-46ce-950d-deebdd7f5f30',
+        actorUserId: '5e8d2d2b-4a11-4ac7-8db9-cda1eafaf001',
+        runId: '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7',
+        resourceId: '456f2b7f-8c46-4d9a-8b44-18eae66a4450',
+        resourceVersion: 1,
+        profile: sharedProfile,
+      },
+    );
+    const policy = captured.find((resource) => resource.kind === 'NetworkPolicy');
+    expect(policy).toBeDefined();
+    const spec = policy?.spec as Record<string, unknown>;
+    expect(spec.policyTypes).toEqual(['Ingress', 'Egress']);
+    expect(spec.ingress).toHaveLength(1);
+    const egress = spec.egress as Array<Record<string, unknown>>;
+    expect(egress).toHaveLength(2);
+    expect(egress[0].to).toBeDefined(); // same tenant namespace only
+    expect((egress[1].ports as Array<Record<string, unknown>>).map((port) => port.port))
+      .toEqual([53, 53]);
+    expect((egress[1].ports as Array<Record<string, unknown>>).map((port) => port.protocol))
+      .toEqual(['UDP', 'TCP']);
+  });
+
   it('rejects invalid pinned dataset-provisioner and workload image settings before provider requests', () => {
     const adapter = new KubernetesSaasPhysicalInfrastructureAdapter(config({
       NODE_ENV: 'production',
