@@ -55,14 +55,14 @@ describe('GrowthCalibrationPolicyService', () => {
   it('proposes a versioned residual policy with unit-aware limits and durable outbox evidence', async () => {
     const savedPolicy = {
       id: POLICY_ID, domain: 'FINANCE', model_version: 'revenue-forecast-v3',
-      metric_key: 'finance.actual_revenue', unit: 'BDT', policy_version: 3,
+      metric_key: 'finance.actual_revenue', unit: 'BDT', policy_version: 4,
       minimum_sample_count: 40, residual_coverage_target_pct: '90.00',
       max_empirical_absolute_residual: '35000.00000000',
       status: 'PENDING_REVIEW', created_by: USER_ID,
     };
     client.query
       .mockResolvedValueOnce({ rows: [{ id: FACTORY_ID }] })
-      .mockResolvedValueOnce({ rows: [{ policy_version: 3 }] })
+      .mockResolvedValueOnce({ rows: [{ policy_version: 4 }] })
       .mockResolvedValueOnce({ rows: [savedPolicy] })
       .mockResolvedValueOnce({ rows: [] });
 
