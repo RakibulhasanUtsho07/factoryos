@@ -258,7 +258,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_cycle_count_task();
 CREATE OR REPLACE FUNCTION factoryos_validate_inventory_cycle_count_task_insert()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM inventory_items i
@@ -297,7 +297,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$;
+$$;
 
 DROP TRIGGER IF EXISTS inventory_cycle_count_task_insert_guard ON inventory_cycle_count_tasks;
 CREATE TRIGGER inventory_cycle_count_task_insert_guard
