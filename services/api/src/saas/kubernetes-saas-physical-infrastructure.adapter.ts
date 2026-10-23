@@ -660,7 +660,6 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
         labels: this.resourceLabels(context),
         annotations,
       },
-      spec,
     };
     if (kind !== 'ConfigMap' && kind !== 'Secret') body.spec = spec;
     if (data) body.data = data;
