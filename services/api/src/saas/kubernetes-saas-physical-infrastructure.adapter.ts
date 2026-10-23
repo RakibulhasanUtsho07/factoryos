@@ -611,7 +611,10 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
 
     const networkPolicySpec = {
       podSelector: {},
-      policyTypes: ['Ingress'],
+      // Default-deny cross-namespace ingress and egress. Same-tenant namespace
+      // traffic remains available; DNS egress is narrowly allowed to kube-dns.
+      // External/database/service access must be granted by a separately reviewed policy.
+      policyTypes: ['Ingress', 'Egress'],
       ingress: [{
         from: [{
           namespaceSelector: {
@@ -619,6 +622,27 @@ export class KubernetesSaasPhysicalInfrastructureAdapter implements PhysicalInfr
           },
         }],
       }],
+      egress: [
+        {
+          to: [{
+            namespaceSelector: {
+              matchLabels: { 'kubernetes.io/metadata.name': namespace },
+            },
+          }],
+        },
+        {
+          to: [{
+            namespaceSelector: {
+              matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' },
+            },
+            podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+          }],
+          ports: [
+            { protocol: 'UDP', port: 53 },
+            { protocol: 'TCP', port: 53 },
+          ],
+        },
+      ],
     };
     const networkPolicy = await this.ensureObject(
       target,
