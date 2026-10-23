@@ -436,6 +436,9 @@ export class InventoryCycleCountService {
     }
 
     if (!result.replayed) {
+      const auditProposal = await this.getProposal(
+        userId, tenantId, factoryId, result.item_id, result.id,
+      );
       await this.recordAuditSafely({
         tenantId, factoryId, userId,
         requestId, traceId, resourceId: result.id,
@@ -443,11 +446,11 @@ export class InventoryCycleCountService {
         payload: {
           item_id: result.item_id,
           counted_quantity: result.counted_quantity,
-          ledger_quantity_at_count: result.ledger_quantity_at_count,
-          balance_version_at_count: result.balance_version_at_count,
-          location_id: result.location_id,
-          location_quantity_at_count: result.location_quantity_at_count,
-          location_version_at_count: result.location_version_at_count,
+          ledger_quantity_at_count: auditProposal.ledger_quantity_at_count,
+          balance_version_at_count: auditProposal.balance_version_at_count,
+          location_id: auditProposal.location_id,
+          location_quantity_at_count: auditProposal.location_quantity_at_count,
+          location_version_at_count: auditProposal.location_version_at_count,
           variance_reason_code: result.variance_reason_code,
           status: result.status,
         },
@@ -800,6 +803,32 @@ export class InventoryCycleCountService {
       });
     }
     return result;
+  }
+
+  private async assertVarianceEscalationResolvedForDecision(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    proposalId: string,
+  ): Promise<void> {
+    const result = await this.database.query<{
+      status: 'OPEN' | 'RESOLVED';
+      resolved_by_user_id: string | null;
+    }>(
+      `SELECT status, resolved_by_user_id::text AS resolved_by_user_id
+       FROM inventory_cycle_count_variance_escalations
+       WHERE tenant_id = $1 AND factory_id = $2 AND proposal_id = $3
+       LIMIT 1`,
+      [tenantId, factoryId, proposalId],
+      { tenantId, userId },
+    );
+    const escalation = result.rows[0];
+    if (escalation?.status === 'OPEN') {
+      throw new ConflictException('Variance escalation must be resolved before approving this count');
+    }
+    if (escalation?.status === 'RESOLVED' && escalation.resolved_by_user_id === userId) {
+      throw new ConflictException('A different reviewer must approve the escalated cycle count');
+    }
   }
 
   private async getProposal(
