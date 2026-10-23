@@ -71,24 +71,15 @@ The existing Growth scenario/sensitivity path keeps its model version, data vint
 5. Run final API and PostgreSQL CI on the exact release candidate SHA before merge/release.
 
 
-## Acceptance verification — 2026-10-22 CI evidence
+## Latest repository verification — 2026-10-23
 
-The implemented source-of-record, realized-outcome, pinned scenario-input, calibration-policy and residual-threshold code was validated at commit `f3377cf9f11928a9de1803d29fc7fa5ee38d9c93`. The current branch head adds documentation only on top of that tested code commit.
+The source implementation, SQL guards, scenario pinning, policy review and residual-threshold changes present at code SHA `32e0afa9813f32844216c9be2827b109dbf4ba68` passed:
 
-- [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39835208031) — **success**. API build/lint and tests passed: **138 suites, 1,214 tests**; AI Tool Registry RLS integration check: **7 tests passed**.
-- [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39835208047) — **success**. Full API/PostgreSQL suite: **178 suites, 1,397 tests**. Migrations 177–179 were applied and replayed successfully; all three new source-observation, calibration-policy and baseline-provenance SQL contracts passed. Ordered migration manifest SHA-256: `04fb2a578150583e011ef7f792274cc3f10d7391f896ae535992fbb09110783d`.
-- [Production dependency security audit](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39833832698) — **success** on the preceding dependency-patched commit; Next.js/React lockfile update is included in the tested source ancestry.
+- [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39889955646) — **success**; **139 suites / 1,228 tests passed**, plus the separate AI Tool Registry RLS check (**7 tests passed**).
+- [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39889955661) — **success**; **179 suites / 1,411 tests passed**. Ordered migration-manifest validation, DDL apply/replay and the Growth source-observation, calibration-policy and baseline-provenance SQL contracts all passed.
+- [Web CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39889955674) — **success**.
+- [Production Dependency Security](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39889955560) — **success**.
+- [SRS/HLD/Blueprint Traceability](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39889955642) — **success**.
 
-These results establish code/test acceptance for the implemented paths, not production deployment of a customer's external ERP connector or approval of domain thresholds. A customer deployment must still activate and validate its actual connector, use authentic out-of-sample observations, and obtain domain-owner approval for metric-specific thresholds.
+This verifies code-level acceptance at the referenced tested SHA. It does not assert that a particular customer’s external Finance connector is active, that its source facts are reconciled/fresh, or that it already has enough representative out-of-sample observations to approve a production calibration policy. Those remain deployment and domain-owner gates.
 
-## Final repository verification (2026-10-22)
-
-The current `rakibul-hasan` code snapshot passed the following GitHub Actions workflows at commit `a23982ea6a8ea844fccb12302d532084cfed571f`:
-
-- [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245662): **138 suites / 1,224 tests passed**, plus the separate AI Tool Registry RLS suite (**7 tests passed**).
-- [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245643): **178 suites / 1,407 tests passed**; the migration list and DDL passed apply/replay, including the Growth source-observation, calibration-policy and baseline-provenance SQL contracts.
-- [Web CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245654): passed.
-- [Production Dependency Security](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245806): passed after the patched Next.js/React lockfile update.
-- [SRS/HLD/Blueprint Traceability](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245665): passed.
-
-These runs verify the repository implementation and tests. They do not assert that a specific customer Finance connector is currently active or that a customer has enough real observations to approve a production calibration policy; those remain environment/data-owner release gates.
