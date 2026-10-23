@@ -229,7 +229,7 @@ export class InventoryStockReconciliationService {
               throw new NotFoundException('Cycle-count proposal not found in this factory');
             }
             cycleCountSnapshot = {
-              task_id: cycleCountSnapshot.task_id,
+              task_id: proposal.task_id,
               ledger_quantity_at_count: proposal.ledger_quantity_at_count,
               balance_version_at_count: proposal.balance_version_at_count,
               counted_quantity: proposal.counted_quantity,
@@ -631,7 +631,7 @@ export class InventoryStockReconciliationService {
                     version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0',
                   }),
                   JSON.stringify({
-                    task_id: proposal.task_id,
+                    task_id: cycleCountSnapshot.task_id,
                     proposal_id: cycleCountReview.proposalId,
                     reconciliation_id: reconciliation.id,
                     item_id: normalizedItemId,
