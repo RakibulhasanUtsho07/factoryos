@@ -10,14 +10,14 @@
     "bearerTokenFile": "/run/secrets/gateway-bearer-token",
     "spoolKeyFile": "/run/secrets/ot-spool-key",
     "approvedTargets": [
-      "https://factoryos-api.example.test:443",
+      "https://factoryos-api.factoryos-api.svc.cluster.local:443",
       "mqtts://broker.example.test:8883",
       "opc.tcp://10.42.1.10:4840",
       "modbus.tcp://10.42.1.20:502"
     ]
   },
   "api": {
-    "baseUrl": "https://factoryos-api.example.test",
+    "baseUrl": "https://factoryos-api.factoryos-api.svc.cluster.local",
     "tokenFile": "/run/secrets/factoryos-api-token"
   },
   "spoolFile": "/var/lib/factoryos-ot/spool.enc",
