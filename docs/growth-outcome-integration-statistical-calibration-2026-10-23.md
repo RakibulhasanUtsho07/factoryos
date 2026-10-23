@@ -80,3 +80,15 @@ The implemented source-of-record, realized-outcome, pinned scenario-input, calib
 - [Production dependency security audit](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39833832698) — **success** on the preceding dependency-patched commit; Next.js/React lockfile update is included in the tested source ancestry.
 
 These results establish code/test acceptance for the implemented paths, not production deployment of a customer's external ERP connector or approval of domain thresholds. A customer deployment must still activate and validate its actual connector, use authentic out-of-sample observations, and obtain domain-owner approval for metric-specific thresholds.
+
+## Final repository verification (2026-10-22)
+
+The current `rakibul-hasan` code snapshot passed the following GitHub Actions workflows at commit `a23982ea6a8ea844fccb12302d532084cfed571f`:
+
+- [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245662): **138 suites / 1,224 tests passed**, plus the separate AI Tool Registry RLS suite (**7 tests passed**).
+- [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245643): **178 suites / 1,407 tests passed**; the migration list and DDL passed apply/replay, including the Growth source-observation, calibration-policy and baseline-provenance SQL contracts.
+- [Web CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245654): passed.
+- [Production Dependency Security](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245806): passed after the patched Next.js/React lockfile update.
+- [SRS/HLD/Blueprint Traceability](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39842245665): passed.
+
+These runs verify the repository implementation and tests. They do not assert that a specific customer Finance connector is currently active or that a customer has enough real observations to approve a production calibration policy; those remain environment/data-owner release gates.
