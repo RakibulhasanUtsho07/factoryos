@@ -24,6 +24,7 @@ interface CycleCountTaskRow extends QueryResultRow {
   factory_id: string;
   item_id: string;
   location_id: string | null;
+  session_id: string | null;
   assigned_to_user_id: string | null;
   due_at: string;
   priority: number;
@@ -109,6 +110,7 @@ const TASK_COLUMNS = `
   factory_id::text AS factory_id,
   item_id::text AS item_id,
   location_id::text AS location_id,
+  session_id::text AS session_id,
   assigned_to_user_id::text AS assigned_to_user_id,
   due_at::text AS due_at,
   priority,
@@ -137,6 +139,7 @@ const TASK_COLUMNS_T = `
   t.factory_id::text AS factory_id,
   t.item_id::text AS item_id,
   t.location_id::text AS location_id,
+  t.session_id::text AS session_id,
   t.assigned_to_user_id::text AS assigned_to_user_id,
   t.due_at::text AS due_at,
   t.priority,
@@ -437,6 +440,9 @@ export class InventoryCycleCountTaskService {
       );
       const task = selected.rows[0];
       if (!task) throw new NotFoundException('Cycle-count task not found in this factory');
+      if (task.session_id) {
+        throw new ConflictException('Session-linked count tasks must be cancelled through their parent count session');
+      }
       if (task.status === 'CANCELLED') {
         if (task.cancelled_by_user_id === userId && task.cancellation_reason === reason) {
           replayed = true;
@@ -681,6 +687,7 @@ export class InventoryCycleCountTaskService {
   private eventShape(task: CycleCountTaskRow): Record<string, unknown> {
     return {
       id: task.id, item_id: task.item_id, location_id: task.location_id,
+      session_id: task.session_id,
       assigned_to_user_id: task.assigned_to_user_id, due_at: task.due_at,
       priority: task.priority, blind_count: task.blind_count, status: task.status, current_proposal_id: task.current_proposal_id,
       version: task.version,
