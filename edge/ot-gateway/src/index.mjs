@@ -2,7 +2,7 @@ import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { loadGatewayConfig, readSecretFile, readSpoolKey, secretFingerprint, validateBearerToken } from './config.mjs';
+import { loadGatewayConfig, readSecretFile, readSpoolKey, secretFingerprint, validateBearerToken, validateCertificatePair } from './config.mjs';
 import { OtEdgeDurableSpool } from './spool.mjs';
 import { ModbusTcpReadDriver, MqttBrokerLoop, OpcUaSessionDriver } from './protocol-drivers.mjs';
 
@@ -258,6 +258,7 @@ class ProtocolSupervisor {
         readSecretFile(this.config.security.serverCertFile, 'gateway TLS certificate'),
         readSecretFile(this.config.security.serverKeyFile, 'gateway TLS private key'),
       ]);
+      validateCertificatePair(cert, key, 'gateway HTTPS');
       server.setSecureContext({ cert, key, ...(this.config.security.clientCaFile ? {
         ca: await readSecretFile(this.config.security.clientCaFile, 'gateway client CA'),
       } : {}) });
@@ -318,11 +319,14 @@ export async function startGateway(config) {
     readSecretFile(config.security.serverCertFile, 'gateway TLS certificate'),
     readSecretFile(config.security.serverKeyFile, 'gateway TLS private key'),
   ]);
+  validateCertificatePair(cert, key, 'gateway HTTPS');
   const tlsOptions = { cert, key };
   if (config.security.clientCaFile) {
     tlsOptions.ca = await readSecretFile(config.security.clientCaFile, 'gateway client CA');
     tlsOptions.requestCert = true;
-    tlsOptions.rejectUnauthorized = true;
+    // Health probes still need to finish TLS. Application endpoints enforce the
+    // client certificate before processing any protocol read request.
+    tlsOptions.rejectUnauthorized = false;
   }
   let httpReady = true;
   let shuttingDown = false;
@@ -337,7 +341,8 @@ export async function startGateway(config) {
           spool: await spool.stats(),
           observed_at: new Date().toISOString(),
         };
-        const ready = httpReady && !shuttingDown;
+        const driverHealth = supervisor.health();
+        const ready = httpReady && !shuttingDown && driverHealth.ready;
         return jsonResponse(response, url.pathname === '/readyz' && !ready ? 503 : 200, health);
       }
       if (request.method !== 'POST' || url.pathname !== '/api/v1/modbus/read') {
@@ -345,6 +350,9 @@ export async function startGateway(config) {
       }
       if (request.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
         return jsonResponse(response, 415, { error: 'JSON_REQUIRED' });
+      }
+      if (config.security.clientCaFile && request.socket.authorized !== true) {
+        return jsonResponse(response, 401, { error: 'CLIENT_CERTIFICATE_REQUIRED' });
       }
       if (!(await requireBearer(request, config.security.bearerTokenFile))) {
         return jsonResponse(response, 401, { error: 'UNAUTHORIZED' });
