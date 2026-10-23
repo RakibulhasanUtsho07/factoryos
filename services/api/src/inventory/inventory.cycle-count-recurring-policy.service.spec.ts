@@ -129,6 +129,80 @@ describe('InventoryCycleCountRecurringPolicyService', () => {
     expect(databaseMock.transaction).not.toHaveBeenCalled();
   });
 
+  it('materializes a recurring multi-bin occurrence as one session and complete child task set atomically', async () => {
+    const binA = '9a9af4a2-1d2c-46e4-beb6-15e9b09d39a2';
+    const binB = 'b4de8386-ea38-4695-a2b9-2fa86e0e0d91';
+    const sessionId = '6f24a321-1bd2-4c78-a194-0ed0c8b2a187';
+    const taskA = 'bce92ca6-dd53-4e7b-9d7f-43f6717071f1';
+    const taskB = 'd00eb5ee-1ee0-4224-b9b6-72fb06a2e5a2';
+    const nextRunAt = '2026-10-31T10:00:00.000Z';
+    const scheduledFor = '2026-10-24T10:00:00.000Z';
+    const policy = {
+      id: 'cb7c4679-1bf4-40b2-a3f4-810c5fb219a9',
+      tenant_id: TENANT_ID,
+      factory_id: FACTORY_ID,
+      item_id: ITEM_ID,
+      location_id: null,
+      session_location_ids: [binA, binB],
+      assigned_to_user_id: ASSIGNEE_ID,
+      cadence_unit: 'WEEKLY',
+      cadence_interval: 1,
+      anchor_at: scheduledFor,
+      next_occurrence_number: '0',
+      next_run_at: scheduledFor,
+      last_run_at: null,
+      priority: 5,
+      blind_count: true,
+      variance_escalation_threshold: '2.0000',
+      status: 'ACTIVE',
+      idempotency_key: 'recurring-create',
+      request_hash: 'a'.repeat(64),
+      notes: 'inventory count',
+      created_by_user_id: USER_ID,
+      created_at: scheduledFor,
+      updated_at: scheduledFor,
+      version: '1',
+    };
+    const client = { query: jest.fn() };
+    client.query
+      .mockResolvedValueOnce({ rows: [{ count: '0' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [policy], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: sessionId }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: taskA }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: taskB }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ next_run_at: nextRunAt }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    databaseMock.transaction.mockImplementation(async (_config, work) => work(client as never) as never);
+
+    const result = await service.materializeDue(
+      USER_ID, TENANT_ID, FACTORY_ID, 50, null, null,
+    );
+
+    expect(result.materialized_count).toBe(1);
+    expect(result.occurrences).toEqual([{
+      policy_id: policy.id,
+      task_id: null,
+      session_id: sessionId,
+      occurrence_number: 0,
+      scheduled_for: scheduledFor,
+      next_run_at: nextRunAt,
+    }]);
+    const queries = client.query.mock.calls.map(([sql]) => String(sql));
+    expect(queries.filter((sql) => sql.includes('INSERT INTO inventory_cycle_count_sessions'))).toHaveLength(1);
+    expect(queries.filter((sql) => sql.includes('INSERT INTO inventory_cycle_count_tasks'))).toHaveLength(2);
+    const occurrenceCall = client.query.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO inventory_cycle_count_recurring_policy_occurrences'),
+    );
+    expect(occurrenceCall?.[1]).toEqual(expect.arrayContaining([null, sessionId]));
+    expect(queries.some((sql) => sql.includes('INVENTORY.CYCLE_COUNT_SESSION_SCHEDULED'))).toBe(true);
+  });
+
   it('rejects an invalid list limit before querying', async () => {
     await expect(service.listPolicies(
       USER_ID, TENANT_ID, FACTORY_ID, { limit: 101 },
