@@ -32,13 +32,16 @@ const profile = {
 describe('SaasPhysicalProvisioningService', () => {
   it('fails closed when no approved infrastructure adapter exists for the topology', async () => {
     const { service } = createService();
-    const append = jest.spyOn(service as never, 'appendEventFromRun' as never).mockResolvedValue(undefined as never);
-    const audit = jest.spyOn(service as never, 'auditRun' as never).mockResolvedValue(undefined as never);
+    const internal = service as unknown as {
+      appendEventFromRun: (...args: unknown[]) => Promise<void>;
+      auditRun: (...args: unknown[]) => Promise<void>;
+      executePreparedRun: (...args: unknown[]) => Promise<unknown>;
+    };
+    const append = jest.spyOn(internal, 'appendEventFromRun').mockResolvedValue(undefined);
+    const audit = jest.spyOn(internal, 'auditRun').mockResolvedValue(undefined);
     const action = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 
-    await expect((service as never as {
-      executePreparedRun: (...args: unknown[]) => Promise<unknown>
-    }).executePreparedRun(
+    await expect(internal.executePreparedRun(
       { id: resourceId, replayed: false, status: 'REQUESTED' },
       profile,
       actorUserId,
