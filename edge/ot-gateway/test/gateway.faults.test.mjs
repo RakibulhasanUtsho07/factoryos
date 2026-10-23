@@ -203,7 +203,7 @@ test('approved target allow-list and Modbus function codes fail closed for write
   assert.doesNotThrow(() => validateGatewayConfig(structuredClone(config), { NODE_ENV: 'test' }));
   const unsafe = structuredClone(config);
   unsafe.modbus[0].register_map[0].function_code = 6;
-  assert.throws(() => validateGatewayConfig(unsafe, { NODE_ENV: 'test' }), /Only Modbus holding\/input register reads/);
+  assert.throws(() => validateGatewayConfig(unsafe, { NODE_ENV: 'test' }), /allows Modbus read function 3\/4/);
 });
 
 test('secret rotation fingerprint changes on certificate/token rotation without printing credential bytes', async (t) => {
