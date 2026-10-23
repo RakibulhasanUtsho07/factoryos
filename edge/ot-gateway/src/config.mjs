@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, timingSafeEqual, X509Certificate } from 'node:crypto';
 import { isIP } from 'node:net';
 import { resolve } from 'node:path';
 
@@ -171,6 +171,24 @@ export async function loadGatewayConfig(path = process.env.FACTORYOS_OT_GATEWAY_
   let config;
   try { config = JSON.parse(raw); } catch { throw new Error('OT gateway configuration must be valid JSON'); }
   return validateGatewayConfig(config);
+}
+
+export function validateCertificatePair(certificateBytes, privateKeyBytes, label = 'TLS') {
+  let certificate;
+  let privateKey;
+  try {
+    certificate = new X509Certificate(certificateBytes);
+    privateKey = createPrivateKey(privateKeyBytes);
+  } catch {
+    throw new Error(label + ' certificate/key pair could not be parsed');
+  }
+  const certificatePublicKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
+  const privatePublicKey = createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
+  if (certificatePublicKey.length !== privatePublicKey.length
+      || !timingSafeEqual(certificatePublicKey, privatePublicKey)) {
+    throw new Error(label + ' certificate does not match its private key');
+  }
+  return true;
 }
 
 export async function readSecretFile(path, label = 'secret') {
