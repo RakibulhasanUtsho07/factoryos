@@ -202,7 +202,9 @@ export class SaasPhysicalProvisioningService {
         },
       });
       return { status: 'SUCCEEDED' as const, providerCode: adapter.providerCode };
-    });
+    }, (runId) => ({
+      tenantId, actorUserId, runId, resourceId: sandbox.id, resourceVersion: Number(sandbox.version), profile,
+    }));
   }
 
   async provisionDeploymentProfile(
@@ -256,7 +258,9 @@ export class SaasPhysicalProvisioningService {
           profileVersion: Number(row.version), scopeType: row.scope_type, scopeKey: row.scope_key },
       });
       return { status: 'SUCCEEDED' as const, providerCode: adapter.providerCode };
-    });
+    }, (runId) => ({
+      tenantId, actorUserId, runId, resourceId: row.id, resourceVersion: Number(row.version), profile,
+    }));
   }
 
   async deployRelease(
@@ -407,11 +411,12 @@ export class SaasPhysicalProvisioningService {
     const runContext = contextFactory ?? ((runId: string): PhysicalOperationContext => ({
       tenantId: '', actorUserId, runId, resourceId: '', resourceVersion: 1, profile,
     }));
+    const context = runContext(run.id);
     if (run.replayed) {
       if (run.status === 'REQUESTED' || run.status === 'IN_PROGRESS' || run.status === 'ROLLBACK_IN_PROGRESS' || !run.status) {
         throw new ConflictException('A physical operation with this idempotency key is still in progress; inspect its immutable run evidence before retrying');
       }
-      return this.loadRunViewForActor(run.id, actorUserId, true);
+      return this.loadRunViewForActor(run.id, actorUserId, true, context.tenantId);
     }
 
     // The adapter is selected only from deployment-controlled registrations.
@@ -427,8 +432,8 @@ export class SaasPhysicalProvisioningService {
       await this.appendEventFromRun(run.id, actorUserId, 'FAILED', {
         reasonCode: 'NO_APPROVED_PHYSICAL_ADAPTER',
         evidence: { topology: profile.profileType, adapterCount: this.adapters.length },
-      });
-      await this.auditRun(run.id, actorUserId, 'PHYSICAL_OPERATION_BLOCKED', {
+      }, context.tenantId);
+      await this.auditRun(run.id, context.tenantId, actorUserId, 'PHYSICAL_OPERATION_BLOCKED', {
         status: 'FAILED', reasonCode: 'NO_APPROVED_PHYSICAL_ADAPTER', topology: profile.profileType,
       });
       throw new ServiceUnavailableException('No approved physical infrastructure adapter is registered for the selected topology; provisioning/deployment failed closed');
@@ -437,27 +442,27 @@ export class SaasPhysicalProvisioningService {
     await this.appendEventFromRun(run.id, actorUserId, 'IN_PROGRESS', {
       providerCode: adapter.providerCode,
       evidence: { topology: profile.profileType, phase: 'PROVIDER_OPERATION_STARTED' },
-    });
+    }, context.tenantId);
     try {
-      const outcome = await action(adapter, runContext(run.id));
-      await this.auditRun(run.id, actorUserId, 'PHYSICAL_OPERATION_' + outcome.status, {
+      const outcome = await action(adapter, context);
+      await this.auditRun(run.id, context.tenantId, actorUserId, 'PHYSICAL_OPERATION_' + outcome.status, {
         status: outcome.status, providerCode: adapter.providerCode, topology: profile.profileType,
       });
-      return this.loadRunViewForActor(run.id, actorUserId, true);
+      return this.loadRunViewForActor(run.id, actorUserId, true, context.tenantId);
     } catch (error) {
-      const latest = await this.latestRunStatus(run.id);
+      const latest = await this.latestRunStatus(run.id, context.tenantId, actorUserId);
       if (latest === 'IN_PROGRESS') {
         await this.appendEventFromRun(run.id, actorUserId, 'FAILED', {
           reasonCode: this.safeErrorCode(error),
           evidence: { topology: profile.profileType, failurePolicy: 'FAIL_CLOSED' },
-        }).catch(() => undefined);
+        }, context.tenantId).catch(() => undefined);
       } else if (latest === 'ROLLBACK_IN_PROGRESS') {
         await this.appendEventFromRun(run.id, actorUserId, 'ROLLBACK_FAILED', {
           reasonCode: this.safeErrorCode(error),
           evidence: { topology: profile.profileType, recoveryRequired: true },
-        }).catch(() => undefined);
+        }, context.tenantId).catch(() => undefined);
       }
-      await this.auditRun(run.id, actorUserId, 'PHYSICAL_OPERATION_ERROR', {
+      await this.auditRun(run.id, context.tenantId, actorUserId, 'PHYSICAL_OPERATION_ERROR', {
         status: latest === 'ROLLBACK_IN_PROGRESS' ? 'ROLLBACK_FAILED' : 'FAILED',
         reasonCode: this.safeErrorCode(error), topology: profile.profileType,
       });
@@ -659,15 +664,8 @@ export class SaasPhysicalProvisioningService {
       providerCode?: string | null; providerReference?: string | null; evidenceDigest?: string | null;
       reasonCode?: string | null; evidence?: Record<string, unknown>;
     },
-    knownTenantId?: string,
+    tenantId: string,
   ) {
-    const run = await this.database.query<QueryResultRow & { tenant_id: string }>(
-      'SELECT tenant_id::text AS tenant_id FROM saas_physical_provisioning_runs WHERE id=$1 LIMIT 1',
-      [runId],
-      knownTenantId ? { tenantId: knownTenantId, userId: actorUserId } : undefined,
-    );
-    const tenantId = knownTenantId ?? run.rows[0]?.tenant_id;
-    if (!tenantId) throw new NotFoundException('Physical provisioning run was not found');
     await this.database.transaction(async (client) => {
       await client.query('SELECT id FROM saas_physical_provisioning_runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, runId]);
       const latest = await client.query<QueryResultRow & { event_version: number | string }>(
@@ -687,18 +685,18 @@ export class SaasPhysicalProvisioningService {
     }, { tenantId, userId: actorUserId, isolationLevel: 'SERIALIZABLE' });
   }
 
-  private async latestRunStatus(runId: string): Promise<PhysicalRunStatus | null> {
+  private async latestRunStatus(runId: string, tenantId: string, actorUserId: string): Promise<PhysicalRunStatus | null> {
     const result = await this.database.query<QueryResultRow & { event_status: PhysicalRunStatus }>(
-      'SELECT event_status FROM saas_physical_provisioning_events WHERE run_id=$1 ORDER BY event_version DESC LIMIT 1',
-      [runId],
+      'SELECT event_status FROM saas_physical_provisioning_events WHERE tenant_id=$1 AND run_id=$2 ORDER BY event_version DESC LIMIT 1',
+      [tenantId, runId], { tenantId, userId: actorUserId },
     );
     return result.rows[0]?.event_status ?? null;
   }
 
-  private async loadRunViewForActor(runId: string, actorUserId: string, idempotent: boolean) {
+  private async loadRunViewForActor(runId: string, actorUserId: string, idempotent: boolean, tenantId: string) {
     const runResult = await this.database.query<PhysicalRunRow>(
-      'SELECT ' + RUN_COLUMNS + ' FROM saas_physical_provisioning_runs WHERE id=$1 LIMIT 1',
-      [runId],
+      'SELECT ' + RUN_COLUMNS + ' FROM saas_physical_provisioning_runs WHERE tenant_id=$1 AND id=$2 LIMIT 1',
+      [tenantId, runId], { tenantId, userId: actorUserId },
     );
     const row = runResult.rows[0];
     if (!row) throw new NotFoundException('Physical provisioning run was not found');
@@ -740,11 +738,11 @@ export class SaasPhysicalProvisioningService {
     };
   }
 
-  private async auditRun(runId: string, actorUserId: string, action: string, payload: Record<string, unknown>) {
+  private async auditRun(runId: string, tenantId: string, actorUserId: string, action: string, payload: Record<string, unknown>) {
     try {
       const run = await this.database.query<QueryResultRow & { tenant_id: string; resource_id: string; resource_type: string }>(
-        'SELECT tenant_id::text AS tenant_id,resource_id::text AS resource_id,resource_type FROM saas_physical_provisioning_runs WHERE id=$1 LIMIT 1',
-        [runId],
+        'SELECT tenant_id::text AS tenant_id,resource_id::text AS resource_id,resource_type FROM saas_physical_provisioning_runs WHERE tenant_id=$1 AND id=$2 LIMIT 1',
+        [tenantId, runId], { tenantId, userId: actorUserId },
       );
       if (!run.rows[0]) return;
       await this.auditService.record({
