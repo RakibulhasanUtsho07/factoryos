@@ -423,7 +423,7 @@ INSERT INTO factoryos_governance.tenant_relation_inventory (
   'Every recurring count occurrence is idempotently linked to one generated immutable count task.'
 ),
 (
-  'public', 'inventory_cycle_count_recurring_policy_events', 'DIRECT_TENANT_ID', 'AUDIT_DATA',
+  'public', 'inventory_cycle_count_recurring_policy_events', 'DIRECT_TENANT_ID', 'BUSINESS_DATA',
   'EXCLUDED', 'BLOCKED_UNREVIEWED', 'DOMAIN_LEDGER_OR_AUDIT_REVIEW',
   'Append-only recurring policy and materialization lifecycle evidence.'
 )
