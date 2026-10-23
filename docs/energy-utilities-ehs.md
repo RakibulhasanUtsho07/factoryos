@@ -1,10 +1,10 @@
-# Energy, Utilities and EHS/Safety — first backend slice
+# Energy, Utilities and EHS/Safety — operational foundations and closure slice
 
 This slice implements the factory-scoped operational foundation called for by FactoryOS AI SRS v2.1:
 - FR-UFM-21/22: energy and utility quantities, per-production-unit intensity, meter hierarchy and source-to-cost mapping.
 - FR-EHS-01: permit-to-work approval, isolation verification, validity window and close-out evidence.
 - FR-EHS-03: incident, near-miss, unsafe-observation and audit-finding capture with owners, due dates and closure evidence.
-- FR-EHS-04 is not claimed as complete: the emergency-drill register/attendance/response workflow remains a separate slice.
+- FR-EHS-04: this branch now includes a drill plan/attendance/response/close-out lifecycle. Live drill execution, mobile attendance capture and site evidence remain staging activities; do not equate the schema/API contract with a completed real-world drill.
 
 ## Security and data lifecycle
 
@@ -101,8 +101,60 @@ Example corrective-action verification payload (JSON):
       }
     }
 
+## Vendor meter source binding, normalized readings and threshold alerts (Task 16)
+
+The additive migration `168_energy_utility_ehs_lifecycle_closure.sql` introduces a tenant/factory-scoped source binding. The API requires an active in-factory meter, a source-system/meter identity, raw unit, approved conversion factor, adapter declaration (`REST_POLL`, `OPC_UA`, `MQTT`, `MODBUS`, `FILE_IMPORT` or `MANUAL_IMPORT`), optional polling interval and a secret-manager reference. A source binding starts as `DRAFT`; activation is versioned and must be approved by someone other than its creator. The database rejects credentials/private keys embedded in source configuration metadata and the API exposes only whether a secret reference is configured, not its value.
+
+| Endpoint | Permission | Purpose |
+|---|---|---|
+| `GET /api/utilities/source-bindings` | `utilities.meters.read` | List approved/configured source identities without exposing credential references |
+| `POST /api/utilities/source-bindings` | `utilities.sources.manage` | Create a DRAFT source identity and unit conversion mapping |
+| `POST /api/utilities/source-bindings/:bindingId/transition` | `utilities.sources.manage` | Activate/deactivate/retire an approved mapping with expected version and reason |
+| `POST /api/utilities/source-events` | `utilities.readings.capture` | Validate a source event against the mapping, normalize its unit and append it to the existing reading ledger |
+
+The ingestion contract requires exact source-system, source-meter and source-unit identity plus a stable source event ID. It normalizes the raw numeric reading using the approved factor, derives a stable idempotency key and retains the original source ID in the normalized reading. The existing utility ledger still checks meter activation, chronological order, cumulative/interval arithmetic, cost snapshot and source-event uniqueness. A repeated event replays the same result; the same idempotency key with a different payload conflicts.
+
+Threshold policies are factory-scoped, DRAFT-first and independently approved. A policy selects a meter and/or utility type, metric (`CONSUMPTION`, `COST` or `INTENSITY`), comparison (`GT`, `GTE`, `LT`, `LTE`), a threshold and unit, and severity. For meter-specific policies the threshold unit must match the meter's reading unit, currency for cost or derived intensity unit. A matching reading creates one immutable policy/readings alert, a linked utility event and a `UTILITIES.THRESHOLD_ALERT_RAISED` transactional outbox event. The alert action reuses the existing utility event lifecycle (acknowledge, resolve with resolution narrative, or permitted cancellation); the event and reading audit records remain the source of truth.
+
+| Endpoint | Permission | Purpose |
+|---|---|---|
+| `GET /api/utilities/threshold-policies` | `utilities.alerts.read` | Read configured policies and approval state |
+| `POST /api/utilities/threshold-policies` | `utilities.alerts.manage` | Create a DRAFT threshold policy |
+| `POST /api/utilities/threshold-policies/:policyId/transition` | `utilities.alerts.manage` | Activate/deactivate/retire with expected version |
+| `GET /api/utilities/threshold-alerts` | `utilities.alerts.read` | Inspect reading-linked alerts and event status |
+| `POST /api/utilities/threshold-alerts/:alertId/transition` | `utilities.alerts.manage` | Acknowledge/resolve/cancel through the event lifecycle |
+
+**Vendor integration boundary:** this is an adapter-neutral source-event contract, not a deployed vendor driver or scheduler. The declared adapter and polling interval are governance/configuration metadata only. No live meter was polled and no external vendor credential was exercised by this repository change. Live transport, device/network configuration, interval delivery/late-event policy, rollout credentials, hardware-in-loop and actual meter evidence need a separate staging sign-off. Outbox creation is verified separately from delivery by an external notification provider.
+
+## Emergency drills, chemical/SDS records and contractor induction (Task 16)
+
+Emergency drills now support idempotent plans and versioned `PLANNED → IN_PROGRESS → COMPLETED` or `CANCELLED` lifecycle. A drill cannot be completed until a present attendee and at least one response/action record exist; close-out requires an outcome summary and structured evidence. Attendance and response evidence is append-only; response timestamps must fall between the drill start and the current time, and identified tenant users must be active members of that tenant.
+
+| Endpoint | Permission | Purpose |
+|---|---|---|
+| `GET /api/ehs/drills` | `ehs.drills.read` | List drill plans, attendance counts and response counts |
+| `POST /api/ehs/drills` | `ehs.drills.manage` | Plan a drill |
+| `POST /api/ehs/drills/:drillId/transition` | `ehs.drills.manage` | Start, cancel or close a drill with version/reason and close-out evidence |
+| `GET/POST /api/ehs/drills/:drillId/attendance` | `ehs.drills.read/manage` | Read or record a single attendance result with evidence |
+| `GET/POST /api/ehs/drills/:drillId/responses` | `ehs.drills.read/manage` | Read or record response/action timing and evidence |
+| `GET/POST /api/ehs/chemicals` | `ehs.chemicals.read/manage` | List or register a DRAFT chemical/SDS revision |
+| `POST /api/ehs/chemicals/:chemicalId/transition` | `ehs.chemicals.manage` | Activate/deactivate/retire an SDS revision with reason/version |
+| `GET/POST /api/ehs/contractors/inductions` | `ehs.contractors.read/manage` | Inspect or register induction evidence and its validity |
+| `POST /api/ehs/contractors/inductions/:inductionId/transition` | `ehs.contractors.manage` | Revoke or mark expired induction evidence |
+
+Chemical records preserve chemical identity, hazard class, storage location, SDS revision/document reference, handling/emergency instructions and review-due timestamp. Only controlled HTTPS/object-store references are accepted; this API records document provenance but does not fetch, scan or attest the remote file's contents. Each revision is immutable after creation; an expired review cannot be activated and a new document requires a new revision. Contractor induction records include contractor/person identity, completed training time, topics, evidence and expiry; future training cannot be recorded as completed and expired induction cannot be activated.
+
+Drill, attendance, response, SDS and contractor changes produce append-only `ehs_lifecycle_events` plus transactional `EHS.LIFECYCLE_CHANGED` outbox events. Threshold breaches produce the linked `UTILITIES.THRESHOLD_ALERT_RAISED` outbox event. The dispatcher now has local consumers for both event types and writes idempotent, recipient-resolved records to the tenant/factory-scoped `operational_notifications` inbox. Alert notifications target the threshold-policy creator plus active factory utility managers; EHS lifecycle notifications target the drill owner or safety-record responsible user plus active factory/tenant EHS managers. Inbox rows preserve source event, entity, metric/severity, version and correlation evidence. Only the assigned recipient can acknowledge an unread item with `expected_version` and a reason; acknowledgement is versioned and append-only audited.
+
+| Endpoint | Permission | Purpose |
+|---|---|---|
+| `GET /api/notifications/inbox` | `notifications.inbox.read` | Read the signed-in user's own factory inbox; optional `status` and bounded `limit` |
+| `POST /api/notifications/:notificationId/acknowledge` | `notifications.inbox.manage` | Acknowledge one unread item with expected version and reason |
+
+The outbox consumer uses a unique source-event/recipient key, so repeated delivery does not create duplicate inbox rows. Recipient resolution requires an active user and tenant membership; absent recipients cause consumer failure/retry instead of silently claiming a notification was delivered. The inbox/audit tables enforce tenant RLS and immutable source evidence. This proves durable in-app notification creation and acknowledgement, not email/SMS/mobile push delivery. Provider credentials, subscription routing, retry/dead-letter handling for each external provider, live recipients and delivery receipts remain deployment/staging acceptance.
+
 ## Validation
 
-PostgreSQL CI explicitly applies migrations 108–111 after the existing workforce migrations and checks the migration inventory. The utility contract exercises RLS, duplicate-source protections, cumulative/interval arithmetic, time ordering, hierarchy-cycle rejection and event resolution. The EHS contract exercises row isolation, permit decision independence, the isolation activation gate, action verification independence and the incident closure gate.
+Staged automated acceptance passed on code SHA `b36d1c78c11c9a02dbe89b81d0ac14ec62a555a5`: [API CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39784479880) and [API PostgreSQL CI](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/39784479980) are both successful for that exact SHA. API CI covers lint/build/unit tests including Wh→kWh source normalization, independent source-binding approval provenance, and duplicate-safe notification consumer behavior. PostgreSQL CI applies the ordered migration manifest including migration 168, replays the energy/EHS closure migration to verify DDL idempotency, and runs `services/api/test/energy-ehs-closure.sql` plus the utility lifecycle contract. The staged fixture covers an independently approved source binding, a normalized threshold-matching reading and transactional alert outbox, below-threshold behavior, notification acknowledgement/audit, drill completion barriers, an active SDS revision, and contractor-induction lifecycle evidence. This verifies the application/database contract only; it is not a substitute for live vendor transport or site evidence.
 
-Not included in this first slice: meter vendor/device connectors, automatic polling and threshold-alert scheduling, unit-conversion/utility-billing integrations, energy dashboards, emergency drills, chemical/SDS registry, contractor induction/access validity, EHS workflow notifications, and EHS/worker mobile screens. These remain separate tasks rather than being described as delivered. The API-side one-shot OPC UA gateway contract is documented in docs/ot-device-registry-opcua-read-slice.md; it does not add automatic meter polling or a deployed protocol driver.
+Not included or externally unverified: a deployed live vendor poller/protocol driver, site-specific meter accuracy/calibration, hardware-in-loop testing, credential provisioning, external SDS download/content scanning, a real on-site emergency drill, mobile/offline worker capture, provider-side email/SMS/push delivery and external delivery receipts. The adapter-neutral ingestion and durable in-app notification path are implemented; live equipment and external provider evidence remain explicit rollout/staging acceptance items. The API-side one-shot OPC UA gateway contract is documented in docs/ot-device-registry-opcua-read-slice.md; it is not a deployed meter poller.

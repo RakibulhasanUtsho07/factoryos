@@ -255,8 +255,11 @@ export function validateFinanceSftpConfiguration(
   if (value.file_format !== 'CSV' && value.file_format !== 'JSON') {
     throw new Error('FINANCE_SFTP_FILE_FORMAT_INVALID');
   }
-  const fingerprint = typeof value.host_key_sha256 === 'string' ? value.host_key_sha256.trim() : '';
-  if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint) && !/^[a-f0-9]{64}$/.test(fingerprint)) {
+  let fingerprint = typeof value.host_key_sha256 === 'string' ? value.host_key_sha256.trim() : '';
+  if (/^[a-f0-9]{64}$/.test(fingerprint)) {
+    fingerprint = 'SHA256:' + Buffer.from(fingerprint, 'hex').toString('base64').replace(/=+$/, '');
+  }
+  if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) {
     throw new Error('FINANCE_SFTP_HOST_KEY_PIN_REQUIRED');
   }
   let filePattern: string | undefined;

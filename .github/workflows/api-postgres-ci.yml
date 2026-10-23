@@ -8,6 +8,8 @@ on:
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
+      - 'deploy/event-bus/**'
+      - 'scripts/event-bus/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
@@ -28,6 +30,8 @@ on:
       - 'scripts/performance/**'
       - 'scripts/security/**'
       - 'deploy/security/**'
+      - 'deploy/event-bus/**'
+      - 'scripts/event-bus/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
@@ -184,6 +188,22 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-management-contract.sql
 
+          echo "Checking AQL sampling, fabric roll scoring, supplier quality and Pareto acceptance"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-acceptance.sql
+
+          echo "Running AQL, fabric roll scoring, quarantine and approved disposition data-path acceptance"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-data-path.sql
+
+          echo "Running populated AQL, fabric roll scoring, hold and authorized-release acceptance fixture"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-workflow.sql
+
+          echo "Running tracked rework input, verified recovered receipt and inventory conservation acceptance"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-rework-inventory.sql
+
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/uom-conversion.sql
@@ -191,6 +211,92 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/product-bom-routing-contract.sql
 
+          echo "Checking PLM/ECO effective-dated revisions and immutable production snapshots"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/product-change-order-contract.sql
+
+          echo "Reapplying PLM/ECO migration to verify lifecycle guard idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/162_plm_eco_effective_dated_revision_integration.sql
+
+          echo "Reapplying finite-capacity planning migration to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
+
+          echo "Reapplying advanced quality migration to verify idempotent profiles, evidence and tenant policies"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
+
+          echo "Reapplying quality disposition inventory balance guard to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
+
+          echo "Reapplying rework inventory ledger migration to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/166_quality_rework_inventory_ledger.sql
+
+          echo "Reapplying sampling binding state guard migration to verify safe schema replay"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/167_quality_sampling_binding_state_guard.sql
+
+          echo "Reapplying energy/EHS lifecycle closure migration to verify policy, RLS and trigger idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/168_energy_utility_ehs_lifecycle_closure.sql
+
+          echo "Reapplying Kafka event-bus DLQ migration to verify broker redrive policy and trigger idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/169_kafka_event_bus_transport.sql
+
+                    echo "Reapplying research provider/document migration to verify tenant RLS and purge trigger idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/171_research_source_provider_documents.sql
+
+          echo "Reapplying research document content integrity guards"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/172_research_document_content_integrity.sql
+
+          echo "Reapplying provider/source identity guards"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/173_research_authenticity_identity_guard.sql
+
+          echo "Reapplying research release retraction guard migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/174_research_release_retraction.sql
+
+          echo "Reapplying source-driven active release withdrawal migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/175_research_source_change_release_withdrawal.sql
+
+          echo "Reapplying deferred release retraction audit guard"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/176_research_release_retraction_audit_guard.sql
+
+          echo "Reapplying growth KPI source-observation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/177_growth_kpi_source_observations.sql
+
+          echo "Reapplying growth calibration-policy migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/178_growth_forecast_calibration_policies.sql
+
+          echo "Reapplying growth KPI baseline evidence provenance migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/179_growth_kpi_baseline_evidence_provenance.sql
+
+          echo "Reapplying approved Growth residual threshold policy migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/180_growth_calibration_residual_threshold_policy.sql
+
+          echo "Reapplying AI live execution evaluation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/180_ai_agent_live_execution_evaluation.sql
+
+          echo "Reapplying trusted AI planner attestation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/181_ai_agent_planner_attestation.sql
+
+          echo "Reapplying Task 22 red-team and compensation evaluation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/182_ai_agent_red_team_compensation_evaluation.sql
+
+          echo "Reapplying executor-pinned compensation evaluation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/183_ai_agent_executor_case_source_binding.sql
+
+          echo "Reapplying exact-action red-team evaluation migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/184_ai_agent_red_team_action_binding.sql
+
+          echo "Reapplying SaaS commercial billing provider migration"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/185_saas_commercial_billing_provider.sql
+
+          echo "Reapplying SaaS physical infrastructure execution migration to verify event-state, RLS and idempotency guards"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/186_saas_physical_infrastructure_execution.sql
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
@@ -214,12 +320,24 @@ jobs:
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO factoryos_app;
           SQL
 
+          echo "Reapplying Kafka event-bus migration after runtime role creation to exercise least-privilege grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/169_kafka_event_bus_transport.sql
+
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-iam.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/ci-postgres-seed.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-factory-manager.sql
+
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f scripts/seed-dev-quality-manager.sql
+
+          echo "Reapplying finance workbench migration to verify DDL idempotency and post-seed role grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/170_finance_costing_profitability_close_workbench.sql
+
           # OT protocol permission assertions run after development role/permission seeding.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/ot-opcua-read-contract.sql
@@ -233,24 +351,37 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/utility-lifecycle.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-management-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ehs-lifecycle.sql
+          echo "Verifying normalized vendor events, threshold alerts, drill close-out, SDS and contractor induction lifecycle"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/energy-ehs-closure.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/commercial-quotation.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/should-cost.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-integration.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finance-workbench-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-dlq-replay-idempotency.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/outbox-bus-dlq-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-webhook.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/integration-reconciliation.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/cbb-evidence-provenance.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/cbb-governance.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-ingestion-provenance.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-release-lifecycle.sql
+           echo "Checking provider authenticity, uploaded-document digest lineage and rights-revocation purge"
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/research-source-production.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-opportunity-governance.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-scenario-sets.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-experiment-outcomes.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-forecast-evaluations.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-kpi-source-observations.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-calibration-policies.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/growth-kpi-baseline-evidence.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-agent-retry-scheduling.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-money-precision.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-commercial-billing.sql
+           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-physical-provisioning-contract.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-entitlement-enforcement.sql
            psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-decision-envelope-lifecycle.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-agent-live-execution-evaluation.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-agent-planner-attestation.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ot-device-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-data-retention-contract.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/saas-tenant-propagation-contract.sql
@@ -411,9 +542,42 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/production-work-order-contract.sql
 
+          echo "Checking manufacturing lifecycle cross-slice PostgreSQL acceptance"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/manufacturing-lifecycle-acceptance.sql
+
           # This contract also checks demo-role grants, so run it after the development role seeds.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
+
+          # Migration 163 is first applied before development roles are seeded; replay it here so its role grants
+          # are also exercised against the fully seeded test fixture before checking the capacity contract.
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/163_mrp_finite_capacity_planning.sql
+
+          echo "Reapplying advanced quality migration after demo-role seeds to verify quality permission grants"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/164_quality_advanced_sampling_supplier_pareto.sql
+
+          echo "Checking advanced quality grants for the seeded QUALITY_MANAGER role"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/quality-advanced-role-grants.sql
+
+          echo "Reapplying quality disposition inventory balance guard to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/165_quality_disposition_inventory_balance_guard.sql
+
+          echo "Reapplying rework inventory ledger migration to verify idempotency"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/166_quality_rework_inventory_ledger.sql
+
+          echo "Reapplying sampling binding state guard migration to verify safe schema replay"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/167_quality_sampling_binding_state_guard.sql
+
+          echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/mrp-finite-capacity-planning-contract.sql
 
           # B19 tests clone only this dedicated, idle template DB.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" \
@@ -496,7 +660,38 @@ jobs:
         working-directory: services/api
         run: npm run build
 
+      - name: Start isolated Kafka-compatible Redpanda broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name factoryos-redpanda-ci -p 127.0.0.1:19092:19092 \
+            docker.redpanda.com/redpandadata/redpanda:v26.2.5 \
+            redpanda start \
+              --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092 \
+              --advertise-kafka-addr internal://factoryos-redpanda-ci:9092,external://localhost:19092 \
+              --mode dev-container --smp 1 --memory 1G --reserve-memory 0M
+          ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec factoryos-redpanda-ci rpk cluster info --brokers=127.0.0.1:9092 >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != "true" ]]; then
+            docker logs factoryos-redpanda-ci
+            echo "::error::Kafka-compatible broker did not become ready"
+            exit 1
+          fi
+          echo "KAFKA_BROKERS=127.0.0.1:19092" >> "$GITHUB_ENV"
+
       - name: Run full API unit and PostgreSQL integration suite
         working-directory: services/api
+        env:
+          KAFKA_BROKERS: 127.0.0.1:19092
         run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand
+
+      - name: Stop isolated Kafka-compatible broker
+        if: always()
+        run: docker rm -f factoryos-redpanda-ci >/dev/null 2>&1 || true
 

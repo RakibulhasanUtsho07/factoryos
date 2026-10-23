@@ -36,9 +36,10 @@ BEGIN
   SELECT count(*) INTO permission_count FROM permissions WHERE code IN (
     'finance.connectors.read','finance.connectors.write','finance.connectors.approve',
     'finance.facts.read','finance.facts.ingest','finance.reconciliation.read',
-    'finance.reconciliation.review','finance.margin.read','finance.working_capital.read'
+    'finance.reconciliation.review','finance.margin.read','finance.working_capital.read',
+    'finance.workbench.read','finance.close.read','finance.close.write','finance.close.submit','finance.close.approve'
   );
-  IF permission_count<>9 THEN RAISE EXCEPTION 'Finance integration IAM permissions are incomplete'; END IF;
+  IF permission_count<>14 THEN RAISE EXCEPTION 'Finance integration IAM permissions are incomplete'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='uq_finance_domain_reporting_source') THEN
     RAISE EXCEPTION 'Single reporting-source constraint is missing';
   END IF;
@@ -50,6 +51,9 @@ BEGIN
   END IF;
   IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='116_finance_file_import_metadata_integrity') THEN
     RAISE EXCEPTION 'Finance file import integrity migration is not registered';
+  END IF;
+  IF NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version='170_finance_costing_profitability_close_workbench') THEN
+    RAISE EXCEPTION 'Finance workbench close migration is not registered';
   END IF;
   SELECT id INTO reviewer_id FROM users WHERE email='manager@factoryos.local';
   IF reviewer_id IS NULL THEN RAISE EXCEPTION 'Independent finance review test user is missing'; END IF;

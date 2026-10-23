@@ -327,6 +327,83 @@ export class SaasReleaseRolloutService {
        FROM latest r
        WHERE r.release_channel = $2
          AND r.stage IN ('CANARY','PRODUCTION')
+         -- A control-plane promotion is not a physical deployment. Resolve a release
+         -- only when this exact version/artifact has a healthy provider receipt, or
+         -- a verified rollback receipt explicitly synchronized to this rollout version.
+         AND EXISTS (
+           SELECT 1
+           FROM saas_physical_provisioning_runs physical_run
+           CROSS JOIN LATERAL (
+             SELECT physical_event.event_status,physical_event.evidence
+             FROM saas_physical_provisioning_events physical_event
+             WHERE physical_event.tenant_id=physical_run.tenant_id
+               AND physical_event.run_id=physical_run.id
+             ORDER BY physical_event.event_version DESC
+             LIMIT 1
+           ) physical_latest
+           WHERE physical_run.tenant_id=r.tenant_id
+             AND physical_run.operation='RELEASE_DEPLOY'
+             AND (
+               (
+                 physical_run.resource_key=r.rollout_key
+                 AND physical_run.resource_version=r.version
+                 AND physical_run.artifact_digest=r.artifact_digest
+                 AND physical_latest.event_status='SUCCEEDED'
+                 AND physical_run.id=(
+                   SELECT exact_run.id FROM saas_physical_provisioning_runs exact_run
+                   WHERE exact_run.tenant_id=r.tenant_id
+                     AND exact_run.operation='RELEASE_DEPLOY'
+                     AND exact_run.resource_key=r.rollout_key
+                     AND exact_run.resource_version=r.version
+                   ORDER BY exact_run.created_at DESC,exact_run.id DESC
+                   LIMIT 1
+                 )
+               )
+               OR
+               (
+                 physical_run.resource_key=r.rollout_key
+                 AND physical_run.resource_version=r.version-1
+                 AND physical_latest.event_status='ROLLED_BACK'
+                 AND physical_latest.evidence->>'controlPlaneRolloutVersion'=r.version::text
+                 AND physical_latest.evidence->>'targetArtifactDigest'=r.artifact_digest
+                 AND physical_run.id=(
+                   SELECT rollback_run.id FROM saas_physical_provisioning_runs rollback_run
+                   WHERE rollback_run.tenant_id=r.tenant_id
+                     AND rollback_run.operation='RELEASE_DEPLOY'
+                     AND rollback_run.resource_key=r.rollout_key
+                     AND rollback_run.resource_version=r.version-1
+                   ORDER BY rollback_run.created_at DESC,rollback_run.id DESC
+                   LIMIT 1
+                 )
+               )
+             )
+         )
+         -- A provider-declared unhealthy/halted rollout must never remain eligible
+         -- because the failed deployment's control-plane pause/rollback sync failed.
+         AND NOT EXISTS (
+           SELECT 1
+           FROM saas_physical_provisioning_runs failed_run
+           WHERE failed_run.tenant_id = r.tenant_id
+             AND failed_run.operation = 'RELEASE_DEPLOY'
+             AND failed_run.resource_id = r.id
+             AND failed_run.id = (
+               SELECT newest_run.id
+               FROM saas_physical_provisioning_runs newest_run
+               WHERE newest_run.tenant_id = r.tenant_id
+                 AND newest_run.operation = 'RELEASE_DEPLOY'
+                 AND newest_run.resource_id = r.id
+               ORDER BY newest_run.created_at DESC,newest_run.id DESC
+               LIMIT 1
+             )
+             AND (
+               SELECT newest_event.event_status
+               FROM saas_physical_provisioning_events newest_event
+               WHERE newest_event.tenant_id = failed_run.tenant_id
+                 AND newest_event.run_id = failed_run.id
+               ORDER BY newest_event.event_version DESC
+               LIMIT 1
+             ) IN ('HALTED','FAILED','ROLLBACK_FAILED')
+         )
          AND (
            r.scope_type = 'ORGANIZATION'
            OR (r.scope_type = 'FACTORY' AND r.factory_id = $3::uuid)

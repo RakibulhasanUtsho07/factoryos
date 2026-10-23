@@ -343,6 +343,94 @@ describe('AiAgentStudioPromotionService', () => {
     expect(result.request.status).toBe('PROMOTED');
   });
 
+  it('blocks production promotion until live refusal, privacy and executor coverage pass after the same-version canary', async () => {
+    const service = makeService();
+
+    database.query
+      .mockResolvedValueOnce({ rows: [requestRow({ status: 'APPROVED', target_stage: 'PRODUCTION' })] })
+      .mockResolvedValueOnce({ rows: [makeSandbox()] })
+      .mockResolvedValueOnce({ rows: [makeSimulation()] })
+      .mockResolvedValueOnce({ rows: [makePolicySimulation()] })
+      .mockResolvedValueOnce({ rows: [deploymentRow({ created_at: '2026-10-10T00:00:00.000Z' })] })
+      .mockResolvedValueOnce({
+        rows: [{
+          missing_active_case: false,
+          missing_refusal_case: true,
+          missing_red_team_case: false,
+          missing_privacy_case: false,
+          missing_active_case_pass: true,
+          missing_write_tool_coverage: true,
+          missing_compensation_coverage: false,
+          failed_live_case: false,
+        }],
+      });
+
+    await expect(
+      service.promotePublication(tenantId, factoryId, userId, traceId, requestId),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    const coverageQuery = String(database.query.mock.calls[5]?.[0]);
+    expect(coverageQuery).toContain('ai_agent_live_evaluation_results');
+    expect(coverageQuery).toContain('ai_tool_registry');
+    expect(coverageQuery).toContain('ai_agent_tool_grants');
+    expect(coverageQuery).toContain('grant_row.version DESC');
+    expect(coverageQuery).toContain('write_capable');
+    expect(coverageQuery).toContain("c.kind = 'EXPECTED_REFUSAL'");
+    expect(coverageQuery).toContain("c.kind = 'RED_TEAM_POLICY_BYPASS'");
+    expect(coverageQuery).toContain('c.expected_tool_id = w.tool_id');
+    expect(coverageQuery).toContain("r.status = 'PASS' AND r.created_at >= $4::timestamptz");
+    expect(coverageQuery).toContain("c.kind = 'PRIVACY_NO_SECRET_LEAKAGE'");
+    expect(coverageQuery).toContain("c.kind = 'EXPECTED_COMPENSATION'");
+    expect(coverageQuery).toContain('c.source_tool_id = w.tool_id');
+    expect(coverageQuery).toContain('c.source_tool_version = w.version');
+    expect(coverageQuery).toContain("c.expected_tool_id = w.rollback->>'toolId'");
+    expect(coverageQuery).toContain("w.rollback->>'type' = 'COMPENSATION'");
+    expect(coverageQuery).toContain('$4::timestamptz');
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('promotes to production only after each active live case has current PASS evidence', async () => {
+    const service = makeService();
+
+    database.query
+      .mockResolvedValueOnce({ rows: [requestRow({ status: 'APPROVED', target_stage: 'PRODUCTION' })] })
+      .mockResolvedValueOnce({ rows: [makeSandbox()] })
+      .mockResolvedValueOnce({ rows: [makeSimulation()] })
+      .mockResolvedValueOnce({ rows: [makePolicySimulation()] })
+      .mockResolvedValueOnce({ rows: [deploymentRow({ created_at: '2026-10-10T00:00:00.000Z' })] })
+      .mockResolvedValueOnce({
+        rows: [{
+          missing_active_case: false,
+          missing_refusal_case: false,
+          missing_red_team_case: false,
+          missing_privacy_case: false,
+          missing_active_case_pass: false,
+          missing_write_tool_coverage: false,
+          missing_compensation_coverage: false,
+          failed_live_case: false,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ max_version: '0' }] })
+      .mockResolvedValueOnce({ rows: [requestRow({ version: '2', status: 'PROMOTED', action: 'PROMOTE', target_stage: 'PRODUCTION' })] });
+
+    database.transaction.mockImplementation(async (callback) =>
+      callback({
+        query: jest
+          .fn<(...args: never[]) => Promise<any>>()
+          .mockResolvedValueOnce({ rows: [deploymentRow({ stage: 'PRODUCTION', deployment_version: '1' })] }),
+      } as never),
+    );
+
+    const result = await service.promotePublication(
+      tenantId, factoryId, userId, traceId, requestId,
+    );
+
+    expect(result.deployment.status).toBe('ACTIVE');
+    expect(result.deployment.stage).toBe('PRODUCTION');
+    expect(result.request.status).toBe('PROMOTED');
+  });
+
   it('rolls back an active deployment to the previous deployment snapshot', async () => {
     const service = makeService();
 

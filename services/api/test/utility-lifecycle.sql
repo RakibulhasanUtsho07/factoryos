@@ -42,7 +42,7 @@ BEGIN
     recorded_by_user_id,correlation_id
   ) VALUES(
     v_reading,v_tenant,v_factory,v_parent,clock_timestamp()-INTERVAL '2 hours',100,NULL,0,
-    'kWh',0.25,0,'METER_GATEWAY','ci-electric-001','ci-utility-reading-1',v_hash,v_actor,v_corr
+    'kWh',0.25,0,'MANUAL','ci-electric-001','ci-utility-reading-1',v_hash,v_actor,v_corr
   );
   v_corr:=gen_random_uuid();
   INSERT INTO utility_meter_readings(
@@ -51,7 +51,7 @@ BEGIN
     idempotency_key,request_hash,recorded_by_user_id,correlation_id
   ) VALUES(
     v_tenant,v_factory,v_parent,clock_timestamp()-INTERVAL '1 hour',120,100,20,
-    'kWh',0.25,5,10,'METER_GATEWAY','ci-electric-002','Baseline-to-current consumption',
+    'kWh',0.25,5,10,'MANUAL','ci-electric-002','Baseline-to-current consumption',
     'ci-utility-reading-2',v_hash,v_actor,v_corr
   );
   SELECT consumption_quantity,cost_amount INTO v_qty,v_cost FROM utility_meter_readings

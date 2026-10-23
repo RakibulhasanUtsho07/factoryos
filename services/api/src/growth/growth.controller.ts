@@ -18,6 +18,9 @@ import { DecideGrowthOpportunityDto } from './dto/decide-growth-opportunity.dto'
 import { RecordGrowthExperimentResultDto } from './dto/record-growth-experiment-result.dto';
 import { RecordGrowthOpportunityOutcomeDto } from './dto/record-growth-opportunity-outcome.dto';
 import { RecordGrowthForecastEvaluationDto } from './dto/record-growth-forecast-evaluation.dto';
+import { SyncGrowthSourceObservationsDto } from './dto/sync-growth-source-observations.dto';
+import { RecordGrowthExperimentResultFromSourceDto } from './dto/record-growth-experiment-result-from-source.dto';
+import { RecordGrowthOpportunityOutcomeFromSourceDto } from './dto/record-growth-opportunity-outcome-from-source.dto';
 import { CreateGrowthAssumptionDto } from './dto/create-growth-assumption.dto';
 import { DecideGrowthAssumptionDto } from './dto/decide-growth-assumption.dto';
 import { CreateGrowthConstraintDto } from './dto/create-growth-constraint.dto';
@@ -25,6 +28,7 @@ import { CreateGrowthEvidenceGapDto } from './dto/create-growth-evidence-gap.dto
 import { DecideGrowthEvidenceGapDto } from './dto/decide-growth-evidence-gap.dto';
 import { AssignGrowthDecisionOwnerDto } from './dto/assign-growth-decision-owner.dto';
 import { GrowthService } from './growth.service';
+import { GrowthSourceOfRecordService } from './growth-source-of-record.service';
 
 interface FactoryOsRequestContext {
   requestId: string;
@@ -40,7 +44,10 @@ type FactoryOsRequest = Request & { factoryos?: FactoryOsRequestContext };
 
 @Controller('growth')
 export class GrowthController {
-  constructor(private readonly growth: GrowthService) {}
+  constructor(
+    private readonly growth: GrowthService,
+    private readonly growthSources: GrowthSourceOfRecordService,
+  ) {}
 
   @Post('opportunities')
   @UseGuards(PermissionGuard)
@@ -352,6 +359,21 @@ export class GrowthController {
     return this.growth.recordOpportunityOutcome(c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId);
   }
 
+  @Post('opportunities/:opportunityId/outcomes/from-source')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  recordOpportunityOutcomeFromSource(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: RecordGrowthOpportunityOutcomeFromSourceDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growthSources.recordOpportunityOutcomeFromSource(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
+  }
+
   @Post('opportunities/:opportunityId/forecast-evaluations')
   @UseGuards(PermissionGuard)
   @RequirePermission('growth.write')
@@ -374,9 +396,59 @@ export class GrowthController {
   getForecastCalibration(
     @Req() req: FactoryOsRequest,
     @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Query('domain') domain?: string,
   ): Promise<unknown> {
     const c = this.context(req);
-    return this.growth.getForecastCalibration(c.tenantId, c.factoryId, opportunityId);
+    return this.growth.getForecastCalibration(c.tenantId, c.factoryId, opportunityId, domain);
+  }
+
+
+  @Post('opportunities/:opportunityId/source-observations/sync')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  syncSourceObservations(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Body() body: SyncGrowthSourceObservationsDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growthSources.syncObservations(
+      c.userId, c.tenantId, c.factoryId, opportunityId, body, c.requestId, c.traceId,
+    );
+  }
+
+  @Get('opportunities/:opportunityId/source-observations')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.read')
+  @RequireFactoryScope()
+  listSourceObservations(
+    @Req() req: FactoryOsRequest,
+    @Param('opportunityId', new ParseUUIDPipe()) opportunityId: string,
+    @Query('source_kind') sourceKind?: string,
+    @Query('metric_key') metricKey?: string,
+    @Query('limit') rawLimit?: string,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growthSources.listObservations(c.tenantId, c.factoryId, opportunityId, {
+      source_kind: sourceKind, metric_key: metricKey,
+      limit: rawLimit === undefined ? 50 : Number(rawLimit),
+    });
+  }
+
+  @Post('experiments/:experimentId/results/from-source')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('growth.write')
+  @RequireFactoryScope()
+  recordExperimentResultFromSource(
+    @Req() req: FactoryOsRequest,
+    @Param('experimentId', new ParseUUIDPipe()) experimentId: string,
+    @Body() body: RecordGrowthExperimentResultFromSourceDto,
+  ): Promise<unknown> {
+    const c = this.context(req);
+    return this.growthSources.recordExperimentResultFromSource(
+      c.userId, c.tenantId, c.factoryId, experimentId, body, c.requestId, c.traceId,
+    );
   }
 
   private context(req: FactoryOsRequest) {

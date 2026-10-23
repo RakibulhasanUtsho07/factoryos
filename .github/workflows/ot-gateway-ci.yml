@@ -1,0 +1,48 @@
+name: OT Gateway CI
+
+on:
+  push:
+    paths:
+      - "edge/ot-gateway/**"
+      - ".github/workflows/ot-gateway-ci.yml"
+  pull_request:
+    paths:
+      - "edge/ot-gateway/**"
+      - ".github/workflows/ot-gateway-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ot-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ot-gateway:
+    name: ot-gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install pinned OT gateway runtime libraries
+        working-directory: edge/ot-gateway
+        run: npm install --no-audit --no-fund
+
+      - name: Check JavaScript syntax
+        working-directory: edge/ot-gateway
+        run: npm run check
+
+      - name: Run spool, replay and protocol fault tests
+        working-directory: edge/ot-gateway
+        run: npm test
+
+      - name: Build hardened gateway container
+        run: docker build --tag factoryos-ot-edge-gateway:ci edge/ot-gateway

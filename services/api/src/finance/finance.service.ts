@@ -487,7 +487,7 @@ export class FinanceService {
         await this.sftpTransport.archiveRemoteFile({
           tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
           secret_reference: connector.secret_reference, configuration,
-          remote_path: download.remote_path, disposition: 'PROCESSED',
+          remote_path: download.remote_path, payload_sha256: contentHash, disposition: 'PROCESSED',
         });
         return { status: 'ALREADY_IMPORTED', duplicate: true, receipt: prior.rows[0] };
       } catch {
@@ -511,7 +511,7 @@ export class FinanceService {
         await this.sftpTransport.archiveRemoteFile({
           tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
           secret_reference: connector.secret_reference, configuration,
-          remote_path: download.remote_path, disposition: 'QUARANTINED',
+          remote_path: download.remote_path, payload_sha256: contentHash, disposition: 'QUARANTINED',
         });
         return { status: 'QUARANTINED', imported: false, validation_report: report };
       } catch {
@@ -526,7 +526,7 @@ export class FinanceService {
       await this.sftpTransport.archiveRemoteFile({
         tenant_id: tenantId, factory_id: factoryId, connector_id: connectorId,
         secret_reference: connector.secret_reference, configuration,
-        remote_path: download.remote_path, disposition: 'PROCESSED',
+        remote_path: download.remote_path, payload_sha256: contentHash, disposition: 'PROCESSED',
       });
       return { status: 'IMPORTED', imported: true, validation_report: report, receipt };
     } catch {
@@ -1504,7 +1504,12 @@ export class FinanceService {
     factoryId: string,
     query: FinanceMarginInputsQueryDto,
   ) {
-    const to = query.to ? new Date(query.to).toISOString() : new Date().toISOString();
+    const toDate = query.to ? new Date(query.to) : new Date();
+    // Date-only end bounds include the entire UTC calendar day.
+    if (query.to && /^\d{4}-\d{2}-\d{2}$/.test(query.to)) {
+      toDate.setUTCHours(23, 59, 59, 999);
+    }
+    const to = toDate.toISOString();
     const from = query.from ? new Date(query.from).toISOString() : new Date(Date.parse(to) - 90 * 86400000).toISOString();
     if (Date.parse(from) > Date.parse(to)) throw new BadRequestException('from must be earlier than or equal to to');
 
@@ -1585,7 +1590,12 @@ export class FinanceService {
     factoryId: string,
     query: FinanceWorkingCapitalQueryDto,
   ) {
-    const asOf = query.as_of ? new Date(query.as_of).toISOString() : new Date().toISOString();
+    const asOfDate = query.as_of ? new Date(query.as_of) : new Date();
+    // Date-only as-of values represent end-of-day balances.
+    if (query.as_of && /^\d{4}-\d{2}-\d{2}$/.test(query.as_of)) {
+      asOfDate.setUTCHours(23, 59, 59, 999);
+    }
+    const asOf = asOfDate.toISOString();
     const horizon = query.horizon_days ?? 30;
     const horizonEnd = new Date(Date.parse(asOf) + horizon * 86400000).toISOString();
     return this.database.transaction({ tenantId, userId }, async (client) => {

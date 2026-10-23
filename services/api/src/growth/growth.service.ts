@@ -26,6 +26,7 @@ import {
   GROWTH_FORECAST_EVALUATION_VERSION,
   GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
   summarizeGrowthForecastCalibration,
+  deriveGrowthEmpiricalResidualThreshold,
   type GrowthForecastCalibrationObservation,
   type GrowthForecastEvaluationMetrics,
 } from './growth-forecast-evaluation';
@@ -1031,13 +1032,57 @@ export class GrowthService {
     const result = await this.database.transaction(
       { tenantId, userId },
       async client => {
-        const opportunity = await client.query<{ status: string; constraints_snapshot: Record<string, unknown> }>(
-          'SELECT status, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
+        const opportunity = await client.query<{ status: string; currency: string; constraints_snapshot: Record<string, unknown> }>(
+          'SELECT status, currency, constraints_snapshot FROM growth_opportunities WHERE id = $1 AND tenant_id = $2 AND factory_id = $3 FOR SHARE',
           [opportunityId, tenantId, factoryId],
         );
         if (!opportunity.rows[0]) throw new NotFoundException('Growth opportunity not found');
         if (!['ACCEPTED', 'IN_PROGRESS'].includes(opportunity.rows[0].status)) {
           throw new ConflictException('Scenarios may only be run against accepted or in-progress hypotheses');
+        }
+        let baselineSourceObservation: Record<string, unknown> | null = null;
+        if (dto.baseline_source_observation_id) {
+          this.validateUuid(dto.baseline_source_observation_id, 'baseline_source_observation_id');
+          const sourceResult = await client.query<{
+            id: string; source_kind: string; adapter_version: string; metric_key: string;
+            unit: string; value: string; observed_at: string; source_record_ref: string;
+            source_revision_hash: string; observation_hash: string; evidence_id: string;
+          }>(
+            `SELECT id::text AS id,source_kind,adapter_version,metric_key,unit,value::text AS value,
+                    observed_at::text AS observed_at,source_record_ref,source_revision_hash,
+                    observation_hash,evidence_id::text AS evidence_id
+               FROM growth_kpi_source_observations
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND opportunity_id=$4
+              FOR SHARE`,
+            [dto.baseline_source_observation_id, tenantId, factoryId, opportunityId],
+          );
+          const source = sourceResult.rows[0];
+          if (!source) throw new NotFoundException('Pinned baseline KPI observation was not found in this Growth opportunity');
+          if (source.source_kind !== 'FINANCIAL_FACT'
+            || source.adapter_version !== 'factoryos.growth.source-of-record.v1'
+            || source.metric_key !== 'finance.actual_revenue') {
+            throw new BadRequestException('A financial sensitivity scenario baseline can only pin a versioned finance.actual_revenue observation');
+          }
+          if (!opportunity.rows[0].currency || source.unit !== opportunity.rows[0].currency) {
+            throw new ConflictException('Pinned revenue observation currency must match the Growth opportunity currency');
+          }
+          if (new Date(source.observed_at).getTime() > vintage.getTime()) {
+            throw new BadRequestException('A baseline source observation must be captured no later than the scenario data vintage');
+          }
+          if (Number(source.value) !== dto.baseline_revenue) {
+            throw new ConflictException('baseline_revenue must equal the pinned source-of-record observation value');
+          }
+          const expectedRef = `factoryos://growth/source-observations/${source.id}`;
+          if (dto.baseline_source_ref.trim() !== expectedRef) {
+            throw new BadRequestException('baseline_source_ref must exactly identify the pinned source observation');
+          }
+          baselineSourceObservation = {
+            id: source.id, source_kind: source.source_kind, adapter_version: source.adapter_version,
+            metric_key: source.metric_key, unit: source.unit, value: source.value,
+            observed_at: new Date(source.observed_at).toISOString(),
+            source_record_ref: source.source_record_ref, source_revision_hash: source.source_revision_hash,
+            observation_hash: source.observation_hash, evidence_id: source.evidence_id,
+          };
         }
         const evidenceResult = await client.query<{ reference_ref: string | null; citation_url: string | null }>(
           'SELECT reference_ref, citation_url FROM growth_opportunity_evidence WHERE opportunity_id = $1 AND tenant_id = $2 AND factory_id = $3',
@@ -1048,6 +1093,9 @@ export class GrowthService {
             .filter((ref): ref is string => typeof ref === 'string' && ref.trim().length > 0)
             .map(ref => ref.trim()),
         );
+        if (baselineSourceObservation && !evidenceReferences.has(dto.baseline_source_ref.trim())) {
+          throw new BadRequestException('Pinned source observation must remain linked as evidence to this Growth opportunity');
+        }
         const constraintGate = this.evaluateConstraintGate(
           opportunity.rows[0].constraints_snapshot,
           dto.projected_constraint_metrics as unknown as Record<string, unknown> | undefined,
@@ -1058,6 +1106,7 @@ export class GrowthService {
           canonicalization_version: GROWTH_SCENARIO_CANONICALIZATION_VERSION,
           ...inputs,
           projected_constraint_metrics: dto.projected_constraint_metrics ?? null,
+          baseline_source_observation: baselineSourceObservation,
           constraints_snapshot: opportunity.rows[0].constraints_snapshot ?? {},
         };
         inputHash = createHash('sha256').update(canonicalizeGrowthScenarioInput({
@@ -1537,12 +1586,16 @@ export class GrowthService {
       if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('KPI direction must be INCREASE, DECREASE or TARGET');
       const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
       if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in experiment result evidence_refs');
+      const baselineEvidenceRef = typeof item.baseline_evidence_ref === 'string' ? item.baseline_evidence_ref.trim() : null;
+      if (baselineEvidenceRef !== null && (!baselineEvidenceRef || !evidenceRefs.includes(baselineEvidenceRef))) {
+        throw new BadRequestException('Each KPI baseline_evidence_ref must be included in experiment result evidence_refs');
+      }
       const baselineValue = dto.pre_measurements[metricKey], actualValue = dto.post_measurements[metricKey];
       if (typeof baselineValue !== 'number' || !Number.isFinite(baselineValue) || Math.abs(baselineValue) > 1e12
         || typeof actualValue !== 'number' || !Number.isFinite(actualValue) || Math.abs(actualValue) > 1e12) throw new BadRequestException('Each KPI metric_key must identify finite numeric values in both pre_measurements and post_measurements');
       const targetValue = item.target_value ?? null;
       if (targetValue !== null && (!Number.isFinite(targetValue) || Math.abs(targetValue) > 1e12)) throw new BadRequestException('KPI target_value must be finite and within supported numeric bounds');
-      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef, baselineEvidenceRef };
     });
     const observedAt = new Date(dto.observed_at);
     if (!Number.isFinite(observedAt.getTime())) throw new BadRequestException('observed_at must be a valid timestamp');
@@ -1574,13 +1627,14 @@ export class GrowthService {
         const saved = await client.query(
           `INSERT INTO growth_experiment_result_kpis (
             tenant_id, factory_id, opportunity_id, experiment_id, experiment_result_id,
-            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            metric_key, baseline_value, actual_value, target_value, unit, direction, baseline_evidence_ref, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
             actual_value::text AS actual_value, target_value::text AS target_value,
-            unit, direction, evidence_ref, created_at::text AS created_at`,
+            unit, direction, baseline_evidence_ref, evidence_ref, created_at::text AS created_at`,
           [tenantId, factoryId, experiment.opportunity_id, experimentId, insertedRow.id, kpi.metricKey,
-            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction,
+            kpi.baselineEvidenceRef, kpi.evidenceRef, userId],
         );
         if (!saved.rows[0]) throw new Error('GROWTH_EXPERIMENT_KPI_INSERT_FAILED');
         savedKpis.push(saved.rows[0]);
@@ -1701,7 +1755,8 @@ export class GrowthService {
         outcome_kpi_measurement_id: actualRow.measurement_id,
         actual_evidence_ref: actualRow.evidence_ref,
         outcome_observed_at: observedAt.toISOString(),
-        recorded_by: userId,
+        // The submitting actor is audit metadata, not part of the forecast request identity.
+        // Excluding it lets a legitimate retry replay the original idempotent result across users.
         ...metrics,
       };
       const requestHash = createHash('sha256')
@@ -1826,34 +1881,198 @@ export class GrowthService {
     return { ...transactionResult.evaluation, replayed: !transactionResult.created };
   }
 
-  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string) {
+  async getForecastCalibration(tenantId: string, factoryId: string, opportunityId: string, domain?: string) {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(opportunityId, 'opportunityId');
-    const result = await this.database.query<GrowthForecastCalibrationObservation & {
-      evaluated_at: string; total_count: string;
-    }>(
-      `SELECT model_version, metric_key, unit, forecast_value::text AS forecast_value,
-          actual_value::text AS actual_value, signed_error::text AS signed_error,
-          absolute_error::text AS absolute_error, squared_error::text AS squared_error,
-          symmetric_percentage_error::text AS symmetric_percentage_error, interval_hit,
-          nominal_coverage_pct::text AS nominal_coverage_pct,
-          evaluated_at::text AS evaluated_at, COUNT(*) OVER ()::text AS total_count
-       FROM growth_forecast_evaluations
-       WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
-       ORDER BY evaluated_at DESC, id DESC LIMIT 10000`,
-      [tenantId, factoryId, opportunityId],
-      { tenantId },
-    );
+    const allowedDomains = ['FINANCE', 'PRODUCTION', 'QUALITY', 'DELIVERY', 'COMMERCIAL', 'OTHER'];
+    if (domain && !allowedDomains.includes(domain)) throw new BadRequestException('Unsupported calibration domain');
+
+    const [result, policiesResult] = await Promise.all([
+      this.database.query<GrowthForecastCalibrationObservation & {
+        evaluated_at: string; total_count: string;
+      }>(
+        `SELECT model_version, metric_key, unit, forecast_value::text AS forecast_value,
+            actual_value::text AS actual_value, signed_error::text AS signed_error,
+            absolute_error::text AS absolute_error, squared_error::text AS squared_error,
+            symmetric_percentage_error::text AS symmetric_percentage_error, interval_hit,
+            nominal_coverage_pct::text AS nominal_coverage_pct,interval_semantics,
+            evaluated_at::text AS evaluated_at, COUNT(*) OVER ()::text AS total_count
+         FROM growth_forecast_evaluations
+         WHERE tenant_id = $1 AND factory_id = $2 AND opportunity_id = $3
+         ORDER BY evaluated_at DESC, id DESC LIMIT 10000`,
+        [tenantId, factoryId, opportunityId],
+        { tenantId },
+      ),
+      this.database.query<{
+        id: string; domain: string; model_version: string; metric_key: string; unit: string;
+        policy_version: number | string; minimum_sample_count: number | string;
+        max_mean_absolute_error: string; max_root_mean_squared_error: string;
+        max_absolute_mean_error: string; max_mean_symmetric_percentage_error_pct: string;
+        max_absolute_calibration_gap_pct_points: string;
+        residual_coverage_target_pct: string | null;
+        max_empirical_absolute_residual: string | null;
+      }>(
+        `SELECT id::text AS id,domain,model_version,metric_key,unit,policy_version,minimum_sample_count,
+            max_mean_absolute_error::text AS max_mean_absolute_error,
+            max_root_mean_squared_error::text AS max_root_mean_squared_error,
+            max_absolute_mean_error::text AS max_absolute_mean_error,
+            max_mean_symmetric_percentage_error_pct::text AS max_mean_symmetric_percentage_error_pct,
+            max_absolute_calibration_gap_pct_points::text AS max_absolute_calibration_gap_pct_points,
+            residual_coverage_target_pct::text AS residual_coverage_target_pct,
+            max_empirical_absolute_residual::text AS max_empirical_absolute_residual
+           FROM growth_forecast_calibration_policies
+          WHERE tenant_id=$1 AND factory_id=$2 AND status='APPROVED'
+            AND ($3::text IS NULL OR domain=$3)
+          ORDER BY domain,model_version,metric_key,unit,policy_version DESC`,
+        [tenantId, factoryId, domain ?? null],
+        { tenantId },
+      ),
+    ]);
     const totalCount = Number(result.rows[0]?.total_count ?? 0);
     const observations = result.rows.map(({ total_count: _totalCount, evaluated_at: _evaluatedAt, ...row }) => row);
+    const summaries = summarizeGrowthForecastCalibration(observations);
+    const policies = policiesResult.rows;
+    const calibration = summaries.map(bucket => {
+      const residualRows = observations.filter(row => row.model_version === bucket.model_version
+        && row.metric_key === bucket.metric_key && row.unit === bucket.unit);
+      const candidates = policies.filter(policy => policy.model_version === bucket.model_version
+        && policy.metric_key === bucket.metric_key && policy.unit === bucket.unit);
+      const domains = [...new Set(candidates.map(policy => policy.domain))];
+      const unavailableResidualThreshold = (status: string, minimumSamples: number | null = null) => ({
+        method_version: 'factoryos.growth.absolute-residual-order-statistic.v1',
+        requested_coverage_pct: null,
+        sample_count: residualRows.length,
+        minimum_sample_count: minimumSamples,
+        required_order_rank: null,
+        threshold_value: null,
+        status,
+        interpretation: status === 'NO_APPROVED_POLICY'
+          ? 'No approved domain policy authorizes a residual coverage target and maximum residual threshold.'
+          : status === 'DOMAIN_REQUIRED'
+            ? 'Multiple approved policy domains match this cohort; select one domain before evaluating its residual threshold.'
+            : 'An older approved policy has no residual-threshold criteria. Propose and independently approve a new policy version before reporting this threshold.',
+      });
+      if (!domain && domains.length > 1) {
+        return {
+          ...bucket,
+          empirical_residual_threshold: unavailableResidualThreshold('DOMAIN_REQUIRED'),
+          uncertainty_threshold_assessment: 'DOMAIN_REQUIRED',
+          calibration_policy: null,
+          error_threshold_assessment: 'DOMAIN_REQUIRED',
+          error_threshold_failures: [],
+          interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
+            : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED' : 'POLICY_NOT_SELECTED',
+        };
+      }
+      if (!candidates.length) {
+        return {
+          ...bucket,
+          empirical_residual_threshold: unavailableResidualThreshold('NO_APPROVED_POLICY'),
+          uncertainty_threshold_assessment: 'NO_APPROVED_POLICY',
+          calibration_policy: null,
+          error_threshold_assessment: 'NO_APPROVED_POLICY',
+          error_threshold_failures: [],
+          interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
+            : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED' : 'NO_APPROVED_POLICY',
+        };
+      }
+      const selected = [...candidates].sort((a, b) => Number(b.policy_version) - Number(a.policy_version))[0];
+      if (!selected) {
+        return {
+          ...bucket,
+          empirical_residual_threshold: unavailableResidualThreshold('NO_APPROVED_POLICY'),
+          uncertainty_threshold_assessment: 'NO_APPROVED_POLICY',
+          calibration_policy: null,
+          error_threshold_assessment: 'NO_APPROVED_POLICY',
+          error_threshold_failures: [],
+          interval_threshold_assessment: 'NO_APPROVED_POLICY',
+        };
+      }
+      const minSamples = Number(selected.minimum_sample_count);
+      const hasResidualPolicy = selected.residual_coverage_target_pct !== null
+        && selected.max_empirical_absolute_residual !== null;
+      const residualThreshold = hasResidualPolicy
+        ? deriveGrowthEmpiricalResidualThreshold(
+          residualRows.map(row => row.absolute_error),
+          Number(selected.residual_coverage_target_pct),
+          minSamples,
+        )
+        : unavailableResidualThreshold('RESIDUAL_POLICY_NOT_CONFIGURED', minSamples);
+      const residualValue = residualThreshold.threshold_value === null ? null : Number(residualThreshold.threshold_value);
+      const uncertaintyAssessment = !hasResidualPolicy
+        ? 'RESIDUAL_POLICY_NOT_CONFIGURED'
+        : residualThreshold.status !== 'ESTIMATED_FROM_HELD_OUT_RESIDUALS'
+          ? residualThreshold.status
+          : residualValue !== null && residualValue > Number(selected.max_empirical_absolute_residual)
+            ? 'EXCEEDS_APPROVED_RESIDUAL_THRESHOLD'
+            : 'WITHIN_APPROVED_RESIDUAL_THRESHOLD';
+      const policySummary = {
+        id: selected.id, domain: selected.domain, policy_version: Number(selected.policy_version),
+        minimum_sample_count: minSamples,
+        thresholds: {
+          max_mean_absolute_error: Number(selected.max_mean_absolute_error),
+          max_root_mean_squared_error: Number(selected.max_root_mean_squared_error),
+          max_absolute_mean_error: Number(selected.max_absolute_mean_error),
+          max_mean_symmetric_percentage_error_pct: Number(selected.max_mean_symmetric_percentage_error_pct),
+          max_absolute_calibration_gap_pct_points: Number(selected.max_absolute_calibration_gap_pct_points),
+          residual_coverage_target_pct: hasResidualPolicy ? Number(selected.residual_coverage_target_pct) : null,
+          max_empirical_absolute_residual: hasResidualPolicy ? Number(selected.max_empirical_absolute_residual) : null,
+        },
+      };
+      if (bucket.sample_count < minSamples) {
+        return {
+          ...bucket,
+          empirical_residual_threshold: residualThreshold,
+          uncertainty_threshold_assessment: uncertaintyAssessment,
+          calibration_policy: policySummary,
+          error_threshold_assessment: 'INSUFFICIENT_POLICY_SAMPLE',
+          error_threshold_failures: [],
+          interval_threshold_assessment: bucket.interval_semantics === 'HEURISTIC_RANGE' ? 'NOT_CALIBRATABLE_HEURISTIC_RANGE'
+            : bucket.interval_semantics === 'NONE' ? 'NO_INTERVAL_DECLARED'
+              : bucket.interval_sample_count < minSamples ? 'INSUFFICIENT_INTERVAL_SAMPLE' : 'NOT_ASSESSED',
+        };
+      }
+      const failures: string[] = [];
+      if (bucket.mean_absolute_error > policySummary.thresholds.max_mean_absolute_error) failures.push('MEAN_ABSOLUTE_ERROR');
+      if (bucket.root_mean_squared_error > policySummary.thresholds.max_root_mean_squared_error) failures.push('ROOT_MEAN_SQUARED_ERROR');
+      if (Math.abs(bucket.mean_error) > policySummary.thresholds.max_absolute_mean_error) failures.push('ABSOLUTE_BIAS');
+      if (bucket.mean_symmetric_percentage_error_pct > policySummary.thresholds.max_mean_symmetric_percentage_error_pct) failures.push('MEAN_SMAPE_PERCENT');
+      let intervalAssessment: string;
+      if (bucket.interval_semantics === 'HEURISTIC_RANGE') {
+        intervalAssessment = 'NOT_CALIBRATABLE_HEURISTIC_RANGE';
+      } else if (bucket.interval_semantics === 'NONE') {
+        intervalAssessment = 'NO_INTERVAL_DECLARED';
+      } else if (bucket.interval_sample_count < minSamples) {
+        intervalAssessment = 'INSUFFICIENT_INTERVAL_SAMPLE';
+      } else if (bucket.calibration_gap_pct_points === null) {
+        intervalAssessment = 'INTERVAL_COVERAGE_UNAVAILABLE';
+      } else if (Math.abs(bucket.calibration_gap_pct_points) > policySummary.thresholds.max_absolute_calibration_gap_pct_points) {
+        intervalAssessment = 'EXCEEDS_APPROVED_COVERAGE_THRESHOLD';
+      } else {
+        intervalAssessment = 'WITHIN_APPROVED_COVERAGE_THRESHOLD';
+      }
+      if (intervalAssessment === 'EXCEEDS_APPROVED_COVERAGE_THRESHOLD') failures.push('ABSOLUTE_CALIBRATION_GAP');
+      return {
+        ...bucket,
+        empirical_residual_threshold: residualThreshold,
+        uncertainty_threshold_assessment: uncertaintyAssessment,
+        calibration_policy: policySummary,
+        error_threshold_assessment: failures.some(failure => failure !== 'ABSOLUTE_CALIBRATION_GAP')
+          ? 'EXCEEDS_APPROVED_ERROR_THRESHOLDS' : 'WITHIN_APPROVED_ERROR_THRESHOLDS',
+        error_threshold_failures: failures.filter(failure => failure !== 'ABSOLUTE_CALIBRATION_GAP'),
+        interval_threshold_assessment: intervalAssessment,
+      };
+    });
     return {
       method_version: GROWTH_FORECAST_EVALUATION_VERSION,
       minimum_calibration_sample_size: GROWTH_FORECAST_CALIBRATION_MIN_SAMPLE_SIZE,
       observations_included: observations.length,
       total_observations: totalCount,
       sample_window_truncated: totalCount > observations.length,
-      interpretation: 'Observed out-of-sample errors and declared interval coverage only. No model is auto-refit; a heuristic range without nominal coverage is not labelled a calibrated prediction interval.',
-      calibration: summarizeGrowthForecastCalibration(observations),
+      policy_domain_filter: domain ?? null,
+      approved_policy_count: policies.length,
+      interpretation: 'Observed out-of-sample errors only. Only an approved domain policy authorizes empirical residual thresholds and point-error checks. Residual thresholds are absolute-error order statistics from held-out forecast evaluations; they are not confidence intervals and do not guarantee future coverage under drift/non-exchangeability. A heuristic range has no nominal coverage and is never described as a confidence or calibrated prediction interval. An interval with declared nominal coverage is assessed separately from point-error and residual thresholds. No model is automatically refit.',
+      calibration,
     };
   }
 
@@ -1880,13 +2099,17 @@ export class GrowthService {
       if (!['INCREASE', 'DECREASE', 'TARGET'].includes(item.direction)) throw new BadRequestException('Invalid KPI direction');
       const evidenceRef = typeof item.evidence_ref === 'string' ? item.evidence_ref.trim() : '';
       if (!evidenceRef || !evidenceRefs.includes(evidenceRef)) throw new BadRequestException('Each KPI evidence_ref must be included in outcome evidence_refs');
+      const baselineEvidenceRef = typeof item.baseline_evidence_ref === 'string' ? item.baseline_evidence_ref.trim() : null;
+      if (baselineEvidenceRef !== null && (!baselineEvidenceRef || !evidenceRefs.includes(baselineEvidenceRef))) {
+        throw new BadRequestException('Each KPI baseline_evidence_ref must be included in outcome evidence_refs');
+      }
       const baselineValue = item.baseline_value, actualValue = item.actual_value, targetValue = item.target_value ?? null;
       if (![baselineValue, actualValue, ...(targetValue === null ? [] : [targetValue])].every(value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12)) {
         throw new BadRequestException('KPI baseline, actual and target values must be finite and within supported numeric bounds');
       }
       if (typeof dto.realized_metrics[metricKey] !== 'number' || !Number.isFinite(dto.realized_metrics[metricKey] as number)
         || dto.realized_metrics[metricKey] !== actualValue) throw new BadRequestException('Each KPI actual_value must match realized_metrics at the same metric_key');
-      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef };
+      return { metricKey, unit, direction: item.direction, baselineValue, actualValue, targetValue, evidenceRef, baselineEvidenceRef };
     });
 
     const outcome = await this.database.transaction({ tenantId, userId }, async client => {
@@ -1911,8 +2134,8 @@ export class GrowthService {
           [dto.experiment_result_id, tenantId, factoryId],
         );
         if (existing.rows[0]) throw new ConflictException('An experiment result can only be linked to one realized growth outcome');
-        const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null }>(
-          `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value
+        const sourceRows = await client.query<{ id: string; metric_key: string; unit: string; direction: string; baseline_value: string; target_value: string | null; baseline_evidence_ref: string | null }>(
+          `SELECT id::text AS id, metric_key, unit, direction, baseline_value::text AS baseline_value, target_value::text AS target_value, baseline_evidence_ref
            FROM growth_experiment_result_kpis
            WHERE experiment_result_id = $1 AND tenant_id = $2 AND factory_id = $3 AND opportunity_id = $4
            ORDER BY metric_key`,
@@ -1923,6 +2146,7 @@ export class GrowthService {
         for (const sourceKpi of sourceRows.rows) {
           const input = kpis.find(item => item.metricKey === sourceKpi.metric_key);
           if (!input || input.unit !== sourceKpi.unit || input.direction !== sourceKpi.direction
+            || input.baselineEvidenceRef !== (sourceKpi.baseline_evidence_ref ?? null)
             || input.baselineValue !== Number(sourceKpi.baseline_value)
             || input.targetValue !== (sourceKpi.target_value === null ? null : Number(sourceKpi.target_value))) {
             throw new BadRequestException('Outcome KPI key, unit, baseline, target and direction must match its linked experiment result');
@@ -1950,14 +2174,15 @@ export class GrowthService {
         const saved = await client.query(
           `INSERT INTO growth_outcome_kpi_measurements (
             tenant_id, factory_id, opportunity_id, outcome_id, source_experiment_kpi_id,
-            metric_key, baseline_value, actual_value, target_value, unit, direction, evidence_ref, recorded_by
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            metric_key, baseline_value, actual_value, target_value, unit, direction, baseline_evidence_ref, evidence_ref, recorded_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           RETURNING id::text AS id, metric_key, baseline_value::text AS baseline_value,
             actual_value::text AS actual_value, target_value::text AS target_value,
-            unit, direction, evidence_ref, source_experiment_kpi_id::text AS source_experiment_kpi_id,
+            unit, direction, baseline_evidence_ref, evidence_ref, source_experiment_kpi_id::text AS source_experiment_kpi_id,
             created_at::text AS created_at`,
           [tenantId, factoryId, opportunityId, result.id, sourceKpi?.id ?? null, kpi.metricKey,
-            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction, kpi.evidenceRef, userId],
+            kpi.baselineValue, kpi.actualValue, kpi.targetValue, kpi.unit, kpi.direction,
+            kpi.baselineEvidenceRef, kpi.evidenceRef, userId],
         );
         if (!saved.rows[0]) throw new Error('GROWTH_OUTCOME_KPI_INSERT_FAILED');
         savedKpis.push(saved.rows[0]);
