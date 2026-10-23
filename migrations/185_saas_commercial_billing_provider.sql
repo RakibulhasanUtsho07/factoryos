@@ -361,7 +361,7 @@ END $$;
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_billing_closed_period()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $billing_close_fence$
 DECLARE
   already_closed BOOLEAN;
 BEGIN
@@ -396,7 +396,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$billing_close_fence$;
 
 DROP TRIGGER IF EXISTS saas_usage_events_billing_close_fence ON public.saas_usage_events;
 CREATE TRIGGER saas_usage_events_billing_close_fence
