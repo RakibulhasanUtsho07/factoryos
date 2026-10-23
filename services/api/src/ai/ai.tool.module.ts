@@ -7,6 +7,7 @@ import { SaasModule } from '../saas/saas.module';
 import { AiArtifactProvenanceService } from './artifacts/ai.artifact.provenance.service';
 import { AiToolRegistryService } from './tools/ai.tool.registry.service';
 import { AiToolGatewayService } from './tools/ai.tool.gateway.service';
+import { AiModelProviderGatewayService } from './ai.model.provider.gateway.service';
 
 
 
@@ -23,6 +24,7 @@ import { AiToolGatewayService } from './tools/ai.tool.gateway.service';
 
   providers: [
     AiArtifactProvenanceService,
+    AiModelProviderGatewayService,
     AiToolRegistryService,
 
     AiToolGatewayService,
@@ -30,6 +32,7 @@ import { AiToolGatewayService } from './tools/ai.tool.gateway.service';
 
   exports: [
     AiArtifactProvenanceService,
+    AiModelProviderGatewayService,
     AiToolRegistryService,
 
     AiToolGatewayService,

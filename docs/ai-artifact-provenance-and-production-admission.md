@@ -30,10 +30,18 @@ Before any Tool Gateway execution outside explicit development/test environments
 
 For local development and automated test environments, the Tool Gateway deliberately does not enforce the production-only gate so engineers can run tests without live signing keys. Any other environment name (including an unset NODE_ENV) is fail-closed for all Tool Gateway workloads.
 
+## Model-provider admission boundary
+
+`AiModelProviderGatewayService.invoke` is the shared pre-inference boundary for live model-provider adapters. The adapter must resolve the exact immutable MODEL artifact key, version and SHA-256 from its approved deployment/model package, and place the provider network call inside the supplied callback. The callback receives the same frozen, normalized artifact reference that was checked.
+
+Outside explicit `development` and `test` modes—including staging and an unset `NODE_ENV`—the gateway re-reads the current tenant-scoped registry, verifies digest, expiry, source approval/revocation and Ed25519 signature, writes an append-only admission decision, and only then invokes the provider callback. Missing digests are passed to the admission service and denied with evidence; a failed admission/database check never falls through to inference. Positive decisions are not cached.
+
+The gateway is a reusable enforcement boundary, not evidence that a provider is already integrated. This repository still has no concrete live provider adapter routed through it; FR-MSO-05 model-inference coverage therefore remains **partial** until each real adapter uses this gateway and passes provider-level tests against the exact model digest.
+
 ## Explicit acceptance boundaries
 
 - The registry cryptographically verifies the signer's binding between artifact identity, SHA-256 and expiry. It does not download arbitrary artifacts or prove that remote storage bytes match that signed digest. The trusted build/deployment pipeline must compute the digest from the actual model/package/container and place the same verified digest into the immutable tool definition's metadata.artifactSha256.
-- This slice wires the live admission gate to production Tool Gateway execution. It exposes model-artifact registration and the same reusable verification/admission service, but this repository path does not currently contain a single universal live model-provider invocation to intercept. A provider-specific model adapter must call assertAdmissible with the actual resolved model digest before sending inference traffic; until that exists and is covered by provider integration tests, FR-MSO-05 model-inference enforcement remains **partial**.
+- This slice wires the production Tool Gateway gate and adds a shared model-provider gateway primitive that can verify the exact MODEL artifact immediately before a provider callback. The repository still has no concrete live model-provider adapter routed through that primitive. FR-MSO-05 model-inference enforcement remains **partial** until every real provider route uses the gateway and has provider-level tests with an immutable model digest.
 - Provider/model replacement compatibility and regression evaluation (FR-MSO-06), prompt/policy checksum enforcement at every execution boundary (FR-MSO-07), CI-produced signing attestations, external revocation synchronization, real release-signing custody and production cluster validation remain separate acceptance work.
 - No existing artifact gets trusted implicitly. After rollout, production tool definitions without an approved signed artifact reference are intentionally denied until they are re-versioned/configured with artifactSha256 and a matching registration is approved.
 
