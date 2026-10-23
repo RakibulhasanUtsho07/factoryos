@@ -1,7 +1,6 @@
-import { InventoryCycleCountService } from './inventory.cycle-count.service';
-import type { InventoryCycleCountProposal } from './inventory.cycle-count.service';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
+import { InventoryCycleCountService, type InventoryCycleCountProposal } from './inventory.cycle-count.service';
 import { InventoryStockReconciliationService } from './inventory.stock-reconciliation.service';
 
 const COUNTER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
