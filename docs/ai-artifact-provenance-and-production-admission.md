@@ -59,12 +59,13 @@ This digest is a signed route/deployment manifest digest, **not a cryptographic 
 ## Explicit acceptance boundaries
 
 - The registry cryptographically verifies the signer's binding between artifact identity, SHA-256 and expiry. It does not download arbitrary artifacts or prove that remote storage bytes match that signed digest. The trusted build/deployment pipeline must compute the digest from the actual model/package/container and place the same verified digest into the immutable tool definition's metadata.artifactSha256.
-- This slice wires the production Tool Gateway gate and adds a shared model-provider gateway primitive that can verify the exact MODEL artifact immediately before a provider callback. The repository still has no concrete live model-provider adapter routed through that primitive. FR-MSO-05 model-inference enforcement remains **partial** until every real provider route uses the gateway and has provider-level tests with an immutable model digest.
+- This slice wires the production Tool Gateway and an authenticated OpenAI-compatible inference route to the shared model-provider admission boundary. The route rechecks a signed provider-route manifest (endpoint, exact model ID, route version and built-in system-prompt hash) before usage metering and provider network I/O; a provider-reported model substitution is rejected. FR-MSO-05 remains **partial** until every production provider adapter uses an equivalent gate and deployed immutable route, provider egress/data-residency approval and owner/reviewer acceptance are evidenced.
 - Provider/model replacement compatibility and regression evaluation (FR-MSO-06), prompt/policy checksum enforcement at every execution boundary (FR-MSO-07), CI-produced signing attestations, external revocation synchronization, real release-signing custody and production cluster validation remain separate acceptance work.
 - No existing artifact gets trusted implicitly. After rollout, production tool definitions without an approved signed artifact reference are intentionally denied until they are re-versioned/configured with artifactSha256 and a matching registration is approved.
 
 ## Tests
 
-- services/api/src/ai/artifacts/ai.artifact.provenance.service.spec.ts verifies Ed25519 signatures, tamper detection, non-Ed25519 rejection, missing-registration denial, revocation denial and successful digest-bound admission.
+- services/api/src/ai/artifacts/ai.artifact.provenance.service.spec.ts verifies Ed25519 signature/integrity and registry admission.
+- services/api/src/ai/ai.model.provider.gateway.service.spec.ts and services/api/src/ai/ai.openai-compatible.provider.service.spec.ts verify provider callback ordering, route-manifest digest binding, egress controls, model-substitution rejection and usage-meter ordering.
 - services/api/test/ai-artifact-provenance.sql verifies forced RLS, uniqueness and database lifecycle guards.
 - PostgreSQL CI applies the migration through the explicit manifest and reapplies the new migration plus this SQL contract to exercise DDL idempotency.
