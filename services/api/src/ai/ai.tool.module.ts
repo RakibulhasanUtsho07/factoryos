@@ -8,6 +8,7 @@ import { AiArtifactProvenanceService } from './artifacts/ai.artifact.provenance.
 import { AiToolRegistryService } from './tools/ai.tool.registry.service';
 import { AiToolGatewayService } from './tools/ai.tool.gateway.service';
 import { AiModelProviderGatewayService } from './ai.model.provider.gateway.service';
+import { AiOpenAiCompatibleProviderService } from './ai.openai-compatible.provider.service';
 
 
 
@@ -25,6 +26,7 @@ import { AiModelProviderGatewayService } from './ai.model.provider.gateway.servi
   providers: [
     AiArtifactProvenanceService,
     AiModelProviderGatewayService,
+    AiOpenAiCompatibleProviderService,
     AiToolRegistryService,
 
     AiToolGatewayService,
@@ -33,6 +35,7 @@ import { AiModelProviderGatewayService } from './ai.model.provider.gateway.servi
   exports: [
     AiArtifactProvenanceService,
     AiModelProviderGatewayService,
+    AiOpenAiCompatibleProviderService,
     AiToolRegistryService,
 
     AiToolGatewayService,
