@@ -613,6 +613,31 @@ export class InventoryStockReconciliationService {
               if (!completedTask.rows[0]) {
                 throw new ConflictException('Approved count could not complete its scheduled task');
               }
+              await client.query(
+                `INSERT INTO outbox_events (
+                   tenant_id, factory_id, aggregate_type, aggregate_id,
+                   event_type, event_version, occurred_at, correlation_id, causation_id,
+                   actor, source, payload
+                 ) VALUES (
+                   $1, $2, 'INVENTORY_CYCLE_COUNT_TASK', $3,
+                   'INVENTORY.CYCLE_COUNT_TASK_COMPLETED', 1,
+                   clock_timestamp(), $4::uuid, NULL, $5::jsonb, $6::jsonb, $7::jsonb
+                 )`,
+                [
+                  tenantId, factoryId, proposal.task_id, correlationId,
+                  JSON.stringify({ type: 'user', id: userId }),
+                  JSON.stringify({
+                    system: 'FactoryOS', connector: 'inventory-cycle-count-task',
+                    version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.1.0',
+                  }),
+                  JSON.stringify({
+                    task_id: proposal.task_id,
+                    proposal_id: cycleCountReview.proposalId,
+                    reconciliation_id: reconciliation.id,
+                    item_id: normalizedItemId,
+                  }),
+                ],
+              );
             }
             await this.insertCycleCountApprovedEvent(client, {
               tenantId,
