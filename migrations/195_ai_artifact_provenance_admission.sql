@@ -134,6 +134,17 @@ BEGIN
       USING ERRCODE = '55000';
   END IF;
 
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'PENDING' OR NEW.revision <> 1
+      OR NEW.approved_by IS NOT NULL OR NEW.approved_at IS NOT NULL OR NEW.approval_reason IS NOT NULL
+      OR NEW.revoked_by IS NOT NULL OR NEW.revoked_at IS NOT NULL OR NEW.revoke_reason IS NOT NULL
+    THEN
+      RAISE EXCEPTION 'new AI artifact trust sources must start pending without approval or revocation fields'
+        USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+  END IF;
+
   IF NEW.id IS DISTINCT FROM OLD.id
     OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
     OR NEW.source_key IS DISTINCT FROM OLD.source_key
@@ -183,7 +194,7 @@ $$;
 
 DROP TRIGGER IF EXISTS ai_artifact_trusted_sources_guard ON ai_artifact_trusted_sources;
 CREATE TRIGGER ai_artifact_trusted_sources_guard
-BEFORE UPDATE OR DELETE ON ai_artifact_trusted_sources
+BEFORE INSERT OR UPDATE OR DELETE ON ai_artifact_trusted_sources
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_ai_artifact_trusted_source();
 
 CREATE OR REPLACE FUNCTION factoryos_guard_ai_artifact_registry()
@@ -194,6 +205,16 @@ BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'AI artifact registry history is retained; deletion is forbidden'
       USING ERRCODE = '55000';
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'ACTIVE' OR NEW.revision <> 1
+      OR NEW.revoked_by IS NOT NULL OR NEW.revoked_at IS NOT NULL OR NEW.revoke_reason IS NOT NULL
+    THEN
+      RAISE EXCEPTION 'new AI artifacts must start active at revision one without revocation fields'
+        USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
   END IF;
 
   IF NEW.id IS DISTINCT FROM OLD.id
@@ -227,7 +248,7 @@ $$;
 
 DROP TRIGGER IF EXISTS ai_artifact_registry_guard ON ai_artifact_registry;
 CREATE TRIGGER ai_artifact_registry_guard
-BEFORE UPDATE OR DELETE ON ai_artifact_registry
+BEFORE INSERT OR UPDATE OR DELETE ON ai_artifact_registry
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_ai_artifact_registry();
 
 CREATE OR REPLACE FUNCTION factoryos_reject_ai_artifact_event_mutation()
