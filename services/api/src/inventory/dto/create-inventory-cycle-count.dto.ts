@@ -30,6 +30,10 @@ export class CreateInventoryCycleCountDto {
   location_id?: string;
 
   @IsOptional()
+  @IsUUID()
+  task_id?: string;
+
+  @IsOptional()
   @IsIn(INVENTORY_CYCLE_COUNT_VARIANCE_REASON_CODES)
   variance_reason_code?: InventoryCycleCountVarianceReasonCode;
 

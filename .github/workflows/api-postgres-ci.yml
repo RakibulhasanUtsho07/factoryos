@@ -298,6 +298,10 @@ jobs:
           echo "Reapplying SaaS physical infrastructure execution migration to verify event-state, RLS and idempotency guards"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/186_saas_physical_infrastructure_execution.sql
 
+          echo "Reapplying scheduled cycle-count task migration and validating task lifecycle/RLS contract"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/187_inventory_cycle_count_tasks.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-tasks.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
