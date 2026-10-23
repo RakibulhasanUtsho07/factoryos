@@ -13,7 +13,10 @@ export async function startModbusTcpSimulator(options = {}) {
   ]);
   const faults = { dropNextResponse: false, wrongUnitId: false, delayNextMs: 0, ...(options.faults ?? {}) };
   const metrics = { reads: 0, writeAttempts: 0, malformedRequests: 0 };
+  const sockets = new Set();
   const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
     let buffered = Buffer.alloc(0);
     socket.on('data', (chunk) => {
       buffered = Buffer.concat([buffered, chunk]);
@@ -93,6 +96,19 @@ export async function startModbusTcpSimulator(options = {}) {
     port: address.port,
     metrics,
     faults,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => new Promise((resolve) => {
+      let settled = false;
+      let cleanupTimer;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (cleanupTimer) clearTimeout(cleanupTimer);
+        resolve();
+      };
+      server.close(finish);
+      for (const socket of sockets) socket.destroy();
+      // Do not let a simulator cleanup callback hang the node:test process.
+      cleanupTimer = setTimeout(finish, 1000);
+    }),
   };
 }
