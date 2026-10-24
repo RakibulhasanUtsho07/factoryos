@@ -213,6 +213,12 @@ test('incomplete or contradictory security evidence fails closed', async (t) => 
     assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('postgres_rls_missing_context.result must equal "PASS"')));
   });
 
+  await t.test('rejects a legacy bare PASS string without provenance', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.api_authz_cross_tenant_read = 'PASS';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('api_authz_cross_tenant_read must be a structured evidence record')));
+  });
+
   await t.test('rejects a negative-test record bound to another candidate SHA', () => {
     const evidence = validAttestation();
     evidence.security_validation.tenant_negative_tests.api_cross_tenant_write.candidate_sha = 'b'.repeat(40);
