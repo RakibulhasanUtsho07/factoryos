@@ -43,7 +43,7 @@ The process polls its encrypted spool and sends batches of at most 20 events to 
 
 The encrypted spool uses AES-256-GCM, fresh IVs, file mode 0600, directory mode 0700, file and directory fsync, atomic replacement, fingerprint validation and bounded storage. Wrong keys, truncated snapshots and tampered contents fail closed; the process does not reset the queue. Entries are not silently evicted at capacity. After 12 consecutive failed replays an entry is blocked, remains durable, and requires operator review plus the exact fingerprint to requeue.
 
-Mounted HTTPS, MQTT and OPC UA certificate/key/trust files are fingerprinted every 30 seconds. A valid certificate/key change updates the HTTPS secure context and recreates protocol sessions with the replacement credentials. FactoryOS API and gateway bearer tokens are read on use so token replacement takes effect without writing secrets to config. If certificate pairing or trust validation fails, the driver remains unavailable and readiness stays false rather than silently switching to anonymous or plaintext transport.
+Mounted HTTPS, MQTT and OPC UA certificate/key/trust files are fingerprinted every 30 seconds. A valid certificate/key change updates the HTTPS secure context and recreates protocol sessions with the replacement credentials. FactoryOS API and gateway bearer tokens are read on use so token replacement takes effect without writing secrets to config. If certificate pairing, trust validation, or a rotated secret file fails, the gateway stops its protocol drivers and keeps readiness false until the currently mounted secret set can be validated and the drivers can restart; it never silently switches to anonymous or plaintext transport.
 
 ## Local test and simulator
 
