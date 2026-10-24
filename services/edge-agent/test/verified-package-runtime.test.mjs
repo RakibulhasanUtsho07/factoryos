@@ -145,6 +145,38 @@ test('stop aborts an in-flight host runtime and rejects a late success as ambigu
   await assert.rejects(outcome, { code: 'EXECUTION_ABORTED_AFTER_START' });
 });
 
+test('returns ambiguous cancellation promptly while keeping a non-cooperative executor tracked', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  let signal;
+  let finishExecution;
+  const outcome = h.supervisor.runVerifiedPackage(
+    signedInput(),
+    { useCaseId, allowedToolIds },
+    (_release, _authorization, activeSignal) => {
+      signal = activeSignal;
+      return new Promise((resolve) => { finishExecution = resolve; });
+    },
+  );
+
+  assert.equal(signal.aborted, false);
+  assert.equal(h.supervisor.activeExecutions.size, 1);
+  h.supervisor.stop();
+  assert.equal(signal.aborted, true);
+
+  const settled = await Promise.race([
+    outcome.then(() => 'resolved', (error) => error.code),
+    new Promise((resolve) => setImmediate(() => resolve('still-pending'))),
+  ]);
+  assert.equal(settled, 'EXECUTION_ABORTED_AFTER_START');
+  // An ambiguous API result is not proof that the underlying executor stopped.
+  assert.equal(h.supervisor.activeExecutions.size, 1);
+
+  finishExecution('late-success');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.supervisor.activeExecutions.size, 0);
+});
+
 test('a refreshed PAUSED control aborts active package work and does not report a late success', async () => {
   const h = harness();
   await h.supervisor.start();
