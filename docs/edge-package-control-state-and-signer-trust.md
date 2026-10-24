@@ -16,6 +16,14 @@ On process restart, only terminal REVOKED decisions remain authoritative; persis
 
 Freshness is mandatory when signer keys are returned for package verification. A stale snapshot or later poll failure fails closed, while previously observed REVOKED keys and keys omitted from a purported complete snapshot remain locally revoked, including after restart. This prevents rollback of key revocation through a stale or incomplete poll.
 
+## Active execution cancellation
+
+The API-side `EdgePackageRuntimeGate.execute(scope, executor)` passes the verified release and a per-execution `AbortSignal` to the host callback. `recordControlSyncFailure()` cancels all active callbacks. After a complete sync is confirmed, the gate rechecks each active execution's exact package control and the signer key ID/public-key identity; a paused/revoked/inactive scope, a revoked/removed/rebound signer, or an unverified refresh aborts the affected callback.
+
+The gate waits for the host callback to settle. If it resolves or rejects after cancellation was requested, the caller receives `EXECUTION_ABORTED_AFTER_START`. That means the operation's outcome may be ambiguous; it does **not** prove side effects were rolled back. Reconcile the operation using its execution/idempotency record before retrying. Cancellation is cooperative: the deployed model/policy runtime must pass the signal into its inference/process loop and any side-effecting tools. A callback or external process that ignores the signal may continue running.
+
+This is still a host-callable gate, not automatic wiring of every model/policy execution path. Each deployed runtime must use this gate and propagate the signal; direct calls to a lower-level release store or executor can bypass both verification and cancellation.
+
 ## Acceptance boundary
 
 The companion package-governance API adds the tenant/factory-scoped database signing-key registry and immutable key/control event ledgers, IAM-guarded administrator routes for key registration/rotation/revocation and control pause/resume/revoke, plus device-token-authenticated endpoints for complete signer snapshots and effective package controls. The token—not caller-supplied scope headers—determines the device's tenant/factory/device identity. The snapshot endpoint refuses oversized results rather than silently truncating revoked-key history.
