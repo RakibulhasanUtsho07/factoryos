@@ -142,6 +142,8 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
   ): EdgePackageVerificationPolicy {
     if (
       !policy ||
+      typeof policy.tenantId !== 'string' ||
+      typeof policy.factoryId !== 'string' ||
       policy.tenantId.toLowerCase() !== this.expectedTenantId ||
       policy.factoryId.toLowerCase() !== this.expectedFactoryId
     ) {
@@ -191,6 +193,8 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
   private assertExecutionScope(scope: EdgePackageActivationScope): void {
     if (
       !scope ||
+      typeof scope.tenantId !== 'string' ||
+      typeof scope.factoryId !== 'string' ||
       scope.tenantId.toLowerCase() !== this.expectedTenantId ||
       scope.factoryId.toLowerCase() !== this.expectedFactoryId ||
       !scope.allowedToolIds ||
