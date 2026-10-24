@@ -46,6 +46,9 @@ const IDENTITY_FIELDS = Object.freeze([
   'gateway_asset_id',
   'gateway_serial',
   'gateway_image_digest',
+  'gateway_source_commit',
+  'gateway_release_receipt_ref',
+  'gateway_release_receipt_sha256',
   'gateway_config_sha256',
   'api_build_sha',
   'device_model_firmware',
@@ -56,6 +59,10 @@ const IDENTITY_FIELDS = Object.freeze([
   'test_ended_at',
   'rollback_stop_work_contact',
 ]);
+
+const OT_GATEWAY_REPOSITORY = 'RakibulhasanUtsho07/factoryos';
+const OT_GATEWAY_IMAGE = 'ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway';
+const OT_GATEWAY_SIGNING_WORKFLOW = 'https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main';
 
 const COUNTER_FIELDS = Object.freeze([
   'events_generated',
@@ -255,6 +262,15 @@ export function validateCommissioningEvidence(evidence) {
       if (!/^sha256:[a-f0-9]{64}$/i.test(identity.gateway_image_digest ?? '')) {
         errors.push('PASS requires an immutable sha256:<64-hex> gateway_image_digest');
       }
+      if (!/^[a-f0-9]{40}$/i.test(identity.gateway_source_commit ?? '')) {
+        errors.push('PASS requires a 40-hex gateway_source_commit from the signed release receipt');
+      }
+      if (!validEvidenceReference(identity.gateway_release_receipt_ref)) {
+        errors.push('PASS requires identity.gateway_release_receipt_ref');
+      }
+      if (!/^[a-f0-9]{64}$/i.test(identity.gateway_release_receipt_sha256 ?? '')) {
+        errors.push('PASS requires a 64-hex gateway_release_receipt_sha256');
+      }
       if (!/^[a-f0-9]{64}$/i.test(identity.gateway_config_sha256 ?? '')) {
         errors.push('PASS requires a 64-hex gateway_config_sha256');
       }
@@ -369,6 +385,12 @@ export async function verifyCommissioningArtifactReferences(evidence, artifactRo
       sha256: signoff.signature_artifact_sha256,
     });
   }
+  if (isObject(evidence?.identity)) entries.push({
+    label: 'identity.gateway_release_receipt',
+    reference: evidence.identity.gateway_release_receipt_ref,
+    sha256: evidence.identity.gateway_release_receipt_sha256,
+    kind: 'otGatewayReleaseReceipt',
+  });
 
   for (const entry of entries) {
     if (!isSafeRelativeArtifactReference(entry.reference)) {
@@ -406,9 +428,35 @@ export async function verifyCommissioningArtifactReferences(evidence, artifactRo
         errors.push(`${entry.label} artifact path escapes --artifact-root`);
         continue;
       }
-      const actual = createHash('sha256').update(await readFile(resolvedTarget)).digest('hex');
+      const bytes = await readFile(resolvedTarget);
+      const actual = createHash('sha256').update(bytes).digest('hex');
       if (actual.toLowerCase() !== entry.sha256.toLowerCase()) {
         errors.push(`${entry.label} artifact SHA-256 does not match recorded digest`);
+        continue;
+      }
+      if (entry.kind === 'otGatewayReleaseReceipt') {
+        let receipt;
+        try { receipt = JSON.parse(bytes.toString('utf8')); }
+        catch {
+          errors.push('gateway release receipt is not valid JSON');
+          continue;
+        }
+        const expectedKeys = ['image', 'provenanceAttested', 'repository', 'signatureVerified', 'signingWorkflow', 'sourceCommit'];
+        const actualKeys = isObject(receipt) ? Object.keys(receipt).sort() : [];
+        const expectedImage = `${OT_GATEWAY_IMAGE}@${evidence.identity.gateway_image_digest}`;
+        const validReceipt = isObject(receipt)
+          && actualKeys.length === expectedKeys.length
+          && expectedKeys.every((key) => actualKeys.includes(key))
+          && receipt.repository === OT_GATEWAY_REPOSITORY
+          && typeof receipt.sourceCommit === 'string'
+          && receipt.sourceCommit.toLowerCase() === evidence.identity.gateway_source_commit.toLowerCase()
+          && receipt.image === expectedImage
+          && receipt.signatureVerified === true
+          && receipt.provenanceAttested === true
+          && receipt.signingWorkflow === OT_GATEWAY_SIGNING_WORKFLOW;
+        if (!validReceipt) {
+          errors.push('gateway release receipt does not bind to the expected repository, source commit, image digest and trusted main signing workflow');
+        }
       }
     } catch {
       errors.push(`${entry.label} artifact is missing, unreadable or traverses a symlink`);
