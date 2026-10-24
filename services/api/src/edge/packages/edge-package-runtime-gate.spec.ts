@@ -276,6 +276,59 @@ describe('EdgePackageRuntimeGate', () => {
     expect(executor).not.toHaveBeenCalled();
   });
 
+  it('passes an AbortSignal to active host work and treats late success after sync failure as ambiguous', async () => {
+    let activeSignal: AbortSignal | undefined;
+    let finishExecution: ((value: string) => void) | undefined;
+    const outcome = gate.execute(activationScope, (_release, signal) => {
+      activeSignal = signal;
+      return new Promise<string>((resolve) => { finishExecution = resolve; });
+    });
+
+    expect(activeSignal).toBeDefined();
+    gate.recordControlSyncFailure();
+    expect(activeSignal?.aborted).toBe(true);
+    if (!finishExecution) throw new Error('Execution callback did not start');
+    finishExecution('late-success');
+
+    await expect(outcome).rejects.toMatchObject({ code: 'EXECUTION_ABORTED_AFTER_START' });
+  });
+
+  it('cancels active work when a freshly confirmed control decision becomes PAUSED', async () => {
+    let activeSignal: AbortSignal | undefined;
+    let finishExecution: ((value: string) => void) | undefined;
+    const outcome = gate.execute(activationScope, (_release, signal) => {
+      activeSignal = signal;
+      return new Promise<string>((resolve) => { finishExecution = resolve; });
+    });
+
+    await controlStore.save(control('PAUSED'));
+    gate.confirmControlSync([managedScope]);
+    expect(activeSignal?.aborted).toBe(true);
+    expect((activeSignal?.reason as { code?: string })?.code).toBe('PACKAGE_CONTROL_DENIED');
+    if (!finishExecution) throw new Error('Execution callback did not start');
+    finishExecution('late-success');
+
+    await expect(outcome).rejects.toMatchObject({ code: 'EXECUTION_ABORTED_AFTER_START' });
+  });
+
+  it('cancels active work when a refreshed signer snapshot revokes the executing signer', async () => {
+    let activeSignal: AbortSignal | undefined;
+    let finishExecution: ((value: string) => void) | undefined;
+    const outcome = gate.execute(activationScope, (_release, signal) => {
+      activeSignal = signal;
+      return new Promise<string>((resolve) => { finishExecution = resolve; });
+    });
+
+    await signingKeyStore.applySnapshot(snapshot('REVOKED'));
+    gate.confirmControlSync([managedScope]);
+    expect(activeSignal?.aborted).toBe(true);
+    expect((activeSignal?.reason as { code?: string })?.code).toBe('SIGNING_KEY_CHANGED');
+    if (!finishExecution) throw new Error('Execution callback did not start');
+    finishExecution('late-success');
+
+    await expect(outcome).rejects.toMatchObject({ code: 'EXECUTION_ABORTED_AFTER_START' });
+  });
+
   it('rejects execution scope mismatches before reading a release or invoking the executor', async () => {
     const executor = jest.fn();
     await expect(gate.execute({
