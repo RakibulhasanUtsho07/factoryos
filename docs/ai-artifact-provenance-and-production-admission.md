@@ -36,7 +36,7 @@ For local development and automated test environments, the Tool Gateway delibera
 
 Outside explicit `development` and `test` modes—including staging and an unset `NODE_ENV`—the gateway re-reads the current tenant-scoped registry, verifies digest, expiry, source approval/revocation and Ed25519 signature, writes an append-only admission decision, and only then invokes the provider callback. Missing digests are passed to the admission service and denied with evidence; a failed admission/database check never falls through to inference. Positive decisions are not cached.
 
-The gateway is a reusable enforcement boundary, not evidence that a provider is already integrated. This repository still has no concrete live provider adapter routed through it; FR-MSO-05 model-inference coverage therefore remains **partial** until each real adapter uses this gateway and passes provider-level tests against the exact model digest.
+The gateway is a reusable enforcement boundary. The authenticated OpenAI-compatible prompt-only route described below is one concrete adapter routed through it and covered by provider-adapter tests. That code-level integration does not prove an approved provider deployment or universal coverage of every production inference path. FR-MSO-05 remains **partial** until the deployed route's immutable configuration is verified in an approved provider environment and every production route has admission and failure-path tests with operational evidence.
 
 ## OpenAI-compatible inference route
 
@@ -61,9 +61,13 @@ This digest is a signed route/deployment manifest digest, **not a cryptographic 
 ## Explicit acceptance boundaries
 
 - The registry cryptographically verifies the signer's binding between artifact identity, SHA-256 and expiry. It does not download arbitrary artifacts or prove that remote storage bytes match that signed digest. The trusted build/deployment pipeline must compute the digest from the actual model/package/container and place the same verified digest into the immutable tool definition's metadata.artifactSha256.
-- This slice wires the production Tool Gateway gate and adds a shared model-provider gateway primitive that can verify the exact MODEL artifact immediately before a provider callback. The repository still has no concrete live model-provider adapter routed through that primitive. FR-MSO-05 model-inference enforcement remains **partial** until every real provider route uses the gateway and has provider-level tests with an immutable model digest.
+- This slice wires the production Tool Gateway gate, the reusable model-provider admission gateway, and one concrete OpenAI-compatible prompt-only inference route through that gateway. FR-MSO-05 remains **partial** until every production provider route uses the gateway, exact model digests and failure paths are verified, and approved deployment/egress/data-residency plus release evidence are recorded.
 - Provider/model replacement compatibility and regression evaluation (FR-MSO-06), prompt/policy checksum enforcement at every execution boundary (FR-MSO-07), CI-produced signing attestations, external revocation synchronization, real release-signing custody and production cluster validation remain separate acceptance work.
 - No existing artifact gets trusted implicitly. After rollout, production tool definitions without an approved signed artifact reference are intentionally denied until they are re-versioned/configured with artifactSha256 and a matching registration is approved.
+
+## Live provider release acceptance
+
+The code-level provider route is implemented, but the approved-environment release gate is still open. Follow [AI Model Provider Live Release Acceptance](ai-provider-live-release-acceptance.md) for the synthetic end-to-end probe, admission/usage correlation, required negative controls, evidence-record fields, rollback checks, and independent release review. The runbook is a procedure and template, not evidence that those steps have been executed; SRS FR-MSO-03 and FR-MSO-05 remain OPEN / NOT_ACCEPTED until the actual deployment evidence and owner/reviewer decisions exist.
 
 ## Tests
 
