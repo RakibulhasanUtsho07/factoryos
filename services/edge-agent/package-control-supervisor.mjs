@@ -1,3 +1,5 @@
+import { verifySynchronizedEdgePackage } from './verified-package-runtime.mjs';
+
 const PACKAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const USE_CASE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
@@ -36,10 +38,11 @@ function validateContext(context) {
 /**
  * Host-side fail-closed supervisor for EdgePackageControlSyncClient.
  *
- * It schedules polling and only calls a host operation when the current snapshot
- * is healthy, the exact configured package scope is ACTIVE, and the release signer
- * is present and ACTIVE. The operation must still verify the signed artifact bytes
- * and enforce any separate runtime/activation policy before causing side effects.
+ * Managed signed packages should use runVerifiedPackage(), which validates the
+ * canonical Ed25519 manifest signature and every artifact byte, then rechecks
+ * the package control and signer immediately before calling the host executor.
+ * runAuthorized() remains a lower-level guard for callers that perform their own
+ * verification; it is not sufficient on its own for signed package execution.
  */
 export class EdgePackageExecutionSupervisor {
   constructor(syncClient, options = {}) {
@@ -71,7 +74,6 @@ export class EdgePackageExecutionSupervisor {
       this.running = false;
       fail('SUPERVISOR_SCHEDULER_FAILED', 'Package-control polling could not be scheduled; execution remains blocked');
     }
-    // Keep the periodic retry active even when this first poll fails.
     return this.refresh();
   }
 
@@ -118,7 +120,6 @@ export class EdgePackageExecutionSupervisor {
       await this.syncClient.pollOnce();
       this.lastPollErrorCode = null;
     } catch (error) {
-      // Fail closed even if an adapter throws without updating its own snapshot.
       let snapshotErrorCode;
       try { snapshotErrorCode = this.syncClient.getSnapshot()?.lastErrorCode; } catch { /* unavailable snapshot */ }
       this.lastPollErrorCode = typeof error?.code === 'string' && SAFE_ERROR_CODE.test(error.code)
@@ -161,6 +162,8 @@ export class EdgePackageExecutionSupervisor {
     }
 
     return Object.freeze({
+      tenantId: snapshot.tenantId,
+      factoryId: snapshot.factoryId,
       packageId: context.packageId,
       packageVersion: context.version,
       useCaseId: context.useCaseId,
@@ -168,6 +171,7 @@ export class EdgePackageExecutionSupervisor {
         keyId: signingKey.keyId,
         publicKeyPem: signingKey.publicKeyPem,
         fingerprintSha256: signingKey.fingerprintSha256,
+        status: signingKey.status,
       }),
       control: Object.freeze({
         status: control.status,
@@ -179,11 +183,41 @@ export class EdgePackageExecutionSupervisor {
     });
   }
 
+  runVerifiedPackage(input, options, executor) {
+    if (typeof executor !== 'function') throw new TypeError('runVerifiedPackage requires an executor callback');
+    if (!options || typeof options !== 'object' || Array.isArray(options)
+      || !(options.allowedToolIds instanceof Set)) {
+      throw new TypeError('runVerifiedPackage requires a host-controlled allowedToolIds Set');
+    }
+    const manifest = input && typeof input === 'object' ? input.manifest : null;
+    const context = {
+      packageId: manifest?.packageId,
+      version: manifest?.version,
+      useCaseId: options.useCaseId ?? null,
+      signingKeyId: manifest?.signingKeyId,
+    };
+    const firstAuthorization = this.authorizeExecution(context);
+    const { useCaseId, allowedToolIds, ...verificationPolicy } = options;
+    const verifiedRelease = verifySynchronizedEdgePackage(input, firstAuthorization, {
+      ...verificationPolicy,
+      allowedToolIds,
+    });
+
+    // Re-read sync health, exact-scope control, and signer after signature/hash
+    // verification, immediately before the callback which may create side effects.
+    const currentAuthorization = this.authorizeExecution(context);
+    if (currentAuthorization.tenantId !== firstAuthorization.tenantId
+      || currentAuthorization.factoryId !== firstAuthorization.factoryId
+      || currentAuthorization.signingKey.keyId !== firstAuthorization.signingKey.keyId
+      || currentAuthorization.signingKey.fingerprintSha256 !== firstAuthorization.signingKey.fingerprintSha256) {
+      fail('PACKAGE_AUTHORIZATION_CHANGED', 'Package signer or target scope changed during verification');
+    }
+    return executor(verifiedRelease, currentAuthorization);
+  }
+
   runAuthorized(input, operation) {
     if (typeof operation !== 'function') throw new TypeError('runAuthorized requires an operation callback');
     const authorization = this.authorizeExecution(input);
-    // Invoke the operation only after every fail-closed check has completed.
-    // The callback is responsible for verifying artifact bytes and activation policy.
     return operation(authorization);
   }
 }

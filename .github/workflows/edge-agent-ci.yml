@@ -32,5 +32,6 @@ jobs:
           node --check services/edge-agent/durable-observation-spool.mjs
           node --check services/edge-agent/package-control-sync.mjs
           node --check services/edge-agent/package-control-supervisor.mjs
+          node --check services/edge-agent/verified-package-runtime.mjs
       - name: Run complete Edge agent contract suite
         run: node --test services/edge-agent/test/*.test.mjs
