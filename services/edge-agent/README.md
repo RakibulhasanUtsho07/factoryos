@@ -7,10 +7,11 @@ The module is published inside the repository as the private npm workspace `@fac
     import {
       EdgePackageControlSyncClient,
       EdgePackageExecutionSupervisor,
+      EdgePackageHostRuntimeAdapter,
       verifySynchronizedEdgePackage,
     } from '@factoryos/edge-agent';
 
-Subpath exports are available for `./durable-observation-spool`, `./package-control-sync`, `./package-control-supervisor`, and `./verified-package-runtime`. The package intentionally has no third-party runtime dependencies; its supported minimum Node.js version is 22. Workspace checks are `npm --workspace @factoryos/edge-agent run check`, `npm --workspace @factoryos/edge-agent run build`, and `npm --workspace @factoryos/edge-agent test`.
+Subpath exports are available for `./durable-observation-spool`, `./package-control-sync`, `./package-control-supervisor`, `./verified-package-runtime`, and `./host-runtime-adapter`. The package intentionally has no third-party runtime dependencies; its supported minimum Node.js version is 22. Workspace checks are `npm --workspace @factoryos/edge-agent run check`, `npm --workspace @factoryos/edge-agent run build`, and `npm --workspace @factoryos/edge-agent test`.
 
 This Node.js library provides a durable telemetry spool, an authenticated package-control sync client, a recurring fail-closed supervisor, and a signed-package verification boundary. It is not a complete service supervisor, native hardware driver suite, or proof that a particular production model/policy executor has been wired to these APIs.
 
@@ -104,6 +105,21 @@ Start a periodic fail-closed supervisor, then use runVerifiedPackage for managed
     );
 
     supervisor.stop();
+
+The canonical adapter guarantees the host invocation goes through the supervisor's signature, artifact and live-authorization checks. It does not implement inference itself; connect the deployment-owned model/policy runtime and propagate the AbortSignal to its real execution loop:
+
+    const adapter = new EdgePackageHostRuntimeAdapter(supervisor, {
+      async execute(request) {
+        const { authorization, signal, ...verifiedRelease } = request;
+        return hostRuntime.loadAndExecute(verifiedRelease, { authorization, signal });
+      },
+    });
+
+    await adapter.execute(signedPackageInput, {
+      useCaseId: 'inspection',
+      allowedToolIds: new Set(['AI.RUNTIME.NOOP']),
+    });
+
 
 runVerifiedPackage:
 
