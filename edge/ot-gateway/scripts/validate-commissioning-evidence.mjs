@@ -334,11 +334,23 @@ export function validateCommissioningEvidence(evidence) {
     if (!isObject(evidence.signoffs)) {
       errors.push('PASS requires all three authorized signoffs');
     } else {
+      const signoffIdentityNames = new Map();
       for (const [role, identityField] of SIGNOFFS) {
         const signoff = evidence.signoffs[role];
         if (!isObject(signoff)) continue;
         if (isPlaceholder(signoff.name) || signoff.name !== identity?.[identityField]) {
           errors.push(`PASS requires signoffs.${role}.name to match identity.${identityField}`);
+        }
+        const normalizedName = typeof signoff.name === 'string'
+          ? signoff.name.normalize('NFKC').trim().toLowerCase()
+          : '';
+        if (normalizedName && !isPlaceholder(signoff.name)) {
+          const previousRole = signoffIdentityNames.get(normalizedName);
+          if (previousRole) {
+            errors.push(`PASS requires three distinct signoff identities; signoffs.${role} duplicates signoffs.${previousRole}`);
+          } else {
+            signoffIdentityNames.set(normalizedName, role);
+          }
         }
         if (!validEvidenceReference(signoff.signature_artifact_ref)) {
           errors.push(`PASS requires signoffs.${role}.signature_artifact_ref`);
@@ -348,6 +360,9 @@ export function validateCommissioningEvidence(evidence) {
         }
         if (!validTimestamp(signoff.signed_at)) {
           errors.push(`PASS requires signoffs.${role}.signed_at with an explicit timezone`);
+        } else if (validTimestamp(identity?.test_ended_at)
+            && Date.parse(signoff.signed_at) < Date.parse(identity.test_ended_at)) {
+          errors.push(`PASS requires signoffs.${role}.signed_at at or after identity.test_ended_at`);
         }
       }
     }

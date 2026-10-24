@@ -200,6 +200,23 @@ test('PASS is rejected when immutable build identity, preconditions, or artifact
   assert.ok(errors.some((error) => error.includes('artifact_ref')));
 });
 
+test('PASS requires three distinct signoff identities, ignoring case and Unicode normalization', async () => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  evidence.identity.security_approver_name = evidence.identity.operator_name.toLowerCase();
+  evidence.signoffs.security_approver.name = evidence.identity.security_approver_name;
+
+  const errors = validateCommissioningEvidence(evidence);
+  assert.ok(errors.some((error) => error.includes('three distinct signoff identities')));
+});
+
+test('PASS requires each signoff timestamp to be at or after test completion', async () => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  evidence.signoffs.release_approver.signed_at = '2026-10-24T09:59:59Z';
+
+  const errors = validateCommissioningEvidence(evidence);
+  assert.ok(errors.some((error) => error.includes('signed_at at or after identity.test_ended_at')));
+});
+
 test('event reconciliation contradictions are rejected even before a PASS decision', async () => {
   const evidence = await loadTemplate();
   evidence.reconciliation.events_generated = 1;
