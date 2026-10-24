@@ -1,9 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 
 import { DurableEdgeSpool, EdgeSpoolError } from './durable-edge-spool.js';
+
+const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 0x37);
 
 const firstBatch = () => ({
   batch_key: 'batch-001',
@@ -27,7 +29,7 @@ describe('DurableEdgeSpool', () => {
 
   beforeEach(async () => {
     rootDir = await mkdtemp(join(tmpdir(), 'factoryos-edge-spool-'));
-    spool = new DurableEdgeSpool(rootDir, { retryBaseMs: 10, retryMaxMs: 40 });
+    spool = new DurableEdgeSpool(rootDir, TEST_ENCRYPTION_KEY, { retryBaseMs: 10, retryMaxMs: 40 });
     await spool.initialize();
   });
 
@@ -40,7 +42,7 @@ describe('DurableEdgeSpool', () => {
     await spool.enqueue(firstBatch(), 1_000);
     await spool.close();
 
-    spool = new DurableEdgeSpool(rootDir, { retryBaseMs: 10, retryMaxMs: 40 });
+    spool = new DurableEdgeSpool(rootDir, TEST_ENCRYPTION_KEY, { retryBaseMs: 10, retryMaxMs: 40 });
     await spool.initialize();
 
     const ready = await spool.listReady(10, 1_000);
@@ -55,7 +57,7 @@ describe('DurableEdgeSpool', () => {
     expect((await spool.status()).lastSuccessfulSyncAt).toBe(timestamp);
 
     await spool.close();
-    spool = new DurableEdgeSpool(rootDir, { retryBaseMs: 10, retryMaxMs: 40 });
+    spool = new DurableEdgeSpool(rootDir, TEST_ENCRYPTION_KEY, { retryBaseMs: 10, retryMaxMs: 40 });
     await spool.initialize();
     expect((await spool.status()).lastSuccessfulSyncAt).toBe(timestamp);
 
@@ -91,7 +93,7 @@ describe('DurableEdgeSpool', () => {
     expect(await spool.listReady(10, 1_009)).toHaveLength(0);
 
     await spool.close();
-    spool = new DurableEdgeSpool(rootDir, { retryBaseMs: 10, retryMaxMs: 40 });
+    spool = new DurableEdgeSpool(rootDir, TEST_ENCRYPTION_KEY, { retryBaseMs: 10, retryMaxMs: 40 });
     await spool.initialize();
 
     const ready = await spool.listReady(10, 1_010);
@@ -109,7 +111,7 @@ describe('DurableEdgeSpool', () => {
 
   it('never discards queued data when the batch capacity is reached', async () => {
     await spool.close();
-    spool = new DurableEdgeSpool(rootDir, {
+    spool = new DurableEdgeSpool(rootDir, TEST_ENCRYPTION_KEY, {
       maxPendingBatches: 1,
       retryBaseMs: 10,
       retryMaxMs: 40,
@@ -135,8 +137,45 @@ describe('DurableEdgeSpool', () => {
     expect((await spool.status()).pendingBatches).toBe(0);
   });
 
+  it('requires a 32-byte AES-256 key', () => {
+    expect(() => new DurableEdgeSpool(rootDir, Buffer.alloc(16))).toThrow(/32-byte AES-256 key/);
+  });
+
+  it('encrypts queued payloads and agent state at rest', async () => {
+    await spool.enqueue(firstBatch());
+    const [fileName] = await readdir(join(rootDir, 'pending'));
+    const raw = await readFile(join(rootDir, 'pending', fileName), 'utf8');
+    const state = await readFile(join(rootDir, 'agent-state.json'), 'utf8');
+
+    expect(raw).toContain('"algorithm":"AES-256-GCM"');
+    expect(raw).not.toContain('motor.temperature');
+    expect(raw).not.toContain('41.7');
+    expect(state).toContain('"algorithm":"AES-256-GCM"');
+    expect(state).not.toContain('last_successful_sync_at');
+  });
+
+  it('fails closed when the spool is reopened with the wrong key', async () => {
+    await spool.enqueue(firstBatch());
+    await spool.close();
+
+    spool = new DurableEdgeSpool(rootDir, Buffer.alloc(32, 0x22), { retryBaseMs: 10, retryMaxMs: 40 });
+    await expect(spool.initialize()).rejects.toMatchObject({ code: 'SPOOL_CORRUPT' });
+  });
+
+  it('fails closed when an encrypted record authentication tag is tampered with', async () => {
+    await spool.enqueue(firstBatch());
+    const [fileName] = await readdir(join(rootDir, 'pending'));
+    const filePath = join(rootDir, 'pending', fileName);
+    const envelope = JSON.parse(await readFile(filePath, 'utf8')) as { auth_tag: string };
+    envelope.auth_tag = Buffer.alloc(16).toString('base64');
+    await writeFile(filePath, JSON.stringify(envelope), 'utf8');
+
+    await expect(spool.listReady()).rejects.toMatchObject({ code: 'SPOOL_CORRUPT' });
+    expect((await readdir(join(rootDir, 'pending')))).toContain(fileName);
+  });
+
   it('serializes ownership of a spool directory to one agent process', async () => {
-    const competing = new DurableEdgeSpool(rootDir);
+    const competing = new DurableEdgeSpool(rootDir, TEST_ENCRYPTION_KEY);
     await expect(competing.initialize()).rejects.toMatchObject({
       code: 'SPOOL_LOCKED',
     });
@@ -152,7 +191,7 @@ describe('DurableEdgeSpool', () => {
   });
 
   it('fails closed when the spool is used before initialization', async () => {
-    const uninitialized = new DurableEdgeSpool(join(rootDir, 'not-opened'));
+    const uninitialized = new DurableEdgeSpool(join(rootDir, 'not-opened'), TEST_ENCRYPTION_KEY);
     await expect(uninitialized.listReady()).rejects.toBeInstanceOf(EdgeSpoolError);
   });
 });
