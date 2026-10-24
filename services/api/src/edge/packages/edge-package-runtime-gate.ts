@@ -39,6 +39,8 @@ export interface EdgePackageManagedScope {
 export interface EdgePackageRuntimeGateOptions {
   maxControlAgeMs: number;
   maxSigningKeyAgeMs: number;
+  /** Fixed package/version/use-case set this host is configured to execute. */
+  managedScopes: readonly EdgePackageManagedScope[];
   clock?: () => Date;
 }
 
@@ -60,6 +62,7 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
   private readonly confirmedScopes = new Set<string>();
   private readonly maxControlAgeMs: number;
   private readonly maxSigningKeyAgeMs: number;
+  private readonly expectedScopes: ReadonlySet<string>;
   private readonly clock: () => Date;
   private readonly expectedTenantId: string;
   private readonly expectedFactoryId: string;
@@ -75,9 +78,30 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
     if (!UUID_PATTERN.test(tenantId) || !UUID_PATTERN.test(factoryId)) {
       throw new EdgePackageRuntimeGateError('INVALID_RUNTIME_SCOPE', 'A valid tenant and factory scope is required');
     }
-    if (!options || !this.validMaxAge(options.maxControlAgeMs) || !this.validMaxAge(options.maxSigningKeyAgeMs)) {
-      throw new EdgePackageRuntimeGateError('INVALID_RUNTIME_SCOPE', 'Runtime gate freshness limits must be bounded positive integers');
+    if (
+      !options ||
+      !this.validMaxAge(options.maxControlAgeMs) ||
+      !this.validMaxAge(options.maxSigningKeyAgeMs) ||
+      !Array.isArray(options.managedScopes) ||
+      options.managedScopes.length < 1 ||
+      options.managedScopes.length > MAX_MANAGED_SCOPES ||
+      !options.managedScopes.every((scope) =>
+        this.validManagedScope(scope?.packageId, scope?.version, scope?.useCaseId))
+    ) {
+      throw new EdgePackageRuntimeGateError(
+        'INVALID_RUNTIME_SCOPE',
+        'Runtime freshness limits and a bounded valid managed-scope set are required',
+      );
     }
+    const expectedScopes = new Set(options.managedScopes.map((scope) =>
+      this.scopeKey(scope.packageId, scope.version, scope.useCaseId)));
+    if (expectedScopes.size !== options.managedScopes.length) {
+      throw new EdgePackageRuntimeGateError(
+        'INVALID_RUNTIME_SCOPE',
+        'Configured managed scopes must be unique',
+      );
+    }
+    this.expectedScopes = expectedScopes;
     this.expectedTenantId = tenantId.toLowerCase();
     this.expectedFactoryId = factoryId.toLowerCase();
     this.maxControlAgeMs = options.maxControlAgeMs;
@@ -93,8 +117,16 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
   confirmControlSync(scopes: readonly EdgePackageManagedScope[]): void {
     this.controlSyncHealthy = false;
     this.confirmedScopes.clear();
-    if (!Array.isArray(scopes) || scopes.length < 1 || scopes.length > MAX_MANAGED_SCOPES) {
-      throw new EdgePackageRuntimeGateError('CONTROL_SYNC_UNVERIFIED', 'A complete bounded managed-scope set is required');
+    if (
+      !Array.isArray(scopes) ||
+      scopes.length !== this.expectedScopes.size ||
+      scopes.length < 1 ||
+      scopes.length > MAX_MANAGED_SCOPES
+    ) {
+      throw new EdgePackageRuntimeGateError(
+        'CONTROL_SYNC_UNVERIFIED',
+        'Control sync must cover every configured managed scope exactly once',
+      );
     }
 
     const nextScopes = new Set<string>();
@@ -103,6 +135,12 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
       const key = this.scopeKey(scope.packageId, scope.version, scope.useCaseId);
       if (nextScopes.has(key)) {
         throw new EdgePackageRuntimeGateError('CONTROL_SYNC_UNVERIFIED', 'The managed-scope snapshot contains duplicates');
+      }
+      if (!this.expectedScopes.has(key)) {
+        throw new EdgePackageRuntimeGateError(
+          'CONTROL_SYNC_UNVERIFIED',
+          'The control-sync snapshot contains an unconfigured managed scope',
+        );
       }
       const state = this.readControlState(scope.packageId, scope.version, scope.useCaseId);
       if (!state || state.lastErrorCode !== null || !this.isFresh(state)) {
