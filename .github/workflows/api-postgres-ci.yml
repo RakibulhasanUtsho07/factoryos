@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'docs/ai-artifact-provenance-and-production-admission.md'
+      - 'docs/ai-provider-live-release-acceptance.md'
       - 'services/api/**'
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
@@ -27,6 +29,8 @@ on:
     branches: [main, dev, rakibul-hasan]
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'docs/ai-artifact-provenance-and-production-admission.md'
+      - 'docs/ai-provider-live-release-acceptance.md'
       - 'services/api/**'
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
