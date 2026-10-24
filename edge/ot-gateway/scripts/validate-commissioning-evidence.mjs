@@ -51,6 +51,7 @@ const IDENTITY_FIELDS = Object.freeze([
   'gateway_source_commit',
   'gateway_release_receipt_ref',
   'gateway_release_receipt_sha256',
+  'gateway_config_ref',
   'gateway_config_sha256',
   'api_build_sha',
   'device_model_firmware',
@@ -277,6 +278,9 @@ export function validateCommissioningEvidence(evidence) {
       if (!/^[a-f0-9]{64}$/i.test(identity.gateway_release_receipt_sha256 ?? '')) {
         errors.push('PASS requires a 64-hex gateway_release_receipt_sha256');
       }
+      if (!validEvidenceReference(identity.gateway_config_ref)) {
+        errors.push('PASS requires identity.gateway_config_ref');
+      }
       if (!/^[a-f0-9]{64}$/i.test(identity.gateway_config_sha256 ?? '')) {
         errors.push('PASS requires a 64-hex gateway_config_sha256');
       }
@@ -391,6 +395,11 @@ export async function verifyCommissioningArtifactReferences(evidence, artifactRo
       sha256: signoff.signature_artifact_sha256,
     });
   }
+  if (isObject(evidence?.identity)) entries.push({
+    label: 'identity.gateway_config',
+    reference: evidence.identity.gateway_config_ref,
+    sha256: evidence.identity.gateway_config_sha256,
+  });
   if (isObject(evidence?.identity)) entries.push({
     label: 'identity.gateway_release_receipt',
     reference: evidence.identity.gateway_release_receipt_ref,

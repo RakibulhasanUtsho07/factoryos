@@ -10,7 +10,8 @@
 | Factory/site/line | |
 | Gateway asset ID and serial | |
 | Gateway image digest | |
-| Gateway configuration SHA-256 | |
+| Gateway configuration artifact reference (relative to evidence artifact root) | |
+| Gateway configuration SHA-256 (must match the referenced file bytes) | |
 | API deployment/build SHA | |
 | PLC/device/broker model and firmware | |
 | Operator and approver | |
