@@ -26,7 +26,7 @@ If any precondition is missing, stop. Do not bypass admission or set a requireme
 
 Run this only against the approved staging/acceptance environment, after the preconditions above are complete. The script emits a small sanitized result containing the request reference and pinned model/version only. It intentionally does not print the token or provider response beyond checking the synthetic marker.
 
-    $uri = $env:FACTORYOS_STAGING_BASE_URL.TrimEnd('/') + '/api/v2/ai/inference/chat-completions'
+    $uri = ($env:FACTORYOS_STAGING_BASE_URL).TrimEnd('/') + '/api/v2/ai/inference/chat-completions'
     $headers = @{ Authorization = "Bearer $env:FACTORYOS_STAGING_JWT" }
     $body = @{
       prompt = 'Return exactly FACTORYOS_PROVIDER_ACCEPTANCE_OK'
