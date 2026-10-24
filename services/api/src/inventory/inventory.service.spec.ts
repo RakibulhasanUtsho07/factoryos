@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import type { Mock } from 'jest-mock';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { AuditService } from '../audit/audit.service';
@@ -42,6 +42,51 @@ describe('InventoryService', () => {
       database as unknown as DatabaseService,
       audit as unknown as AuditService,
     );
+  });
+
+  it('reads an authoritative stock snapshot with tenant and factory predicates', async () => {
+    const stock = {
+      item_id: ITEM_ID,
+      sku: 'FABRIC-01',
+      name: 'Cotton Fabric',
+      unit: 'M',
+      status: 'ACTIVE',
+      quantity_on_hand: '12.0000',
+      quantity_reserved: '2.0000',
+      quantity_available: '10.0000',
+      balance_version: '7',
+    };
+    database.query.mockResolvedValueOnce({ rows: [stock] } as QueryResponse);
+
+    const result = await service.getStockSummary(USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID);
+
+    expect(result).toEqual(stock);
+    expect(database.query).toHaveBeenCalledWith(
+      expect.stringContaining('AND i.tenant_id = $2'),
+      [ITEM_ID, TENANT_ID, FACTORY_ID],
+      { tenantId: TENANT_ID, userId: USER_ID },
+    );
+    const query = String(database.query.mock.calls[0]?.[0]);
+    expect(query).toContain('AND i.factory_id = $3');
+    expect(query).toContain('AND b.factory_id = i.factory_id');
+    expect(query).toContain('(b.quantity_on_hand - b.quantity_reserved)::text AS quantity_available');
+    expect(query).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?(?:inventory_|public\.inventory_)/i);
+  });
+
+  it('does not return stock when the item is outside the requested factory scope', async () => {
+    database.query.mockResolvedValueOnce({ rows: [] } as QueryResponse);
+
+    await expect(service.getStockSummary(USER_ID, TENANT_ID, FACTORY_ID, ITEM_ID))
+      .rejects.toBeInstanceOf(NotFoundException);
+    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid item identifier before any database query', async () => {
+    await expect(service.getStockSummary(USER_ID, TENANT_ID, FACTORY_ID, 'not-a-uuid'))
+      .rejects.toMatchObject({ status: 400 });
+    expect(database.query).not.toHaveBeenCalled();
+    expect(database.transaction).not.toHaveBeenCalled();
   });
 
   it('creates a normalized item, its zero balance and an outbox event in one transaction', async () => {
