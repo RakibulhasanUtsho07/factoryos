@@ -176,6 +176,25 @@ For each finding, record: finding_id, title, severity (Critical/High/Medium/Low/
 
 ## 9. Rollback and release approval
 
+### Automated evidence consistency check
+
+The checked-in `deploy/security/production-security-baseline.yml` is an **unattested template only**. CI runs:
+
+```sh
+node scripts/security/validate-production-security-baseline.mjs --check-template
+```
+
+This fails if the shared template is edited to imply production approval, successful external tests, verified credentials, or reviewed network controls without operator evidence. Do not overwrite the template with live secrets or use a CI result as runtime attestation.
+
+For a separate, access-controlled operator evidence copy, run the exact-candidate release gate:
+
+```sh
+node scripts/security/validate-production-security-baseline.mjs --release-gate /secure/path/production-security-attestation.yml <full-40-character-candidate-sha>
+```
+
+The validator checks that the declared candidate SHA matches the supplied immutable SHA, dependency-audit evidence refers to that same SHA, required identity/database/secrets/network controls have explicit outcomes, negative tests and independent-review evidence are complete, credential-overlap windows are valid, and operator/approver are different people. Missing, ambiguous, stale or contradictory evidence fails closed. A successful validator run means the supplied evidence is internally complete; it does not independently authenticate the report or replace release authority's review of the evidence.
+
+
 The release remains blocked until all applicable items are supported by evidence:
 
 - [ ] Exact candidate SHA recorded and applicable API/PostgreSQL/Web/security CI passes.
