@@ -327,7 +327,29 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
       signingKeyPem: signingKey.publicKeyPem,
     });
 
-    const executionPromise = Promise.resolve().then(() => executor(release, controller.signal));
+    let executorInvoked = false;
+    const cancellationBeforeStart = () => {
+      const reason = controller.signal.reason;
+      if (reason instanceof Error) return reason;
+      return new EdgePackageRuntimeGateError(
+        'CONTROL_SYNC_UNVERIFIED',
+        'Execution was denied because package authorization was cancelled before host invocation',
+      );
+    };
+    const abortedAfterStart = () => new EdgePackageRuntimeGateError(
+      'EXECUTION_ABORTED_AFTER_START',
+      'Cancellation was requested after the host executor started; its work may still be running, so reconcile possible side effects before retrying',
+    );
+    const cancellationOutcome = () => executorInvoked ? abortedAfterStart() : cancellationBeforeStart();
+
+    // Cancellation can arrive after admission but before this microtask runs.
+    // Re-check the signal before invoking any host code, otherwise a just-revoked
+    // execution could start side effects after the caller was already denied.
+    const executionPromise = Promise.resolve().then(() => {
+      if (controller.signal.aborted) throw cancellationBeforeStart();
+      executorInvoked = true;
+      return executor(release, controller.signal);
+    });
     // Keep the execution registered until the host callback really settles. If
     // it ignores AbortSignal, the caller still gets an ambiguous result promptly,
     // but the gate does not pretend the underlying work has stopped.
@@ -336,23 +358,19 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
       () => { this.activeExecutions.delete(executionId); },
     );
 
-    const abortedAfterStart = () => new EdgePackageRuntimeGateError(
-      'EXECUTION_ABORTED_AFTER_START',
-      'Cancellation was requested after the host executor started; its work may still be running, so reconcile possible side effects before retrying',
-    );
     let onAbort: (() => void) | undefined;
     const abortPromise = new Promise<never>((_resolve, reject) => {
-      onAbort = () => reject(abortedAfterStart());
+      onAbort = () => reject(cancellationOutcome());
       if (controller.signal.aborted) onAbort();
       else controller.signal.addEventListener('abort', onAbort, { once: true });
     });
 
     try {
       const outcome = await Promise.race([executionPromise, abortPromise]);
-      if (controller.signal.aborted) throw abortedAfterStart();
+      if (controller.signal.aborted) throw cancellationOutcome();
       return outcome;
     } catch (error) {
-      if (controller.signal.aborted) throw abortedAfterStart();
+      if (controller.signal.aborted) throw cancellationOutcome();
       throw error;
     } finally {
       if (onAbort) controller.signal.removeEventListener('abort', onAbort);
