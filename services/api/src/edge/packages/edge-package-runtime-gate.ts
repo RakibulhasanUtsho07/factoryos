@@ -21,7 +21,9 @@ const MAX_FRESHNESS_MS = 24 * 60 * 60 * 1000;
 export type EdgePackageRuntimeGateErrorCode =
   | 'INVALID_RUNTIME_SCOPE'
   | 'CONTROL_SYNC_UNVERIFIED'
-  | 'PACKAGE_CONTROL_DENIED';
+  | 'PACKAGE_CONTROL_DENIED'
+  | 'SIGNING_KEY_CHANGED'
+  | 'EXECUTION_ABORTED_AFTER_START';
 
 export class EdgePackageRuntimeGateError extends Error {
   constructor(readonly code: EdgePackageRuntimeGateErrorCode, message: string) {
@@ -66,6 +68,12 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
   private readonly clock: () => Date;
   private readonly expectedTenantId: string;
   private readonly expectedFactoryId: string;
+  private readonly activeExecutions = new Map<symbol, {
+    scope: EdgePackageActivationScope;
+    controller: AbortController;
+    signingKeyId: string;
+    signingKeyPem: string;
+  }>();
 
   constructor(
     private readonly activationStore: ActiveReleaseVerifier,
@@ -117,46 +125,132 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
   confirmControlSync(scopes: readonly EdgePackageManagedScope[]): void {
     this.controlSyncHealthy = false;
     this.confirmedScopes.clear();
-    if (
-      !Array.isArray(scopes) ||
-      scopes.length !== this.expectedScopes.size ||
-      scopes.length < 1 ||
-      scopes.length > MAX_MANAGED_SCOPES
-    ) {
-      throw new EdgePackageRuntimeGateError(
-        'CONTROL_SYNC_UNVERIFIED',
-        'Control sync must cover every configured managed scope exactly once',
-      );
-    }
-
-    const nextScopes = new Set<string>();
-    for (const scope of scopes) {
-      this.assertManagedScope(scope);
-      const key = this.scopeKey(scope.packageId, scope.version, scope.useCaseId);
-      if (nextScopes.has(key)) {
-        throw new EdgePackageRuntimeGateError('CONTROL_SYNC_UNVERIFIED', 'The managed-scope snapshot contains duplicates');
-      }
-      if (!this.expectedScopes.has(key)) {
+    try {
+      if (
+        !Array.isArray(scopes) ||
+        scopes.length !== this.expectedScopes.size ||
+        scopes.length < 1 ||
+        scopes.length > MAX_MANAGED_SCOPES
+      ) {
         throw new EdgePackageRuntimeGateError(
           'CONTROL_SYNC_UNVERIFIED',
-          'The control-sync snapshot contains an unconfigured managed scope',
+          'Control sync must cover every configured managed scope exactly once',
         );
       }
-      const state = this.readControlState(scope.packageId, scope.version, scope.useCaseId);
-      if (!state || state.lastErrorCode !== null || !this.isFresh(state)) {
-        throw new EdgePackageRuntimeGateError('CONTROL_SYNC_UNVERIFIED', 'A managed scope is missing, stale or has a control-sync error');
-      }
-      nextScopes.add(key);
-    }
 
-    for (const key of nextScopes) this.confirmedScopes.add(key);
-    this.controlSyncHealthy = true;
+      const nextScopes = new Set<string>();
+      for (const scope of scopes) {
+        this.assertManagedScope(scope);
+        const key = this.scopeKey(scope.packageId, scope.version, scope.useCaseId);
+        if (nextScopes.has(key)) {
+          throw new EdgePackageRuntimeGateError('CONTROL_SYNC_UNVERIFIED', 'The managed-scope snapshot contains duplicates');
+        }
+        if (!this.expectedScopes.has(key)) {
+          throw new EdgePackageRuntimeGateError(
+            'CONTROL_SYNC_UNVERIFIED',
+            'The control-sync snapshot contains an unconfigured managed scope',
+          );
+        }
+        const state = this.readControlState(scope.packageId, scope.version, scope.useCaseId);
+        if (!state || state.lastErrorCode !== null || !this.isFresh(state)) {
+          throw new EdgePackageRuntimeGateError('CONTROL_SYNC_UNVERIFIED', 'A managed scope is missing, stale or has a control-sync error');
+        }
+        nextScopes.add(key);
+      }
+
+      for (const key of nextScopes) this.confirmedScopes.add(key);
+      this.controlSyncHealthy = true;
+      // A completed control/signer refresh must also re-authorize active work.
+      // PAUSED/REVOKED controls and removed/rotated/revoked signers cancel it.
+      this.recheckActiveExecutions();
+    } catch (error) {
+      this.controlSyncHealthy = false;
+      this.confirmedScopes.clear();
+      this.abortActiveExecutions(
+        'CONTROL_SYNC_UNVERIFIED',
+        'Package execution must stop because a complete trusted control sync could not be confirmed',
+      );
+      throw error;
+    }
   }
 
   /** A transport, parsing or persistence error closes every managed scope until a complete poll succeeds. */
   recordControlSyncFailure(): void {
     this.controlSyncHealthy = false;
     this.confirmedScopes.clear();
+    this.abortActiveExecutions(
+      'CONTROL_SYNC_UNVERIFIED',
+      'Package execution must stop because package-control synchronization failed',
+    );
+  }
+
+  private abortActiveExecutions(
+    code: 'CONTROL_SYNC_UNVERIFIED' | 'PACKAGE_CONTROL_DENIED' | 'SIGNING_KEY_CHANGED',
+    message: string,
+  ): void {
+    for (const execution of this.activeExecutions.values()) {
+      if (!execution.controller.signal.aborted) {
+        execution.controller.abort(new EdgePackageRuntimeGateError(code, message));
+      }
+    }
+  }
+
+  private recheckActiveExecutions(): void {
+    for (const execution of this.activeExecutions.values()) {
+      if (execution.controller.signal.aborted) continue;
+      if (!this.isPackageExecutionAllowed(
+        execution.scope.packageId,
+        execution.scope.version,
+        execution.scope.useCaseId,
+      )) {
+        this.abortActiveExecutionsForExecution(
+          execution,
+          'PACKAGE_CONTROL_DENIED',
+          'Package control changed while a model/policy execution was active',
+        );
+        continue;
+      }
+
+      try {
+        const currentPolicy = this.createExecutionVerificationPolicy(execution.scope);
+        const signer = currentPolicy.trustedSigningKeys[execution.signingKeyId];
+        if (!signer || signer.status !== 'ACTIVE' || signer.publicKeyPem !== execution.signingKeyPem) {
+          this.abortActiveExecutionsForExecution(
+            execution,
+            'SIGNING_KEY_CHANGED',
+            'The package signer was revoked, removed or rebound while execution was active',
+          );
+        }
+      } catch {
+        this.abortActiveExecutionsForExecution(
+          execution,
+          'SIGNING_KEY_CHANGED',
+          'Current signer trust could not be verified while execution was active',
+        );
+      }
+    }
+  }
+
+  private abortActiveExecutionsForExecution(
+    execution: { controller: AbortController },
+    code: 'PACKAGE_CONTROL_DENIED' | 'SIGNING_KEY_CHANGED',
+    message: string,
+  ): void {
+    if (!execution.controller.signal.aborted) {
+      execution.controller.abort(new EdgePackageRuntimeGateError(code, message));
+    }
+  }
+
+  private createExecutionVerificationPolicy(scope: EdgePackageActivationScope): EdgePackageVerificationPolicy {
+    return this.createPackageVerificationPolicy({
+      tenantId: this.expectedTenantId,
+      factoryId: this.expectedFactoryId,
+      allowedToolIds: scope.allowedToolIds,
+      now: this.clock(),
+      ...(scope.maxClockSkewMs === undefined ? {} : { maxClockSkewMs: scope.maxClockSkewMs }),
+      ...(scope.maxPackageLifetimeMs === undefined ? {} : { maxPackageLifetimeMs: scope.maxPackageLifetimeMs }),
+      ...(scope.maxTotalArtifactBytes === undefined ? {} : { maxTotalArtifactBytes: scope.maxTotalArtifactBytes }),
+    });
   }
 
   isPackageExecutionAllowed(packageId: string, version: string, useCaseId?: string): boolean {
@@ -193,22 +287,14 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
 
   async execute<T>(
     scope: EdgePackageActivationScope,
-    executor: (release: Readonly<VerifiedEdgePackageRelease>) => Promise<T> | T,
+    executor: (release: Readonly<VerifiedEdgePackageRelease>, signal: AbortSignal) => Promise<T> | T,
   ): Promise<T> {
     this.assertExecutionScope(scope);
     if (!this.isPackageExecutionAllowed(scope.packageId, scope.version, scope.useCaseId)) {
       throw new EdgePackageRuntimeGateError('PACKAGE_CONTROL_DENIED', 'Package execution requires a fresh exact-scope ACTIVE control decision');
     }
 
-    const verificationPolicy = this.createPackageVerificationPolicy({
-      tenantId: this.expectedTenantId,
-      factoryId: this.expectedFactoryId,
-      allowedToolIds: scope.allowedToolIds,
-      now: this.clock(),
-      ...(scope.maxClockSkewMs === undefined ? {} : { maxClockSkewMs: scope.maxClockSkewMs }),
-      ...(scope.maxPackageLifetimeMs === undefined ? {} : { maxPackageLifetimeMs: scope.maxPackageLifetimeMs }),
-      ...(scope.maxTotalArtifactBytes === undefined ? {} : { maxTotalArtifactBytes: scope.maxTotalArtifactBytes }),
-    });
+    const verificationPolicy = this.createExecutionVerificationPolicy(scope);
 
     // Recheck active pointer, signature, signer trust and every artifact on the
     // exact release immediately before passing verified bytes to the host.
@@ -223,7 +309,44 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
     if (!this.isPackageExecutionAllowed(scope.packageId, scope.version, scope.useCaseId)) {
       throw new EdgePackageRuntimeGateError('PACKAGE_CONTROL_DENIED', 'Package control changed during execution admission');
     }
-    return executor(release);
+    const signingKey = verificationPolicy.trustedSigningKeys[release.manifest.signingKeyId];
+    if (!signingKey || signingKey.status !== 'ACTIVE') {
+      throw new EdgePackageRuntimeGateError('SIGNING_KEY_CHANGED', 'The verified release signer is no longer active');
+    }
+
+    const executionId = Symbol('edge-package-runtime-execution');
+    const controller = new AbortController();
+    const activeScope: EdgePackageActivationScope = {
+      ...scope,
+      allowedToolIds: new Set(scope.allowedToolIds),
+    };
+    this.activeExecutions.set(executionId, {
+      scope: activeScope,
+      controller,
+      signingKeyId: release.manifest.signingKeyId,
+      signingKeyPem: signingKey.publicKeyPem,
+    });
+
+    try {
+      const outcome = await executor(release, controller.signal);
+      if (controller.signal.aborted) {
+        throw new EdgePackageRuntimeGateError(
+          'EXECUTION_ABORTED_AFTER_START',
+          'The host executor was invoked before cancellation; reconcile possible side effects before retrying',
+        );
+      }
+      return outcome;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new EdgePackageRuntimeGateError(
+          'EXECUTION_ABORTED_AFTER_START',
+          'The host executor was invoked before cancellation; reconcile possible side effects before retrying',
+        );
+      }
+      throw error;
+    } finally {
+      this.activeExecutions.delete(executionId);
+    }
   }
 
   private assertExecutionScope(scope: EdgePackageActivationScope): void {
