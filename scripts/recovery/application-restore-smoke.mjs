@@ -12,6 +12,22 @@ function fail(message) {
   process.exitCode = 1;
 }
 
+function safeApiStartupDiagnostics(stdout, stderr) {
+  // Startup failures can originate in Nest, pg or a native dependency. Keep
+  // only the bounded output tail and redact connection strings and common
+  // credential forms before exposing any diagnostic in CI logs.
+  const candidates = [...stdout.split(/\r?\n/), ...stderr.split(/\r?\n/)]
+    .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
+    .filter((line) => /error|exception|unknown|cannot|dependenc|AuditService|IamService|moduleRef|Nest|stack/i.test(line))
+    .slice(-16);
+  return candidates.map((line) => line
+    .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, '[REDACTED_DATABASE_URL]')
+    .replace(/https?:\/\/[^\s'"]+/gi, '[REDACTED_URL]')
+    .replace(/Bearer\s+[^\s'"]+/gi, 'Bearer [REDACTED]')
+    .replace(/((?:password|secret|token|credential|api[_-]?key|authorization|connectionstring|dsn)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .slice(0, 400));
+}
+
 async function findFreePort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -94,8 +110,8 @@ try {
     env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', (chunk) => { stdoutTail = (stdoutTail + chunk.toString()).slice(-2_000); });
-  child.stderr.on('data', (chunk) => { stderrTail = (stderrTail + chunk.toString()).slice(-2_000); });
+  child.stdout.on('data', (chunk) => { stdoutTail = (stdoutTail + chunk.toString()).slice(-12_000); });
+  child.stderr.on('data', (chunk) => { stderrTail = (stderrTail + chunk.toString()).slice(-12_000); });
 
   const base = 'http://127.0.0.1:' + port + '/api/health';
   const live = await waitForResponse(base + '/live', child);
@@ -119,7 +135,13 @@ try {
   // Deliberately avoid logging the database URL, raw request data or application logs.
   console.error(message);
   if (child && (stdoutTail || stderrTail)) {
-    console.error('candidate API emitted diagnostic output; full logs are intentionally not printed to avoid disclosing runtime configuration');
+    const safeDiagnostics = safeApiStartupDiagnostics(stdoutTail, stderrTail);
+    if (safeDiagnostics.length) {
+      console.error('candidate API sanitized startup diagnostics:');
+      for (const line of safeDiagnostics) console.error(line);
+    } else {
+      console.error('candidate API emitted startup output without a recognized safe error signature; full logs are intentionally suppressed');
+    }
   }
   process.exitCode = 1;
 } finally {
