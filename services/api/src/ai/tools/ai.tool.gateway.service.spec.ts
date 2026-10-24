@@ -2,7 +2,7 @@ import {
   jest,
 } from '@jest/globals';
 
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import {
   createHash,
@@ -84,6 +84,23 @@ describe(
         jest.fn<(...args: unknown[]) => Promise<void>>(),
     };
 
+    const inventoryService = {
+      getStockSummary:
+        jest.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(),
+    };
+
+    const stockSummary = {
+      item_id: '69ef2a43-8157-4d91-aa59-7b4260ef1778',
+      sku: 'WIDGET-001',
+      name: 'Widget',
+      unit: 'EA',
+      status: 'ACTIVE',
+      quantity_on_hand: '12.0000',
+      quantity_reserved: '2.0000',
+      quantity_available: '10.0000',
+      balance_version: '4',
+    };
+
     let gateway:
       AiToolGatewayService;
 
@@ -104,6 +121,7 @@ describe(
 
         saasSubscriptionService.assertAiCapabilityAvailable
           .mockResolvedValue(undefined);
+        inventoryService.getStockSummary.mockResolvedValue(stockSummary);
 
         gateway =
           new AiToolGatewayService(
@@ -111,6 +129,8 @@ describe(
             iamService as never,
             saasUsageService as never,
             saasSubscriptionService as never,
+            undefined,
+            inventoryService as never,
           );
       },
     );
@@ -224,6 +244,601 @@ describe(
 
         ...overrides,
       };
+    }
+
+    function buildInventoryStockSummaryTool(): AiToolDefinition {
+      const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}
+      AiToolActionContext & {
+        executionKey:
+          string;
+      };
+
+    function buildAction(
+      overrides:
+        Partial<TestAiToolActionContext> =
+        {},
+    ): TestAiToolActionContext {
+      /**
+       * Keep toolId and actionType aligned by default.
+       *
+       * The gateway validates that the action tool id
+       * exactly matches the registered tool id.
+       *
+       * This also allows tests that override only actionType
+       * to remain internally consistent without duplicating
+       * toolId in every test case.
+       */
+      const resolvedActionType =
+        overrides.actionType ??
+        'AI.RUNTIME.NOOP';
+
+      const resolvedToolId =
+        overrides.toolId ??
+        resolvedActionType;
+
+      return {
+        tenantId,
+
+        factoryId,
+
+        actorUserId,
+
+        actionIntentId,
+
+        decisionId,
+
+        toolId:
+          resolvedToolId,
+
+        actionType:
+          resolvedActionType,
+
+        target:
+          {},
+
+        resourceType:
+          null,
+
+        resourceId:
+          null,
+
+        payload:
+          {
+            sample:
+              'value',
+          },
+
+        payloadHash:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+
+        riskClass:
+          'L0',
+
+        authorizationStatus:
+          'AUTHORIZED',
+
+        approvalId:
+          null,
+
+        actionToken,
+
+        actionTokenHash,
+
+        tokenExpiresAt:
+          '2099-01-01T00:00:00.000Z',
+
+        idempotencyKey:
+          null,
+
+        executionKey:
+          'execution-001',
+
+        toolVersion:
+          '1.0.0',
+
+        executorType:
+          'AI.RUNTIME.NOOP',
+
+        ...overrides,
+      };
+    }
+
+    it(
+      'executes the registered no-side-effect tool and re-checks required IAM scope',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool(),
+        );
+
+        const result =
+          await gateway.execute(
+            buildAction(),
+          );
+
+        expect(
+          result.status,
+        ).toBe(
+          'SUCCEEDED',
+        );
+
+        expect(
+          result.result.execution,
+        ).toBe(
+          'NO_SIDE_EFFECT',
+        );
+
+        expect(
+          result.result.committed,
+        ).toBe(
+          false,
+        );
+
+        expect(
+          iamService.authorize,
+        ).toHaveBeenCalledWith(
+          actorUserId,
+          tenantId,
+          'ai.actions.execute',
+          factoryId,
+        );
+      },
+    );
+
+    it('runs the read-only inventory stock-summary executor under the registered inventory scope', async () => {
+      registry.getTool.mockResolvedValue(buildInventoryStockSummaryTool());
+
+      const result = await gateway.execute(buildAction({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        actionType: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        executorType: 'INVENTORY.STOCK.SUMMARY',
+        payload: { item_id: stockSummary.item_id },
+      }));
+
+      expect(result.status).toBe('SUCCEEDED');
+      expect(result.result).toEqual(stockSummary);
+      expect(inventoryService.getStockSummary).toHaveBeenCalledWith(
+        actorUserId, tenantId, factoryId, stockSummary.item_id,
+      );
+      expect(iamService.authorize).toHaveBeenCalledWith(
+        actorUserId, tenantId, 'inventory.read', factoryId,
+      );
+    });
+
+    it('does not expose stock data when the item is not in the scoped factory', async () => {
+      registry.getTool.mockResolvedValue(buildInventoryStockSummaryTool());
+      inventoryService.getStockSummary.mockRejectedValueOnce(
+        new NotFoundException('Inventory item not found in this factory'),
+      );
+
+      const result = await gateway.execute(buildAction({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        actionType: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        payload: { item_id: stockSummary.item_id },
+      }));
+
+      expect(result.status).toBe('FAILED');
+      expect(result.result).toEqual({});
+      expect(result.error).toEqual({
+        code: 'INVENTORY_ITEM_NOT_FOUND',
+        message: 'Inventory item not found in this factory',
+      });
+    });
+
+    it('fails closed when the inventory domain executor is not wired', async () => {
+      registry.getTool.mockResolvedValue(buildInventoryStockSummaryTool());
+      const unconfiguredGateway = new AiToolGatewayService(
+        registry as never,
+        iamService as never,
+        saasUsageService as never,
+        saasSubscriptionService as never,
+      );
+
+      const result = await unconfiguredGateway.execute(buildAction({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        actionType: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        payload: { item_id: stockSummary.item_id },
+      }));
+
+      expect(result.status).toBe('FAILED');
+      expect(result.error.code).toBe('EXECUTOR_NOT_CONFIGURED');
+    });
+
+    it(
+      'fails closed when the action risk class does not match the registered tool',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            riskClass:
+              'L1',
+          }),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction({
+              riskClass:
+                'L0',
+            }),
+          ),
+        ).rejects.toThrow(
+          'AI action risk class does not match the registered tool risk class',
+        );
+      },
+    );
+
+    it(
+      'fails closed when the token binding does not match',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool(),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction({
+              actionTokenHash:
+                'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+            }),
+          ),
+        ).rejects.toThrow(
+          'AI action token binding is invalid',
+        );
+      },
+    );
+
+    it(
+      'fails closed when a write-capable registered tool has no idempotency key',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            toolId:
+              'WRITE.TEST',
+
+            writeCapable:
+              true,
+
+            idempotencyRequired:
+              true,
+
+            rollback: {
+              type:
+                'COMPENSATION',
+
+              metadata: {
+                contract:
+                  'test',
+              },
+            },
+
+            riskClass:
+              'L2',
+          }),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction({
+              actionType:
+                'WRITE.TEST',
+
+              riskClass:
+                'L2',
+            }),
+          ),
+        ).rejects.toThrow(
+          'Registered AI tool requires an idempotency key',
+        );
+      },
+    );
+
+    it(
+      'requires approval binding when the registry approval mode requires it',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            approvalMode:
+              'role',
+          }),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction(),
+          ),
+        ).rejects.toThrow(
+          'Registered AI tool requires an approval binding',
+        );
+      },
+    );
+
+    it(
+      'rejects expired action tokens',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool(),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction({
+              tokenExpiresAt:
+                '2020-01-01T00:00:00.000Z',
+            }),
+          ),
+        ).rejects.toThrow(
+          'AI action token has expired',
+        );
+      },
+    );
+
+    it(
+      'returns fail-closed executor error for an active but unimplemented tool',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            toolId:
+              'FUTURE.DOMAIN.TOOL',
+          }),
+        );
+
+        const result =
+          await gateway.execute(
+            buildAction({
+              actionType:
+                'FUTURE.DOMAIN.TOOL',
+            }),
+          );
+
+        expect(
+          result.status,
+        ).toBe(
+          'FAILED',
+        );
+
+        expect(
+          result.error.code,
+        ).toBe(
+          'EXECUTOR_NOT_CONFIGURED',
+        );
+      },
+    );
+
+    it(
+      'rejects payloads that violate the registered input schema',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            inputSchema: {
+              type:
+                'object',
+
+              properties: {
+                count: {
+                  type:
+                    'integer',
+
+                  minimum:
+                    1,
+                },
+              },
+
+              required: [
+                'count',
+              ],
+
+              additionalProperties:
+                false,
+            },
+          }),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction({
+              payload: {
+                unexpected:
+                  true,
+              },
+            }),
+          ),
+        ).rejects.toThrow(
+          '$.payload.count is required by the registered tool schema',
+        );
+      },
+    );
+
+    it(
+      'checks live tenant subscription state before metering or executing an AI tool',
+      async () => {
+        registry.getTool.mockResolvedValue(buildTool());
+        await gateway.execute(buildAction());
+
+        expect(saasSubscriptionService.assertAiCapabilityAvailable)
+          .toHaveBeenCalledWith(tenantId);
+        expect(saasSubscriptionService.assertAiCapabilityAvailable.mock.invocationCallOrder[0])
+          .toBeLessThan(saasUsageService.recordAiToolCall.mock.invocationCallOrder[0]);
+      },
+    );
+
+    it(
+      'blocks a suspended or expired subscription before metering and tool side effects',
+      async () => {
+        registry.getTool.mockResolvedValue(buildTool());
+        saasSubscriptionService.assertAiCapabilityAvailable.mockRejectedValueOnce(
+          new ForbiddenException('subscription disabled'),
+        );
+
+        await expect(gateway.execute(buildAction())).rejects.toBeInstanceOf(ForbiddenException);
+        expect(saasSubscriptionService.assertAiCapabilityAvailable).toHaveBeenCalledWith(tenantId);
+        expect(saasUsageService.recordAiToolCall).not.toHaveBeenCalled();
+        expect(saasUsageService.assertWorkloadExecutionAllowed).not.toHaveBeenCalled();
+      },
+    );
+
+    it(
+      'records registry-classified AI tool usage before execution',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            metadata: {
+              workloadClass: 'DEVELOPMENT',
+            },
+          }),
+        );
+
+        await gateway.execute(buildAction());
+
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          actorUserId,
+          {
+            executionKey: actionIntentId,
+            toolId: 'AI.RUNTIME.NOOP',
+            workloadClass: 'DEVELOPMENT',
+          },
+        );
+        expect(saasUsageService.assertWorkloadExecutionAllowed).toHaveBeenCalledWith(
+          tenantId,
+          factoryId,
+          actorUserId,
+          'DEVELOPMENT',
+        );
+      },
+    );
+
+    it(
+      'fails closed before tool side effects when a non-critical workload is paused',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool({
+            metadata: {
+              workloadClass: 'SHADOW_MODE',
+            },
+          }),
+        );
+        saasUsageService.assertWorkloadExecutionAllowed.mockRejectedValueOnce(
+          new ForbiddenException('paused'),
+        );
+
+        const result = await gateway.execute(buildAction());
+
+        expect(result.status).toBe('FAILED');
+        expect(result.error.code).toBe('SAAS_WORKLOAD_PAUSED');
+        expect(saasUsageService.recordAiToolCall).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it(
+      'blocks a production tool before metering when artifact admission denies it',
+      async () => {
+        const previousNodeEnv = process.env.NODE_ENV;
+        process.env.NODE_ENV = 'production';
+        try {
+          registry.getTool.mockResolvedValue(
+            buildTool({
+              metadata: {
+                workloadClass: 'PRODUCTION',
+                artifactSha256: 'a'.repeat(64),
+              },
+            }),
+          );
+          const artifactProvenance = {
+            assertAdmissible: jest.fn<(...args: unknown[]) => Promise<void>>()
+              .mockRejectedValue(new ForbiddenException('artifact rejected')),
+          };
+          const guardedGateway = new AiToolGatewayService(
+            registry as never,
+            iamService as never,
+            saasUsageService as never,
+            saasSubscriptionService as never,
+            artifactProvenance as never,
+          );
+
+          await expect(guardedGateway.execute(buildAction()))
+            .rejects.toBeInstanceOf(ForbiddenException);
+
+          expect(artifactProvenance.assertAdmissible).toHaveBeenCalledWith({
+            tenantId,
+            factoryId,
+            actorUserId,
+            artifactType: 'TOOL',
+            artifactKey: 'AI.RUNTIME.NOOP',
+            version: '1.0.0',
+            expectedSha256: 'a'.repeat(64),
+            requestRef: actionIntentId,
+          });
+          expect(saasUsageService.recordAiToolCall).not.toHaveBeenCalled();
+        } finally {
+          if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+          else process.env.NODE_ENV = previousNodeEnv;
+        }
+      },
+    );
+
+    it(
+      'rejects an unauthorized action before tool execution',
+      async () => {
+        registry.getTool.mockResolvedValue(
+          buildTool(),
+        );
+
+        await expect(
+          gateway.execute(
+            buildAction({
+              authorizationStatus:
+                'APPROVAL_REQUIRED',
+            }),
+          ),
+        ).rejects.toThrow(
+          'AI action is not authorized for Tool Gateway execution',
+        );
+
+        expect(
+          iamService.authorize,
+        ).not.toHaveBeenCalled();
+      },
+    );
+  },
+);;
+      return buildTool({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        requiredScopes: ['inventory.read'],
+        metadata: {
+          workloadClass: 'NON_AI',
+          domainExecutor: 'INVENTORY_STOCK_SUMMARY',
+        },
+        inputSchema: {
+          type: 'object',
+          properties: { item_id: { type: 'string', pattern: uuidPattern } },
+          required: ['item_id'],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: 'object',
+          required: [
+            'item_id', 'sku', 'name', 'unit', 'status',
+            'quantity_on_hand', 'quantity_reserved', 'quantity_available',
+            'balance_version',
+          ],
+          properties: {
+            item_id: { type: 'string', pattern: uuidPattern },
+            sku: { type: 'string' },
+            name: { type: 'string' },
+            unit: { type: 'string' },
+            status: { type: 'string', enum: ['ACTIVE', 'DISABLED'] },
+            quantity_on_hand: { type: 'string' },
+            quantity_reserved: { type: 'string' },
+            quantity_available: { type: 'string' },
+            balance_version: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      });
     }
 
     type TestAiToolActionContext =
