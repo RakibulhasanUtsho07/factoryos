@@ -1,7 +1,8 @@
 const PACKAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const SEMVER = /^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$/;
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const USE_CASE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SAFE_ERROR_CODE = /^[A-Z0-9_]{1,64}$/;
 
 export class EdgePackageSupervisorError extends Error {
   constructor(code, message) {
@@ -58,6 +59,7 @@ export class EdgePackageExecutionSupervisor {
     this.running = false;
     this.timer = null;
     this.refreshPromise = null;
+    this.lastPollErrorCode = null;
   }
 
   async start() {
@@ -85,12 +87,13 @@ export class EdgePackageExecutionSupervisor {
     let snapshot;
     try { snapshot = this.syncClient.getSnapshot(); }
     catch { snapshot = null; }
-    const healthy = this.running && snapshot?.healthy === true;
+    const healthy = this.running && snapshot?.healthy === true && this.lastPollErrorCode === null;
     return {
       running: this.running,
       healthy,
       lastErrorCode: healthy ? null : (!this.running ? 'SUPERVISOR_STOPPED'
-        : (typeof snapshot?.lastErrorCode === 'string' ? snapshot.lastErrorCode : 'CONTROL_SYNC_UNHEALTHY')),
+        : (this.lastPollErrorCode ?? (typeof snapshot?.lastErrorCode === 'string'
+          ? snapshot.lastErrorCode : 'CONTROL_SYNC_UNHEALTHY'))),
       syncedAt: typeof snapshot?.syncedAt === 'string' ? snapshot.syncedAt : null,
       freshnessAgeMs: Number.isFinite(snapshot?.freshnessAgeMs) ? snapshot.freshnessAgeMs : null,
       controls: Array.isArray(snapshot?.controls) ? snapshot.controls.map((entry) => ({
@@ -113,9 +116,15 @@ export class EdgePackageExecutionSupervisor {
   async refreshInternal() {
     try {
       await this.syncClient.pollOnce();
-    } catch {
-      // The sync client records the failure and reports an unhealthy snapshot.
-      // Swallow here so the timer can retry without an unhandled rejection.
+      this.lastPollErrorCode = null;
+    } catch (error) {
+      // Fail closed even if an adapter throws without updating its own snapshot.
+      let snapshotErrorCode;
+      try { snapshotErrorCode = this.syncClient.getSnapshot()?.lastErrorCode; } catch { /* unavailable snapshot */ }
+      this.lastPollErrorCode = typeof error?.code === 'string' && SAFE_ERROR_CODE.test(error.code)
+        ? error.code
+        : (typeof snapshotErrorCode === 'string' && SAFE_ERROR_CODE.test(snapshotErrorCode)
+          ? snapshotErrorCode : 'EDGE_SYNC_FAILED');
     }
     return this.getStatus();
   }
@@ -127,9 +136,8 @@ export class EdgePackageExecutionSupervisor {
     let snapshot;
     try { snapshot = this.syncClient.getSnapshot(); }
     catch { fail('CONTROL_SYNC_UNAVAILABLE', 'Package-control state cannot be read safely'); }
-    if (!snapshot || snapshot.healthy !== true) {
-      const code = typeof snapshot?.lastErrorCode === 'string' ? snapshot.lastErrorCode : 'CONTROL_SYNC_UNHEALTHY';
-      fail('CONTROL_SYNC_UNHEALTHY', 'Package execution is blocked because package controls are not healthy (' + code + ')');
+    if (!snapshot || snapshot.healthy !== true || this.lastPollErrorCode !== null) {
+      fail('CONTROL_SYNC_UNHEALTHY', 'Package execution is blocked because package controls are not healthy');
     }
     if (!Array.isArray(snapshot.controls) || !Array.isArray(snapshot.signingKeys)) {
       fail('CONTROL_SYNC_UNHEALTHY', 'Package-control snapshot is incomplete');
