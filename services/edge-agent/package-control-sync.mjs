@@ -406,12 +406,54 @@ export class EdgePackageControlSyncClient {
       const status = Number.isInteger(response.status) ? response.status : 0;
       fail('HTTP_' + (status >= 100 && status <= 599 ? status : 0), 'Package-governance endpoint rejected synchronization');
     }
-    const length = Number(response.headers?.get?.('content-length'));
-    if (Number.isFinite(length) && length > MAX_RESPONSE_BYTES) fail('RESPONSE_TOO_LARGE', 'Package-governance response exceeds the bounded size limit');
-    let body;
-    try { body = await response.text(); } catch { fail('INVALID_CONTROL_SNAPSHOT', 'Package-governance response body could not be read'); }
-    if (Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) fail('RESPONSE_TOO_LARGE', 'Package-governance response exceeds the bounded size limit');
+    const body = await this.readBoundedBody(response);
     try { return JSON.parse(body); } catch { fail('INVALID_CONTROL_SNAPSHOT', 'Package-governance endpoint returned invalid JSON'); }
+  }
+
+  async readBoundedBody(response) {
+    const length = Number(response.headers?.get?.('content-length'));
+    if (Number.isFinite(length) && length > MAX_RESPONSE_BYTES) {
+      fail('RESPONSE_TOO_LARGE', 'Package-governance response exceeds the bounded size limit');
+    }
+    const readerFactory = response.body && response.body.getReader;
+    if (typeof readerFactory === 'function') {
+      const reader = readerFactory.call(response.body);
+      const chunks = [];
+      let total = 0;
+      try {
+        while (true) {
+          const part = await reader.read();
+          if (part.done) break;
+          if (!(part.value instanceof Uint8Array)) {
+            fail('INVALID_CONTROL_SNAPSHOT', 'Package-governance response stream returned invalid bytes');
+          }
+          total += part.value.byteLength;
+          if (total > MAX_RESPONSE_BYTES) {
+            await reader.cancel().catch(() => {});
+            fail('RESPONSE_TOO_LARGE', 'Package-governance response exceeds the bounded size limit');
+          }
+          chunks.push(Buffer.from(part.value));
+        }
+      } catch (error) {
+        if (error instanceof EdgePackageSyncError) throw error;
+        fail('INVALID_CONTROL_SNAPSHOT', 'Package-governance response body could not be read');
+      } finally {
+        try { reader.releaseLock(); } catch { /* reader may already be closed */ }
+      }
+      return Buffer.concat(chunks, total).toString('utf8');
+    }
+    let body;
+    try {
+      if (typeof response.text !== 'function') fail('INVALID_CONTROL_SNAPSHOT', 'Package-governance response body is unavailable');
+      body = await response.text();
+    } catch (error) {
+      if (error instanceof EdgePackageSyncError) throw error;
+      fail('INVALID_CONTROL_SNAPSHOT', 'Package-governance response body could not be read');
+    }
+    if (typeof body !== 'string' || Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) {
+      fail('RESPONSE_TOO_LARGE', 'Package-governance response exceeds the bounded size limit');
+    }
+    return body;
   }
 
   async writeStateAtomically(state) {
