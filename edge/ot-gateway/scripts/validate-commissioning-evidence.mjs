@@ -428,14 +428,14 @@ async function main() {
       allowIncomplete = true;
     } else if (arg === '--artifact-root') {
       if (index + 1 >= args.length || args[index + 1].startsWith('--')) {
-        process.stderr.write('Option --artifact-root requires a directory path\\n');
+        process.stderr.write('Option --artifact-root requires a directory path\n');
         process.exitCode = 2;
         return;
       }
       artifactRoot = args[index + 1];
       index += 1;
     } else if (arg.startsWith('--')) {
-      process.stderr.write(`Unknown option: ${arg}\\n`);
+      process.stderr.write(`Unknown option: ${arg}\n`);
       process.exitCode = 2;
       return;
     } else {
@@ -444,7 +444,7 @@ async function main() {
   }
   const file = positional[0];
   if (!file || positional.length !== 1) {
-    process.stderr.write('Usage: node scripts/validate-commissioning-evidence.mjs [--allow-incomplete] [--artifact-root <directory>] <record.json>\\n');
+    process.stderr.write('Usage: node scripts/validate-commissioning-evidence.mjs [--allow-incomplete] [--artifact-root <directory>] <record.json>\n');
     process.exitCode = 2;
     return;
   }
@@ -476,7 +476,7 @@ async function main() {
   }
 
   if (evidence.decision === 'PASS') {
-    process.stdout.write('Commissioning evidence passed structural, artifact existence and SHA-256 integrity checks. Referenced evidence and real-world commissioning still require independent verification.\n');
+    process.stdout.write('Commissioning evidence passed structural, artifact existence and SHA-256 integrity checks. Signer authenticity and real-world commissioning still require independent verification.\n');
   } else {
     process.stdout.write(`Draft commissioning evidence structure is valid; decision is ${evidence.decision}. This is not release acceptance.\n`);
   }
