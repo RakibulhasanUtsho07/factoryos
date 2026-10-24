@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { execFile as execFileCallback } from 'node:child_process';
 import { lstat, readFile, realpath } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -63,6 +65,10 @@ const IDENTITY_FIELDS = Object.freeze([
 const OT_GATEWAY_REPOSITORY = 'RakibulhasanUtsho07/factoryos';
 const OT_GATEWAY_IMAGE = 'ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway';
 const OT_GATEWAY_SIGNING_WORKFLOW = 'https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main';
+const OT_GATEWAY_SIGNER_WORKFLOW = 'github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml';
+const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
+const SLSA_PROVENANCE_V1 = 'https://slsa.dev/provenance/v1';
+const execFile = promisify(execFileCallback);
 
 const COUNTER_FIELDS = Object.freeze([
   'events_generated',
@@ -465,6 +471,81 @@ export async function verifyCommissioningArtifactReferences(evidence, artifactRo
   return [...new Set(errors)];
 }
 
+
+async function runJsonVerifier(executable, args, label, execFileImpl) {
+  let result;
+  try {
+    result = await execFileImpl(executable, args, {
+      timeout: 120_000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    });
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`${label} executable is unavailable`);
+    throw new Error(`${label} verification command failed`);
+  }
+  let parsed;
+  try { parsed = JSON.parse(result?.stdout ?? ''); }
+  catch { throw new Error(`${label} returned invalid verification JSON`); }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error(`${label} returned no verified evidence`);
+  }
+  return parsed;
+}
+
+/**
+ * Verify the exact release image with Cosign, then verify its SLSA v1 provenance
+ * from the OCI registry with GitHub CLI. The verified certificate's source commit
+ * and workflow identity are checked against the commissioning record.
+ */
+export async function verifyGatewayReleaseCryptography(identity, { execFileImpl = execFile } = {}) {
+  if (!isObject(identity)
+      || !/^sha256:[a-f0-9]{64}$/i.test(identity.gateway_image_digest ?? '')
+      || !/^[a-f0-9]{40}$/i.test(identity.gateway_source_commit ?? '')) {
+    throw new Error('release cryptographic verification requires a valid image digest and source commit');
+  }
+  const imageRef = `${OT_GATEWAY_IMAGE}@${identity.gateway_image_digest}`;
+  const signatureOutput = await runJsonVerifier('cosign', [
+    'verify',
+    '--certificate-identity', OT_GATEWAY_SIGNING_WORKFLOW,
+    '--certificate-oidc-issuer', GITHUB_ACTIONS_OIDC_ISSUER,
+    imageRef,
+  ], 'Cosign image signature verifier', execFileImpl);
+
+  // Cosign verifies the signature and the signed digest claim for the immutable image ref.
+  void signatureOutput;
+
+  const attestationOutput = await runJsonVerifier('gh', [
+    'attestation', 'verify', `oci://${imageRef}`,
+    '--bundle-from-oci',
+    '--repo', OT_GATEWAY_REPOSITORY,
+    '--signer-workflow', OT_GATEWAY_SIGNER_WORKFLOW,
+    '--source-ref', 'refs/heads/main',
+    '--predicate-type', SLSA_PROVENANCE_V1,
+    '--format', 'json',
+  ], 'GitHub SLSA provenance verifier', execFileImpl);
+
+  const expectedDigest = identity.gateway_image_digest.slice('sha256:'.length).toLowerCase();
+  const expectedSourceRepo = `https://github.com/${OT_GATEWAY_REPOSITORY}`;
+  const hasTrustedProvenance = attestationOutput.some((entry) => {
+    const verification = entry?.verificationResult;
+    const certificate = verification?.signature?.certificate;
+    const statement = verification?.statement;
+    const subjects = Array.isArray(statement?.subject) ? statement.subject : [];
+    return certificate?.issuer === GITHUB_ACTIONS_OIDC_ISSUER
+      && certificate?.subjectAlternativeName === OT_GATEWAY_SIGNING_WORKFLOW
+      && certificate?.sourceRepositoryURI === expectedSourceRepo
+      && typeof certificate?.sourceRepositoryDigest === 'string'
+      && certificate.sourceRepositoryDigest.toLowerCase() === identity.gateway_source_commit.toLowerCase()
+      && statement?.predicateType === SLSA_PROVENANCE_V1
+      && subjects.some((subject) => subject?.digest?.sha256?.toLowerCase() === expectedDigest);
+  });
+  if (!hasTrustedProvenance) {
+    throw new Error('GitHub SLSA provenance does not match the trusted workflow, recorded source commit and image digest');
+  }
+  return { imageRef, signatureVerified: true, provenanceVerified: true };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   let allowIncomplete = false;
@@ -511,11 +592,21 @@ async function main() {
   if (!allowIncomplete && evidence?.decision !== 'PASS') {
     errors.push('release acceptance requires decision PASS (use --allow-incomplete only for draft review)');
   }
+  if (allowIncomplete && evidence?.decision === 'PASS') {
+    errors.push('--allow-incomplete cannot be used with decision PASS; release acceptance gates cannot be bypassed');
+  }
   if (!allowIncomplete && evidence?.decision === 'PASS' && !artifactRoot) {
     errors.push('release acceptance requires --artifact-root <directory> to verify referenced artifact bytes');
   }
   if (!allowIncomplete && evidence?.decision === 'PASS' && artifactRoot) {
     errors.push(...await verifyCommissioningArtifactReferences(evidence, artifactRoot));
+    if (errors.length === 0) {
+      try {
+        await verifyGatewayReleaseCryptography(evidence.identity);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : 'release cryptographic verification failed');
+      }
+    }
   }
   if (errors.length > 0) {
     process.stderr.write('Commissioning evidence rejected:\n' + [...new Set(errors)].map((error) => `- ${error}`).join('\n') + '\n');
@@ -524,7 +615,7 @@ async function main() {
   }
 
   if (evidence.decision === 'PASS') {
-    process.stdout.write('Commissioning evidence passed structural, artifact existence and SHA-256 integrity checks. Signer authenticity and real-world commissioning still require independent verification.\n');
+    process.stdout.write('Commissioning evidence passed artifact integrity, Cosign image signature and GitHub SLSA provenance checks. Physical commissioning and human sign-off authenticity still require independent review.\n');
   } else {
     process.stdout.write(`Draft commissioning evidence structure is valid; decision is ${evidence.decision}. This is not release acceptance.\n`);
   }
