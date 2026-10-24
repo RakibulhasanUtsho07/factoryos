@@ -341,4 +341,24 @@ test('requires HTTPS for remote sync and rejects malformed or oversized response
   } finally {
     await oversized.cleanup();
   }
+
+  const chunked = await fixture({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(1_048_577));
+          controller.close();
+        },
+      }),
+      text: async () => '',
+    }),
+  });
+  try {
+    await assert.rejects(chunked.client.pollOnce(), { code: 'RESPONSE_TOO_LARGE' });
+  } finally {
+    await chunked.cleanup();
+  }
 });
