@@ -3,6 +3,7 @@ import { createHash, generateKeyPairSync, sign as signPayload } from 'node:crypt
 import test from 'node:test';
 
 import { EdgePackageExecutionSupervisor } from '../package-control-supervisor.mjs';
+import { EdgePackageHostRuntimeAdapter } from '../host-runtime-adapter.mjs';
 import { edgePackageRuntimeSigningPayload } from '../verified-package-runtime.mjs';
 
 const tenantId = '11111111-1111-4111-8111-111111111111';
@@ -97,6 +98,68 @@ function harness() {
   });
   return { client, snapshot, supervisor };
 }
+
+test('host runtime adapter forwards only the supervisor-verified package and cancellation signal', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  const seen = [];
+  const adapter = new EdgePackageHostRuntimeAdapter(h.supervisor, {
+    async execute(request) {
+      seen.push(request);
+      assert.equal(request.manifest.packageId, packageId);
+      assert.equal(request.manifest.version, version);
+      assert.match(request.manifestSha256, /^[a-f0-9]{64}$/);
+      assert.equal(request.artifactBytes, modelBytes.length + policyBytes.length);
+      assert.equal(request.authorization.control.status, 'ACTIVE');
+      assert.equal(request.authorization.signingKey.status, 'ACTIVE');
+      assert.equal(request.signal.aborted, false);
+      assert.deepEqual(request.artifacts['models/quality-defect.bin'], modelBytes);
+      return 'runtime-result';
+    },
+  });
+
+  const result = await adapter.execute(signedInput(), { useCaseId, allowedToolIds });
+  assert.equal(result, 'runtime-result');
+  assert.equal(seen.length, 1);
+  assert.equal(Object.isFrozen(seen[0]), true);
+  h.supervisor.stop();
+});
+
+test('host runtime adapter preserves prompt ambiguous cancellation and tracks a non-cooperative runtime', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  let signal;
+  let finishExecution;
+  const adapter = new EdgePackageHostRuntimeAdapter(h.supervisor, {
+    execute(request) {
+      signal = request.signal;
+      return new Promise((resolve) => { finishExecution = resolve; });
+    },
+  });
+
+  const outcome = adapter.execute(signedInput(), { useCaseId, allowedToolIds });
+  assert.equal(h.supervisor.activeExecutions.size, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(signal.aborted, false);
+
+  h.supervisor.stop();
+  assert.equal(signal.aborted, true);
+  const settled = await Promise.race([
+    outcome.then(() => 'resolved', (error) => error.code),
+    new Promise((resolve) => setImmediate(() => resolve('still-pending'))),
+  ]);
+  assert.equal(settled, 'EXECUTION_ABORTED_AFTER_START');
+  assert.equal(h.supervisor.activeExecutions.size, 1);
+
+  finishExecution('late-side-effect-possible');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.supervisor.activeExecutions.size, 0);
+});
+
+test('host runtime adapter rejects invalid construction instead of bypassing governance', () => {
+  assert.throws(() => new EdgePackageHostRuntimeAdapter({}, { execute() {} }), /supervisor/);
+  assert.throws(() => new EdgePackageHostRuntimeAdapter({ runVerifiedPackage() {} }, {}), /host runtime/);
+});
 
 test('verifies the synchronized Ed25519 signer and every artifact before invoking the host runtime', async () => {
   const h = harness();
