@@ -224,8 +224,29 @@ export class ProtocolSupervisor {
   async start() {
     if (this.started) return;
     this.started = true;
-    await this.#startDrivers();
-    this.rotationFingerprint = await secretFingerprint(allSecretPaths(this.config));
+    let stage = 'SECRET_INVENTORY';
+    try {
+      // Establish the complete credential baseline before any protocol connection starts.
+      const initialFingerprint = await secretFingerprint(allSecretPaths(this.config));
+      stage = 'DRIVER_START';
+      await this.#startDrivers();
+      // Catch mounts/credentials that changed while the protocol sessions were initializing.
+      stage = 'SECRET_RECHECK';
+      const verifiedFingerprint = await secretFingerprint(allSecretPaths(this.config));
+      if (verifiedFingerprint !== initialFingerprint) throw new Error('SECRET_ROTATION_DURING_STARTUP');
+      this.rotationFingerprint = verifiedFingerprint;
+      this.rotationFault = false;
+      this.lastError = null;
+    } catch (error) {
+      this.started = false;
+      this.rotationFault = true;
+      const code = error instanceof Error && error.message === 'SECRET_ROTATION_DURING_STARTUP'
+        ? 'SECRET_ROTATION_DURING_STARTUP'
+        : (stage === 'DRIVER_START' ? 'GATEWAY_DRIVER_START_FAILED' : 'SECRET_ROTATION_FILE_UNAVAILABLE');
+      this.lastError = code;
+      await this.#stopDrivers();
+      throw new Error(code);
+    }
   }
 
   async stop() {
