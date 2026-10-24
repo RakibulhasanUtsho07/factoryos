@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OtEdgeDurableSpool } from '../src/spool.mjs';
 import { handleMqttDelivery } from '../src/protocol-drivers.mjs';
-import { replayOnce } from '../src/index.mjs';
-import { secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
+import { ProtocolSupervisor, replayOnce } from '../src/index.mjs';
+import { resolveSecretFilePath, secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
 import { ModbusTcpReadDriver } from '../src/protocol-drivers.mjs';
 import { startModbusTcpSimulator } from './modbus-tcp-simulator.mjs';
 
@@ -206,6 +206,37 @@ test('approved target allow-list and Modbus function codes fail closed for write
   assert.throws(() => validateGatewayConfig(unsafe, { NODE_ENV: 'test' }), /allows Modbus read function 3\/4/);
 });
 
+test('production secret resolution rejects symlink escapes but permits in-root projected-secret links', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'factoryos-secret-paths-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const root = join(dir, 'secrets');
+  const versioned = join(root, '..2026_10');
+  const outside = join(dir, 'outside');
+  await mkdir(versioned, { recursive: true });
+  await mkdir(outside, { recursive: true });
+
+  const secretContents = 'rotatable-secret-token-value';
+  await writeFile(join(versioned, 'token'), secretContents, 'utf8');
+  // Kubernetes projected Secret volumes commonly use an in-root ..data symlink.
+  await symlink('..2026_10', join(root, '..data'));
+  await symlink(join('..data', 'token'), join(root, 'token'));
+
+  const resolved = await resolveSecretFilePath(join(root, 'token'), [root], true);
+  assert.equal(await readFile(resolved, 'utf8'), secretContents);
+
+  const externalSecret = join(outside, 'escape-token');
+  await writeFile(externalSecret, 'must-not-be-read', 'utf8');
+  await symlink(externalSecret, join(root, 'escape'));
+  await assert.rejects(
+    () => resolveSecretFilePath(join(root, 'escape'), [root], true),
+    /resolves outside the approved secret directory/,
+  );
+  await assert.rejects(
+    () => resolveSecretFilePath(externalSecret, [root], true),
+    /not mounted under the approved secret directory/,
+  );
+});
+
 test('secret rotation fingerprint changes on certificate/token rotation without printing credential bytes', async (t) => {
   const { dir } = await fixture(t);
   const cert = join(dir, 'gateway-cert.pem');
@@ -282,4 +313,64 @@ test('Modbus response loss and wrong unit ID fail closed without attempting a wr
     /Only Modbus holding\/input register reads/,
   );
   assert.equal(simulator.metrics.writeAttempts, 0);
+});
+
+test('missing rotated secret files stop protocol drivers and force readiness false', async (t) => {
+  const { dir } = await fixture(t);
+  const cert = join(dir, 'gateway-cert.pem');
+  const key = join(dir, 'gateway-key.pem');
+  await writeFile(cert, 'CERTIFICATE-V1');
+  await writeFile(key, 'PRIVATE-KEY-V1');
+
+  const supervisor = new ProtocolSupervisor({
+    security: { serverCertFile: cert, serverKeyFile: key },
+    mqtt: null,
+    opcua: [],
+    modbus: [],
+  }, {});
+  supervisor.started = true;
+  supervisor.rotationFingerprint = await secretFingerprint([cert, key]);
+  let stopCalls = 0;
+  supervisor.modbus = [{ health: () => ({ ready: true }), stop: async () => { stopCalls += 1; } }];
+
+  await rm(cert);
+  await supervisor.checkRotation({
+    setSecureContext() { assert.fail('must not install a TLS context when a credential file is missing'); },
+  });
+
+  assert.equal(supervisor.health().ready, false);
+  assert.equal(supervisor.health().credentialRotationReady, false);
+  assert.equal(supervisor.health().errorCode, 'SECRET_ROTATION_FILE_UNAVAILABLE');
+  assert.equal(stopCalls, 1);
+  assert.equal(supervisor.modbus.length, 0);
+});
+
+test('mismatched rotated certificate material stops drivers and remains unready', async (t) => {
+  const { dir } = await fixture(t);
+  const cert = join(dir, 'gateway-cert.pem');
+  const key = join(dir, 'gateway-key.pem');
+  await writeFile(cert, 'CERTIFICATE-V1');
+  await writeFile(key, 'PRIVATE-KEY-V1');
+
+  const supervisor = new ProtocolSupervisor({
+    security: { serverCertFile: cert, serverKeyFile: key },
+    mqtt: null,
+    opcua: [],
+    modbus: [],
+  }, {});
+  supervisor.started = true;
+  supervisor.rotationFingerprint = await secretFingerprint([cert, key]);
+  let stopCalls = 0;
+  supervisor.modbus = [{ health: () => ({ ready: true }), stop: async () => { stopCalls += 1; } }];
+
+  await writeFile(cert, 'CERTIFICATE-V2');
+  await supervisor.checkRotation({
+    setSecureContext() { assert.fail('must not install a TLS context with invalid certificate/key material'); },
+  });
+
+  assert.equal(supervisor.health().ready, false);
+  assert.equal(supervisor.health().credentialRotationReady, false);
+  assert.equal(supervisor.health().errorCode, 'SECRET_ROTATION_REJECTED');
+  assert.equal(stopCalls, 1);
+  assert.equal(supervisor.modbus.length, 0);
 });

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-This library slice adds two local, fail-closed stores that support the signed-package verifier and activation coordinator. It does not create the cloud API or automatically wire the stores into the host model runtime.
+This slice adds local, fail-closed control/signer stores and a host-callable execution gate for signed packages. It does not perform network polling itself or automatically register the gate with a model-runtime process.
 
 ## Durable package-control state
 
 `EdgePackageControlStateStore` persists package/version/use-case decisions such as ACTIVE, PAUSED and terminal REVOKED. Updates use a private directory, regular-file checks, atomic replacement and file/directory sync. Concurrent updates are serialized. A corrupt file or symlink fails closed instead of initializing an empty control set. A stored REVOKED decision cannot be overwritten by ACTIVE, and removed scopes do not erase historical terminal revocations.
 
-The store is local persistence only; a deployment must still poll its authoritative control endpoint, validate exact target scope and freshness, and have the model/policy host call the gate at the actual activation and execution boundaries.
+On process restart, only terminal REVOKED decisions remain authoritative; persisted ACTIVE/PAUSED/UNKNOWN records are reset to UNKNOWN with RESTART_REQUIRES_FRESH_SYNC until a new cloud poll succeeds. The store is local persistence only; a deployment must poll its authoritative control endpoint, validate exact target scope and freshness, persist the complete result, and only then confirm that sync to the runtime gate.
 
 ## Trusted signer-key snapshot
 
@@ -18,6 +18,8 @@ Freshness is mandatory when signer keys are returned for package verification. A
 
 ## Acceptance boundary
 
-These stores do not perform network polling themselves, host the device-token API, create the database signing-key registry, manage deployment secrets, provision a cloud identity, or start/stop a model runtime. An integration layer must authenticate the cloud response, require a complete snapshot, bind the tenant/factory from the authenticated device identity, record poll failures, and pass fresh signer policy and exact package-control decisions to the activation coordinator.
+The companion package-governance API adds the tenant/factory-scoped database signing-key registry and immutable key/control event ledgers, IAM-guarded administrator routes for key registration/rotation/revocation and control pause/resume/revoke, plus device-token-authenticated endpoints for complete signer snapshots and effective package controls. The token—not caller-supplied scope headers—determines the device's tenant/factory/device identity. The snapshot endpoint refuses oversized results rather than silently truncating revoked-key history.
 
-The local files contain public keys and package-control metadata, not private signing keys. Filesystem permissions, OS ownership, backup policy, host-secret custody and production rollout remain deployment controls. Passing repository tests does not constitute SRS production acceptance or prove hardware-in-loop commissioning.
+EdgePackageRuntimeGate supplies a host-callable execution boundary. It requires a complete, bounded set of fresh managed control scopes; fails closed after any poll failure; resolves exact package/version/use-case state; re-verifies the currently active manifest, signing-key status, and every artifact byte at execution time; then rechecks control immediately before invoking the host callback. The execution callback receives copies of the verified artifact bytes, not an unverified path reference.
+
+The local files contain public keys and package-control metadata, not private signing keys. The deployment-owned agent must still authenticate and poll the cloud endpoints, call confirmControlSync only after every managed scope is successfully persisted, and call recordControlSyncFailure on any poll/parse/persistence error. The actual host must route every model/policy execution through EdgePackageRuntimeGate.execute; direct calls to lower-level stores/executors can bypass the gate. Filesystem permissions, OS ownership, backup policy, host-secret custody, live runtime wiring and production rollout remain deployment controls. Passing repository tests does not constitute SRS production acceptance or prove hardware-in-loop commissioning.

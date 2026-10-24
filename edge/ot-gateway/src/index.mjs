@@ -207,7 +207,7 @@ function allSecretPaths(config) {
   ];
 }
 
-class ProtocolSupervisor {
+export class ProtocolSupervisor {
   constructor(config, spool) {
     this.config = config;
     this.spool = spool;
@@ -218,13 +218,35 @@ class ProtocolSupervisor {
     this.rotationFingerprint = null;
     this.started = false;
     this.lastError = null;
+    this.rotationFault = false;
   }
 
   async start() {
     if (this.started) return;
     this.started = true;
-    await this.#startDrivers();
-    this.rotationFingerprint = await secretFingerprint(allSecretPaths(this.config));
+    let stage = 'SECRET_INVENTORY';
+    try {
+      // Establish the complete credential baseline before any protocol connection starts.
+      const initialFingerprint = await secretFingerprint(allSecretPaths(this.config));
+      stage = 'DRIVER_START';
+      await this.#startDrivers();
+      // Catch mounts/credentials that changed while the protocol sessions were initializing.
+      stage = 'SECRET_RECHECK';
+      const verifiedFingerprint = await secretFingerprint(allSecretPaths(this.config));
+      if (verifiedFingerprint !== initialFingerprint) throw new Error('SECRET_ROTATION_DURING_STARTUP');
+      this.rotationFingerprint = verifiedFingerprint;
+      this.rotationFault = false;
+      this.lastError = null;
+    } catch (error) {
+      this.started = false;
+      this.rotationFault = true;
+      const code = error instanceof Error && error.message === 'SECRET_ROTATION_DURING_STARTUP'
+        ? 'SECRET_ROTATION_DURING_STARTUP'
+        : (stage === 'DRIVER_START' ? 'GATEWAY_DRIVER_START_FAILED' : 'SECRET_ROTATION_FILE_UNAVAILABLE');
+      this.lastError = code;
+      await this.#stopDrivers();
+      throw new Error(code);
+    }
   }
 
   async stop() {
@@ -240,11 +262,13 @@ class ProtocolSupervisor {
     const mqttHealth = this.mqtt?.health() ?? null;
     const opcuaHealth = this.opcua.map((driver, index) => ({ device_id: this.config.opcua[index]?.device_id, ...driver.health() }));
     const modbusHealth = this.modbus.map((driver, index) => ({ device_id: this.config.modbus[index]?.device_id, ...driver.health() }));
-    const ready = (!mqttHealth || mqttHealth.ready)
+    const ready = !this.rotationFault
+      && (!mqttHealth || mqttHealth.ready)
       && opcuaHealth.every((driver) => driver.ready)
       && modbusHealth.every((driver) => driver.ready);
     return {
       ready,
+      credentialRotationReady: !this.rotationFault,
       mqtt: mqttHealth,
       opcua: opcuaHealth,
       modbus: modbusHealth,
@@ -258,10 +282,12 @@ class ProtocolSupervisor {
     let next;
     try { next = await secretFingerprint(allSecretPaths(this.config)); }
     catch {
-      this.lastError = 'SECRET_ROTATION_FILE_UNAVAILABLE';
+      await this.#blockRotation('SECRET_ROTATION_FILE_UNAVAILABLE');
       return;
     }
-    if (next === this.rotationFingerprint) return;
+    // After a rotation fault, even the original fingerprint must be revalidated:
+    // a missing mount may have returned without changing the previous snapshot.
+    if (next === this.rotationFingerprint && !this.rotationFault) return;
     try {
       const [cert, key] = await Promise.all([
         readSecretFile(this.config.security.serverCertFile, 'gateway TLS certificate'),
@@ -274,10 +300,18 @@ class ProtocolSupervisor {
       await this.#restartDrivers();
       this.rotationFingerprint = next;
       this.lastRotationAt = new Date().toISOString();
+      this.rotationFault = false;
       this.lastError = null;
     } catch {
-      this.lastError = 'SECRET_ROTATION_REJECTED';
+      await this.#blockRotation('SECRET_ROTATION_REJECTED');
     }
+  }
+
+  async #blockRotation(code) {
+    this.rotationFault = true;
+    this.lastError = code;
+    // Do not keep protocol sessions operating on the pre-rotation credential set.
+    await this.#stopDrivers();
   }
 
   async #restartDrivers() {
@@ -315,6 +349,42 @@ class ProtocolSupervisor {
   }
 }
 
+export function evaluateGatewayReadiness({
+  httpReady,
+  shuttingDown,
+  driverReady,
+  spoolStats,
+  spoolCapacity,
+  spoolAvailable = true,
+}) {
+  const spoolStatsValid = spoolAvailable === true
+    && Number.isSafeInteger(spoolStats?.queued)
+    && spoolStats.queued >= 0
+    && Number.isSafeInteger(spoolStats?.blocked)
+    && spoolStats.blocked >= 0;
+  const spoolCapacityValid = Number.isSafeInteger(spoolCapacity) && spoolCapacity > 0;
+  const spoolCapacityAvailable = spoolStatsValid
+    && spoolCapacityValid
+    && spoolStats.queued < spoolCapacity;
+
+  let reason = null;
+  if (shuttingDown === true) reason = 'SHUTTING_DOWN';
+  else if (httpReady !== true) reason = 'HTTP_NOT_READY';
+  else if (driverReady !== true) reason = 'PROTOCOL_DRIVERS_NOT_READY';
+  else if (!spoolStatsValid) reason = 'SPOOL_STATUS_UNAVAILABLE';
+  else if (!spoolCapacityValid) reason = 'SPOOL_CAPACITY_INVALID';
+  else if (spoolStats.blocked > 0) reason = 'SPOOL_HAS_BLOCKED_ENTRIES';
+  else if (!spoolCapacityAvailable) reason = 'SPOOL_CAPACITY_REACHED';
+
+  const ready = reason === null;
+  return {
+    ready,
+    status: shuttingDown === true ? 'stopping' : (ready ? 'ready' : 'not_ready'),
+    reason,
+    spoolCapacityAvailable,
+  };
+}
+
 export async function startGateway(config) {
   const spoolKey = await readSpoolKey(config.security.spoolKeyFile);
   const spool = new OtEdgeDurableSpool(config.spoolFile ?? '/var/lib/factoryos-ot/spool.enc', spoolKey, {
@@ -348,15 +418,35 @@ export async function startGateway(config) {
     try {
       if (request.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/readyz')) {
         const driverHealth = supervisor.health();
-        const ready = httpReady && !shuttingDown && driverHealth.ready;
+        let spoolStats = null;
+        let spoolAvailable = true;
+        try { spoolStats = await spool.stats(); }
+        catch { spoolAvailable = false; }
+        const spoolCapacity = config.spool?.maxEntries ?? 10000;
+        const readiness = evaluateGatewayReadiness({
+          httpReady,
+          shuttingDown,
+          driverReady: driverHealth.ready,
+          spoolStats,
+          spoolCapacity,
+          spoolAvailable,
+        });
         const health = {
-          status: shuttingDown ? 'stopping' : (ready ? 'ready' : 'not_ready'),
+          status: readiness.status,
+          readiness_reason: readiness.reason,
           gateway_id: config.gatewayId,
           protocol_drivers: driverHealth,
-          spool: await spool.stats(),
+          spool: spoolAvailable ? {
+            ...spoolStats,
+            capacity: spoolCapacity,
+            capacityReached: Number.isSafeInteger(spoolStats?.queued) && spoolStats.queued >= spoolCapacity,
+            blockedEntriesPresent: Number.isSafeInteger(spoolStats?.blocked) && spoolStats.blocked > 0,
+          } : { status: 'unavailable', errorCode: 'SPOOL_STATUS_UNAVAILABLE' },
           observed_at: new Date().toISOString(),
         };
-        return jsonResponse(response, url.pathname === '/readyz' && !ready ? 503 : 200, health);
+        // Liveness remains 200 while the process serves health. Readiness fails
+        // closed if the spool cannot be inspected or has no space for new events.
+        return jsonResponse(response, url.pathname === '/readyz' && !readiness.ready ? 503 : 200, health);
       }
       if (request.method !== 'POST' || url.pathname !== '/api/v1/modbus/read') {
         return jsonResponse(response, 404, { error: 'NOT_FOUND' });
