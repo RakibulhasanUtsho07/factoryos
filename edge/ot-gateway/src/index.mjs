@@ -207,7 +207,7 @@ function allSecretPaths(config) {
   ];
 }
 
-class ProtocolSupervisor {
+export class ProtocolSupervisor {
   constructor(config, spool) {
     this.config = config;
     this.spool = spool;
@@ -218,6 +218,7 @@ class ProtocolSupervisor {
     this.rotationFingerprint = null;
     this.started = false;
     this.lastError = null;
+    this.rotationFault = false;
   }
 
   async start() {
@@ -240,11 +241,13 @@ class ProtocolSupervisor {
     const mqttHealth = this.mqtt?.health() ?? null;
     const opcuaHealth = this.opcua.map((driver, index) => ({ device_id: this.config.opcua[index]?.device_id, ...driver.health() }));
     const modbusHealth = this.modbus.map((driver, index) => ({ device_id: this.config.modbus[index]?.device_id, ...driver.health() }));
-    const ready = (!mqttHealth || mqttHealth.ready)
+    const ready = !this.rotationFault
+      && (!mqttHealth || mqttHealth.ready)
       && opcuaHealth.every((driver) => driver.ready)
       && modbusHealth.every((driver) => driver.ready);
     return {
       ready,
+      credentialRotationReady: !this.rotationFault,
       mqtt: mqttHealth,
       opcua: opcuaHealth,
       modbus: modbusHealth,
@@ -258,10 +261,12 @@ class ProtocolSupervisor {
     let next;
     try { next = await secretFingerprint(allSecretPaths(this.config)); }
     catch {
-      this.lastError = 'SECRET_ROTATION_FILE_UNAVAILABLE';
+      await this.#blockRotation('SECRET_ROTATION_FILE_UNAVAILABLE');
       return;
     }
-    if (next === this.rotationFingerprint) return;
+    // After a rotation fault, even the original fingerprint must be revalidated:
+    // a missing mount may have returned without changing the previous snapshot.
+    if (next === this.rotationFingerprint && !this.rotationFault) return;
     try {
       const [cert, key] = await Promise.all([
         readSecretFile(this.config.security.serverCertFile, 'gateway TLS certificate'),
@@ -274,10 +279,18 @@ class ProtocolSupervisor {
       await this.#restartDrivers();
       this.rotationFingerprint = next;
       this.lastRotationAt = new Date().toISOString();
+      this.rotationFault = false;
       this.lastError = null;
     } catch {
-      this.lastError = 'SECRET_ROTATION_REJECTED';
+      await this.#blockRotation('SECRET_ROTATION_REJECTED');
     }
+  }
+
+  async #blockRotation(code) {
+    this.rotationFault = true;
+    this.lastError = code;
+    // Do not keep protocol sessions operating on the pre-rotation credential set.
+    await this.#stopDrivers();
   }
 
   async #restartDrivers() {
