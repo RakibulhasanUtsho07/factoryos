@@ -27,11 +27,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      - name: Install and validate workspace lockfile
+        run: npm ci
       - name: Validate Edge agent JavaScript syntax
         run: |
           node --check services/edge-agent/durable-observation-spool.mjs
           node --check services/edge-agent/package-control-sync.mjs
           node --check services/edge-agent/package-control-supervisor.mjs
           node --check services/edge-agent/verified-package-runtime.mjs
+      - name: Run Edge agent workspace build and lint contracts
+        run: |
+          npm --workspace @factoryos/edge-agent run build
+          npm --workspace @factoryos/edge-agent run lint
       - name: Run complete Edge agent contract suite
-        run: node --test services/edge-agent/test/*.test.mjs
+        run: npm --workspace @factoryos/edge-agent test
