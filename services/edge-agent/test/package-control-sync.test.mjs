@@ -184,6 +184,32 @@ test('terminal signer and package revocations survive later snapshots that omit 
     assert.equal(final.healthy, true);
     assert.equal(final.signingKeys.find((key) => key.keyId === 'release-key-v1')?.status, 'REVOKED');
     assert.ok(final.controls.every((entry) => entry.status === 'REVOKED'));
+
+    // Reopening the persisted snapshot must not erase terminal revocation history.
+    const restarted = new EdgePackageControlSyncClient({
+      baseUrl: 'https://edge.example.test',
+      deviceId,
+      tenantId,
+      factoryId,
+      token: 'opaque-device-secret',
+      stateFile: join(f.root, 'state', 'package-sync.json'),
+      managedScopes: scopes,
+      fetchImpl: async (url) => {
+        const target = new URL(url);
+        if (target.pathname.includes('/device-package-signing-keys/')) {
+          return response(signingSnapshot({
+            signingKeys: [{ keyId: 'release-key-v1', publicKeyPem, fingerprintSha256, status: 'ACTIVE' }],
+          }));
+        }
+        const scope = scopes.find((item) => item.packageId === target.searchParams.get('package_id'));
+        return response(controlResponse(scope, 'ACTIVE'));
+      },
+    });
+    await restarted.initialize();
+    assert.equal(restarted.getSnapshot().healthy, false);
+    const afterRestart = await restarted.pollOnce();
+    assert.equal(afterRestart.signingKeys.find((key) => key.keyId === 'release-key-v1')?.status, 'REVOKED');
+    assert.ok(afterRestart.controls.every((entry) => entry.status === 'REVOKED'));
   } finally {
     await f.cleanup();
   }
@@ -224,6 +250,33 @@ test('rejects cross-tenant signer snapshots and invalid signing-key fingerprints
     assert.equal(bad.client.getSnapshot().healthy, false);
   } finally {
     await bad.cleanup();
+  }
+});
+
+test('rejects private-key PEM material even when Node can derive its public key', async () => {
+  const privateKeyPem = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  const f = await fixture({
+    fetchImpl: async (url) => {
+      const target = new URL(url);
+      if (target.pathname.includes('/device-package-signing-keys/')) {
+        return response(signingSnapshot({
+          signingKeys: [{
+            keyId: 'release-key-v1',
+            publicKeyPem: privateKeyPem,
+            fingerprintSha256,
+            status: 'ACTIVE',
+          }],
+        }));
+      }
+      const scope = scopes.find((item) => item.packageId === target.searchParams.get('package_id'));
+      return response(controlResponse(scope));
+    },
+  });
+  try {
+    await assert.rejects(f.client.pollOnce(), { code: 'INVALID_SIGNING_KEY_SNAPSHOT' });
+    assert.equal(f.client.getSnapshot().healthy, false);
+  } finally {
+    await f.cleanup();
   }
 });
 
@@ -273,5 +326,19 @@ test('requires HTTPS for remote sync and rejects malformed or oversized response
     await assert.rejects(f.client.pollOnce(), { code: 'INVALID_SIGNING_KEY_SNAPSHOT' });
   } finally {
     await f.cleanup();
+  }
+
+  const oversized = await fixture({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name === 'content-length' ? String(2 * 1024 * 1024) : null },
+      text: async () => '',
+    }),
+  });
+  try {
+    await assert.rejects(oversized.client.pollOnce(), { code: 'RESPONSE_TOO_LARGE' });
+  } finally {
+    await oversized.cleanup();
   }
 });
