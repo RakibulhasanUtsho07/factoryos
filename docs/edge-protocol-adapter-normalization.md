@@ -15,7 +15,11 @@ This is a reusable, transport-injected library slice under `services/api/src/edg
 
 ## Security boundary that remains
 
-The durable spool file format in this library is **not encrypted at rest**. Mode-restricted files and atomic writes do not substitute for encryption. Before storing sensitive production telemetry, the deployment must place the spool on an approved encrypted volume/filesystem with strict OS ownership and backup controls, and must never send credentials or secrets in observation payloads. Corruption or wrong structure must trigger operational investigation rather than queue reset.
+Persisted agent-state and queued batch records are encrypted at rest with **AES-256-GCM**, independent random 96-bit IVs, 128-bit authentication tags, and additional authenticated data bound to each record's relative spool path. The constructor requires a 32-byte `Uint8Array` encryption key injected by the deployment host from an approved secret manager or mounted secret. The key is never written to disk.
+
+An incorrect key, modified ciphertext/tag, malformed envelope or unexpected plaintext record fails closed with `SPOOL_CORRUPT`; no queue item is silently deleted and there is no plaintext fallback. **Do not point this encrypted implementation at an existing directory containing plaintext spool files.** Any pre-encryption queue needs an approved offline drain/migration procedure and recorded integrity checks before cutover. This library does not implement in-place key rotation; rotate only after draining the queue or through a separately reviewed atomic re-encryption procedure.
+
+At-rest encryption complements rather than replaces restrictive filesystem permissions, approved encrypted storage, backup/key custody controls and access monitoring. Credentials, bearer tokens and secret material remain forbidden in observation payloads.
 
 This port intentionally does not add a native MQTT client, OPC UA session/certificate manager, Modbus TCP socket driver, broker ACL, plant firewall/VLAN policy, secret-manager integration or hardware-in-the-loop commissioning. Those are separate deployment/OT acceptance gates. The adapters normalize **read-only telemetry**; they must not be treated as PLC write capability. No production commissioning or signed SRS acceptance is implied by repository CI.
 
