@@ -42,6 +42,7 @@ service_identities:
     credential_source: ""
     use_window_and_approver_recorded: false
   monitoring_role:
+    name: ""
     separate_from_runtime_role: true
     superuser: false
     bypassrls: false
