@@ -15,6 +15,7 @@ Do not send a request to an external provider until all of the following are tru
 - The environment is explicitly approved for provider traffic. Provider contract/subprocessor terms, data residency, retention, and outbound-network review have named approvers and a review/change ticket.
 - Test data is synthetic and approved for the provider. Do not use real tenant, employee, customer, credential, production order, or other confidential data during acceptance.
 - The exact candidate commit SHA, built artifact/deployment image digest, environment name, and database migration head are recorded. Verify migration 195 is present and applied in the target database.
+- The Production Dependency Security workflow passes on the exact candidate SHA; `npm audit --omit=dev` reports zero vulnerabilities. Do not suppress an advisory or treat a prior commit's clean audit as evidence for this candidate.
 - Deployment configuration is provided through the approved secret/configuration manager: AI_MODEL_PROVIDER_CHAT_COMPLETIONS_URL, AI_MODEL_PROVIDER_API_KEY, AI_MODEL_PROVIDER_MODEL_ID, AI_MODEL_PROVIDER_ARTIFACT_VERSION, and AI_MODEL_PROVIDER_EGRESS_APPROVED=true. Outside explicit development/test modes, the endpoint must be HTTPS and the egress approval must be present.
 - The model ID and route artifact version are immutable/pinned for this release. Compute the expected digest using the repository's canonicalizeAiModelProviderRouteManifest implementation and register/sign that exact digest through the approved artifact workflow. The signing private key remains in the trusted signing system and must never be copied to the API deployment.
 - A different authorized reviewer approves the pending artifact source; the source and artifact are active, unexpired, and scoped to the tenant/factory that will run the test. Record the source ID, artifact ID/version, public-key fingerprint, manifest digest, and expiry.
@@ -98,6 +99,8 @@ Create one immutable evidence record per environment and candidate. Replace plac
       "migrationHead": "",
       "apiCiRunUrl": "",
       "postgresCiRunUrl": "",
+      "productionDependencyAuditRunUrl": "",
+      "productionDependencyAuditResult": "NOT_RUN",
       "traceOrRequestRef": "",
       "admissionReceiptRef": "",
       "usageEventRefs": [],
@@ -114,7 +117,7 @@ The evidence store must enforce access control and retention. Do not include API
 
 ## Release review and rollback
 
-The release reviewer must verify: (1) the run's candidate SHA equals the deployed candidate; (2) API and PostgreSQL CI evidence relates to that candidate; (3) the signed route manifest and registered artifact match the deployed endpoint/model/version/prompt; (4) provider/legal/security review approves the egress and data location; (5) the positive probe and all required negative controls pass; (6) admission and usage evidence correlate; and (7) the owner and an independent reviewer approve the evidence record.
+The release reviewer must verify: (1) the run's candidate SHA equals the deployed candidate; (2) API CI, PostgreSQL CI and Production Dependency Security evidence relates to that candidate, with `npm audit --omit=dev` reporting zero vulnerabilities; (3) the signed route manifest and registered artifact match the deployed endpoint/model/version/prompt; (4) provider/legal/security review approves the egress and data location; (5) the positive probe and all required negative controls pass; (6) admission and usage evidence correlate; and (7) the owner and an independent reviewer approve the evidence record.
 
 Rollback immediately if the provider identity/region changes unexpectedly, the route digest does not match, any unapproved egress occurs, an admission-denied request reaches the provider, secrets appear in logs/responses, or usage/admission evidence cannot be reconciled. Disable provider egress through the deployment control, revoke the affected artifact/source when appropriate, verify that subsequent calls fail closed, and record the change/audit references. Do not treat an emergency rollback as requirement acceptance.
 
