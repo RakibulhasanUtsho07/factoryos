@@ -136,7 +136,6 @@ export class EdgePackageControlStateStore {
         'Package control state failed integrity validation; execution remains blocked',
       );
     }
-    this.initialized = true;
     let changed = this.states.size > 0;
     if (managedScopes !== undefined) {
       const retainedKeys = new Set(managedScopes.map((scope) => controlKey(scope)));
@@ -150,6 +149,7 @@ export class EdgePackageControlStateStore {
       }
     }
     if (changed) await this.writeAtomic();
+    this.initialized = true;
     return this.list();
   }
 
