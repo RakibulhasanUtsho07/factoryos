@@ -12,10 +12,11 @@
     "./durable-observation-spool": "./durable-observation-spool.mjs",
     "./package-control-sync": "./package-control-sync.mjs",
     "./package-control-supervisor": "./package-control-supervisor.mjs",
-    "./verified-package-runtime": "./verified-package-runtime.mjs"
+    "./verified-package-runtime": "./verified-package-runtime.mjs",
+    "./host-runtime-adapter": "./host-runtime-adapter.mjs"
   },
   "scripts": {
-    "check": "node --check index.mjs && node --check durable-observation-spool.mjs && node --check package-control-sync.mjs && node --check package-control-supervisor.mjs && node --check verified-package-runtime.mjs && node --check test/durable-observation-spool.test.mjs && node --check test/package-control-sync.test.mjs && node --check test/package-control-supervisor.test.mjs && node --check test/verified-package-runtime.test.mjs",
+    "check": "node --check index.mjs && node --check durable-observation-spool.mjs && node --check package-control-sync.mjs && node --check package-control-supervisor.mjs && node --check verified-package-runtime.mjs && node --check host-runtime-adapter.mjs && node --check test/durable-observation-spool.test.mjs && node --check test/package-control-sync.test.mjs && node --check test/package-control-supervisor.test.mjs && node --check test/verified-package-runtime.test.mjs",
     "build": "npm run check",
     "lint": "npm run check",
     "test": "node --test test/*.test.mjs"
