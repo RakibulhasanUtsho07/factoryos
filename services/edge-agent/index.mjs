@@ -17,3 +17,7 @@ export {
   verifySynchronizedEdgePackage,
   EdgePackageRuntimeVerificationError,
 } from './verified-package-runtime.mjs';
+
+export {
+  EdgePackageHostRuntimeAdapter,
+} from './host-runtime-adapter.mjs';
