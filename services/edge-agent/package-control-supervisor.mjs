@@ -272,21 +272,6 @@ export class EdgePackageExecutionSupervisor {
       throw error;
     }
 
-    const finish = (value) => {
-      this.activeExecutions.delete(executionId);
-      if (controller.signal.aborted) {
-        fail(
-          'EXECUTION_ABORTED_AFTER_START',
-          'Package execution was cancelled after host invocation; reconcile possible side effects before retrying',
-        );
-      }
-      return value;
-    };
-    const reject = (error) => {
-      this.activeExecutions.delete(executionId);
-      throw error;
-    };
-
     let then;
     try {
       then = outcome !== null && (typeof outcome === 'object' || typeof outcome === 'function')
@@ -295,8 +280,53 @@ export class EdgePackageExecutionSupervisor {
       this.activeExecutions.delete(executionId);
       throw error;
     }
-    if (typeof then === 'function') return Promise.resolve(outcome).then(finish, reject);
-    return finish(outcome);
+
+    if (typeof then !== 'function') {
+      this.activeExecutions.delete(executionId);
+      if (controller.signal.aborted) {
+        fail(
+          'EXECUTION_ABORTED_AFTER_START',
+          'Package execution was cancelled after host invocation; reconcile possible side effects before retrying',
+        );
+      }
+      return outcome;
+    }
+
+    const executionPromise = Promise.resolve(outcome);
+    // Keep tracking the host work until it really settles. Reporting an
+    // ambiguous cancellation must not pretend that a non-cooperative executor
+    // has stopped or make its side effects safe to retry.
+    void executionPromise.then(
+      () => { this.activeExecutions.delete(executionId); },
+      () => { this.activeExecutions.delete(executionId); },
+    );
+
+    const abortedAfterStart = () => new EdgePackageSupervisorError(
+      'EXECUTION_ABORTED_AFTER_START',
+      'Package execution was cancelled after host invocation; the runtime may still be running, so reconcile possible side effects before retrying',
+    );
+    const finish = (value) => {
+      if (controller.signal.aborted) throw abortedAfterStart();
+      return value;
+    };
+    const reject = (error) => {
+      if (controller.signal.aborted) throw abortedAfterStart();
+      throw error;
+    };
+
+    let onAbort;
+    const abortPromise = new Promise((_resolve, rejectAbort) => {
+      onAbort = () => rejectAbort(abortedAfterStart());
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+
+    return Promise.race([
+      executionPromise.then(finish, reject),
+      abortPromise,
+    ]).finally(() => {
+      if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+    });
   }
 
   runAuthorized(input, operation) {
