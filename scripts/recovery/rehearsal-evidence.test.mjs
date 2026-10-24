@@ -24,6 +24,13 @@ function sampleEvidence() {
     schema: 'factoryos.disaster-recovery-rehearsal/v1',
     runId: 'run-fixture-1',
     status: 'TECHNICAL_PASS',
+    timestamps: {
+      startedAtUtc: '2026-10-20T09:58:00Z',
+      finishedAtUtc: '2026-10-20T10:02:00Z',
+      sourceWatermarkUtc: '2026-10-20T09:59:50Z',
+      restoredWatermarkUtc: '2026-10-20T09:59:50Z',
+      simulatedIncidentAtUtc: '2026-10-20T10:00:25Z',
+    },
     candidate: {
       commitSha: 'a'.repeat(40),
       migrationManifestPath: 'scripts/recovery/ci-candidate-migrations.txt',
@@ -238,6 +245,104 @@ test('PASS sign-off rejects an idempotent CI replay receipt as a production migr
     ]);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /pending release migration manifest/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+
+test('PASS sign-off rejects a missing or malformed candidate commit SHA', () => {
+  for (const sha of [null, 'not-a-commit-sha', 'a'.repeat(39), 'g'.repeat(40)]) {
+    const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-sha-'));
+    try {
+      const evidencePath = join(directory, 'receipt.json');
+      const evidence = sampleEvidence();
+      evidence.candidate.commitSha = sha;
+      writeFileSync(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+      const result = run(process.execPath, [signoff,
+        '--evidence', evidencePath,
+        '--decision', 'PASS',
+        '--operator', 'DB Operator',
+        '--approver', 'Release Approver',
+        '--notes', 'Candidate SHA validation regression test.',
+        '--reference', 'CHG-DR-2026-109',
+      ]);
+      assert.notEqual(result.status, 0, String(sha));
+      assert.match(result.stderr, /exact candidate commit SHA/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('PASS sign-off rejects contradictory RPO and restored watermark evidence', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-rpo-mismatch-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.measured.observedRpoSeconds = 34;
+    writeFileSync(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'RPO consistency regression test.',
+      '--reference', 'CHG-DR-2026-110',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /RPO matches event cutoff and restored watermark/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('PASS sign-off rejects negative observed RPO/RTO values', () => {
+  for (const measurement of ['observedRpoSeconds', 'observedRtoSeconds']) {
+    const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-negative-metric-'));
+    try {
+      const evidencePath = join(directory, 'receipt.json');
+      const evidence = sampleEvidence();
+      evidence.measured[measurement] = -1;
+      writeFileSync(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+      const result = run(process.execPath, [signoff,
+        '--evidence', evidencePath,
+        '--decision', 'PASS',
+        '--operator', 'DB Operator',
+        '--approver', 'Release Approver',
+        '--notes', 'Negative recovery metric regression test.',
+        '--reference', 'CHG-DR-2026-111',
+      ]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /non-negative measured/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('PASS sign-off enforces approved RPO/RTO thresholds from the measured values', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'factoryos-dr-signoff-target-breach-'));
+  try {
+    const evidencePath = join(directory, 'receipt.json');
+    const evidence = sampleEvidence();
+    evidence.measured.approvedTargets = true;
+    evidence.measured.approvedRpoTargetSeconds = 30;
+    evidence.measured.approvedRtoTargetSeconds = 100;
+    // Simulate a forged/inconsistent receipt that incorrectly claims the threshold was met.
+    evidence.measured.targetAssessment = 'WITHIN_APPROVED_TARGETS';
+    writeFileSync(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+    const result = run(process.execPath, [signoff,
+      '--evidence', evidencePath,
+      '--decision', 'PASS',
+      '--operator', 'DB Operator',
+      '--approver', 'Release Approver',
+      '--notes', 'Approved target enforcement regression test.',
+      '--reference', 'CHG-DR-2026-112',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /observed RPO\/RTO exceed or do not satisfy approved targets/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
