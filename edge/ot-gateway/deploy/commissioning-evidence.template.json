@@ -6,6 +6,7 @@
     "gateway_asset_id": "",
     "gateway_serial": "",
     "gateway_image_digest": "",
+    "gateway_config_ref": "",
     "gateway_config_sha256": "",
     "api_build_sha": "",
     "device_model_firmware": "",

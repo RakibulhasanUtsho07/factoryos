@@ -68,6 +68,12 @@ async function writeEvidenceArtifacts(record, root) {
     await writeFile(target, bytes);
     item[hashKey] = createHash('sha256').update(bytes).digest('hex');
   }
+  const configPath = join(root, record.identity.gateway_config_ref);
+  await mkdir(dirname(configPath), { recursive: true });
+  const configBytes = Buffer.from('approved gateway config fixture\n', 'utf8');
+  await writeFile(configPath, configBytes);
+  record.identity.gateway_config_sha256 = createHash('sha256').update(configBytes).digest('hex');
+
   const receipt = {
     repository: 'RakibulhasanUtsho07/factoryos',
     sourceCommit: record.identity.gateway_source_commit,
@@ -94,6 +100,7 @@ function validPassingEvidence(template) {
     gateway_source_commit: 'f'.repeat(40),
     gateway_release_receipt_ref: 'evidence/release/ot-gateway-release.json',
     gateway_release_receipt_sha256: 'e'.repeat(64),
+    gateway_config_ref: 'evidence/config/gateway-config.yaml',
     gateway_config_sha256: 'b'.repeat(64),
     api_build_sha: 'c'.repeat(40),
     device_model_firmware: 'Approved meter/controller model and firmware rev 4.2',
@@ -240,6 +247,21 @@ test('artifact verifier requires every referenced file to exist and match its SH
   await rm(join(directory, evidence.hil_tests[0].artifact_ref));
   const missing = await verifyCommissioningArtifactReferences(evidence, directory);
   assert.ok(missing.some((error) => error.includes('artifact is missing')));
+});
+
+test('gateway configuration fingerprint must match the referenced artifact bytes', async (t) => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const directory = await mkdtemp(join(tmpdir(), 'factoryos-config-evidence-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeEvidenceArtifacts(evidence, directory);
+  assert.deepEqual(await verifyCommissioningArtifactReferences(evidence, directory), []);
+
+  const configPath = join(directory, evidence.identity.gateway_config_ref);
+  await writeFile(configPath, 'tampered configuration\\n', 'utf8');
+  const errors = await verifyCommissioningArtifactReferences(evidence, directory);
+  assert.ok(errors.some((error) => error.includes(
+    'identity.gateway_config artifact SHA-256 does not match recorded digest'
+  )));
 });
 
 test('artifact verifier rejects traversal and symbolic links', async (t) => {
