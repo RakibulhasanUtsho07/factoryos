@@ -33,6 +33,18 @@ type InventoryItemRow = QueryResultRow & {
   created_at: string;
 };
 
+export interface InventoryStockSummary extends QueryResultRow {
+  item_id: string;
+  sku: string;
+  name: string;
+  unit: string;
+  status: 'ACTIVE' | 'DISABLED';
+  quantity_on_hand: string;
+  quantity_reserved: string;
+  quantity_available: string;
+  balance_version: string;
+}
+
 type InventoryMovementRow = QueryResultRow & {
   id: string;
   tenant_id: string;
@@ -69,6 +81,49 @@ export class InventoryService {
     private readonly auditService: AuditService,
     @Optional() private readonly uomService?: UnitOfMeasureService,
   ) {}
+
+  /**
+   * Return the authoritative aggregate stock snapshot for one item.
+   * The item, factory and tenant predicates are explicit in addition to
+   * transaction-local RLS context. This method is read-only.
+   */
+  async getStockSummary(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+  ): Promise<InventoryStockSummary> {
+    this.validateScope(userId, tenantId, factoryId);
+    if (!isUUID(itemId)) throw new BadRequestException('itemId must be a valid UUID');
+
+    const result = await this.database.query<InventoryStockSummary>(
+      `
+      SELECT i.id::text AS item_id,
+             i.sku,
+             i.name,
+             i.unit,
+             i.status,
+             b.quantity_on_hand::text AS quantity_on_hand,
+             b.quantity_reserved::text AS quantity_reserved,
+             (b.quantity_on_hand - b.quantity_reserved)::text AS quantity_available,
+             b.version::text AS balance_version
+      FROM inventory_items i
+      JOIN inventory_stock_balances b
+        ON b.item_id = i.id
+       AND b.tenant_id = i.tenant_id
+       AND b.factory_id = i.factory_id
+      WHERE i.id = $1
+        AND i.tenant_id = $2
+        AND i.factory_id = $3
+      LIMIT 1
+      `,
+      [itemId.toLowerCase(), tenantId, factoryId],
+      { tenantId, userId },
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('Inventory item not found in this factory');
+    return row;
+  }
 
   async createItem(
     userId: string,

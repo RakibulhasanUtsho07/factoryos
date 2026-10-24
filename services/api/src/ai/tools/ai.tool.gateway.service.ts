@@ -3,6 +3,8 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import {
@@ -10,6 +12,7 @@ import {
 } from 'node:crypto';
 
 import { AiArtifactProvenanceService } from '../artifacts/ai.artifact.provenance.service';
+import { InventoryService } from '../../inventory/inventory.service';
 
 import {
   IamService,
@@ -52,6 +55,10 @@ export class AiToolGatewayService {
 
     private readonly artifactProvenance?:
       AiArtifactProvenanceService,
+
+    @Optional()
+    private readonly inventoryService?:
+      InventoryService,
   ) {}
 
   /* ==========================================================
@@ -483,6 +490,10 @@ export class AiToolGatewayService {
       });
     }
 
+    if (tool.toolId === 'INVENTORY.STOCK.SUMMARY') {
+      return this.executeInventoryStockSummary(action);
+    }
+
     /*
      * Fail closed for action types that do not yet have a
      * domain executor.
@@ -520,6 +531,65 @@ export class AiToolGatewayService {
   /* ==========================================================
    * PRIVATE: BOUNDED TIMEOUT
    * ========================================================== */
+
+  private async executeInventoryStockSummary(
+    action: AiToolActionContext,
+  ): Promise<{
+    status: 'SUCCEEDED' | 'FAILED';
+    result: Record<string, unknown>;
+    error: Record<string, unknown>;
+  }> {
+    if (!this.inventoryService) {
+      return {
+        status: 'FAILED',
+        result: {},
+        error: {
+          code: 'EXECUTOR_NOT_CONFIGURED',
+          message: 'Inventory stock-summary executor is unavailable',
+          toolId: 'INVENTORY.STOCK.SUMMARY',
+          toolVersion: action.toolVersion,
+        },
+      };
+    }
+
+    const itemId = action.payload.item_id;
+    if (typeof itemId !== 'string') {
+      return {
+        status: 'FAILED',
+        result: {},
+        error: {
+          code: 'INVALID_TOOL_INPUT',
+          message: 'item_id is required for inventory stock summary',
+        },
+      };
+    }
+
+    try {
+      const stock = await this.inventoryService.getStockSummary(
+        action.actorUserId,
+        action.tenantId,
+        action.factoryId,
+        itemId,
+      );
+      return {
+        status: 'SUCCEEDED',
+        result: { ...stock },
+        error: {},
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        return {
+          status: 'FAILED',
+          result: {},
+          error: {
+            code: 'INVENTORY_ITEM_NOT_FOUND',
+            message: 'Inventory item not found in this factory',
+          },
+        };
+      }
+      throw error;
+    }
+  }
 
   private async withTimeout(
     promise: Promise<{

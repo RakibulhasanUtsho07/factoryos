@@ -2,6 +2,7 @@ import {
   Module,
 } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
+import { InventoryModule } from '../inventory/inventory.module';
 import { IamModule } from '../iam/iam.module';
 import { SaasModule } from '../saas/saas.module';
 import { AiArtifactProvenanceService } from './artifacts/ai.artifact.provenance.service';
@@ -21,6 +22,7 @@ import { AiOpenAiCompatibleProviderService } from './ai.openai-compatible.provid
     IamModule,
 
     SaasModule,
+    InventoryModule,
   ],
 
   providers: [
