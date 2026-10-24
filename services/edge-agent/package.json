@@ -1,0 +1,23 @@
+{
+  "name": "@factoryos/edge-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FactoryOS edge-agent contracts for durable telemetry, authenticated package-control sync, and verified signed-package execution",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./index.mjs",
+    "./durable-observation-spool": "./durable-observation-spool.mjs",
+    "./package-control-sync": "./package-control-sync.mjs",
+    "./package-control-supervisor": "./package-control-supervisor.mjs",
+    "./verified-package-runtime": "./verified-package-runtime.mjs"
+  },
+  "scripts": {
+    "check": "node --check index.mjs && node --check durable-observation-spool.mjs && node --check package-control-sync.mjs && node --check package-control-supervisor.mjs && node --check verified-package-runtime.mjs && node --check test/durable-observation-spool.test.mjs && node --check test/package-control-sync.test.mjs && node --check test/package-control-supervisor.test.mjs && node --check test/verified-package-runtime.test.mjs",
+    "build": "npm run check",
+    "lint": "npm run check",
+    "test": "node --test test/*.test.mjs"
+  }
+}

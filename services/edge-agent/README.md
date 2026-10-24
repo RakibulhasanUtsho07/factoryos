@@ -1,5 +1,17 @@
 # Edge agent: durable observation spool and package runtime controls
 
+## Workspace package
+
+The module is published inside the repository as the private npm workspace `@factoryos/edge-agent`. Use the stable entry point instead of importing implementation file paths from another service:
+
+    import {
+      EdgePackageControlSyncClient,
+      EdgePackageExecutionSupervisor,
+      verifySynchronizedEdgePackage,
+    } from '@factoryos/edge-agent';
+
+Subpath exports are available for `./durable-observation-spool`, `./package-control-sync`, `./package-control-supervisor`, and `./verified-package-runtime`. The package intentionally has no third-party runtime dependencies; its supported minimum Node.js version is 22. Workspace checks are `npm --workspace @factoryos/edge-agent run check`, `npm --workspace @factoryos/edge-agent run build`, and `npm --workspace @factoryos/edge-agent test`.
+
 This Node.js library provides a durable telemetry spool, an authenticated package-control sync client, a recurring fail-closed supervisor, and a signed-package verification boundary. It is not a complete service supervisor, native hardware driver suite, or proof that a particular production model/policy executor has been wired to these APIs.
 
 ## Durable observations
