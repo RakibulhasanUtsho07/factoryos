@@ -68,15 +68,39 @@ After PR #68 merged, the actual merge SHA `afeb9cdbe25d1d154ad42a4e6137a18977d33
 
 ## 2026-10-24 dev-to-main promotion verification
 
-**Status: OPEN / NOT_ACCEPTED pending exact post-merge SHA checks.** This section records staged promotion evidence; it is not production acceptance and does not replace post-merge verification.
+**Repository CI gate for exact `main` merge SHA `96804e4408f1ef7f4df1912f1cbc0c542d5c4f05`: PASS.** Promotion PR [#150](https://github.com/RakibulhasanUtsho07/factoryos/pull/150) was merged after all five PR-candidate workflows passed. All five post-merge workflows below also completed successfully with `head_sha=96804e4408f1ef7f4df1912f1cbc0c542d5c4f05`.
 
-- Source branch: `rakibul-hasan`, conflict-resolved candidate `3ceb59a040dc070def9ea70bceb4096a0f226ca5`.
 - Source-to-dev promotion: [PR #124](https://github.com/RakibulhasanUtsho07/factoryos/pull/124), merged as `bb85a5291873a4fb20fe0cc73178a21f7d43f014`.
-- PR-head API CI: [run 40077592817](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40077592817) — SUCCESS on `3ceb59a040dc070def9ea70bceb4096a0f226ca5`.
-- PR-head API PostgreSQL CI: [run 40077592838](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40077592838) — SUCCESS on `3ceb59a040dc070def9ea70bceb4096a0f226ca5`.
-- PR-head Production Dependency Security: [run 40077592818](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40077592818) — SUCCESS on `3ceb59a040dc070def9ea70bceb4096a0f226ca5`.
+- Dev-to-main promotion: [PR #150](https://github.com/RakibulhasanUtsho07/factoryos/pull/150), merge commit `96804e4408f1ef7f4df1912f1cbc0c542d5c4f05`.
 
-These are **pre-merge PR-head checks**, not evidence that the `dev` or `main` merge commit passed. Keep this promotion open until exact post-merge `dev` and `main` SHAs have completed applicable API, PostgreSQL, dependency-security, SRS/HLD/Blueprint traceability, and Web CI where web paths change. Record each run URL and outcome against its own SHA. Verify the ordered migration manifest and its inventory/hash on the release candidate; do not copy historical manifest counts or checksums from the 2026-10-20 record.
+### Exact post-merge CI on main
 
-FR-MSO-03 and FR-MSO-05 remain OPEN / NOT_ACCEPTED until live-provider acceptance prerequisites, positive/negative probe evidence, and independent release sign-off are recorded.
+| Workflow | Post-merge run | Result |
+|---|---|---|
+| API CI | [Run 40078188614](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078188614) | **SUCCESS** — API lint/build and unit-test job completed. |
+| API PostgreSQL CI | [Run 40078188589](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078188589) | **SUCCESS** — ordered migration manifest, PostgreSQL application/integration suite, and recovery/security/performance contracts completed. |
+| Production Dependency Security | [Run 40078188585](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078188585) | **SUCCESS** — locked dependency install and production security audit completed. |
+| Web CI | [Run 40078188611](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078188611) | **SUCCESS** — web lint and production build completed. |
+| SRS HLD Blueprint Traceability | [Run 40078188631](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078188631) | **SUCCESS** — SRS/HLD/Blueprint audit consistency validator completed. |
+
+Every run above identifies the exact merge SHA in its metadata; these are post-merge `push` runs, not merely PR-head checks.
+
+### Ordered migration manifest verification
+
+The PostgreSQL CI run invoked `scripts/audit/verify-migration-manifest.mjs` before applying schema changes. Its successful output records:
+
+| Verification item | Result on merge SHA |
+|---|---|
+| Ordered manifest entries | **202** |
+| Top-level `migrations/*.sql` inventory | **202** |
+| Ordered manifest SHA-256 | `04e2462a218f2725a3ed242484d09d7317a14f33d2f3e8da9b13fd0b4a978043` |
+| Manifest/inventory validator | **PASS** |
+
+The workflow then applied the ordered migration set, including the current inventory cycle-count/session migrations and AI artifact provenance/admission migration, and completed the PostgreSQL-backed integration suite successfully.
+
+### Release and SRS boundary
+
+**Repository CI gate: PASS. Production release authorization: NOT IMPLIED.** Passing CI does not prove a production deployment, approved customer-cluster policy installation, actual OT hardware HIL commissioning, live provider acceptance, external deletion propagation, production backup/restore RPO/RTO, or owner/reviewer sign-off for every SRS requirement.
+
+SRS FR-MSO-03 and FR-MSO-05 remain **OPEN / NOT_ACCEPTED** until the approved live-provider environment, synthetic positive/negative probe evidence, operational records, and independent release sign-off are recorded. The provider acceptance procedure is documented in [AI Model Provider Live Release Acceptance](ai-provider-live-release-acceptance.md); the procedure itself is not evidence that a live acceptance run occurred.
 
