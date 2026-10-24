@@ -1,0 +1,218 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { test } from 'node:test';
+import {
+  parseDocument,
+  validateSecurityAttestation,
+  validateTemplate,
+} from './validate-production-security-baseline.mjs';
+
+const now = Date.parse('2026-10-24T12:00:00Z');
+const candidateSha = 'a'.repeat(40);
+
+function validAttestation() {
+  return {
+    status: 'ATTESTED',
+    candidate: {
+      git_sha: candidateSha,
+      environment: 'factoryos-prod-eu',
+      hosting_provider_and_region: 'ApprovedCloud / eu-west',
+      deployment_topology: 'dedicated',
+      api_replica_count: 3,
+      database_service: 'managed-postgres-prod',
+      evidence_change_reference: 'https://github.com/RakibulhasanUtsho07/factoryos/issues/900',
+    },
+    identity: {
+      auth_mode: 'oidc',
+      dev_auth_enabled: false,
+      oidc: {
+        issuer: 'https://id.example.com/',
+        audience: 'factoryos-api',
+        jwks_uri: 'https://id.example.com/.well-known/jwks.json',
+        require_mfa: true,
+        mfa_amr_values: ['mfa'],
+        mfa_acr_values: ['urn:example:loa:2'],
+        verified_tls: true,
+        idp_mfa_policy_evidence: 'evidence://identity/mfa-policy',
+      },
+      scim: {
+        repository_implementation_present: false,
+        applicability: 'NOT_REQUIRED_WITH_APPROVED_ALTERNATIVE',
+        identity_provider_scim_enabled: false,
+        group_role_mapping_reviewed: false,
+        evidence_reference: 'evidence://identity/approved-manual-lifecycle',
+      },
+    },
+    service_identities: {
+      api_database_role: {
+        name: 'factoryos_app',
+        login: true,
+        superuser: false,
+        createdb: false,
+        createrole: false,
+        replication: false,
+        bypassrls: false,
+        grants_reviewed_against_table_inventory: true,
+      },
+      migration_role: {
+        distinct_from_runtime_role: true,
+        just_in_time_elevation: true,
+        credential_source: 'vault://factoryos/migration-role',
+        use_window_and_approver_recorded: true,
+      },
+      monitoring_role: {
+        name: 'factoryos_metrics',
+        separate_from_runtime_role: true,
+        superuser: false,
+        bypassrls: false,
+        business_table_select: false,
+        evidence_reference: 'evidence://database/monitoring-role-audit',
+      },
+    },
+    secrets: {
+      manager_provider_and_scope: 'Vault / factoryos-prod',
+      no_static_secrets_in_image_or_repository_verified: true,
+      runtime_secret_versions_attested: true,
+      database_credential_rotation: {
+        interval_days: 60,
+        last_completed_utc: '2026-10-20T09:00:00Z',
+        tested_application_reconnect: true,
+        rollback_credential_overlap_expiry_utc: '2027-01-20T09:00:00Z',
+      },
+      oidc_client_or_workload_credential_rotation: {
+        interval_days: 90,
+        last_completed_utc: '2026-10-20T09:00:00Z',
+        tested_old_credential_revocation: true,
+      },
+      signing_key_rotation: {
+        issuer_owned: true,
+        jwks_overlap_and_cache_tested: true,
+        evidence_reference: 'evidence://identity/jwks-rotation',
+      },
+    },
+    network: {
+      default_deny_ingress: true,
+      default_deny_egress: true,
+      api_ingress_restricted_to_trusted_edge: true,
+      database_private_only: true,
+      metrics_and_otlp_private_only: true,
+      production_egress_allowlist_reviewed: true,
+      no_public_route_to_ot_networks: true,
+      evidence_reference: 'evidence://network/approved-policy-and-denials',
+    },
+    security_validation: {
+      dependency_audit: {
+        workflow_url: 'https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40071027236',
+        candidate_sha: candidateSha,
+        result: 'SUCCESS',
+      },
+      tenant_negative_tests: {
+        api_authz_cross_tenant_read: 'PASS',
+        api_cross_tenant_write: 'PASS',
+        postgres_rls_missing_context: 'PASS',
+        postgres_rls_cross_tenant_write: 'PASS',
+        unauthorized_metrics_scrape: 'PASS',
+        dev_auth_disabled_in_production: 'PASS',
+        invalid_oidc_mfa_claims_denied: 'PASS',
+      },
+      external_review: {
+        reviewer_identity: 'IndependentReviewer',
+        reviewer_organization: 'ExternalSecurityFirm',
+        independence_conflict_check: 'PASS',
+        authorization_reference: 'evidence://security/scope-authorization',
+        scope_and_exclusions_approved: true,
+        executed_at_utc: '2026-10-21T09:00:00Z',
+        report_reference: 'evidence://security/review-report',
+        all_high_critical_findings_closed: true,
+      },
+    },
+    release: {
+      operator: 'OpsOwner',
+      approver: 'ReleaseApprover',
+      approval_reference: 'evidence://release/approval-record',
+      rollback_artifact_and_procedure: 'artifact://release/rollback-and-recovery',
+      rollback_drill_reference: 'evidence://release/rollback-drill',
+      release_approved: true,
+    },
+  };
+}
+
+test('checked-in security baseline remains an explicitly unattested template', async () => {
+  const source = await readFile(new URL('../../deploy/security/production-security-baseline.yml', import.meta.url), 'utf8');
+  const document = parseDocument(source);
+  assert.deepEqual(validateTemplate(document), []);
+});
+
+test('parser rejects duplicate YAML keys rather than accepting ambiguous evidence', () => {
+  assert.throws(() => parseDocument('status: NOT_ATTESTED\nstatus: ATTESTED\n'));
+});
+
+test('complete security evidence passes only when tied to the exact candidate SHA', () => {
+  assert.deepEqual(validateSecurityAttestation(validAttestation(), candidateSha, now), []);
+});
+
+test('incomplete or contradictory security evidence fails closed', async (t) => {
+  await t.test('rejects abbreviated candidate SHA', () => {
+    const evidence = validAttestation();
+    evidence.candidate.git_sha = candidateSha.slice(0, 12);
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('candidate.git_sha must be a full 40-character')));
+  });
+
+  await t.test('rejects a different expected candidate SHA', () => {
+    assert.ok(validateSecurityAttestation(validAttestation(), 'b'.repeat(40), now).some((error) => error.includes('candidate.git_sha must match')));
+  });
+
+  await t.test('rejects production dev-auth mode', () => {
+    const evidence = validAttestation();
+    evidence.identity.dev_auth_enabled = true;
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('identity.dev_auth_enabled must equal false')));
+  });
+
+  await t.test('rejects non-HTTPS identity provider endpoints', () => {
+    const evidence = validAttestation();
+    evidence.identity.oidc.issuer = 'http://id.example.com/';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('identity.oidc.issuer must be an HTTPS URL')));
+  });
+
+  await t.test('rejects unresolved SCIM applicability', () => {
+    const evidence = validAttestation();
+    evidence.identity.scim.applicability = 'OWNER_DECISION_REQUIRED';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('owner-approved applicability decision')));
+  });
+
+  await t.test('rejects RLS-bypass database role', () => {
+    const evidence = validAttestation();
+    evidence.service_identities.api_database_role.bypassrls = true;
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('api_database_role.bypassrls must equal false')));
+  });
+
+  await t.test('rejects dependency evidence from another SHA', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.dependency_audit.candidate_sha = 'b'.repeat(40);
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('dependency_audit.candidate_sha must equal')));
+  });
+
+  await t.test('rejects missing tenant-negative-test outcomes', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.postgres_rls_missing_context = 'NOT_RUN';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('postgres_rls_missing_context must equal "PASS"')));
+  });
+
+  await t.test('rejects expired credential overlap window', () => {
+    const evidence = validAttestation();
+    evidence.secrets.database_credential_rotation.rollback_credential_overlap_expiry_utc = '2026-10-23T09:00:00Z';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('must be a valid future UTC timestamp')));
+  });
+
+  await t.test('rejects release approval without rollback drill evidence', () => {
+    const evidence = validAttestation();
+    evidence.release.rollback_drill_reference = '';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('release.rollback_drill_reference must be a non-empty string')));
+  });
+
+  await t.test('rejects implementer/operator also acting as approver', () => {
+    const evidence = validAttestation();
+    evidence.release.approver = evidence.release.operator;
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('must be different people')));
+  });
+});
