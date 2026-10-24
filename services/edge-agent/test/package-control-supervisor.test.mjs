@@ -149,6 +149,23 @@ test('denies an unhealthy snapshot and continues scheduled recovery attempts', a
   h.supervisor.stop();
 });
 
+test('a polling exception blocks execution even if an adapter leaves a formerly healthy snapshot unchanged', async () => {
+  const client = new FakeSyncClient();
+  const h = harness(client);
+  await h.supervisor.start();
+  const normalPoll = client.pollOnce.bind(client);
+  client.pollOnce = async () => { throw new Error('adapter failed without updating cached state'); };
+
+  const failed = await h.fireScheduled();
+  assert.equal(failed.healthy, false);
+  assert.equal(failed.lastErrorCode, 'EDGE_SYNC_FAILED');
+  assert.throws(() => h.supervisor.runAuthorized(execution, () => assert.fail('must not execute')), { code: 'CONTROL_SYNC_UNHEALTHY' });
+
+  client.pollOnce = normalPoll;
+  assert.equal((await h.fireScheduled()).healthy, true);
+  h.supervisor.stop();
+});
+
 test('denies paused, revoked, and unconfigured package scopes', async () => {
   const client = new FakeSyncClient();
   const h = harness(client);
