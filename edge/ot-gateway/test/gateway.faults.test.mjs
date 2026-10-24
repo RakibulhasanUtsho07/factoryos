@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OtEdgeDurableSpool } from '../src/spool.mjs';
 import { handleMqttDelivery } from '../src/protocol-drivers.mjs';
 import { ProtocolSupervisor, replayOnce } from '../src/index.mjs';
-import { secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
+import { resolveSecretFilePath, secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
 import { ModbusTcpReadDriver } from '../src/protocol-drivers.mjs';
 import { startModbusTcpSimulator } from './modbus-tcp-simulator.mjs';
 
@@ -204,6 +204,37 @@ test('approved target allow-list and Modbus function codes fail closed for write
   const unsafe = structuredClone(config);
   unsafe.modbus[0].register_map[0].function_code = 6;
   assert.throws(() => validateGatewayConfig(unsafe, { NODE_ENV: 'test' }), /allows Modbus read function 3\/4/);
+});
+
+test('production secret resolution rejects symlink escapes but permits in-root projected-secret links', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'factoryos-secret-paths-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const root = join(dir, 'secrets');
+  const versioned = join(root, '..2026_10');
+  const outside = join(dir, 'outside');
+  await mkdir(versioned, { recursive: true });
+  await mkdir(outside, { recursive: true });
+
+  const secretContents = 'rotatable-secret-token-value';
+  await writeFile(join(versioned, 'token'), secretContents, 'utf8');
+  // Kubernetes projected Secret volumes commonly use an in-root ..data symlink.
+  await symlink('..2026_10', join(root, '..data'));
+  await symlink(join('..data', 'token'), join(root, 'token'));
+
+  const resolved = await resolveSecretFilePath(join(root, 'token'), [root], true);
+  assert.equal(await readFile(resolved, 'utf8'), secretContents);
+
+  const externalSecret = join(outside, 'escape-token');
+  await writeFile(externalSecret, 'must-not-be-read', 'utf8');
+  await symlink(externalSecret, join(root, 'escape'));
+  await assert.rejects(
+    () => resolveSecretFilePath(join(root, 'escape'), [root], true),
+    /resolves outside the approved secret directory/,
+  );
+  await assert.rejects(
+    () => resolveSecretFilePath(externalSecret, [root], true),
+    /not mounted under the approved secret directory/,
+  );
 });
 
 test('secret rotation fingerprint changes on certificate/token rotation without printing credential bytes', async (t) => {

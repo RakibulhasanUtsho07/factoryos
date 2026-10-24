@@ -68,6 +68,10 @@ The policy must be installed first by a cluster administrator on a Kyverno versi
 
 This is an image supply-chain gate for the OT gateway binary and a deployment prerequisite aligned with staged release control (SRS FR-SAAS2-05). It does not by itself close AI model/tool-specific FR-MSO-03/FR-MSO-05, establish that every application resolves effective releases, or prove a rollout actually happened in a customer cluster. The existing physical SaaS provisioner owns runtime deploy/health-check/HALT-or-ROLLBACK receipts. Actual cluster enforcement and hardware-in-the-loop (HIL) commissioning remain environment/site acceptance gates; this repository does not claim those external gates have passed.
 
+## Secret-file path containment
+
+In production, credentials must be mounted under `/run/secrets/` or `/etc/factoryos/secrets/`. The gateway resolves the final path before reading and rejects symlinks whose targets escape the approved root. Kubernetes-style projected Secret symlinks remain supported only when their resolved targets stay within that root. Keep private keys and tokens in a secret manager; never include them in commissioning evidence or configuration snapshots.
+
 ## Secure deployment sequence
 
 1. Provision a dedicated OT subnet/VLAN and firewall rules first. Permit only the reviewed broker, OPC UA server, Modbus meter, DNS and FactoryOS API target. Keep all PLC write-capable ports outside this gateway's contract.
