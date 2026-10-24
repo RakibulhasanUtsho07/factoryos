@@ -246,8 +246,49 @@ describe(
       };
     }
 
+
     function buildInventoryStockSummaryTool(): AiToolDefinition {
-      const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}
+      const uuidPattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
+      return buildTool({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        requiredScopes: ['inventory.read'],
+        metadata: {
+          workloadClass: 'NON_AI',
+          domainExecutor: 'INVENTORY_STOCK_SUMMARY',
+        },
+        inputSchema: {
+          type: 'object',
+          properties: {
+            item_id: { type: 'string', pattern: uuidPattern },
+          },
+          required: ['item_id'],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: 'object',
+          required: [
+            'item_id', 'sku', 'name', 'unit', 'status',
+            'quantity_on_hand', 'quantity_reserved', 'quantity_available',
+            'balance_version',
+          ],
+          properties: {
+            item_id: { type: 'string', pattern: uuidPattern },
+            sku: { type: 'string' },
+            name: { type: 'string' },
+            unit: { type: 'string' },
+            status: { type: 'string', enum: ['ACTIVE', 'DISABLED'] },
+            quantity_on_hand: { type: 'string' },
+            quantity_reserved: { type: 'string' },
+            quantity_available: { type: 'string' },
+            balance_version: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      });
+    }
+
+    type TestAiToolActionContext =
       AiToolActionContext & {
         executionKey:
           string;
@@ -802,139 +843,5 @@ describe(
         ).not.toHaveBeenCalled();
       },
     );
-  },
-);;
-      return buildTool({
-        toolId: 'INVENTORY.STOCK.SUMMARY',
-        riskClass: 'L1',
-        requiredScopes: ['inventory.read'],
-        metadata: {
-          workloadClass: 'NON_AI',
-          domainExecutor: 'INVENTORY_STOCK_SUMMARY',
-        },
-        inputSchema: {
-          type: 'object',
-          properties: { item_id: { type: 'string', pattern: uuidPattern } },
-          required: ['item_id'],
-          additionalProperties: false,
-        },
-        outputSchema: {
-          type: 'object',
-          required: [
-            'item_id', 'sku', 'name', 'unit', 'status',
-            'quantity_on_hand', 'quantity_reserved', 'quantity_available',
-            'balance_version',
-          ],
-          properties: {
-            item_id: { type: 'string', pattern: uuidPattern },
-            sku: { type: 'string' },
-            name: { type: 'string' },
-            unit: { type: 'string' },
-            status: { type: 'string', enum: ['ACTIVE', 'DISABLED'] },
-            quantity_on_hand: { type: 'string' },
-            quantity_reserved: { type: 'string' },
-            quantity_available: { type: 'string' },
-            balance_version: { type: 'string' },
-          },
-          additionalProperties: false,
-        },
-      });
-    }
-
-    type TestAiToolActionContext =
-      AiToolActionContext & {
-        executionKey:
-          string;
-      };
-
-    function buildAction(
-      overrides:
-        Partial<TestAiToolActionContext> =
-        {},
-    ): TestAiToolActionContext {
-      /**
-       * Keep toolId and actionType aligned by default.
-       *
-       * The gateway validates that the action tool id
-       * exactly matches the registered tool id.
-       *
-       * This also allows tests that override only actionType
-       * to remain internally consistent without duplicating
-       * toolId in every test case.
-       */
-      const resolvedActionType =
-        overrides.actionType ??
-        'AI.RUNTIME.NOOP';
-
-      const resolvedToolId =
-        overrides.toolId ??
-        resolvedActionType;
-
-      return {
-        tenantId,
-
-        factoryId,
-
-        actorUserId,
-
-        actionIntentId,
-
-        decisionId,
-
-        toolId:
-          resolvedToolId,
-
-        actionType:
-          resolvedActionType,
-
-        target:
-          {},
-
-        resourceType:
-          null,
-
-        resourceId:
-          null,
-
-        payload:
-          {
-            sample:
-              'value',
-          },
-
-        payloadHash:
-          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-
-        riskClass:
-          'L0',
-
-        authorizationStatus:
-          'AUTHORIZED',
-
-        approvalId:
-          null,
-
-        actionToken,
-
-        actionTokenHash,
-
-        tokenExpiresAt:
-          '2099-01-01T00:00:00.000Z',
-
-        idempotencyKey:
-          null,
-
-        executionKey:
-          'execution-001',
-
-        toolVersion:
-          '1.0.0',
-
-        executorType:
-          'AI.RUNTIME.NOOP',
-
-        ...overrides,
-      };
-    }
   },
 );
