@@ -327,25 +327,35 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
       signingKeyPem: signingKey.publicKeyPem,
     });
 
+    const executionPromise = Promise.resolve().then(() => executor(release, controller.signal));
+    // Keep the execution registered until the host callback really settles. If
+    // it ignores AbortSignal, the caller still gets an ambiguous result promptly,
+    // but the gate does not pretend the underlying work has stopped.
+    void executionPromise.then(
+      () => { this.activeExecutions.delete(executionId); },
+      () => { this.activeExecutions.delete(executionId); },
+    );
+
+    const abortedAfterStart = () => new EdgePackageRuntimeGateError(
+      'EXECUTION_ABORTED_AFTER_START',
+      'Cancellation was requested after the host executor started; its work may still be running, so reconcile possible side effects before retrying',
+    );
+    let onAbort: (() => void) | undefined;
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(abortedAfterStart());
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+
     try {
-      const outcome = await executor(release, controller.signal);
-      if (controller.signal.aborted) {
-        throw new EdgePackageRuntimeGateError(
-          'EXECUTION_ABORTED_AFTER_START',
-          'The host executor was invoked before cancellation; reconcile possible side effects before retrying',
-        );
-      }
+      const outcome = await Promise.race([executionPromise, abortPromise]);
+      if (controller.signal.aborted) throw abortedAfterStart();
       return outcome;
     } catch (error) {
-      if (controller.signal.aborted) {
-        throw new EdgePackageRuntimeGateError(
-          'EXECUTION_ABORTED_AFTER_START',
-          'The host executor was invoked before cancellation; reconcile possible side effects before retrying',
-        );
-      }
+      if (controller.signal.aborted) throw abortedAfterStart();
       throw error;
     } finally {
-      this.activeExecutions.delete(executionId);
+      if (onAbort) controller.signal.removeEventListener('abort', onAbort);
     }
   }
 
