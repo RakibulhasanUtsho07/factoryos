@@ -35,7 +35,7 @@ function validHttpsUrl(value) {
   }
 }
 
-function parseDocument(source) {
+export function parseDocument(source) {
   const document = yaml.safeLoad(source, { schema: yaml.DEFAULT_SAFE_SCHEMA });
   if (document === null || typeof document !== 'object' || Array.isArray(document)) {
     throw new Error('Security evidence document must be a YAML mapping');
