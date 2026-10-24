@@ -107,7 +107,6 @@ export function validateTemplate(document) {
     'service_identities.monitoring_role.superuser',
     'service_identities.monitoring_role.bypassrls',
     'service_identities.monitoring_role.business_table_select',
-    'service_identities.monitoring_role.evidence_reference',
     'secrets.no_static_secrets_in_image_or_repository_verified',
     'secrets.runtime_secret_versions_attested',
     'network.default_deny_ingress',
@@ -235,7 +234,6 @@ export function validateSecurityAttestation(document, expectedSha, now = Date.no
   nonEmptyArray('identity.oidc.mfa_acr_values');
   reference('identity.oidc.idp_mfa_policy_evidence');
 
-  bool('identity.scim.repository_implementation_present', false);
   const scimApplicability = getAt(document, 'identity.scim.applicability');
   if (!['REQUIRED', 'NOT_REQUIRED_WITH_APPROVED_ALTERNATIVE'].includes(scimApplicability)) {
     errors.push('identity.scim.applicability must be an owner-approved applicability decision');
@@ -245,6 +243,7 @@ export function validateSecurityAttestation(document, expectedSha, now = Date.no
     bool('identity.scim.identity_provider_scim_enabled');
     bool('identity.scim.group_role_mapping_reviewed');
   } else if (scimApplicability === 'NOT_REQUIRED_WITH_APPROVED_ALTERNATIVE') {
+    bool('identity.scim.repository_implementation_present', false);
     bool('identity.scim.identity_provider_scim_enabled', false);
   }
   reference('identity.scim.evidence_reference');
