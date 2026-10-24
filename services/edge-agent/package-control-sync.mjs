@@ -54,7 +54,8 @@ function validateScopes(scopes) {
   for (const scope of scopes) {
     if (!isRecord(scope) || typeof scope.packageId !== 'string' || !PACKAGE_ID.test(scope.packageId)
       || typeof scope.version !== 'string' || !SEMVER.test(scope.version)
-      || (scope.useCaseId !== undefined && (typeof scope.useCaseId !== 'string' || !USE_CASE.test(scope.useCaseId)))) {
+      || (scope.useCaseId !== undefined && scope.useCaseId !== null
+        && (typeof scope.useCaseId !== 'string' || !USE_CASE.test(scope.useCaseId)))) {
       throw new TypeError('Each managed scope requires a safe packageId, semantic version and optional useCaseId');
     }
     const normalized = { packageId: scope.packageId, version: scope.version, useCaseId: scope.useCaseId ?? null };
