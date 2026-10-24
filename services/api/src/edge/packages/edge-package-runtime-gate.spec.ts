@@ -145,7 +145,7 @@ describe('EdgePackageRuntimeGate', () => {
       signingKeyStore,
       tenantId,
       factoryId,
-      { maxControlAgeMs: 120_000, maxSigningKeyAgeMs: 120_000 },
+      { maxControlAgeMs: 120_000, maxSigningKeyAgeMs: 120_000, managedScopes: [managedScope] },
     );
     gate.confirmControlSync([managedScope]);
   });
@@ -198,6 +198,29 @@ describe('EdgePackageRuntimeGate', () => {
       code: 'PACKAGE_CONTROL_DENIED',
     });
     expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('rejects a partial control-sync snapshot against the configured managed-scope set', async () => {
+    const twoScopeGate = new EdgePackageRuntimeGate(
+      activationStore,
+      controlStore,
+      signingKeyStore,
+      tenantId,
+      factoryId,
+      {
+        maxControlAgeMs: 120_000,
+        maxSigningKeyAgeMs: 120_000,
+        managedScopes: [
+          managedScope,
+          { packageId: 'quality-alert', version, useCaseId },
+        ],
+      },
+    );
+
+    expect(() => twoScopeGate.confirmControlSync([managedScope])).toThrow(
+      expect.objectContaining({ code: 'CONTROL_SYNC_UNVERIFIED' }),
+    );
+    expect(twoScopeGate.isPackageExecutionAllowed(packageId, version, useCaseId)).toBe(false);
   });
 
   it('blocks execution after any control-poll failure until a complete sync is confirmed', async () => {
