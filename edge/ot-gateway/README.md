@@ -80,3 +80,17 @@ This is an image supply-chain gate for the OT gateway binary and a deployment pr
 ## Explicit acceptance boundary
 
 No live PLC, production broker, customer key store or site hardware was available during repository implementation. This repository therefore does not claim completed HIL commissioning evidence. The simulator tests are automated; the commissioned site test record must be completed and signed by the authorized OT operator after using the actual site hardware.
+
+## Machine-checkable commissioning evidence
+
+Copy `deploy/commissioning-evidence.template.json` to a separate, access-controlled evidence location and fill it with the actual deployment identity, test artifacts, event reconciliation values and authorized sign-offs. Keep the blank template unchanged in source control; never put secrets or private key material in the record.
+
+Run the release-acceptance gate from `edge/ot-gateway`:
+
+```sh
+npm run commissioning:validate -- /path/to/commissioning-evidence.json
+```
+
+The default command exits non-zero unless the decision is `PASS` and the record includes all required simulator and hardware-in-the-loop cases, immutable image/config/API identity, approved preconditions, artifact references, reconciled event counts, zero unresolved sequence gaps/backlog/alarms, and three matching sign-off records. A draft can be structurally reviewed with `npm run commissioning:validate -- --allow-incomplete /path/to/record.json`; draft validation explicitly does **not** mean release acceptance.
+
+The validator checks record structure and evidence completeness only. It does not cryptographically authenticate artifact references or signatures and cannot prove that a physical PLC, broker, network or operator test actually occurred. Those references and the site commissioning outcome still require independent review by the authorized OT, release and security owners.

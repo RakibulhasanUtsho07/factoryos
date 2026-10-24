@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "change_ticket_id": "",
+    "factory_site_line": "",
+    "gateway_asset_id": "",
+    "gateway_serial": "",
+    "gateway_image_digest": "",
+    "gateway_config_sha256": "",
+    "api_build_sha": "",
+    "device_model_firmware": "",
+    "operator_name": "",
+    "release_approver_name": "",
+    "security_approver_name": "",
+    "test_started_at": "",
+    "test_ended_at": "",
+    "maintenance_window_approved": false,
+    "rollback_stop_work_contact": ""
+  },
+  "preconditions": {
+    "network_diagram_attached": false,
+    "egress_acl_reviewed": false,
+    "mqtt_identity_and_topic_acl_verified": false,
+    "opcua_trust_and_encryption_verified": false,
+    "modbus_unit_and_register_map_reviewed": false,
+    "service_identity_scope_verified": false,
+    "plc_write_paths_disabled": false
+  },
+  "simulator_tests": [
+    {
+      "case_id": "wrong_spool_key",
+      "title": "Wrong spool key",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "mismatched_tls_pair",
+      "title": "Mismatched TLS certificate/private key",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "crash_during_enqueue",
+      "title": "Crash during enqueue/atomic rename",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "broker_puback_lost",
+      "title": "Broker PUBACK lost after durable enqueue",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "mqtt_unavailable_reconnect",
+      "title": "MQTT unavailable and reconnect",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "api_ack_lost_after_commit",
+      "title": "API commits event but acknowledgement is lost",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "duplicate_id_changed_content",
+      "title": "Duplicate source event ID with changed content",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "sequence_gap_preserved",
+      "title": "Source sequence gap is preserved",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "modbus_timeout",
+      "title": "Modbus TCP response loss/timeout",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "wrong_unit_or_malformed_response",
+      "title": "Wrong Modbus unit ID/malformed response",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "credential_rotation",
+      "title": "Certificate/key rotation",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "disk_full_or_queue_capacity",
+      "title": "Disk full/queue capacity reached",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "cross_tenant_scope_mismatch",
+      "title": "Cross-tenant/factory scope mismatch",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    }
+  ],
+  "hil_tests": [
+    {
+      "case_id": "opcua_secure_subscription",
+      "title": "OPC UA secure session and subscription read",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "opcua_reconnect",
+      "title": "OPC UA interruption and reconnect",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "mqtt_broker_restart",
+      "title": "MQTT telemetry and broker restart",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "modbus_approved_registers",
+      "title": "Modbus read of approved registers",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "read_only_verification",
+      "title": "PLC/control network read-only verification",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "api_outage_restore",
+      "title": "API outage and restore",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "gateway_power_loss_restart",
+      "title": "Gateway power loss and restart",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    },
+    {
+      "case_id": "operator_stop_rollback_drill",
+      "title": "Operator stop/rollback drill",
+      "result": "NOT_RUN",
+      "artifact_ref": "",
+      "notes": ""
+    }
+  ],
+  "reconciliation": {
+    "events_generated": 0,
+    "events_durably_spooled": 0,
+    "events_acknowledged": 0,
+    "duplicate_replay_outcomes": 0,
+    "unresolved_sequence_gaps": 0,
+    "pending_spool_entries": 0,
+    "blocked_spool_entries": 0,
+    "unresolved_alarm_ids": []
+  },
+  "signoffs": {
+    "ot_operator": {
+      "name": "",
+      "signature_artifact_ref": "",
+      "signed_at": ""
+    },
+    "release_approver": {
+      "name": "",
+      "signature_artifact_ref": "",
+      "signed_at": ""
+    },
+    "security_approver": {
+      "name": "",
+      "signature_artifact_ref": "",
+      "signed_at": ""
+    }
+  },
+  "decision": "IN_PROGRESS",
+  "decision_reason": "",
+  "conditions": []
+}
