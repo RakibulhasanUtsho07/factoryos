@@ -123,7 +123,11 @@ export class EdgePackageControlStateStore {
       for (const state of parsed.controls) {
         const key = controlKey(state);
         if (this.states.has(key)) throw new Error('Duplicate package control scope');
-        this.states.set(key, { ...state });
+        // Only terminal revocations survive restart as authoritative decisions.
+        // ACTIVE/PAUSED/UNKNOWN must wait for a fresh complete cloud poll.
+        this.states.set(key, state.status === 'REVOKED'
+          ? { ...state }
+          : { ...state, status: 'UNKNOWN', lastErrorCode: 'RESTART_REQUIRES_FRESH_SYNC' });
       }
     } catch {
       this.states.clear();
@@ -133,19 +137,19 @@ export class EdgePackageControlStateStore {
       );
     }
     this.initialized = true;
+    let changed = this.states.size > 0;
     if (managedScopes !== undefined) {
       const retainedKeys = new Set(managedScopes.map((scope) => controlKey(scope)));
-      let pruned = false;
       for (const [key, state] of this.states) {
         // Keep terminal revocations for removed packages so re-adding a scope
         // cannot silently restore a locally revoked package.
         if (state.status !== 'REVOKED' && !retainedKeys.has(key)) {
           this.states.delete(key);
-          pruned = true;
+          changed = true;
         }
       }
-      if (pruned) await this.writeAtomic();
     }
+    if (changed) await this.writeAtomic();
     return this.list();
   }
 
