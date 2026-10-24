@@ -341,6 +341,28 @@ describe('EdgePackageRuntimeGate', () => {
     await expect(outcome).rejects.toMatchObject({ code: 'EXECUTION_ABORTED_AFTER_START' });
   });
 
+  it('returns an ambiguous result promptly when a host executor ignores cancellation', async () => {
+    let activeSignal: AbortSignal | undefined;
+    let finishExecution: ((value: string) => void) | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const outcome = gate.execute(activationScope, (_release, signal) => {
+      activeSignal = signal;
+      markStarted();
+      return new Promise<string>((resolve) => { finishExecution = resolve; });
+    });
+    await started;
+
+    gate.recordControlSyncFailure();
+    expect(activeSignal?.aborted).toBe(true);
+
+    // The wrapper must reject without waiting for a non-cooperative host.
+    // Reconcile before retrying because that host can still finish side effects.
+    await expect(outcome).rejects.toMatchObject({ code: 'EXECUTION_ABORTED_AFTER_START' });
+    if (!finishExecution) throw new Error('Execution callback did not start');
+    finishExecution('late-success');
+  });
+
   it('rejects execution scope mismatches before reading a release or invoking the executor', async () => {
     const executor = jest.fn();
     await expect(gate.execute({
