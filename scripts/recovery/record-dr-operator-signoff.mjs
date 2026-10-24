@@ -41,7 +41,7 @@ try {
 if (evidence.schema !== 'factoryos.disaster-recovery-rehearsal/v1') fail('unsupported evidence schema');
 
 function utcEpochSeconds(value) {
-  if (typeof value !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$/.test(value)) return null;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\\.\d+)?Z$/.test(value)) return null;
   const milliseconds = Date.parse(value);
   return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null;
 }
@@ -60,7 +60,7 @@ if (args.decision === 'PASS') {
     && candidateManifestPath.length > 0
     && candidateManifestPath === candidateManifestPath.trim()
     && !candidateManifestPath.startsWith('/')
-    && !candidateManifestPath.includes('\\\\')
+    && !candidateManifestPath.includes('\\')
     && !candidateManifestPath.split('/').includes('..');
 
   const checks = [
