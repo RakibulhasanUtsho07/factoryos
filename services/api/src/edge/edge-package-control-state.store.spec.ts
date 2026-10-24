@@ -54,7 +54,7 @@ describe('EdgePackageControlStateStore', () => {
   it('restores non-terminal controls as UNKNOWN while preserving terminal revocation across restart', async () => {
     const first = new EdgePackageControlStateStore(rootDir);
     await first.initialize();
-    await first.save(ACTIVE);
+    await first.save({ ...ACTIVE, packageId: 'quality-predictor' });
     await first.save({ ...ACTIVE, packageId: 'quality-alert', status: 'PAUSED' });
     await first.save(REVOKED);
 
@@ -62,7 +62,7 @@ describe('EdgePackageControlStateStore', () => {
     const restored = await restarted.initialize();
 
     expect(restored).toHaveLength(3);
-    expect(restarted.get(ACTIVE)).toMatchObject({
+    expect(restarted.get({ ...ACTIVE, packageId: 'quality-predictor' })).toMatchObject({
       status: 'UNKNOWN',
       lastErrorCode: 'RESTART_REQUIRES_FRESH_SYNC',
     });
