@@ -339,12 +339,11 @@ export class EdgePackageControlSyncClient {
     if (!this.initialized) await this.initialize();
     try {
       // Validate every response first; do not persist partial snapshots.
-      const now = Date.now();
       const keyUrl = this.endpoint('/api/v2/edge/device-package-signing-keys/' + encodeURIComponent(this.deviceId));
       const rawSignerSnapshot = await this.requestJson(keyUrl);
       const signerSnapshot = validateSignerSnapshot(rawSignerSnapshot, {
         tenantId: this.tenantId, factoryId: this.factoryId,
-      }, now, this.maxSnapshotAgeMs);
+      }, Date.now(), this.maxSnapshotAgeMs);
       const rawControls = await Promise.all(this.scopes.map(async (scope) => {
         const url = new URL('/api/v2/edge/device-package-controls/' + encodeURIComponent(this.deviceId) + '/effective', this.baseUrl);
         url.searchParams.set('package_id', scope.packageId);
