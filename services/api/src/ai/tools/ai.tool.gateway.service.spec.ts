@@ -2,7 +2,7 @@ import {
   jest,
 } from '@jest/globals';
 
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import {
   createHash,
@@ -84,6 +84,23 @@ describe(
         jest.fn<(...args: unknown[]) => Promise<void>>(),
     };
 
+    const inventoryService = {
+      getStockSummary:
+        jest.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(),
+    };
+
+    const stockSummary = {
+      item_id: '69ef2a43-8157-4d91-aa59-7b4260ef1778',
+      sku: 'WIDGET-001',
+      name: 'Widget',
+      unit: 'EA',
+      status: 'ACTIVE',
+      quantity_on_hand: '12.0000',
+      quantity_reserved: '2.0000',
+      quantity_available: '10.0000',
+      balance_version: '4',
+    };
+
     let gateway:
       AiToolGatewayService;
 
@@ -104,6 +121,7 @@ describe(
 
         saasSubscriptionService.assertAiCapabilityAvailable
           .mockResolvedValue(undefined);
+        inventoryService.getStockSummary.mockResolvedValue(stockSummary);
 
         gateway =
           new AiToolGatewayService(
@@ -111,6 +129,8 @@ describe(
             iamService as never,
             saasUsageService as never,
             saasSubscriptionService as never,
+            undefined,
+            inventoryService as never,
           );
       },
     );
@@ -224,6 +244,48 @@ describe(
 
         ...overrides,
       };
+    }
+
+
+    function buildInventoryStockSummaryTool(): AiToolDefinition {
+      const uuidPattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
+      return buildTool({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        requiredScopes: ['inventory.read'],
+        metadata: {
+          workloadClass: 'NON_AI',
+          domainExecutor: 'INVENTORY_STOCK_SUMMARY',
+        },
+        inputSchema: {
+          type: 'object',
+          properties: {
+            item_id: { type: 'string', pattern: uuidPattern },
+          },
+          required: ['item_id'],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: 'object',
+          required: [
+            'item_id', 'sku', 'name', 'unit', 'status',
+            'quantity_on_hand', 'quantity_reserved', 'quantity_available',
+            'balance_version',
+          ],
+          properties: {
+            item_id: { type: 'string', pattern: uuidPattern },
+            sku: { type: 'string' },
+            name: { type: 'string' },
+            unit: { type: 'string' },
+            status: { type: 'string', enum: ['ACTIVE', 'DISABLED'] },
+            quantity_on_hand: { type: 'string' },
+            quantity_reserved: { type: 'string' },
+            quantity_available: { type: 'string' },
+            balance_version: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      });
     }
 
     type TestAiToolActionContext =
@@ -362,6 +424,68 @@ describe(
         );
       },
     );
+
+    it('runs the read-only inventory stock-summary executor under the registered inventory scope', async () => {
+      registry.getTool.mockResolvedValue(buildInventoryStockSummaryTool());
+
+      const result = await gateway.execute(buildAction({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        actionType: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        executorType: 'INVENTORY.STOCK.SUMMARY',
+        payload: { item_id: stockSummary.item_id },
+      }));
+
+      expect(result.status).toBe('SUCCEEDED');
+      expect(result.result).toEqual(stockSummary);
+      expect(inventoryService.getStockSummary).toHaveBeenCalledWith(
+        actorUserId, tenantId, factoryId, stockSummary.item_id,
+      );
+      expect(iamService.authorize).toHaveBeenCalledWith(
+        actorUserId, tenantId, 'inventory.read', factoryId,
+      );
+    });
+
+    it('does not expose stock data when the item is not in the scoped factory', async () => {
+      registry.getTool.mockResolvedValue(buildInventoryStockSummaryTool());
+      inventoryService.getStockSummary.mockRejectedValueOnce(
+        new NotFoundException('Inventory item not found in this factory'),
+      );
+
+      const result = await gateway.execute(buildAction({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        actionType: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        payload: { item_id: stockSummary.item_id },
+      }));
+
+      expect(result.status).toBe('FAILED');
+      expect(result.result).toEqual({});
+      expect(result.error).toEqual({
+        code: 'INVENTORY_ITEM_NOT_FOUND',
+        message: 'Inventory item not found in this factory',
+      });
+    });
+
+    it('fails closed when the inventory domain executor is not wired', async () => {
+      registry.getTool.mockResolvedValue(buildInventoryStockSummaryTool());
+      const unconfiguredGateway = new AiToolGatewayService(
+        registry as never,
+        iamService as never,
+        saasUsageService as never,
+        saasSubscriptionService as never,
+      );
+
+      const result = await unconfiguredGateway.execute(buildAction({
+        toolId: 'INVENTORY.STOCK.SUMMARY',
+        actionType: 'INVENTORY.STOCK.SUMMARY',
+        riskClass: 'L1',
+        payload: { item_id: stockSummary.item_id },
+      }));
+
+      expect(result.status).toBe('FAILED');
+      expect(result.error.code).toBe('EXECUTOR_NOT_CONFIGURED');
+    });
 
     it(
       'fails closed when the action risk class does not match the registered tool',
