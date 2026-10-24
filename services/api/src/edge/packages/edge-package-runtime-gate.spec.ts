@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign as signPayload } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
@@ -162,6 +162,42 @@ describe('EdgePackageRuntimeGate', () => {
     expect(executor).toHaveBeenCalledTimes(1);
     expect(executor.mock.calls[0]?.[0].artifacts['models/quality-defect.bin']).toEqual(modelBytes);
     expect(executor.mock.calls[0]?.[0].artifacts['policy/edge-policy.json']).toEqual(policyBytes);
+  });
+
+  it('refuses to execute when a persisted active artifact was tampered with after activation', async () => {
+    const active = await activationStore.getState(packageId);
+    if (!active) throw new Error('Test setup did not activate a package release');
+    const artifactPath = join(
+      rootDir,
+      'releases',
+      packageId,
+      'releases',
+      active.active.manifestSha256,
+      'models',
+      'quality-defect.bin',
+    );
+    await writeFile(artifactPath, Buffer.from('tampered-model-bytes'));
+    const executor = jest.fn();
+
+    await expect(gate.execute(activationScope, executor)).rejects.toBeDefined();
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('denies execution when no complete control sync has been confirmed', async () => {
+    const unconfirmedGate = new EdgePackageRuntimeGate(
+      activationStore,
+      controlStore,
+      signingKeyStore,
+      tenantId,
+      factoryId,
+      { maxControlAgeMs: 120_000, maxSigningKeyAgeMs: 120_000 },
+    );
+    const executor = jest.fn();
+
+    await expect(unconfirmedGate.execute(activationScope, executor)).rejects.toMatchObject({
+      code: 'PACKAGE_CONTROL_DENIED',
+    });
+    expect(executor).not.toHaveBeenCalled();
   });
 
   it('blocks execution after any control-poll failure until a complete sync is confirmed', async () => {
