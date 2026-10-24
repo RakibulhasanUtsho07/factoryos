@@ -46,7 +46,7 @@ async function writeEvidenceArtifacts(record, root) {
   };
   const receiptPath = join(root, record.identity.gateway_release_receipt_ref);
   await mkdir(dirname(receiptPath), { recursive: true });
-  const receiptBytes = Buffer.from(JSON.stringify(receipt, null, 2) + '\\n');
+  const receiptBytes = Buffer.from(JSON.stringify(receipt, null, 2));
   await writeFile(receiptPath, receiptBytes);
   record.identity.gateway_release_receipt_sha256 = createHash('sha256').update(receiptBytes).digest('hex');
 }
