@@ -9,6 +9,27 @@ import {
 
 const now = Date.parse('2026-10-24T12:00:00Z');
 const candidateSha = 'a'.repeat(40);
+const negativeTestKeys = [
+  'api_authz_cross_tenant_read',
+  'api_cross_tenant_write',
+  'postgres_rls_missing_context',
+  'postgres_rls_cross_tenant_write',
+  'unauthorized_metrics_scrape',
+  'dev_auth_disabled_in_production',
+  'invalid_oidc_mfa_claims_denied',
+];
+
+// Synthetic evidence values are fixtures only; they are not claims about a live environment.
+function negativeTestEvidence(key) {
+  return {
+    result: 'PASS',
+    candidate_sha: candidateSha,
+    workflow_url: 'https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/123456789',
+    evidence_reference: 'evidence://security/negative-tests/' + key,
+    tested_environment: 'isolated-preproduction-eu',
+    executed_at_utc: '2026-10-21T09:00:00Z',
+  };
+}
 
 function validAttestation() {
   return {
@@ -106,15 +127,9 @@ function validAttestation() {
         candidate_sha: candidateSha,
         result: 'SUCCESS',
       },
-      tenant_negative_tests: {
-        api_authz_cross_tenant_read: 'PASS',
-        api_cross_tenant_write: 'PASS',
-        postgres_rls_missing_context: 'PASS',
-        postgres_rls_cross_tenant_write: 'PASS',
-        unauthorized_metrics_scrape: 'PASS',
-        dev_auth_disabled_in_production: 'PASS',
-        invalid_oidc_mfa_claims_denied: 'PASS',
-      },
+      tenant_negative_tests: Object.fromEntries(
+        negativeTestKeys.map((key) => [key, negativeTestEvidence(key)]),
+      ),
       external_review: {
         reviewer_identity: 'IndependentReviewer',
         reviewer_organization: 'ExternalSecurityFirm',
@@ -194,8 +209,41 @@ test('incomplete or contradictory security evidence fails closed', async (t) => 
 
   await t.test('rejects missing tenant-negative-test outcomes', () => {
     const evidence = validAttestation();
-    evidence.security_validation.tenant_negative_tests.postgres_rls_missing_context = 'NOT_RUN';
-    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('postgres_rls_missing_context must equal "PASS"')));
+    evidence.security_validation.tenant_negative_tests.postgres_rls_missing_context.result = 'NOT_RUN';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('postgres_rls_missing_context.result must equal "PASS"')));
+  });
+
+  await t.test('rejects a negative-test record bound to another candidate SHA', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.api_cross_tenant_write.candidate_sha = 'b'.repeat(40);
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('api_cross_tenant_write.candidate_sha must match')));
+  });
+
+  await t.test('rejects a test workflow link outside this repository Actions runs', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.postgres_rls_missing_context.workflow_url = 'https://example.com/results/123';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('postgres_rls_missing_context.workflow_url must identify this repository GitHub Actions run')));
+  });
+
+  await t.test('rejects missing evidence references and test environment identity', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.api_authz_cross_tenant_read.evidence_reference = '';
+    evidence.security_validation.tenant_negative_tests.api_cross_tenant_write.tested_environment = ' ';
+    const errors = validateSecurityAttestation(evidence, candidateSha, now);
+    assert.ok(errors.some((error) => error.includes('api_authz_cross_tenant_read.evidence_reference must be a non-empty string')));
+    assert.ok(errors.some((error) => error.includes('api_cross_tenant_write.tested_environment must be a non-empty string')));
+  });
+
+  await t.test('rejects future test evidence timestamps', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.invalid_oidc_mfa_claims_denied.executed_at_utc = '2027-10-21T09:00:00Z';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('invalid_oidc_mfa_claims_denied.executed_at_utc must be a valid UTC timestamp that is not in the future')));
+  });
+
+  await t.test('rejects evidence references that embed credentials', () => {
+    const evidence = validAttestation();
+    evidence.security_validation.tenant_negative_tests.api_cross_tenant_write.evidence_reference = 'artifact:token=secret-value';
+    assert.ok(validateSecurityAttestation(evidence, candidateSha, now).some((error) => error.includes('api_cross_tenant_write.evidence_reference must be an opaque reference')));
   });
 
   await t.test('rejects expired credential overlap window', () => {
