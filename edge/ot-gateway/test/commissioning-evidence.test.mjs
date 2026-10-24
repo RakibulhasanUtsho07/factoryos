@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,7 +110,7 @@ test('blank JSON template is structurally valid but not accepted for release', a
   assert.match(run.stderr, /release acceptance requires decision PASS/);
 });
 
-test('complete simulator and HIL evidence with all sign-offs can pass acceptance validation', async () => {
+test('complete simulator and HIL evidence with all sign-offs passes structural validation', async () => {
   const template = await loadTemplate();
   assert.deepEqual(validateCommissioningEvidence(validPassingEvidence(template)), []);
 });
@@ -211,7 +211,7 @@ test('artifact verifier rejects traversal and symbolic links', async (t) => {
   const escapeFile = join(outside, 'escape.json');
   await writeFile(escapeFile, 'outside evidence');
   const link = join(directory, 'evidence', 'simulator', 'linked.json');
-  await (await import('node:fs/promises')).symlink(escapeFile, link);
+  await symlink(escapeFile, link);
   evidence.simulator_tests[0].artifact_ref = 'evidence/simulator/linked.json';
   errors = await verifyCommissioningArtifactReferences(evidence, directory);
   assert.ok(errors.some((error) => error.includes('symlink')));
