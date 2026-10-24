@@ -17,6 +17,7 @@ export {
   type EdgePackageActivationResult,
   type EdgePackageActivationState,
   type EdgePackageReleaseRef,
+  type VerifiedEdgePackageRelease,
 } from './edge-package-activation.store.js';
 export {
   EdgePackageActivationCoordinatorError,
@@ -25,3 +26,11 @@ export {
   type EdgePackageActivationRuntime,
   type EdgePackageActivationCoordinatorErrorCode,
 } from './edge-package-release-coordinator.js';
+
+export {
+  EdgePackageRuntimeGate,
+  EdgePackageRuntimeGateError,
+  type EdgePackageManagedScope,
+  type EdgePackageRuntimeGateErrorCode,
+  type EdgePackageRuntimeGateOptions,
+} from './edge-package-runtime-gate.js';
