@@ -80,13 +80,55 @@ security_validation:
     candidate_sha: ""
     result: NOT_RUN
   tenant_negative_tests:
-    api_authz_cross_tenant_read: NOT_RUN
-    api_cross_tenant_write: NOT_RUN
-    postgres_rls_missing_context: NOT_RUN
-    postgres_rls_cross_tenant_write: NOT_RUN
-    unauthorized_metrics_scrape: NOT_RUN
-    dev_auth_disabled_in_production: NOT_RUN
-    invalid_oidc_mfa_claims_denied: NOT_RUN
+    api_authz_cross_tenant_read:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
+    api_cross_tenant_write:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
+    postgres_rls_missing_context:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
+    postgres_rls_cross_tenant_write:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
+    unauthorized_metrics_scrape:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
+    dev_auth_disabled_in_production:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
+    invalid_oidc_mfa_claims_denied:
+      result: NOT_RUN
+      candidate_sha: ""
+      workflow_url: ""
+      evidence_reference: ""
+      tested_environment: ""
+      executed_at_utc: ""
   external_review:
     reviewer_identity: ""
     reviewer_organization: ""
