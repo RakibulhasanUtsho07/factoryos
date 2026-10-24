@@ -229,7 +229,7 @@ export class EdgePackageActivationStore {
     packageId: string,
     expectedVersion: string,
     policy: EdgePackageVerificationPolicy,
-  ): Promise<VerifiedEdgePackage> {
+  ): Promise<VerifiedEdgePackageRelease> {
     this.assertPackageId(packageId);
     if (typeof expectedVersion !== 'string' || !SEMVER_PATTERN.test(expectedVersion)) {
       throw new EdgePackageActivationError(
