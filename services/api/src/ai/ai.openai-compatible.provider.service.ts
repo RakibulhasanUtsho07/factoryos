@@ -23,7 +23,7 @@ export const AI_MODEL_PROVIDER_SYSTEM_PROMPT =
   'You are an informational assistant. Your output is untrusted text: do not claim you executed tools, changed production systems, or performed external actions. Do not request passwords, API keys, or other secrets.';
 const DEFAULT_MAX_TOKENS = 512;
 const MAX_ALLOWED_COMPLETION_TOKENS = 2048;
-const MAX_RESPONSE_BYTES_AS_TEXT = 1_048_576;
+const MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export interface AiModelProviderRouteManifest {
@@ -118,6 +118,44 @@ interface ProviderConfig {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function readBoundedProviderResponseText(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      totalBytes += next.value.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new BadGatewayException('AI model provider response exceeded the allowed size');
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (error instanceof BadGatewayException) throw error;
+    if (error instanceof ServiceUnavailableException) throw error;
+    throw new ServiceUnavailableException('AI model provider request failed or timed out');
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new BadGatewayException('AI model provider returned invalid UTF-8');
+  }
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -362,15 +400,18 @@ export class AiOpenAiCompatibleProviderService {
         signal: abort.signal,
       });
       responseStatus = response.status;
-      bodyText = await response.text();
-    } catch {
+      const declaredLength = Number(response.headers.get('content-length'));
+      if (Number.isSafeInteger(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new BadGatewayException('AI model provider response exceeded the allowed size');
+      }
+      bodyText = await readBoundedProviderResponseText(response);
+    } catch (error) {
+      if (error instanceof BadGatewayException) throw error;
+      if (error instanceof ServiceUnavailableException) throw error;
       throw new ServiceUnavailableException('AI model provider request failed or timed out');
     } finally {
       clearTimeout(timeout);
-    }
-
-    if (bodyText.length > MAX_RESPONSE_BYTES_AS_TEXT) {
-      throw new BadGatewayException('AI model provider response exceeded the allowed size');
     }
     if (responseStatus < 200 || responseStatus >= 300) {
       throw new BadGatewayException('AI model provider returned a non-success status');
