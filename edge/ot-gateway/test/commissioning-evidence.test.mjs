@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
@@ -12,6 +12,7 @@ import {
   SIMULATOR_CASE_IDS,
   validateCommissioningEvidence,
   verifyCommissioningArtifactReferences,
+  verifyGatewayReleaseCryptography,
 } from '../scripts/validate-commissioning-evidence.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -22,6 +23,37 @@ async function loadTemplate() {
   return JSON.parse(await readFile(templatePath, 'utf8'));
 }
 
+
+function makeAttestationOutput(record, overrides = {}) {
+  const certificate = {
+    issuer: 'https://token.actions.githubusercontent.com',
+    subjectAlternativeName: 'https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main',
+    sourceRepositoryURI: 'https://github.com/RakibulhasanUtsho07/factoryos',
+    sourceRepositoryDigest: record.identity.gateway_source_commit,
+    ...overrides.certificate,
+  };
+  const statement = {
+    predicateType: 'https://slsa.dev/provenance/v1',
+    subject: [{
+      name: 'ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway',
+      digest: { sha256: record.identity.gateway_image_digest.slice('sha256:'.length) },
+    }],
+    ...overrides.statement,
+  };
+  return JSON.stringify([{ verificationResult: { signature: { certificate }, statement } }]);
+}
+
+async function writeVerifierStubs(directory, record, { cosignOutput = '[{"verified":true}]', attestationOutput } = {}) {
+  await mkdir(directory, { recursive: true });
+  const cosignPath = join(directory, 'cosign');
+  const ghPath = join(directory, 'gh');
+  const attestation = attestationOutput ?? makeAttestationOutput(record);
+  await writeFile(cosignPath, '#!/usr/bin/env node\nprocess.stdout.write(' + JSON.stringify(cosignOutput) + ');\n', 'utf8');
+  await writeFile(ghPath, '#!/usr/bin/env node\nprocess.stdout.write(' + JSON.stringify(attestation) + ');\n', 'utf8');
+  await chmod(cosignPath, 0o755);
+  await chmod(ghPath, 0o755);
+  return directory;
+}
 async function writeEvidenceArtifacts(record, root) {
   const targets = [
     ...(record.simulator_tests ?? []).map((item) => ({ item, refKey: 'artifact_ref', hashKey: 'artifact_sha256' })),
@@ -245,9 +277,15 @@ test('PASS CLI requires an artifact root and verifies evidence bytes before acce
   assert.equal(withoutRoot.status, 1);
   assert.match(withoutRoot.stderr, /requires --artifact-root/);
 
-  const verified = spawnSync(process.execPath, [validatorPath, '--artifact-root', directory, file], { encoding: 'utf8' });
+  const bypass = spawnSync(process.execPath, [validatorPath, '--allow-incomplete', file], { encoding: 'utf8' });
+  assert.equal(bypass.status, 1);
+  assert.match(bypass.stderr, /cannot be used with decision PASS/);
+
+  const binDirectory = await writeVerifierStubs(join(directory, 'bin'), evidence);
+  const env = { ...process.env, PATH: [binDirectory, process.env.PATH ?? ''].join(delimiter) };
+  const verified = spawnSync(process.execPath, [validatorPath, '--artifact-root', directory, file], { encoding: 'utf8', env });
   assert.equal(verified.status, 0, verified.stderr);
-  assert.match(verified.stdout, /artifact existence and SHA-256 integrity checks/i);
+  assert.match(verified.stdout, /Cosign image signature and GitHub SLSA provenance checks/i);
 });
 
 test('release receipt must bind the recorded image digest and source commit to the trusted main workflow', async (t) => {
@@ -266,4 +304,55 @@ test('release receipt must bind the recorded image digest and source commit to t
 
   const errors = await verifyCommissioningArtifactReferences(evidence, directory);
   assert.ok(errors.some((error) => error.includes('release receipt does not bind')));
+});
+
+test('PASS cryptographic gate invokes Cosign and GitHub attestation verification for the pinned image', async () => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const calls = [];
+  const result = await verifyGatewayReleaseCryptography(evidence.identity, {
+    execFileImpl: async (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === 'cosign') return { stdout: '[{"verified":true}]', stderr: '' };
+      if (command === 'gh') return { stdout: makeAttestationOutput(evidence), stderr: '' };
+      throw new Error('unexpected verifier');
+    },
+  });
+
+  assert.equal(result.imageRef, 'ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway@' + evidence.identity.gateway_image_digest);
+  assert.equal(result.signatureVerified, true);
+  assert.equal(result.provenanceVerified, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].command, 'cosign');
+  assert.ok(calls[0].args.includes('--certificate-identity'));
+  assert.ok(calls[0].args.includes('https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main'));
+  assert.equal(calls[0].args.at(-1), result.imageRef);
+  assert.equal(calls[1].command, 'gh');
+  assert.ok(calls[1].args.includes('--bundle-from-oci'));
+  assert.ok(calls[1].args.includes('--source-ref'));
+  assert.ok(calls[1].args.includes('refs/heads/main'));
+});
+
+test('PASS cryptographic gate rejects provenance for another source commit', async () => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  await assert.rejects(() => verifyGatewayReleaseCryptography(evidence.identity, {
+    execFileImpl: async (command) => {
+      if (command === 'cosign') return { stdout: '[{"verified":true}]', stderr: '' };
+      return {
+        stdout: makeAttestationOutput(evidence, { certificate: { sourceRepositoryDigest: '0'.repeat(40) } }),
+        stderr: '',
+      };
+    },
+  }), /does not match the trusted workflow, recorded source commit and image digest/);
+});
+
+test('PASS cryptographic gate fails closed when a verifier is unavailable or returns empty evidence', async () => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const unavailable = Object.assign(new Error('missing binary'), { code: 'ENOENT' });
+  await assert.rejects(() => verifyGatewayReleaseCryptography(evidence.identity, {
+    execFileImpl: async () => { throw unavailable; },
+  }), /Cosign image signature verifier executable is unavailable/);
+
+  await assert.rejects(() => verifyGatewayReleaseCryptography(evidence.identity, {
+    execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
+  }), /returned no verified evidence/);
 });
