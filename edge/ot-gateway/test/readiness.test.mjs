@@ -69,3 +69,23 @@ test('protocol-driver and HTTP readiness faults take precedence over queue capac
   assert.equal(stopping.status, 'stopping');
   assert.equal(stopping.reason, 'SHUTTING_DOWN');
 });
+
+test('readiness fails closed while any durable spool entry is blocked for operator review', () => {
+  const result = evaluateGatewayReadiness({
+    ...base,
+    spoolStats: { ...base.spoolStats, blocked: 1 },
+  });
+  assert.equal(result.ready, false);
+  assert.equal(result.status, 'not_ready');
+  assert.equal(result.reason, 'SPOOL_HAS_BLOCKED_ENTRIES');
+  assert.equal(result.spoolCapacityAvailable, true);
+});
+
+test('readiness rejects a spool status without a valid blocked-entry count', () => {
+  const result = evaluateGatewayReadiness({
+    ...base,
+    spoolStats: { queued: 1, blocked: Number.NaN },
+  });
+  assert.equal(result.ready, false);
+  assert.equal(result.reason, 'SPOOL_STATUS_UNAVAILABLE');
+});
