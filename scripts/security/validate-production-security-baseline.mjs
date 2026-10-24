@@ -35,6 +35,23 @@ function validHttpsUrl(value) {
   }
 }
 
+function isGitHubActionsRunUrl(value) {
+  if (!validHttpsUrl(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.hostname === 'github.com' && url.search.length === 0 &&
+      /^\/RakibulhasanUtsho07\/factoryos\/actions\/runs\/[1-9][0-9]*$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function safeEvidenceReference(value) {
+  return hasText(value) && value.length <= 500 &&
+    !/(?:password|secret|credential|access[-_]?key|token)\s*[:=]/i.test(value) &&
+    !/https?:\/\/[^/\s:@]+:[^@/\s]+@/i.test(value);
+}
+
 export function parseDocument(source) {
   const document = yaml.safeLoad(source, { schema: yaml.DEFAULT_SAFE_SCHEMA });
   if (document === null || typeof document !== 'object' || Array.isArray(document)) {
@@ -125,8 +142,24 @@ export function validateTemplate(document) {
   ]) expectFalse(path);
 
   expect('security_validation.dependency_audit.result', 'NOT_RUN');
-  for (const [path, value] of Object.entries(getAt(document, 'security_validation.tenant_negative_tests') ?? {})) {
-    expect('security_validation.tenant_negative_tests.' + path, 'NOT_RUN');
+  const templateNegativeTests = getAt(document, 'security_validation.tenant_negative_tests') ?? {};
+  for (const key of [
+    'api_authz_cross_tenant_read',
+    'api_cross_tenant_write',
+    'postgres_rls_missing_context',
+    'postgres_rls_cross_tenant_write',
+    'unauthorized_metrics_scrape',
+    'dev_auth_disabled_in_production',
+    'invalid_oidc_mfa_claims_denied',
+  ]) {
+    const path = 'security_validation.tenant_negative_tests.' + key;
+    expect(path + '.result', 'NOT_RUN');
+    for (const field of ['candidate_sha', 'workflow_url', 'evidence_reference', 'tested_environment', 'executed_at_utc']) {
+      expect(path + '.' + field, '');
+    }
+  }
+  if (Object.keys(templateNegativeTests).length !== 7) {
+    errors.push('security_validation.tenant_negative_tests must retain exactly the seven required evidence records');
   }
   expect('security_validation.external_review.independence_conflict_check', 'NOT_RUN');
   expectFalse('security_validation.external_review.scope_and_exclusions_approved');
@@ -311,7 +344,35 @@ export function validateSecurityAttestation(document, expectedSha, now = Date.no
       'dev_auth_disabled_in_production',
       'invalid_oidc_mfa_claims_denied',
     ];
-    for (const key of requiredTests) equals('security_validation.tenant_negative_tests.' + key, 'PASS');
+    for (const key of requiredTests) {
+      const path = 'security_validation.tenant_negative_tests.' + key;
+      const evidence = getAt(document, path);
+      if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)) {
+        errors.push(path + ' must be a structured evidence record');
+        continue;
+      }
+      equals(path + '.result', 'PASS');
+      const testSha = string(path + '.candidate_sha');
+      if (typeof testSha === 'string' && !SHA_PATTERN.test(testSha)) {
+        errors.push(path + '.candidate_sha must be a full 40-character lowercase Git SHA');
+      }
+      if (typeof testSha === 'string' && SHA_PATTERN.test(expectedSha ?? '') && testSha !== expectedSha) {
+        errors.push(path + '.candidate_sha must match the expected immutable candidate SHA');
+      }
+      const workflowUrl = string(path + '.workflow_url');
+      if (typeof workflowUrl === 'string' && !isGitHubActionsRunUrl(workflowUrl)) {
+        errors.push(path + '.workflow_url must identify this repository GitHub Actions run');
+      }
+      const evidenceReference = string(path + '.evidence_reference');
+      if (typeof evidenceReference === 'string' && !safeEvidenceReference(evidenceReference)) {
+        errors.push(path + '.evidence_reference must be an opaque reference without embedded credentials');
+      }
+      string(path + '.tested_environment');
+      utc(path + '.executed_at_utc');
+    }
+    for (const key of Object.keys(negativeTests)) {
+      if (!requiredTests.includes(key)) errors.push('security_validation.tenant_negative_tests contains unsupported evidence key ' + key);
+    }
   }
 
   string('security_validation.external_review.reviewer_identity');
