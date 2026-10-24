@@ -104,3 +104,27 @@ The workflow then applied the ordered migration set, including the current inven
 
 SRS FR-MSO-03 and FR-MSO-05 remain **OPEN / NOT_ACCEPTED** until the approved live-provider environment, synthetic positive/negative probe evidence, operational records, and independent release sign-off are recorded. The provider acceptance procedure is documented in [AI Model Provider Live Release Acceptance](ai-provider-live-release-acceptance.md); the procedure itself is not evidence that a live acceptance run occurred.
 
+## 2026-10-24 post-merge dependency promotion
+
+The grouped dependency update [PR #90](https://github.com/RakibulhasanUtsho07/factoryos/pull/90) was merged as `c0cdefdcbdd3ad17befdb9476bfcd22efa41f66d`. The exact post-merge `main` SHA completed the applicable push workflows successfully:
+
+| Workflow | Post-merge run | Result |
+|---|---|---|
+| API CI | [Run 40078990071](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078990071) | **SUCCESS** |
+| API PostgreSQL CI | [Run 40078990065](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078990065) | **SUCCESS** |
+| Production Dependency Security | [Run 40078990147](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078990147) | **SUCCESS** |
+| Web CI | [Run 40078990091](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078990091) | **SUCCESS** |
+
+All four run records identify the exact merge SHA `c0cdefdcbdd3ad17befdb9476bfcd22efa41f66d`. The traceability workflow was not triggered by the dependency-only file set; the immediately preceding `main` SHA `9dac10f2d5f9028600eb0f7c38627a62e17dff45` passed [SRS HLD Blueprint Traceability run 40078667385](https://github.com/RakibulhasanUtsho07/factoryos/actions/runs/40078667385). This evidence-record change itself will run the traceability and applicable CI checks on its candidate SHA.
+
+The PostgreSQL workflow on `c0cdefdcbdd3ad17befdb9476bfcd22efa41f66d` re-ran `scripts/audit/verify-migration-manifest.mjs` and confirmed:
+
+| Verification item | Result |
+|---|---|
+| Ordered manifest entries | **202** |
+| Top-level `migrations/*.sql` inventory | **202** |
+| Ordered manifest SHA-256 | `04e2462a218f2725a3ed242484d09d7317a14f33d2f3e8da9b13fd0b4a978043` |
+| Manifest/inventory validator | **PASS** |
+
+The dependency promotion passed repository CI. This remains separate from production release authorization and does not change the OPEN / NOT_ACCEPTED status of SRS FR-MSO-03 and FR-MSO-05 pending live-provider acceptance evidence and independent sign-off.
+
