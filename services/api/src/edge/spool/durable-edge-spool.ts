@@ -573,7 +573,7 @@ export class DurableEdgeSpool {
   }
 
   private encryptionAssociatedData(destination: string): Buffer {
-    const recordPath = relative(this.rootDir, destination).split('\\\\').join('/');
+    const recordPath = relative(this.rootDir, destination).split('\\').join('/');
     if (!recordPath || recordPath === '..' || recordPath.startsWith('../')) {
       throw new EdgeSpoolError('SPOOL_CORRUPT', 'Encrypted spool record path is outside the spool root');
     }
