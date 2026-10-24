@@ -85,12 +85,12 @@ No live PLC, production broker, customer key store or site hardware was availabl
 
 Copy `deploy/commissioning-evidence.template.json` to a separate, access-controlled evidence location and fill it with the actual deployment identity, test artifacts, event reconciliation values and authorized sign-offs. Keep the blank template unchanged in source control; never put secrets or private key material in the record.
 
-Run the release-acceptance gate from `edge/ot-gateway`:
+Run the release-acceptance gate from `edge/ot-gateway`, pointing at a separate, controlled evidence directory:
 
 ```sh
-npm run commissioning:validate -- /path/to/commissioning-evidence.json
+npm run commissioning:validate -- --artifact-root /path/to/evidence-root /path/to/commissioning-evidence.json
 ```
 
-The default command exits non-zero unless the decision is `PASS` and the record includes all required simulator and hardware-in-the-loop cases, immutable image/config/API identity, approved preconditions, artifact references, reconciled event counts, zero unresolved sequence gaps/backlog/alarms, and three matching sign-off records. A draft can be structurally reviewed with `npm run commissioning:validate -- --allow-incomplete /path/to/record.json`; draft validation explicitly does **not** mean release acceptance.
+The default command exits non-zero unless the decision is `PASS`, the record includes all required simulator and hardware-in-the-loop cases, immutable image/config/API identity, approved preconditions, reconciled event counts, zero unresolved sequence gaps/backlog/alarms, and three matching sign-off records. Every completed case and each sign-off must include a 64-hex SHA-256 digest. The validator resolves each relative `artifact_ref` inside `--artifact-root`, rejects traversal and symlinks, requires a regular file, and verifies its bytes against the recorded digest. A draft can be structurally reviewed with `npm run commissioning:validate -- --allow-incomplete /path/to/record.json`; draft validation explicitly does **not** mean release acceptance.
 
-The validator checks record structure and evidence completeness only. It does not cryptographically authenticate artifact references or signatures and cannot prove that a physical PLC, broker, network or operator test actually occurred. Those references and the site commissioning outcome still require independent review by the authorized OT, release and security owners.
+Artifact hashes establish byte integrity against the submitted record, not signer identity or truth of a claimed test. The validator does not cryptographically authenticate operator signatures and cannot prove that a physical PLC, broker, network or operator test actually occurred. Independent review by the authorized OT, release and security owners, including real hardware-in-the-loop evidence, remains mandatory.
