@@ -63,6 +63,11 @@ export interface EdgePackageActivationResult {
   artifactBytes: number;
 }
 
+export interface VerifiedEdgePackageRelease extends VerifiedEdgePackage {
+  /** Copies of the exact artifact bytes re-verified immediately before execution. */
+  artifacts: Readonly<Record<string, Uint8Array>>;
+}
+
 /**
  * Filesystem activation store for a single edge-agent writer.
  *
@@ -333,7 +338,7 @@ export class EdgePackageActivationStore {
     packageId: string,
     ref: EdgePackageReleaseRef,
     policy: EdgePackageVerificationPolicy,
-  ): Promise<VerifiedEdgePackage> {
+  ): Promise<VerifiedEdgePackageRelease> {
     const input = await this.readReleaseFiles(packageId, ref.manifestSha256);
     const verified = verifyEdgePackage(input, policy);
     if (
@@ -372,7 +377,10 @@ export class EdgePackageActivationStore {
         'Persisted release metadata failed integrity validation',
       );
     }
-    return verified;
+    const artifacts = Object.freeze(Object.fromEntries(
+      Object.entries(input.artifacts).map(([path, bytes]) => [path, Uint8Array.from(bytes)]),
+    ));
+    return { ...verified, artifacts };
   }
 
   private async readReleaseFiles(
