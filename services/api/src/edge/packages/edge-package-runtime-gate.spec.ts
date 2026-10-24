@@ -276,6 +276,28 @@ describe('EdgePackageRuntimeGate', () => {
     expect(executor).not.toHaveBeenCalled();
   });
 
+  it('does not invoke the host executor when control is lost after admission but before callback dispatch', async () => {
+    const isAllowed = gate.isPackageExecutionAllowed.bind(gate);
+    let checks = 0;
+    jest.spyOn(gate, 'isPackageExecutionAllowed').mockImplementation((...args) => {
+      checks += 1;
+      const allowed = isAllowed(...args);
+      if (checks === 2 && allowed) {
+        // The admission continuation will register execution and queue the
+        // executor callback; this control-loss microtask must win that race.
+        queueMicrotask(() => gate.recordControlSyncFailure());
+      }
+      return allowed;
+    });
+
+    const executor = jest.fn().mockResolvedValue('must-not-start');
+    await expect(gate.execute(activationScope, executor)).rejects.toMatchObject({
+      code: 'CONTROL_SYNC_UNVERIFIED',
+    });
+    expect(checks).toBeGreaterThanOrEqual(2);
+    expect(executor).not.toHaveBeenCalled();
+  });
+
   it('passes an AbortSignal to active host work and treats late success after sync failure as ambiguous', async () => {
     let activeSignal: AbortSignal | undefined;
     let finishExecution: ((value: string) => void) | undefined;
