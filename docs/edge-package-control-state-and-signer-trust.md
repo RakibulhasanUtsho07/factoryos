@@ -18,6 +18,8 @@ Freshness is mandatory when signer keys are returned for package verification. A
 
 ## Acceptance boundary
 
-These stores do not perform network polling themselves, host the device-token API, create the database signing-key registry, manage deployment secrets, provision a cloud identity, or start/stop a model runtime. An integration layer must authenticate the cloud response, require a complete snapshot, bind the tenant/factory from the authenticated device identity, record poll failures, and pass fresh signer policy and exact package-control decisions to the activation coordinator.
+The companion package-governance API adds the tenant/factory-scoped database signing-key registry and immutable key/control event ledgers, IAM-guarded administrator routes for key registration/rotation/revocation and control pause/resume/revoke, plus device-token-authenticated endpoints for complete signer snapshots and effective package controls. The token—not caller-supplied scope headers—determines the device's tenant/factory/device identity. The snapshot endpoint refuses oversized results rather than silently truncating revoked-key history.
+
+The local stores still do not perform network polling themselves or start/stop a model runtime. The deployment-owned agent must authenticate and poll these endpoints, pass complete snapshots into the signer store, record poll failures, then supply fresh signer policy and exact package-control decisions to the activation coordinator and execution-time gate.
 
 The local files contain public keys and package-control metadata, not private signing keys. Filesystem permissions, OS ownership, backup policy, host-secret custody and production rollout remain deployment controls. Passing repository tests does not constitute SRS production acceptance or prove hardware-in-loop commissioning.
