@@ -39,12 +39,40 @@ try {
   fail('evidence file is not valid JSON');
 }
 if (evidence.schema !== 'factoryos.disaster-recovery-rehearsal/v1') fail('unsupported evidence schema');
+
+function utcEpochSeconds(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return null;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null;
+}
+
 if (args.decision === 'PASS') {
   if (!evidence.databases?.distinctIdentityVerified || !evidence.databases?.targetWasEmptyBeforeRestore) {
     fail('PASS sign-off requires proof of distinct source/restore identity and an empty target');
   }
+  const startedAt = utcEpochSeconds(evidence.timestamps?.startedAtUtc);
+  const finishedAt = utcEpochSeconds(evidence.timestamps?.finishedAtUtc);
+  const sourceWatermark = utcEpochSeconds(evidence.timestamps?.sourceWatermarkUtc);
+  const restoredWatermark = utcEpochSeconds(evidence.timestamps?.restoredWatermarkUtc);
+  const eventAt = utcEpochSeconds(evidence.timestamps?.simulatedIncidentAtUtc);
+  const candidateManifestPath = evidence.candidate?.migrationManifestPath;
+  const manifestPathIsSafe = typeof candidateManifestPath === 'string'
+    && candidateManifestPath.length > 0
+    && candidateManifestPath === candidateManifestPath.trim()
+    && !candidateManifestPath.startsWith('/')
+    && !candidateManifestPath.includes('\\')
+    && !candidateManifestPath.split('/').includes('..');
+
   const checks = [
     ['status', evidence.status === 'TECHNICAL_PASS'],
+    ['exact candidate commit SHA', typeof evidence.candidate?.commitSha === 'string' && /^[a-f0-9]{40}$/.test(evidence.candidate.commitSha)],
+    ['relative candidate migration manifest path', manifestPathIsSafe],
+    ['source database identity', typeof evidence.databases?.sourceIdentity === 'string' && evidence.databases.sourceIdentity.trim().length > 0],
+    ['restore target database identity', typeof evidence.databases?.restoreTargetIdentity === 'string' && evidence.databases.restoreTargetIdentity.trim().length > 0],
+    ['UTC rehearsal timestamps', startedAt !== null && finishedAt !== null && sourceWatermark !== null && restoredWatermark !== null && eventAt !== null && finishedAt >= startedAt && finishedAt >= eventAt],
+    ['non-negative measured RPO', Number.isSafeInteger(evidence.measured?.observedRpoSeconds) && evidence.measured.observedRpoSeconds >= 0],
+    ['RPO matches event cutoff and restored watermark', eventAt !== null && restoredWatermark !== null && restoredWatermark <= eventAt && evidence.measured?.observedRpoSeconds === eventAt - restoredWatermark],
+    ['non-negative measured RTO', Number.isSafeInteger(evidence.measured?.observedRtoSeconds) && evidence.measured.observedRtoSeconds >= 0],
     ['encrypted backup', evidence.backup?.encryption === 'ENCRYPTED_GPG'],
     ['checksum', evidence.backup?.checksumVerified === true && /^[a-f0-9]{64}$/.test(evidence.backup?.sha256 ?? '')],
     ['archive readability', evidence.backup?.archiveReadability === 'READABLE'],
@@ -56,13 +84,21 @@ if (args.decision === 'PASS') {
     ['application smoke', evidence.verification?.applicationSmokeStatus === 'PASS'],
     ['tenant isolation', evidence.verification?.tenantIsolationStatus === 'PASS'],
     ['audit continuity', evidence.verification?.auditContinuityStatus === 'PASS'],
-    ['measured RPO', Number.isSafeInteger(evidence.measured?.observedRpoSeconds)],
-    ['measured RTO', Number.isSafeInteger(evidence.measured?.observedRtoSeconds)],
   ];
   const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
   if (failed.length) fail('PASS sign-off requires successful evidence for: ' + failed.join(', '));
-  if (evidence.measured?.approvedTargets === true && evidence.measured?.targetAssessment !== 'WITHIN_APPROVED_TARGETS') {
-    fail('approved RPO/RTO targets were not met');
+  if (evidence.measured?.approvedTargets === true) {
+    const rpoTarget = evidence.measured?.approvedRpoTargetSeconds;
+    const rtoTarget = evidence.measured?.approvedRtoTargetSeconds;
+    if (!Number.isSafeInteger(rpoTarget) || rpoTarget < 0 || !Number.isSafeInteger(rtoTarget) || rtoTarget < 0) {
+      fail('approved RPO/RTO targets must be non-negative integer seconds');
+    }
+    if (evidence.measured.observedRpoSeconds > rpoTarget || evidence.measured.observedRtoSeconds > rtoTarget
+      || evidence.measured.targetAssessment !== 'WITHIN_APPROVED_TARGETS') {
+      fail('observed RPO/RTO exceed or do not satisfy approved targets');
+    }
+  } else if (evidence.measured?.targetAssessment !== 'NOT_APPROVED_NOT_CONTRACTUAL') {
+    fail('unapproved RPO/RTO values must not be labelled contractual or within approved targets');
   }
 }
 const output = evidencePath + '.signoff.json';
