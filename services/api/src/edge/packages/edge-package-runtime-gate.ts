@@ -8,14 +8,12 @@ import type {
   EdgePackageActivationScope,
 } from './edge-package-release-coordinator.js';
 import type { EdgePackageActivationStore } from './edge-package-activation.store.js';
-import type {
-  EdgePackageVerificationPolicy,
-  VerifiedEdgePackage,
-} from './edge-package-manifest-verifier.js';
+import type { EdgePackageVerificationPolicy } from './edge-package-manifest-verifier.js';
+import type { VerifiedEdgePackageRelease } from './edge-package-activation.store.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PACKAGE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const PACKAGE_VERSION_PATTERN = /^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$/;
+const PACKAGE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const USE_CASE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
 const MAX_MANAGED_SCOPES = 64;
 const MAX_FRESHNESS_MS = 24 * 60 * 60 * 1000;
@@ -157,7 +155,7 @@ export class EdgePackageRuntimeGate implements EdgePackageActivationRuntime {
 
   async execute<T>(
     scope: EdgePackageActivationScope,
-    executor: (release: Readonly<VerifiedEdgePackage>) => Promise<T> | T,
+    executor: (release: Readonly<VerifiedEdgePackageRelease>) => Promise<T> | T,
   ): Promise<T> {
     this.assertExecutionScope(scope);
     if (!this.isPackageExecutionAllowed(scope.packageId, scope.version, scope.useCaseId)) {
