@@ -68,6 +68,8 @@ function validateScopes(scopes) {
 function validatePublicKey(entry) {
   if (!isRecord(entry) || typeof entry.keyId !== 'string' || !KEY_ID.test(entry.keyId)
     || typeof entry.publicKeyPem !== 'string' || entry.publicKeyPem.length > 16_384
+    || !entry.publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')
+    || /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(entry.publicKeyPem)
     || typeof entry.fingerprintSha256 !== 'string' || !SHA256.test(entry.fingerprintSha256)
     || !['ACTIVE', 'REVOKED'].includes(entry.status)) {
     fail('INVALID_SIGNING_KEY_SNAPSHOT', 'A signing-key snapshot entry is malformed');
@@ -236,12 +238,14 @@ export class EdgePackageControlSyncClient {
     if (this.initialized) return this.getSnapshot();
     await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
     const dir = await lstat(this.stateDirectory);
-    if (!dir.isDirectory() || dir.isSymbolicLink()) fail('LOCAL_STATE_CORRUPT', 'State directory must be a real directory, not a symlink');
+    if (!dir.isDirectory() || dir.isSymbolicLink() || (dir.mode & 0o077) !== 0) {
+      fail('LOCAL_STATE_CORRUPT', 'State directory must be a private real directory, not a symlink');
+    }
     let raw;
     try {
       const file = await lstat(this.statePath);
-      if (!file.isFile() || file.isSymbolicLink() || file.size > this.maxStateBytes) {
-        fail('LOCAL_STATE_CORRUPT', 'Persisted package-sync state must be a bounded regular file');
+      if (!file.isFile() || file.isSymbolicLink() || file.size > this.maxStateBytes || (file.mode & 0o077) !== 0) {
+        fail('LOCAL_STATE_CORRUPT', 'Persisted package-sync state must be a bounded owner-only regular file');
       }
       raw = await readFile(this.statePath, 'utf8');
     } catch (error) {
@@ -418,8 +422,8 @@ export class EdgePackageControlSyncClient {
     try {
       try {
         const existing = await lstat(this.statePath);
-        if (!existing.isFile() || existing.isSymbolicLink() || existing.size > this.maxStateBytes) {
-          fail('LOCAL_STATE_CORRUPT', 'Package-sync state destination is not a bounded regular file');
+        if (!existing.isFile() || existing.isSymbolicLink() || existing.size > this.maxStateBytes || (existing.mode & 0o077) !== 0) {
+          fail('LOCAL_STATE_CORRUPT', 'Package-sync state destination is not a bounded owner-only regular file');
         }
       } catch (error) {
         if (error?.code !== 'ENOENT') throw error;
