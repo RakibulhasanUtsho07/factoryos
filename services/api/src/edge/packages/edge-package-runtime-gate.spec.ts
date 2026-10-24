@@ -190,7 +190,7 @@ describe('EdgePackageRuntimeGate', () => {
       signingKeyStore,
       tenantId,
       factoryId,
-      { maxControlAgeMs: 120_000, maxSigningKeyAgeMs: 120_000 },
+      { maxControlAgeMs: 120_000, maxSigningKeyAgeMs: 120_000, managedScopes: [managedScope] },
     );
     const executor = jest.fn();
 
@@ -217,9 +217,13 @@ describe('EdgePackageRuntimeGate', () => {
       },
     );
 
-    expect(() => twoScopeGate.confirmControlSync([managedScope])).toThrow(
-      expect.objectContaining({ code: 'CONTROL_SYNC_UNVERIFIED' }),
-    );
+    let syncError: unknown;
+    try {
+      twoScopeGate.confirmControlSync([managedScope]);
+    } catch (error) {
+      syncError = error;
+    }
+    expect(syncError).toMatchObject({ code: 'CONTROL_SYNC_UNVERIFIED' });
     expect(twoScopeGate.isPackageExecutionAllowed(packageId, version, useCaseId)).toBe(false);
   });
 
