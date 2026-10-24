@@ -279,10 +279,14 @@ describe('EdgePackageRuntimeGate', () => {
   it('passes an AbortSignal to active host work and treats late success after sync failure as ambiguous', async () => {
     let activeSignal: AbortSignal | undefined;
     let finishExecution: ((value: string) => void) | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const outcome = gate.execute(activationScope, (_release, signal) => {
       activeSignal = signal;
+      markStarted();
       return new Promise<string>((resolve) => { finishExecution = resolve; });
     });
+    await started;
 
     expect(activeSignal).toBeDefined();
     gate.recordControlSyncFailure();
@@ -296,10 +300,14 @@ describe('EdgePackageRuntimeGate', () => {
   it('cancels active work when a freshly confirmed control decision becomes PAUSED', async () => {
     let activeSignal: AbortSignal | undefined;
     let finishExecution: ((value: string) => void) | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const outcome = gate.execute(activationScope, (_release, signal) => {
       activeSignal = signal;
+      markStarted();
       return new Promise<string>((resolve) => { finishExecution = resolve; });
     });
+    await started;
 
     await controlStore.save(control('PAUSED'));
     gate.confirmControlSync([managedScope]);
@@ -314,10 +322,14 @@ describe('EdgePackageRuntimeGate', () => {
   it('cancels active work when a refreshed signer snapshot revokes the executing signer', async () => {
     let activeSignal: AbortSignal | undefined;
     let finishExecution: ((value: string) => void) | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const outcome = gate.execute(activationScope, (_release, signal) => {
       activeSignal = signal;
+      markStarted();
       return new Promise<string>((resolve) => { finishExecution = resolve; });
     });
+    await started;
 
     await signingKeyStore.applySnapshot(snapshot('REVOKED'));
     gate.confirmControlSync([managedScope]);
