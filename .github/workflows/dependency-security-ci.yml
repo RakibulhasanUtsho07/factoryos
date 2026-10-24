@@ -67,13 +67,16 @@ jobs:
           node --check scripts/performance/api-load-smoke.mjs
           node --check scripts/performance/api-load-smoke.test.mjs
           node --check scripts/security/production-security-config.test.mjs
+          node --check scripts/security/validate-production-security-baseline.mjs
+          node --check scripts/security/production-security-baseline-validator.test.mjs
+          node scripts/security/validate-production-security-baseline.mjs --check-template
 
       - name: Exercise bounded load and backup/restore security controls
         working-directory: services/api
         run: |
           npm run test:load-smoke:contract
           npm run test:recovery:contract
-          node --test ../../scripts/security/production-security-config.test.mjs
+          node --test ../../scripts/security/production-security-config.test.mjs ../../scripts/security/production-security-baseline-validator.test.mjs
 
       - name: Audit production dependencies
         run: npm audit --omit=dev
