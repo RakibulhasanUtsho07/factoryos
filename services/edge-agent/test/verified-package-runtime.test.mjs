@@ -122,6 +122,78 @@ test('verifies the synchronized Ed25519 signer and every artifact before invokin
   h.supervisor.stop();
 });
 
+test('stop aborts an in-flight host runtime and rejects a late success as ambiguous', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  let signal;
+  let finishExecution;
+  const outcome = h.supervisor.runVerifiedPackage(
+    signedInput(),
+    { useCaseId, allowedToolIds },
+    (_release, _authorization, activeSignal) => {
+      signal = activeSignal;
+      return new Promise((resolve) => { finishExecution = resolve; });
+    },
+  );
+
+  assert.equal(signal.aborted, false);
+  h.supervisor.stop();
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason.code, 'SUPERVISOR_STOPPED');
+
+  finishExecution('late-success');
+  await assert.rejects(outcome, { code: 'EXECUTION_ABORTED_AFTER_START' });
+});
+
+test('a refreshed PAUSED control aborts active package work and does not report a late success', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  let signal;
+  let finishExecution;
+  const outcome = h.supervisor.runVerifiedPackage(
+    signedInput(),
+    { useCaseId, allowedToolIds },
+    (_release, _authorization, activeSignal) => {
+      signal = activeSignal;
+      return new Promise((resolve) => { finishExecution = resolve; });
+    },
+  );
+
+  h.snapshot.controls[0].status = 'PAUSED';
+  await h.supervisor.refresh();
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason.code, 'PACKAGE_CONTROL_PAUSED');
+
+  finishExecution('late-success');
+  await assert.rejects(outcome, { code: 'EXECUTION_ABORTED_AFTER_START' });
+  h.supervisor.stop();
+});
+
+test('a failed package-control poll aborts active work and requires reconciliation before retry', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  let signal;
+  let finishExecution;
+  const outcome = h.supervisor.runVerifiedPackage(
+    signedInput(),
+    { useCaseId, allowedToolIds },
+    (_release, _authorization, activeSignal) => {
+      signal = activeSignal;
+      return new Promise((resolve) => { finishExecution = resolve; });
+    },
+  );
+
+  h.client.pollOnce = async () => { throw new Error('offline'); };
+  const status = await h.supervisor.refresh();
+  assert.equal(status.healthy, false);
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason.code, 'EDGE_SYNC_FAILED');
+
+  finishExecution('late-success');
+  await assert.rejects(outcome, { code: 'EXECUTION_ABORTED_AFTER_START' });
+  h.supervisor.stop();
+});
+
 test('blocks a forged signature and never calls the executor', async () => {
   const h = harness();
   await h.supervisor.start();

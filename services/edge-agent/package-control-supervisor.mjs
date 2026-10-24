@@ -63,6 +63,7 @@ export class EdgePackageExecutionSupervisor {
     this.timer = null;
     this.refreshPromise = null;
     this.lastPollErrorCode = null;
+    this.activeExecutions = new Map();
   }
 
   async start() {
@@ -79,6 +80,7 @@ export class EdgePackageExecutionSupervisor {
 
   stop() {
     this.running = false;
+    this.abortActiveExecutions('SUPERVISOR_STOPPED');
     if (this.timer !== null) {
       try { this.clearIntervalImpl(this.timer); } finally { this.timer = null; }
     }
@@ -127,7 +129,48 @@ export class EdgePackageExecutionSupervisor {
         : (typeof snapshotErrorCode === 'string' && SAFE_ERROR_CODE.test(snapshotErrorCode)
           ? snapshotErrorCode : 'EDGE_SYNC_FAILED');
     }
+
+    // In-flight executions are not allowed to outlive a control poll failure.
+    if (this.lastPollErrorCode !== null) this.abortActiveExecutions(this.lastPollErrorCode);
+    else this.recheckActiveExecutions();
     return this.getStatus();
+  }
+
+  abortActiveExecutions(code) {
+    const safeCode = typeof code === 'string' && SAFE_ERROR_CODE.test(code) ? code : 'CONTROL_SYNC_UNHEALTHY';
+    for (const execution of this.activeExecutions.values()) {
+      if (execution.controller.signal.aborted) continue;
+      execution.controller.abort(new EdgePackageSupervisorError(
+        safeCode,
+        'Package execution must stop because runtime authorization is no longer available',
+      ));
+    }
+  }
+
+  recheckActiveExecutions() {
+    for (const execution of this.activeExecutions.values()) {
+      if (execution.controller.signal.aborted) continue;
+      try {
+        const current = this.authorizeExecution(execution.context);
+        const original = execution.authorization;
+        if (current.tenantId !== original.tenantId
+          || current.factoryId !== original.factoryId
+          || current.signingKey.keyId !== original.signingKey.keyId
+          || current.signingKey.fingerprintSha256 !== original.signingKey.fingerprintSha256) {
+          execution.controller.abort(new EdgePackageSupervisorError(
+            'PACKAGE_AUTHORIZATION_CHANGED',
+            'Package signer or target scope changed while the host runtime was executing',
+          ));
+        }
+      } catch (error) {
+        const code = typeof error?.code === 'string' && SAFE_ERROR_CODE.test(error.code)
+          ? error.code : 'CONTROL_SYNC_UNHEALTHY';
+        execution.controller.abort(new EdgePackageSupervisorError(
+          code,
+          'Package execution must stop because current control or signer authorization was denied',
+        ));
+      }
+    }
   }
 
   authorizeExecution(input) {
@@ -212,7 +255,48 @@ export class EdgePackageExecutionSupervisor {
       || currentAuthorization.signingKey.fingerprintSha256 !== firstAuthorization.signingKey.fingerprintSha256) {
       fail('PACKAGE_AUTHORIZATION_CHANGED', 'Package signer or target scope changed during verification');
     }
-    return executor(verifiedRelease, currentAuthorization);
+    const executionId = Symbol('edge-package-execution');
+    const controller = new AbortController();
+    this.activeExecutions.set(executionId, {
+      context,
+      authorization: currentAuthorization,
+      controller,
+    });
+
+    let outcome;
+    try {
+      // The host adapter must propagate this signal into its runtime/process loop.
+      outcome = executor(verifiedRelease, currentAuthorization, controller.signal);
+    } catch (error) {
+      this.activeExecutions.delete(executionId);
+      throw error;
+    }
+
+    const finish = (value) => {
+      this.activeExecutions.delete(executionId);
+      if (controller.signal.aborted) {
+        fail(
+          'EXECUTION_ABORTED_AFTER_START',
+          'Package execution was cancelled after host invocation; reconcile possible side effects before retrying',
+        );
+      }
+      return value;
+    };
+    const reject = (error) => {
+      this.activeExecutions.delete(executionId);
+      throw error;
+    };
+
+    let then;
+    try {
+      then = outcome !== null && (typeof outcome === 'object' || typeof outcome === 'function')
+        ? outcome.then : undefined;
+    } catch (error) {
+      this.activeExecutions.delete(executionId);
+      throw error;
+    }
+    if (typeof then === 'function') return Promise.resolve(outcome).then(finish, reject);
+    return finish(outcome);
   }
 
   runAuthorized(input, operation) {

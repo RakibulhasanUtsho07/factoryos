@@ -95,10 +95,11 @@ Start a periodic fail-closed supervisor, then use runVerifiedPackage for managed
         useCaseId: 'inspection',
         allowedToolIds: new Set(['AI.RUNTIME.NOOP']), // host-owned, not manifest-owned
       },
-      async (verifiedRelease, authorization) => {
+      async (verifiedRelease, authorization, signal) => {
         // Integrate the existing trusted model/policy loader here. Consume the
         // exact verified byte copies, not a path re-read from untrusted storage.
-        return hostRuntime.loadAndExecute(verifiedRelease);
+        // Propagate signal to the host runtime's cancellation/stop mechanism.
+        return hostRuntime.loadAndExecute(verifiedRelease, { authorization, signal });
       },
     );
 
@@ -111,7 +112,7 @@ runVerifiedPackage:
 3. Verifies the Ed25519 signature, tenant/factory/package/version scope, issue and expiry window, host-owned tool allow-list, exact artifact set, artifact sizes and SHA-256 digests.
 4. Rechecks the live control and signer after verification, immediately before invoking the host callback. A pause/revoke or signer/scope change blocks the callback.
 
-The executor callback is invoked only after these checks pass and receives copied bytes that were checked against the signed manifest. runAuthorized is a lower-level admission guard for integrations that supply their own verifier; do not use it alone to execute signed model/policy packages. stop() disables the guard.
+The executor callback is invoked only after these checks pass and receives copied bytes that were checked against the signed manifest. It receives a third argument, an `AbortSignal`: `stop()`, a failed control poll, an unhealthy snapshot, a pause/revoke, or a signer/scope change aborts active work. The host adapter must propagate this signal into the actual inference/process loop and stop side effects cooperatively. If the callback resolves successfully after cancellation, the wrapper rejects with `EXECUTION_ABORTED_AFTER_START`; this is an ambiguous outcome, not proof that side effects were rolled back. Reconcile the operation before retrying. An AbortSignal cannot forcibly kill a callback or external process that ignores it. runAuthorized is a lower-level admission guard for integrations that supply their own verifier; do not use it alone to execute signed model/policy packages. stop() disables new execution and requests cancellation of active signed-package callbacks.
 
 ## Important production boundary
 
