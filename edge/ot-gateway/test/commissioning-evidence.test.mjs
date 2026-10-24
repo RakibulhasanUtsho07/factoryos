@@ -48,8 +48,8 @@ async function writeVerifierStubs(directory, record, { cosignOutput = '[{"verifi
   const cosignPath = join(directory, 'cosign');
   const ghPath = join(directory, 'gh');
   const attestation = attestationOutput ?? makeAttestationOutput(record);
-  await writeFile(cosignPath, '#!/usr/bin/env node\\nprocess.stdout.write(' + JSON.stringify(cosignOutput) + ');\\n', 'utf8');
-  await writeFile(ghPath, '#!/usr/bin/env node\\nprocess.stdout.write(' + JSON.stringify(attestation) + ');\\n', 'utf8');
+  await writeFile(cosignPath, '#!/usr/bin/env node\nprocess.stdout.write(' + JSON.stringify(cosignOutput) + ');\n', 'utf8');
+  await writeFile(ghPath, '#!/usr/bin/env node\nprocess.stdout.write(' + JSON.stringify(attestation) + ');\n', 'utf8');
   await chmod(cosignPath, 0o755);
   await chmod(ghPath, 0o755);
   return directory;
