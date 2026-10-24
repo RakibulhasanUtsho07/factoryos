@@ -205,3 +205,4 @@ migrations/193_edge_device_health_and_stream_metadata.sql
 migrations/194_inventory_cycle_count_recurring_sessions.sql
 migrations/195_ai_artifact_provenance_admission.sql
 migrations/196_edge_package_governance.sql
+migrations/197_ai_inventory_stock_summary_tool.sql
