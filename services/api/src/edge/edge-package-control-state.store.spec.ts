@@ -51,6 +51,28 @@ describe('EdgePackageControlStateStore', () => {
     expect(second.get(REVOKED)).toEqual(REVOKED);
   });
 
+  it('restores non-terminal controls as UNKNOWN while preserving terminal revocation across restart', async () => {
+    const first = new EdgePackageControlStateStore(rootDir);
+    await first.initialize();
+    await first.save({ ...ACTIVE, packageId: 'quality-predictor' });
+    await first.save({ ...ACTIVE, packageId: 'quality-alert', status: 'PAUSED' });
+    await first.save(REVOKED);
+
+    const restarted = new EdgePackageControlStateStore(rootDir);
+    const restored = await restarted.initialize();
+
+    expect(restored).toHaveLength(3);
+    expect(restarted.get({ ...ACTIVE, packageId: 'quality-predictor' })).toMatchObject({
+      status: 'UNKNOWN',
+      lastErrorCode: 'RESTART_REQUIRES_FRESH_SYNC',
+    });
+    expect(restarted.get({ ...ACTIVE, packageId: 'quality-alert' })).toMatchObject({
+      status: 'UNKNOWN',
+      lastErrorCode: 'RESTART_REQUIRES_FRESH_SYNC',
+    });
+    expect(restarted.get(REVOKED)).toEqual(REVOKED);
+  });
+
   it('serializes concurrent updates without dropping separate package scopes', async () => {
     const store = new EdgePackageControlStateStore(rootDir);
     await store.initialize();

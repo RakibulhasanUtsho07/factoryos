@@ -7,11 +7,12 @@ import { EdgeDeviceGatewayController } from './edge-device-gateway.controller';
 import { EdgeDeviceGatewayService } from './edge-device-gateway.service';
 import { EdgeDeviceCredentialService } from './edge-device-credential.service';
 import { EdgeDeviceHealthService } from './edge-device-health.service';
+import { EdgePackageGovernanceService } from './edge-package-governance.service';
 
 @Module({
   imports: [AuditModule, DatabaseModule, IamModule],
   controllers: [EdgeDeviceGatewayController],
-  providers: [EdgeDeviceGatewayService, EdgeDeviceCredentialService, EdgeDeviceHealthService],
-  exports: [EdgeDeviceGatewayService],
+  providers: [EdgeDeviceGatewayService, EdgeDeviceCredentialService, EdgeDeviceHealthService, EdgePackageGovernanceService],
+  exports: [EdgeDeviceGatewayService, EdgePackageGovernanceService],
 })
 export class EdgeModule {}
