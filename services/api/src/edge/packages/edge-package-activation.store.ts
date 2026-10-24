@@ -29,7 +29,8 @@ export type EdgePackageActivationErrorCode =
   | 'ROLLBACK_TARGET_MISMATCH'
   | 'RELEASE_VERSION_CONFLICT'
   | 'RELEASE_STORE_CORRUPT'
-  | 'INVALID_PACKAGE_ID';
+  | 'INVALID_PACKAGE_ID'
+  | 'ACTIVE_RELEASE_VERSION_MISMATCH';
 
 export class EdgePackageActivationError extends Error {
   constructor(
@@ -212,6 +213,41 @@ export class EdgePackageActivationStore {
   async getState(packageId: string): Promise<EdgePackageActivationState | null> {
     this.assertPackageId(packageId);
     return this.withPackageLock(packageId, () => this.readState(packageId));
+  }
+
+  /**
+   * Re-reads and verifies the active release immediately before execution.
+   * This re-checks the persisted manifest, signature, signer status and artifact bytes
+   * using the caller's current trust policy; activation-time verification alone is not enough.
+   */
+  async verifyActiveRelease(
+    packageId: string,
+    expectedVersion: string,
+    policy: EdgePackageVerificationPolicy,
+  ): Promise<VerifiedEdgePackage> {
+    this.assertPackageId(packageId);
+    if (typeof expectedVersion !== 'string' || !SEMVER_PATTERN.test(expectedVersion)) {
+      throw new EdgePackageActivationError(
+        'ACTIVE_RELEASE_VERSION_MISMATCH',
+        'A valid expected package version is required for execution',
+      );
+    }
+    return this.withPackageLock(packageId, async () => {
+      const current = await this.readState(packageId);
+      if (current === null) {
+        throw new EdgePackageActivationError(
+          'NO_ACTIVE_RELEASE',
+          'There is no active package release to execute',
+        );
+      }
+      if (current.active.version !== expectedVersion) {
+        throw new EdgePackageActivationError(
+          'ACTIVE_RELEASE_VERSION_MISMATCH',
+          'The active package version does not match the requested execution version',
+        );
+      }
+      return this.loadVerifiedRelease(packageId, current.active, policy);
+    });
   }
 
   private async persistVerifiedRelease(
