@@ -6,6 +6,8 @@ import {
   createEdgeGatewaySender,
   EdgePackageControlSyncClient,
   EdgePackageExecutionSupervisor,
+  EdgePackageHostRuntimeAdapter,
+  EdgePackageHostRuntimeAdapter,
   EdgePackageSupervisorError,
   edgePackageRuntimeSigningPayload,
   verifySynchronizedEdgePackage,
