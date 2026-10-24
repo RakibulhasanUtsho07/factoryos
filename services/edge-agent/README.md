@@ -1,8 +1,8 @@
-# Edge agent: durable observation spool
+# Edge agent: durable observation spool and package runtime controls
 
-This is a Node.js library component for edge runtimes that need to preserve normalized telemetry while the cloud API is unavailable. It contains a durable observation spool, an authenticated package-control synchronization client, and a host-callable package execution supervisor. It is not a complete service supervisor and does not contain physical-device drivers or a production model/policy executor.
+This Node.js library provides a durable telemetry spool, an authenticated package-control sync client, a recurring fail-closed supervisor, and a signed-package verification boundary. It is not a complete service supervisor, native hardware driver suite, or proof that a particular production model/policy executor has been wired to these APIs.
 
-## Basic use
+## Durable observations
 
 Generate and persist a batch key before the first send attempt, then keep that exact key and body until the server confirms the durable receipt.
 
@@ -12,6 +12,12 @@ Generate and persist a batch key before the first send attempt, then keep that e
       maxBatches: 1024,
       maxBytes: 64 * 1024 * 1024,
       maxBatchBytes: 1024 * 1024,
+    });
+
+    const send = createEdgeGatewaySender({
+      baseUrl: process.env.FACTORYOS_API_BASE_URL,
+      deviceId: process.env.FACTORYOS_EDGE_DEVICE_ID,
+      token: process.env.FACTORYOS_EDGE_DEVICE_TOKEN,
     });
 
     await spool.enqueue({
@@ -27,32 +33,18 @@ Generate and persist a batch key before the first send attempt, then keep that e
         payload: { value: 21.5 },
       }],
     });
-
-    const send = createEdgeGatewaySender({
-      baseUrl: process.env.FACTORYOS_API_BASE_URL,
-      deviceId: process.env.FACTORYOS_EDGE_DEVICE_ID,
-      token: process.env.FACTORYOS_EDGE_DEVICE_TOKEN,
-    });
     const outcome = await spool.flush(send, { maxAttempts: 5, baseDelayMs: 250 });
 
-The sample values are illustrative. Supply real device IDs and tokens through the deployment's secret manager or protected environment; never put credentials in an observation payload or spool file.
+The sample values are illustrative. Use a secret manager or protected environment for real credentials; never put tokens in observation payloads or spool files.
 
-## Durability and retry contract
+The spool fsyncs and atomically renames files where supported, validates stored payload digests, rejects sensitive credential-like fields, preserves FIFO order, and removes a batch only after a matching durable receipt. Capacity exhaustion is an explicit error rather than silent eviction.
 
-- Enqueue writes a versioned JSON envelope to a temporary file, syncs it, atomically renames it into the pending queue, then attempts to sync the containing directory. Files and directories are restricted to owner access where supported.
-- Every loaded batch is validated and checked against its SHA-256 payload digest. Unexpected files, symlinks, invalid envelopes, duplicate local sequence numbers, or digest mismatch fail closed rather than discarding data.
-- Identical batch_key plus content is idempotent. Reusing a key with different content is rejected. Capacity limits reject newly enqueued work instead of silently evicting pending batches.
-- Flushes run FIFO. The first pending batch keeps the queue blocked until a matching gateway receipt is obtained or the configured bounded retry attempts are exhausted. Transport errors and HTTP 408, 429, and 5xx are retryable; other 4xx responses and malformed or mismatched receipts are not.
-- A batch is removed only after the receipt's summary.batchKey, observation count, and inserted/deduplicated counts reconcile to the exact queued batch. Failed sends and untrusted receipts leave the batch on disk for inspection and a later deliberate retry.
+## Authenticated package-control synchronization
 
-## Signed package-control synchronization
-
-The package-control synchronization client polls the existing device endpoints:
+The sync client polls these authenticated endpoints for the device:
 
 - GET /api/v2/edge/device-package-signing-keys/:deviceId for the complete signer snapshot.
-- GET /api/v2/edge/device-package-controls/:deviceId/effective with package_id, package_version, and optional use_case_id for every configured managed package scope.
-
-Example:
+- GET /api/v2/edge/device-package-controls/:deviceId/effective with package_id, package_version, and optional use_case_id for every configured managed scope.
 
     import { EdgePackageControlSyncClient } from './package-control-sync.mjs';
 
@@ -70,45 +62,47 @@ Example:
     });
 
     await sync.initialize();
-    const snapshot = await sync.pollOnce();
-    if (!snapshot.healthy) {
-      // The host must keep package execution blocked.
-    }
 
-The poller requires HTTPS except explicitly enabled loopback HTTP outside production, sends the opaque device token only as bearer authorization, rejects redirects, limits response/state sizes, validates tenant/factory scope and Ed25519 public-key fingerprints, and persists the full snapshot atomically with owner-only file permissions. A partial, invalid, stale, failed, or unpersisted sync cannot replace the prior usable snapshot; it marks the cached state unhealthy. Previously revoked signing keys remain revoked if omitted or later reported active, and package-control REVOKED state is terminal locally. A process restart does not turn a persisted snapshot into fresh authorization: call pollOnce successfully before allowing execution.
+The poller requires HTTPS except explicitly enabled loopback HTTP outside production, uses bearer authorization, rejects redirects, bounds response and persisted-state sizes, verifies tenant/factory scope and Ed25519 public-key fingerprints, and atomically persists a complete snapshot with owner-only permissions. Partial, invalid, stale, failed, or unpersisted polls cannot authorize execution. Signer and package REVOKED states are terminal locally. A persisted snapshot is not fresh runtime authorization after a process restart: the first successful poll must complete before execution is allowed.
 
-## Host runtime supervision and execution guard
+## Supervisor and verified execution boundary
 
-The supervisor schedules polling, retries after failed polls, and fails closed at the callback boundary if polling is unhealthy, the exact package/version/use-case is not configured and ACTIVE, or the selected signer is missing, inactive, or revoked.
+Start a periodic fail-closed supervisor, then use runVerifiedPackage for managed signed package execution:
 
     import { EdgePackageExecutionSupervisor } from './package-control-supervisor.mjs';
 
-    const supervisor = new EdgePackageExecutionSupervisor(sync, {
-      pollIntervalMs: 30_000,
-    });
-    const initialHealth = await supervisor.start();
-    if (!initialHealth.healthy) {
-      // Do not activate or execute managed packages; scheduled polling will retry.
+    const supervisor = new EdgePackageExecutionSupervisor(sync, { pollIntervalMs: 30_000 });
+    const health = await supervisor.start();
+    if (!health.healthy) {
+      // Keep the package runtime blocked. The scheduled poller will retry.
     }
 
-    await supervisor.runAuthorized({
-      packageId: 'quality-defect',
-      version: '1.2.0',
-      useCaseId: 'inspection',
-      signingKeyId: release.signingKeyId,
-    }, async (authorization) => {
-      // Host integration must verify the exact release bytes and signature using
-      // authorization.signingKey.publicKeyPem, enforce activation policy, and only
-      // then call the real package/model executor.
-      return hostRuntime.execute(release);
-    });
+    await supervisor.runVerifiedPackage(
+      signedPackageInput, // { manifest, signature, artifacts: { relativePath: Uint8Array } }
+      {
+        useCaseId: 'inspection',
+        allowedToolIds: new Set(['AI.RUNTIME.NOOP']), // host-owned, not manifest-owned
+      },
+      async (verifiedRelease, authorization) => {
+        // Integrate the existing trusted model/policy loader here. Consume the
+        // exact verified byte copies, not a path re-read from untrusted storage.
+        return hostRuntime.loadAndExecute(verifiedRelease);
+      },
+    );
 
     supervisor.stop();
 
-Call runAuthorized at each managed package activation or execution boundary. It checks current supervisor state and invokes the callback only after authorization checks pass. stop disables the guard. The supervisor also marks its state unhealthy when a poll throws, even if a custom sync adapter mistakenly leaves a prior snapshot marked healthy.
+runVerifiedPackage:
 
-This is a host integration primitive, not proof that a particular production executor uses it. The callback remains responsible for verifying the actual artifact bytes/signature and any separate activation or runtime policy. This library does not discover or automatically wrap an existing production model/policy executor.
+1. Requires a currently healthy synchronized state and an exact configured ACTIVE package/version/use-case.
+2. Requires the selected signer to be ACTIVE, then validates the signed manifest using the same sorted-key canonical JSON contract as the API.
+3. Verifies the Ed25519 signature, tenant/factory/package/version scope, issue and expiry window, host-owned tool allow-list, exact artifact set, artifact sizes and SHA-256 digests.
+4. Rechecks the live control and signer after verification, immediately before invoking the host callback. A pause/revoke or signer/scope change blocks the callback.
 
-## Operational boundary
+The executor callback is invoked only after these checks pass and receives copied bytes that were checked against the signed manifest. runAuthorized is a lower-level admission guard for integrations that supply their own verifier; do not use it alone to execute signed model/policy packages. stop() disables the guard.
 
-One process must own a spool directory. Provision adequate durable storage and monitor disk usage; capacity exhaustion is surfaced as an error and should trigger an operator/health alert. Filesystem permissions are not a substitute for encrypted disks, backups, or host security controls. The edge-agent library does not supply native MQTT/OPC UA/Modbus collectors, hardware-in-loop commissioning, complete deployment orchestration, or end-to-end production runtime wiring. Those require separate integration and deployment acceptance.
+## Important production boundary
+
+This integration provides an executable verification boundary, not a claim that the repository has automatically replaced every model/policy executor. Deployment code must call runVerifiedPackage at the actual activation/execution path and must load the returned verified bytes rather than reopening a mutable source path. Hardware-in-loop commissioning, production network/service supervision, native OPC UA/MQTT/Modbus drivers, and rollout/rollback evidence remain separate deployment acceptance items.
+
+Persist runtime state on a durable local filesystem with a single owner process. Provision adequate disk, monitoring, encryption and backups; file permissions alone are not a complete host-security boundary.
