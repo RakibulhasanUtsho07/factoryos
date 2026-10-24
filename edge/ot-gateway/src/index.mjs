@@ -359,7 +359,9 @@ export function evaluateGatewayReadiness({
 }) {
   const spoolStatsValid = spoolAvailable === true
     && Number.isSafeInteger(spoolStats?.queued)
-    && spoolStats.queued >= 0;
+    && spoolStats.queued >= 0
+    && Number.isSafeInteger(spoolStats?.blocked)
+    && spoolStats.blocked >= 0;
   const spoolCapacityValid = Number.isSafeInteger(spoolCapacity) && spoolCapacity > 0;
   const spoolCapacityAvailable = spoolStatsValid
     && spoolCapacityValid
@@ -371,6 +373,7 @@ export function evaluateGatewayReadiness({
   else if (driverReady !== true) reason = 'PROTOCOL_DRIVERS_NOT_READY';
   else if (!spoolStatsValid) reason = 'SPOOL_STATUS_UNAVAILABLE';
   else if (!spoolCapacityValid) reason = 'SPOOL_CAPACITY_INVALID';
+  else if (spoolStats.blocked > 0) reason = 'SPOOL_HAS_BLOCKED_ENTRIES';
   else if (!spoolCapacityAvailable) reason = 'SPOOL_CAPACITY_REACHED';
 
   const ready = reason === null;
@@ -437,6 +440,7 @@ export async function startGateway(config) {
             ...spoolStats,
             capacity: spoolCapacity,
             capacityReached: Number.isSafeInteger(spoolStats?.queued) && spoolStats.queued >= spoolCapacity,
+            blockedEntriesPresent: Number.isSafeInteger(spoolStats?.blocked) && spoolStats.blocked > 0,
           } : { status: 'unavailable', errorCode: 'SPOOL_STATUS_UNAVAILABLE' },
           observed_at: new Date().toISOString(),
         };
