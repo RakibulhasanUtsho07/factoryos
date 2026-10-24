@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   lstat,
   mkdir,
@@ -11,9 +11,11 @@ import {
   unlink,
 } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 export const EDGE_SPOOL_MAX_BATCH_BYTES = 64 * 1024;
+const ENCRYPTED_RECORD_MAX_BYTES = EDGE_SPOOL_MAX_BATCH_BYTES * 2;
+const ENCRYPTION_AAD_PREFIX = 'factoryos-edge-spool:v1';
 const DEFAULT_MAX_PENDING_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_PENDING_BATCHES = 10_000;
 const DEFAULT_RETRY_BASE_MS = 1_000;
@@ -260,6 +262,7 @@ export class DurableEdgeSpool {
   private readonly tempDir: string;
   private readonly lockPath: string;
   private readonly statePath: string;
+  private readonly encryptionKey: Buffer;
   private lastSuccessfulSyncAt: string | null = null;
   private readonly maxPendingBytes: number;
   private readonly maxPendingBatches: number;
@@ -271,8 +274,13 @@ export class DurableEdgeSpool {
 
   constructor(
     readonly rootDir: string,
+    encryptionKey: Uint8Array,
     limits: EdgeSpoolLimits = {},
   ) {
+    if (!(encryptionKey instanceof Uint8Array) || encryptionKey.byteLength !== 32) {
+      throw new Error('encryptionKey must be a 32-byte AES-256 key supplied by the host secret manager');
+    }
+    this.encryptionKey = Buffer.from(encryptionKey);
     this.pendingDir = join(rootDir, 'pending');
     this.tempDir = join(rootDir, '.tmp');
     this.lockPath = join(rootDir, '.edge-agent.lock');
@@ -377,7 +385,7 @@ export class DurableEdgeSpool {
         throw new EdgeSpoolError('INVALID_BATCH', 'Could not serialize the queued batch');
       }
       if (usage.pendingBatches + 1 > this.maxPendingBatches ||
-          usage.pendingBytes + Buffer.byteLength(serialized, 'utf8') > this.maxPendingBytes) {
+          usage.pendingBytes + Buffer.byteLength(this.encryptPersisted(destination, serialized), 'utf8') > this.maxPendingBytes) {
         throw new EdgeSpoolError('CAPACITY_EXCEEDED', 'Local edge spool is full; no queued data was discarded');
       }
 
@@ -478,7 +486,7 @@ export class DurableEdgeSpool {
       if (!details.isFile() || details.isSymbolicLink()) {
         throw new EdgeSpoolError('SPOOL_CORRUPT', 'Agent state must be a regular file');
       }
-      raw = await readFile(this.statePath, 'utf8');
+      raw = this.decryptPersisted(this.statePath, await readFile(this.statePath, 'utf8'));
     } catch (error) {
       if (errorCode(error) !== 'ENOENT') throw error;
       this.lastSuccessfulSyncAt = null;
@@ -531,7 +539,7 @@ export class DurableEdgeSpool {
       throw error;
     }
     try {
-      const parsed = JSON.parse(raw) as Partial<StoredEdgeBatch>;
+      const parsed = JSON.parse(this.decryptPersisted(filePath, raw)) as Partial<StoredEdgeBatch>;
       if (
         parsed.schema_version !== 1 ||
         typeof parsed.content_hash !== 'string' ||
@@ -564,12 +572,73 @@ export class DurableEdgeSpool {
     return join(this.pendingDir, `${sha256(batchKey)}.json`);
   }
 
+  private encryptionAssociatedData(destination: string): Buffer {
+    const recordPath = relative(this.rootDir, destination).split('\\\\').join('/');
+    if (!recordPath || recordPath === '..' || recordPath.startsWith('../')) {
+      throw new EdgeSpoolError('SPOOL_CORRUPT', 'Encrypted spool record path is outside the spool root');
+    }
+    return Buffer.from(`${ENCRYPTION_AAD_PREFIX}:${recordPath}`, 'utf8');
+  }
+
+  private encryptPersisted(destination: string, plaintext: string): string {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.encryptionKey, iv);
+    cipher.setAAD(this.encryptionAssociatedData(destination));
+    const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    return JSON.stringify({
+      schema_version: 1,
+      algorithm: 'AES-256-GCM',
+      iv: iv.toString('base64'),
+      auth_tag: cipher.getAuthTag().toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+    });
+  }
+
+  private decryptPersisted(destination: string, raw: string): string {
+    try {
+      if (Buffer.byteLength(raw, 'utf8') > ENCRYPTED_RECORD_MAX_BYTES) {
+        throw new Error('Encrypted record is oversized');
+      }
+      const envelope = JSON.parse(raw) as Record<string, unknown>;
+      const expectedKeys = ['schema_version', 'algorithm', 'iv', 'auth_tag', 'ciphertext'];
+      if (!isPlainRecord(envelope) ||
+          Object.keys(envelope).length !== expectedKeys.length ||
+          Object.keys(envelope).some((key) => !expectedKeys.includes(key)) ||
+          envelope.schema_version !== 1 || envelope.algorithm !== 'AES-256-GCM' ||
+          typeof envelope.iv !== 'string' || typeof envelope.auth_tag !== 'string' ||
+          typeof envelope.ciphertext !== 'string') {
+        throw new Error('Invalid encrypted record envelope');
+      }
+      const decodeBase64 = (value: string): Buffer => {
+        if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+          throw new Error('Invalid base64 envelope field');
+        }
+        const decoded = Buffer.from(value, 'base64');
+        if (decoded.toString('base64') !== value) throw new Error('Non-canonical base64 envelope field');
+        return decoded;
+      };
+      const iv = decodeBase64(envelope.iv);
+      const authTag = decodeBase64(envelope.auth_tag);
+      const ciphertext = decodeBase64(envelope.ciphertext);
+      if (iv.byteLength !== 12 || authTag.byteLength !== 16 || ciphertext.byteLength < 1) {
+        throw new Error('Encrypted record has invalid cryptographic field lengths');
+      }
+      const decipher = createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+      decipher.setAAD(this.encryptionAssociatedData(destination));
+      decipher.setAuthTag(authTag);
+      return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+    } catch {
+      throw new EdgeSpoolError('SPOOL_CORRUPT', 'A persisted spool record failed encryption or authentication validation; it was not deleted');
+    }
+  }
+
   private async writeAtomic(destination: string, contents: string): Promise<void> {
+    const encryptedContents = this.encryptPersisted(destination, contents);
     const temporaryPath = join(this.tempDir, `${randomUUID()}.tmp`);
     let handle: FileHandle | undefined;
     try {
       handle = await open(temporaryPath, 'wx', 0o600);
-      await handle.writeFile(contents, 'utf8');
+      await handle.writeFile(encryptedContents, 'utf8');
       await handle.sync();
       await handle.close();
       handle = undefined;
