@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,7 @@ import {
   PRECONDITION_KEYS,
   SIMULATOR_CASE_IDS,
   validateCommissioningEvidence,
+  verifyCommissioningArtifactReferences,
 } from '../scripts/validate-commissioning-evidence.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -18,6 +20,22 @@ const validatorPath = join(root, 'scripts', 'validate-commissioning-evidence.mjs
 
 async function loadTemplate() {
   return JSON.parse(await readFile(templatePath, 'utf8'));
+}
+
+async function writeEvidenceArtifacts(record, root) {
+  const targets = [
+    ...(record.simulator_tests ?? []).map((item) => ({ item, refKey: 'artifact_ref', hashKey: 'artifact_sha256' })),
+    ...(record.hil_tests ?? []).map((item) => ({ item, refKey: 'artifact_ref', hashKey: 'artifact_sha256' })),
+    ...Object.values(record.signoffs ?? {}).map((item) => ({ item, refKey: 'signature_artifact_ref', hashKey: 'signature_artifact_sha256' })),
+  ];
+  for (const { item, refKey, hashKey } of targets) {
+    if (!item?.[refKey]) continue;
+    const target = join(root, item[refKey]);
+    await mkdir(dirname(target), { recursive: true });
+    const bytes = Buffer.from(`test evidence bytes for ${item[refKey]}\\n`);
+    await writeFile(target, bytes);
+    item[hashKey] = createHash('sha256').update(bytes).digest('hex');
+  }
 }
 
 function validPassingEvidence(template) {
@@ -41,10 +59,12 @@ function validPassingEvidence(template) {
   };
   record.preconditions = Object.fromEntries(PRECONDITION_KEYS.map((key) => [key, true]));
   record.simulator_tests = SIMULATOR_CASE_IDS.map((case_id) => ({
-    case_id, title: case_id, result: 'PASS', artifact_ref: `evidence/simulator/${case_id}.json`, notes: ''
+    case_id, title: case_id, result: 'PASS', artifact_ref: `evidence/simulator/${case_id}.json`,
+    artifact_sha256: 'd'.repeat(64), notes: ''
   }));
   record.hil_tests = HIL_CASE_IDS.map((case_id) => ({
-    case_id, title: case_id, result: 'PASS', artifact_ref: `evidence/hil/${case_id}.json`, notes: ''
+    case_id, title: case_id, result: 'PASS', artifact_ref: `evidence/hil/${case_id}.json`,
+    artifact_sha256: 'd'.repeat(64), notes: ''
   }));
   record.reconciliation = {
     events_generated: 25,
@@ -60,16 +80,19 @@ function validPassingEvidence(template) {
     ot_operator: {
       name: 'Authorized OT Operator',
       signature_artifact_ref: 'evidence/signatures/operator-signed-record.pdf',
+      signature_artifact_sha256: 'e'.repeat(64),
       signed_at: '2026-10-24T10:10:00Z'
     },
     release_approver: {
       name: 'Release Approver',
       signature_artifact_ref: 'evidence/signatures/release-approver-signed-record.pdf',
+      signature_artifact_sha256: 'e'.repeat(64),
       signed_at: '2026-10-24T10:12:00Z'
     },
     security_approver: {
       name: 'Security Approver',
       signature_artifact_ref: 'evidence/signatures/security-approver-signed-record.pdf',
+      signature_artifact_sha256: 'e'.repeat(64),
       signed_at: '2026-10-24T10:14:00Z'
     }
   };
@@ -152,4 +175,61 @@ test('CLI can validate a draft explicitly without reporting it as release accept
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('artifact verifier requires every referenced file to exist and match its SHA-256', async (t) => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const directory = await mkdtemp(join(tmpdir(), 'factoryos-evidence-root-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeEvidenceArtifacts(evidence, directory);
+  assert.deepEqual(await verifyCommissioningArtifactReferences(evidence, directory), []);
+
+  evidence.simulator_tests[0].artifact_sha256 = '0'.repeat(64);
+  const mismatch = await verifyCommissioningArtifactReferences(evidence, directory);
+  assert.ok(mismatch.some((error) => error.includes('SHA-256 does not match')));
+
+  evidence.simulator_tests[0].artifact_sha256 = 'd'.repeat(64);
+  await rm(join(directory, evidence.hil_tests[0].artifact_ref));
+  const missing = await verifyCommissioningArtifactReferences(evidence, directory);
+  assert.ok(missing.some((error) => error.includes('artifact is missing')));
+});
+
+test('artifact verifier rejects traversal and symbolic links', async (t) => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const directory = await mkdtemp(join(tmpdir(), 'factoryos-evidence-root-'));
+  const outside = await mkdtemp(join(tmpdir(), 'factoryos-evidence-outside-'));
+  t.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+  await writeEvidenceArtifacts(evidence, directory);
+  evidence.simulator_tests[0].artifact_ref = '../outside.json';
+  evidence.simulator_tests[0].artifact_sha256 = 'd'.repeat(64);
+  let errors = await verifyCommissioningArtifactReferences(evidence, directory);
+  assert.ok(errors.some((error) => error.includes('unsafe artifact_ref')));
+
+  const escapeFile = join(outside, 'escape.json');
+  await writeFile(escapeFile, 'outside evidence');
+  const link = join(directory, 'evidence', 'simulator', 'linked.json');
+  await (await import('node:fs/promises')).symlink(escapeFile, link);
+  evidence.simulator_tests[0].artifact_ref = 'evidence/simulator/linked.json';
+  errors = await verifyCommissioningArtifactReferences(evidence, directory);
+  assert.ok(errors.some((error) => error.includes('symlink')));
+});
+
+test('PASS CLI requires an artifact root and verifies evidence bytes before acceptance', async (t) => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const directory = await mkdtemp(join(tmpdir(), 'factoryos-evidence-cli-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeEvidenceArtifacts(evidence, directory);
+  const file = join(directory, 'record.json');
+  await writeFile(file, JSON.stringify(evidence), 'utf8');
+
+  const withoutRoot = spawnSync(process.execPath, [validatorPath, file], { encoding: 'utf8' });
+  assert.equal(withoutRoot.status, 1);
+  assert.match(withoutRoot.stderr, /requires --artifact-root/);
+
+  const verified = spawnSync(process.execPath, [validatorPath, '--artifact-root', directory, file], { encoding: 'utf8' });
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.match(verified.stdout, /artifact existence and SHA-256 integrity checks/i);
 });
