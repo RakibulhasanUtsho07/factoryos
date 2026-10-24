@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { lstat, readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const PRECONDITION_KEYS = Object.freeze([
@@ -123,6 +124,11 @@ function validateCaseList(value, path, expectedIds, errors) {
     } else if (item.result !== 'NOT_RUN' && !validEvidenceReference(item.artifact_ref)) {
       errors.push(`${rowPath}.artifact_ref is required for a completed test`);
     }
+    if (typeof item.artifact_sha256 !== 'string') {
+      errors.push(`${rowPath}.artifact_sha256 must be a string`);
+    } else if (item.result !== 'NOT_RUN' && !/^[a-f0-9]{64}$/i.test(item.artifact_sha256)) {
+      errors.push(`${rowPath}.artifact_sha256 must be a 64-hex SHA-256 for a completed test`);
+    }
     if (item.notes !== undefined && typeof item.notes !== 'string') {
       errors.push(`${rowPath}.notes must be a string when provided`);
     }
@@ -202,10 +208,15 @@ export function validateCommissioningEvidence(evidence) {
         errors.push(`signoffs.${role} must be an object`);
         continue;
       }
-      for (const field of ['name', 'signature_artifact_ref', 'signed_at']) {
+      for (const field of ['name', 'signature_artifact_ref', 'signature_artifact_sha256', 'signed_at']) {
         if (typeof signoff[field] !== 'string') {
           errors.push(`signoffs.${role}.${field} must be a string`);
         }
+      }
+      if (typeof signoff.signature_artifact_sha256 === 'string'
+          && signoff.signature_artifact_sha256 !== ''
+          && !/^[a-f0-9]{64}$/i.test(signoff.signature_artifact_sha256)) {
+        errors.push(`signoffs.${role}.signature_artifact_sha256 must be a 64-hex SHA-256`);
       }
     }
   }
@@ -272,6 +283,9 @@ export function validateCommissioningEvidence(evidence) {
         } else if (!validEvidenceReference(row.artifact_ref)) {
           errors.push(`PASS requires an artifact_ref for ${path} case ${id}`);
         }
+        if (row && !/^[a-f0-9]{64}$/i.test(row.artifact_sha256 ?? '')) {
+          errors.push(`PASS requires a SHA-256 artifact_sha256 for ${path} case ${id}`);
+        }
       }
     }
 
@@ -303,6 +317,9 @@ export function validateCommissioningEvidence(evidence) {
         if (!validEvidenceReference(signoff.signature_artifact_ref)) {
           errors.push(`PASS requires signoffs.${role}.signature_artifact_ref`);
         }
+        if (!/^[a-f0-9]{64}$/i.test(signoff.signature_artifact_sha256 ?? '')) {
+          errors.push(`PASS requires signoffs.${role}.signature_artifact_sha256`);
+        }
         if (!validTimestamp(signoff.signed_at)) {
           errors.push(`PASS requires signoffs.${role}.signed_at with an explicit timezone`);
         }
@@ -317,14 +334,117 @@ export function validateCommissioningEvidence(evidence) {
   return [...new Set(errors)];
 }
 
+
+function isSafeRelativeArtifactReference(reference) {
+  if (typeof reference !== 'string' || isPlaceholder(reference)
+      || isAbsolute(reference) || /^[a-z]:/i.test(reference) || reference.includes('\\')) return false;
+  const segments = reference.split('/');
+  return segments.length > 0 && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/** Verify local artifact bytes; this does not authenticate a signer or prove a test occurred. */
+export async function verifyCommissioningArtifactReferences(evidence, artifactRoot) {
+  const errors = [];
+  let root;
+  try {
+    root = await realpath(resolve(artifactRoot));
+    if (!(await lstat(root)).isDirectory()) return ['artifact root must be a directory'];
+  } catch {
+    return ['artifact root is missing or unreadable'];
+  }
+
+  const entries = [];
+  for (const path of ['simulator_tests', 'hil_tests']) {
+    if (!Array.isArray(evidence?.[path])) continue;
+    for (const item of evidence[path]) {
+      if (!isObject(item) || item.result === 'NOT_RUN') continue;
+      entries.push({ label: `${path} case ${String(item.case_id)}`, reference: item.artifact_ref, sha256: item.artifact_sha256 });
+    }
+  }
+  for (const [role] of SIGNOFFS) {
+    const signoff = evidence?.signoffs?.[role];
+    if (isObject(signoff)) entries.push({
+      label: `signoffs.${role}`,
+      reference: signoff.signature_artifact_ref,
+      sha256: signoff.signature_artifact_sha256,
+    });
+  }
+
+  for (const entry of entries) {
+    if (!isSafeRelativeArtifactReference(entry.reference)) {
+      errors.push(`${entry.label} has an unsafe artifact_ref; use a relative path inside --artifact-root`);
+      continue;
+    }
+    if (!/^[a-f0-9]{64}$/i.test(entry.sha256 ?? '')) {
+      errors.push(`${entry.label} requires a 64-hex SHA-256 digest`);
+      continue;
+    }
+    const candidate = resolve(root, ...entry.reference.split('/'));
+    const fromRoot = relative(root, candidate);
+    if (!fromRoot || fromRoot === '..' || fromRoot.startsWith('..' + sep) || isAbsolute(fromRoot)) {
+      errors.push(`${entry.label} artifact path escapes --artifact-root`);
+      continue;
+    }
+    try {
+      let current = root;
+      const segments = entry.reference.split('/');
+      let targetStat;
+      for (let index = 0; index < segments.length; index += 1) {
+        current = join(current, segments[index]);
+        const stat = await lstat(current);
+        if (stat.isSymbolicLink()) throw new Error('symlink');
+        if (index < segments.length - 1 && !stat.isDirectory()) throw new Error('not-directory');
+        targetStat = stat;
+      }
+      if (!targetStat?.isFile()) {
+        errors.push(`${entry.label} artifact is not a regular file`);
+        continue;
+      }
+      const resolvedTarget = await realpath(candidate);
+      const realFromRoot = relative(root, resolvedTarget);
+      if (!realFromRoot || realFromRoot === '..' || realFromRoot.startsWith('..' + sep) || isAbsolute(realFromRoot)) {
+        errors.push(`${entry.label} artifact path escapes --artifact-root`);
+        continue;
+      }
+      const actual = createHash('sha256').update(await readFile(resolvedTarget)).digest('hex');
+      if (actual.toLowerCase() !== entry.sha256.toLowerCase()) {
+        errors.push(`${entry.label} artifact SHA-256 does not match recorded digest`);
+      }
+    } catch {
+      errors.push(`${entry.label} artifact is missing, unreadable or traverses a symlink`);
+    }
+  }
+  return [...new Set(errors)];
+}
+
 async function main() {
   const args = process.argv.slice(2);
-  const allowIncompleteIndex = args.indexOf('--allow-incomplete');
-  const allowIncomplete = allowIncompleteIndex !== -1;
-  if (allowIncomplete) args.splice(allowIncompleteIndex, 1);
-  const file = args[0];
-  if (!file || args.length !== 1) {
-    process.stderr.write('Usage: node scripts/validate-commissioning-evidence.mjs [--allow-incomplete] <record.json>\n');
+  let allowIncomplete = false;
+  let artifactRoot = null;
+  const positional = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--allow-incomplete') {
+      allowIncomplete = true;
+    } else if (arg === '--artifact-root') {
+      if (index + 1 >= args.length || args[index + 1].startsWith('--')) {
+        process.stderr.write('Option --artifact-root requires a directory path\\n');
+        process.exitCode = 2;
+        return;
+      }
+      artifactRoot = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith('--')) {
+      process.stderr.write(`Unknown option: ${arg}\\n`);
+      process.exitCode = 2;
+      return;
+    } else {
+      positional.push(arg);
+    }
+  }
+  const file = positional[0];
+  if (!file || positional.length !== 1) {
+    process.stderr.write('Usage: node scripts/validate-commissioning-evidence.mjs [--allow-incomplete] [--artifact-root <directory>] <record.json>\\n');
     process.exitCode = 2;
     return;
   }
@@ -343,6 +463,12 @@ async function main() {
   if (!allowIncomplete && evidence?.decision !== 'PASS') {
     errors.push('release acceptance requires decision PASS (use --allow-incomplete only for draft review)');
   }
+  if (!allowIncomplete && evidence?.decision === 'PASS' && !artifactRoot) {
+    errors.push('release acceptance requires --artifact-root <directory> to verify referenced artifact bytes');
+  }
+  if (!allowIncomplete && evidence?.decision === 'PASS' && artifactRoot) {
+    errors.push(...await verifyCommissioningArtifactReferences(evidence, artifactRoot));
+  }
   if (errors.length > 0) {
     process.stderr.write('Commissioning evidence rejected:\n' + [...new Set(errors)].map((error) => `- ${error}`).join('\n') + '\n');
     process.exitCode = 1;
@@ -350,7 +476,7 @@ async function main() {
   }
 
   if (evidence.decision === 'PASS') {
-    process.stdout.write('Commissioning evidence passed structural and acceptance checks. Referenced evidence and real-world commissioning still require independent verification.\n');
+    process.stdout.write('Commissioning evidence passed structural, artifact existence and SHA-256 integrity checks. Referenced evidence and real-world commissioning still require independent verification.\n');
   } else {
     process.stdout.write(`Draft commissioning evidence structure is valid; decision is ${evidence.decision}. This is not release acceptance.\n`);
   }
