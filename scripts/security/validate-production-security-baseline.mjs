@@ -48,8 +48,8 @@ function isGitHubActionsRunUrl(value) {
 
 function safeEvidenceReference(value) {
   return hasText(value) && value.length <= 500 &&
-    !/(?:password|secret|credential|access[-_]?key|token)\\s*[:=]/i.test(value) &&
-    !/https?:\\/\\/[^/\\s:@]+:[^@/\\s]+@/i.test(value);
+    !/(?:password|secret|credential|access[-_]?key|token)\s*[:=]/i.test(value) &&
+    !/https?:\/\/[^/\s:@]+:[^@/\s]+@/i.test(value);
 }
 
 export function parseDocument(source) {
