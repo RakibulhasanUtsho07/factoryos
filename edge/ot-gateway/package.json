@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/index.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "for file in src/*.mjs test/*.mjs; do node --check \"$file\" || exit 1; done"
+    "check": "for file in src/*.mjs scripts/*.mjs test/*.mjs; do node --check \"$file\" || exit 1; done",
+    "commissioning:validate": "node scripts/validate-commissioning-evidence.mjs"
   },
   "dependencies": {
     "modbus-serial": "8.0.25",

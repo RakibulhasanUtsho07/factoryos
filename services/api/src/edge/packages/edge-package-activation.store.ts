@@ -29,7 +29,8 @@ export type EdgePackageActivationErrorCode =
   | 'ROLLBACK_TARGET_MISMATCH'
   | 'RELEASE_VERSION_CONFLICT'
   | 'RELEASE_STORE_CORRUPT'
-  | 'INVALID_PACKAGE_ID';
+  | 'INVALID_PACKAGE_ID'
+  | 'ACTIVE_RELEASE_VERSION_MISMATCH';
 
 export class EdgePackageActivationError extends Error {
   constructor(
@@ -60,6 +61,11 @@ export interface EdgePackageActivationResult {
   state: EdgePackageActivationState;
   manifestSha256: string;
   artifactBytes: number;
+}
+
+export interface VerifiedEdgePackageRelease extends VerifiedEdgePackage {
+  /** Copies of the exact artifact bytes re-verified immediately before execution. */
+  artifacts: Readonly<Record<string, Uint8Array>>;
 }
 
 /**
@@ -214,6 +220,41 @@ export class EdgePackageActivationStore {
     return this.withPackageLock(packageId, () => this.readState(packageId));
   }
 
+  /**
+   * Re-reads and verifies the active release immediately before execution.
+   * This re-checks the persisted manifest, signature, signer status and artifact bytes
+   * using the caller's current trust policy; activation-time verification alone is not enough.
+   */
+  async verifyActiveRelease(
+    packageId: string,
+    expectedVersion: string,
+    policy: EdgePackageVerificationPolicy,
+  ): Promise<VerifiedEdgePackageRelease> {
+    this.assertPackageId(packageId);
+    if (typeof expectedVersion !== 'string' || !SEMVER_PATTERN.test(expectedVersion)) {
+      throw new EdgePackageActivationError(
+        'ACTIVE_RELEASE_VERSION_MISMATCH',
+        'A valid expected package version is required for execution',
+      );
+    }
+    return this.withPackageLock(packageId, async () => {
+      const current = await this.readState(packageId);
+      if (current === null) {
+        throw new EdgePackageActivationError(
+          'NO_ACTIVE_RELEASE',
+          'There is no active package release to execute',
+        );
+      }
+      if (current.active.version !== expectedVersion) {
+        throw new EdgePackageActivationError(
+          'ACTIVE_RELEASE_VERSION_MISMATCH',
+          'The active package version does not match the requested execution version',
+        );
+      }
+      return this.loadVerifiedRelease(packageId, current.active, policy);
+    });
+  }
+
   private async persistVerifiedRelease(
     input: SignedEdgePackageInput,
     verified: VerifiedEdgePackage,
@@ -297,7 +338,7 @@ export class EdgePackageActivationStore {
     packageId: string,
     ref: EdgePackageReleaseRef,
     policy: EdgePackageVerificationPolicy,
-  ): Promise<VerifiedEdgePackage> {
+  ): Promise<VerifiedEdgePackageRelease> {
     const input = await this.readReleaseFiles(packageId, ref.manifestSha256);
     const verified = verifyEdgePackage(input, policy);
     if (
@@ -336,7 +377,10 @@ export class EdgePackageActivationStore {
         'Persisted release metadata failed integrity validation',
       );
     }
-    return verified;
+    const artifacts = Object.freeze(Object.fromEntries(
+      Object.entries(input.artifacts).map(([path, bytes]) => [path, Uint8Array.from(bytes)]),
+    ));
+    return { ...verified, artifacts };
   }
 
   private async readReleaseFiles(

@@ -32,7 +32,7 @@ Mount the files read-only under /run/secrets. The gateway checks certificate/pri
 The gateway expects a trusted HTTPS origin in api.baseUrl and exposes:
 
 - GET /healthz: process/liveness summary (HTTP 200 while the process can serve health)
-- GET /readyz: HTTP 200 only when configured drivers are ready, otherwise 503
+- GET /readyz: HTTP 200 only when configured drivers are ready, spool state is readable, no entry is blocked for operator review, and the durable queue has free capacity; otherwise 503. `/healthz` remains a process-liveness check and still returns HTTP 200 while the process can serve health, even if readiness is false.
 - POST /api/v1/modbus/read: bearer-authenticated, scope-bound, read-only gateway API; optional mTLS client verification is enabled when security.clientCaFile is configured
 
 The existing FactoryOS API client must point FACTORYOS_OT_PROTOCOL_GATEWAY_URL at the fixed HTTPS /api/v1/modbus/read endpoint and set FACTORYOS_OT_PROTOCOL_GATEWAY_TOKEN to the corresponding service credential. In production, use the mTLS ingress/service-mesh policy used by the API deployment and restrict network policy ingress to the API workload. Do not expose this service directly to the public internet.
@@ -43,7 +43,7 @@ The process polls its encrypted spool and sends batches of at most 20 events to 
 
 The encrypted spool uses AES-256-GCM, fresh IVs, file mode 0600, directory mode 0700, file and directory fsync, atomic replacement, fingerprint validation and bounded storage. Wrong keys, truncated snapshots and tampered contents fail closed; the process does not reset the queue. Entries are not silently evicted at capacity. After 12 consecutive failed replays an entry is blocked, remains durable, and requires operator review plus the exact fingerprint to requeue.
 
-Mounted HTTPS, MQTT and OPC UA certificate/key/trust files are fingerprinted every 30 seconds. A valid certificate/key change updates the HTTPS secure context and recreates protocol sessions with the replacement credentials. FactoryOS API and gateway bearer tokens are read on use so token replacement takes effect without writing secrets to config. If certificate pairing or trust validation fails, the driver remains unavailable and readiness stays false rather than silently switching to anonymous or plaintext transport.
+At startup, the gateway fingerprints the complete mounted secret-file inventory before opening protocol sessions and checks it again after session initialization; any missing file or credential change during startup aborts and cleans up the partial startup. Mounted HTTPS, MQTT and OPC UA certificate/key/trust files are fingerprinted every 30 seconds. A valid certificate/key change updates the HTTPS secure context and recreates protocol sessions with the replacement credentials. FactoryOS API and gateway bearer tokens are read on use so token replacement takes effect without writing secrets to config. If certificate pairing, trust validation, or a rotated secret file fails, the gateway stops its protocol drivers and keeps readiness false until the currently mounted secret set can be validated and the drivers can restart; it never silently switches to anonymous or plaintext transport.
 
 ## Local test and simulator
 
@@ -68,6 +68,10 @@ The policy must be installed first by a cluster administrator on a Kyverno versi
 
 This is an image supply-chain gate for the OT gateway binary and a deployment prerequisite aligned with staged release control (SRS FR-SAAS2-05). It does not by itself close AI model/tool-specific FR-MSO-03/FR-MSO-05, establish that every application resolves effective releases, or prove a rollout actually happened in a customer cluster. The existing physical SaaS provisioner owns runtime deploy/health-check/HALT-or-ROLLBACK receipts. Actual cluster enforcement and hardware-in-the-loop (HIL) commissioning remain environment/site acceptance gates; this repository does not claim those external gates have passed.
 
+## Secret-file path containment
+
+In production, credentials must be mounted under `/run/secrets/` or `/etc/factoryos/secrets/`. The gateway resolves the final path before reading and rejects symlinks whose targets escape the approved root. Kubernetes-style projected Secret symlinks remain supported only when their resolved targets stay within that root. Keep private keys and tokens in a secret manager; never include them in commissioning evidence or configuration snapshots.
+
 ## Secure deployment sequence
 
 1. Provision a dedicated OT subnet/VLAN and firewall rules first. Permit only the reviewed broker, OPC UA server, Modbus meter, DNS and FactoryOS API target. Keep all PLC write-capable ports outside this gateway's contract.
@@ -80,3 +84,17 @@ This is an image supply-chain gate for the OT gateway binary and a deployment pr
 ## Explicit acceptance boundary
 
 No live PLC, production broker, customer key store or site hardware was available during repository implementation. This repository therefore does not claim completed HIL commissioning evidence. The simulator tests are automated; the commissioned site test record must be completed and signed by the authorized OT operator after using the actual site hardware.
+
+## Machine-checkable commissioning evidence
+
+Copy `deploy/commissioning-evidence.template.json` to a separate, access-controlled evidence location and fill it with the actual deployment identity, test artifacts, event reconciliation values and authorized sign-offs. Keep the blank template unchanged in source control; never put secrets or private key material in the record.
+
+Run the release-acceptance gate from `edge/ot-gateway`, pointing at a separate, controlled evidence directory:
+
+```sh
+npm run commissioning:validate -- --artifact-root /path/to/evidence-root /path/to/commissioning-evidence.json
+```
+
+The default command exits non-zero unless the decision is `PASS`, the record includes all required simulator and hardware-in-the-loop cases, immutable image/config/API identity, approved preconditions, reconciled event counts, zero unresolved sequence gaps/backlog/alarms, and three matching sign-off records. Every completed case and each sign-off must include a 64-hex SHA-256 digest. The validator resolves each relative `artifact_ref` inside `--artifact-root`, rejects traversal and symlinks, requires a regular file, and verifies its bytes against the recorded digest. The identity field `gateway_config_ref` must also point to the actual deployed gateway configuration file within that artifact root; its bytes must hash to `gateway_config_sha256`. Store a sanitized configuration snapshot only—never include private keys, passwords, tokens or other secrets. A PASS record must also point to the OT Gateway release receipt, bind its recorded source commit and immutable `image@sha256:...` digest, and match the repository's trusted `main` signing-workflow identity plus the receipt's signature/provenance claims. For release acceptance, the CLI also runs `cosign verify` against that exact image digest and `gh attestation verify oci://<image@digest> --bundle-from-oci` to verify SLSA v1 provenance from the OCI registry. It checks the verified certificate's source-repository commit, trusted workflow identity, and attested subject digest. Install `cosign` and GitHub `gh`, authenticate to GHCR (`docker login ghcr.io`) and configure GitHub CLI access. A missing verifier, failed command, empty verification result, wrong signer, source commit or digest mismatch rejects PASS; `--allow-incomplete` is draft-only and is rejected for PASS records. A draft can be structurally reviewed with `npm run commissioning:validate -- --allow-incomplete /path/to/record.json`; draft validation explicitly does **not** mean release acceptance.
+
+Artifact hashes establish byte integrity against the submitted record, not truth of a claimed test. The PASS CLI verifies the exact image signature and SLSA attestation with external tools, but it does not cryptographically authenticate the human signature artifacts or prove that a physical PLC, broker, network or operator test actually occurred. Authorized human review and site HIL evidence remain mandatory.

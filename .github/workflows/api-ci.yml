@@ -73,8 +73,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Test durable Edge agent spool and replay contract
-        run: node --test services/edge-agent/test/durable-observation-spool.test.mjs
+      - name: Test durable Edge agent spool and package-control sync contracts
+        run: node --test services/edge-agent/test/durable-observation-spool.test.mjs services/edge-agent/test/package-control-sync.test.mjs
       - name: Prepare AI Tool Registry RLS integration database
         env:
           PGPASSWORD: factoryos
