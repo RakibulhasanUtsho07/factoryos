@@ -194,6 +194,16 @@ node scripts/security/validate-production-security-baseline.mjs --release-gate /
 
 The validator checks that the declared candidate SHA matches the supplied immutable SHA, dependency-audit evidence refers to that same SHA, required identity/database/secrets/network controls have explicit outcomes, negative tests and independent-review evidence are complete, credential-overlap windows are valid, and operator/approver are different people. Missing, ambiguous, stale or contradictory evidence fails closed. A successful validator run means the supplied evidence is internally complete; it does not independently authenticate the report or replace release authority's review of the evidence.
 
+Each of the seven tenant-boundary negative-test records must now contain a structured evidence object with:
+- `result: PASS`;
+- the full candidate `candidate_sha`, exactly equal to the release-gate argument;
+- `workflow_url` identifying a GitHub Actions run in this repository;
+- an opaque `evidence_reference` without embedded credentials;
+- a named `tested_environment`; and
+- a valid, non-future UTC `executed_at_utc`.
+
+A bare `PASS` string is not an acceptable evidence record. This validation checks the claims' shape and SHA binding only; an operator and independent reviewer must still open the linked run/artifact, verify that the named test ran and passed in the stated environment, and confirm sanitized evidence is retained. Never create a reference or timestamp just to satisfy the validator, and never add tokens, customer data, or raw production rows to the attestation.
+
 
 The release remains blocked until all applicable items are supported by evidence:
 
