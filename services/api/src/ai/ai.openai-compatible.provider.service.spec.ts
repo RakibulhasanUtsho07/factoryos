@@ -214,4 +214,56 @@ describe('AI OpenAI-compatible provider adapter', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('stops reading provider responses once the byte limit is exceeded', async () => {
+    let cancelled = false;
+    const oversizedChunk = new TextEncoder().encode('x'.repeat(1_048_577));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(oversizedChunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(body, { status: 200 }));
+
+    await expect(service.chatCompletion({
+      tenantId, factoryId, actorUserId, requestRef, prompt: 'Hello',
+    })).rejects.toThrow('AI model provider response exceeded the allowed size');
+
+    expect(cancelled).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(usage.recordUsageEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send a provider request if the pre-call usage ledger write fails', async () => {
+    usage.recordUsageEvent.mockRejectedValueOnce(new Error('usage database unavailable'));
+
+    await expect(service.chatCompletion({
+      tenantId, factoryId, actorUserId, requestRef, prompt: 'Hello',
+    })).rejects.toThrow('usage database unavailable');
+
+    expect(usage.recordUsageEvent).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('maps provider transport/timeout failures to a safe error without leaking transport details', async () => {
+    fetchMock.mockImplementationOnce(async (_input, init) => {
+      await new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('secret socket diagnostic')), {
+          once: true,
+        });
+      });
+      throw new Error('unreachable');
+    });
+    process.env.AI_MODEL_PROVIDER_TIMEOUT_MS = '1';
+
+    await expect(service.chatCompletion({
+      tenantId, factoryId, actorUserId, requestRef, prompt: 'Hello',
+    })).rejects.toThrow('AI model provider request failed or timed out');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
 });
