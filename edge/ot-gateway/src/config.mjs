@@ -1,7 +1,7 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { createHash, createPrivateKey, createPublicKey, timingSafeEqual, X509Certificate } from 'node:crypto';
 import { isIP } from 'node:net';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STREAM = /^[A-Za-z][A-Za-z0-9_.:-]{0,159}$/;
@@ -203,11 +203,53 @@ export function validateCertificatePair(certificateBytes, privateKeyBytes, label
   return true;
 }
 
+function isWithinDirectory(root, candidate) {
+  const fromRoot = relative(root, candidate);
+  return fromRoot !== '' && fromRoot !== '..'
+    && !fromRoot.startsWith('..' + sep) && !isAbsolute(fromRoot);
+}
+
+/**
+ * Resolve a secret path while ensuring a symlink (including a projected-secret
+ * symlink) cannot escape the approved secret root. Projected secret links are
+ * accepted when their final target remains under that root.
+ */
+export async function resolveSecretFilePath(path, allowedRoots = SECRET_ROOTS, production = process.env.NODE_ENV === 'production') {
+  if (typeof path !== 'string' || !path.startsWith('/')) {
+    throw new Error('secret must be an absolute secret-file path');
+  }
+  const candidate = resolve(path);
+  const matchingRoot = allowedRoots.map((root) => resolve(root))
+    .find((root) => isWithinDirectory(root, candidate));
+
+  if (production && !matchingRoot) {
+    throw new Error('secret is not mounted under the approved secret directory');
+  }
+  if (!matchingRoot) return candidate;
+
+  let canonicalRoot;
+  let canonicalTarget;
+  try {
+    [canonicalRoot, canonicalTarget] = await Promise.all([
+      realpath(matchingRoot),
+      realpath(candidate),
+    ]);
+  } catch {
+    throw new Error('secret file path is missing or unreadable');
+  }
+  if (!isWithinDirectory(canonicalRoot, canonicalTarget)) {
+    throw new Error('secret path resolves outside the approved secret directory');
+  }
+  return canonicalTarget;
+}
+
 export async function readSecretFile(path, label = 'secret') {
-  if (typeof path !== 'string' || !path.startsWith('/')) throw new Error(label + ' must be an absolute secret-file path');
-  const resolved = resolve(path);
-  if (process.env.NODE_ENV === 'production' && !SECRET_ROOTS.some((root) => resolved.startsWith(root))) {
-    throw new Error(label + ' is not mounted under the approved secret directory');
+  let resolved;
+  try {
+    resolved = await resolveSecretFilePath(path);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'path resolution failed';
+    throw new Error(label + ': ' + reason);
   }
   const fileStat = await stat(resolved);
   if (!fileStat.isFile() || fileStat.size < 1 || fileStat.size > 1024 * 1024) throw new Error(label + ' file must be a non-empty file no larger than 1 MiB');
