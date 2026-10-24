@@ -125,6 +125,40 @@ test('host runtime adapter forwards only the supervisor-verified package and can
   h.supervisor.stop();
 });
 
+test('host runtime adapter fails closed for forged signatures and tampered artifacts', async () => {
+  const h = harness();
+  await h.supervisor.start();
+  let hostCalls = 0;
+  const adapter = new EdgePackageHostRuntimeAdapter(h.supervisor, {
+    execute() {
+      hostCalls += 1;
+      return 'must-not-run';
+    },
+  });
+
+  const forged = signedInput(makeManifest(), {
+    signature: Buffer.alloc(64).toString('base64'),
+  });
+  assert.throws(
+    () => adapter.execute(forged, { useCaseId, allowedToolIds }),
+    { code: 'INVALID_SIGNATURE' },
+  );
+
+  const tampered = signedInput(makeManifest(), {
+    artifacts: {
+      'models/quality-defect.bin': Buffer.from('tampered-model'),
+      'policy/edge-policy.json': Buffer.from(policyBytes),
+    },
+  });
+  assert.throws(
+    () => adapter.execute(tampered, { useCaseId, allowedToolIds }),
+    { code: 'ARTIFACT_MISMATCH' },
+  );
+
+  assert.equal(hostCalls, 0);
+  h.supervisor.stop();
+});
+
 test('host runtime adapter preserves prompt ambiguous cancellation and tracks a non-cooperative runtime', async () => {
   const h = harness();
   await h.supervisor.start();
