@@ -1,0 +1,36 @@
+name: Edge Agent CI
+
+on:
+  pull_request:
+    paths:
+      - 'services/edge-agent/**'
+      - '.github/workflows/edge-agent-ci.yml'
+  push:
+    branches: [main, dev, rakibul-hasan]
+    paths:
+      - 'services/edge-agent/**'
+      - '.github/workflows/edge-agent-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-agent-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  edge-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Validate Edge agent JavaScript syntax
+        run: |
+          node --check services/edge-agent/durable-observation-spool.mjs
+          node --check services/edge-agent/package-control-sync.mjs
+          node --check services/edge-agent/package-control-supervisor.mjs
+      - name: Run complete Edge agent contract suite
+        run: node --test services/edge-agent/test/*.test.mjs
