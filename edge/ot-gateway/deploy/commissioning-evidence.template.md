@@ -64,6 +64,10 @@ Perform only during the approved maintenance window and under the plant's lockou
 
 ## Reconciliation and sign-off
 
+For a release decision of `PASS`, the operator, release approver, and security approver must be three distinct people. The validator compares Unicode-normalized, case-insensitive names and rejects duplicate identities. Each sign-off timestamp must be at or after `identity.test_ended_at`. Referenced signature files and their SHA-256 digests are integrity-checked, but file hashes alone do not authenticate a person's identity or authority; verify human signatures and role authorization independently before accepting the record.
+
+
+
 | Metric/evidence | Value/reference |
 |---|---|
 | Events generated / durably spooled | |
