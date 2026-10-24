@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'docs/ai-artifact-provenance-and-production-admission.md'
+      - 'docs/ai-provider-live-release-acceptance.md'
       - 'services/api/**'
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
@@ -27,6 +29,8 @@ on:
     branches: [main, dev, rakibul-hasan]
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'docs/ai-artifact-provenance-and-production-admission.md'
+      - 'docs/ai-provider-live-release-acceptance.md'
       - 'services/api/**'
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
@@ -340,11 +344,11 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/ai-artifact-provenance.sql
 
           echo "Reapplying edge package governance migration and validating tenant RLS, immutable lifecycle guards, and permissions"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/196_edge_package_governance.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/edge-package-governance.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/196_edge_package_governance.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/edge-package-governance.sql
           echo "Reapplying edge package governance migration a second time to verify idempotency"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/196_edge_package_governance.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/edge-package-governance.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/196_edge_package_governance.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/edge-package-governance.sql
 
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
