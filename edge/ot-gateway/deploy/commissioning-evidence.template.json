@@ -15,7 +15,10 @@
     "test_started_at": "",
     "test_ended_at": "",
     "maintenance_window_approved": false,
-    "rollback_stop_work_contact": ""
+    "rollback_stop_work_contact": "",
+    "gateway_source_commit": "",
+    "gateway_release_receipt_ref": "",
+    "gateway_release_receipt_sha256": ""
   },
   "preconditions": {
     "network_diagram_attached": false,

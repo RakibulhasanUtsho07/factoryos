@@ -36,6 +36,19 @@ async function writeEvidenceArtifacts(record, root) {
     await writeFile(target, bytes);
     item[hashKey] = createHash('sha256').update(bytes).digest('hex');
   }
+  const receipt = {
+    repository: 'RakibulhasanUtsho07/factoryos',
+    sourceCommit: record.identity.gateway_source_commit,
+    image: 'ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway@' + record.identity.gateway_image_digest,
+    signatureVerified: true,
+    provenanceAttested: true,
+    signingWorkflow: 'https://github.com/RakibulhasanUtsho07/factoryos/.github/workflows/ot-gateway-release.yml@refs/heads/main',
+  };
+  const receiptPath = join(root, record.identity.gateway_release_receipt_ref);
+  await mkdir(dirname(receiptPath), { recursive: true });
+  const receiptBytes = Buffer.from(JSON.stringify(receipt, null, 2));
+  await writeFile(receiptPath, receiptBytes);
+  record.identity.gateway_release_receipt_sha256 = createHash('sha256').update(receiptBytes).digest('hex');
 }
 
 function validPassingEvidence(template) {
@@ -46,6 +59,9 @@ function validPassingEvidence(template) {
     gateway_asset_id: 'OT-GW-002',
     gateway_serial: 'GW-SERIAL-002',
     gateway_image_digest: 'sha256:' + 'a'.repeat(64),
+    gateway_source_commit: 'f'.repeat(40),
+    gateway_release_receipt_ref: 'evidence/release/ot-gateway-release.json',
+    gateway_release_receipt_sha256: 'e'.repeat(64),
     gateway_config_sha256: 'b'.repeat(64),
     api_build_sha: 'c'.repeat(40),
     device_model_firmware: 'Approved meter/controller model and firmware rev 4.2',
@@ -232,4 +248,22 @@ test('PASS CLI requires an artifact root and verifies evidence bytes before acce
   const verified = spawnSync(process.execPath, [validatorPath, '--artifact-root', directory, file], { encoding: 'utf8' });
   assert.equal(verified.status, 0, verified.stderr);
   assert.match(verified.stdout, /artifact existence and SHA-256 integrity checks/i);
+});
+
+test('release receipt must bind the recorded image digest and source commit to the trusted main workflow', async (t) => {
+  const evidence = validPassingEvidence(await loadTemplate());
+  const directory = await mkdtemp(join(tmpdir(), 'factoryos-release-receipt-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeEvidenceArtifacts(evidence, directory);
+  assert.deepEqual(await verifyCommissioningArtifactReferences(evidence, directory), []);
+
+  const receiptPath = join(directory, evidence.identity.gateway_release_receipt_ref);
+  const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+  receipt.image = 'ghcr.io/rakibulhasanutsho07/factoryos/ot-edge-gateway@sha256:' + '0'.repeat(64);
+  const bytes = Buffer.from(JSON.stringify(receipt, null, 2) + '\n');
+  await writeFile(receiptPath, bytes);
+  evidence.identity.gateway_release_receipt_sha256 = createHash('sha256').update(bytes).digest('hex');
+
+  const errors = await verifyCommissioningArtifactReferences(evidence, directory);
+  assert.ok(errors.some((error) => error.includes('release receipt does not bind')));
 });
