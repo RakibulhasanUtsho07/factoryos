@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OtEdgeDurableSpool } from '../src/spool.mjs';
 import { handleMqttDelivery } from '../src/protocol-drivers.mjs';
-import { replayOnce } from '../src/index.mjs';
+import { ProtocolSupervisor, replayOnce } from '../src/index.mjs';
 import { secretFingerprint, validateGatewayConfig } from '../src/config.mjs';
 import { ModbusTcpReadDriver } from '../src/protocol-drivers.mjs';
 import { startModbusTcpSimulator } from './modbus-tcp-simulator.mjs';
@@ -282,4 +282,64 @@ test('Modbus response loss and wrong unit ID fail closed without attempting a wr
     /Only Modbus holding\/input register reads/,
   );
   assert.equal(simulator.metrics.writeAttempts, 0);
+});
+
+test('missing rotated secret files stop protocol drivers and force readiness false', async (t) => {
+  const { dir } = await fixture(t);
+  const cert = join(dir, 'gateway-cert.pem');
+  const key = join(dir, 'gateway-key.pem');
+  await writeFile(cert, 'CERTIFICATE-V1');
+  await writeFile(key, 'PRIVATE-KEY-V1');
+
+  const supervisor = new ProtocolSupervisor({
+    security: { serverCertFile: cert, serverKeyFile: key },
+    mqtt: null,
+    opcua: [],
+    modbus: [],
+  }, {});
+  supervisor.started = true;
+  supervisor.rotationFingerprint = await secretFingerprint([cert, key]);
+  let stopCalls = 0;
+  supervisor.modbus = [{ health: () => ({ ready: true }), stop: async () => { stopCalls += 1; } }];
+
+  await rm(cert);
+  await supervisor.checkRotation({
+    setSecureContext() { assert.fail('must not install a TLS context when a credential file is missing'); },
+  });
+
+  assert.equal(supervisor.health().ready, false);
+  assert.equal(supervisor.health().credentialRotationReady, false);
+  assert.equal(supervisor.health().errorCode, 'SECRET_ROTATION_FILE_UNAVAILABLE');
+  assert.equal(stopCalls, 1);
+  assert.equal(supervisor.modbus.length, 0);
+});
+
+test('mismatched rotated certificate material stops drivers and remains unready', async (t) => {
+  const { dir } = await fixture(t);
+  const cert = join(dir, 'gateway-cert.pem');
+  const key = join(dir, 'gateway-key.pem');
+  await writeFile(cert, 'CERTIFICATE-V1');
+  await writeFile(key, 'PRIVATE-KEY-V1');
+
+  const supervisor = new ProtocolSupervisor({
+    security: { serverCertFile: cert, serverKeyFile: key },
+    mqtt: null,
+    opcua: [],
+    modbus: [],
+  }, {});
+  supervisor.started = true;
+  supervisor.rotationFingerprint = await secretFingerprint([cert, key]);
+  let stopCalls = 0;
+  supervisor.modbus = [{ health: () => ({ ready: true }), stop: async () => { stopCalls += 1; } }];
+
+  await writeFile(cert, 'CERTIFICATE-V2');
+  await supervisor.checkRotation({
+    setSecureContext() { assert.fail('must not install a TLS context with invalid certificate/key material'); },
+  });
+
+  assert.equal(supervisor.health().ready, false);
+  assert.equal(supervisor.health().credentialRotationReady, false);
+  assert.equal(supervisor.health().errorCode, 'SECRET_ROTATION_REJECTED');
+  assert.equal(stopCalls, 1);
+  assert.equal(supervisor.modbus.length, 0);
 });
