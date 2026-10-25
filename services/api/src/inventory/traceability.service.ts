@@ -536,6 +536,93 @@ export class TraceabilityService {
     };
   }
 
+  /**
+   * Builds a bounded, read-only recall impact assessment from the unit's genealogy.
+   * It reports downstream identities and customer shipments without changing stock,
+   * marking identities recalled, or creating a recall decision.
+   */
+  async recallImpact(
+    userId: string, tenantId: string, factoryId: string, unitId: string,
+    rawDepth?: number, rawLimit?: number,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const downstream = await this.trace(userId, tenantId, factoryId, unitId, 'FORWARD', rawDepth, rawLimit);
+    const upstream = await this.trace(userId, tenantId, factoryId, unitId, 'REVERSE', rawDepth, rawLimit);
+    const rootId = String(downstream.root.id).toLowerCase();
+    const impactedUnits = downstream.units.filter((unit: QueryResultRow & { id: string }) =>
+      String(unit.id).toLowerCase() !== rootId);
+    const shipmentIds = impactedUnits
+      .filter((unit: QueryResultRow & { id: string; unit_type?: string; product_role?: string }) =>
+        String(unit.unit_type ?? '').toUpperCase() === 'SHIPMENT'
+        || String(unit.product_role ?? '').toUpperCase() === 'SHIPMENT')
+      .map((unit: QueryResultRow & { id: string }) => String(unit.id));
+
+    const shipmentResult = await this.database.query<{
+      shipment_unit_id: string;
+      shipment_code: string;
+      container_unit_id: string;
+      customer_name: string;
+      customer_order_reference: string;
+      order_id: string | null;
+      order_line_id: string | null;
+      carrier_name: string | null;
+      tracking_reference: string | null;
+      quantity: string;
+      unit: string;
+      dispatched_at: string;
+      latest_delivery_event_type: string | null;
+      latest_delivery_event_at: string | null;
+      pod_reference: string | null;
+      pod_sha256: string | null;
+    }>(`
+      SELECT s.shipment_unit_id::text AS shipment_unit_id,
+        s.shipment_code, s.container_unit_id::text AS container_unit_id,
+        s.customer_name, s.customer_order_reference,
+        s.order_id::text AS order_id, s.order_line_id::text AS order_line_id,
+        s.carrier_name, s.tracking_reference,
+        s.quantity::text AS quantity, s.unit,
+        s.dispatched_at::text AS dispatched_at,
+        latest.event_type AS latest_delivery_event_type,
+        latest.event_at::text AS latest_delivery_event_at,
+        latest.proof_reference AS pod_reference,
+        latest.proof_sha256 AS pod_sha256
+      FROM wms_shipments s
+      LEFT JOIN LATERAL (
+        SELECT e.event_type, e.event_at, e.proof_reference, e.proof_sha256
+        FROM wms_shipment_delivery_events e
+        WHERE e.tenant_id=s.tenant_id AND e.factory_id=s.factory_id
+          AND e.shipment_unit_id=s.shipment_unit_id
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT 1
+      ) latest ON true
+      WHERE s.tenant_id=$1 AND s.factory_id=$2
+        AND s.shipment_unit_id=ANY($3::uuid[])
+      ORDER BY s.dispatched_at DESC, s.shipment_code, s.shipment_unit_id
+    `, [tenantId, factoryId, shipmentIds], { tenantId, userId });
+
+    return {
+      requested_unit: downstream.root,
+      direction: 'FORWARD',
+      max_depth: downstream.max_depth,
+      node_limit: downstream.limit,
+      impact_truncated: downstream.truncated,
+      provenance_truncated: upstream.truncated,
+      impacted_unit_count: impactedUnits.length,
+      impacted_units: impactedUnits,
+      downstream_relationships: downstream.relationships,
+      upstream_provenance: upstream.units.filter((unit: QueryResultRow & { id: string }) =>
+        String(unit.id).toLowerCase() !== rootId),
+      upstream_relationships: upstream.relationships,
+      affected_shipment_count: shipmentResult.rows.length,
+      affected_shipments: shipmentResult.rows,
+      side_effects: {
+        stock_changed: false,
+        statuses_changed: false,
+        records_created: false,
+      },
+    };
+  }
+
   async changeUnitStatus(
     userId: string, tenantId: string, factoryId: string, unitId: string,
     dto: ChangeTraceabilityUnitStatusDto, rawIdempotencyKey: string | null,
