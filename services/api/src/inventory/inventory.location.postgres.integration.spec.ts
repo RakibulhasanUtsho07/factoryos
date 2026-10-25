@@ -70,6 +70,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_traceability_location_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
+        // Label issue records are append-only in production; disable their guard only
+        // for isolated integration-fixture cleanup at the end of this suite.
+        await adminPool.query('ALTER TABLE traceability_label_issues DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_shipment_delivery_events DISABLE TRIGGER USER');
