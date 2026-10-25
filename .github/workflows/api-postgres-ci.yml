@@ -387,6 +387,13 @@ jobs:
           echo "Exercise typed pack/ship rejection and valid shipment lifecycle against traceability fixtures"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/traceability.sql
 
+          echo "Checking atomic package-to-shipment inventory issue, append-only dispatch lines and required evidence"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/202_wms_transactional_shipment_dispatch.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-transactional-shipment-dispatch.sql
+          echo "Reapplying transactional shipment dispatch migration and SQL contract to verify idempotency"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/202_wms_transactional_shipment_dispatch.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-transactional-shipment-dispatch.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
