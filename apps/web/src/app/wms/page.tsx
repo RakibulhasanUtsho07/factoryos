@@ -111,7 +111,7 @@ export default function WmsMobileAcceptancePage() {
     try {
       const list = await getQueue().list(scope);
       setEntries(list as QueuedEntry[]);
-      setQueueMessage(list.length ? "Queue restored from this browser&apos;s durable IndexedDB store." : "No queued operations for this scope.");
+      setQueueMessage(list.length ? "Queue restored from this browser's durable IndexedDB store." : "No queued operations for this scope.");
       setQueueError("");
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : "Could not load offline queue.");
@@ -139,8 +139,8 @@ export default function WmsMobileAcceptancePage() {
       );
       await refreshQueue();
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-      if (typeof result.retryAt === "number" && result.pendingCount > 0) {
-        const waitMs = Math.max(0, result.retryAt - Date.now());
+      if (result.pendingCount > 0) {
+        const waitMs = typeof result.retryAt === "number" ? Math.max(0, result.retryAt - Date.now()) : 0;
         retryTimerRef.current = setTimeout(() => { void flushQueueRef.current?.(); }, waitMs);
       }
       if (result.transportError) setQueueError("Sync failed safely; local queue was retained: " + result.transportError);
@@ -374,7 +374,7 @@ export default function WmsMobileAcceptancePage() {
 
       <section className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-semibold">3. Scan or resolve a barcode/QR value</h2>
-        <p className="mt-1 text-sm text-zinc-600">Focus the field and scan with a keyboard-wedge scanner, or paste text produced by a camera scanner adapter. The lookup uses the API's authenticated factory scope and rejects blank, unknown, or ambiguous codes.</p>
+        <p className="mt-1 text-sm text-zinc-600">Focus the field and scan with a keyboard-wedge scanner, or paste text produced by a camera scanner adapter. The lookup uses the API&apos;s authenticated factory scope and rejects blank, unknown, or ambiguous codes.</p>
         <form onSubmit={resolveScan} className="mt-4 flex flex-col gap-3 sm:flex-row">
           <input value={scanCode} onChange={(e) => setScanCode(e.target.value)} autoComplete="off" placeholder="Scan code here…" className="min-w-0 flex-1 rounded-lg border border-zinc-300 px-3 py-2" />
           <button disabled={!apiOrigin.trim()} className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Resolve code</button>
