@@ -17,13 +17,15 @@ Before this change, reportOutput() posted a good-output inventory receipt and im
 - Work-order completion reads the immutable material consumption-traceability allocations and writes CONSUMED_INTO edges from the source material lot/serial to finished-good lots, and PROCESSED_INTO edges to scrap evidence identities.
 - The source material quantity stays in its original UOM. A named deterministic ratio algorithm apportions that quantity against the reported good/scrap output mix using integer four-decimal arithmetic, puts any rounding remainder on the final eligible target, and preserves exact consumed quantity.
 - Matching genealogy event, audit event and outbox event are committed in the same transaction as work-order completion. Missing traceability identities fail closed.
+- Migration 199 adds a database-level evidence guard: an edge into a work-order output LOT/scrap identity must point to the same work order's real immutable WMS consumption allocation, source material identity, output posting/report and exact target kind. Caller-supplied evidence JSON alone cannot authorize the relationship.
+- Deferred PostgreSQL constraints require the entire consumed lot/serial allocation quantity to be represented exactly once across the output genealogy and reject both an unsupported edge commit and a work-order completion that omits an allocation. Replays and the proportional quantity conservation checks remain covered by regression tests.
 
 ## Automated test plan
 
 1. API CI: InventoryReservationService unit coverage for good + scrap identity creation, scrap-only handling, plus multi-report genealogy quantity-conservation test.
-2. PostgreSQL CI: migration 198 foreign keys, unique identity links, enabled posting guard, and traceability RLS contract; migration replay/idempotency.
+2. PostgreSQL CI: migrations 198–199, output identity/report/item binding, work-order consumption-evidence binding, deferred exact-allocation conservation, completion gate, traceability RLS contract, and replay/idempotency.
 3. API regression: all prior unit tests, lint and build.
-4. PostgreSQL regression: full ordered migration application and full integration/Jest suite on the exact candidate SHA.
+4. PostgreSQL regression: full ordered migration application, output-genealogy contract, consumption-evidence guard contract, migration replay/idempotency, and full integration/Jest suite on the exact candidate SHA.
 
 ## Explicitly still open
 
