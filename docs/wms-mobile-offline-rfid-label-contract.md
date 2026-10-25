@@ -89,11 +89,12 @@ The PostgreSQL integration suite covers:
 1. Offline enqueue applies one issue and saves its receipt.
 2. Repeating the same queued transaction replays its durable result without another issue movement.
 3. Two concurrent requests with the same transaction ID and same payload serialize to one applied movement and one replay; reusing that ID with a different payload returns `CONFLICT`.
-4. Distinct invalid precision values such as `1.00001` and `1.00002` do not collapse to the same request fingerprint; the first terminal rejection remains durable and the changed payload becomes an idempotency conflict.
-5. An old expected version returns `CONFLICT`; an unknown item returns `REJECTED`.
-6. Final stock ledger remains exactly reconciled with one effective issue and records APPLIED/REPLAYED/CONFLICT/REJECTED/IDEMPOTENCY_CONFLICT attempts.
-5. A label issue replays by key, the scanned canonical barcode resolves to the same unit ID, and a `PACKED_INTO` genealogy event is traversable from that identity.
-6. A material master SKU label resolves back to the same inventory item and has its own label history without creating fake traceability stock.
-7. Three repeated reads of one EPC count as one tag with two suppressed reads; a repeated session request replays, and an unknown EPC produces an explicit variance without changing stock.
+4. Two concurrent requests with the same transaction ID but different stock-affecting payloads produce one terminal winner and one `IDEMPOTENCY_CONFLICT`; exactly one stock movement commits.
+5. Distinct invalid precision values such as `1.00001` and `1.00002` do not collapse to the same request fingerprint; the first terminal rejection remains durable and the changed payload becomes an idempotency conflict.
+6. An old expected version returns `CONFLICT`; an unknown item returns `REJECTED`.
+7. Final stock ledger remains exactly reconciled and records APPLIED/REPLAYED/CONFLICT/REJECTED/IDEMPOTENCY_CONFLICT attempts.
+8. A label issue replays by key, the scanned canonical barcode resolves to the same unit ID, and a `PACKED_INTO` genealogy event is traversable from that identity.
+9. A material master SKU label resolves back to the same inventory item and has its own label history without creating fake traceability stock.
+10. Three repeated reads of one EPC count as one tag with two suppressed reads; a repeated session request replays, and an unknown EPC produces an explicit variance without changing stock.
 
 Migration `161_wms_mobile_offline_rfid_label_contract.sql` is added to the ordered PostgreSQL migration manifest. Run API lint/build and the full API PostgreSQL CI gate before merge.
