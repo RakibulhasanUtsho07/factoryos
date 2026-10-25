@@ -233,6 +233,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         } finally {
           await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_label_issues ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_label_templates ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE product_genealogy_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_unit_status_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_shipment_delivery_events ENABLE TRIGGER USER');
