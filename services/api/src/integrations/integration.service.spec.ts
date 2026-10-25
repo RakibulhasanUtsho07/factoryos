@@ -50,6 +50,7 @@ describe('IntegrationService signed webhook ingress', () => {
     rateLimit?: string;
     requestCount?: number;
     sourceSystem?: string;
+    displayName?: string;
     allowedEventTypes?: string[];
     payloadSchema?: Record<string, unknown>;
     shipmentRows?: Array<{ shipment_unit_id: string; shipment_code: string; status: string }>;
@@ -57,6 +58,7 @@ describe('IntegrationService signed webhook ingress', () => {
     const testConnector = {
       ...connector,
       source_system: options.sourceSystem ?? connector.source_system,
+      display_name: options.displayName ?? connector.display_name,
       allowed_event_types: options.allowedEventTypes ?? connector.allowed_event_types,
       payload_schema: options.payloadSchema ?? connector.payload_schema,
     };
@@ -281,6 +283,7 @@ describe('IntegrationService signed webhook ingress', () => {
     const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
     const harness = setup(undefined, {
       sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
       allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
       payloadSchema: carrierPayloadSchema,
       shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-CARRIER-1', status: 'DISPATCHED' }],
