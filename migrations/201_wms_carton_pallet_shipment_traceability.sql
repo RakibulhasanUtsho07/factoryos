@@ -615,6 +615,183 @@ AFTER INSERT ON wms_shipments
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION factoryos_assert_wms_shipment_dispatch_evidence();
 
+-- An active carton is a stock commitment, not merely genealogy metadata.
+-- Deferred guards prevent later issues/reservations/transfers from consuming the
+-- same finished-good lot after it has been packed. Dispatch releases the commitment
+-- by marking the carton DISPATCHED in the same transaction that posts the issue.
+CREATE OR REPLACE FUNCTION factoryos_assert_wms_packing_stock_capacity(
+  p_tenant_id UUID,
+  p_factory_id UUID,
+  p_item_id UUID,
+  p_location_id UUID DEFAULT NULL,
+  p_traceability_unit_id UUID DEFAULT NULL
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_packed NUMERIC(18,4);
+  v_available NUMERIC(18,4);
+BEGIN
+  IF p_traceability_unit_id IS NOT NULL THEN
+    SELECT COALESCE(SUM(pc.quantity),0)::numeric(18,4)
+      INTO v_packed
+    FROM wms_packing_contents pc
+    JOIN wms_packing_containers carton
+      ON carton.container_unit_id=pc.container_unit_id
+     AND carton.tenant_id=pc.tenant_id AND carton.factory_id=pc.factory_id
+    WHERE pc.tenant_id=p_tenant_id AND pc.factory_id=p_factory_id
+      AND pc.item_id=p_item_id AND pc.location_id=p_location_id
+      AND pc.source_unit_id=p_traceability_unit_id
+      AND pc.source_container_unit_id IS NULL
+      AND carton.container_type='CARTON' AND carton.status IN ('OPEN','SEALED');
+
+    SELECT COALESCE(quantity_on_hand-quantity_reserved,0)::numeric(18,4)
+      INTO v_available
+    FROM inventory_traceability_location_balances
+    WHERE tenant_id=p_tenant_id AND factory_id=p_factory_id AND item_id=p_item_id
+      AND location_id=p_location_id AND traceability_unit_id=p_traceability_unit_id;
+  ELSIF p_location_id IS NOT NULL THEN
+    SELECT COALESCE(SUM(pc.quantity),0)::numeric(18,4)
+      INTO v_packed
+    FROM wms_packing_contents pc
+    JOIN wms_packing_containers carton
+      ON carton.container_unit_id=pc.container_unit_id
+     AND carton.tenant_id=pc.tenant_id AND carton.factory_id=pc.factory_id
+    WHERE pc.tenant_id=p_tenant_id AND pc.factory_id=p_factory_id
+      AND pc.item_id=p_item_id AND pc.location_id=p_location_id
+      AND pc.source_container_unit_id IS NULL
+      AND carton.container_type='CARTON' AND carton.status IN ('OPEN','SEALED');
+
+    SELECT COALESCE(quantity_on_hand-quantity_reserved,0)::numeric(18,4)
+      INTO v_available
+    FROM inventory_location_balances
+    WHERE tenant_id=p_tenant_id AND factory_id=p_factory_id
+      AND item_id=p_item_id AND location_id=p_location_id;
+  ELSE
+    SELECT COALESCE(SUM(pc.quantity),0)::numeric(18,4)
+      INTO v_packed
+    FROM wms_packing_contents pc
+    JOIN wms_packing_containers carton
+      ON carton.container_unit_id=pc.container_unit_id
+     AND carton.tenant_id=pc.tenant_id AND carton.factory_id=pc.factory_id
+    WHERE pc.tenant_id=p_tenant_id AND pc.factory_id=p_factory_id
+      AND pc.item_id=p_item_id AND pc.source_container_unit_id IS NULL
+      AND carton.container_type='CARTON' AND carton.status IN ('OPEN','SEALED');
+
+    SELECT COALESCE(quantity_on_hand-quantity_reserved,0)::numeric(18,4)
+      INTO v_available
+    FROM inventory_stock_balances
+    WHERE tenant_id=p_tenant_id AND factory_id=p_factory_id AND item_id=p_item_id;
+  END IF;
+
+  IF COALESCE(v_packed,0) > COALESCE(v_available,0) THEN
+    RAISE EXCEPTION 'available stock cannot cover active carton packing commitments (packed %, available %)',
+      COALESCE(v_packed,0), COALESCE(v_available,0)
+      USING ERRCODE = '23514';
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION factoryos_assert_wms_packing_stock_commitment()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_tenant UUID;
+  v_factory UUID;
+  v_item UUID;
+  v_location UUID;
+  v_traceability_unit UUID;
+  v_content RECORD;
+BEGIN
+  IF TG_TABLE_NAME = 'inventory_stock_balances' THEN
+    IF TG_OP='DELETE' THEN v_tenant:=OLD.tenant_id; v_factory:=OLD.factory_id; v_item:=OLD.item_id;
+    ELSE v_tenant:=NEW.tenant_id; v_factory:=NEW.factory_id; v_item:=NEW.item_id; END IF;
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,NULL,NULL);
+  ELSIF TG_TABLE_NAME = 'inventory_location_balances' THEN
+    IF TG_OP='DELETE' THEN
+      v_tenant:=OLD.tenant_id; v_factory:=OLD.factory_id; v_item:=OLD.item_id; v_location:=OLD.location_id;
+    ELSE
+      v_tenant:=NEW.tenant_id; v_factory:=NEW.factory_id; v_item:=NEW.item_id; v_location:=NEW.location_id;
+    END IF;
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,v_location,NULL);
+  ELSIF TG_TABLE_NAME = 'inventory_traceability_location_balances' THEN
+    IF TG_OP='DELETE' THEN
+      v_tenant:=OLD.tenant_id; v_factory:=OLD.factory_id; v_item:=OLD.item_id;
+      v_location:=OLD.location_id; v_traceability_unit:=OLD.traceability_unit_id;
+    ELSE
+      v_tenant:=NEW.tenant_id; v_factory:=NEW.factory_id; v_item:=NEW.item_id;
+      v_location:=NEW.location_id; v_traceability_unit:=NEW.traceability_unit_id;
+    END IF;
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,v_location,v_traceability_unit);
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,v_location,NULL);
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,NULL,NULL);
+  ELSIF TG_TABLE_NAME = 'wms_packing_contents' THEN
+    IF TG_OP='DELETE' THEN
+      v_tenant:=OLD.tenant_id; v_factory:=OLD.factory_id; v_item:=OLD.item_id;
+      v_location:=OLD.location_id; v_traceability_unit:=OLD.source_unit_id;
+    ELSE
+      v_tenant:=NEW.tenant_id; v_factory:=NEW.factory_id; v_item:=NEW.item_id;
+      v_location:=NEW.location_id; v_traceability_unit:=NEW.source_unit_id;
+      IF NEW.source_container_unit_id IS NOT NULL THEN RETURN NULL; END IF;
+    END IF;
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,v_location,v_traceability_unit);
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,v_location,NULL);
+    PERFORM factoryos_assert_wms_packing_stock_capacity(v_tenant,v_factory,v_item,NULL,NULL);
+  ELSIF TG_TABLE_NAME = 'wms_packing_containers' THEN
+    IF TG_OP='DELETE' OR NEW.container_type <> 'CARTON' THEN RETURN NULL; END IF;
+    FOR v_content IN
+      SELECT pc.item_id, pc.location_id, pc.source_unit_id
+      FROM wms_packing_contents pc
+      WHERE pc.tenant_id=NEW.tenant_id AND pc.factory_id=NEW.factory_id
+        AND pc.container_unit_id=NEW.container_unit_id AND pc.source_container_unit_id IS NULL
+    LOOP
+      PERFORM factoryos_assert_wms_packing_stock_capacity(
+        NEW.tenant_id,NEW.factory_id,v_content.item_id,v_content.location_id,v_content.source_unit_id
+      );
+      PERFORM factoryos_assert_wms_packing_stock_capacity(
+        NEW.tenant_id,NEW.factory_id,v_content.item_id,v_content.location_id,NULL
+      );
+      PERFORM factoryos_assert_wms_packing_stock_capacity(
+        NEW.tenant_id,NEW.factory_id,v_content.item_id,NULL,NULL
+      );
+    END LOOP;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS ctr_wms_packing_stock_item_balance ON inventory_stock_balances;
+CREATE CONSTRAINT TRIGGER ctr_wms_packing_stock_item_balance
+AFTER INSERT OR UPDATE OR DELETE ON inventory_stock_balances
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_wms_packing_stock_commitment();
+
+DROP TRIGGER IF EXISTS ctr_wms_packing_stock_location_balance ON inventory_location_balances;
+CREATE CONSTRAINT TRIGGER ctr_wms_packing_stock_location_balance
+AFTER INSERT OR UPDATE OR DELETE ON inventory_location_balances
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_wms_packing_stock_commitment();
+
+DROP TRIGGER IF EXISTS ctr_wms_packing_stock_traceability_balance ON inventory_traceability_location_balances;
+CREATE CONSTRAINT TRIGGER ctr_wms_packing_stock_traceability_balance
+AFTER INSERT OR UPDATE OR DELETE ON inventory_traceability_location_balances
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_wms_packing_stock_commitment();
+
+DROP TRIGGER IF EXISTS ctr_wms_packing_stock_content ON wms_packing_contents;
+CREATE CONSTRAINT TRIGGER ctr_wms_packing_stock_content
+AFTER INSERT ON wms_packing_contents
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_wms_packing_stock_commitment();
+
+DROP TRIGGER IF EXISTS ctr_wms_packing_stock_container ON wms_packing_containers;
+CREATE CONSTRAINT TRIGGER ctr_wms_packing_stock_container
+AFTER INSERT OR UPDATE ON wms_packing_containers
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION factoryos_assert_wms_packing_stock_commitment();
+
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('201_wms_carton_pallet_shipment_traceability', NULL)
 ON CONFLICT (version) DO NOTHING;

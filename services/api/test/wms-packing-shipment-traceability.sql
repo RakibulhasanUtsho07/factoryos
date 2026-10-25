@@ -43,6 +43,23 @@ BEGIN
   IF position('assigned to a pallet' IN v_function) = 0 THEN
     RAISE EXCEPTION 'A carton assigned to a pallet must not be independently dispatched';
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid='public.inventory_stock_balances'::regclass
+      AND tgname='ctr_wms_packing_stock_item_balance' AND tgenabled='O'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid='public.inventory_location_balances'::regclass
+      AND tgname='ctr_wms_packing_stock_location_balance' AND tgenabled='O'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid='public.inventory_traceability_location_balances'::regclass
+      AND tgname='ctr_wms_packing_stock_traceability_balance' AND tgenabled='O'
+  ) THEN
+    RAISE EXCEPTION 'Active carton packing must reserve stock capacity across item, location and lot balances';
+  END IF;
+  v_function := pg_get_functiondef('public.factoryos_assert_wms_packing_stock_capacity(uuid,uuid,uuid,uuid,uuid)'::regprocedure);
+  IF position('active carton packing commitments' IN v_function) = 0
+     OR position('quantity_reserved' IN v_function) = 0 THEN
+    RAISE EXCEPTION 'Stock capacity guard must block issue/reservation that overlaps active carton commitments';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='201_wms_carton_pallet_shipment_traceability') THEN
     RAISE EXCEPTION 'WMS packing/shipment migration marker is missing';
   END IF;

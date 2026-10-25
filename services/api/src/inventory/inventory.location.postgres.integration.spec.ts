@@ -947,6 +947,30 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-carton-create-' + randomUUID(), requestId, traceId,
     );
     const cartonId = carton.container.container_unit_id as string;
+    const packingCommitmentClient = await adminPool.connect();
+    try {
+      await packingCommitmentClient.query('BEGIN');
+      await packingCommitmentClient.query(
+        `UPDATE inventory_traceability_location_balances
+         SET quantity_on_hand=2.0000, version=version+1, updated_at=clock_timestamp()
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+           AND traceability_unit_id=$4 AND location_id=$5`,
+        [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+      );
+      await expect(packingCommitmentClient.query('COMMIT'))
+        .rejects.toThrow(/active carton packing commitments/i);
+      await packingCommitmentClient.query('ROLLBACK').catch(() => undefined);
+    } finally {
+      packingCommitmentClient.release();
+    }
+    const afterRejectedIssue = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+    );
+    expect(afterRejectedIssue.rows[0]?.quantity_on_hand).toBe('5.0000');
     await fulfillmentService.addContent(
       userId, tenantId, fixture.factoryId, cartonId,
       { source_unit_id: finishedLot.id, quantity: 3 },
