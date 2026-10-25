@@ -21,7 +21,7 @@ Set these environment values in the API deployment and store credentials only in
 | WMS_POD_STORAGE_MAX_BYTES | 10,485,760 | Maximum object body size, from 1 byte to 25 MiB. |
 | WMS_POD_STORAGE_TIMEOUT_MS | 5,000 | Bounded fetch timeout, from 1,000 to 30,000 ms. |
 
-The API's credential needs should be limited to GetObject for the dedicated proof bucket/prefix. It does not need bucket listing or object-write permissions for verification. Production endpoint and credentials must be chosen by the deployment/security owner; this repository does not contain live credentials or assert that a provider bucket is provisioned.
+The API's storage principal needs GetObject for independent digest verification and PutObject for the authenticated upload prefix (scoped to the dedicated POD bucket/prefix); it does not need bucket listing. Separate upload workflows can use their own least-privilege principal. Production endpoint and credentials must be chosen by the deployment/security owner; this repository does not contain live credentials or assert that a provider bucket is provisioned.
 
 ## Carrier integration contract
 
@@ -39,4 +39,4 @@ This code proves the bounded adapter contract and mocked regression behavior onl
 
 ## Regression coverage
 
-services/api/src/integrations/wms-pod-storage.spec.ts verifies signed request construction, digest success and mismatch, fail-closed missing config, key-traversal rejection, object size limit and production HTTPS enforcement. integration.service.spec.ts verifies that actual stored bytes must match before the WMS ledger and webhook receipt are committed. CI runs the API tests and PostgreSQL migration/acceptance suite for the PR head.
+services/api/src/integrations/wms-pod-storage.spec.ts verifies signed GET/PUT construction, successful read-back digest verification, stored-byte mismatch, content-signature spoofing, missing configuration, key traversal, size bounds and production HTTPS enforcement. integration.service.spec.ts verifies that a tenant/factory-scoped dispatched-shipment upload emits audit/outbox evidence only after read-back verification, and that a failed digest never creates upload evidence. Existing webhook tests verify that the separately fetched stored bytes must match before the WMS delivery event and webhook receipt commit. CI must run the API suite and PostgreSQL migration/acceptance suite for the PR head.
