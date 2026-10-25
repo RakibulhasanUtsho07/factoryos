@@ -2551,6 +2551,376 @@ export class InventoryReservationService {
     return policyRow;
   }
 
+  /**
+   * Links immutable consumed material lot/serial evidence to finished-good identities
+   * recorded against each production report. Run only after material reservations are
+   * consumed, in the same transaction as work-order completion.
+   */
+  async recordWorkOrderMaterialGenealogy(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrderId: string;
+      workOrderNumber: string;
+      finishedItemId: string;
+      correlationId: string;
+      requestId?: string | null;
+    },
+  ): Promise<{
+    eventCount: number;
+    replayedEventCount: number;
+    sourceAllocationCount: number;
+    targetUnitCount: number;
+  }> {
+    const sourceResult = await client.query<QueryResultRow & {
+      consumption_id: string;
+      reservation_id: string;
+      requirement_id: string;
+      allocation_id: string;
+      allocation_sequence: number | null;
+      source_unit_id: string;
+      source_unit_type: string;
+      source_product_role: string;
+      source_status: string;
+      source_item_id: string | null;
+      source_unit_code: string;
+      source_unit: string;
+      source_location_id: string | null;
+      quantity: string;
+      consumed_at: string;
+    }>(
+      `
+      SELECT c.id::text AS consumption_id,
+             r.id::text AS reservation_id,
+             mr.requirement_id::text AS requirement_id,
+             a.id::text AS allocation_id,
+             ra.allocation_sequence,
+             tu.id::text AS source_unit_id,
+             tu.unit_type AS source_unit_type,
+             tu.product_role AS source_product_role,
+             tu.status AS source_status,
+             tu.inventory_item_id::text AS source_item_id,
+             tu.unit_code AS source_unit_code,
+             tu.unit,
+             a.location_id::text AS source_location_id,
+             a.quantity::text AS quantity,
+             c.created_at::text AS consumed_at
+      FROM work_order_material_reservations mr
+      JOIN inventory_reservations r
+        ON r.id = mr.reservation_id
+       AND r.tenant_id = mr.tenant_id AND r.factory_id = mr.factory_id
+      JOIN inventory_reservation_consumptions c
+        ON c.reservation_id = r.id
+       AND c.tenant_id = r.tenant_id AND c.factory_id = r.factory_id
+       AND c.item_id = r.item_id
+      JOIN inventory_reservation_consumption_traceability_allocations a
+        ON a.consumption_id = c.id
+       AND a.tenant_id = c.tenant_id AND a.factory_id = c.factory_id
+      JOIN traceability_units tu
+        ON tu.id = a.traceability_unit_id
+       AND tu.tenant_id = a.tenant_id AND tu.factory_id = a.factory_id
+       AND tu.inventory_item_id = c.item_id
+      LEFT JOIN inventory_reservation_traceability_allocations ra
+        ON ra.tenant_id = a.tenant_id AND ra.factory_id = a.factory_id
+       AND ra.reservation_id = c.reservation_id
+       AND ra.item_id = c.item_id
+       AND ra.traceability_unit_id = a.traceability_unit_id
+       AND ra.location_id = a.location_id
+      WHERE mr.work_order_id = $1
+        AND mr.tenant_id = $2 AND mr.factory_id = $3
+        AND r.reference_type = 'WORK_ORDER_MATERIAL'
+        AND r.reference_id = mr.work_order_id
+      ORDER BY mr.requirement_id, c.created_at, c.id,
+               ra.allocation_sequence NULLS LAST, a.created_at, a.id
+      `,
+      [input.workOrderId, input.tenantId, input.factoryId],
+    );
+    const sources = sourceResult.rows;
+    if (sources.length === 0) {
+      return { eventCount: 0, replayedEventCount: 0, sourceAllocationCount: 0, targetUnitCount: 0 };
+    }
+
+    const targetResult = await client.query<QueryResultRow & {
+      production_report_id: string;
+      report_good_quantity: string;
+      report_created_at: string;
+      finished_item_unit: string;
+      target_unit_id: string | null;
+      target_unit_type: string | null;
+      target_quantity: string | null;
+      target_unit: string | null;
+      target_item_id: string | null;
+      target_status: string | null;
+      target_unit_code: string | null;
+    }>(
+      `
+      SELECT r.id::text AS production_report_id,
+             r.good_quantity::text AS report_good_quantity,
+             r.created_at::text AS report_created_at,
+             fi.unit AS finished_item_unit,
+             tu.id::text AS target_unit_id,
+             tu.unit_type AS target_unit_type,
+             tu.quantity::text AS target_quantity,
+             tu.unit AS target_unit,
+             tu.inventory_item_id::text AS target_item_id,
+             tu.status AS target_status,
+             tu.unit_code AS target_unit_code
+      FROM order_production_reports r
+      JOIN inventory_items fi
+        ON fi.id = $4 AND fi.tenant_id = r.tenant_id AND fi.factory_id = r.factory_id
+      LEFT JOIN traceability_units tu
+        ON tu.production_report_id = r.id
+       AND tu.tenant_id = r.tenant_id AND tu.factory_id = r.factory_id
+       AND tu.product_role = 'FINISHED_GOOD'
+      WHERE r.work_order_id = $1
+        AND r.tenant_id = $2 AND r.factory_id = $3
+        AND r.good_quantity > 0
+      ORDER BY r.created_at, r.id, tu.created_at, tu.id
+      `,
+      [input.workOrderId, input.tenantId, input.factoryId, input.finishedItemId],
+    );
+
+    type TargetIdentity = {
+      productionReportId: string;
+      reportGoodQuantity: string;
+      reportGoodUnits: bigint;
+      targetUnitId: string;
+      targetUnitType: string;
+      targetQuantity: string;
+      targetQuantityUnits: bigint;
+      targetUnit: string;
+      targetUnitCode: string;
+    };
+    const reportGroups = new Map<string, {
+      reportGoodQuantity: string;
+      reportGoodUnits: bigint;
+      finishedItemUnit: string;
+      identities: TargetIdentity[];
+    }>();
+    for (const row of targetResult.rows) {
+      const reportGoodUnits = this.decimalToUnits(row.report_good_quantity);
+      if (reportGoodUnits <= 0n) continue;
+      let report = reportGroups.get(row.production_report_id);
+      if (!report) {
+        report = {
+          reportGoodQuantity: row.report_good_quantity,
+          reportGoodUnits,
+          finishedItemUnit: row.finished_item_unit,
+          identities: [],
+        };
+        reportGroups.set(row.production_report_id, report);
+      } else if (report.reportGoodUnits !== reportGoodUnits) {
+        throw new ConflictException('Production report output quantity changed while material genealogy was being recorded');
+      }
+
+      if (!row.target_unit_id) continue;
+      if (row.target_status !== 'ACTIVE') {
+        throw new ConflictException(`Finished-good traceability identity ${row.target_unit_code ?? row.target_unit_id} must be ACTIVE before material genealogy can be committed`);
+      }
+      if (row.target_item_id !== input.finishedItemId) {
+        throw new ConflictException('Finished-good traceability identity does not match the work-order finished item');
+      }
+      if (row.target_unit?.trim().toUpperCase() !== row.finished_item_unit.trim().toUpperCase()) {
+        throw new ConflictException('Finished-good traceability unit of measure must match the inventory item base unit');
+      }
+      const targetQuantityUnits = this.decimalToUnits(row.target_quantity ?? '0');
+      if (targetQuantityUnits <= 0n) {
+        throw new ConflictException('Finished-good traceability identity must have positive quantity');
+      }
+      report.identities.push({
+        productionReportId: row.production_report_id,
+        reportGoodQuantity: row.report_good_quantity,
+        reportGoodUnits,
+        targetUnitId: row.target_unit_id,
+        targetUnitType: row.target_unit_type ?? '',
+        targetQuantity: row.target_quantity ?? '0',
+        targetQuantityUnits,
+        targetUnit: row.target_unit ?? '',
+        targetUnitCode: row.target_unit_code ?? '',
+      });
+    }
+
+    if (reportGroups.size === 0) {
+      throw new ConflictException('Tracked material was consumed but the work order has no positive good-output report identity; record an approved scrap/disposition genealogy before completing this work order');
+    }
+
+    const targets: TargetIdentity[] = [];
+    let totalGoodUnits = 0n;
+    for (const [reportId, report] of reportGroups) {
+      if (report.identities.length === 0) {
+        throw new ConflictException(`Production report ${reportId} requires an ACTIVE finished-good lot/serial identity before the work order can be completed with tracked material`);
+      }
+      const isSerial = report.identities.some((identity) => identity.targetUnitType === 'SERIAL');
+      if (isSerial && report.identities.some((identity) => identity.targetUnitType !== 'SERIAL')) {
+        throw new ConflictException(`Production report ${reportId} cannot mix finished-good lot and serial identities`);
+      }
+      if (!isSerial && report.identities.length !== 1) {
+        throw new ConflictException(`Production report ${reportId} must use one finished-good lot identity or a set of serial identities`);
+      }
+      const identityTotal = report.identities.reduce((sum, identity) => sum + identity.targetQuantityUnits, 0n);
+      if (identityTotal !== report.reportGoodUnits) {
+        throw new ConflictException(`Finished-good identities for production report ${reportId} do not exactly account for its good output quantity`);
+      }
+      totalGoodUnits += report.reportGoodUnits;
+      targets.push(...report.identities);
+    }
+    if (targets.length === 0 || totalGoodUnits <= 0n) {
+      throw new ConflictException('Tracked material genealogy requires at least one positive finished-good identity');
+    }
+
+    let eventCount = 0;
+    let replayedEventCount = 0;
+    let serialTargetSequence = 0;
+
+    for (const source of sources) {
+      if (source.source_product_role !== 'MATERIAL'
+        || (source.source_unit_type !== 'LOT' && source.source_unit_type !== 'SERIAL')
+        || source.source_status !== 'ACTIVE'
+        || !source.source_item_id
+        || !source.source_unit.trim()) {
+        throw new ConflictException(`Consumed inventory allocation ${source.allocation_id} lacks an ACTIVE material lot/serial identity`);
+      }
+      const sourceUnits = this.decimalToUnits(source.quantity);
+      if (sourceUnits <= 0n) throw new ConflictException('Consumed material traceability allocation must have positive quantity');
+      let portions: Array<{ target: TargetIdentity; quantityUnits: bigint; allocationMethod: string }>;
+
+      if (source.source_unit_type === 'SERIAL') {
+        if (sourceUnits !== 10000n) {
+          throw new ConflictException(`Serialized material ${source.source_unit_code} must remain an indivisible whole unit in genealogy`);
+        }
+        const target = targets[serialTargetSequence % targets.length]!;
+        serialTargetSequence += 1;
+        portions = [{
+          target,
+          quantityUnits: sourceUnits,
+          allocationMethod: 'SERIAL_SOURCE_TO_SINGLE_FINISHED_IDENTITY',
+        }];
+      } else {
+        let allocatedUnits = 0n;
+        portions = [];
+        for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+          const target = targets[targetIndex]!;
+          const quantityUnits = targetIndex === targets.length - 1
+            ? sourceUnits - allocatedUnits
+            : (sourceUnits * target.targetQuantityUnits) / totalGoodUnits;
+          allocatedUnits += quantityUnits;
+          if (quantityUnits > 0n) {
+            portions.push({
+              target,
+              quantityUnits,
+              allocationMethod: 'LOT_SOURCE_PROPORTIONAL_TO_GOOD_OUTPUT',
+            });
+          }
+        }
+        if (allocatedUnits !== sourceUnits) {
+          throw new ConflictException(`Material lot ${source.source_unit_code} genealogy allocation did not conserve issued quantity`);
+        }
+      }
+
+      for (const portion of portions) {
+        const quantity = this.unitsToDecimal(portion.quantityUnits);
+        const evidence = {
+          kind: 'WORK_ORDER_MATERIAL_ISSUE',
+          work_order_id: input.workOrderId,
+          work_order_number: input.workOrderNumber,
+          requirement_id: source.requirement_id,
+          reservation_id: source.reservation_id,
+          consumption_id: source.consumption_id,
+          consumption_allocation_id: source.allocation_id,
+          source_location_id: source.source_location_id,
+          source_unit_code: source.source_unit_code,
+          source_issue_quantity: source.quantity,
+          allocated_source_quantity: quantity,
+          production_report_id: portion.target.productionReportId,
+          finished_good_unit_id: portion.target.targetUnitId,
+          report_good_quantity: portion.target.reportGoodQuantity,
+          total_good_output_quantity: this.unitsToDecimal(totalGoodUnits),
+          allocation_method: portion.allocationMethod,
+        };
+        const idempotencyKey = `work-order-material-genealogy:${input.workOrderId}:${source.allocation_id}:${portion.target.targetUnitId}`;
+        const requestHash = this.hash({
+          sourceUnitId: source.source_unit_id,
+          targetUnitId: portion.target.targetUnitId,
+          quantity,
+          unit: source.source_unit,
+          evidence,
+        });
+        const inserted = await client.query<{ id: string; request_hash: string }>(
+          `
+          INSERT INTO product_genealogy_events (
+            tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
+            quantity, unit, evidence, notes, idempotency_key, request_hash,
+            created_by_user_id, correlation_id
+          ) VALUES (
+            $1, $2, $3, $4, 'CONSUMED_INTO', $5::numeric, $6, $7::jsonb,
+            $8, $9, $10, $11, $12::uuid
+          )
+          ON CONFLICT (tenant_id, factory_id, idempotency_key) DO NOTHING
+          RETURNING id::text AS id, request_hash
+          `,
+          [
+            input.tenantId, input.factoryId, source.source_unit_id, portion.target.targetUnitId,
+            quantity, source.source_unit, JSON.stringify(evidence),
+            `Material ${source.source_unit_code} consumed by ${input.workOrderNumber}`,
+            idempotencyKey, requestHash, input.userId, input.correlationId,
+          ],
+        );
+        let eventId = inserted.rows[0]?.id;
+        if (!eventId) {
+          const existing = await client.query<{ id: string; request_hash: string }>(
+            `SELECT id::text AS id, request_hash FROM product_genealogy_events
+             WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3 LIMIT 1`,
+            [input.tenantId, input.factoryId, idempotencyKey],
+          );
+          const previous = existing.rows[0];
+          if (!previous || previous.request_hash.trim() !== requestHash) {
+            throw new ConflictException('Material genealogy idempotency key was reused for a different source/target allocation');
+          }
+          eventId = previous.id;
+          replayedEventCount += 1;
+          continue;
+        }
+
+        const payload = {
+          genealogy_event_id: eventId,
+          relationship_type: 'CONSUMED_INTO',
+          source_unit_id: source.source_unit_id,
+          target_unit_id: portion.target.targetUnitId,
+          quantity,
+          unit: source.source_unit,
+          evidence,
+        };
+        await client.query(
+          `INSERT INTO outbox_events (
+             tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+           ) VALUES ($1, $2, 'PRODUCT_GENEALOGY_EVENT', $3, 'TRACEABILITY.GENEALOGY_RECORDED', $4::jsonb)`,
+          [input.tenantId, input.factoryId, eventId, JSON.stringify(payload)],
+        );
+        await client.query(
+          `INSERT INTO audit_events (
+             tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
+             correlation_id, request_id, data_class, payload
+           ) VALUES ($1, $2, $3, 'TRACEABILITY', 'RECORDED', 'PRODUCT_GENEALOGY_EVENT', $4,
+             $5::uuid, $6::uuid, 'INTERNAL', $7::jsonb)`,
+          [
+            input.tenantId, input.factoryId, input.userId, eventId, input.correlationId,
+            input.requestId ?? null, JSON.stringify(payload),
+          ],
+        );
+        eventCount += 1;
+      }
+    }
+
+    return {
+      eventCount,
+      replayedEventCount,
+      sourceAllocationCount: sources.length,
+      targetUnitCount: targets.length,
+    };
+  }
+
   private decimalToUnits(value: string): bigint {
     const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
     if (!match) throw new ConflictException('Inventory quantity is not a valid four-decimal value');
