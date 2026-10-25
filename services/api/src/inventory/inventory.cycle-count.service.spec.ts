@@ -96,6 +96,13 @@ describe('InventoryCycleCountService blind-count response protection', () => {
     expect(result.balance_version_at_count).toBeNull();
   });
 
+  it('normalizes UUID casing before identifying the original counter', () => {
+    const result = mapProposal.call(service, proposalRow(true), COUNTER_ID.toUpperCase(), true);
+
+    expect(result.ledger_quantity_at_count).toBeNull();
+    expect(result.balance_version_at_count).toBeNull();
+  });
+
   it('keeps public listing redacted and exposes snapshots through the review-only service method', async () => {
     query.mockResolvedValueOnce({ rows: [proposalRow(true)] });
 
