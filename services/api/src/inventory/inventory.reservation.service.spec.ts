@@ -695,7 +695,7 @@ describe('InventoryReservationService', () => {
           consumption_created_at: '2026-10-24T00:00:00.000Z',
         }]);
       }
-      if (query.includes('SELECT id::text AS id, request_hash FROM product_genealogy_events')) {
+      if (query.includes('FROM product_genealogy_events') && query.includes('request_hash')) {
         return queryRows([]);
       }
       if (query.includes('INSERT INTO product_genealogy_events')) {
