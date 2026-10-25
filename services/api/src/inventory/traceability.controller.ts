@@ -13,7 +13,7 @@ import {
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 import { WmsFulfillmentService } from './wms-fulfillment.service';
-import { AddWmsPackingContentDto, CreateWmsPackingContainerDto, DispatchWmsShipmentDto } from './dto/wms-packing-shipment.dto';
+import { AddWmsPackingContentDto, CreateWmsPackingContainerDto, DispatchWmsShipmentDto, RecordWmsShipmentDeliveryEventDto } from './dto/wms-packing-shipment.dto';
 
 interface TraceabilityRequestContext {
   requestId?: string | null;
@@ -313,6 +313,35 @@ export class TraceabilityController {
       c.userId, c.tenantId, c.factoryId, containerUnitId, body,
       idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
     );
+  }
+
+  @Post('shipments/:shipmentUnitId/delivery-events')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async recordShipmentDeliveryEvent(
+    @Req() request: TraceabilityRequest,
+    @Param('shipmentUnitId', new ParseUUIDPipe()) shipmentUnitId: string,
+    @Body() body: RecordWmsShipmentDeliveryEventDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.recordDeliveryEvent(
+      c.userId, c.tenantId, c.factoryId, shipmentUnitId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
+  @Get('shipments/:shipmentUnitId/delivery-events')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async listShipmentDeliveryEvents(
+    @Req() request: TraceabilityRequest,
+    @Param('shipmentUnitId', new ParseUUIDPipe()) shipmentUnitId: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.listDeliveryEvents(c.userId, c.tenantId, c.factoryId, shipmentUnitId);
   }
 
   private requireContext(request: TraceabilityRequest) {
