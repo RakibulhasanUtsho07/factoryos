@@ -88,18 +88,23 @@ test("only an exact matching APPLIED transaction receipt removes a queued operat
   let clock = Date.parse("2026-10-26T00:00:00.000Z");
   const queue = new WmsOfflineQueue({ store, now: () => clock });
   await queue.enqueue(scope(), payload());
-  const invalidAck = await queue.flush(scope(), async () => ({ results: [ applied(TX2) ] }), { baseRetryMs: 100 });
+  const invalidAck = await queue.flush(scope(), async () => ({ results: [ applied(TX2) ] }), { baseRetryMs: 100, maxRetryMs: 100 });
   assert.equal(invalidAck.syncedCount, 0);
   assert.equal((await queue.list(scope()))[0].status, "PENDING");
   assert.equal((await queue.list(scope()))[0].lastError, "MISSING_OR_MISMATCHED_TRANSACTION_RECEIPT");
 
   clock += 101;
-  const malformedReceipt = await queue.flush(scope(), async () => ({ results: [ { ...applied(TX1), receipt_id: "not-a-uuid" } ] }), { baseRetryMs: 100 });
+  const wrongOperation = await queue.flush(scope(), async () => ({ results: [ { ...applied(TX1), operation: "OTHER" } ] }), { baseRetryMs: 100, maxRetryMs: 100 });
+  assert.equal(wrongOperation.syncedCount, 0);
+  assert.equal((await queue.list(scope()))[0].status, "PENDING");
+
+  clock += 101;
+  const malformedReceipt = await queue.flush(scope(), async () => ({ results: [ { ...applied(TX1), receipt_id: "not-a-uuid" } ] }), { baseRetryMs: 100, maxRetryMs: 100 });
   assert.equal(malformedReceipt.syncedCount, 0);
   assert.equal((await queue.list(scope()))[0].status, "PENDING");
 
   clock += 101;
-  const acknowledged = await queue.flush(scope(), async () => ({ results: [ applied(TX1) ] }), { baseRetryMs: 100 });
+  const acknowledged = await queue.flush(scope(), async () => ({ results: [ applied(TX1) ] }), { baseRetryMs: 100, maxRetryMs: 100 });
   assert.equal(acknowledged.syncedCount, 1);
   assert.equal((await queue.list(scope())).length, 0);
 });
