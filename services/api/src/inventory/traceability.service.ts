@@ -525,6 +525,12 @@ export class TraceabilityService {
             'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
             [tenantId + ':' + factoryId + ':shipment-dispatch-idempotency:' + idempotencyKey],
           );
+          // Serialize shipment dispatch with genealogy/package writes so no new
+          // pack edge can appear after the quantity snapshot is taken.
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':product-genealogy-graph'],
+          );
           const existingByKey = await client.query<{ id: string; request_hash: string }>(`
             SELECT id::text AS id, request_hash
             FROM traceability_shipment_dispatches
@@ -585,6 +591,42 @@ export class TraceabilityService {
           if (!sourceLocation || sourceLocation.location_type !== 'STAGING'
             || sourceLocation.status !== 'ACTIVE' || sourceLocation.picking_enabled !== true) {
             throw new BadRequestException('Shipment dispatch must issue from an active pick-enabled STAGING location');
+          }
+
+          const packageLocks = await client.query<{
+            id: string; unit_type: string; product_role: string; status: string;
+          }>(`
+            WITH RECURSIVE package_nodes(unit_id) AS (
+              SELECT p.id
+              FROM product_genealogy_events shipped
+              JOIN traceability_units p
+                ON p.id=shipped.source_unit_id AND p.tenant_id=shipped.tenant_id AND p.factory_id=shipped.factory_id
+              WHERE shipped.tenant_id=$1 AND shipped.factory_id=$2
+                AND shipped.target_unit_id=$3 AND shipped.relationship_type='SHIPPED_AS'
+                AND p.product_role='PACKAGING' AND p.unit_type IN ('CARTON','PALLET')
+              UNION
+              SELECT child.id
+              FROM product_genealogy_events packed
+              JOIN package_nodes parent ON parent.unit_id=packed.target_unit_id
+              JOIN traceability_units child
+                ON child.id=packed.source_unit_id AND child.tenant_id=packed.tenant_id AND child.factory_id=packed.factory_id
+              WHERE packed.tenant_id=$1 AND packed.factory_id=$2
+                AND packed.relationship_type='PACKED_INTO'
+                AND child.product_role='PACKAGING' AND child.unit_type IN ('CARTON','PALLET')
+            )
+            SELECT u.id::text AS id, u.unit_type, u.product_role, u.status
+            FROM traceability_units u
+            JOIN package_nodes p ON p.unit_id=u.id
+            WHERE u.tenant_id=$1 AND u.factory_id=$2
+            ORDER BY u.id
+            FOR UPDATE OF u
+          `, [tenantId, factoryId, shipmentId]);
+          if (packageLocks.rows.length === 0) {
+            throw new ConflictException('Shipment has no carton/pallet package assigned');
+          }
+          if (packageLocks.rows.some(p => p.status !== 'ACTIVE'
+            || p.product_role !== 'PACKAGING' || !['CARTON','PALLET'].includes(p.unit_type))) {
+            throw new ConflictException('Shipment contains a non-active or invalid carton/pallet identity');
           }
 
           const contentsResult = await client.query<{
