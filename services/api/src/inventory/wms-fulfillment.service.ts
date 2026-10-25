@@ -383,6 +383,14 @@ export class WmsFulfillmentService {
     const customerOrderReference = this.requiredText(dto.customer_order_reference, 'customer_order_reference', 160);
     const carrierName = dto.carrier_name?.trim() || null;
     const trackingReference = dto.tracking_reference?.trim() || null;
+    if ((carrierName === null) !== (trackingReference === null)) {
+      throw new BadRequestException('carrier_name and tracking_reference must be supplied together');
+    }
+    for (const [field, value] of [['carrier_name', carrierName], ['tracking_reference', trackingReference]] as const) {
+      if (value !== null && (value.length > 255 || !/^[\x20-\x7e]+$/.test(value))) {
+        throw new BadRequestException(field + ' must contain 1–255 visible ASCII characters');
+      }
+    }
     const orderId = dto.order_id ? this.uuid(dto.order_id, 'order_id') : null;
     const orderLineId = dto.order_line_id ? this.uuid(dto.order_line_id, 'order_line_id') : null;
     if ((orderId === null) !== (orderLineId === null)) {
