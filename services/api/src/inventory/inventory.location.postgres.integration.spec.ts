@@ -1761,6 +1761,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       shipment_code: 'SHIP-ORDER-POD-' + randomUUID().slice(0, 8),
       customer_name: 'Acceptance Customer', customer_order_reference: validReference,
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
+      carrier_name: 'Acme Logistics',
+      tracking_reference: 'ACME-TRACK-' + randomUUID().slice(0, 8),
     };
     const dispatch = await fulfillmentService.dispatchContainer(
       userId, tenantId, fixture.factoryId, cartonId, payload,
@@ -1851,7 +1853,105 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(shipmentList.shipments[0]).toMatchObject({
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
       latest_delivery_event_type: 'DELIVERED',
+      carrier_name: payload.carrier_name,
+      tracking_reference: payload.tracking_reference,
     });
+
+    // Cross-feature SRS regression: the same order-bound shipment, verified POD
+    // metadata, recall assessment/declaration and lifecycle-aware label snapshots
+    // must agree on the persisted shipment and identity state.
+    const labelTemplate = await traceabilityService.createLabelTemplate(
+      userId, tenantId, fixture.factoryId,
+      {
+        template_code: 'WP02-E2E-' + randomUUID().slice(0, 8),
+        name: 'WP02 end-to-end lifecycle label',
+        symbology: 'QR',
+        supported_unit_types: ['LOT', 'SHIPMENT'],
+        label_layout: {
+          page: { width_mm: 50, height_mm: 30 },
+          fields: ['unit_code', 'barcode_value', 'status'],
+        },
+      } as never,
+      requestId, traceId,
+    );
+    const labelBeforeRecall = await traceabilityService.issueLabel(
+      userId, tenantId, fixture.factoryId,
+      { unit_id: finishedLot.id, template_id: labelTemplate.id, copy_count: 1 } as never,
+      'wp02-e2e-label-before-' + randomUUID(), requestId, traceId,
+    );
+    expect(labelBeforeRecall.print_contract.identity_payload).toMatchObject({
+      unit_id: finishedLot.id,
+      status: 'ACTIVE',
+    });
+
+    const impact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 200,
+    );
+    expect(impact.affected_shipment_count).toBe(1);
+    expect(impact.affected_shipments[0]).toMatchObject({
+      shipment_unit_id: dispatch.shipment.shipment_unit_id,
+      container_unit_id: cartonId,
+      order_id: validOrder.orderId,
+      order_line_id: validOrder.orderLineId,
+      carrier_name: payload.carrier_name,
+      tracking_reference: payload.tracking_reference,
+      latest_delivery_event_type: 'DELIVERED',
+      pod_reference: proofPayload.proof_reference,
+      pod_sha256: 'a'.repeat(64),
+    });
+    expect(impact).toMatchObject({
+      impact_truncated: false,
+      provenance_truncated: false,
+      side_effects: { stock_changed: false, statuses_changed: false, records_created: false },
+    });
+
+    const stockBeforeRecall = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsBeforeRecall = await readBinTotals(fixture.factoryId, fixture.itemId);
+    const recallKey = 'wp02-e2e-recall-' + randomUUID();
+    const recall = await traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'E2E regression: delivered shipment requires recall review', depth: 12, limit: 200 },
+      recallKey, requestId, traceId,
+    );
+    expect(recall.replayed).toBe(false);
+    const recallActions = new Map(recall.units.map((row: { unit_id: string; unit_action: string }) => [row.unit_id, row.unit_action]));
+    expect(recallActions.get(finishedLot.id)).toBe('RECALLED');
+    expect(recallActions.get(cartonId)).toBe('SHIPPED_REVIEW_REQUIRED');
+    expect(recallActions.get(dispatch.shipment.shipment_unit_id)).toBe('SHIPPED_REVIEW_REQUIRED');
+
+    const labelAfterRecall = await traceabilityService.issueLabel(
+      userId, tenantId, fixture.factoryId,
+      { unit_id: finishedLot.id, template_id: labelTemplate.id, copy_count: 1 } as never,
+      'wp02-e2e-label-after-' + randomUUID(), requestId, traceId,
+    );
+    expect(labelAfterRecall.print_contract.identity_payload).toMatchObject({
+      unit_id: finishedLot.id,
+      status: 'RECALLED',
+    });
+    const shippedLabelAfterRecall = await traceabilityService.issueLabel(
+      userId, tenantId, fixture.factoryId,
+      { unit_id: dispatch.shipment.shipment_unit_id, template_id: labelTemplate.id, copy_count: 1 } as never,
+      'wp02-e2e-shipment-label-after-recall-' + randomUUID(), requestId, traceId,
+    );
+    expect(shippedLabelAfterRecall.print_contract.identity_payload).toMatchObject({
+      unit_id: dispatch.shipment.shipment_unit_id,
+      status: 'SHIPPED',
+    });
+
+    const persistedLifecycle = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, dispatch.shipment.shipment_unit_id]],
+    );
+    expect(persistedLifecycle.rows).toHaveLength(3);
+    expect(persistedLifecycle.rows.find((row) => row.id === finishedLot.id)?.status).toBe('RECALLED');
+    expect(persistedLifecycle.rows.find((row) => row.id === cartonId)?.status).toBe('SHIPPED');
+    expect(persistedLifecycle.rows.find((row) => row.id === dispatch.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
+    const stockAfterRecall = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsAfterRecall = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(stockAfterRecall?.quantity_on_hand).toBe(stockBeforeRecall?.quantity_on_hand);
+    expect(binsAfterRecall?.sum).toBe(binsBeforeRecall?.sum);
+
     const foreignTenantId = randomUUID();
     await expect(fulfillmentService.listDeliveryEvents(
       userId, foreignTenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
