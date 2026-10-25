@@ -24,6 +24,7 @@ All routes require authenticated actor, tenant and factory context plus the name
 - `POST /api/v1/traceability/genealogy` — add a directed relationship with source, target, quantity, notes and evidence JSON; requires `traceability.write` and `Idempotency-Key`.
 - `GET /api/v1/traceability/units/:unitId/forward?depth=5&limit=200` — follow downstream batches, products, packaging and shipment identities.
 - `GET /api/v1/traceability/units/:unitId/reverse?depth=5&limit=200` — follow a finished product/carton/shipment upstream to source lots and production identities.
+- `GET /api/v1/traceability/units/:unitId/recall-impact?depth=5&limit=200` — build a bounded, read-only recall impact assessment with downstream identities, matching WMS customer shipments, latest delivery/POD reference metadata and upstream provenance. The response exposes node/depth truncation indicators.
 - `POST /api/v1/traceability/units/:unitId/status` and `GET /api/v1/traceability/units/:unitId/status-history` — controlled state changes plus immutable history.
 - `POST /api/v1/traceability/label-templates`, `GET /api/v1/traceability/label-templates` — create/read label templates.
 - `GET /api/v1/traceability/settings`, `PUT /api/v1/traceability/settings` — read/update factory retention and allocation policy using optimistic `expected_version`.
