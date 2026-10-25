@@ -549,13 +549,16 @@ export class TraceabilityService {
     const downstream = await this.trace(userId, tenantId, factoryId, unitId, 'FORWARD', rawDepth, rawLimit);
     const upstream = await this.trace(userId, tenantId, factoryId, unitId, 'REVERSE', rawDepth, rawLimit);
     const rootId = String(downstream.root.id).toLowerCase();
-    const impactedUnits = downstream.units.filter((unit: QueryResultRow & { id: string }) =>
-      String(unit.id).toLowerCase() !== rootId);
+    // trace() deliberately returns database projection rows with a depth annotation;
+    // make the known projection fields explicit here for safe TypeScript narrowing.
+    const downstreamUnits = downstream.units as unknown as Array<
+      QueryResultRow & { id: string; unit_type?: string; product_role?: string; depth: number }
+    >;
+    const impactedUnits = downstreamUnits.filter((unit) => String(unit.id).toLowerCase() !== rootId);
     const shipmentIds = impactedUnits
-      .filter((unit: QueryResultRow & { id: string; unit_type?: string; product_role?: string }) =>
-        String(unit.unit_type ?? '').toUpperCase() === 'SHIPMENT'
+      .filter((unit) => String(unit.unit_type ?? '').toUpperCase() === 'SHIPMENT'
         || String(unit.product_role ?? '').toUpperCase() === 'SHIPMENT')
-      .map((unit: QueryResultRow & { id: string }) => String(unit.id));
+      .map((unit) => String(unit.id));
 
     const shipmentResult = await this.database.query<{
       shipment_unit_id: string;
@@ -610,8 +613,8 @@ export class TraceabilityService {
       impacted_unit_count: impactedUnits.length,
       impacted_units: impactedUnits,
       downstream_relationships: downstream.relationships,
-      upstream_provenance: upstream.units.filter((unit: QueryResultRow & { id: string }) =>
-        String(unit.id).toLowerCase() !== rootId),
+      upstream_provenance: (upstream.units as unknown as Array<QueryResultRow & { id: string }>)
+        .filter((unit) => String(unit.id).toLowerCase() !== rootId),
       upstream_relationships: upstream.relationships,
       affected_shipment_count: shipmentResult.rows.length,
       affected_shipments: shipmentResult.rows,
