@@ -1225,6 +1225,30 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-carton-remainder-seal-' + randomUUID(), requestId, traceId,
     );
 
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      {
+        shipment_code: 'SHIP-CARRIER-PAIR-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARRIER-PAIR-' + randomUUID().slice(0, 8),
+        carrier_name: 'Acceptance Carrier',
+      } as never,
+      'wms-carrier-missing-tracking-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    // The dispatch lookup and database index normalize carrier/tracking case.
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      {
+        shipment_code: 'SHIP-CARRIER-DUP-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARRIER-DUP-' + randomUUID().slice(0, 8),
+        carrier_name: dispatchPayload.carrier_name.toLowerCase(),
+        tracking_reference: dispatchPayload.tracking_reference.toLowerCase(),
+      },
+      'wms-carrier-duplicate-tracking-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
     const rollbackPayload = {
       shipment_code: 'SHIP-ROLLBACK-' + randomUUID().slice(0, 8),
       customer_name: 'Rollback Acceptance Customer',
