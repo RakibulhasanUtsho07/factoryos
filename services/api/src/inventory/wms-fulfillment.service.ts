@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
   AddWmsPackingContentDto, CreateWmsPackingContainerDto, DispatchWmsShipmentDto,
+  RecordWmsShipmentDeliveryEventDto,
 } from './dto/wms-packing-shipment.dto';
 
 export interface WmsContainerRow {
@@ -382,9 +383,15 @@ export class WmsFulfillmentService {
     const customerOrderReference = this.requiredText(dto.customer_order_reference, 'customer_order_reference', 160);
     const carrierName = dto.carrier_name?.trim() || null;
     const trackingReference = dto.tracking_reference?.trim() || null;
+    const orderId = dto.order_id ? this.uuid(dto.order_id, 'order_id') : null;
+    const orderLineId = dto.order_line_id ? this.uuid(dto.order_line_id, 'order_line_id') : null;
+    if ((orderId === null) !== (orderLineId === null)) {
+      throw new BadRequestException('order_id and order_line_id must be supplied together');
+    }
     const requestHash = this.hash({
       container_unit_id: containerId, shipment_code: shipmentCode, customer_name: customerName,
       customer_order_reference: customerOrderReference, carrier_name: carrierName, tracking_reference: trackingReference,
+      order_id: orderId, order_line_id: orderLineId,
     });
     const correlationId = this.correlation(requestId, traceId);
 
@@ -396,11 +403,13 @@ export class WmsFulfillmentService {
             [tenantId + ':' + factoryId + ':wms-dispatch:' + key]);
           const replay = await client.query<{
             shipment_unit_id: string; shipment_code: string; container_unit_id: string;
-            quantity: string; unit: string; inventory_movement_id: string; request_hash: string;
+            quantity: string; unit: string; inventory_movement_id: string;
+            order_id: string | null; order_line_id: string | null; request_hash: string;
           }>(`
             SELECT shipment_unit_id::text AS shipment_unit_id, shipment_code,
               container_unit_id::text AS container_unit_id, quantity::text AS quantity, unit,
-              inventory_movement_id::text AS inventory_movement_id, request_hash
+              inventory_movement_id::text AS inventory_movement_id,
+              order_id::text AS order_id, order_line_id::text AS order_line_id, request_hash
             FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE
           `, [tenantId, factoryId, key]);
           if (replay.rows[0]) {
@@ -516,14 +525,56 @@ export class WmsFulfillmentService {
             }
           }
 
-          const itemResult = await client.query<{ unit: string; status: string }>(`
-            SELECT unit, status FROM inventory_items
+          const itemResult = await client.query<{ unit: string; status: string; sku: string }>(`
+            SELECT unit, status, sku FROM inventory_items
             WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE
           `, [container.item_id, tenantId, factoryId]);
           const item = itemResult.rows[0];
           if (!item || item.status !== 'ACTIVE' || item.unit !== container.unit) {
             throw new ConflictException('Shipment inventory item is inactive or its UOM does not match');
           }
+
+          if (orderId && orderLineId) {
+            const orderResult = await client.query<{
+              order_number: string; customer_name: string | null; customer_reference: string | null; status: string;
+            }>(`
+              SELECT order_number, customer_name, customer_reference, status
+              FROM orders WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE
+            `, [orderId, tenantId, factoryId]);
+            const order = orderResult.rows[0];
+            if (!order) throw new NotFoundException('Customer order not found in this factory');
+            if (!['CONFIRMED', 'IN_PROGRESS', 'COMPLETED'].includes(order.status)) {
+              throw new ConflictException('Only confirmed, in-progress or completed orders may be dispatched');
+            }
+            if (!order.customer_name?.trim()
+              || order.customer_name.trim().toLowerCase() !== customerName.trim().toLowerCase()) {
+              throw new ConflictException('Shipment customer must match the bound customer order');
+            }
+            const expectedReference = order.customer_reference?.trim() || order.order_number.trim();
+            if (expectedReference.toLowerCase() !== customerOrderReference.trim().toLowerCase()) {
+              throw new ConflictException('Shipment customer-order reference must match the bound order reference');
+            }
+            const lineResult = await client.query<{ product_code: string; unit: string; quantity: string; inventory_item_id: string | null }>(`
+              SELECT product_code, unit, quantity::text AS quantity, inventory_item_id::text AS inventory_item_id
+              FROM order_lines WHERE id=$1 AND order_id=$2 AND tenant_id=$3 AND factory_id=$4 FOR UPDATE
+            `, [orderLineId, orderId, tenantId, factoryId]);
+            const orderLine = lineResult.rows[0];
+            if (!orderLine) throw new NotFoundException('Customer order line not found in the bound order');
+            if (orderLine.product_code.trim().toUpperCase() !== item.sku.trim().toUpperCase()
+              || orderLine.unit.trim().toUpperCase() !== item.unit.trim().toUpperCase()
+              || (orderLine.inventory_item_id !== null && orderLine.inventory_item_id !== container.item_id)) {
+              throw new ConflictException('Shipment item, SKU and UOM must match the bound order line');
+            }
+            const priorShipped = await client.query<{ quantity: string }>(`
+              SELECT COALESCE(sum(quantity),0)::text AS quantity
+              FROM wms_shipments
+              WHERE tenant_id=$1 AND factory_id=$2 AND order_id=$3 AND order_line_id=$4
+            `, [tenantId, factoryId, orderId, orderLineId]);
+            if (this.units(priorShipped.rows[0]?.quantity ?? '0') + totalUnits > this.units(orderLine.quantity)) {
+              throw new ConflictException('Shipment quantity exceeds the unshipped quantity on the bound order line');
+            }
+          }
+
           const aggregateResult = await client.query<{ quantity_on_hand: string; quantity_reserved: string }>(`
             SELECT quantity_on_hand::text AS quantity_on_hand, quantity_reserved::text AS quantity_reserved
             FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 FOR UPDATE
@@ -554,6 +605,7 @@ export class WmsFulfillmentService {
               customer_name: customerName, customer_order_reference: customerOrderReference,
               carrier_name: carrierName, tracking_reference: trackingReference,
               container_unit_id: containerId, item_id: container.item_id,
+              order_id: orderId, order_line_id: orderLineId,
             }), 'wms-shipment-' + this.hash(key), requestHash, userId, correlationId]);
           const shipmentUnitId = unitIdResult.rows[0]?.id;
           if (!shipmentUnitId) throw new Error('WMS_SHIPMENT_TRACEABILITY_IDENTITY_INSERT_FAILED');
@@ -623,13 +675,13 @@ export class WmsFulfillmentService {
           await client.query(`
             INSERT INTO wms_shipments (
               shipment_unit_id, tenant_id, factory_id, container_unit_id, item_id, source_location_id,
-              inventory_movement_id, shipment_code, customer_name, customer_order_reference,
+              inventory_movement_id, shipment_code, customer_name, customer_order_reference, order_id, order_line_id,
               carrier_name, tracking_reference, quantity, unit, status, idempotency_key, request_hash,
               dispatched_by_user_id, correlation_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::numeric,$14,'DISPATCHED',$15,$16,$17,$18)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::numeric,$16,'DISPATCHED',$17,$18,$19,$20)
           `, [shipmentUnitId, tenantId, factoryId, containerId, container.item_id, container.location_id,
-            movementId, shipmentCode, customerName, customerOrderReference, carrierName, trackingReference,
-            quantityDecimal, container.unit, key, requestHash, userId, correlationId]);
+            movementId, shipmentCode, customerName, customerOrderReference, orderId, orderLineId,
+            carrierName, trackingReference, quantityDecimal, container.unit, key, requestHash, userId, correlationId]);
 
           await client.query(`
             UPDATE wms_packing_containers
@@ -685,13 +737,14 @@ export class WmsFulfillmentService {
               shipment_code: shipmentCode, customer_name: customerName,
               customer_order_reference: customerOrderReference, container_unit_id: containerId,
               item_id: container.item_id, quantity: quantityDecimal, unit: container.unit, inventory_movement_id: movementId,
+              order_id: orderId, order_line_id: orderLineId,
             });
           await this.insertOutbox(client, tenantId, factoryId, 'WMS_SHIPMENT', shipmentUnitId,
             'WMS.SHIPMENT_DISPATCHED', {
               shipment_unit_id: shipmentUnitId, shipment_code: shipmentCode,
               customer_order_reference: customerOrderReference, container_unit_id: containerId,
               item_id: container.item_id, quantity: quantityDecimal, unit: container.unit,
-              inventory_movement_id: movementId,
+              inventory_movement_id: movementId, order_id: orderId, order_line_id: orderLineId,
             });
           return {
             shipment: {
@@ -699,7 +752,8 @@ export class WmsFulfillmentService {
               item_id: container.item_id, source_location_id: container.location_id,
               quantity: quantityDecimal, unit: container.unit, inventory_movement_id: movementId,
               customer_name: customerName, customer_order_reference: customerOrderReference,
-              carrier_name: carrierName, tracking_reference: trackingReference, status: 'DISPATCHED',
+              carrier_name: carrierName, tracking_reference: trackingReference,
+              order_id: orderId, order_line_id: orderLineId, status: 'DISPATCHED',
             },
             replayed: false,
           };
@@ -729,11 +783,21 @@ export class WmsFulfillmentService {
         container_unit.unit_code AS container_code,
         s.item_id::text AS item_id, s.source_location_id::text AS source_location_id,
         s.inventory_movement_id::text AS inventory_movement_id,
-        s.customer_name, s.customer_order_reference, s.carrier_name, s.tracking_reference,
+        s.customer_name, s.customer_order_reference, s.order_id::text AS order_id,
+        s.order_line_id::text AS order_line_id, s.carrier_name, s.tracking_reference,
         s.quantity::text AS quantity, s.unit, s.status,
         s.dispatched_at::text AS dispatched_at,
-        shipment_unit.status AS traceability_status
+        shipment_unit.status AS traceability_status,
+        latest_delivery.event_type AS latest_delivery_event_type,
+        latest_delivery.event_at::text AS latest_delivery_event_at
       FROM wms_shipments s
+      LEFT JOIN LATERAL (
+        SELECT e.event_type, e.event_at
+        FROM wms_shipment_delivery_events e
+        WHERE e.tenant_id=s.tenant_id AND e.factory_id=s.factory_id
+          AND e.shipment_unit_id=s.shipment_unit_id
+        ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+      ) latest_delivery ON TRUE
       JOIN traceability_units shipment_unit
         ON shipment_unit.id=s.shipment_unit_id
        AND shipment_unit.tenant_id=s.tenant_id AND shipment_unit.factory_id=s.factory_id
@@ -754,6 +818,113 @@ export class WmsFulfillmentService {
     return { shipments: result.rows, limit };
   }
 
+  async recordDeliveryEvent(
+    userId: string, tenantId: string, factoryId: string, shipmentUnitId: string,
+    dto: RecordWmsShipmentDeliveryEventDto, rawKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const shipmentId = this.uuid(shipmentUnitId, 'shipmentUnitId');
+    const key = this.requiredKey(rawKey);
+    const eventType = this.requiredText(dto.event_type, 'event_type', 24).toUpperCase();
+    if (!['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'DELIVERED', 'RETURNED'].includes(eventType)) {
+      throw new BadRequestException('event_type is not supported');
+    }
+    const eventAt = dto.event_at ? new Date(dto.event_at) : new Date();
+    if (!Number.isFinite(eventAt.getTime())) throw new BadRequestException('event_at must be a valid timestamp');
+    if (eventAt.getTime() > Date.now() + 10 * 60 * 1000) {
+      throw new BadRequestException('event_at cannot be more than ten minutes in the future');
+    }
+    const recipientName = dto.recipient_name?.trim() || null;
+    const proofType = dto.proof_type?.trim().toUpperCase() || null;
+    const proofReference = dto.proof_reference?.trim() || null;
+    const proofSha256 = dto.proof_sha256?.trim().toLowerCase() || null;
+    const signedAt = dto.signed_at ? new Date(dto.signed_at) : null;
+    const notes = dto.notes?.trim() || null;
+    if (eventType === 'DELIVERED') {
+      if (!recipientName || !proofType || !proofReference || !proofSha256 || !signedAt
+        || !Number.isFinite(signedAt.getTime()) || signedAt.getTime() > eventAt.getTime()) {
+        throw new BadRequestException('DELIVERED requires recipient, proof type, object key, SHA-256 digest and signed timestamp');
+      }
+      if (!['SIGNATURE', 'PHOTO', 'DOCUMENT', 'OTP', 'CUSTOMER_ACKNOWLEDGEMENT'].includes(proofType)) {
+        throw new BadRequestException('proof_type is not supported');
+      }
+      if (!/^[a-f0-9]{64}$/.test(proofSha256)) throw new BadRequestException('proof_sha256 must be SHA-256 hex');
+      if (proofReference.length > 500 || !/^(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9._/-]{0,499}$/.test(proofReference)) {
+        throw new BadRequestException('proof_reference must be a relative storage object key');
+      }
+    } else if (recipientName || proofType || proofReference || proofSha256 || signedAt) {
+      throw new BadRequestException('POD fields may only be provided for DELIVERED events');
+    }
+    const requestHash = this.hash({
+      shipment_unit_id: shipmentId, event_type: eventType, event_at: eventAt.toISOString(),
+      recipient_name: recipientName, proof_type: proofType, proof_reference: proofReference,
+      proof_sha256: proofSha256, signed_at: signedAt?.toISOString() ?? null, notes,
+    });
+    const requestUuid = this.uuidOrNull(requestId);
+    const correlationId = this.correlation(requestId, traceId);
+    try {
+      return await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: this.uuidOrNull(traceId) },
+        async (client) => {
+          const shipmentResult = await client.query<{ shipment_unit_id: string; shipment_code: string; status: string }>(
+            'SELECT shipment_unit_id::text AS shipment_unit_id, shipment_code, status FROM wms_shipments WHERE shipment_unit_id=$1 AND tenant_id=$2 AND factory_id=$3 FOR UPDATE',
+            [shipmentId, tenantId, factoryId],
+          );
+          const shipment = shipmentResult.rows[0];
+          if (!shipment) throw new NotFoundException('Shipment not found in this factory');
+          await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':wms-delivery-event:' + key]);
+          const replay = await client.query<{ id: string; request_hash: string }>(
+            'SELECT id::text AS id, request_hash FROM wms_shipment_delivery_events WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE',
+            [tenantId, factoryId, key],
+          );
+          if (replay.rows[0]) {
+            if (replay.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Delivery event idempotency key was used for a different request');
+            }
+            const prior = await client.query(
+              'SELECT id::text AS id, shipment_unit_id::text AS shipment_unit_id, event_type, source_system, event_at::text AS event_at, recipient_name, proof_type, proof_reference, proof_sha256, signed_at::text AS signed_at, notes, recorded_by_user_id::text AS recorded_by_user_id, created_at::text AS created_at FROM wms_shipment_delivery_events WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+              [replay.rows[0].id, tenantId, factoryId],
+            );
+            return { event: prior.rows[0], replayed: true };
+          }
+          const inserted = await client.query<{ id: string; [key: string]: unknown }>(
+            'INSERT INTO wms_shipment_delivery_events (tenant_id,factory_id,shipment_unit_id,event_type,source_system,event_at,recipient_name,proof_type,proof_reference,proof_sha256,signed_at,notes,idempotency_key,request_hash,recorded_by_user_id,correlation_id) VALUES ($1,$2,$3,$4,$5,$6::timestamptz,$7,$8,$9,$10,$11::timestamptz,$12,$13,$14,$15,$16::uuid) RETURNING id::text AS id, shipment_unit_id::text AS shipment_unit_id, event_type, source_system, event_at::text AS event_at, recipient_name, proof_type, proof_reference, proof_sha256, signed_at::text AS signed_at, notes, recorded_by_user_id::text AS recorded_by_user_id, created_at::text AS created_at',
+            [tenantId, factoryId, shipmentId, eventType, 'MANUAL', eventAt.toISOString(), recipientName, proofType, proofReference, proofSha256, signedAt?.toISOString() ?? null, notes, key, requestHash, userId, correlationId],
+          );
+          const event = inserted.rows[0];
+          if (!event) throw new Error('WMS_SHIPMENT_DELIVERY_EVENT_INSERT_FAILED');
+          await this.insertAudit(client, tenantId, factoryId, userId, 'WMS_SHIPMENT_DELIVERY_EVENT', event.id, 'RECORDED', correlationId, requestId, {
+            shipment_unit_id: shipmentId, shipment_code: shipment.shipment_code, event_type: eventType, event_at: eventAt.toISOString(),
+            source_system: 'MANUAL', proof_type: proofType, proof_reference: proofReference, proof_sha256: proofSha256,
+          });
+          await this.insertOutbox(client, tenantId, factoryId, 'WMS_SHIPMENT_DELIVERY_EVENT', event.id, 'WMS.SHIPMENT_DELIVERY_EVENT_RECORDED', {
+            delivery_event_id: event.id, shipment_unit_id: shipmentId, shipment_code: shipment.shipment_code, event_type: eventType,
+            event_at: eventAt.toISOString(), source_system: 'MANUAL', proof_type: proofType, proof_reference: proofReference, proof_sha256: proofSha256,
+          });
+          return { event, replayed: false };
+        },
+      );
+    } catch (error) {
+      throw this.mapError(error, 'Shipment delivery event conflicts with lifecycle, proof requirements or idempotency binding');
+    }
+  }
+
+  async listDeliveryEvents(userId: string, tenantId: string, factoryId: string, shipmentUnitId: string) {
+    this.validateScope(userId, tenantId, factoryId);
+    const shipmentId = this.uuid(shipmentUnitId, 'shipmentUnitId');
+    const shipment = await this.database.query(
+      'SELECT shipment_unit_id::text AS shipment_unit_id, shipment_code FROM wms_shipments WHERE shipment_unit_id=$1 AND tenant_id=$2 AND factory_id=$3 LIMIT 1',
+      [shipmentId, tenantId, factoryId], { tenantId, userId },
+    );
+    if (!shipment.rows[0]) throw new NotFoundException('Shipment not found in this factory');
+    const result = await this.database.query(
+      'SELECT id::text AS id, shipment_unit_id::text AS shipment_unit_id, event_type, source_system, event_at::text AS event_at, recipient_name, proof_type, proof_reference, proof_sha256, signed_at::text AS signed_at, notes, recorded_by_user_id::text AS recorded_by_user_id, created_at::text AS created_at FROM wms_shipment_delivery_events WHERE tenant_id=$1 AND factory_id=$2 AND shipment_unit_id=$3 ORDER BY created_at, id',
+      [tenantId, factoryId, shipmentId], { tenantId, userId },
+    );
+    return { shipment: shipment.rows[0], events: result.rows };
+  }
   async getContainer(userId: string, tenantId: string, factoryId: string, containerUnitId: string) {
     this.validateScope(userId, tenantId, factoryId);
     const id = this.uuid(containerUnitId, 'containerUnitId');

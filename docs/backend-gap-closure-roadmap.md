@@ -54,4 +54,14 @@
 
 **Boundary:** this closes the backend directed-movement identity gap for the supported finished-good LOT. It does not claim carton/pallet shipment capture, scanner/RFID hardware acceptance, production-site deployment, or completion of all WP02/SRS requirements.
 
+### WP02 slice — internal customer-order binding and proof-of-delivery evidence
+
+**Gap:** migration 201 dispatches a sealed carton/pallet to a caller-supplied customer and external order reference, but did not prove the shipment matched a FactoryOS customer order line or keep a durable delivery/POD timeline.
+
+**Implementation/acceptance target:** migration 202 adds optional `order_id`/`order_line_id` binding to immutable shipment records and database guards that verify same tenant/factory, permitted order status, matching customer and order reference, matching finished-good SKU/UOM, and cumulative shipment quantity not exceeding the order line. Legacy unbound shipments remain accepted for compatibility and must not be described as ERP-validated. The delivery-event API stores append-only, idempotent lifecycle events and requires recipient/proof type/object-key/SHA-256/signed timestamp for `DELIVERED`; state transitions, RLS, actor scope, audit/outbox and migration replay are database-guarded.
+
+**Direct regression/acceptance:** PostgreSQL integration covers order-line over-shipment rejection without stock loss, wrong customer rejection, successful exact-order binding, delivery-event replay, missing-POD rejection, valid POD evidence, rejection of events after terminal delivery and cross-tenant reads. `services/api/test/wms-shipment-delivery-order.sql` asserts the database columns, constraints, RLS and triggers; CI re-applies migration 202 and the SQL contract.
+
+**Boundary:** the API records caller-supplied POD metadata and does not upload/fetch the proof object or independently validate its digest. Carrier-specific webhook authentication/signature rotation/replay, a configured object-storage adapter, barcode/QR rendering, end-to-end offline/RFID shipping capture and live site/device acceptance still require their own provider/device evidence. This is one bounded WP02 slice, not acceptance of all WP02/SRS requirements.
+
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.

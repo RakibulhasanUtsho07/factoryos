@@ -72,7 +72,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_shipment_delivery_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_shipments DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE order_lines DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE orders DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_contents DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_containers DISABLE TRIGGER USER');
         await adminPool.query(
@@ -109,7 +112,19 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
+            'DELETE FROM wms_shipment_delivery_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
             'DELETE FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM order_lines WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM orders WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -187,7 +202,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE product_genealogy_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_unit_status_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_shipment_delivery_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_shipments ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE order_lines ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE orders ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_packing_contents ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_packing_containers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations ENABLE TRIGGER USER');
@@ -1309,6 +1327,200 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       [finishedLot.id, tenantId, fixture.factoryId],
     );
     expect(finalLotStatus.rows[0]?.status).toBe('SHIPPED');
+  });
+
+  it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
+    const fixture = await createStockFixture('2.0000');
+    const { binA } = await createWarehouseAndBins(fixture.factoryId);
+    const finishedLot = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT', product_role: 'FINISHED_GOOD',
+        unit_code: 'FG-ORDER-POD-' + randomUUID().slice(0, 8),
+        inventory_item_id: fixture.itemId, quantity: 2, unit: 'PCS',
+        external_reference: 'wms-order-pod-acceptance',
+      } as never,
+      'fg-order-pod-register-' + randomUUID(), requestId, traceId,
+    );
+    await adminPool.query(
+      `INSERT INTO inventory_traceability_location_balances
+         (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
+       VALUES ($1,$2,$3,$4,$5,2.0000)`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
+    );
+    await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId, destination_location_id: binA.id,
+        quantity: 2, movement_purpose: 'PUT_AWAY', traceability_unit_id: finishedLot.id,
+      },
+      'fg-order-pod-putaway-' + randomUUID(), requestId, traceId,
+    );
+    const carton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON', container_code: 'CARTON-ORDER-POD-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId, location_id: binA.id, capacity_quantity: 2,
+      },
+      'wms-order-pod-carton-create-' + randomUUID(), requestId, traceId,
+    );
+    const cartonId = carton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 2 },
+      'wms-order-pod-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, cartonId,
+      'wms-order-pod-seal-' + randomUUID(), requestId, traceId,
+    );
+
+    const itemResult = await adminPool.query<{ sku: string; name: string; unit: string }>(
+      `SELECT sku, name, unit FROM inventory_items
+       WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [fixture.itemId, tenantId, fixture.factoryId],
+    );
+    const item = itemResult.rows[0];
+    expect(item).toBeDefined();
+    const createOrderLine = async (quantity: number, reference: string) => {
+      const orderNumber = 'SO-WMS-POD-' + randomUUID().slice(0, 8);
+      const order = await adminPool.query<{ id: string }>(
+        `INSERT INTO orders (tenant_id, factory_id, order_number, customer_name, customer_reference, status, order_date, currency, created_by_user_id)
+         VALUES ($1,$2,$3,'Acceptance Customer',$4,'CONFIRMED',CURRENT_DATE,'BDT',$5)
+         RETURNING id::text AS id`,
+        [tenantId, fixture.factoryId, orderNumber, reference, userId],
+      );
+      const orderId = order.rows[0]?.id;
+      if (!orderId) throw new Error('WMS shipment acceptance order was not created');
+      const line = await adminPool.query<{ id: string }>(
+        `INSERT INTO order_lines (tenant_id, factory_id, order_id, line_number, product_code, product_name, inventory_item_id, quantity, unit)
+         VALUES ($1,$2,$3,1,$4,$5,$6,$7::numeric,$8) RETURNING id::text AS id`,
+        [tenantId, fixture.factoryId, orderId, item!.sku, item!.name, fixture.itemId, quantity.toFixed(4), item!.unit],
+      );
+      const orderLineId = line.rows[0]?.id;
+      if (!orderLineId) throw new Error('WMS shipment acceptance order line was not created');
+      return { orderId, orderLineId, orderNumber, reference };
+    };
+
+    const tooSmallReference = 'CUSTOMER-ORDER-TOO-SMALL-' + randomUUID().slice(0, 8);
+    const tooSmallOrder = await createOrderLine(1, tooSmallReference);
+    const tooSmallPayload = {
+      shipment_code: 'SHIP-ORDER-TOO-SMALL-' + randomUUID().slice(0, 8),
+      customer_name: 'Acceptance Customer', customer_order_reference: tooSmallReference,
+      order_id: tooSmallOrder.orderId, order_line_id: tooSmallOrder.orderLineId,
+    };
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, cartonId, tooSmallPayload,
+      'wms-order-pod-overship-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+    const balanceAfterRejectedOrder = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('2.0000');
+
+    const validReference = 'CUSTOMER-ORDER-VALID-' + randomUUID().slice(0, 8);
+    const validOrder = await createOrderLine(2, validReference);
+    const invalidCustomerPayload = {
+      shipment_code: 'SHIP-ORDER-CUSTOMER-MISMATCH-' + randomUUID().slice(0, 8),
+      customer_name: 'Different Customer', customer_order_reference: validReference,
+      order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
+    };
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, cartonId, invalidCustomerPayload,
+      'wms-order-pod-customer-mismatch-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const payload = {
+      shipment_code: 'SHIP-ORDER-POD-' + randomUUID().slice(0, 8),
+      customer_name: 'Acceptance Customer', customer_order_reference: validReference,
+      order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
+    };
+    const dispatch = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, cartonId, payload,
+      'wms-order-pod-dispatch-' + randomUUID(), requestId, traceId,
+    );
+    expect(dispatch).toMatchObject({
+      replayed: false,
+      shipment: { order_id: validOrder.orderId, order_line_id: validOrder.orderLineId, quantity: '2.0000', status: 'DISPATCHED' },
+    });
+    const storedOrderBinding = await adminPool.query<{ order_id: string; order_line_id: string; customer_order_reference: string }>(
+      `SELECT order_id::text AS order_id, order_line_id::text AS order_line_id, customer_order_reference
+       FROM wms_shipments WHERE shipment_unit_id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [dispatch.shipment.shipment_unit_id, tenantId, fixture.factoryId],
+    );
+    expect(storedOrderBinding.rows[0]).toEqual({
+      order_id: validOrder.orderId, order_line_id: validOrder.orderLineId, customer_order_reference: validReference,
+    });
+
+    const transitAt = new Date(Date.now() - 120_000).toISOString();
+    const transitPayload = { event_type: 'IN_TRANSIT' as const, event_at: transitAt, notes: 'Shipment handed to carrier' };
+    const transitKey = 'wms-delivery-transit-' + randomUUID();
+    const transit = await fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      transitPayload, transitKey, requestId, traceId,
+    );
+    expect(transit).toMatchObject({ replayed: false, event: { event_type: 'IN_TRANSIT', source_system: 'MANUAL' } });
+    const transitReplay = await fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      transitPayload, transitKey, requestId, traceId,
+    );
+    expect(transitReplay).toMatchObject({ replayed: true, event: { id: transit.event.id } });
+
+    await expect(fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      { event_type: 'DELIVERED', event_at: new Date().toISOString() },
+      'wms-delivery-no-proof-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const deliveredAt = new Date().toISOString();
+    const signedAt = new Date(Date.now() - 60_000).toISOString();
+    const proofPayload = {
+      event_type: 'DELIVERED' as const, event_at: deliveredAt,
+      recipient_name: 'Acceptance Recipient', proof_type: 'SIGNATURE' as const,
+      proof_reference: 'pod/' + dispatch.shipment.shipment_unit_id + '/signature.png',
+      proof_sha256: 'a'.repeat(64), signed_at: signedAt, notes: 'POD acceptance evidence',
+    };
+    const proofKey = 'wms-delivery-proof-' + randomUUID();
+    const proof = await fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      proofPayload, proofKey, requestId, traceId,
+    );
+    expect(proof).toMatchObject({
+      replayed: false,
+      event: {
+        event_type: 'DELIVERED', recipient_name: 'Acceptance Recipient', proof_type: 'SIGNATURE',
+        proof_reference: proofPayload.proof_reference, proof_sha256: 'a'.repeat(64),
+      },
+    });
+    expect(new Date(proof.event.signed_at as string).getTime()).toBe(new Date(signedAt).getTime());
+    const proofReplay = await fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      proofPayload, proofKey, requestId, traceId,
+    );
+    expect(proofReplay).toMatchObject({ replayed: true, event: { id: proof.event.id } });
+    await expect(fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      { event_type: 'IN_TRANSIT', event_at: new Date().toISOString() },
+      'wms-delivery-terminal-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const deliveryHistory = await fulfillmentService.listDeliveryEvents(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+    );
+    expect(deliveryHistory.events).toHaveLength(2);
+    expect(deliveryHistory.events.map((event: { event_type: string }) => event.event_type)).toEqual(['IN_TRANSIT', 'DELIVERED']);
+    expect(deliveryHistory.events[1]).toMatchObject({
+      proof_reference: proofPayload.proof_reference, proof_sha256: 'a'.repeat(64), recipient_name: 'Acceptance Recipient',
+    });
+    const shipmentList = await fulfillmentService.listShipments(
+      userId, tenantId, fixture.factoryId, { search: validReference },
+    );
+    expect(shipmentList.shipments[0]).toMatchObject({
+      order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
+      latest_delivery_event_type: 'DELIVERED',
+    });
+    const foreignTenantId = randomUUID();
+    await expect(fulfillmentService.listDeliveryEvents(
+      userId, foreignTenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+    )).rejects.toThrow(/not found in this factory/i);
   });
 
 });
