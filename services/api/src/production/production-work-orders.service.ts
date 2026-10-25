@@ -1035,8 +1035,23 @@ export class ProductionWorkOrdersService {
         if (consumedMaterials.reservationCount < materialReadiness.requirement_count) {
           throw new ConflictException('Work-order material reservations could not all be consumed');
         }
+        const genealogy = await this.inventoryReservationService.recordWorkOrderMaterialGenealogy(
+          client,
+          {
+            userId, tenantId, factoryId,
+            workOrderId: workOrder.id,
+            workOrderNumber: workOrder.work_order_number,
+            finishedItemId: workOrder.finished_item_id,
+            correlationId,
+            requestId,
+          },
+        );
         payload.material_reservation_count = consumedMaterials.reservationCount;
         payload.consumed_material_quantities = consumedMaterials.quantityByItem;
+        payload.material_genealogy_event_count = genealogy.eventCount;
+        payload.material_genealogy_replayed_event_count = genealogy.replayedEventCount;
+        payload.material_genealogy_source_allocation_count = genealogy.sourceAllocationCount;
+        payload.material_genealogy_target_unit_count = genealogy.targetUnitCount;
       }
 
       if (command !== 'CANCEL' && command !== 'COMPLETE' && command !== 'RELEASE' && command !== 'HOLD' && command !== 'RESUME') {
