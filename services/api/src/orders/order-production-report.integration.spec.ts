@@ -133,6 +133,8 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
         'inventory_movements',
         'inventory_stock_balances',
         'inventory_location_balances',
+        'inventory_traceability_location_balances',
+        'traceability_units',
       ];
       for (const table of triggerTables) {
         await pool.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
@@ -158,6 +160,39 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
            WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])
              AND reference_type = 'PRODUCTION_OUTPUT'`,
           [tenantId, factoryId, itemIds],
+        );
+        // Output postings now hold immutable report-derived traceability lots.
+        // Remove only these random integration fixtures and their tracked-location
+        // balances before deleting the source reports; production data is untouched.
+        await pool.query(
+          `DELETE FROM inventory_traceability_location_balances
+           WHERE tenant_id = $1 AND factory_id = $2
+             AND traceability_unit_id IN (
+               SELECT p.traceability_unit_id
+               FROM production_output_postings p
+               WHERE p.tenant_id = $1 AND p.factory_id = $2
+                 AND p.production_report_id IN (
+                   SELECT r.id FROM order_production_reports r
+                   WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
+                 )
+                 AND p.traceability_unit_id IS NOT NULL
+             )`,
+          [tenantId, factoryId, orderIds],
+        );
+        await pool.query(
+          `DELETE FROM traceability_units u
+           WHERE u.tenant_id = $1 AND u.factory_id = $2
+             AND (
+               u.production_report_id IN (
+                 SELECT r.id FROM order_production_reports r
+                 WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
+               )
+               OR u.attributes->>'production_report_id' IN (
+                 SELECT r.id::text FROM order_production_reports r
+                 WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
+               )
+             )`,
+          [tenantId, factoryId, orderIds],
         );
         await pool.query(
           'DELETE FROM order_production_reports WHERE tenant_id = $1 AND factory_id = $2 AND order_id = ANY($3::uuid[])',
