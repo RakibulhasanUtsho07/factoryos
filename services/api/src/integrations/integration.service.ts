@@ -117,7 +117,7 @@ export class IntegrationService {
     if (shipment.status !== 'DISPATCHED') throw new ConflictException('POD files may only be uploaded for dispatched shipments');
 
     const objectId = randomUUID();
-    const objectKey = 'pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId.toLowerCase() + '/' + objectId;
+    const objectKey = 'pod/' + tenantId.toLowerCase() + '/' + factoryId.toLowerCase() + '/' + shipmentUnitId.toLowerCase() + '/' + objectId;
     const stored = await uploadWmsPodObjectAndVerify(this.config, objectKey, file.buffer, file.mimetype);
     const correlationId = (traceId && isUUID(traceId) ? traceId : null) ??
       (requestId && isUUID(requestId) ? requestId : null) ?? objectId;
@@ -475,6 +475,37 @@ export class IntegrationService {
       // Existing event IDs must reach the transaction's exact-replay/conflict logic
       // even if storage is currently unavailable; never mask replay reconciliation.
       if (!priorReceipt) {
+        const carrierName = typeof envelope.payload.carrier_name === 'string'
+          ? envelope.payload.carrier_name.trim() : '';
+        const trackingReference = typeof envelope.payload.tracking_reference === 'string'
+          ? envelope.payload.tracking_reference.trim() : '';
+        if (!carrierName || !trackingReference) {
+          throw new BadRequestException('Delivered carrier proof requires carrier_name and tracking_reference');
+        }
+        const shipmentLookup = await this.database.query<{ shipment_unit_id: string }>(
+          `SELECT shipment_unit_id::text AS shipment_unit_id
+           FROM wms_shipments
+           WHERE tenant_id=$1 AND factory_id=$2
+             AND lower(btrim(carrier_name))=lower(btrim($3))
+             AND upper(btrim(tracking_reference))=upper(btrim($4))
+           ORDER BY shipment_unit_id
+           LIMIT 2`,
+          [scope.tenant_id, scope.factory_id, carrierName, trackingReference],
+          { tenantId: scope.tenant_id },
+        );
+        if (shipmentLookup.rows.length === 0) {
+          throw new NotFoundException('Carrier tracking reference does not resolve to a shipment in this factory');
+        }
+        if (shipmentLookup.rows.length > 1) {
+          throw new ConflictException('Carrier tracking reference is ambiguous within this factory');
+        }
+        const shipmentUnitId = shipmentLookup.rows[0]!.shipment_unit_id.toLowerCase();
+        const expectedPrefix = 'pod/' + scope.tenant_id.toLowerCase() + '/' +
+          scope.factory_id.toLowerCase() + '/' + shipmentUnitId + '/';
+        if (!envelope.payload.proof_reference.startsWith(expectedPrefix) ||
+          envelope.payload.proof_reference.length <= expectedPrefix.length) {
+          throw new BadRequestException('Carrier POD object key must belong to the resolved tenant, factory and shipment');
+        }
         await verifyWmsPodObjectDigest(
           this.config,
           envelope.payload.proof_reference,
@@ -730,6 +761,14 @@ export class IntegrationService {
     const shipment = shipmentResult.rows[0]!;
     if (shipment.status !== 'DISPATCHED') {
       throw new ConflictException('Carrier delivery events require a dispatched shipment');
+    }
+    if (eventType === 'DELIVERED') {
+      const expectedPrefix = 'pod/' + input.tenantId.toLowerCase() + '/' +
+        input.factoryId.toLowerCase() + '/' + shipment.shipment_unit_id.toLowerCase() + '/';
+      if (!proofReference || !proofReference.startsWith(expectedPrefix) ||
+        proofReference.length <= expectedPrefix.length) {
+        throw new BadRequestException('Carrier POD object key must belong to the resolved tenant, factory and shipment');
+      }
     }
 
     const idempotencyKey = 'carrier:' + input.connector.id + ':' + input.externalEventId;
