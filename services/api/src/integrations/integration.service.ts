@@ -31,6 +31,7 @@ import {
   recordOperationalWebhookReplay,
   type OperationalWebhookInput,
 } from './integration-reconciliation.store';
+import { verifyWmsPodObjectDigest } from './wms-pod-storage';
 
 interface ConnectorRow {
   id: string;
@@ -374,6 +375,36 @@ export class IntegrationService {
       correlation_id: envelope.correlation_id ?? null,
       payload: envelope.payload,
     });
+    // Verify delivered proof bytes outside the business transaction; never trust the
+    // carrier's declared digest alone. A byte-identical accepted replay skips object I/O
+    // so storage outages do not break webhook idempotency.
+    if (
+      connector.source_system === 'WMS_CARRIER' &&
+      typeof envelope.payload.event_type === 'string' &&
+      envelope.payload.event_type.toUpperCase() === 'DELIVERED' &&
+      typeof envelope.payload.proof_reference === 'string' &&
+      typeof envelope.payload.proof_sha256 === 'string' &&
+      /^[a-fA-F0-9]{64}$/.test(envelope.payload.proof_sha256)
+    ) {
+      const priorReceiptResult = await this.database.query<WebhookReceiptRow>(
+        'SELECT outbox_event_id::text AS outbox_event_id,payload_sha256,event_type,schema_version FROM integration_webhook_receipts WHERE tenant_id=$1 AND factory_id=$2 AND connector_id=$3 AND external_event_id=$4',
+        [scope.tenant_id, scope.factory_id, connectorId, externalEventId],
+        { tenantId: scope.tenant_id },
+      );
+      const priorReceipt = priorReceiptResult.rows[0];
+      const exactReplay = priorReceipt
+        && priorReceipt.payload_sha256 === payloadHash
+        && priorReceipt.event_type === envelope.event_type
+        && Number(priorReceipt.schema_version) === envelope.schema_version;
+      if (!exactReplay) {
+        await verifyWmsPodObjectDigest(
+          this.config,
+          envelope.payload.proof_reference,
+          envelope.payload.proof_sha256.toLowerCase(),
+        );
+      }
+    }
+
     const reconciliationInput: OperationalWebhookInput = {
       tenantId: scope.tenant_id,
       factoryId: scope.factory_id,
