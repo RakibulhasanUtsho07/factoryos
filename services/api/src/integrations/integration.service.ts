@@ -392,11 +392,9 @@ export class IntegrationService {
         { tenantId: scope.tenant_id },
       );
       const priorReceipt = priorReceiptResult.rows[0];
-      const exactReplay = priorReceipt
-        && priorReceipt.payload_sha256 === payloadHash
-        && priorReceipt.event_type === envelope.event_type
-        && Number(priorReceipt.schema_version) === envelope.schema_version;
-      if (!exactReplay) {
+      // Existing event IDs must reach the transaction's exact-replay/conflict logic
+      // even if storage is currently unavailable; never mask replay reconciliation.
+      if (!priorReceipt) {
         await verifyWmsPodObjectDigest(
           this.config,
           envelope.payload.proof_reference,
