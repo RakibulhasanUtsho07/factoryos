@@ -11,12 +11,14 @@ DECLARE
   v_material UUID := gen_random_uuid();
   v_finished UUID := gen_random_uuid();
   v_carton UUID := gen_random_uuid();
+  v_pallet UUID := gen_random_uuid();
   v_shipment UUID := gen_random_uuid();
   v_other_unit UUID := gen_random_uuid();
   v_serial UUID := gen_random_uuid();
   v_event_one UUID := gen_random_uuid();
   v_event_two UUID := gen_random_uuid();
   v_event_three UUID := gen_random_uuid();
+  v_event_four UUID := gen_random_uuid();
   v_node_count INTEGER;
   v_cycle_rejected BOOLEAN := FALSE;
   v_overconsumption_rejected BOOLEAN := FALSE;
@@ -78,7 +80,7 @@ BEGIN
     label_layout, created_by_user_id
   ) VALUES (
     v_template, v_tenant, v_factory, 'TRACE-QR-V1', 'Traceability QR v1', 'QR',
-    ARRAY['LOT','SERIAL','FINISHED_GOOD','CARTON','SHIPMENT']::text[],
+    ARRAY['LOT','SERIAL','FINISHED_GOOD','CARTON','PALLET','SHIPMENT']::text[],
     '{"fields":["unit_code","barcode_value","product_role","unit","quantity"]}'::jsonb, v_actor
   );
   INSERT INTO audit_events (
@@ -105,6 +107,8 @@ BEGIN
      v_finished_item, 5, 'PCS', 'PRODUCTION-BATCH-001', '{}'::jsonb, v_template, 'trace-unit-finished', repeat('b',64), v_actor, v_trace),
     (v_carton, v_tenant, v_factory, 'CARTON', 'PACKAGING', 'CARTON-001', 'QR-CARTON-001',
      NULL, 1, 'EA', 'CARTON-EXT-001', '{}'::jsonb, v_template, 'trace-unit-carton', repeat('c',64), v_actor, v_trace),
+    (v_pallet, v_tenant, v_factory, 'PALLET', 'PACKAGING', 'PALLET-001', 'QR-PALLET-001',
+     NULL, 1, 'EA', 'PALLET-EXT-001', '{}'::jsonb, v_template, 'trace-unit-pallet', repeat('9',64), v_actor, v_trace),
     (v_shipment, v_tenant, v_factory, 'SHIPMENT', 'SHIPMENT', 'SHIPMENT-001', 'QR-SHIPMENT-001',
      NULL, 1, 'EA', 'CUSTOMER-SHIPMENT-EXT-001',
      '{"customer_reference":"CUSTOMER-001","customer_order_reference":"CUSTOMER-ORDER-001","shipment_reference":"SHIPMENT-001"}'::jsonb,
@@ -198,15 +202,22 @@ BEGIN
      '{"pack_level":"carton"}'::jsonb, 'Finished goods packed into carton',
      'trace-edge-fg-carton', repeat('1',64), v_actor, v_trace);
 
-  -- Separate statement ensures the just-recorded package contents are visible
-  -- to the database guard when the carton is linked to its shipment.
+  -- Separate statements ensure package contents exist before nesting and shipment.
   INSERT INTO product_genealogy_events (
     id, tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity,
     unit, evidence, notes, idempotency_key, request_hash, created_by_user_id, correlation_id
   ) VALUES (
-    v_event_three, v_tenant, v_factory, v_carton, v_shipment, 'SHIPPED_AS', 1, 'EA',
+    v_event_three, v_tenant, v_factory, v_carton, v_pallet, 'PACKED_INTO', 1, 'EA',
+    '{"pack_level":"pallet"}'::jsonb, 'Carton nested into pallet',
+    'trace-edge-carton-pallet', repeat('2',64), v_actor, v_trace
+  );
+  INSERT INTO product_genealogy_events (
+    id, tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity,
+    unit, evidence, notes, idempotency_key, request_hash, created_by_user_id, correlation_id
+  ) VALUES (
+    v_event_four, v_tenant, v_factory, v_pallet, v_shipment, 'SHIPPED_AS', 1, 'EA',
     '{"customer_reference":"CUSTOMER-001","customer_order_reference":"CUSTOMER-ORDER-001","shipment_reference":"SHIPMENT-001"}'::jsonb,
-    'Carton included in shipment', 'trace-edge-carton-shipment', repeat('2',64), v_actor, v_trace
+    'Pallet included in shipment', 'trace-edge-pallet-shipment', repeat('2',64), v_actor, v_trace
   );
 
   INSERT INTO audit_events (
@@ -234,7 +245,7 @@ BEGIN
     WHERE NOT e.target_unit_id = ANY(w.visited)
   )
   SELECT count(DISTINCT unit_id) INTO v_node_count FROM forward_walk;
-  IF v_node_count <> 4 THEN RAISE EXCEPTION 'forward trace expected 4 nodes; got %', v_node_count; END IF;
+  IF v_node_count <> 5 THEN RAISE EXCEPTION 'forward trace expected 5 nodes through carton, pallet and shipment; got %', v_node_count; END IF;
 
   WITH RECURSIVE reverse_walk(unit_id, depth, visited) AS (
     SELECT v_shipment, 0, ARRAY[v_shipment]::uuid[]
@@ -246,7 +257,7 @@ BEGIN
     WHERE NOT e.source_unit_id = ANY(w.visited)
   )
   SELECT count(DISTINCT unit_id) INTO v_node_count FROM reverse_walk;
-  IF v_node_count <> 4 THEN RAISE EXCEPTION 'reverse trace expected 4 nodes; got %', v_node_count; END IF;
+  IF v_node_count <> 5 THEN RAISE EXCEPTION 'reverse trace expected 5 nodes through shipment, pallet, carton and finished lot; got %', v_node_count; END IF;
 
   BEGIN
     INSERT INTO product_genealogy_events (
