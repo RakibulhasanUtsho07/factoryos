@@ -741,8 +741,9 @@ describe('InventoryReservationService', () => {
       && evidence.consumption_traceability_allocation_id === allocationId
       && evidence.source_inventory_item_id === ITEM_ID
       && evidence.source_unit === 'KG'
-      && evidence.source_quantity === evidence.source_quantity
     )).toBe(true);
+    expect(insertedEvidence.map((evidence) => evidence.source_quantity))
+      .toEqual(insertedEvents.map((edge) => edge.quantity));
     expect(insertedEvidence.map((evidence) => evidence.output_identity_kind))
       .toEqual(['FINISHED_GOOD', 'SCRAP', 'FINISHED_GOOD', 'SCRAP']);
     expect(insertedEvidence.map((evidence) => evidence.output_quantity_weight))
