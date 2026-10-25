@@ -347,6 +347,31 @@ describe('IntegrationService signed webhook ingress', () => {
       String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
   });
 
+  it('rejects impossible carrier calendar timestamps before resolving a shipment', async () => {
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      shipmentRows: [{ shipment_unit_id: '51c58ea7-1207-4ac2-8b68-a4e13883cf81', shipment_code: 'SHIP-CARRIER-DATE', status: 'DISPATCHED' }],
+    });
+    const signed = signedRequest('carrier-event-invalid-date', {
+      event_type: 'WMS.SHIPMENT_DELIVERY',
+      schema_version: 1,
+      payload: {
+        carrier_name: 'Acme Logistics',
+        tracking_reference: 'ACME-TRACK-DATE',
+        event_type: 'IN_TRANSIT',
+        event_at: '2026-02-31T10:00:00Z',
+      },
+    });
+    await expect(harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'))).toBe(false);
+  });
+
   it('does not resolve carrier tracking references outside the connector factory shipment scope', async () => {
     const harness = setup(undefined, {
       sourceSystem: 'WMS_CARRIER',
