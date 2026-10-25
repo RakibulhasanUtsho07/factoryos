@@ -525,7 +525,7 @@ export class TraceabilityService {
     `, [unitIds, tenantId, factoryId], context);
     const boundaryIds = units
       .filter(row => Number((row as QueryResultRow & { depth?: number }).depth) === depth)
-      .map(row => String((row as QueryResultRow & { id: string }).id));
+      .map(row => String((row as unknown as QueryResultRow & { id: string }).id));
     let depthTruncated = false;
     if (boundaryIds.length > 0) {
       const outwardEdge = direction === 'FORWARD'
