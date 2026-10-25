@@ -653,15 +653,15 @@ export class IntegrationService {
     const eventId = inserted.rows[0]?.id;
     if (!eventId) throw new Error('WMS_CARRIER_DELIVERY_EVENT_INSERT_FAILED');
 
-    // The connector creator is the accountable configuration owner; payload records that
-    // the actual event actor is the authenticated carrier connector, not a user action.
+    // The signed connector is the actor; do not attribute a provider callback to a human user.
+    // actor_user_id is deliberately NULL and the authenticated connector/event are explicit in payload.
     await client.query(
       `INSERT INTO audit_events (
         tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
         resource_id,correlation_id,request_id,data_class,payload
-      ) VALUES ($1,$2,$3,'WMS_FULFILLMENT','RECORDED','WMS_SHIPMENT_DELIVERY_EVENT',$4,$5,NULL,'INTERNAL',$6::jsonb)`,
+      ) VALUES ($1,$2,NULL,'WMS_FULFILLMENT','RECORDED','WMS_SHIPMENT_DELIVERY_EVENT',$3,$4,NULL,'INTERNAL',$5::jsonb)`,
       [
-        input.tenantId, input.factoryId, input.connector.created_by_user_id, eventId, correlationId,
+        input.tenantId, input.factoryId, eventId, correlationId,
         JSON.stringify({
           shipment_unit_id: shipment.shipment_unit_id,
           shipment_code: shipment.shipment_code,
