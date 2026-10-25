@@ -65,6 +65,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE inventory_reservation_consumption_traceability_allocations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_traceability_location_balances DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -96,6 +97,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM inventory_traceability_location_balances WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            "DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND external_reference='wms-finished-good-putaway-test'",
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -144,6 +149,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
         } finally {
           await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_consumption_traceability_allocations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_consumptions ENABLE TRIGGER USER');
