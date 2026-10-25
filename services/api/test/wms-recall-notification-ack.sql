@@ -67,7 +67,7 @@ BEGIN
     SELECT 1 FROM pg_constraint
     WHERE conrelid='public.wms_traceability_recall_notification_intents'::regclass
       AND conname='chk_wms_recall_notification_intent_recipient_reference'
-      AND position('https?://' in pg_get_constraintdef(oid)) > 0
+      AND position('://' in pg_get_constraintdef(oid)) > 0
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conrelid='public.wms_traceability_recall_notification_acknowledgements'::regclass
