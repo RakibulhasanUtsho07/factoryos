@@ -190,7 +190,7 @@ test("Code 128 renderer creates bars and rejects unsupported or non-printable va
   assert.match(rendered.svg, /<rect/);
   assert.match(rendered.svg, /role="img"/);
   assert.match(rendered.svg, /LOT-TEST-01/);
-  assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-01\\nBAD" } })), errorCode("INVALID_LABEL_VALUE"));
+  assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-01" + String.fromCharCode(10) + "BAD" } })), errorCode("INVALID_LABEL_VALUE"));
   assert.throws(() => renderWmsLabel(labelIssue("DATAMATRIX")), errorCode("ENCODER_NOT_IMPLEMENTED"));
   assert.throws(() => renderWmsLabel(labelIssue("GS1_128")), errorCode("ENCODER_NOT_IMPLEMENTED"));
 });
@@ -205,9 +205,9 @@ test("label rendering fails closed for bad identity, status, geometry, and copy 
 });
 
 test("scan normalization rejects blank/control data and resolver rejects unknown or ambiguous factory codes", async () => {
-  assert.equal(normalizeScannedLabel(" lot-test-01\\r\\n"), "LOT-TEST-01");
-  assert.throws(() => normalizeScannedLabel(" \\n"), errorCode("INVALID_SCAN"));
-  assert.throws(() => normalizeScannedLabel("LOT\\u0000TEST"), errorCode("INVALID_SCAN"));
+  assert.equal(normalizeScannedLabel(" lot-test-01" + String.fromCharCode(13, 10)), "LOT-TEST-01");
+  assert.throws(() => normalizeScannedLabel(" " + String.fromCharCode(10)), errorCode("INVALID_SCAN"));
+  assert.throws(() => normalizeScannedLabel("LOT" + String.fromCharCode(0) + "TEST"), errorCode("INVALID_SCAN"));
   let calledUrl = "";
   const resolve = createWmsLabelScanResolver({
     endpoint: "https://factory.example/api/v1/traceability/labels/resolve",
@@ -218,7 +218,7 @@ test("scan normalization rejects blank/control data and resolver rejects unknown
       return { ok: true, status: 200, json: async () => ({ identity_type: "MATERIAL", identity: { sku: "LOT-TEST-01" } }) };
     },
   });
-  const result = await resolve("lot-test-01\\r");
+  const result = await resolve("lot-test-01" + String.fromCharCode(13));
   assert.equal(result.identity_type, "MATERIAL");
   assert.match(calledUrl, /code=LOT-TEST-01/);
   const unknown = createWmsLabelScanResolver({
