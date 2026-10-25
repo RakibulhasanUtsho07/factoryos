@@ -882,8 +882,10 @@ export class WmsFulfillmentService {
             if (replay.rows[0].request_hash.trim() !== requestHash) {
               throw new ConflictException('Delivery event idempotency key was used for a different request');
             }
-            const prior = await client.query('SELECT * FROM wms_shipment_delivery_events WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
-              [replay.rows[0].id, tenantId, factoryId]);
+            const prior = await client.query(
+              'SELECT id::text AS id, shipment_unit_id::text AS shipment_unit_id, event_type, source_system, event_at::text AS event_at, recipient_name, proof_type, proof_reference, proof_sha256, signed_at::text AS signed_at, notes, recorded_by_user_id::text AS recorded_by_user_id, created_at::text AS created_at FROM wms_shipment_delivery_events WHERE id=$1 AND tenant_id=$2 AND factory_id=$3',
+              [replay.rows[0].id, tenantId, factoryId],
+            );
             return { event: prior.rows[0], replayed: true };
           }
           const inserted = await client.query<{ id: string; [key: string]: unknown }>(
