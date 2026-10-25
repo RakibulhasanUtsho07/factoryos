@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import {
   WmsOfflineQueue,
   createWmsOfflineSyncTransport,
@@ -11,6 +11,23 @@ import {
   renderWmsLabel,
 } from "@/lib/wms-label-renderer.mjs";
 
+function subscribeToOnlineStatus(callback: () => void) {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener("online", callback);
+  window.addEventListener("offline", callback);
+  return () => {
+    window.removeEventListener("online", callback);
+    window.removeEventListener("offline", callback);
+  };
+}
+function getOnlineStatus() {
+  return typeof navigator === "undefined" ? true : navigator.onLine;
+}
+type RenderedLabel = {
+  symbology: string; encoded_value: string; copies: number; status: string;
+  width_mm: number; height_mm: number; svg: string; print_html: string; svg_data_uri: string;
+};
+type LabelScanResult = { identity_type: "TRACEABILITY_UNIT" | "MATERIAL"; identity: Record<string, unknown> };
 type QueuedEntry = {
   transactionId: string;
   status: string;
@@ -57,33 +74,34 @@ export default function WmsMobileAcceptancePage() {
   const [resolvingVersion, setResolvingVersion] = useState<Record<string, string>>({});
   const [labelIssueJson, setLabelIssueJson] = useState(initialLabelIssue);
   const [currentIdentityJson, setCurrentIdentityJson] = useState("");
-  const [renderedLabel, setRenderedLabel] = useState<any>(null);
+  const [renderedLabel, setRenderedLabel] = useState<RenderedLabel | null>(null);
   const [labelError, setLabelError] = useState("");
   const [scanCode, setScanCode] = useState("");
-  const [scanResult, setScanResult] = useState<any>(null);
+  const [scanResult, setScanResult] = useState<LabelScanResult | null>(null);
   const [scanError, setScanError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [online, setOnline] = useState(true);
-  const queueRef = useRef<any>(null);
+  const online = useSyncExternalStore(subscribeToOnlineStatus, getOnlineStatus, () => true);
+  const queueRef = useRef<InstanceType<typeof WmsOfflineQueue> | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const labelFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const flushQueueRef = useRef<(() => Promise<void>) | null>(null);
 
-  const scope = { tenantId, factoryId, userId, deviceId };
+  const scope = useMemo(() => ({ tenantId, factoryId, userId, deviceId }), [tenantId, factoryId, userId, deviceId]);
   const scopeReady = uuidPattern.test(tenantId.trim()) && uuidPattern.test(factoryId.trim()) &&
     uuidPattern.test(userId.trim()) && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(deviceId.trim());
-  const getQueue = () => {
+  const getQueue = useCallback(() => {
     if (!queueRef.current) queueRef.current = new WmsOfflineQueue();
-    return queueRef.current as InstanceType<typeof WmsOfflineQueue>;
-  };
-  const apiUrl = (path: string) => {
+    return queueRef.current;
+  }, []);
+  const apiUrl = useCallback((path: string) => {
     const origin = apiOrigin.trim();
     if (!origin) throw new Error("Set the API origin first, for example https://factory-api.example.com.");
     return new URL(path, origin.endsWith("/") ? origin : origin + "/").toString();
-  };
-  const transport = () => createWmsOfflineSyncTransport({
+  }, [apiOrigin]);
+  const transport = useCallback(() => createWmsOfflineSyncTransport({
     endpoint: apiUrl("/api/v1/wms/mobile/offline-sync/batches"),
     getAccessToken: () => accessToken.trim() || undefined,
-  });
+  }), [apiUrl, accessToken]);
 
   const refreshQueue = useCallback(async () => {
     if (!scopeReady) {
@@ -93,12 +111,12 @@ export default function WmsMobileAcceptancePage() {
     try {
       const list = await getQueue().list(scope);
       setEntries(list as QueuedEntry[]);
-      setQueueMessage(list.length ? "Queue restored from this browser's durable IndexedDB store." : "No queued operations for this scope.");
+      setQueueMessage(list.length ? "Queue restored from this browser&apos;s durable IndexedDB store." : "No queued operations for this scope.");
       setQueueError("");
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : "Could not load offline queue.");
     }
-  }, [tenantId, factoryId, userId, deviceId, scopeReady]);
+  }, [scope, scopeReady, getQueue]);
 
   const flushQueue = useCallback(async () => {
     if (!scopeReady) {
@@ -106,7 +124,6 @@ export default function WmsMobileAcceptancePage() {
       return;
     }
     if (!navigator.onLine) {
-      setOnline(false);
       setQueueMessage("Device is offline. Queued transactions are kept locally.");
       return;
     }
@@ -124,7 +141,7 @@ export default function WmsMobileAcceptancePage() {
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       if (typeof result.retryAt === "number" && result.pendingCount > 0) {
         const waitMs = Math.max(0, result.retryAt - Date.now());
-        retryTimerRef.current = setTimeout(() => { void flushQueue(); }, waitMs);
+        retryTimerRef.current = setTimeout(() => { void flushQueueRef.current?.(); }, waitMs);
       }
       if (result.transportError) setQueueError("Sync failed safely; local queue was retained: " + result.transportError);
     } catch (error) {
@@ -132,18 +149,19 @@ export default function WmsMobileAcceptancePage() {
     } finally {
       setBusy(false);
     }
-  }, [tenantId, factoryId, userId, deviceId, scopeReady, apiOrigin, accessToken, refreshQueue]);
+  }, [scope, scopeReady, transport, refreshQueue, getQueue]);
 
   useEffect(() => {
-    setOnline(navigator.onLine);
+    flushQueueRef.current = flushQueue;
+  }, [flushQueue]);
+
+  useEffect(() => {
     void refreshQueue();
     const onOnline = () => {
-      setOnline(true);
       setQueueMessage("Connection restored. Attempting receipt-safe queue synchronization.");
       void flushQueue();
     };
     const onOffline = () => {
-      setOnline(false);
       setQueueMessage("Device is offline. New operations remain in IndexedDB until the API is reachable.");
     };
     window.addEventListener("online", onOnline);
