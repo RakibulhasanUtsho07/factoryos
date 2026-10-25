@@ -379,7 +379,7 @@ describe('IntegrationService signed webhook ingress', () => {
           event_at: eventAt.toISOString(),
           recipient_name: 'Warehouse Receiver',
           proof_type: 'PHOTO',
-          proof_reference: 'pod/ACME-TRACK-POD/photo.png',
+          proof_reference: 'pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId + '/photo.png',
           proof_sha256: digest,
           signed_at: signedAt.toISOString(),
         },
@@ -390,7 +390,7 @@ describe('IntegrationService signed webhook ingress', () => {
       expect(result).toEqual(expect.objectContaining({ accepted: true, duplicate: false }));
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
-        'https://pod-storage.example.test/factoryos-pod/pod/ACME-TRACK-POD/photo.png',
+        'https://pod-storage.example.test/factoryos-pod/pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId + '/photo.png',
       );
       const deliveryInsert = harness.clientQuery.mock.calls.find(([sql]) =>
         String(sql).includes('INSERT INTO wms_shipment_delivery_events'));
@@ -403,6 +403,7 @@ describe('IntegrationService signed webhook ingress', () => {
   });
 
   it('rejects a DELIVERED event when stored proof bytes do not match the carrier SHA-256', async () => {
+    const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
     const declaredBytes = Buffer.from('carrier-claimed-proof', 'utf8');
     const storedBytes = Buffer.from('different-stored-proof', 'utf8');
     const declaredDigest = createHash('sha256').update(declaredBytes).digest('hex');
@@ -413,7 +414,7 @@ describe('IntegrationService signed webhook ingress', () => {
       allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
       payloadSchema: carrierPayloadSchema,
       podStorageConfigured: true,
-      shipmentRows: [{ shipment_unit_id: '51c58ea7-1207-4ac2-8b68-a4e13883cf81', shipment_code: 'SHIP-CARRIER-BAD-POD', status: 'DISPATCHED' }],
+      shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-CARRIER-BAD-POD', status: 'DISPATCHED' }],
     });
     const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(storedBytes, { status: 200, headers: { 'content-length': String(storedBytes.length) } }),
@@ -429,7 +430,7 @@ describe('IntegrationService signed webhook ingress', () => {
           event_at: eventAt.toISOString(),
           recipient_name: 'Warehouse Receiver',
           proof_type: 'PHOTO',
-          proof_reference: 'pod/ACME-TRACK-BAD-POD/photo.png',
+          proof_reference: 'pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId + '/bad-photo.png',
           proof_sha256: declaredDigest,
           signed_at: new Date(eventAt.getTime() - 1000).toISOString(),
         },
@@ -438,6 +439,52 @@ describe('IntegrationService signed webhook ingress', () => {
         connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
       )).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('INSERT INTO wms_shipment_delivery_events'))).toBe(false);
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('rejects a carrier POD object key scoped to a different shipment before storage read or receipt commit', async () => {
+    const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
+    const foreignShipmentUnitId = '7fb5cf7d-c1d3-4b15-9df6-bec7b66f4136';
+    const bytes = Buffer.from('verified carrier proof bytes', 'utf8');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const eventAt = new Date();
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      podStorageConfigured: true,
+      shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-CARRIER-FOREIGN-POD', status: 'DISPATCHED' }],
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.length) } }),
+    );
+    try {
+      const signed = signedRequest('carrier-event-foreign-pod', {
+        event_type: 'WMS.SHIPMENT_DELIVERY',
+        schema_version: 1,
+        payload: {
+          carrier_name: 'Acme Logistics',
+          tracking_reference: 'ACME-TRACK-FOREIGN-POD',
+          event_type: 'DELIVERED',
+          event_at: eventAt.toISOString(),
+          recipient_name: 'Warehouse Receiver',
+          proof_type: 'PHOTO',
+          proof_reference: 'pod/' + tenantId + '/' + factoryId + '/' + foreignShipmentUnitId + '/photo.png',
+          proof_sha256: digest,
+          signed_at: new Date(eventAt.getTime() - 1000).toISOString(),
+        },
+      });
+      await expect(harness.service.receiveWebhook(
+        connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+      )).rejects.toBeInstanceOf(BadRequestException);
+      expect(fetchMock).not.toHaveBeenCalled();
       expect(harness.clientQuery.mock.calls.some(([sql]) =>
         String(sql).includes('INSERT INTO wms_shipment_delivery_events'))).toBe(false);
       expect(harness.clientQuery.mock.calls.some(([sql]) =>
