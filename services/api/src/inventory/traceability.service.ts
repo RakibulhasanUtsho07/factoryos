@@ -825,7 +825,7 @@ export class TraceabilityService {
     const evidenceReference = dto.evidence_reference === undefined
       ? null
       : this.requiredText(dto.evidence_reference, 'evidence_reference', 500);
-    if (evidenceReference && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/.test(evidenceReference)) {
+    if (evidenceReference && (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/.test(evidenceReference) || /^https?:\/\//i.test(evidenceReference))) {
       throw new BadRequestException('evidence_reference must be a reference token, not a URL');
     }
     const requestHash = this.hash({
