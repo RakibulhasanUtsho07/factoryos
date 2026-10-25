@@ -280,6 +280,265 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
     ]);
   });
 
+  it('serializes concurrent offline retries and detects distinct rejected payloads without rounding', async () => {
+    const itemId = await createItem('10.0000');
+    const versionResult = await adminPool.query<{ version: string }>(
+      'SELECT version::text AS version FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    const initialVersion = versionResult.rows[0]?.version;
+    if (!initialVersion) throw new Error('Offline sync initial balance version was not found');
+
+    const deviceId = 'WMS-DEVICE-' + randomUUID();
+    deviceIds.push(deviceId);
+    const clientTransactionId = randomUUID();
+    const accepted: SyncOfflineBatchDto = {
+      device_id: deviceId,
+      transactions: [{
+        client_transaction_id: clientTransactionId,
+        operation: 'STOCK_MOVEMENT',
+        item_id: itemId,
+        movement_type: 'ISSUE',
+        quantity: 2,
+        expected_balance_version: initialVersion,
+      }],
+    };
+
+    const [concurrentA, concurrentB] = await Promise.all([
+      mobileService.syncOfflineBatch(
+        TEST_USER_ID, tenantId, factoryId, accepted, null, correlation(),
+      ),
+      mobileService.syncOfflineBatch(
+        TEST_USER_ID, tenantId, factoryId, accepted, null, correlation(),
+      ),
+    ]);
+    const concurrentResults = [concurrentA.results[0], concurrentB.results[0]];
+    expect(concurrentResults.every((result) => result?.status === 'APPLIED')).toBe(true);
+    expect(concurrentResults.filter((result) => result?.replayed === false)).toHaveLength(1);
+    expect(concurrentResults.filter((result) => result?.replayed === true)).toHaveLength(1);
+
+    const reusedTransactionId: SyncOfflineBatchDto = {
+      ...accepted,
+      transactions: [{ ...accepted.transactions[0]!, quantity: 3 }],
+    };
+    const conflictingReplay = await mobileService.syncOfflineBatch(
+      TEST_USER_ID, tenantId, factoryId, reusedTransactionId, null, correlation(),
+    );
+    expect(conflictingReplay.results[0]).toMatchObject({
+      status: 'CONFLICT',
+      replayed: false,
+      error: { code: 'IDEMPOTENCY_KEY_REUSED' },
+    });
+
+    // Two different payloads racing for a new transaction ID must not race to
+    // persist the first terminal receipt: exactly one payload may move stock.
+    const raceItemId = await createItem('10.0000');
+    const raceVersionResult = await adminPool.query<{ version: string }>(
+      'SELECT version::text AS version FROM inventory_stock_balances WHERE item_id = $1',
+      [raceItemId],
+    );
+    const raceVersion = raceVersionResult.rows[0]?.version;
+    if (!raceVersion) throw new Error('Concurrent conflict test balance version was not found');
+    const racingTransactionId = randomUUID();
+    const raceBase: SyncOfflineBatchDto = {
+      device_id: deviceId,
+      transactions: [{
+        client_transaction_id: racingTransactionId,
+        operation: 'STOCK_MOVEMENT',
+        item_id: raceItemId,
+        movement_type: 'ISSUE',
+        quantity: 2,
+        expected_balance_version: raceVersion,
+      }],
+    };
+    const racePayloadB: SyncOfflineBatchDto = {
+      ...raceBase,
+      transactions: [{ ...raceBase.transactions[0]!, quantity: 3 }],
+    };
+    const [raceResultA, raceResultB] = await Promise.all([
+      mobileService.syncOfflineBatch(
+        TEST_USER_ID, tenantId, factoryId, raceBase, null, correlation(),
+      ),
+      mobileService.syncOfflineBatch(
+        TEST_USER_ID, tenantId, factoryId, racePayloadB, null, correlation(),
+      ),
+    ]);
+    const raceResults = [raceResultA.results[0], raceResultB.results[0]];
+    expect(raceResults.filter((result) => result?.status === 'APPLIED')).toHaveLength(1);
+    expect(raceResults.filter((result) => result?.status === 'CONFLICT')).toHaveLength(1);
+    expect(raceResults.filter((result) => result?.replayed === false)).toHaveLength(2);
+    expect(raceResults.find((result) => result?.status === 'CONFLICT')).toMatchObject({
+      error: { code: 'IDEMPOTENCY_KEY_REUSED' },
+    });
+    const raceBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [raceItemId],
+    );
+    expect(['7.0000', '8.0000']).toContain(raceBalance.rows[0]?.quantity_on_hand);
+    const raceMovementCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1 AND movement_type = \'ISSUE\'',
+      [raceItemId],
+    );
+    expect(raceMovementCount.rows[0]?.count).toBe('1');
+
+    // Invalid precision is recorded as a terminal REJECTED result, but its exact
+    // request fingerprint must not round away a later, different invalid value.
+    const invalidTransactionId = randomUUID();
+    const invalidPrecision: SyncOfflineBatchDto = {
+      device_id: deviceId,
+      transactions: [{
+        client_transaction_id: invalidTransactionId,
+        operation: 'STOCK_MOVEMENT',
+        item_id: itemId,
+        movement_type: 'ISSUE',
+        quantity: 1.00001,
+        expected_balance_version: initialVersion,
+      }],
+    };
+    const rejected = await mobileService.syncOfflineBatch(
+      TEST_USER_ID, tenantId, factoryId, invalidPrecision, null, correlation(),
+    );
+    expect(rejected.results[0]).toMatchObject({ status: 'REJECTED', replayed: false });
+
+    const changedInvalidPrecision: SyncOfflineBatchDto = {
+      ...invalidPrecision,
+      transactions: [{ ...invalidPrecision.transactions[0]!, quantity: 1.00002 }],
+    };
+    const invalidConflict = await mobileService.syncOfflineBatch(
+      TEST_USER_ID, tenantId, factoryId, changedInvalidPrecision, null, correlation(),
+    );
+    expect(invalidConflict.results[0]).toMatchObject({
+      status: 'CONFLICT',
+      replayed: false,
+      error: { code: 'IDEMPOTENCY_KEY_REUSED' },
+    });
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
+
+    const movementCount = await adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1 AND movement_type = 'ISSUE'",
+      [itemId],
+    );
+    expect(movementCount.rows[0]?.count).toBe('1');
+
+    const attempts = await adminPool.query<{ outcome: string; count: string }>(`
+      SELECT outcome, count(*)::text AS count
+      FROM mobile_offline_sync_attempts
+      WHERE device_id = $1
+      GROUP BY outcome ORDER BY outcome
+    `, [deviceId]);
+    expect(attempts.rows).toEqual([
+      { outcome: 'APPLIED', count: '2' },
+      { outcome: 'IDEMPOTENCY_CONFLICT', count: '3' },
+      { outcome: 'REJECTED', count: '1' },
+      { outcome: 'REPLAYED', count: '1' },
+    ]);
+  });
+
+  it('repairs a missing terminal receipt after the stock movement has already committed', async () => {
+    const itemId = await createItem('10.0000');
+    const versionResult = await adminPool.query<{ version: string }>(
+      'SELECT version::text AS version FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    const initialVersion = versionResult.rows[0]?.version;
+    if (!initialVersion) throw new Error('Receipt recovery initial balance version was not found');
+
+    const deviceId = 'WMS-RECEIPT-RECOVERY-' + randomUUID();
+    deviceIds.push(deviceId);
+    const clientTransactionId = randomUUID();
+    const batch: SyncOfflineBatchDto = {
+      device_id: deviceId,
+      transactions: [{
+        client_transaction_id: clientTransactionId,
+        operation: 'STOCK_MOVEMENT',
+        item_id: itemId,
+        movement_type: 'ISSUE',
+        quantity: 2,
+        expected_balance_version: initialVersion,
+      }],
+    };
+
+    const suffix = randomUUID().replace(/-/g, '');
+    const functionName = 'test_fail_mobile_receipt_' + suffix;
+    const triggerName = 'trg_test_fail_mobile_receipt_' + suffix;
+    let triggerCreated = false;
+    try {
+      await adminPool.query(`
+        CREATE FUNCTION public.${functionName}() RETURNS trigger
+        LANGUAGE plpgsql AS $wms_test$
+        BEGIN
+          IF NEW.device_id LIKE 'WMS-RECEIPT-RECOVERY-%' THEN
+            RAISE EXCEPTION 'simulated interruption after stock commit' USING ERRCODE = 'P0001';
+          END IF;
+          RETURN NEW;
+        END;
+        $wms_test$
+      `);
+      await adminPool.query(`
+        CREATE TRIGGER ${triggerName}
+        BEFORE INSERT ON mobile_offline_sync_receipts
+        FOR EACH ROW EXECUTE FUNCTION public.${functionName}()
+      `);
+      triggerCreated = true;
+
+      let firstAttemptError: unknown;
+      try {
+        await mobileService.syncOfflineBatch(
+          TEST_USER_ID, tenantId, factoryId, batch, null, correlation(),
+        );
+      } catch (error) {
+        firstAttemptError = error;
+      }
+      expect(firstAttemptError).toBeDefined();
+
+      const movementBeforeRetry = await adminPool.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1 AND idempotency_key = $2',
+        [itemId, 'offline:' + deviceId + ':' + clientTransactionId],
+      );
+      expect(movementBeforeRetry.rows[0]?.count).toBe('1');
+      const receiptBeforeRetry = await adminPool.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM mobile_offline_sync_receipts WHERE tenant_id = $1 AND factory_id = $2 AND device_id = $3 AND client_transaction_id = $4::uuid',
+        [tenantId, factoryId, deviceId, clientTransactionId],
+      );
+      expect(receiptBeforeRetry.rows[0]?.count).toBe('0');
+    } finally {
+      if (triggerCreated) {
+        await adminPool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON mobile_offline_sync_receipts`);
+      }
+      await adminPool.query(`DROP FUNCTION IF EXISTS public.${functionName}()`);
+    }
+
+    const retried = await mobileService.syncOfflineBatch(
+      TEST_USER_ID, tenantId, factoryId, batch, null, correlation(),
+    );
+    expect(retried.results[0]).toMatchObject({
+      status: 'APPLIED',
+      replayed: false,
+      result: { movement: { replayed: true } },
+    });
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
+    const movementCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1',
+      [itemId],
+    );
+    expect(movementCount.rows[0]?.count).toBe('1');
+    const receiptCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM mobile_offline_sync_receipts WHERE tenant_id = $1 AND factory_id = $2 AND device_id = $3 AND client_transaction_id = $4::uuid',
+      [tenantId, factoryId, deviceId, clientTransactionId],
+    );
+    expect(receiptCount.rows[0]?.count).toBe('1');
+  });
+
   it('issues labels for identities, resolves the same barcode into genealogy, and suppresses repeated RFID reads', async () => {
     const itemId = await createItem('3.0000');
     const template = await createTemplate(['MATERIAL', 'LOT', 'BUNDLE']);
