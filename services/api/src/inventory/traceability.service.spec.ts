@@ -2,7 +2,11 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
-  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityUnitDto, UpdateTraceabilitySettingsDto,
+  ChangeTraceabilityUnitStatusDto,
+  CreateGenealogyEventDto,
+  CreateTraceabilityUnitDto,
+  DeclareTraceabilityRecallDto,
+  UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 
@@ -63,6 +67,33 @@ describe('TraceabilityService input contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects invalid recall bounds before opening a transaction', async () => {
+    const invalidDepth: DeclareTraceabilityRecallDto = {
+      reason: 'Valid recall rationale', depth: 13, limit: 200,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      invalidDepth, 'trace-recall-depth-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const invalidLimit: DeclareTraceabilityRecallDto = {
+      reason: 'Valid recall rationale', depth: 5, limit: 501,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      invalidLimit, 'trace-recall-limit-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const blankReason: DeclareTraceabilityRecallDto = {
+      reason: '   ', depth: 5, limit: 200,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      blankReason, 'trace-recall-reason-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires reasoned status changes and a valid optimistic settings version', async () => {
     const status: ChangeTraceabilityUnitStatusDto = { target_status: 'RECALLED', reason: '   ' };
     await expect(service.changeUnitStatus(
@@ -74,4 +105,30 @@ describe('TraceabilityService input contracts', () => {
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
+  it('rejects unsafe recall notification recipients and missing idempotency before transactions', async () => {
+    await expect(service.createRecallNotificationIntent(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      { recipient_type: 'CUSTOMER', recipient_reference: 'https://evil.test', channel: 'EMAIL' },
+      'notification-unsafe-ref', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.createRecallNotificationIntent(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      { recipient_type: 'CUSTOMER', recipient_reference: 'CUSTOMER-001', channel: 'EMAIL' },
+      null, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported recall acknowledgement outcomes and URL evidence references before transactions', async () => {
+    await expect(service.recordRecallNotificationAcknowledgement(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, UNIT_ID,
+      { outcome: 'DELIVERED_BY_EMAIL' as never }, 'ack-invalid-outcome', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.recordRecallNotificationAcknowledgement(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, UNIT_ID,
+      { outcome: 'RECEIVED', evidence_reference: 'https://example.test/evidence' }, 'ack-invalid-evidence', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
 });
