@@ -171,6 +171,23 @@ export class InventoryController {
     );
   }
 
+  @Get(':itemId/cycle-counts/review')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.cycle-count.review')
+  @RequireFactoryScope()
+  async listCycleCountsForReview(
+    @Req() request: FactoryOsRequest,
+    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Query('status') status?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const context = this.requireContext(request);
+    return this.cycleCountService.listCycleCountsForReview(
+      context.userId, context.tenantId, context.factoryId, itemId,
+      { status, limit: rawLimit === undefined ? 50 : Number(rawLimit) },
+    );
+  }
+
   @Post(':itemId/cycle-counts/:proposalId/approve')
   @UseGuards(PermissionGuard)
   @RequirePermission('inventory.cycle-count.review')
