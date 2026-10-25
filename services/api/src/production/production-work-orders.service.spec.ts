@@ -15,12 +15,20 @@ describe('ProductionWorkOrdersService request contracts', () => {
   let service: ProductionWorkOrdersService;
   let database: { transaction: ReturnType<typeof jest.fn>; query: ReturnType<typeof jest.fn> };
   let audit: { record: ReturnType<typeof jest.fn> };
-  let inventory: { reserveWorkOrderMaterialRequirement: ReturnType<typeof jest.fn>; transitionWorkOrderMaterialReservations: ReturnType<typeof jest.fn> };
+  let inventory: {
+    reserveWorkOrderMaterialRequirement: ReturnType<typeof jest.fn>;
+    transitionWorkOrderMaterialReservations: ReturnType<typeof jest.fn>;
+    recordWorkOrderMaterialGenealogy: ReturnType<typeof jest.fn>;
+  };
 
   beforeEach(() => {
     database = { transaction: jest.fn(), query: jest.fn() };
     audit = { record: jest.fn() };
-    inventory = { reserveWorkOrderMaterialRequirement: jest.fn(), transitionWorkOrderMaterialReservations: jest.fn() };
+    inventory = {
+      reserveWorkOrderMaterialRequirement: jest.fn(),
+      transitionWorkOrderMaterialReservations: jest.fn(),
+      recordWorkOrderMaterialGenealogy: jest.fn(),
+    };
     service = new ProductionWorkOrdersService(
       database as unknown as DatabaseService,
       audit as unknown as AuditService,
