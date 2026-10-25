@@ -1463,6 +1463,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       transitPayload, transitKey, requestId, traceId,
     );
     expect(transitReplay).toMatchObject({ replayed: true, event: { id: transit.event.id } });
+    expect(transitReplay.event.event_at).toBe(transit.event.event_at);
+    await expect(fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      { ...transitPayload, notes: 'Changed payload must not replay' },
+      transitKey, requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     await expect(fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
