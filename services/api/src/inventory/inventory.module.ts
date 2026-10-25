@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
 import { IamModule } from '../iam/iam.module';
+import { IntegrationsModule } from '../integrations/integrations.module';
 
 import { InventoryController } from './inventory.controller';
 import { InventoryCycleCountTaskController } from './inventory.cycle-count-task.controller';
@@ -29,7 +30,7 @@ import { UnitOfMeasureController } from './uom.controller';
 import { UnitOfMeasureService } from './uom.service';
 
 @Module({
-  imports: [DatabaseModule, AuditModule, IamModule],
+  imports: [DatabaseModule, AuditModule, IamModule, IntegrationsModule],
   controllers: [InventoryController, InventoryCycleCountTaskController, InventoryCycleCountSessionController, InventoryCycleCountRecurringPolicyController, InventoryAllocationPolicyController, InventoryReplenishmentController, InventoryLocationController, TraceabilityController, UnitOfMeasureController, WmsMobileController],
   providers: [InventoryService, InventoryReplenishmentService, InventoryReservationService, InventoryStockReconciliationService, InventoryCycleCountService, InventoryCycleCountTaskService, InventoryCycleCountSessionService, InventoryCycleCountRecurringPolicyService, InventoryLocationService, TraceabilityService, WmsFulfillmentService, UnitOfMeasureService, WmsMobileService],
   exports: [InventoryService, InventoryReservationService, TraceabilityService, UnitOfMeasureService],
