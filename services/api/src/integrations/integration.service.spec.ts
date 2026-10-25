@@ -46,17 +46,39 @@ describe('IntegrationService signed webhook ingress', () => {
     payload_sha256: string;
     event_type: string;
     schema_version: number;
-  }, options: { rateLimit?: string; requestCount?: number } = {}) {
+  }, options: {
+    rateLimit?: string;
+    requestCount?: number;
+    sourceSystem?: string;
+    displayName?: string;
+    allowedEventTypes?: string[];
+    payloadSchema?: Record<string, unknown>;
+    shipmentRows?: Array<{ shipment_unit_id: string; shipment_code: string; status: string }>;
+  } = {}) {
+    const testConnector = {
+      ...connector,
+      source_system: options.sourceSystem ?? connector.source_system,
+      display_name: options.displayName ?? connector.display_name,
+      allowed_event_types: options.allowedEventTypes ?? connector.allowed_event_types,
+      payload_schema: options.payloadSchema ?? connector.payload_schema,
+    };
     let transactionCount = 0;
     const clientQuery = jest.fn(async (sql: string, _values?: unknown[]) => {
       if (sql.includes('INSERT INTO public.integration_webhook_rate_limits')) {
         return { rows: [{ request_count: options.requestCount ?? 1 }], rowCount: 1 };
       }
+      if (sql.includes('FROM wms_shipments') && sql.includes('tracking_reference')) {
+        const rows = options.shipmentRows ?? [];
+        return { rows, rowCount: rows.length };
+      }
+      if (sql.includes('INSERT INTO wms_shipment_delivery_events')) {
+        return { rows: [{ id: 'ddf352b2-bc42-41f8-b2a9-477bd220d3c1' }], rowCount: 1 };
+      }
       if (sql.includes('FROM integration_webhook_receipts')) {
         return { rows: existingReceipt ? [existingReceipt] : [], rowCount: existingReceipt ? 1 : 0 };
       }
       if (sql.includes('FROM integration_connectors') && sql.includes('FOR UPDATE')) {
-        return { rows: [{ status: 'ACTIVE', secret_reference: connector.secret_reference, schema_version: connector.schema_version }], rowCount: 1 };
+        return { rows: [{ status: 'ACTIVE', secret_reference: testConnector.secret_reference, schema_version: testConnector.schema_version }], rowCount: 1 };
       }
       return { rows: [], rowCount: 1 };
     });
@@ -66,7 +88,7 @@ describe('IntegrationService signed webhook ingress', () => {
         if (sql.includes('factoryos_resolve_integration_webhook')) {
           return { rows: [{ tenant_id: tenantId, factory_id: factoryId }], rowCount: 1 };
         }
-        return { rows: [connector], rowCount: 1 };
+        return { rows: [testConnector], rowCount: 1 };
       }),
       transaction: jest.fn(async (...args: unknown[]) => {
         transactionCount += 1;
@@ -238,4 +260,147 @@ describe('IntegrationService signed webhook ingress', () => {
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
     expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
   });
+
+  const carrierPayloadSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      carrier_name: { type: 'string', minLength: 1, maxLength: 255 },
+      tracking_reference: { type: 'string', minLength: 1, maxLength: 255 },
+      event_type: { type: 'string', enum: ['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'DELIVERED', 'RETURNED'] },
+      event_at: { type: 'string', minLength: 1, maxLength: 64 },
+      recipient_name: { type: 'string', minLength: 1, maxLength: 255 },
+      proof_type: { type: 'string', enum: ['SIGNATURE', 'PHOTO', 'DOCUMENT', 'OTP', 'CUSTOMER_ACKNOWLEDGEMENT'] },
+      proof_reference: { type: 'string', minLength: 1, maxLength: 500 },
+      proof_sha256: { type: 'string', minLength: 64, maxLength: 64 },
+      signed_at: { type: 'string', minLength: 1, maxLength: 64 },
+      notes: { type: 'string', maxLength: 2000 },
+    },
+    required: ['carrier_name', 'tracking_reference', 'event_type', 'event_at'],
+  };
+
+  it('commits a signed carrier delivery event to the WMS timeline with the webhook receipt', async () => {
+    const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-CARRIER-1', status: 'DISPATCHED' }],
+    });
+    const signed = signedRequest('carrier-event-101', {
+      event_type: 'WMS.SHIPMENT_DELIVERY',
+      schema_version: 1,
+      payload: {
+        carrier_name: 'Acme Logistics',
+        tracking_reference: 'ACME-TRACK-101',
+        event_type: 'IN_TRANSIT',
+        event_at: new Date().toISOString(),
+      },
+    });
+    const result = await harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+    );
+    expect(result).toEqual(expect.objectContaining({ accepted: true, duplicate: false }));
+    const deliveryInsert = harness.clientQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO wms_shipment_delivery_events'));
+    expect(deliveryInsert).toBeDefined();
+    expect(String(deliveryInsert?.[0])).toContain("'CARRIER_WEBHOOK'");
+    expect(String(deliveryInsert?.[0])).toContain('recorded_by_user_id,correlation_id');
+    expect(deliveryInsert?.[1]).toEqual(expect.arrayContaining([
+      tenantId, factoryId, shipmentUnitId, 'IN_TRANSIT',
+    ]));
+    const shipmentLookup = harness.clientQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'));
+    expect(shipmentLookup?.[1]).toEqual([tenantId, factoryId, 'Acme Logistics', 'ACME-TRACK-101']);
+    const auditInsert = harness.clientQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO audit_events') &&
+      String(sql).includes('WMS_SHIPMENT_DELIVERY_EVENT'));
+    expect(String(auditInsert?.[0])).toContain("VALUES ($1,$2,NULL,'WMS_FULFILLMENT'");
+    expect(auditInsert?.[1]).toEqual(expect.arrayContaining([tenantId, factoryId]));
+    expect(auditInsert?.[1]).not.toContain(connector.created_by_user_id);
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes("INSERT INTO outbox_events") &&
+      String(sql).includes("'WMS.SHIPMENT_DELIVERY_EVENT_RECORDED'"))).toBe(true);
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(true);
+  });
+
+  it('rejects carrier DELIVERED events without complete proof-of-delivery metadata', async () => {
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      shipmentRows: [{ shipment_unit_id: '51c58ea7-1207-4ac2-8b68-a4e13883cf81', shipment_code: 'SHIP-CARRIER-2', status: 'DISPATCHED' }],
+    });
+    const signed = signedRequest('carrier-event-missing-pod', {
+      event_type: 'WMS.SHIPMENT_DELIVERY',
+      schema_version: 1,
+      payload: {
+        carrier_name: 'Acme Logistics',
+        tracking_reference: 'ACME-TRACK-102',
+        event_type: 'DELIVERED',
+        event_at: new Date().toISOString(),
+      },
+    });
+    await expect(harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO wms_shipment_delivery_events'))).toBe(false);
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
+  });
+
+  it('rejects impossible carrier calendar timestamps before resolving a shipment', async () => {
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      shipmentRows: [{ shipment_unit_id: '51c58ea7-1207-4ac2-8b68-a4e13883cf81', shipment_code: 'SHIP-CARRIER-DATE', status: 'DISPATCHED' }],
+    });
+    const signed = signedRequest('carrier-event-invalid-date', {
+      event_type: 'WMS.SHIPMENT_DELIVERY',
+      schema_version: 1,
+      payload: {
+        carrier_name: 'Acme Logistics',
+        tracking_reference: 'ACME-TRACK-DATE',
+        event_type: 'IN_TRANSIT',
+        event_at: '2026-02-31T10:00:00Z',
+      },
+    });
+    await expect(harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'))).toBe(false);
+  });
+
+  it('does not resolve carrier tracking references outside the connector factory shipment scope', async () => {
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      shipmentRows: [],
+    });
+    const signed = signedRequest('carrier-event-unknown-tracking', {
+      event_type: 'WMS.SHIPMENT_DELIVERY',
+      schema_version: 1,
+      payload: {
+        carrier_name: 'Acme Logistics',
+        tracking_reference: 'OTHER-FACTORY-TRACKING',
+        event_type: 'IN_TRANSIT',
+        event_at: new Date().toISOString(),
+      },
+    });
+    await expect(harness.service.receiveWebhook(
+      connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+    )).rejects.toMatchObject({ status: 404 });
+    expect(harness.clientQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO wms_shipment_delivery_events'))).toBe(false);
+  });
+
 });
