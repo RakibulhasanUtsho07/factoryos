@@ -1,8 +1,12 @@
 import { jest } from '@jest/globals';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
-  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityUnitDto, UpdateTraceabilitySettingsDto,
+  ChangeTraceabilityUnitStatusDto,
+  CreateGenealogyEventDto,
+  CreateTraceabilityUnitDto,
+  DeclareTraceabilityRecallDto,
+  UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 
@@ -63,6 +67,33 @@ describe('TraceabilityService input contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('rejects invalid recall bounds before opening a transaction', async () => {
+    const invalidDepth: DeclareTraceabilityRecallDto = {
+      reason: 'Valid recall rationale', depth: 13, limit: 200,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      invalidDepth, 'trace-recall-depth-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const invalidLimit: DeclareTraceabilityRecallDto = {
+      reason: 'Valid recall rationale', depth: 5, limit: 501,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      invalidLimit, 'trace-recall-limit-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const blankReason: DeclareTraceabilityRecallDto = {
+      reason: '   ', depth: 5, limit: 200,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      blankReason, 'trace-recall-reason-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires reasoned status changes and a valid optimistic settings version', async () => {
     const status: ChangeTraceabilityUnitStatusDto = { target_status: 'RECALLED', reason: '   ' };
     await expect(service.changeUnitStatus(
@@ -73,5 +104,225 @@ describe('TraceabilityService input contracts', () => {
       USER_ID, TENANT_ID, FACTORY_ID, settings, null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
+  });
+  it('rejects unsafe recall notification recipients and missing idempotency before transactions', async () => {
+    await expect(service.createRecallNotificationIntent(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      { recipient_type: 'CUSTOMER', recipient_reference: 'https://evil.test', channel: 'EMAIL' },
+      'notification-unsafe-ref', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.createRecallNotificationIntent(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      { recipient_type: 'CUSTOMER', recipient_reference: 'CUSTOMER-001', channel: 'EMAIL' },
+      null, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported recall acknowledgement outcomes and URL evidence references before transactions', async () => {
+    await expect(service.recordRecallNotificationAcknowledgement(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, UNIT_ID,
+      { outcome: 'DELIVERED_BY_EMAIL' as never }, 'ack-invalid-outcome', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.recordRecallNotificationAcknowledgement(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, UNIT_ID,
+      { outcome: 'RECEIVED', evidence_reference: 'https://example.test/evidence' }, 'ack-invalid-evidence', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+
+  it('preserves traceability lifecycle status in the issued label payload', async () => {
+    const templateId = 'b4fbbe44-d33b-4df4-a5ca-fbcb9eb8e9fd';
+    const labelIssueId = '6d03efc0-5671-41b3-a37e-00dc181fd1a9';
+    const labelLayout = { fields: ['unit_code', 'barcode_value', 'status'] };
+    const unit = {
+      id: UNIT_ID,
+      unit_code: 'FG-RECALL-001',
+      barcode_value: 'FG-RECALL-001',
+      rfid_epc: null,
+      unit_type: 'LOT',
+      product_role: 'FINISHED_GOOD',
+      inventory_item_id: UNIT_ID,
+      quantity: '5.0000',
+      unit: 'PCS',
+      expires_at: null,
+      status: 'RECALLED',
+      attributes: {},
+    };
+    const template = {
+      id: templateId,
+      template_code: 'TRACE-QR-V1',
+      symbology: 'QR',
+      supported_unit_types: ['LOT'],
+      label_layout: labelLayout,
+      is_active: true,
+    };
+    const client = {
+      query: jest.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes('FROM traceability_units')) return { rows: [unit] };
+        if (sql.includes('FROM traceability_label_templates')) return { rows: [template] };
+        if (sql.includes('INSERT INTO traceability_label_issues')) {
+          const encodedPayload = JSON.parse(String(params?.[9])) as Record<string, unknown>;
+          return {
+            rows: [{
+              id: labelIssueId,
+              tenant_id: TENANT_ID,
+              factory_id: FACTORY_ID,
+              unit_id: UNIT_ID,
+              inventory_item_id: UNIT_ID,
+              template_id: templateId,
+              template_code: template.template_code,
+              unit_code: unit.unit_code,
+              barcode_value: unit.barcode_value,
+              symbology: template.symbology,
+              encoded_payload: encodedPayload,
+              label_layout: labelLayout,
+              copy_count: 1,
+              created_by_user_id: USER_ID,
+              correlation_id: String(params?.[15]),
+              created_at: '2026-10-25T00:00:00.000Z',
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+    const transaction = database.transaction as unknown as {
+      mockImplementation: (fn: (
+        scope: unknown,
+        callback: (client: unknown) => Promise<unknown>,
+      ) => Promise<unknown>) => void;
+    };
+    transaction.mockImplementation(async (_scope, callback) => callback(client));
+
+    const result = await service.issueLabel(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { unit_id: UNIT_ID, template_id: templateId, copy_count: 1 },
+      'label-recalled-status-001', null, null,
+    );
+
+    expect(result).toMatchObject({
+      replayed: false,
+      print_contract: {
+        symbology: 'QR',
+        identity_payload: {
+          unit_id: UNIT_ID,
+          unit_code: 'FG-RECALL-001',
+          status: 'RECALLED',
+        },
+      },
+    });
+  });
+
+  it('includes inventory-material lifecycle status in the issued label payload', async () => {
+    const templateId = 'd8fbbe44-d33b-4df4-a5ca-fbcb9eb8e9fd';
+    const labelIssueId = 'f41b14ab-7794-4a35-bcad-6b8f51ba4f1b';
+    const item = {
+      id: UNIT_ID,
+      sku: 'MAT-ACTIVE-001',
+      name: 'Active material',
+      unit: 'PCS',
+      sector_code: 'FABRIC',
+      status: 'ACTIVE',
+    };
+    const labelLayout = { fields: ['sku', 'name', 'status'] };
+    const template = {
+      id: templateId,
+      template_code: 'MAT-QR-V1',
+      symbology: 'QR',
+      supported_unit_types: ['MATERIAL'],
+      label_layout: labelLayout,
+      is_active: true,
+    };
+    const client = {
+      query: jest.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes('FROM inventory_items')) return { rows: [item] };
+        if (sql.includes('FROM traceability_label_templates')) return { rows: [template] };
+        if (sql.includes('INSERT INTO traceability_label_issues')) {
+          const encodedPayload = JSON.parse(String(params?.[9])) as Record<string, unknown>;
+          return {
+            rows: [{
+              id: labelIssueId,
+              tenant_id: TENANT_ID,
+              factory_id: FACTORY_ID,
+              unit_id: null,
+              inventory_item_id: item.id,
+              template_id: templateId,
+              template_code: template.template_code,
+              unit_code: item.sku,
+              barcode_value: item.sku,
+              symbology: template.symbology,
+              encoded_payload: encodedPayload,
+              label_layout: labelLayout,
+              copy_count: 1,
+              created_by_user_id: USER_ID,
+              correlation_id: String(params?.[15]),
+              created_at: '2026-10-25T00:00:00.000Z',
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+    const transaction = database.transaction as unknown as {
+      mockImplementation: (fn: (
+        scope: unknown,
+        callback: (client: unknown) => Promise<unknown>,
+      ) => Promise<unknown>) => void;
+    };
+    transaction.mockImplementation(async (_scope, callback) => callback(client));
+
+    const result = await service.issueLabel(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { item_id: UNIT_ID, template_id: templateId, copy_count: 1 },
+      'label-material-status-001', null, null,
+    );
+
+    expect(result).toMatchObject({
+      replayed: false,
+      print_contract: {
+        symbology: 'QR',
+        identity_payload: {
+          identity_type: 'MATERIAL',
+          inventory_item_id: UNIT_ID,
+          sku: 'MAT-ACTIVE-001',
+          status: 'ACTIVE',
+        },
+      },
+    });
+  });
+
+  it('rejects label issuance for an inactive material before creating a label issue', async () => {
+    const inactiveItem = {
+      id: UNIT_ID,
+      sku: 'MAT-INACTIVE-001',
+      name: 'Inactive material',
+      unit: 'PCS',
+      sector_code: 'FABRIC',
+      status: 'INACTIVE',
+    };
+    const client = {
+      query: jest.fn(async (sql: string) => {
+        if (sql.includes('FROM inventory_items')) return { rows: [inactiveItem] };
+        return { rows: [] };
+      }),
+    };
+    const transaction = database.transaction as unknown as {
+      mockImplementation: (fn: (
+        scope: unknown,
+        callback: (client: unknown) => Promise<unknown>,
+      ) => Promise<unknown>) => void;
+    };
+    transaction.mockImplementation(async (_scope, callback) => callback(client));
+
+    await expect(service.issueLabel(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { item_id: UNIT_ID, template_id: 'd8fbbe44-d33b-4df4-a5ca-fbcb9eb8e9fd' },
+      'label-material-inactive-001', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO traceability_label_issues'))).toBe(false);
   });
 });

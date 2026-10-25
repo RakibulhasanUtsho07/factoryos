@@ -14,6 +14,9 @@ import {
   CreateGenealogyEventDto,
   CreateTraceabilityLabelTemplateDto,
   CreateTraceabilityUnitDto,
+  DeclareTraceabilityRecallDto,
+  CreateRecallNotificationIntentDto,
+  RecordRecallNotificationAcknowledgementDto,
   IssueTraceabilityLabelDto,
   UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
@@ -523,6 +526,23 @@ export class TraceabilityService {
       ORDER BY e.created_at, e.id
       LIMIT 1000
     `, [unitIds, tenantId, factoryId], context);
+    const boundaryIds = units
+      .filter(row => Number((row as QueryResultRow & { depth?: number }).depth) === depth)
+      .map(row => String((row as unknown as QueryResultRow & { id: string }).id));
+    let depthTruncated = false;
+    if (boundaryIds.length > 0) {
+      const outwardEdge = direction === 'FORWARD'
+        ? 'e.source_unit_id = ANY($1::uuid[]) AND NOT (e.target_unit_id = ANY($1::uuid[]))'
+        : 'e.target_unit_id = ANY($1::uuid[]) AND NOT (e.source_unit_id = ANY($1::uuid[]))';
+      const boundaryResult = await this.database.query<{ truncated: boolean }>(`
+        SELECT EXISTS (
+          SELECT 1 FROM product_genealogy_events e
+          WHERE ${outwardEdge} AND e.tenant_id = $2 AND e.factory_id = $3
+        ) AS truncated
+      `, [boundaryIds, tenantId, factoryId], context);
+      depthTruncated = boundaryResult.rows[0]?.truncated === true;
+    }
+    const nodeLimitReached = units.length >= limit;
     const settings = await this.getSettings(userId, tenantId, factoryId);
     return {
       root: root.rows[0],
@@ -530,10 +550,717 @@ export class TraceabilityService {
       max_depth: depth,
       limit,
       retention_years: settings.retention_years,
-      truncated: units.length >= limit,
+      truncated: nodeLimitReached || depthTruncated,
+      node_limit_reached: nodeLimitReached,
+      depth_truncated: depthTruncated,
       units,
       relationships: edgesResult.rows,
     };
+  }
+
+  /**
+   * Builds a bounded, read-only recall impact assessment from the unit's genealogy.
+   * It reports downstream identities and customer shipments without changing stock,
+   * marking identities recalled, or creating a recall decision.
+   */
+  async recallImpact(
+    userId: string, tenantId: string, factoryId: string, unitId: string,
+    rawDepth?: number, rawLimit?: number,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const downstream = await this.trace(userId, tenantId, factoryId, unitId, 'FORWARD', rawDepth, rawLimit);
+    const upstream = await this.trace(userId, tenantId, factoryId, unitId, 'REVERSE', rawDepth, rawLimit);
+    const rootId = String(downstream.root.id).toLowerCase();
+    // trace() deliberately returns database projection rows with a depth annotation;
+    // make the known projection fields explicit here for safe TypeScript narrowing.
+    const downstreamUnits = downstream.units as unknown as Array<
+      QueryResultRow & { id: string; unit_type?: string; product_role?: string; depth: number }
+    >;
+    const impactedUnits = downstreamUnits.filter((unit) => String(unit.id).toLowerCase() !== rootId);
+    const shipmentIds = impactedUnits
+      .filter((unit) => String(unit.unit_type ?? '').toUpperCase() === 'SHIPMENT'
+        || String(unit.product_role ?? '').toUpperCase() === 'SHIPMENT')
+      .map((unit) => String(unit.id));
+
+    const shipmentResult = await this.database.query<{
+      shipment_unit_id: string;
+      shipment_code: string;
+      container_unit_id: string;
+      customer_name: string;
+      customer_order_reference: string;
+      order_id: string | null;
+      order_line_id: string | null;
+      carrier_name: string | null;
+      tracking_reference: string | null;
+      quantity: string;
+      unit: string;
+      dispatched_at: string;
+      latest_delivery_event_type: string | null;
+      latest_delivery_event_at: string | null;
+      pod_reference: string | null;
+      pod_sha256: string | null;
+    }>(`
+      SELECT s.shipment_unit_id::text AS shipment_unit_id,
+        s.shipment_code, s.container_unit_id::text AS container_unit_id,
+        s.customer_name, s.customer_order_reference,
+        s.order_id::text AS order_id, s.order_line_id::text AS order_line_id,
+        s.carrier_name, s.tracking_reference,
+        s.quantity::text AS quantity, s.unit,
+        s.dispatched_at::text AS dispatched_at,
+        latest.event_type AS latest_delivery_event_type,
+        latest.event_at::text AS latest_delivery_event_at,
+        latest.proof_reference AS pod_reference,
+        latest.proof_sha256 AS pod_sha256
+      FROM wms_shipments s
+      LEFT JOIN LATERAL (
+        SELECT e.event_type, e.event_at, e.proof_reference, e.proof_sha256
+        FROM wms_shipment_delivery_events e
+        WHERE e.tenant_id=s.tenant_id AND e.factory_id=s.factory_id
+          AND e.shipment_unit_id=s.shipment_unit_id
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT 1
+      ) latest ON true
+      WHERE s.tenant_id=$1 AND s.factory_id=$2
+        AND s.shipment_unit_id=ANY($3::uuid[])
+      ORDER BY s.dispatched_at DESC, s.shipment_code, s.shipment_unit_id
+    `, [tenantId, factoryId, shipmentIds], { tenantId, userId });
+
+    return {
+      requested_unit: downstream.root,
+      direction: 'FORWARD',
+      max_depth: downstream.max_depth,
+      node_limit: downstream.limit,
+      impact_truncated: downstream.truncated,
+      impact_node_limit_reached: downstream.node_limit_reached,
+      impact_depth_truncated: downstream.depth_truncated,
+      provenance_truncated: upstream.truncated,
+      provenance_node_limit_reached: upstream.node_limit_reached,
+      provenance_depth_truncated: upstream.depth_truncated,
+      impacted_unit_count: impactedUnits.length,
+      impacted_units: impactedUnits,
+      downstream_relationships: downstream.relationships,
+      upstream_provenance: (upstream.units as unknown as Array<QueryResultRow & { id: string }>)
+        .filter((unit) => String(unit.id).toLowerCase() !== rootId),
+      upstream_relationships: upstream.relationships,
+      affected_shipment_count: shipmentResult.rows.length,
+      affected_shipments: shipmentResult.rows,
+      side_effects: {
+        stock_changed: false,
+        statuses_changed: false,
+        records_created: false,
+      },
+    };
+  }
+
+  /**
+   * Records a durable notification dispatch intent; it is not proof that an
+   * email, portal message, or EDI payload was sent or delivered.
+   */
+  async createRecallNotificationIntent(
+    userId: string, tenantId: string, factoryId: string, recallCaseId: string,
+    dto: CreateRecallNotificationIntentDto, rawIdempotencyKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(recallCaseId, 'recallCaseId');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const recipientType = String(dto.recipient_type ?? '').trim().toUpperCase();
+    if (!['CUSTOMER', 'SITE'].includes(recipientType)) {
+      throw new BadRequestException('recipient_type must be CUSTOMER or SITE');
+    }
+    const recipientReference = this.requiredText(dto.recipient_reference, 'recipient_reference', 255);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/.test(recipientReference) || /^https?:/i.test(recipientReference)) {
+      throw new BadRequestException('recipient_reference must be a non-URL customer/site reference, not contact data');
+    }
+    const channel = String(dto.channel ?? '').trim().toUpperCase();
+    if (!['EMAIL', 'PORTAL', 'EDI', 'MANUAL'].includes(channel)) {
+      throw new BadRequestException('channel must be EMAIL, PORTAL, EDI or MANUAL');
+    }
+    const reason = dto.reason === undefined ? null : this.requiredText(dto.reason, 'reason', 1800);
+    const requestHash = this.hash({
+      recall_case_id: recallCaseId.toLowerCase(), recipient_type: recipientType,
+      recipient_reference: recipientReference, channel, reason,
+    });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+
+    try {
+      return await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':wms-recall-notification:' + idempotencyKey],
+          );
+          const existing = await client.query<StoredKeyRow>(`
+            SELECT id::text AS id, request_hash
+            FROM wms_traceability_recall_notification_intents
+            WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, idempotencyKey]);
+          if (existing.rows[0]) {
+            if (existing.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Idempotency-Key was already used for a different recall notification request');
+            }
+            const replay = await client.query<QueryResultRow>(`
+              SELECT id::text AS id, recall_case_id::text AS recall_case_id,
+                recipient_type, recipient_reference, channel, reason,
+                requested_by_user_id::text AS requested_by_user_id,
+                correlation_id::text AS correlation_id, created_at::text AS created_at
+              FROM wms_traceability_recall_notification_intents
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            `, [existing.rows[0].id, tenantId, factoryId]);
+            if (!replay.rows[0]) throw new Error('WMS_RECALL_NOTIFICATION_REPLAY_ROW_MISSING');
+            return { ...replay.rows[0], dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED', replayed: true };
+          }
+
+          const recallCase = await client.query(`
+            SELECT id FROM wms_traceability_recall_cases
+            WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            FOR UPDATE
+          `, [recallCaseId.toLowerCase(), tenantId, factoryId]);
+          if (!recallCase.rows[0]) throw new NotFoundException('Recall case not found in this factory');
+
+          const inserted = await client.query<QueryResultRow>(`
+            INSERT INTO wms_traceability_recall_notification_intents (
+              tenant_id, factory_id, recall_case_id, recipient_type,
+              recipient_reference, channel, reason, idempotency_key, request_hash,
+              requested_by_user_id, correlation_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            RETURNING id::text AS id, recall_case_id::text AS recall_case_id,
+              recipient_type, recipient_reference, channel, reason,
+              requested_by_user_id::text AS requested_by_user_id,
+              correlation_id::text AS correlation_id, created_at::text AS created_at
+          `, [
+            tenantId, factoryId, recallCaseId.toLowerCase(), recipientType, recipientReference,
+            channel, reason, idempotencyKey, requestHash, userId, correlationId,
+          ]);
+          const intent = inserted.rows[0];
+          if (!intent) throw new Error('WMS_RECALL_NOTIFICATION_INTENT_INSERT_FAILED');
+
+          await client.query(`
+            INSERT INTO audit_events (
+              tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
+              resource_id,correlation_id,request_id,data_class,payload
+            ) VALUES ($1,$2,$3,'WMS_FULFILLMENT','NOTIFICATION_INTENT_RECORDED',
+              'WMS_RECALL_NOTIFICATION_INTENT',$4,$5,$6,'INTERNAL',$7::jsonb)
+          `, [tenantId, factoryId, userId, intent.id, correlationId, requestUuid, JSON.stringify({
+            recall_case_id: recallCaseId.toLowerCase(), recipient_type: recipientType,
+            recipient_reference: recipientReference, channel,
+            dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+          })]);
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload
+            ) VALUES ($1,$2,'WMS_RECALL_NOTIFICATION_INTENT',$3,'WMS.RECALL_NOTIFICATION_REQUESTED',$4::jsonb)
+          `, [tenantId, factoryId, intent.id, JSON.stringify({
+            notification_intent_id: intent.id, recall_case_id: recallCaseId.toLowerCase(),
+            recipient_type: recipientType, recipient_reference: recipientReference, channel,
+          })]);
+          return { ...intent, dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED', replayed: false };
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'Recall notification request conflicts with existing scope or idempotency evidence');
+    }
+  }
+
+  async listRecallNotificationIntents(
+    userId: string, tenantId: string, factoryId: string, recallCaseId: string,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(recallCaseId, 'recallCaseId');
+    return this.database.transaction(
+      { tenantId, userId },
+      async (client) => {
+        const recallCase = await client.query(`
+          SELECT id FROM wms_traceability_recall_cases
+          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+        `, [recallCaseId.toLowerCase(), tenantId, factoryId]);
+        if (!recallCase.rows[0]) throw new NotFoundException('Recall case not found in this factory');
+        const result = await client.query<QueryResultRow>(`
+          SELECT n.id::text AS id, n.recall_case_id::text AS recall_case_id,
+            n.recipient_type, n.recipient_reference, n.channel, n.reason,
+            n.requested_by_user_id::text AS requested_by_user_id,
+            n.correlation_id::text AS correlation_id, n.created_at::text AS created_at,
+            a.id::text AS acknowledgement_id, a.outcome AS acknowledgement_outcome,
+            a.notes AS acknowledgement_notes, a.evidence_reference AS acknowledgement_evidence_reference,
+            a.recorded_by_user_id::text AS acknowledgement_recorded_by_user_id,
+            a.acknowledgement_source, a.created_at::text AS acknowledgement_created_at
+          FROM wms_traceability_recall_notification_intents n
+          LEFT JOIN wms_traceability_recall_notification_acknowledgements a
+            ON a.notification_intent_id=n.id AND a.tenant_id=n.tenant_id AND a.factory_id=n.factory_id
+          WHERE n.recall_case_id=$1 AND n.tenant_id=$2 AND n.factory_id=$3
+          ORDER BY n.created_at, n.id
+          LIMIT 500
+        `, [recallCaseId.toLowerCase(), tenantId, factoryId]);
+        return {
+          recall_case_id: recallCaseId.toLowerCase(),
+          items: result.rows.map((row) => ({
+            ...row,
+            dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+            acknowledgement_externally_authenticated: false,
+          })),
+          limit: 500,
+        };
+      },
+    );
+  }
+
+  async recordRecallNotificationAcknowledgement(
+    userId: string, tenantId: string, factoryId: string, recallCaseId: string,
+    notificationIntentId: string, dto: RecordRecallNotificationAcknowledgementDto,
+    rawIdempotencyKey: string | null, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(recallCaseId, 'recallCaseId');
+    this.validateUuid(notificationIntentId, 'notificationIntentId');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const outcome = String(dto.outcome ?? '').trim().toUpperCase();
+    if (!['RECEIVED', 'NO_ACTION_REQUIRED', 'ACTION_IN_PROGRESS', 'ACTION_COMPLETED', 'UNABLE_TO_CONFIRM'].includes(outcome)) {
+      throw new BadRequestException('Unsupported recall acknowledgement outcome');
+    }
+    const notes = dto.notes === undefined ? null : this.requiredText(dto.notes, 'notes', 1800);
+    const evidenceReference = dto.evidence_reference === undefined
+      ? null
+      : this.requiredText(dto.evidence_reference, 'evidence_reference', 500);
+    if (evidenceReference && (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/.test(evidenceReference) || /^https?:\/\//i.test(evidenceReference))) {
+      throw new BadRequestException('evidence_reference must be a reference token, not a URL');
+    }
+    const requestHash = this.hash({
+      recall_case_id: recallCaseId.toLowerCase(), notification_intent_id: notificationIntentId.toLowerCase(),
+      outcome, notes, evidence_reference: evidenceReference,
+    });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+
+    try {
+      return await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':wms-recall-ack:' + idempotencyKey],
+          );
+          const existing = await client.query<StoredKeyRow>(`
+            SELECT id::text AS id, request_hash
+            FROM wms_traceability_recall_notification_acknowledgements
+            WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, idempotencyKey]);
+          if (existing.rows[0]) {
+            if (existing.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Idempotency-Key was already used for a different recall acknowledgement');
+            }
+            const replay = await client.query<QueryResultRow>(`
+              SELECT id::text AS id, recall_case_id::text AS recall_case_id,
+                notification_intent_id::text AS notification_intent_id, recipient_type,
+                recipient_reference, outcome, notes, evidence_reference, acknowledgement_source,
+                recorded_by_user_id::text AS recorded_by_user_id,
+                correlation_id::text AS correlation_id, created_at::text AS created_at
+              FROM wms_traceability_recall_notification_acknowledgements
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            `, [existing.rows[0].id, tenantId, factoryId]);
+            if (!replay.rows[0]) throw new Error('WMS_RECALL_ACK_REPLAY_ROW_MISSING');
+            return { ...replay.rows[0], externally_authenticated: false, replayed: true };
+          }
+
+          const intent = await client.query<QueryResultRow>(`
+            SELECT id::text AS id
+            FROM wms_traceability_recall_notification_intents
+            WHERE id=$1 AND recall_case_id=$2 AND tenant_id=$3 AND factory_id=$4
+            FOR UPDATE
+          `, [notificationIntentId.toLowerCase(), recallCaseId.toLowerCase(), tenantId, factoryId]);
+          if (!intent.rows[0]) throw new NotFoundException('Recall notification intent not found in this factory');
+          const priorAcknowledgement = await client.query(`
+            SELECT id FROM wms_traceability_recall_notification_acknowledgements
+            WHERE notification_intent_id=$1 AND tenant_id=$2 AND factory_id=$3
+            FOR UPDATE
+          `, [notificationIntentId.toLowerCase(), tenantId, factoryId]);
+          if (priorAcknowledgement.rows[0]) {
+            throw new ConflictException('This notification intent already has an acknowledgement; use its original idempotency key to replay');
+          }
+
+          const inserted = await client.query<QueryResultRow>(`
+            INSERT INTO wms_traceability_recall_notification_acknowledgements (
+              tenant_id, factory_id, recall_case_id, notification_intent_id,
+              recipient_type, recipient_reference, outcome, notes, evidence_reference,
+              idempotency_key, request_hash, recorded_by_user_id, correlation_id,
+              acknowledgement_source
+            )
+            SELECT n.tenant_id, n.factory_id, n.recall_case_id, n.id,
+              n.recipient_type, n.recipient_reference, $5, $6, $7,
+              $8, $9, $10, $11, 'OPERATOR_REPORTED'
+            FROM wms_traceability_recall_notification_intents n
+            WHERE n.id=$1 AND n.recall_case_id=$2 AND n.tenant_id=$3 AND n.factory_id=$4
+            RETURNING id::text AS id, recall_case_id::text AS recall_case_id,
+              notification_intent_id::text AS notification_intent_id, recipient_type,
+              recipient_reference, outcome, notes, evidence_reference, acknowledgement_source,
+              recorded_by_user_id::text AS recorded_by_user_id,
+              correlation_id::text AS correlation_id, created_at::text AS created_at
+          `, [
+            notificationIntentId.toLowerCase(), recallCaseId.toLowerCase(), tenantId, factoryId,
+            outcome, notes, evidenceReference, idempotencyKey, requestHash, userId, correlationId,
+          ]);
+          const acknowledgement = inserted.rows[0];
+          if (!acknowledgement) throw new NotFoundException('Recall notification intent not found in this factory');
+
+          await client.query(`
+            INSERT INTO audit_events (
+              tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
+              resource_id,correlation_id,request_id,data_class,payload
+            ) VALUES ($1,$2,$3,'WMS_FULFILLMENT','ACKNOWLEDGEMENT_RECORDED',
+              'WMS_RECALL_NOTIFICATION_ACKNOWLEDGEMENT',$4,$5,$6,'INTERNAL',$7::jsonb)
+          `, [tenantId, factoryId, userId, acknowledgement.id, correlationId, requestUuid, JSON.stringify({
+            recall_case_id: recallCaseId.toLowerCase(), notification_intent_id: notificationIntentId.toLowerCase(),
+            outcome, acknowledgement_source: 'OPERATOR_REPORTED',
+            notes_sha256: notes ? this.hash(notes) : null,
+            evidence_reference: evidenceReference,
+          })]);
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload
+            ) VALUES ($1,$2,'WMS_RECALL_NOTIFICATION_ACKNOWLEDGEMENT',$3,'WMS.RECALL_NOTIFICATION_ACKNOWLEDGED',$4::jsonb)
+          `, [tenantId, factoryId, acknowledgement.id, JSON.stringify({
+            acknowledgement_id: acknowledgement.id, recall_case_id: recallCaseId.toLowerCase(),
+            notification_intent_id: notificationIntentId.toLowerCase(), outcome,
+            acknowledgement_source: 'OPERATOR_REPORTED',
+          })]);
+          return { ...acknowledgement, externally_authenticated: false, replayed: false };
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'Recall acknowledgement conflicts with existing scope, intent or idempotency evidence');
+    }
+  }
+
+  /**
+   * Declares a recall against a complete, bounded downstream genealogy. A partial
+   * traversal is rejected before any case or unit status is written.
+   */
+  async declareRecall(
+    userId: string, tenantId: string, factoryId: string, unitId: string,
+    dto: DeclareTraceabilityRecallDto, rawIdempotencyKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(unitId, 'unitId');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const reason = this.requiredText(dto.reason, 'reason', 1800);
+    const depth = dto.depth ?? 5;
+    const limit = dto.limit ?? 200;
+    if (!Number.isInteger(depth) || depth < 1 || depth > 12) {
+      throw new BadRequestException('depth must be an integer between 1 and 12');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      throw new BadRequestException('limit must be an integer between 1 and 500');
+    }
+
+    const requestHash = this.hash({
+      source_unit_id: unitId.toLowerCase(), reason, depth, limit,
+    });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+
+    try {
+      return await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          // Match the global graph lock used by genealogy inserts. This freezes the
+          // edge set while the affected unit set is computed and status-locked.
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':product-genealogy-graph'],
+          );
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':wms-recall-case:' + idempotencyKey],
+          );
+
+          const existing = await client.query<QueryResultRow & {
+            id: string; request_hash: string;
+          }>(`
+            SELECT id::text AS id, request_hash
+            FROM wms_traceability_recall_cases
+            WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, idempotencyKey]);
+          if (existing.rows[0]) {
+            if (existing.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Idempotency-Key was already used for a different recall declaration');
+            }
+            const priorCase = await client.query<QueryResultRow>(`
+              SELECT id::text AS id, source_unit_id::text AS source_unit_id, reason,
+                max_depth, node_limit, impacted_unit_count, impact_fingerprint,
+                declared_by_user_id::text AS declared_by_user_id,
+                correlation_id::text AS correlation_id, created_at::text AS created_at
+              FROM wms_traceability_recall_cases
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            `, [existing.rows[0].id, tenantId, factoryId]);
+            const priorUnits = await client.query<QueryResultRow>(`
+              SELECT unit_id::text AS unit_id, unit_code_snapshot, unit_type_snapshot,
+                depth, status_before, unit_action, status_event_id::text AS status_event_id
+              FROM wms_traceability_recall_case_units
+              WHERE recall_case_id=$1 AND tenant_id=$2 AND factory_id=$3
+              ORDER BY depth, unit_id
+            `, [existing.rows[0].id, tenantId, factoryId]);
+            if (!priorCase.rows[0]) throw new Error('WMS_RECALL_CASE_REPLAY_ROW_MISSING');
+            return {
+              recall_case: priorCase.rows[0],
+              units: priorUnits.rows,
+              follow_up_required: priorUnits.rows.filter(
+                (row) => row.unit_action === 'SHIPPED_REVIEW_REQUIRED',
+              ).length,
+              replayed: true,
+            };
+          }
+
+          const rootResult = await client.query<QueryResultRow & {
+            id: string; unit_code: string; unit_type: string; product_role: string;
+          }>(`
+            SELECT id::text AS id, unit_code, unit_type, product_role
+            FROM traceability_units
+            WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+          `, [unitId, tenantId, factoryId]);
+          const root = rootResult.rows[0];
+          if (!root) throw new NotFoundException('Traceability unit not found in this factory');
+
+          // Breadth-first traversal with a hard cap at every layer. The query may
+          // read only limit+1 edges per layer; excessive fan-out fails closed too.
+          const nodes = new Map<string, { id: string; depth: number }>([
+            [String(root.id).toLowerCase(), { id: String(root.id).toLowerCase(), depth: 0 }],
+          ]);
+          const graphEdges: Array<{
+            id: string; source_unit_id: string; target_unit_id: string;
+            relationship_type: string; quantity: string;
+          }> = [];
+          let frontier = [String(root.id).toLowerCase()];
+          for (let currentDepth = 0; currentDepth < depth && frontier.length > 0; currentDepth += 1) {
+            const edgeResult = await client.query<QueryResultRow & {
+              id: string; source_unit_id: string; target_unit_id: string;
+              relationship_type: string; quantity: string;
+            }>(`
+              SELECT id::text AS id, source_unit_id::text AS source_unit_id,
+                target_unit_id::text AS target_unit_id, relationship_type, quantity::text AS quantity
+              FROM product_genealogy_events
+              WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=ANY($3::uuid[])
+              ORDER BY source_unit_id, target_unit_id, id
+              LIMIT $4
+            `, [tenantId, factoryId, frontier, limit + 1]);
+            if (edgeResult.rows.length > limit) {
+              throw new ConflictException(
+                'Recall declaration refused: genealogy fan-out exceeds the configured node bound; no statuses changed',
+              );
+            }
+
+            const nextFrontier: string[] = [];
+            for (const edge of edgeResult.rows) {
+              graphEdges.push({
+                id: String(edge.id).toLowerCase(),
+                source_unit_id: String(edge.source_unit_id).toLowerCase(),
+                target_unit_id: String(edge.target_unit_id).toLowerCase(),
+                relationship_type: String(edge.relationship_type),
+                quantity: String(edge.quantity),
+              });
+              const targetId = String(edge.target_unit_id).toLowerCase();
+              if (nodes.has(targetId)) continue;
+              if (nodes.size >= limit) {
+                throw new ConflictException(
+                  'Recall declaration refused: downstream genealogy exceeds the configured node bound; no statuses changed',
+                );
+              }
+              nodes.set(targetId, { id: targetId, depth: currentDepth + 1 });
+              nextFrontier.push(targetId);
+            }
+            frontier = nextFrontier;
+          }
+
+          if (frontier.length > 0) {
+            const beyondBoundary = await client.query<{ truncated: boolean }>(`
+              SELECT EXISTS (
+                SELECT 1 FROM product_genealogy_events e
+                WHERE e.tenant_id=$1 AND e.factory_id=$2
+                  AND e.source_unit_id=ANY($3::uuid[])
+                  AND NOT (e.target_unit_id=ANY($4::uuid[]))
+              ) AS truncated
+            `, [tenantId, factoryId, frontier, Array.from(nodes.keys())]);
+            if (beyondBoundary.rows[0]?.truncated === true) {
+              throw new ConflictException(
+                'Recall declaration refused: downstream genealogy is truncated at the requested depth; no statuses changed',
+              );
+            }
+          }
+
+          const orderedNodeIds = Array.from(nodes.keys()).sort();
+          const lockedResult = await client.query<QueryResultRow & {
+            id: string; unit_code: string; unit_type: string; product_role: string;
+            status: string; version: string;
+          }>(`
+            SELECT id::text AS id, unit_code, unit_type, product_role, status, version::text AS version
+            FROM traceability_units
+            WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])
+            ORDER BY id
+            FOR UPDATE
+          `, [tenantId, factoryId, orderedNodeIds]);
+          if (lockedResult.rows.length !== nodes.size) {
+            throw new ConflictException('Recall declaration refused because genealogy identities changed during assessment');
+          }
+          const lockedById = new Map(lockedResult.rows.map((row) => [String(row.id).toLowerCase(), row]));
+          const graphFingerprint = this.hash({
+            units: Array.from(nodes.values())
+              .sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id))
+              .map((node) => ({
+                unit_id: node.id,
+                depth: node.depth,
+                unit_code: lockedById.get(node.id)?.unit_code ?? null,
+                status: lockedById.get(node.id)?.status ?? null,
+              })),
+            relationships: graphEdges.sort((a, b) => a.id.localeCompare(b.id)),
+          });
+          const caseResult = await client.query<QueryResultRow & {
+            id: string; source_unit_id: string; reason: string; max_depth: number;
+            node_limit: number; impacted_unit_count: number; impact_fingerprint: string;
+            declared_by_user_id: string; correlation_id: string; created_at: string;
+          }>(`
+            INSERT INTO wms_traceability_recall_cases (
+              tenant_id, factory_id, source_unit_id, reason, max_depth, node_limit,
+              impacted_unit_count, impact_fingerprint, idempotency_key, request_hash,
+              declared_by_user_id, correlation_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid)
+            RETURNING id::text AS id, source_unit_id::text AS source_unit_id, reason,
+              max_depth, node_limit, impacted_unit_count, impact_fingerprint,
+              declared_by_user_id::text AS declared_by_user_id,
+              correlation_id::text AS correlation_id, created_at::text AS created_at
+          `, [
+            tenantId, factoryId, root.id, reason, depth, limit, nodes.size,
+            graphFingerprint, idempotencyKey, requestHash, userId, correlationId,
+          ]);
+          const recallCase = caseResult.rows[0];
+          if (!recallCase) throw new Error('WMS_RECALL_CASE_INSERT_FAILED');
+
+          const caseUnits: Array<Record<string, unknown> & { unit_id: string; unit_action: string }> = [];
+          for (const node of Array.from(nodes.values()).sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id))) {
+            const unit = lockedById.get(node.id);
+            if (!unit) throw new Error('WMS_RECALL_CASE_UNIT_LOCK_MISSING');
+            let unitAction: 'RECALLED' | 'ALREADY_RECALLED' | 'SHIPPED_REVIEW_REQUIRED' | 'ALREADY_DISPOSED';
+            let statusEventId: string | null = null;
+            const statusBefore = String(unit.status);
+
+            if (unit.status === 'ACTIVE' || unit.status === 'QUARANTINED') {
+              const update = await client.query<QueryResultRow & { version: string; status: string }>(`
+                UPDATE traceability_units
+                SET status='RECALLED', version=version+1, updated_at=clock_timestamp()
+                WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND status=$4
+                RETURNING version::text AS version, status
+              `, [unit.id, tenantId, factoryId, unit.status]);
+              if (!update.rows[0]) {
+                throw new ConflictException('Recall declaration refused because a unit status changed concurrently');
+              }
+              unitAction = 'RECALLED';
+              const statusRequestHash = this.hash({
+                recall_case_id: recallCase.id, unit_id: unit.id,
+                from_status: statusBefore, to_status: 'RECALLED', reason,
+              });
+              const statusEvent = await client.query<QueryResultRow & { id: string }>(`
+                INSERT INTO traceability_unit_status_events (
+                  tenant_id, factory_id, unit_id, version, from_status, to_status, reason,
+                  idempotency_key, request_hash, changed_by_user_id, correlation_id
+                ) VALUES ($1,$2,$3,$4::bigint,$5,'RECALLED',$6,$7,$8,$9,$10::uuid)
+                RETURNING id::text AS id
+              `, [
+                tenantId, factoryId, unit.id, update.rows[0].version,
+                statusBefore, 'Recall case ' + recallCase.id + ': ' + reason,
+                'wms-recall-' + recallCase.id.replace(/-/g, '') + '-' + unit.id.replace(/-/g, ''),
+                statusRequestHash, userId, correlationId,
+              ]);
+              statusEventId = statusEvent.rows[0]?.id ?? null;
+              if (!statusEventId) throw new Error('WMS_RECALL_STATUS_EVENT_INSERT_FAILED');
+              await this.insertAudit(client, {
+                tenantId, factoryId, userId, resourceType: 'TRACEABILITY_UNIT', resourceId: unit.id,
+                action: 'STATUS_CHANGED', correlationId, requestId: requestUuid,
+                payload: {
+                  fromStatus: statusBefore, toStatus: 'RECALLED',
+                  reason: 'Recall case ' + recallCase.id + ': ' + reason,
+                  version: update.rows[0].version, recall_case_id: recallCase.id,
+                },
+              });
+              await client.query(`
+                INSERT INTO outbox_events (
+                  tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+                ) VALUES ($1,$2,'TRACEABILITY_UNIT',$3,'TRACEABILITY.UNIT_STATUS_CHANGED',$4::jsonb)
+              `, [tenantId, factoryId, unit.id, JSON.stringify({
+                unit_id: unit.id, from_status: statusBefore, to_status: 'RECALLED',
+                reason, version: update.rows[0].version, recall_case_id: recallCase.id,
+              })]);
+            } else if (unit.status === 'RECALLED') {
+              unitAction = 'ALREADY_RECALLED';
+            } else if (unit.status === 'SHIPPED') {
+              // The domain status machine forbids SHIPPED -> RECALLED. Keep that
+              // immutable logistics fact and require a separate customer/site action.
+              unitAction = 'SHIPPED_REVIEW_REQUIRED';
+            } else if (unit.status === 'DISPOSED') {
+              unitAction = 'ALREADY_DISPOSED';
+            } else {
+              throw new ConflictException('Recall declaration encountered an unsupported traceability status');
+            }
+
+            await client.query(`
+              INSERT INTO wms_traceability_recall_case_units (
+                tenant_id, factory_id, recall_case_id, unit_id, unit_code_snapshot,
+                unit_type_snapshot, depth, status_before, unit_action, status_event_id
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::uuid)
+            `, [
+              tenantId, factoryId, recallCase.id, unit.id, unit.unit_code,
+              unit.unit_type, node.depth, statusBefore, unitAction, statusEventId,
+            ]);
+            caseUnits.push({
+              unit_id: unit.id, unit_code_snapshot: unit.unit_code,
+              unit_type_snapshot: unit.unit_type, depth: node.depth,
+              status_before: statusBefore, unit_action: unitAction, status_event_id: statusEventId,
+            });
+          }
+
+          await this.insertAudit(client, {
+            tenantId, factoryId, userId, resourceType: 'WMS_RECALL_CASE', resourceId: recallCase.id,
+            action: 'DECLARED', correlationId, requestId: requestUuid,
+            payload: {
+              source_unit_id: root.id, reason, max_depth: depth, node_limit: limit,
+              impacted_unit_count: nodes.size, impact_fingerprint: graphFingerprint,
+              recalled_count: caseUnits.filter((row) => row.unit_action === 'RECALLED').length,
+              already_recalled_count: caseUnits.filter((row) => row.unit_action === 'ALREADY_RECALLED').length,
+              shipped_review_required_count: caseUnits.filter((row) => row.unit_action === 'SHIPPED_REVIEW_REQUIRED').length,
+              already_disposed_count: caseUnits.filter((row) => row.unit_action === 'ALREADY_DISPOSED').length,
+            },
+          });
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+            ) VALUES ($1,$2,'WMS_RECALL_CASE',$3,'WMS.RECALL_DECLARED',$4::jsonb)
+          `, [tenantId, factoryId, recallCase.id, JSON.stringify({
+            recall_case_id: recallCase.id, source_unit_id: root.id, reason,
+            impacted_unit_count: nodes.size,
+            recalled_count: caseUnits.filter((row) => row.unit_action === 'RECALLED').length,
+            already_recalled_count: caseUnits.filter((row) => row.unit_action === 'ALREADY_RECALLED').length,
+            shipped_review_required_count: caseUnits.filter((row) => row.unit_action === 'SHIPPED_REVIEW_REQUIRED').length,
+            already_disposed_count: caseUnits.filter((row) => row.unit_action === 'ALREADY_DISPOSED').length,
+            customer_notification_sent: false,
+            stock_changed: false,
+          })]);
+
+          return {
+            recall_case: recallCase,
+            units: caseUnits,
+            follow_up_required: caseUnits.filter((row) => row.unit_action === 'SHIPPED_REVIEW_REQUIRED').length,
+            replayed: false,
+          };
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'Recall declaration conflicts with existing identity, status or idempotency evidence');
+    }
   }
 
   async changeUnitStatus(
@@ -782,6 +1509,7 @@ export class TraceabilityService {
               quantity: unit.quantity,
               unit: unit.unit,
               expires_at: unit.expires_at,
+              status: unit.status,
             };
           } else {
             const itemResult = await client.query<{
@@ -807,6 +1535,7 @@ export class TraceabilityService {
               name: item.name,
               unit: item.unit,
               sector_code: item.sector_code,
+              status: item.status,
             };
           }
 

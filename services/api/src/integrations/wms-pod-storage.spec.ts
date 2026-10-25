@@ -1,7 +1,7 @@
 import { BadRequestException, ServiceUnavailableException, UnprocessableEntityException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { jest } from '@jest/globals';
-import { verifyWmsPodObjectDigest } from './wms-pod-storage';
+import { uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
 
 type ConfigValues = Record<string, string | undefined>;
 
@@ -99,4 +99,56 @@ describe('WMS proof-of-delivery object verification', () => {
     )).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it('uploads a supported POD file with SigV4 then GETs and verifies the persisted bytes', async () => {
+    const bytes = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x01,0x02]);
+    const expected = createHash('sha256').update(bytes).digest('hex');
+    const fetcher = jest.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } }));
+    const result = await uploadWmsPodObjectAndVerify(
+      testConfig(), 'pod/tenant/factory/shipment/object-1', bytes, 'image/png', fetcher as never,
+    );
+    expect(result).toEqual({ sha256: expected, byteLength: bytes.byteLength, contentType: 'image/png' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const [putUrl, putInit] = fetcher.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(String(putUrl)).toBe('https://storage.example.test/factoryos-pod/pod/tenant/factory/shipment/object-1');
+    expect(putInit.method).toBe('PUT');
+    expect(putInit.redirect).toBe('error');
+    expect(Buffer.from(putInit.body as Uint8Array)).toEqual(bytes);
+    const putHeaders = putInit.headers as Record<string, string>;
+    expect(putHeaders['content-type']).toBe('image/png');
+    expect(putHeaders['x-amz-content-sha256']).toBe(expected);
+    expect(putHeaders.Authorization).toContain('SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date');
+    const [, getInit] = fetcher.mock.calls[1] as unknown as [URL, RequestInit];
+    expect(getInit.method).toBe('GET');
+    expect(getInit.redirect).toBe('error');
+  });
+
+  it('fails closed when read-back bytes differ after upload', async () => {
+    const uploaded = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x01,0x02]);
+    const stored = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x01,0x03]);
+    const fetcher = jest.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(stored, { status: 200, headers: { 'content-length': String(stored.byteLength) } }));
+    await expect(uploadWmsPodObjectAndVerify(
+      testConfig(), 'pod/tenant/factory/shipment/object-2', uploaded, 'image/png', fetcher as never,
+    )).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects mismatched content signatures and configured byte limits before network access', async () => {
+    const fetcher = jest.fn(async () => new Response(null, { status: 200 }));
+    await expect(uploadWmsPodObjectAndVerify(
+      testConfig(), 'pod/tenant/factory/shipment/object-3', Buffer.from('not a PNG'), 'image/png', fetcher as never,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(fetcher).not.toHaveBeenCalled();
+    const bytes = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00]);
+    await expect(uploadWmsPodObjectAndVerify(
+      testConfig({ WMS_POD_STORAGE_MAX_BYTES: '8' }),
+      'pod/tenant/factory/shipment/object-4', bytes, 'image/png', fetcher as never,
+    )).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
 });

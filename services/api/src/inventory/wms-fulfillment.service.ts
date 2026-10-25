@@ -383,6 +383,14 @@ export class WmsFulfillmentService {
     const customerOrderReference = this.requiredText(dto.customer_order_reference, 'customer_order_reference', 160);
     const carrierName = dto.carrier_name?.trim() || null;
     const trackingReference = dto.tracking_reference?.trim() || null;
+    if ((carrierName === null) !== (trackingReference === null)) {
+      throw new BadRequestException('carrier_name and tracking_reference must be supplied together');
+    }
+    for (const [field, value] of [['carrier_name', carrierName], ['tracking_reference', trackingReference]] as const) {
+      if (value !== null && (value.length > 255 || !/^[\x20-\x7e]+$/.test(value))) {
+        throw new BadRequestException(field + ' must contain 1–255 visible ASCII characters');
+      }
+    }
     const orderId = dto.order_id ? this.uuid(dto.order_id, 'order_id') : null;
     const orderLineId = dto.order_line_id ? this.uuid(dto.order_line_id, 'order_line_id') : null;
     if ((orderId === null) !== (orderLineId === null)) {
@@ -830,8 +838,13 @@ export class WmsFulfillmentService {
     if (!['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'DELIVERED', 'RETURNED'].includes(eventType)) {
       throw new BadRequestException('event_type is not supported');
     }
-    const eventAt = dto.event_at ? new Date(dto.event_at) : new Date();
-    if (!Number.isFinite(eventAt.getTime())) throw new BadRequestException('event_at must be a valid timestamp');
+    // Fingerprint the caller's input, not a timestamp synthesized by this server.
+    // If event_at is omitted, a retry must match the original request even though "now" changes.
+    const suppliedEventAt = dto.event_at != null ? new Date(dto.event_at) : null;
+    if (suppliedEventAt && !Number.isFinite(suppliedEventAt.getTime())) {
+      throw new BadRequestException('event_at must be a valid timestamp');
+    }
+    const eventAt = suppliedEventAt ?? new Date();
     if (eventAt.getTime() > Date.now() + 10 * 60 * 1000) {
       throw new BadRequestException('event_at cannot be more than ten minutes in the future');
     }
@@ -857,7 +870,8 @@ export class WmsFulfillmentService {
       throw new BadRequestException('POD fields may only be provided for DELIVERED events');
     }
     const requestHash = this.hash({
-      shipment_unit_id: shipmentId, event_type: eventType, event_at: eventAt.toISOString(),
+      shipment_unit_id: shipmentId, event_type: eventType,
+      event_at: suppliedEventAt?.toISOString() ?? null,
       recipient_name: recipientName, proof_type: proofType, proof_reference: proofReference,
       proof_sha256: proofSha256, signed_at: signedAt?.toISOString() ?? null, notes,
     });

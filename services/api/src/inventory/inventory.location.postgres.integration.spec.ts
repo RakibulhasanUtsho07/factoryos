@@ -73,11 +73,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_shipment_delivery_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_traceability_recall_case_units DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_traceability_recall_cases DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_shipments DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE order_lines DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE orders DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_contents DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_containers DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_traceability_recall_notification_acknowledgements DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_traceability_recall_notification_intents DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -133,6 +137,22 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_traceability_recall_notification_acknowledgements WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_traceability_recall_notification_intents WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_traceability_recall_case_units WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_traceability_recall_cases WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -1225,6 +1245,30 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-carton-remainder-seal-' + randomUUID(), requestId, traceId,
     );
 
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      {
+        shipment_code: 'SHIP-CARRIER-PAIR-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARRIER-PAIR-' + randomUUID().slice(0, 8),
+        carrier_name: 'Acceptance Carrier',
+      } as never,
+      'wms-carrier-missing-tracking-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    // The dispatch lookup and database index normalize carrier/tracking case.
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      {
+        shipment_code: 'SHIP-CARRIER-DUP-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARRIER-DUP-' + randomUUID().slice(0, 8),
+        carrier_name: dispatchPayload.carrier_name.toLowerCase(),
+        tracking_reference: dispatchPayload.tracking_reference.toLowerCase(),
+      },
+      'wms-carrier-duplicate-tracking-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
     const rollbackPayload = {
       shipment_code: 'SHIP-ROLLBACK-' + randomUUID().slice(0, 8),
       customer_name: 'Rollback Acceptance Customer',
@@ -1327,6 +1371,291 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       [finishedLot.id, tenantId, fixture.factoryId],
     );
     expect(finalLotStatus.rows[0]?.status).toBe('SHIPPED');
+
+    const recallImpact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 200,
+    );
+    expect(recallImpact).toMatchObject({
+      requested_unit: { id: finishedLot.id, unit_code: finishedLot.unit_code },
+      side_effects: { stock_changed: false, statuses_changed: false, records_created: false },
+    });
+    const impactShipmentIds = recallImpact.affected_shipments.map(
+      (shipment: { shipment_unit_id: string }) => shipment.shipment_unit_id,
+    );
+    expect(impactShipmentIds).toEqual(expect.arrayContaining([
+      dispatched.shipment.shipment_unit_id,
+      remainderDispatch.shipment.shipment_unit_id,
+    ]));
+    expect(recallImpact.impacted_units.map((unit: { id: string }) => unit.id)).toEqual(
+      expect.arrayContaining([cartonId, palletId, remainderCartonId,
+        dispatched.shipment.shipment_unit_id, remainderDispatch.shipment.shipment_unit_id]),
+    );
+
+    // The recall preview is bounded and read-only; callers must not mistake it for a recall decision.
+    const boundedImpact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 1,
+    );
+    expect(boundedImpact).toMatchObject({
+      impact_truncated: true,
+      impact_node_limit_reached: true,
+      impacted_unit_count: 0,
+    });
+    const depthBoundedImpact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 1, 200,
+    );
+    expect(depthBoundedImpact.impact_depth_truncated).toBe(true);
+    expect(depthBoundedImpact.impact_truncated).toBe(true);
+    const afterImpactAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(afterImpactAggregate?.quantity_on_hand).toBe(finalAggregate?.quantity_on_hand);
+    const afterImpactStatus = await adminPool.query<{ status: string }>(
+      `SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [finishedLot.id, tenantId, fixture.factoryId],
+    );
+    expect(afterImpactStatus.rows[0]?.status).toBe(finalLotStatus.rows[0]?.status);
+    await expect(traceabilityService.recallImpact(
+      userId, randomUUID(), fixture.factoryId, finishedLot.id, 12, 200,
+    )).rejects.toThrow(/not found in this factory/i);
+  });
+
+  it('declares an idempotent recall case only for complete downstream genealogy and preserves stock', async () => {
+    const fixture = await createStockFixture('2.0000');
+    const { binA } = await createWarehouseAndBins(fixture.factoryId);
+    const finishedLot = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT', product_role: 'FINISHED_GOOD',
+        unit_code: 'FG-RECALL-' + randomUUID().slice(0, 8),
+        inventory_item_id: fixture.itemId, quantity: 2, unit: 'PCS',
+        external_reference: 'wms-recall-declaration-acceptance',
+      } as never,
+      'fg-recall-register-' + randomUUID(), requestId, traceId,
+    );
+    await adminPool.query(
+      `INSERT INTO inventory_traceability_location_balances
+         (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
+       VALUES ($1,$2,$3,$4,$5,2.0000)`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
+    );
+    await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId, destination_location_id: binA.id,
+        quantity: 2, movement_purpose: 'PUT_AWAY', traceability_unit_id: finishedLot.id,
+      },
+      'fg-recall-putaway-' + randomUUID(), requestId, traceId,
+    );
+
+    const carton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-RECALL-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId, location_id: binA.id, capacity_quantity: 2,
+      },
+      'wms-recall-carton-create-' + randomUUID(), requestId, traceId,
+    );
+    const cartonId = carton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 2 },
+      'wms-recall-carton-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, cartonId,
+      'wms-recall-carton-seal-' + randomUUID(), requestId, traceId,
+    );
+    const pallet = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'PALLET',
+        container_code: 'PALLET-RECALL-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId, location_id: binA.id, capacity_quantity: 2,
+      },
+      'wms-recall-pallet-create-' + randomUUID(), requestId, traceId,
+    );
+    const palletId = pallet.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, palletId,
+      { source_unit_id: cartonId, quantity: 2 },
+      'wms-recall-pallet-content-' + randomUUID(), requestId, traceId,
+    );
+
+    const aggregateBefore = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsBefore = await readBinTotals(fixture.factoryId, fixture.itemId);
+    const casesBefore = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM wms_traceability_recall_cases
+       WHERE tenant_id=$1 AND factory_id=$2`,
+      [tenantId, fixture.factoryId],
+    );
+
+    await expect(traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'bounded recall requires complete genealogy', depth: 1, limit: 200 },
+      'wms-recall-depth-block-' + randomUUID(), requestId, traceId,
+    )).rejects.toThrow(/truncated at the requested depth/i);
+    await expect(traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'bounded recall requires all affected units', depth: 12, limit: 1 },
+      'wms-recall-node-block-' + randomUUID(), requestId, traceId,
+    )).rejects.toThrow(/configured node bound/i);
+    const casesAfterRejected = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM wms_traceability_recall_cases
+       WHERE tenant_id=$1 AND factory_id=$2`,
+      [tenantId, fixture.factoryId],
+    );
+    expect(casesAfterRejected.rows[0]?.count).toBe(casesBefore.rows[0]?.count);
+    const statusesAfterRejected = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, palletId]],
+    );
+    expect(statusesAfterRejected.rows).toHaveLength(3);
+    expect(statusesAfterRejected.rows.every((row) => row.status === 'ACTIVE')).toBe(true);
+
+    const idempotencyKey = 'wms-recall-declare-' + randomUUID();
+    const declared = await traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'Confirmed quality defect in finished-good lot', depth: 12, limit: 200 },
+      idempotencyKey, requestId, traceId,
+    );
+    expect(declared.replayed).toBe(false);
+    expect(declared.recall_case).toMatchObject({
+      source_unit_id: finishedLot.id,
+      reason: 'Confirmed quality defect in finished-good lot',
+      impacted_unit_count: 3,
+    });
+    expect(declared.units.map((row) => row.unit_id)).toEqual(
+      expect.arrayContaining([finishedLot.id, cartonId, palletId]),
+    );
+    expect(declared.units.every((row) => row.unit_action === 'RECALLED')).toBe(true);
+
+    const persistedStatuses = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, palletId]],
+    );
+    expect(persistedStatuses.rows).toHaveLength(3);
+    expect(persistedStatuses.rows.every((row) => row.status === 'RECALLED')).toBe(true);
+
+    const statusEventsBeforeReplay = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM traceability_unit_status_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND unit_id=ANY($3::uuid[]) AND to_status='RECALLED'`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, palletId]],
+    );
+    expect(statusEventsBeforeReplay.rows[0]?.count).toBe('3');
+
+    const replay = await traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'Confirmed quality defect in finished-good lot', depth: 12, limit: 200 },
+      idempotencyKey, requestId, traceId,
+    );
+    expect(replay.replayed).toBe(true);
+    expect(replay.recall_case.id).toBe(declared.recall_case.id);
+
+    const notificationKey = 'wms-recall-notify-' + randomUUID();
+    const notificationIntent = await traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+      {
+        recipient_type: 'CUSTOMER',
+        recipient_reference: 'CUSTOMER-' + randomUUID().slice(0, 8),
+        channel: 'PORTAL',
+        reason: 'Notify customer for recall case',
+      },
+      notificationKey, requestId, traceId,
+    );
+    expect(notificationIntent.replayed).toBe(false);
+    expect(notificationIntent.dispatch_status).toBe('INTENT_RECORDED_NOT_DELIVERY_CONFIRMED');
+    const notificationReplay = await traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+      {
+        recipient_type: 'CUSTOMER',
+        recipient_reference: notificationIntent.recipient_reference,
+        channel: 'PORTAL',
+        reason: 'Notify customer for recall case',
+      },
+      notificationKey, requestId, traceId,
+    );
+    expect(notificationReplay.replayed).toBe(true);
+    expect(notificationReplay.id).toBe(notificationIntent.id);
+    await expect(traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+      {
+        recipient_type: 'CUSTOMER',
+        recipient_reference: notificationIntent.recipient_reference,
+        channel: 'EMAIL',
+        reason: 'Notify customer for recall case',
+      },
+      notificationKey, requestId, traceId,
+    )).rejects.toThrow(/different recall notification request/i);
+
+    const acknowledgementKey = 'wms-recall-ack-' + randomUUID();
+    const acknowledgement = await traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id, notificationIntent.id,
+      {
+        outcome: 'RECEIVED',
+        notes: 'Customer service operator reported receipt',
+        evidence_reference: 'TICKET-' + randomUUID().slice(0, 8),
+      },
+      acknowledgementKey, requestId, traceId,
+    );
+    expect(acknowledgement.replayed).toBe(false);
+    expect(acknowledgement.acknowledgement_source).toBe('OPERATOR_REPORTED');
+    expect(acknowledgement.externally_authenticated).toBe(false);
+    const acknowledgementReplay = await traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id, notificationIntent.id,
+      {
+        outcome: 'RECEIVED',
+        notes: 'Customer service operator reported receipt',
+        evidence_reference: acknowledgement.evidence_reference,
+      },
+      acknowledgementKey, requestId, traceId,
+    );
+    expect(acknowledgementReplay.replayed).toBe(true);
+    expect(acknowledgementReplay.id).toBe(acknowledgement.id);
+    await expect(traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id, notificationIntent.id,
+      { outcome: 'ACTION_IN_PROGRESS' },
+      acknowledgementKey, requestId, traceId,
+    )).rejects.toThrow(/different recall acknowledgement/i);
+
+    const notificationList = await traceabilityService.listRecallNotificationIntents(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+    );
+    expect(notificationList.items).toHaveLength(1);
+    expect(notificationList.items[0]).toMatchObject({
+      id: notificationIntent.id,
+      acknowledgement_outcome: 'RECEIVED',
+      acknowledgement_source: 'OPERATOR_REPORTED',
+      dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+      acknowledgement_externally_authenticated: false,
+    });
+    await expect(traceabilityService.listRecallNotificationIntents(
+      userId, randomUUID(), fixture.factoryId, declared.recall_case.id,
+    )).rejects.toThrow(/not found in this factory/i);
+
+    const statusEventsAfterReplay = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM traceability_unit_status_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND unit_id=ANY($3::uuid[]) AND to_status='RECALLED'`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, palletId]],
+    );
+    expect(statusEventsAfterReplay.rows[0]?.count).toBe('3');
+    await expect(traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'Different reason', depth: 12, limit: 200 },
+      idempotencyKey, requestId, traceId,
+    )).rejects.toThrow(/different recall declaration/i);
+
+    const aggregateAfter = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsAfter = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(aggregateAfter?.quantity_on_hand).toBe(aggregateBefore?.quantity_on_hand);
+    expect(binsAfter?.sum).toBe(binsBefore?.sum);
+
+    const foreignTenantId = randomUUID();
+    await expect(traceabilityService.declareRecall(
+      userId, foreignTenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'foreign scope test', depth: 12, limit: 200 },
+      'wms-recall-foreign-' + randomUUID(), requestId, traceId,
+    )).rejects.toThrow(/not found in this factory/i);
   });
 
   it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
@@ -1450,8 +1779,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId, customer_order_reference: validReference,
     });
 
-    const transitAt = new Date(Date.now() - 120_000).toISOString();
-    const transitPayload = { event_type: 'IN_TRANSIT' as const, event_at: transitAt, notes: 'Shipment handed to carrier' };
+    // The server assigns event_at once; an identical retry with the timestamp omitted must replay.
+    const transitPayload = { event_type: 'IN_TRANSIT' as const, notes: 'Shipment handed to carrier' };
     const transitKey = 'wms-delivery-transit-' + randomUUID();
     const transit = await fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
@@ -1463,6 +1792,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       transitPayload, transitKey, requestId, traceId,
     );
     expect(transitReplay).toMatchObject({ replayed: true, event: { id: transit.event.id } });
+    expect(transitReplay.event.event_at).toBe(transit.event.event_at);
+    await expect(fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      { ...transitPayload, notes: 'Changed payload must not replay' },
+      transitKey, requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     await expect(fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,

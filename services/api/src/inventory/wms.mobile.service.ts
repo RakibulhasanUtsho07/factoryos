@@ -298,6 +298,33 @@ export class WmsMobileService {
     userId: string, tenantId: string, factoryId: string, deviceId: string,
     tx: OfflineStockTransactionDto, requestId: string | null, traceId: string | null,
   ) {
+    // Serialize concurrent deliveries of one device transaction ID across the
+    // stock mutation and durable terminal-receipt write. The session lock is
+    // acquired before BEGIN by DatabaseService and released after this callback.
+    // If the process crashes after the stock transaction but before the receipt,
+    // inventory movement idempotency makes a retry safe; the retry then repairs
+    // the missing terminal receipt without applying stock a second time.
+    const transactionId = typeof tx?.client_transaction_id === 'string'
+      ? tx.client_transaction_id.trim().toLowerCase() : '';
+    const lockKey = [
+      'wms-mobile-offline-sync',
+      tenantId,
+      factoryId,
+      deviceId,
+      transactionId,
+    ].join(':');
+    return this.database.transaction(
+      { tenantId, userId, advisoryLockKey: lockKey },
+      async () => this.syncOneOfflineTransactionUnlocked(
+        userId, tenantId, factoryId, deviceId, tx, requestId, traceId,
+      ),
+    );
+  }
+
+  private async syncOneOfflineTransactionUnlocked(
+    userId: string, tenantId: string, factoryId: string, deviceId: string,
+    tx: OfflineStockTransactionDto, requestId: string | null, traceId: string | null,
+  ) {
     const clientTransactionId = typeof tx?.client_transaction_id === 'string'
       ? tx.client_transaction_id.trim().toLowerCase() : '';
     const itemIdInput = typeof tx?.item_id === 'string' ? tx.item_id.trim().toLowerCase() : '';
@@ -306,7 +333,10 @@ export class WmsMobileService {
       operation: tx?.operation ?? null,
       item_id: itemIdInput,
       movement_type: tx?.movement_type ?? null,
-      quantity: typeof tx?.quantity === 'number' ? tx.quantity.toFixed(4) : String(tx?.quantity ?? ''),
+      // Keep invalid precision visible in the fingerprint. Rounding here would
+      // make distinct rejected payloads (for example 1.00001 and 1.00002)
+      // look like the same transaction ID and incorrectly replay a rejection.
+      quantity: typeof tx?.quantity === 'number' ? String(tx.quantity) : String(tx?.quantity ?? ''),
       expected_balance_version: String(tx?.expected_balance_version ?? ''),
       location_id: typeof tx?.location_id === 'string' ? tx.location_id.trim().toLowerCase() : null,
       reference_type: typeof tx?.reference_type === 'string' ? tx.reference_type.trim().toUpperCase() : null,
@@ -350,8 +380,16 @@ export class WmsMobileService {
       if (!isUUID(itemIdInput)) throw new BadRequestException('item_id must be a UUID');
       if (tx.operation !== 'STOCK_MOVEMENT') throw new BadRequestException('Unsupported offline operation');
       if (!['RECEIPT', 'ISSUE'].includes(tx.movement_type)) throw new BadRequestException('movement_type must be RECEIPT or ISSUE');
-      if (!Number.isFinite(tx.quantity) || tx.quantity <= 0 || Math.abs(tx.quantity * 10000 - Math.round(tx.quantity * 10000)) > 0.000001) {
-        throw new BadRequestException('quantity must be positive with at most four decimal places');
+      const quantityUnits = tx.quantity * 10000;
+      const roundedQuantityUnits = Math.round(quantityUnits);
+      if (
+        !Number.isFinite(tx.quantity) || tx.quantity <= 0 ||
+        !Number.isSafeInteger(roundedQuantityUnits) ||
+        Math.abs(quantityUnits - roundedQuantityUnits) > 0.000001
+      ) {
+        throw new BadRequestException(
+          'quantity must be positive, safely representable, and have at most four decimal places',
+        );
       }
       const expectedVersion = String(tx.expected_balance_version ?? '').trim();
       if (!/^\d{1,19}$/.test(expectedVersion) || BigInt(expectedVersion) <= 0n) {
