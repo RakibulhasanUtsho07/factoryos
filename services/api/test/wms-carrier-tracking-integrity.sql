@@ -27,8 +27,12 @@ BEGIN
   FROM pg_index
   WHERE indexrelid='public.uq_wms_shipments_carrier_tracking_binding'::regclass;
   IF v_unique_index IS DISTINCT FROM TRUE
-     OR position('lower(btrim(carrier_name))' IN v_index_definition) = 0
-     OR position('upper(btrim(tracking_reference))' IN v_index_definition) = 0 THEN
+     OR position('lower' IN v_index_definition) = 0
+     OR position('upper' IN v_index_definition) = 0
+     OR position('btrim' IN v_index_definition) = 0
+     OR length(v_index_definition) - length(replace(v_index_definition, 'btrim', '')) < 10
+     OR position('carrier_name' IN v_index_definition) = 0
+     OR position('tracking_reference' IN v_index_definition) = 0 THEN
     RAISE EXCEPTION 'Case-normalized tenant/factory carrier tracking uniqueness is missing or invalid';
   END IF;
 
