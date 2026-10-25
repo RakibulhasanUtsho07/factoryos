@@ -24,7 +24,8 @@ BEGIN
     OR v_pack_ship_function NOT ILIKE '%SHIPPED_AS%'
     OR v_pack_ship_function NOT ILIKE '%customer_order_reference%'
     OR v_pack_ship_function NOT ILIKE '%only a package with recorded contents%'
-    OR v_pack_ship_function NOT ILIKE '%only one shipment%' THEN
+    OR v_pack_ship_function NOT ILIKE '%only one shipment%'
+    OR v_pack_ship_function NOT ILIKE '%contents are frozen%' THEN
     RAISE EXCEPTION 'pack/ship genealogy guard is missing type, content or customer-order restrictions';
   END IF;
 
