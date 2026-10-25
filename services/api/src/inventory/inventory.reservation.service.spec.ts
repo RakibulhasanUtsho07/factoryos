@@ -738,4 +738,153 @@ describe('InventoryReservationService', () => {
     expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO inventory_reservations'))).toBe(false);
   });
 
+  it('links consumed material lots across finished-good batches proportionally and emits transactional audit/outbox evidence', async () => {
+    const sourceRows = [{
+      consumption_id: '22222222-2222-4222-8222-222222222222',
+      reservation_id: '44444444-4444-4444-8444-444444444444',
+      requirement_id: '55555555-5555-4555-8555-555555555555',
+      allocation_id: '33333333-3333-4333-8333-333333333333',
+      allocation_sequence: 1, source_unit_id: '11111111-1111-4111-8111-111111111111',
+      source_unit_type: 'LOT', source_product_role: 'MATERIAL', source_status: 'ACTIVE',
+      source_item_id: ITEM_ID, source_unit_code: 'MAT-LOT-1', source_unit: 'KG',
+      source_location_id: BIN_A_ID, quantity: '5.0000', consumed_at: '2026-10-25T00:00:00Z',
+    }];
+    const targetRows = [{
+      production_report_id: '66666666-6666-4666-8666-666666666666',
+      report_good_quantity: '4.0000', report_created_at: '2026-10-25T00:01:00Z',
+      finished_item_unit: 'EA', target_unit_id: '88888888-8888-4888-8888-888888888888',
+      target_unit_type: 'LOT', target_quantity: '4.0000', target_unit: 'EA',
+      target_item_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', target_status: 'ACTIVE',
+      target_unit_code: 'FG-LOT-1',
+    }, {
+      production_report_id: '77777777-7777-4777-8777-777777777777',
+      report_good_quantity: '6.0000', report_created_at: '2026-10-25T00:02:00Z',
+      finished_item_unit: 'EA', target_unit_id: '99999999-9999-4999-8999-999999999999',
+      target_unit_type: 'LOT', target_quantity: '6.0000', target_unit: 'EA',
+      target_item_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', target_status: 'ACTIVE',
+      target_unit_code: 'FG-LOT-2',
+    }];
+    client.query
+      .mockResolvedValueOnce(queryRows(sourceRows))
+      .mockResolvedValueOnce(queryRows(targetRows))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID(), request_hash: 'a'.repeat(64) }]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID(), request_hash: 'b'.repeat(64) }]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([]));
+
+    const result = await service.recordWorkOrderMaterialGenealogy(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID, workOrderNumber: 'WO-GENEALOGY-01',
+      finishedItemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      correlationId: TRACE_ID, requestId: TRACE_ID,
+    });
+
+    expect(result).toEqual({
+      eventCount: 2, replayedEventCount: 0, sourceAllocationCount: 1, targetUnitCount: 2,
+    });
+    const inserts = client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO product_genealogy_events'));
+    expect(inserts).toHaveLength(2);
+    expect(inserts.map((call) => String((call[1] as unknown[])[4]))).toEqual(['2.0000', '3.0000']);
+    expect(inserts.map((call) => (call[1] as unknown[])[2])).toEqual([
+      '11111111-1111-4111-8111-111111111111',
+      '11111111-1111-4111-8111-111111111111',
+    ]);
+    expect(inserts.map((call) => (call[1] as unknown[])[3])).toEqual([
+      '88888888-8888-4888-8888-888888888888',
+      '99999999-9999-4999-8999-999999999999',
+    ]);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('TRACEABILITY.GENEALOGY_RECORDED'))).toHaveLength(2);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes("'TRACEABILITY', 'RECORDED', 'PRODUCT_GENEALOGY_EVENT'"))).toHaveLength(2);
+  });
+
+  it('keeps a consumed serial material identity indivisible when linking it to a finished-good identity', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([{
+        consumption_id: '22222222-2222-4222-8222-222222222222',
+        reservation_id: '44444444-4444-4444-8444-444444444444',
+        requirement_id: '55555555-5555-4555-8555-555555555555',
+        allocation_id: '33333333-3333-4333-8333-333333333333',
+        allocation_sequence: 1, source_unit_id: '11111111-1111-4111-8111-111111111111',
+        source_unit_type: 'SERIAL', source_product_role: 'MATERIAL', source_status: 'ACTIVE',
+        source_item_id: ITEM_ID, source_unit_code: 'MAT-SERIAL-1', source_unit: 'EA',
+        source_location_id: BIN_A_ID, quantity: '1.0000', consumed_at: '2026-10-25T00:00:00Z',
+      }]))
+      .mockResolvedValueOnce(queryRows([{
+        production_report_id: '66666666-6666-4666-8666-666666666666',
+        report_good_quantity: '2.0000', report_created_at: '2026-10-25T00:01:00Z',
+        finished_item_unit: 'EA', target_unit_id: '88888888-8888-4888-8888-888888888888',
+        target_unit_type: 'SERIAL', target_quantity: '1.0000', target_unit: 'EA',
+        target_item_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', target_status: 'ACTIVE',
+        target_unit_code: 'FG-SERIAL-1',
+      }, {
+        production_report_id: '66666666-6666-4666-8666-666666666666',
+        report_good_quantity: '2.0000', report_created_at: '2026-10-25T00:01:00Z',
+        finished_item_unit: 'EA', target_unit_id: '99999999-9999-4999-8999-999999999999',
+        target_unit_type: 'SERIAL', target_quantity: '1.0000', target_unit: 'EA',
+        target_item_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', target_status: 'ACTIVE',
+        target_unit_code: 'FG-SERIAL-2',
+      }]))
+      .mockResolvedValueOnce(queryRows([{ id: randomUUID(), request_hash: 'c'.repeat(64) }]))
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([]));
+
+    const result = await service.recordWorkOrderMaterialGenealogy(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID, workOrderNumber: 'WO-SERIAL-01',
+      finishedItemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', correlationId: TRACE_ID,
+    });
+
+    expect(result.eventCount).toBe(1);
+    const insert = client.query.mock.calls.find((call) => String(call[0]).includes('INSERT INTO product_genealogy_events'));
+    expect(insert).toBeDefined();
+    expect(String((insert?.[1] as unknown[])[4])).toBe('1.0000');
+    expect((insert?.[1] as unknown[])[3]).toBe('88888888-8888-4888-8888-888888888888');
+  });
+
+  it('fails closed when consumed tracked materials have no finished-good traceability identity for an output report', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([{
+        consumption_id: '22222222-2222-4222-8222-222222222222',
+        reservation_id: '44444444-4444-4444-8444-444444444444',
+        requirement_id: '55555555-5555-4555-8555-555555555555',
+        allocation_id: '33333333-3333-4333-8333-333333333333',
+        allocation_sequence: 1, source_unit_id: '11111111-1111-4111-8111-111111111111',
+        source_unit_type: 'LOT', source_product_role: 'MATERIAL', source_status: 'ACTIVE',
+        source_item_id: ITEM_ID, source_unit_code: 'MAT-LOT-1', source_unit: 'KG',
+        source_location_id: BIN_A_ID, quantity: '5.0000', consumed_at: '2026-10-25T00:00:00Z',
+      }]))
+      .mockResolvedValueOnce(queryRows([{
+        production_report_id: '66666666-6666-4666-8666-666666666666',
+        report_good_quantity: '10.0000', report_created_at: '2026-10-25T00:01:00Z',
+        finished_item_unit: 'EA', target_unit_id: null, target_unit_type: null,
+        target_quantity: null, target_unit: null, target_item_id: null, target_status: null,
+        target_unit_code: null,
+      }]));
+
+    await expect(service.recordWorkOrderMaterialGenealogy(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID, workOrderNumber: 'WO-GENEALOGY-MISSING',
+      finishedItemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', correlationId: TRACE_ID,
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO product_genealogy_events'))).toBe(false);
+  });
+
+  it('does not require output genealogy when a work order consumed only untracked material', async () => {
+    client.query.mockResolvedValueOnce(queryRows([]));
+
+    const result = await service.recordWorkOrderMaterialGenealogy(client as never, {
+      userId: USER_ID, tenantId: TENANT_ID, factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID, workOrderNumber: 'WO-UNTRACKED-01',
+      finishedItemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual({
+      eventCount: 0, replayedEventCount: 0, sourceAllocationCount: 0, targetUnitCount: 0,
+    });
+    expect(client.query).toHaveBeenCalledTimes(1);
+  });
+
+
 });
