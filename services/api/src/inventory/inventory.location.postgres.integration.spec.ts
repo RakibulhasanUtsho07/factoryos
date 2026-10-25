@@ -1351,8 +1351,16 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const boundedImpact = await traceabilityService.recallImpact(
       userId, tenantId, fixture.factoryId, finishedLot.id, 12, 1,
     );
-    expect(boundedImpact.impact_truncated).toBe(true);
-    expect(boundedImpact.impacted_unit_count).toBe(0);
+    expect(boundedImpact).toMatchObject({
+      impact_truncated: true,
+      impact_node_limit_reached: true,
+      impacted_unit_count: 0,
+    });
+    const depthBoundedImpact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 1, 200,
+    );
+    expect(depthBoundedImpact.impact_depth_truncated).toBe(true);
+    expect(depthBoundedImpact.impact_truncated).toBe(true);
     const afterImpactAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
     expect(afterImpactAggregate?.quantity_on_hand).toBe(finalAggregate?.quantity_on_hand);
     const afterImpactStatus = await adminPool.query<{ status: string }>(
