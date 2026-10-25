@@ -284,7 +284,7 @@ export class InventoryCycleCountService {
             if (task.item_id !== normalizedItemId || task.location_id !== locationId) {
               throw new ConflictException('Cycle-count submission item/bin does not match the scheduled task');
             }
-            if (task.assigned_to_user_id !== userId) {
+            if (!this.sameUuid(task.assigned_to_user_id, userId)) {
               throw new ConflictException('Cycle-count task must be started by its assigned counter');
             }
           } else {
@@ -560,7 +560,7 @@ export class InventoryCycleCountService {
         locationVersionAtCount: proposal.location_version_at_count,
       }
       : {};
-    if (proposal.created_by_user_id === userId) {
+    if (this.sameUuid(proposal.created_by_user_id, userId)) {
       throw new ConflictException('The user who submitted a cycle count cannot approve it');
     }
     if (proposal.status === 'REJECTED') {
@@ -680,13 +680,13 @@ export class InventoryCycleCountService {
           );
           const proposal = proposalResult.rows[0];
           if (!proposal) throw new NotFoundException('Cycle-count proposal not found in this factory');
-          if (proposal.created_by_user_id === userId) {
+          if (this.sameUuid(proposal.created_by_user_id, userId)) {
             throw new ConflictException('The user who submitted a cycle count cannot reject it');
           }
 
           if (proposal.status === 'REJECTED') {
             if (
-              proposal.reviewed_by_user_id === userId
+              this.sameUuid(proposal.reviewed_by_user_id, userId)
               && proposal.review_idempotency_key === idempotencyKey
               && proposal.review_request_hash === reviewRequestHash
             ) {
@@ -711,7 +711,7 @@ export class InventoryCycleCountService {
             if (escalation?.status === 'OPEN') {
               throw new ConflictException('Variance escalation must be resolved before rejecting this count');
             }
-            if (escalation?.status === 'RESOLVED' && escalation.resolved_by_user_id === userId) {
+            if (escalation?.status === 'RESOLVED' && this.sameUuid(escalation.resolved_by_user_id, userId)) {
               throw new ConflictException('A different reviewer must reject the escalated cycle count');
             }
           }
@@ -802,7 +802,7 @@ export class InventoryCycleCountService {
       const proposal = stored.rows[0];
       if (
         proposal.review_request_hash !== reviewRequestHash
-        || proposal.reviewed_by_user_id !== userId
+        || !this.sameUuid(proposal.reviewed_by_user_id, userId)
       ) {
         throw new ConflictException('Idempotency-Key was reused for a different cycle-count decision');
       }
@@ -852,7 +852,7 @@ export class InventoryCycleCountService {
     if (escalation?.status === 'OPEN') {
       throw new ConflictException('Variance escalation must be resolved before approving this count');
     }
-    if (escalation?.status === 'RESOLVED' && escalation.resolved_by_user_id === userId) {
+    if (escalation?.status === 'RESOLVED' && this.sameUuid(escalation.resolved_by_user_id, userId)) {
       throw new ConflictException('A different reviewer must approve the escalated cycle count');
     }
   }
@@ -946,7 +946,7 @@ export class InventoryCycleCountService {
     void review_idempotency_key;
     void review_request_hash;
     const hideExpectedBalance = blind_count_snapshot
-      && (viewerUserId === row.created_by_user_id || !allowReviewerSnapshotAccess);
+      && (this.sameUuid(viewerUserId, row.created_by_user_id) || !allowReviewerSnapshotAccess);
     return {
       ...proposal,
       ledger_quantity_at_count: hideExpectedBalance ? null : ledger_quantity_at_count,
@@ -1064,6 +1064,13 @@ export class InventoryCycleCountService {
     if (traceId && isUUID(traceId)) return traceId;
     if (requestId && isUUID(requestId)) return requestId;
     return randomUUID();
+  }
+
+  private sameUuid(
+    left: string | null | undefined,
+    right: string | null | undefined,
+  ): boolean {
+    return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
   }
 
   private validateScope(userId: string, tenantId: string, factoryId: string): void {
