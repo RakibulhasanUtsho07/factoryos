@@ -24,6 +24,7 @@ DECLARE
   v_duplicate_rejected BOOLEAN := FALSE;
   v_bad_pack_rejected BOOLEAN := FALSE;
   v_early_dispatch_rejected BOOLEAN := FALSE;
+  v_missing_shipment_metadata_rejected BOOLEAN := FALSE;
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
 BEGIN
@@ -142,6 +143,24 @@ BEGIN
 
   IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
     BEGIN
+      INSERT INTO traceability_units (
+        tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+        quantity, unit, external_reference, attributes, idempotency_key, request_hash,
+        created_by_user_id, correlation_id
+      ) VALUES (
+        v_tenant, v_factory, 'SHIPMENT', 'SHIPMENT', 'SHIP-NO-CUSTOMER-REF', 'QR-SHIP-NO-CUSTOMER-REF',
+        1, 'EA', 'SHIP-NO-REF-EXT', '{}'::jsonb, 'trace-shipment-no-customer-ref', repeat('7',64), v_actor, v_trace
+      );
+    EXCEPTION WHEN check_violation THEN
+      v_missing_shipment_metadata_rejected := TRUE;
+    END;
+    IF NOT v_missing_shipment_metadata_rejected THEN
+      RAISE EXCEPTION 'shipment identity without customer/order/shipment references was accepted';
+    END IF;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
+    BEGIN
       UPDATE traceability_units
       SET status = 'SHIPPED', version = version + 1, updated_at = clock_timestamp()
       WHERE id = v_shipment AND tenant_id = v_tenant AND factory_id = v_factory;
@@ -177,10 +196,18 @@ BEGIN
      'trace-edge-material-fg', repeat('f',64), v_actor, v_trace),
     (v_event_two, v_tenant, v_factory, v_finished, v_carton, 'PACKED_INTO', 1, 'PCS',
      '{"pack_level":"carton"}'::jsonb, 'Finished goods packed into carton',
-     'trace-edge-fg-carton', repeat('1',64), v_actor, v_trace),
-    (v_event_three, v_tenant, v_factory, v_carton, v_shipment, 'SHIPPED_AS', 1, 'EA',
-     '{"customer_reference":"CUSTOMER-001","shipment_reference":"SHIPMENT-001"}'::jsonb, 'Carton included in shipment',
-     'trace-edge-carton-shipment', repeat('2',64), v_actor, v_trace);
+     'trace-edge-fg-carton', repeat('1',64), v_actor, v_trace);
+
+  -- Separate statement ensures the just-recorded package contents are visible
+  -- to the database guard when the carton is linked to its shipment.
+  INSERT INTO product_genealogy_events (
+    id, tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity,
+    unit, evidence, notes, idempotency_key, request_hash, created_by_user_id, correlation_id
+  ) VALUES (
+    v_event_three, v_tenant, v_factory, v_carton, v_shipment, 'SHIPPED_AS', 1, 'EA',
+    '{"customer_reference":"CUSTOMER-001","customer_order_reference":"CUSTOMER-ORDER-001","shipment_reference":"SHIPMENT-001"}'::jsonb,
+    'Carton included in shipment', 'trace-edge-carton-shipment', repeat('2',64), v_actor, v_trace
+  );
 
   INSERT INTO audit_events (
     tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
