@@ -1068,7 +1068,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(shipmentList.shipments).toHaveLength(1);
     expect(shipmentList.shipments[0]).toMatchObject({
       shipment_unit_id: dispatched.shipment.shipment_unit_id,
-      shipment_code: dispatchPayload.shipment_code,
+      shipment_code: dispatchPayload.shipment_code.toUpperCase(),
       customer_name: dispatchPayload.customer_name,
       customer_order_reference: dispatchPayload.customer_order_reference,
       quantity: '3.0000',
