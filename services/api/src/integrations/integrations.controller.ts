@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -10,9 +11,12 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
@@ -35,6 +39,11 @@ interface IntegrationRequestContext {
 }
 type AuthenticatedIntegrationRequest = Request & { factoryos?: IntegrationRequestContext };
 type WebhookRequest = Request & { rawBody?: Buffer; factoryos?: IntegrationRequestContext };
+interface PodMultipartFile {
+  buffer: Buffer;
+  size: number;
+  mimetype: string;
+}
 
 function scope(request: AuthenticatedIntegrationRequest) {
   const userId = request.factoryos?.userId ?? null;
@@ -52,6 +61,27 @@ export class IntegrationsController {
     private readonly service: IntegrationService,
     private readonly reconciliationService: IntegrationReconciliationService,
   ) {}
+
+  @Post('wms/shipments/:shipmentUnitId/pod-object')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 0, parts: 1 },
+  }))
+  async uploadShipmentPodObject(
+    @Req() request: AuthenticatedIntegrationRequest,
+    @Param('shipmentUnitId', new ParseUUIDPipe()) shipmentUnitId: string,
+    @UploadedFile() file?: PodMultipartFile,
+  ) {
+    const ctx = scope(request);
+    if (!file) throw new BadRequestException('Exactly one multipart file field named file is required');
+    return this.service.uploadWmsShipmentPodObject(
+      ctx.userId, ctx.tenantId, ctx.factoryId, shipmentUnitId, file,
+      request.factoryos?.requestId ?? null,
+      request.factoryos?.traceId ?? null,
+    );
+  }
 
   @Post('connectors')
   @UseGuards(PermissionGuard)

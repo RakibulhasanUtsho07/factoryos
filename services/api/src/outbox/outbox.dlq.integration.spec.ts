@@ -87,10 +87,18 @@ describe(
 
             order_number
 
-          FROM orders
+          FROM orders o
 
           WHERE
-            factory_id IS NOT NULL
+            o.factory_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM tenant_memberships tm
+              INNER JOIN users active_user ON active_user.id = tm.user_id
+              WHERE tm.tenant_id = o.tenant_id
+                AND tm.status = 'ACTIVE'
+                AND active_user.status = 'ACTIVE'
+            )
 
           ORDER BY
             created_at DESC
