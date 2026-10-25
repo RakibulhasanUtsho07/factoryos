@@ -1073,6 +1073,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(replay.id).toBe(dispatch.id);
     expect(replay.replayed).toBe(true);
+    await expect(traceabilityService.dispatchShipment(
+      userId, tenantId, fixture.factoryId, shipmentId,
+      { ...dispatchInput, notes: 'Changed request payload must conflict' },
+      idempotencyKey, requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+    await expect(traceabilityService.dispatchShipment(
+      userId, tenantId, fixture.factoryId, shipmentId, dispatchInput,
+      'ship-test-second-dispatch-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
     expect(aggregate?.quantity_on_hand).toBe('0.0000');
