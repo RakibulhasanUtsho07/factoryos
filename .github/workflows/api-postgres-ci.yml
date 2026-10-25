@@ -605,6 +605,12 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/manufacturing-lifecycle-acceptance.sql
 
+          echo "Reapplying work-order output genealogy guard and validating scoped policy/stock constraints"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/198_wp02_production_output_genealogy.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/production-output-genealogy.sql
+
           # This contract also checks demo-role grants, so run it after the development role seeds.
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/mrp-lite-planning-contract.sql
