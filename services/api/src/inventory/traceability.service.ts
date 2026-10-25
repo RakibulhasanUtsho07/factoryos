@@ -1509,6 +1509,7 @@ export class TraceabilityService {
               quantity: unit.quantity,
               unit: unit.unit,
               expires_at: unit.expires_at,
+              status: unit.status,
             };
           } else {
             const itemResult = await client.query<{
@@ -1534,6 +1535,7 @@ export class TraceabilityService {
               name: item.name,
               unit: item.unit,
               sector_code: item.sector_code,
+              status: item.status,
             };
           }
 
