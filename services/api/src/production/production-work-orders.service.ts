@@ -1037,6 +1037,12 @@ export class ProductionWorkOrdersService {
         }
         payload.material_reservation_count = consumedMaterials.reservationCount;
         payload.consumed_material_quantities = consumedMaterials.quantityByItem;
+        const genealogy = await this.inventoryReservationService.recordWorkOrderOutputGenealogy(
+          client,
+          { userId, tenantId, factoryId, workOrderId: workOrder.id, correlationId },
+        );
+        payload.production_output_genealogy_event_count = genealogy.genealogyEventCount;
+        payload.traceability_material_allocation_count = genealogy.traceabilityAllocationCount;
       }
 
       if (command !== 'CANCEL' && command !== 'COMPLETE' && command !== 'RELEASE' && command !== 'HOLD' && command !== 'RESUME') {
@@ -1703,12 +1709,16 @@ export class ProductionWorkOrdersService {
           production_report_id: string;
           production_output_posting_id: string | null;
           inventory_movement_id: string | null;
+          traceability_unit_id: string | null;
+          scrap_traceability_unit_id: string | null;
           source_operation_event_id: string | null;
           yield_percentage: string | null;
           cumulative_yield_percentage: string | null;
         }>(`
           SELECT r.id::text AS production_report_id, p.id::text AS production_output_posting_id,
             p.inventory_movement_id::text AS inventory_movement_id,
+            p.traceability_unit_id::text AS traceability_unit_id,
+            p.scrap_traceability_unit_id::text AS scrap_traceability_unit_id,
             e.id::text AS source_operation_event_id,
             p.yield_percentage::text AS yield_percentage,
             p.cumulative_yield_percentage::text AS cumulative_yield_percentage
@@ -1733,6 +1743,8 @@ export class ProductionWorkOrdersService {
           productionReportId: previousOutput.production_report_id,
           productionOutputPostingId: previousOutput.production_output_posting_id,
           inventoryMovementId: previousOutput.inventory_movement_id,
+          traceabilityUnitId: previousOutput.traceability_unit_id,
+          scrapTraceabilityUnitId: previousOutput.scrap_traceability_unit_id,
           sourceOperationEventId: previousOutput.source_operation_event_id,
           yieldPercentage: previousOutput.yield_percentage,
           cumulativeYieldPercentage: previousOutput.cumulative_yield_percentage,
@@ -1831,6 +1843,7 @@ export class ProductionWorkOrdersService {
           productionReportId,
           goodQuantity,
           scrapQuantity,
+          scrapReason,
           yieldPercentage,
           cumulativeYieldPercentage,
           correlationId,
@@ -1846,23 +1859,27 @@ export class ProductionWorkOrdersService {
         yield_percentage: yieldPercentage,
         cumulative_yield_percentage: cumulativeYieldPercentage,
         inventory_movement_id: finishedGoodsReceipt.movementId,
+        traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
+        scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
         request_hash: requestHash,
       });
       const outputPostingResult = await client.query<{ id: string }>(`
         INSERT INTO production_output_postings (
           tenant_id, factory_id, work_order_id, work_order_operation_id,
           production_report_id, finished_item_id, inventory_movement_id,
+          traceability_unit_id, scrap_traceability_unit_id,
           good_quantity, scrap_quantity, yield_percentage, cumulative_yield_percentage,
           idempotency_key, request_hash, created_by_user_id, correlation_id
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7::uuid,
-          $8::numeric, $9::numeric, $10::numeric, $11::numeric,
-          $12, $13, $14, $15::uuid
+          $1, $2, $3, $4, $5, $6, $7::uuid, $8::uuid, $9::uuid,
+          $10::numeric, $11::numeric, $12::numeric, $13::numeric,
+          $14, $15, $16, $17::uuid
         )
         RETURNING id::text AS id
       `, [
         tenantId, factoryId, workOrder.id, operation.id,
         productionReportId, workOrder.finished_item_id, finishedGoodsReceipt.movementId,
+        finishedGoodsReceipt.traceabilityUnitId, finishedGoodsReceipt.scrapTraceabilityUnitId,
         goodQuantity, scrapQuantity, yieldPercentage, cumulativeYieldPercentage,
         `work-order-output:${eventKey}`, postingHash, userId, correlationId,
       ]);
@@ -1894,6 +1911,8 @@ export class ProductionWorkOrdersService {
           finished_item_id: workOrder.finished_item_id,
           finished_good_movement_id: finishedGoodsReceipt.movementId,
           finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
+          finished_good_traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
+          scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
           good_quantity: goodQuantity, scrap_quantity: scrapQuantity, scrap_reason: scrapReason, notes,
           yield_percentage: yieldPercentage,
           cumulative_yield_percentage: cumulativeYieldPercentage,
@@ -1906,6 +1925,8 @@ export class ProductionWorkOrdersService {
       return {
         workOrderId, productionReportId, productionOutputPostingId,
         inventoryMovementId: finishedGoodsReceipt.movementId,
+        traceabilityUnitId: finishedGoodsReceipt.traceabilityUnitId,
+        scrapTraceabilityUnitId: finishedGoodsReceipt.scrapTraceabilityUnitId,
         sourceOperationEventId: outputEvent.id,
         yieldPercentage, cumulativeYieldPercentage, replayed: false as const,
       };
@@ -1920,6 +1941,8 @@ export class ProductionWorkOrdersService {
           productionReportId: result.productionReportId,
           productionOutputPostingId: result.productionOutputPostingId,
           inventoryMovementId: result.inventoryMovementId,
+          finishedGoodTraceabilityUnitId: result.traceabilityUnitId,
+          scrapTraceabilityUnitId: result.scrapTraceabilityUnitId,
           goodQuantity, scrapQuantity, yieldPercentage: result.yieldPercentage,
           cumulativeYieldPercentage: result.cumulativeYieldPercentage,
           replayed: false,
@@ -1932,6 +1955,8 @@ export class ProductionWorkOrdersService {
       production_output_posting_id: result.productionOutputPostingId,
       source_operation_event_id: result.sourceOperationEventId,
       finished_good_movement_id: result.inventoryMovementId,
+      finished_good_traceability_unit_id: result.traceabilityUnitId,
+      scrap_traceability_unit_id: result.scrapTraceabilityUnitId,
       output_yield_percentage: result.yieldPercentage,
       cumulative_yield_percentage: result.cumulativeYieldPercentage,
       replayed: result.replayed,

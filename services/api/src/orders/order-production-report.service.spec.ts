@@ -18,6 +18,8 @@ const FINISHED_ITEM = '69ef2a43-8157-4d91-aa59-7b4260ef1778';
 const REPORT = '522ecb02-3e23-4416-9d13-ed9dcd780b81';
 const POSTING = 'eac3a958-a13d-4fca-9746-45f1d7f8b7a6';
 const MOVEMENT = 'c81f1485-5824-458e-b237-3230e8c3f905';
+const FINISHED_GOOD_TRACEABILITY_UNIT = '58e7e777-3be7-4b72-a425-5a1b13b05c9e';
+const SCRAP_TRACEABILITY_UNIT = '9b3e02b5-9e4f-4b87-a71a-6e1b3994ad87';
 const TRACE = 'f7168be2-1b73-42b3-a930-72c31b2d6050';
 
 type Rows = { rows: QueryResultRow[] };
@@ -52,6 +54,8 @@ describe('OrderProductionReportService', () => {
     report_yield_percent: null,
     production_output_posting_id: null,
     inventory_movement_id: null,
+    finished_good_traceability_unit_id: null,
+    scrap_traceability_unit_id: null,
     ...overrides,
   } as unknown as QueryResultRow);
 
@@ -150,6 +154,8 @@ describe('OrderProductionReportService', () => {
     inventory.postFinishedGoodsOutputReceipt.mockResolvedValue({
       movementId: MOVEMENT,
       quantityAfter: '29.0000',
+      traceabilityUnitId: FINISHED_GOOD_TRACEABILITY_UNIT,
+      scrapTraceabilityUnitId: SCRAP_TRACEABILITY_UNIT,
     });
 
     const result = await service.createReport(
@@ -173,6 +179,7 @@ describe('OrderProductionReportService', () => {
         productionReportId: REPORT,
         goodQuantity: '9.0000',
         scrapQuantity: '1.0000',
+        scrapReason: 'Failed final inspection',
         yieldPercentage: '90.0000',
         cumulativeYieldPercentage: '90.0000',
       }),
@@ -180,6 +187,8 @@ describe('OrderProductionReportService', () => {
     expect(String(client.query.mock.calls[5]?.[0])).toContain('INSERT INTO order_production_reports');
     expect(String(client.query.mock.calls[6]?.[0])).toContain('INSERT INTO production_output_postings');
     expect(client.query.mock.calls[6]?.[1]).toContain(MOVEMENT);
+    expect(client.query.mock.calls[6]?.[1]).toContain(FINISHED_GOOD_TRACEABILITY_UNIT);
+    expect(client.query.mock.calls[6]?.[1]).toContain(SCRAP_TRACEABILITY_UNIT);
     expect(String(client.query.mock.calls[7]?.[0])).toContain('INSERT INTO outbox_events');
     expect(result).toMatchObject({
       id: REPORT,
@@ -189,6 +198,8 @@ describe('OrderProductionReportService', () => {
       yield_percent: '90.0000',
       production_output_posting_id: POSTING,
       finished_good_movement_id: MOVEMENT,
+      finished_good_traceability_unit_id: FINISHED_GOOD_TRACEABILITY_UNIT,
+      scrap_traceability_unit_id: SCRAP_TRACEABILITY_UNIT,
       replayed: false,
     });
     expect(audit.record).toHaveBeenCalledTimes(1);
@@ -221,6 +232,8 @@ describe('OrderProductionReportService', () => {
     inventory.postFinishedGoodsOutputReceipt.mockResolvedValue({
       movementId: null,
       quantityAfter: null,
+      traceabilityUnitId: null,
+      scrapTraceabilityUnitId: SCRAP_TRACEABILITY_UNIT,
     });
 
     const result = await service.createReport(
@@ -244,11 +257,14 @@ describe('OrderProductionReportService', () => {
       }),
     );
     expect(client.query.mock.calls[6]?.[1]).toContain(null);
+    expect(client.query.mock.calls[6]?.[1]).toContain(SCRAP_TRACEABILITY_UNIT);
     expect(result).toMatchObject({
       good_quantity: '0.0000',
       scrap_quantity: '2.0000',
       report_yield_percent: '0.0000',
       finished_good_movement_id: null,
+      finished_good_traceability_unit_id: null,
+      scrap_traceability_unit_id: SCRAP_TRACEABILITY_UNIT,
     });
   });
 

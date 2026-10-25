@@ -484,16 +484,36 @@ describe('InventoryReservationService', () => {
     expect(String(client.query.mock.calls[3]?.[0])).toContain("tu.expires_at >= CURRENT_DATE");
   });
 
-  it('posts accepted finished goods as an inventory receipt with durable outbox evidence', async () => {
+  it('posts a finished-good lot and non-sellable scrap identity atomically with the output receipt', async () => {
     const workOrderId = randomUUID();
     const reportId = randomUUID();
     const movementId = randomUUID();
-    client.query
-      .mockResolvedValueOnce(queryRows([{ id: ITEM_ID, unit: 'EA', status: 'ACTIVE' }]))
-      .mockResolvedValueOnce(queryRows([])) // reset the transaction-local location to UNASSIGNED
-      .mockResolvedValueOnce(queryRows([{ quantity_on_hand: '62.5000' }]))
-      .mockResolvedValueOnce(queryRows([{ id: movementId, quantity_after: '62.5000' }]))
-      .mockResolvedValueOnce(queryRows([])); // inventory outbox event
+    const finishedLotId = randomUUID();
+    const scrapUnitId = randomUUID();
+    client.query.mockImplementation(async (sql: unknown, values?: unknown[]) => {
+      const query = String(sql);
+      if (query.includes('FROM inventory_items') && query.includes('FOR UPDATE')) {
+        return queryRows([{ id: ITEM_ID, unit: 'EA', status: 'ACTIVE' }]);
+      }
+      if (query.includes('set_config')) return queryRows([]);
+      if (query.includes('UPDATE inventory_stock_balances')) {
+        return queryRows([{ quantity_on_hand: '62.5000' }]);
+      }
+      if (query.includes('INSERT INTO inventory_movements')) {
+        return queryRows([{ id: movementId, quantity_after: '62.5000' }]);
+      }
+      if (query.includes('INSERT INTO traceability_units')) {
+        return queryRows([{
+          id: values?.[3] === 'FINISHED_GOOD' ? finishedLotId : scrapUnitId,
+        }]);
+      }
+      if (query.includes('INSERT INTO inventory_traceability_location_balances')) {
+        return queryRows([{ id: randomUUID() }]);
+      }
+      if (query.includes('INSERT INTO outbox_events')) return queryRows([]);
+      if (query.includes('INSERT INTO audit_events')) return queryRows([]);
+      throw new Error('Unexpected query in finished-good genealogy unit test: ' + query.slice(0, 100));
+    });
 
     const result = await service.postFinishedGoodsOutputReceipt(client as never, {
       userId: USER_ID,
@@ -501,25 +521,44 @@ describe('InventoryReservationService', () => {
       factoryId: FACTORY_ID,
       workOrderId,
       workOrderNumber: 'WO-OUTPUT-001',
-      orderId: randomUUID(),
+      orderId: ORDER_ID,
       orderNumber: 'ORD-OUTPUT-001',
       orderLineId: ORDER_LINE_ID,
       finishedItemId: ITEM_ID,
       productionReportId: reportId,
       goodQuantity: '12.5000',
       scrapQuantity: '1.0000',
+      scrapReason: 'Material defect',
       yieldPercentage: '92.5926',
       cumulativeYieldPercentage: '92.5926',
       correlationId: TRACE_ID,
     });
 
-    expect(result).toEqual({ movementId, quantityAfter: '62.5000' });
-    expect(String(client.query.mock.calls[2]?.[0])).toContain('UPDATE inventory_stock_balances');
-    expect(client.query.mock.calls[2]?.[1]).toContain('12.5000');
-    expect(String(client.query.mock.calls[3]?.[0])).toContain('INSERT INTO inventory_movements');
-    expect(String(client.query.mock.calls[3]?.[0])).toContain("'PRODUCTION_OUTPUT'");
-    expect(client.query.mock.calls[4]?.[1]?.[3]).toBe('INVENTORY.STOCK_RECEIVED');
-    const outboxPayload = JSON.parse(String(client.query.mock.calls[4]?.[1]?.[7])) as {
+    expect(result).toEqual({
+      movementId,
+      quantityAfter: '62.5000',
+      traceabilityUnitId: finishedLotId,
+      scrapTraceabilityUnitId: scrapUnitId,
+    });
+    const finishedInsert = client.query.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO traceability_units')
+        && (call[1] as unknown[] | undefined)?.[3] === 'FINISHED_GOOD');
+    const scrapInsert = client.query.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO traceability_units')
+        && (call[1] as unknown[] | undefined)?.[3] === 'OTHER');
+    expect(finishedInsert?.[1]).toContain('12.5000');
+    expect(finishedInsert?.[1]).toContain(ORDER_ID);
+    expect(finishedInsert?.[1]).toContain(ORDER_LINE_ID);
+    expect(finishedInsert?.[1]).toContain(reportId);
+    expect(scrapInsert?.[1]).toContain('1.0000');
+    expect(String(scrapInsert?.[0])).toContain('INSERT INTO traceability_units');
+    expect(String(client.query.mock.calls.find((call) => String(call[0]).includes('INSERT INTO inventory_traceability_location_balances'))?.[0]))
+      .toContain('lb.quantity_on_hand - COALESCE');
+
+    const outboxCalls = client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO outbox_events'));
+    const stockOutbox = outboxCalls.find((call) => (call[1] as unknown[] | undefined)?.[3] === 'INVENTORY.STOCK_RECEIVED');
+    expect(stockOutbox).toBeDefined();
+    const outboxPayload = JSON.parse(String(stockOutbox?.[1]?.[7])) as {
       purpose: string;
       good_quantity: string;
       scrap_quantity: string;
@@ -533,9 +572,30 @@ describe('InventoryReservationService', () => {
       yield_percentage: '92.5926',
       movement: { quantity: '12.5000', reference_id: reportId },
     });
+    expect(client.query.mock.calls.some((call) =>
+      String(call[0]).includes("TRACEABILITY.UNIT_REGISTERED"),
+    )).toBe(true);
   });
 
-  it('does not create a finished-good stock receipt when reported output is entirely scrap', async () => {
+  it('records scrap-only production as non-sellable traceability evidence without stock receipt', async () => {
+    const reportId = randomUUID();
+    const scrapUnitId = randomUUID();
+    client.query.mockImplementation(async (sql: unknown, values?: unknown[]) => {
+      const query = String(sql);
+      if (query.includes('FROM inventory_items') && query.includes('FOR UPDATE')) {
+        return queryRows([{ id: ITEM_ID, unit: 'EA', status: 'ACTIVE' }]);
+      }
+      if (query.includes('INSERT INTO traceability_units')) {
+        expect(values?.[3]).toBe('OTHER');
+        expect(values?.[5]).toBeNull();
+        return queryRows([{ id: scrapUnitId }]);
+      }
+      if (query.includes('INSERT INTO audit_events') || query.includes('INSERT INTO outbox_events')) {
+        return queryRows([]);
+      }
+      throw new Error('Unexpected query in scrap-only genealogy unit test: ' + query.slice(0, 100));
+    });
+
     const result = await service.postFinishedGoodsOutputReceipt(client as never, {
       userId: USER_ID,
       tenantId: TENANT_ID,
@@ -546,16 +606,25 @@ describe('InventoryReservationService', () => {
       orderNumber: 'ORD-SCRAP-ONLY',
       orderLineId: ORDER_LINE_ID,
       finishedItemId: ITEM_ID,
-      productionReportId: randomUUID(),
+      productionReportId: reportId,
       goodQuantity: '0.0000',
       scrapQuantity: '2.0000',
+      scrapReason: 'Rejected output',
       yieldPercentage: '0.0000',
       cumulativeYieldPercentage: '0.0000',
       correlationId: TRACE_ID,
     });
 
-    expect(result).toEqual({ movementId: null, quantityAfter: null });
-    expect(client.query).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      movementId: null,
+      quantityAfter: null,
+      traceabilityUnitId: null,
+      scrapTraceabilityUnitId: scrapUnitId,
+    });
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('UPDATE inventory_stock_balances'))).toBe(false);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO inventory_movements'))).toBe(false);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO inventory_traceability_location_balances'))).toBe(false);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('TRACEABILITY.UNIT_REGISTERED'))).toBe(true);
   });
 
   it('fails closed when the finished-good inventory item is disabled', async () => {
@@ -581,6 +650,139 @@ describe('InventoryReservationService', () => {
 
     expect(client.query).toHaveBeenCalledTimes(1);
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE inventory_stock_balances'))).toBe(false);
+  });
+
+  it('conserves consumed input-lot quantity across proportional good and scrap genealogy edges', async () => {
+    const reportA = randomUUID();
+    const reportB = randomUUID();
+    const postingA = randomUUID();
+    const postingB = randomUUID();
+    const lotA = randomUUID();
+    const lotB = randomUUID();
+    const scrapA = randomUUID();
+    const scrapB = randomUUID();
+    const consumptionId = randomUUID();
+    const allocationId = randomUUID();
+    const sourceUnitId = randomUUID();
+    const insertedEvents: Array<{ target: string; relation: string; quantity: string }> = [];
+    const insertedEvidence: Array<Record<string, unknown>> = [];
+    client.query.mockImplementation(async (sql: unknown, values?: unknown[]) => {
+      const query = String(sql);
+      if (query.includes('FROM order_production_reports r') && query.includes('JOIN production_output_postings p')) {
+        return queryRows([
+          {
+            posting_id: postingA, production_report_id: reportA, finished_item_id: ITEM_ID,
+            traceability_unit_id: lotA, scrap_traceability_unit_id: scrapA,
+            good_quantity: '3.0000', scrap_quantity: '1.0000',
+          },
+          {
+            posting_id: postingB, production_report_id: reportB, finished_item_id: ITEM_ID,
+            traceability_unit_id: lotB, scrap_traceability_unit_id: scrapB,
+            good_quantity: '5.0000', scrap_quantity: '1.0000',
+          },
+        ]);
+      }
+      if (query.includes('FROM inventory_reservation_consumption_traceability_allocations ca')) {
+        return queryRows([{
+          allocation_id: allocationId,
+          consumption_id: consumptionId,
+          reservation_id: RESERVATION_ID,
+          item_id: ITEM_ID,
+          source_unit_id: sourceUnitId,
+          source_unit_code: 'RAW-LOT-01',
+          source_unit: 'KG',
+          source_location_id: BIN_A_ID,
+          consumed_quantity: '1.0001',
+          source_created_at: '2026-10-01T00:00:00.000Z',
+          consumption_created_at: '2026-10-24T00:00:00.000Z',
+        }]);
+      }
+      if (query.includes('FROM product_genealogy_events') && query.includes('request_hash')) {
+        return queryRows([]);
+      }
+      if (query.includes('INSERT INTO product_genealogy_events')) {
+        insertedEvents.push({
+          target: String(values?.[3]),
+          relation: String(values?.[4]),
+          quantity: String(values?.[5]),
+        });
+        insertedEvidence.push(JSON.parse(String(values?.[7])) as Record<string, unknown>);
+        return queryRows([{ id: randomUUID() }]);
+      }
+      if (query.includes('INSERT INTO audit_events') || query.includes('INSERT INTO outbox_events')) {
+        return queryRows([]);
+      }
+      throw new Error('Unexpected query in work-order genealogy unit test: ' + query.slice(0, 120));
+    });
+
+    const result = await service.recordWorkOrderOutputGenealogy(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID,
+      correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual({ genealogyEventCount: 4, traceabilityAllocationCount: 1 });
+    expect(insertedEvents).toEqual([
+      { target: lotA, relation: 'CONSUMED_INTO', quantity: '0.3000' },
+      { target: scrapA, relation: 'PROCESSED_INTO', quantity: '0.1000' },
+      { target: lotB, relation: 'CONSUMED_INTO', quantity: '0.5000' },
+      { target: scrapB, relation: 'PROCESSED_INTO', quantity: '0.1001' },
+    ]);
+    expect(insertedEvents.reduce((sum, edge) => sum + BigInt(edge.quantity.replace('.', '')), 0n))
+      .toBe(10001n);
+    expect(insertedEvidence).toHaveLength(4);
+    expect(insertedEvidence.every((evidence) =>
+      evidence.source === 'WORK_ORDER_MATERIAL_CONSUMPTION'
+      && evidence.work_order_id === ORDER_ID
+      && evidence.reservation_id === RESERVATION_ID
+      && evidence.consumption_id === consumptionId
+      && evidence.consumption_traceability_allocation_id === allocationId
+      && evidence.source_inventory_item_id === ITEM_ID
+      && evidence.source_unit === 'KG'
+    )).toBe(true);
+    expect(insertedEvidence.map((evidence) => evidence.source_quantity))
+      .toEqual(insertedEvents.map((edge) => edge.quantity));
+    expect(insertedEvidence.map((evidence) => evidence.output_identity_kind))
+      .toEqual(['FINISHED_GOOD', 'SCRAP', 'FINISHED_GOOD', 'SCRAP']);
+    expect(insertedEvidence.map((evidence) => evidence.output_quantity_weight))
+      .toEqual(['3.0000', '1.0000', '5.0000', '1.0000']);
+    expect(insertedEvidence.map((evidence) => evidence.production_report_id))
+      .toEqual([reportA, reportA, reportB, reportB]);
+    expect(insertedEvidence.map((evidence) => evidence.production_output_posting_id))
+      .toEqual([postingA, postingA, postingB, postingB]);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO audit_events'))).toHaveLength(4);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('TRACEABILITY.GENEALOGY_RECORDED'))).toHaveLength(4);
+  });
+
+  it('fails closed when work-order output postings have no finished-good traceability lot', async () => {
+    client.query.mockImplementation(async (sql: unknown) => {
+      const query = String(sql);
+      if (query.includes('FROM order_production_reports r') && query.includes('JOIN production_output_postings p')) {
+        return queryRows([{
+          posting_id: randomUUID(),
+          production_report_id: randomUUID(),
+          finished_item_id: ITEM_ID,
+          traceability_unit_id: null,
+          scrap_traceability_unit_id: null,
+          good_quantity: '1.0000',
+          scrap_quantity: '0.0000',
+        }]);
+      }
+      throw new Error('The completion gate should fail before reading material allocations: ' + query.slice(0, 100));
+    });
+
+    await expect(service.recordWorkOrderOutputGenealogy(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID,
+      correlationId: TRACE_ID,
+    })).rejects.toThrow('missing its finished-good traceability lot');
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO product_genealogy_events'))).toBe(false);
   });
 
   it('requires an idempotency key for reservation creation', async () => {
