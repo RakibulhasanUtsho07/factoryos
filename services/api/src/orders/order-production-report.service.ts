@@ -34,6 +34,8 @@ interface ProductionReportRow extends QueryResultRow {
   report_yield_percent: string | null;
   production_output_posting_id: string | null;
   inventory_movement_id: string | null;
+  finished_good_traceability_unit_id: string | null;
+  scrap_traceability_unit_id: string | null;
 }
 
 interface ProductionTotalsRow extends QueryResultRow {
@@ -73,6 +75,16 @@ const PRODUCTION_REPORT_COLUMNS = `
       AND p.tenant_id = order_production_reports.tenant_id
       AND p.factory_id = order_production_reports.factory_id
     LIMIT 1) AS inventory_movement_id,
+  (SELECT p.traceability_unit_id::text FROM production_output_postings p
+    WHERE p.production_report_id = order_production_reports.id
+      AND p.tenant_id = order_production_reports.tenant_id
+      AND p.factory_id = order_production_reports.factory_id
+    LIMIT 1) AS finished_good_traceability_unit_id,
+  (SELECT p.scrap_traceability_unit_id::text FROM production_output_postings p
+    WHERE p.production_report_id = order_production_reports.id
+      AND p.tenant_id = order_production_reports.tenant_id
+      AND p.factory_id = order_production_reports.factory_id
+    LIMIT 1) AS scrap_traceability_unit_id,
   round(
     cumulative_good_quantity * 100
       / NULLIF(cumulative_good_quantity + cumulative_scrap_quantity, 0),
@@ -99,6 +111,8 @@ type ProductionReportResult = {
   report_yield_percent: string | null;
   production_output_posting_id: string | null;
   finished_good_movement_id: string | null;
+  finished_good_traceability_unit_id: string | null;
+  scrap_traceability_unit_id: string | null;
   replayed: boolean;
 };
 
@@ -290,6 +304,7 @@ export class OrderProductionReportService {
             productionReportId: report.id,
             goodQuantity,
             scrapQuantity,
+            scrapReason,
             yieldPercentage,
             cumulativeYieldPercentage,
             correlationId,
@@ -305,22 +320,26 @@ export class OrderProductionReportService {
           yieldPercentage,
           cumulativeYieldPercentage,
           inventoryMovementId: finishedGoodsReceipt.movementId,
+          finishedGoodTraceabilityUnitId: finishedGoodsReceipt.traceabilityUnitId,
+          scrapTraceabilityUnitId: finishedGoodsReceipt.scrapTraceabilityUnitId,
           requestHash,
         });
         const outputPostingResult = await client.query<{ id: string }>(`
           INSERT INTO production_output_postings (
             tenant_id, factory_id, work_order_id, work_order_operation_id,
             production_report_id, finished_item_id, inventory_movement_id,
+            traceability_unit_id, scrap_traceability_unit_id,
             good_quantity, scrap_quantity, yield_percentage, cumulative_yield_percentage,
             idempotency_key, request_hash, created_by_user_id, correlation_id
           ) VALUES (
-            $1, $2, NULL, NULL, $3, $4, $5::uuid,
-            $6::numeric, $7::numeric, $8::numeric, $9::numeric,
-            $10, $11, $12, $13::uuid
+            $1, $2, NULL, NULL, $3, $4, $5::uuid, $6::uuid, $7::uuid,
+            $8::numeric, $9::numeric, $10::numeric, $11::numeric,
+            $12, $13, $14, $15::uuid
           )
           RETURNING id::text AS id
         `, [
           tenantId, factoryId, report.id, finishedItemId, finishedGoodsReceipt.movementId,
+          finishedGoodsReceipt.traceabilityUnitId, finishedGoodsReceipt.scrapTraceabilityUnitId,
           goodQuantity, scrapQuantity, yieldPercentage, cumulativeYieldPercentage,
           `order-production-output:${report.id}`, postingHash, userId, correlationId,
         ]);
@@ -366,6 +385,8 @@ export class OrderProductionReportService {
                 production_output_posting_id: productionOutputPostingId,
                 finished_good_movement_id: finishedGoodsReceipt.movementId,
                 finished_good_quantity_after: finishedGoodsReceipt.quantityAfter,
+                finished_good_traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
+                scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
               },
               inventory: {
                 finished_item_id: finishedItemId,
@@ -382,6 +403,8 @@ export class OrderProductionReportService {
           report_yield_percent: yieldPercentage,
           production_output_posting_id: productionOutputPostingId,
           finished_good_movement_id: finishedGoodsReceipt.movementId,
+          finished_good_traceability_unit_id: finishedGoodsReceipt.traceabilityUnitId,
+          scrap_traceability_unit_id: finishedGoodsReceipt.scrapTraceabilityUnitId,
         };
       },
     );
@@ -515,6 +538,8 @@ export class OrderProductionReportService {
       report_yield_percent: row.report_yield_percent,
       production_output_posting_id: row.production_output_posting_id,
       finished_good_movement_id: row.inventory_movement_id,
+      finished_good_traceability_unit_id: row.finished_good_traceability_unit_id,
+      scrap_traceability_unit_id: row.scrap_traceability_unit_id,
       replayed,
     };
   }
