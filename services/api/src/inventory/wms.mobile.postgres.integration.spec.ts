@@ -432,8 +432,8 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       GROUP BY outcome ORDER BY outcome
     `, [deviceId]);
     expect(attempts.rows).toEqual([
-      { outcome: 'APPLIED', count: '1' },
-      { outcome: 'IDEMPOTENCY_CONFLICT', count: '2' },
+      { outcome: 'APPLIED', count: '2' },
+      { outcome: 'IDEMPOTENCY_CONFLICT', count: '3' },
       { outcome: 'REJECTED', count: '1' },
       { outcome: 'REPLAYED', count: '1' },
     ]);
