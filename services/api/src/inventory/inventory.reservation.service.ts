@@ -2056,6 +2056,7 @@ export class InventoryReservationService {
       source_unit_id: string;
       source_unit_code: string;
       source_unit: string;
+      source_location_id: string;
       consumed_quantity: string;
       source_created_at: string;
       consumption_created_at: string;
@@ -2064,6 +2065,7 @@ export class InventoryReservationService {
       SELECT ca.id::text AS allocation_id, c.id::text AS consumption_id,
         c.reservation_id::text AS reservation_id, c.item_id::text AS item_id,
         tu.id::text AS source_unit_id, tu.unit_code AS source_unit_code, tu.unit,
+        ca.location_id::text AS source_location_id,
         ca.quantity::text AS consumed_quantity, tu.created_at::text AS source_created_at,
         c.created_at::text AS consumption_created_at
       FROM inventory_reservation_consumption_traceability_allocations ca
@@ -2073,9 +2075,33 @@ export class InventoryReservationService {
         ON mr.reservation_id = c.reservation_id AND mr.tenant_id = c.tenant_id AND mr.factory_id = c.factory_id
       JOIN traceability_units tu
         ON tu.id = ca.traceability_unit_id AND tu.tenant_id = ca.tenant_id AND tu.factory_id = ca.factory_id
+      JOIN inventory_items i
+        ON i.id = c.item_id AND i.tenant_id = c.tenant_id AND i.factory_id = c.factory_id
+      LEFT JOIN goods_receipts gr
+        ON gr.id = tu.goods_receipt_id AND gr.tenant_id = tu.tenant_id AND gr.factory_id = tu.factory_id
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = c.tenant_id AND p.factory_id = c.factory_id
+             AND p.policy_scope = 'MATERIAL' AND p.inventory_item_id = c.item_id),
+          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = c.tenant_id AND p.factory_id = c.factory_id
+             AND p.policy_scope = 'SECTOR' AND lower(p.sector_code) = lower(i.sector_code)),
+          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = c.tenant_id AND p.factory_id = c.factory_id
+             AND p.policy_scope = 'FACTORY'),
+          (SELECT ts.allocation_policy FROM traceability_settings ts
+           WHERE ts.tenant_id = c.tenant_id AND ts.factory_id = c.factory_id),
+          'FIFO'
+        ) AS allocation_policy
+      ) effective_policy ON TRUE
       WHERE mr.work_order_id = $1 AND mr.tenant_id = $2 AND mr.factory_id = $3
         AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT', 'SERIAL')
-      ORDER BY c.item_id, tu.created_at, tu.id, c.created_at, ca.created_at, ca.id
+      ORDER BY c.item_id,
+        CASE WHEN effective_policy.allocation_policy = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
+        COALESCE(gr.posted_at, gr.received_at, tu.created_at),
+        lower(tu.unit_code), ca.location_id, tu.id,
+        c.created_at, ca.created_at, ca.id
       FOR UPDATE OF ca, tu
       `,
       [input.workOrderId, input.tenantId, input.factoryId],
@@ -2110,6 +2136,7 @@ export class InventoryReservationService {
           consumption_traceability_allocation_id: source.allocation_id,
           source_inventory_item_id: source.item_id,
           source_unit_code: source.source_unit_code,
+          source_location_id: source.source_location_id,
           source_quantity: quantity,
           source_unit: source.source_unit,
           production_report_id: target.reportId,
