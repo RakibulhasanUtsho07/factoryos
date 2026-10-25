@@ -808,6 +808,7 @@ export class TraceabilityService {
               name: item.name,
               unit: item.unit,
               sector_code: item.sector_code,
+              status: item.status,
             };
           }
 
