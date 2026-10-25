@@ -140,6 +140,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
+            'DELETE FROM traceability_label_issues WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
             'DELETE FROM wms_traceability_recall_notification_acknowledgements WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
@@ -165,6 +169,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_label_templates WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -1857,7 +1865,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       tracking_reference: payload.tracking_reference,
     });
 
-    // Cross-feature SRS regression: the same order-bound shipment, verified POD
+    // Cross-feature SRS regression: the same order-bound shipment, persisted POD
     // metadata, recall assessment/declaration and lifecycle-aware label snapshots
     // must agree on the persisted shipment and identity state.
     const labelTemplate = await traceabilityService.createLabelTemplate(
