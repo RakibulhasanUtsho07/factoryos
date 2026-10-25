@@ -85,17 +85,20 @@ test("offline queue is durable across queue instances and prevents transaction-I
 
 test("only an exact matching APPLIED transaction receipt removes a queued operation", async () => {
   const store = new MemoryStore();
-  const queue = new WmsOfflineQueue({ store, now: () => Date.parse("2026-10-26T00:00:00.000Z") });
+  let clock = Date.parse("2026-10-26T00:00:00.000Z");
+  const queue = new WmsOfflineQueue({ store, now: () => clock });
   await queue.enqueue(scope(), payload());
-  const invalidAck = await queue.flush(scope(), async () => ({ results: [ { ...applied(TX2), client_transaction_id: TX1 } ] }), { baseRetryMs: 100 });
+  const invalidAck = await queue.flush(scope(), async () => ({ results: [ applied(TX2) ] }), { baseRetryMs: 100 });
   assert.equal(invalidAck.syncedCount, 0);
   assert.equal((await queue.list(scope()))[0].status, "PENDING");
   assert.equal((await queue.list(scope()))[0].lastError, "MISSING_OR_MISMATCHED_TRANSACTION_RECEIPT");
 
+  clock += 101;
   const malformedReceipt = await queue.flush(scope(), async () => ({ results: [ { ...applied(TX1), receipt_id: "not-a-uuid" } ] }), { baseRetryMs: 100 });
   assert.equal(malformedReceipt.syncedCount, 0);
   assert.equal((await queue.list(scope()))[0].status, "PENDING");
 
+  clock += 101;
   const acknowledged = await queue.flush(scope(), async () => ({ results: [ applied(TX1) ] }), { baseRetryMs: 100 });
   assert.equal(acknowledged.syncedCount, 1);
   assert.equal((await queue.list(scope())).length, 0);
@@ -190,7 +193,7 @@ test("Code 128 renderer creates bars and rejects unsupported or non-printable va
   assert.match(rendered.svg, /<rect/);
   assert.match(rendered.svg, /role="img"/);
   assert.match(rendered.svg, /LOT-TEST-01/);
-  assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-01" + String.fromCharCode(10) + "BAD" } })), errorCode("INVALID_LABEL_VALUE"));
+  assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" }, issue: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" } })), errorCode("INVALID_LABEL_VALUE"));
   assert.throws(() => renderWmsLabel(labelIssue("DATAMATRIX")), errorCode("ENCODER_NOT_IMPLEMENTED"));
   assert.throws(() => renderWmsLabel(labelIssue("GS1_128")), errorCode("ENCODER_NOT_IMPLEMENTED"));
 });
