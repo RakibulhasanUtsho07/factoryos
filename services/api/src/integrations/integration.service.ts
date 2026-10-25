@@ -529,6 +529,25 @@ export class IntegrationService {
         || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
         throw new BadRequestException(field + ' must be an RFC 3339 timestamp with an explicit timezone');
       }
+      const parts = value.match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})/);
+      if (!parts) throw new BadRequestException(field + ' must be a valid RFC 3339 timestamp');
+      const year = Number(parts[1]);
+      const month = Number(parts[2]);
+      const day = Number(parts[3]);
+      const hour = Number(parts[4]);
+      const minute = Number(parts[5]);
+      const second = Number(parts[6]);
+      const calendarDate = new Date(Date.UTC(year, month - 1, day));
+      if (calendarDate.getUTCFullYear() !== year
+        || calendarDate.getUTCMonth() + 1 !== month
+        || calendarDate.getUTCDate() !== day
+        || hour > 23 || minute > 59 || second > 59) {
+        throw new BadRequestException(field + ' must be a valid RFC 3339 calendar date and time');
+      }
+      const offset = value.match(/([+-])(\\d{2}):(\\d{2})$/);
+      if (offset && (Number(offset[2]) > 23 || Number(offset[3]) > 59)) {
+        throw new BadRequestException(field + ' has an invalid RFC 3339 timezone offset');
+      }
       const parsed = new Date(value);
       if (!Number.isFinite(parsed.getTime())) throw new BadRequestException(field + ' must be a valid timestamp');
       return parsed;
