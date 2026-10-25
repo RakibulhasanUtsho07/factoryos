@@ -185,6 +185,7 @@ DECLARE
   v_source_role VARCHAR(20);
   v_source_status VARCHAR(16);
   v_source_expiry DATE;
+  v_source_attributes JSONB;
   v_move_item UUID;
   v_move_location UUID;
   v_move_type VARCHAR(20);
@@ -201,8 +202,8 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  SELECT unit_type, product_role, status, expires_at
-    INTO v_source_type, v_source_role, v_source_status, v_source_expiry
+  SELECT unit_type, product_role, status, expires_at, attributes
+    INTO v_source_type, v_source_role, v_source_status, v_source_expiry, v_source_attributes
   FROM traceability_units
   WHERE id = NEW.traceability_unit_id
     AND tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id
@@ -213,7 +214,16 @@ BEGIN
     OR v_source_role <> 'FINISHED_GOOD'
     OR v_source_type NOT IN ('LOT', 'SERIAL', 'FINISHED_GOOD')
     OR v_source_status <> 'ACTIVE'
-    OR (v_source_expiry IS NOT NULL AND v_source_expiry < CURRENT_DATE) THEN
+    OR (v_source_expiry IS NOT NULL AND v_source_expiry < CURRENT_DATE)
+    OR COALESCE(v_source_attributes @> '{"damaged":true}'::jsonb, FALSE)
+    OR COALESCE(v_source_attributes @> '{"held":true}'::jsonb, FALSE)
+    OR COALESCE(v_source_attributes @> '{"quarantined":true}'::jsonb, FALSE)
+    OR upper(COALESCE(v_source_attributes->>'condition', '')) IN ('DAMAGED','HELD','QUARANTINED','EXPIRED')
+    OR EXISTS (
+      SELECT 1 FROM quality_holds qh
+      WHERE qh.tenant_id=NEW.tenant_id AND qh.factory_id=NEW.factory_id AND qh.status='ACTIVE'
+        AND (qh.inventory_item_id=NEW.item_id OR qh.traceability_unit_id=NEW.traceability_unit_id)
+    ) THEN
     RAISE EXCEPTION 'dispatch line must bind an eligible active finished-good lot/serial to its inventory item'
       USING ERRCODE = '23514';
   END IF;
