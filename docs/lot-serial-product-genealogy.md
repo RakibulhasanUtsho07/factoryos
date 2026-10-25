@@ -24,11 +24,19 @@ All routes require authenticated actor, tenant and factory context plus the name
 - `POST /api/v1/traceability/genealogy` — add a directed relationship with source, target, quantity, notes and evidence JSON; requires `traceability.write` and `Idempotency-Key`.
 - `GET /api/v1/traceability/units/:unitId/forward?depth=5&limit=200` — follow downstream batches, products, packaging and shipment identities.
 - `GET /api/v1/traceability/units/:unitId/reverse?depth=5&limit=200` — follow a finished product/carton/shipment upstream to source lots and production identities.
+- `GET /api/v1/traceability/units/:unitId/recall-impact?depth=5&limit=200` — build a bounded, read-only recall impact assessment with downstream identities, matching WMS customer shipments, latest delivery/POD reference metadata and upstream provenance. The response exposes node/depth truncation indicators.
+- `POST /api/v1/traceability/units/:unitId/recall` — declare an auditable recall case from a complete bounded downstream graph; requires `traceability.write`, a reason and `Idempotency-Key`. Truncated graphs fail closed without status changes.
 - `POST /api/v1/traceability/units/:unitId/status` and `GET /api/v1/traceability/units/:unitId/status-history` — controlled state changes plus immutable history.
 - `POST /api/v1/traceability/label-templates`, `GET /api/v1/traceability/label-templates` — create/read label templates.
 - `GET /api/v1/traceability/settings`, `PUT /api/v1/traceability/settings` — read/update factory retention and allocation policy using optimistic `expected_version`.
 
-Forward/reverse queries cap depth at 12 and nodes at 500. Relationship `evidence` JSON can hold external quality certificate, inspection and shipment references.
+Forward/reverse/recall-impact queries cap depth at 12 and nodes at 500. Relationship `evidence` JSON can hold external quality certificate, inspection and shipment references.
+
+A declared recall is persisted by migration 205. The API acquires the same tenant/factory graph lock used by genealogy writes, traverses the downstream graph breadth-first, locks all affected identities and refuses to write when depth, node or per-layer fan-out limits prevent a complete traversal. A successful declaration inserts an immutable `wms_traceability_recall_cases` record and its unit snapshots, then transitions `ACTIVE`/`QUARANTINED` identities to `RECALLED` with versioned status history, audit and outbox evidence in one transaction. An exact retry returns the original case; reuse of the key with another reason or bound conflicts. The case snapshots a deterministic graph fingerprint and per-unit depth/status/action.
+
+The existing unit lifecycle does not permit `SHIPPED` to transition to `RECALLED`; shipped identities remain `SHIPPED` and are explicitly marked `SHIPPED_REVIEW_REQUIRED` for separate customer/site action. Already-recalled and disposed units are captured without an extra status transition. Declaring a case changes neither inventory balance nor stock movements and does not dispatch stop-ship commands, notify customers, or capture acknowledgements. Authorized recall-owner approval, customer contact, containment and site acceptance remain separate gates.
+
+The recall-impact endpoint requires `traceability.read` and uses the authenticated tenant/factory scope. It never changes stock or identity status and creates no recall record; the response explicitly reports these side effects as false. The response distinguishes `impact_node_limit_reached` / `provenance_node_limit_reached` from `impact_depth_truncated` / `provenance_depth_truncated`; the combined `impact_truncated` and `provenance_truncated` flags are true when either limit prevents a complete traversal. Treat any truncation as an incomplete assessment and rerun with appropriate bounded parameters before deciding recall scope. Recall declaration, quarantine/stop-ship decisions, customer notifications/acknowledgements and recall-owner acceptance remain separate operational actions and are not implied by this preview.
 
 ## Work-order production output genealogy (migration 198)
 
@@ -72,3 +80,12 @@ The repository now has first-class quality inspections, immutable defect-to-lot/
 ## Verification
 
 Migration: `074_lot_serial_product_genealogy.sql`. PostgreSQL regression: `services/api/test/traceability.sql`, plus accepted-GRN lot registration coverage in `services/api/test/goods-receipt.sql`. API input regression: `services/api/src/inventory/traceability.service.spec.ts`.
+
+
+## Recall notification and acknowledgement evidence (migration 206)
+
+- `POST /api/v1/traceability/recall-cases/:recallCaseId/notifications` records a tenant/factory-scoped, idempotent notification intent for a customer or site and emits `WMS.RECALL_NOTIFICATION_REQUESTED` through the transactional outbox.
+- `GET /api/v1/traceability/recall-cases/:recallCaseId/notifications` returns recorded intents and any linked acknowledgement evidence.
+- `POST /api/v1/traceability/recall-cases/:recallCaseId/notifications/:notificationIntentId/acknowledgements` records one append-only operator-reported response per intent. Supported outcomes are `RECEIVED`, `NO_ACTION_REQUIRED`, `ACTION_IN_PROGRESS`, `ACTION_COMPLETED` and `UNABLE_TO_CONFIRM`.
+- Notification targets are reference tokens, not arbitrary URLs or email addresses. Intent and acknowledgement records are protected by FORCE RLS, immutable triggers, same-case/same-recipient foreign keys, idempotency constraints, and deferred audit/outbox evidence checks.
+- **Boundary:** requesting an intent does not prove that a message was sent or delivered. Acknowledgements created through this endpoint are marked `OPERATOR_REPORTED` and are not externally authenticated. Provider delivery receipts, customer/site portal authentication, stop-ship execution and recall-owner acceptance remain separate release gates.
