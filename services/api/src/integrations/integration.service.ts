@@ -117,7 +117,7 @@ export class IntegrationService {
     if (shipment.status !== 'DISPATCHED') throw new ConflictException('POD files may only be uploaded for dispatched shipments');
 
     const objectId = randomUUID();
-    const objectKey = 'pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId.toLowerCase() + '/' + objectId;
+    const objectKey = 'pod/' + tenantId.toLowerCase() + '/' + factoryId.toLowerCase() + '/' + shipmentUnitId.toLowerCase() + '/' + objectId;
     const stored = await uploadWmsPodObjectAndVerify(this.config, objectKey, file.buffer, file.mimetype);
     const correlationId = (traceId && isUUID(traceId) ? traceId : null) ??
       (requestId && isUUID(requestId) ? requestId : null) ?? objectId;
