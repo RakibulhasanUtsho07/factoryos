@@ -55,9 +55,9 @@ BEGIN
     )
     OR v_status <> 'ACTIVE'
     OR (v_expires_at IS NOT NULL AND v_expires_at < CURRENT_DATE)
-    OR COALESCE((v_attributes->>'damaged')::BOOLEAN, FALSE)
-    OR COALESCE((v_attributes->>'held')::BOOLEAN, FALSE)
-    OR COALESCE((v_attributes->>'quarantined')::BOOLEAN, FALSE)
+    OR COALESCE(v_attributes @> '{"damaged":true}'::jsonb, FALSE)
+    OR COALESCE(v_attributes @> '{"held":true}'::jsonb, FALSE)
+    OR COALESCE(v_attributes @> '{"quarantined":true}'::jsonb, FALSE)
     OR upper(COALESCE(v_attributes->>'condition', '')) IN ('DAMAGED', 'HELD', 'QUARANTINED', 'EXPIRED')
   THEN
     RAISE EXCEPTION 'location transfer traceability identity must be an eligible active material lot/serial or finished-good lot'
