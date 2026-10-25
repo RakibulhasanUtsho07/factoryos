@@ -387,7 +387,7 @@ export class WmsFulfillmentService {
       throw new BadRequestException('carrier_name and tracking_reference must be supplied together');
     }
     for (const [field, value] of [['carrier_name', carrierName], ['tracking_reference', trackingReference]] as const) {
-      if (value !== null && (value.length > 255 || !/^[\\x20-\\x7e]+$/.test(value))) {
+      if (value !== null && (value.length > 255 || !/^[\x20-\x7e]+$/.test(value))) {
         throw new BadRequestException(field + ' must contain 1–255 visible ASCII characters');
       }
     }
