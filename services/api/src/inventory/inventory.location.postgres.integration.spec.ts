@@ -1357,7 +1357,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(afterImpactAggregate?.quantity_on_hand).toBe(finalAggregate?.quantity_on_hand);
     const afterImpactStatus = await adminPool.query<{ status: string }>(
       `SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
-      [tenantId, fixture.factoryId, finishedLot.id],
+      [finishedLot.id, tenantId, fixture.factoryId],
     );
     expect(afterImpactStatus.rows[0]?.status).toBe(finalLotStatus.rows[0]?.status);
     await expect(traceabilityService.recallImpact(
