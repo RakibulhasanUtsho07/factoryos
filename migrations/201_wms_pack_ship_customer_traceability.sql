@@ -142,7 +142,9 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_pack_ship_genealogy_event();
 CREATE OR REPLACE FUNCTION factoryos_guard_shipment_customer_lifecycle()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
+AS $
+DECLARE
+  v_dispatch_exists BOOLEAN;
 BEGIN
   IF NEW.unit_type = 'SHIPMENT' THEN
     IF NEW.product_role <> 'SHIPMENT'
@@ -157,7 +159,7 @@ BEGIN
   IF TG_OP = 'UPDATE'
     AND OLD.unit_type = 'SHIPMENT'
     AND NEW.status = 'SHIPPED'
-    AND OLD.status <> 'SHIPPED' THEN
+    AND OLD.status IS DISTINCT FROM 'SHIPPED' THEN
     IF NOT EXISTS (
       SELECT 1 FROM product_genealogy_events e
       JOIN traceability_units p
@@ -169,11 +171,26 @@ BEGIN
       RAISE EXCEPTION 'shipment cannot transition to SHIPPED before a packaged carton/pallet is assigned'
         USING ERRCODE = '23514';
     END IF;
+
+    -- This migration is replayed by PostgreSQL CI to test idempotency. If the
+    -- later transactional-dispatch schema already exists, reapplying migration
+    -- 201 must not weaken the SHIPPED gate installed by migration 202.
+    IF to_regclass('public.traceability_shipment_dispatches') IS NOT NULL THEN
+      EXECUTE
+        'SELECT EXISTS (SELECT 1 FROM public.traceability_shipment_dispatches d
+         WHERE d.tenant_id = $1 AND d.factory_id = $2 AND d.shipment_unit_id = $3)'
+        INTO v_dispatch_exists
+        USING NEW.tenant_id, NEW.factory_id, NEW.id;
+      IF NOT v_dispatch_exists THEN
+        RAISE EXCEPTION 'shipment cannot transition to SHIPPED before transactional inventory dispatch evidence exists'
+          USING ERRCODE = '23514';
+      END IF;
+    END IF;
   END IF;
 
   RETURN NEW;
 END;
-$$;
+$;
 
 DROP TRIGGER IF EXISTS trg_traceability_shipment_lifecycle_guard ON traceability_units;
 CREATE TRIGGER trg_traceability_shipment_lifecycle_guard
@@ -183,7 +200,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_shipment_customer_lifecycle();
 COMMENT ON FUNCTION factoryos_guard_pack_ship_genealogy_event() IS
   'Enforces finished-good to carton/pallet packing, carton-to-pallet nesting, and package-to-shipment customer-reference traceability.';
 COMMENT ON FUNCTION factoryos_guard_shipment_customer_lifecycle() IS
-  'Requires shipment/customer/order references and prevents SHIPPED status before a package genealogy edge exists.';
+  'Requires shipment/customer/order references and, when dispatch schema is installed, prevents SHIPPED status without transactional dispatch evidence.';
 
 INSERT INTO schema_migrations(version, checksum)
 VALUES ('201_wms_pack_ship_customer_traceability', NULL)
