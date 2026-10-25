@@ -38,6 +38,8 @@ When a work order completes, the same transaction consumes its remaining materia
 
 Migration/contract: migrations/198_production_output_lot_genealogy.sql and services/api/test/production-output-lot-genealogy.sql. Unit tests cover good + scrap identity creation, scrap-only handling and exact consumption-quantity conservation across multiple output reports.
 
+Migration 199 makes this linkage a PostgreSQL invariant, not just an API convention. A genealogy edge into a work-order finished-good or scrap output must bind to an actual `inventory_reservation_consumption_traceability_allocations` row whose reservation belongs to that same work order and whose source lot/serial and output posting/report match. The database rejects arbitrary evidence JSON, checks the edge quantity against the allocated source quantity, and uses deferred constraints to require exact allocation conservation and a `COMPLETED` work order at commit. A work order cannot complete while any consumed tracked material allocation is missing from output genealogy. PostgreSQL acceptance is `services/api/test/work-order-genealogy-consumption-guard.sql`; the ordered manifest and CI replay migration 199 twice.
+
 This is only the production-report-to-output-lot genealogy slice. It deliberately does not backfill historical output quantities into current physical bins, and does not claim finished-good carton/pallet transfer, shipment/customer trace, RFID/offline synchronization, recall-owner acceptance or a live plant end-to-end rehearsal.
 
 ## Scope boundary
