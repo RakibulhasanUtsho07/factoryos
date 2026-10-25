@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
-  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityUnitDto, UpdateTraceabilitySettingsDto,
+  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityUnitDto, DeclareTraceabilityRecallDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 
@@ -59,6 +59,33 @@ describe('TraceabilityService input contracts', () => {
       USER_ID, TENANT_ID, FACTORY_ID,
       { ...selfEdge, target_unit_id: 'b42f8e90-99d9-492d-a3b0-8cecb64ecfd3', relationship_type: 'UNKNOWN' as never },
       'trace-invalid-edge', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid recall bounds before opening a transaction', async () => {
+    const invalidDepth: DeclareTraceabilityRecallDto = {
+      reason: 'Valid recall rationale', depth: 13, limit: 200,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      invalidDepth, 'trace-recall-depth-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const invalidLimit: DeclareTraceabilityRecallDto = {
+      reason: 'Valid recall rationale', depth: 5, limit: 501,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      invalidLimit, 'trace-recall-limit-invalid', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    const blankReason: DeclareTraceabilityRecallDto = {
+      reason: '   ', depth: 5, limit: 200,
+    };
+    await expect(service.declareRecall(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      blankReason, 'trace-recall-reason-invalid', null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
