@@ -360,7 +360,8 @@ export class IntegrationService {
       envelope = validateWebhookEnvelope(request.body, connector.schema_version, connector.payload_schema);
       assertWebhookEventTypeAllowed(envelope.event_type, connector.allowed_event_types);
       if ((connector.source_system === 'WMS_CARRIER') !== (envelope.event_type === 'WMS.SHIPMENT_DELIVERY')) {
-        throw new UnprocessableEntityException(
+        throw new IntegrationContractError(
+          'WEBHOOK_EVENT_TYPE_NOT_ALLOWED',
           'WMS_CARRIER connectors must send WMS.SHIPMENT_DELIVERY events, and only WMS_CARRIER connectors may send them',
         );
       }
