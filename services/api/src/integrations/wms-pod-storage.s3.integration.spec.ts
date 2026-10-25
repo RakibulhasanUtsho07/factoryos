@@ -101,9 +101,10 @@ function testConfig() {
   return { get: <T = string>(name: string) => values[name] as T | undefined } as never;
 }
 
+jest.setTimeout(30000);
+
 describe('WMS POD upload against a real S3-compatible test server', () => {
   beforeAll(async () => {
-    jest.setTimeout(30000);
     await createTestBucket();
   });
 
