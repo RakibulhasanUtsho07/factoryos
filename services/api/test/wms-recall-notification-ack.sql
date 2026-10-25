@@ -64,6 +64,20 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.wms_traceability_recall_notification_intents'::regclass
+      AND conname='chk_wms_recall_notification_intent_recipient_reference'
+      AND position('https?://' in pg_get_constraintdef(oid)) > 0
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='public.wms_traceability_recall_notification_acknowledgements'::regclass
+      AND conname='chk_wms_recall_notification_ack_evidence'
+      AND position('https?://' in pg_get_constraintdef(oid)) > 0
+  ) THEN
+    RAISE EXCEPTION 'Database constraints must reject URL-shaped recipient and acknowledgement evidence references';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM schema_migrations WHERE version='206_wms_recall_notification_acknowledgements'
   ) THEN
     RAISE EXCEPTION 'Recall notification migration version is not registered';
