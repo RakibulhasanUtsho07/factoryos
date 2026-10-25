@@ -70,6 +70,18 @@ BEGIN
     RAISE EXCEPTION 'SHIPPED_AS target must be a shipment identity'
       USING ERRCODE = '23514';
   END IF;
+
+  IF v_source_type = 'CARTON' AND EXISTS (
+    SELECT 1 FROM product_genealogy_events nested
+    JOIN traceability_units pallet
+      ON pallet.id=nested.target_unit_id AND pallet.tenant_id=nested.tenant_id AND pallet.factory_id=nested.factory_id
+    WHERE nested.tenant_id=NEW.tenant_id AND nested.factory_id=NEW.factory_id
+      AND nested.source_unit_id=NEW.source_unit_id AND nested.relationship_type='PACKED_INTO'
+      AND pallet.product_role='PACKAGING' AND pallet.unit_type='PALLET'
+  ) THEN
+    RAISE EXCEPTION 'a carton nested into a pallet must ship as part of that pallet'
+      USING ERRCODE = '23514';
+  END IF;
   IF btrim(COALESCE(v_target_attributes->>'customer_reference', '')) = ''
     OR btrim(COALESCE(v_target_attributes->>'customer_order_reference', '')) = ''
     OR btrim(COALESCE(v_target_attributes->>'shipment_reference', '')) = '' THEN
