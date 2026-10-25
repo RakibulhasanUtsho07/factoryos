@@ -28,6 +28,7 @@ DECLARE
   v_early_dispatch_rejected BOOLEAN := FALSE;
   v_missing_shipment_metadata_rejected BOOLEAN := FALSE;
   v_dispatch_without_issue_rejected BOOLEAN := FALSE;
+  v_nested_carton_direct_ship_rejected BOOLEAN := FALSE;
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
 BEGIN
@@ -84,6 +85,23 @@ BEGIN
     ARRAY['LOT','SERIAL','FINISHED_GOOD','CARTON','PALLET','SHIPMENT']::text[],
     '{"fields":["unit_code","barcode_value","product_role","unit","quantity"]}'::jsonb, v_actor
   );
+  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
+    BEGIN
+      INSERT INTO product_genealogy_events (
+        tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity, unit,
+        evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
+      ) VALUES (
+        v_tenant, v_factory, v_carton, v_shipment, 'SHIPPED_AS', 1, 'EA',
+        '{}'::jsonb, 'trace-invalid-nested-carton-ship', repeat('8',64), v_actor, v_trace
+      );
+    EXCEPTION WHEN check_violation THEN
+      v_nested_carton_direct_ship_rejected := TRUE;
+    END;
+    IF NOT v_nested_carton_direct_ship_rejected THEN
+      RAISE EXCEPTION 'a carton already nested into a pallet was allowed to ship outside its pallet';
+    END IF;
+  END IF;
+
   INSERT INTO audit_events (
     tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
     correlation_id, request_id, data_class, payload
