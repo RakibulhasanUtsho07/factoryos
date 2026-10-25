@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { jest } from '@jest/globals';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 
@@ -1132,6 +1133,143 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(packageStatuses.rows.find(row => row.container_unit_id === palletId)?.status).toBe('DISPATCHED');
     expect(packageStatuses.rows.find(row => row.container_unit_id === cartonId)?.status).toBe('DISPATCHED');
+
+    // A caller from another tenant must not learn container or customer shipment details.
+    const foreignTenantId = randomUUID();
+    await expect(fulfillmentService.getContainer(
+      userId, foreignTenantId, fixture.factoryId, palletId,
+    )).rejects.toThrow(/not found in this factory/i);
+    const foreignShipments = await fulfillmentService.listShipments(
+      userId, foreignTenantId, fixture.factoryId, { search: dispatchPayload.customer_order_reference },
+    );
+    expect(foreignShipments.shipments).toHaveLength(0);
+
+    // The previously packed lot has exactly two units left. Exercise the late-failure
+    // path after stock and shipment rows have been written, and prove transaction rollback.
+    const remainderCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-REMAINDER-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 2,
+      },
+      'wms-carton-remainder-create-' + randomUUID(), requestId, traceId,
+    );
+    const remainderCartonId = remainderCarton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      { source_unit_id: finishedLot.id, quantity: 2 },
+      'wms-carton-remainder-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      'wms-carton-remainder-seal-' + randomUUID(), requestId, traceId,
+    );
+
+    const rollbackPayload = {
+      shipment_code: 'SHIP-ROLLBACK-' + randomUUID().slice(0, 8),
+      customer_name: 'Rollback Acceptance Customer',
+      customer_order_reference: 'ORDER-ROLLBACK-' + randomUUID().slice(0, 8),
+    };
+    const fulfillmentInternals = fulfillmentService as unknown as {
+      insertOutbox: (...args: unknown[]) => Promise<void>;
+    };
+    const originalInsertOutbox = fulfillmentInternals.insertOutbox.bind(fulfillmentService);
+    const outboxSpy = jest.spyOn(fulfillmentInternals, 'insertOutbox').mockImplementation(async (...args: unknown[]) => {
+      if (args[5] === 'WMS.SHIPMENT_DISPATCHED') {
+        throw new Error('forced WMS shipment outbox failure for rollback acceptance');
+      }
+      return originalInsertOutbox(...args);
+    });
+    try {
+      await expect(fulfillmentService.dispatchContainer(
+        userId, tenantId, fixture.factoryId, remainderCartonId, rollbackPayload,
+        'wms-dispatch-rollback-' + randomUUID(), requestId, traceId,
+      )).rejects.toThrow(/forced WMS shipment outbox failure/i);
+    } finally {
+      outboxSpy.mockRestore();
+    }
+
+    const afterRollbackAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(afterRollbackAggregate?.quantity_on_hand).toBe('2.0000');
+    const afterRollbackLotBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+    );
+    expect(afterRollbackLotBalance.rows[0]?.quantity_on_hand).toBe('2.0000');
+    const afterRollbackContainer = await adminPool.query<{ status: string }>(
+      `SELECT status FROM wms_packing_containers
+       WHERE tenant_id=$1 AND factory_id=$2 AND container_unit_id=$3`,
+      [tenantId, fixture.factoryId, remainderCartonId],
+    );
+    expect(afterRollbackContainer.rows[0]?.status).toBe('SEALED');
+    const rolledBackShipmentCount = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM wms_shipments
+       WHERE tenant_id=$1 AND factory_id=$2
+         AND (container_unit_id=$3 OR shipment_code=$4)`,
+      [tenantId, fixture.factoryId, remainderCartonId, rollbackPayload.shipment_code],
+    );
+    expect(rolledBackShipmentCount.rows[0]?.count).toBe('0');
+    const rolledBackMovementCount = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM inventory_movements
+       WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='WMS_SHIPMENT'
+         AND notes=$3`,
+      [tenantId, fixture.factoryId, 'WMS customer dispatch ' + rollbackPayload.shipment_code],
+    );
+    expect(rolledBackMovementCount.rows[0]?.count).toBe('0');
+
+    // Partial-quantity fulfilment can continue as a second shipment, but it must
+    // consume only the remaining two units and leave the stock ledger at zero.
+    const remainderPayload = {
+      shipment_code: 'SHIP-REMAINDER-' + randomUUID().slice(0, 8),
+      customer_name: 'Acceptance Customer',
+      customer_order_reference: 'CUSTOMER-ORDER-REMAINDER-' + randomUUID().slice(0, 8),
+    };
+    const remainderKey = 'wms-dispatch-remainder-' + randomUUID();
+    const remainderDispatch = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      remainderPayload, remainderKey, requestId, traceId,
+    );
+    expect(remainderDispatch).toMatchObject({
+      replayed: false,
+      shipment: { container_unit_id: remainderCartonId, quantity: '2.0000', status: 'DISPATCHED' },
+    });
+    const remainderReplay = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      remainderPayload, remainderKey, requestId, traceId,
+    );
+    expect(remainderReplay).toMatchObject({
+      replayed: true, shipment: { shipment_unit_id: remainderDispatch.shipment.shipment_unit_id },
+    });
+
+    const finalAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const finalLocationTotals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(finalAggregate?.quantity_on_hand).toBe('0.0000');
+    expect(finalLocationTotals?.sum).toBe(finalAggregate?.quantity_on_hand);
+    const finalLotBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT COALESCE(sum(quantity_on_hand),0)::text AS quantity_on_hand
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id],
+    );
+    expect(finalLotBalance.rows[0]?.quantity_on_hand).toBe('0.0000');
+    const allShipments = await adminPool.query<{ quantity: string }>(
+      `SELECT quantity::text AS quantity FROM wms_shipments
+       WHERE tenant_id=$1 AND factory_id=$2
+         AND container_unit_id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [palletId, remainderCartonId]],
+    );
+    expect(allShipments.rows.map(row => Number(row.quantity)).reduce((sum, q) => sum + q, 0)).toBe(5);
+    const finalLotStatus = await adminPool.query<{ status: string }>(
+      `SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [finishedLot.id, tenantId, fixture.factoryId],
+    );
+    expect(finalLotStatus.rows[0]?.status).toBe('SHIPPED');
   });
 
 });
