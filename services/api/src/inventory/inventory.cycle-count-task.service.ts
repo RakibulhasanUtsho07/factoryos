@@ -554,7 +554,7 @@ export class InventoryCycleCountTaskService {
         const existing = replay.rows[0];
         if (
           existing.resolution_request_hash !== requestHash
-          || existing.resolved_by_user_id !== userId
+          || existing.resolved_by_user_id?.toLowerCase() !== userId.toLowerCase()
           || existing.status !== 'RESOLVED'
         ) {
           throw new ConflictException('Idempotency-Key was reused for a different variance escalation resolution');
@@ -581,7 +581,7 @@ export class InventoryCycleCountTaskService {
       if (task.status !== 'AWAITING_REVIEW' || !task.current_proposal_id) {
         throw new ConflictException('Variance escalation can only be resolved while the count is awaiting review');
       }
-      if (task.submitted_by_user_id === userId) {
+      if (task.submitted_by_user_id?.toLowerCase() === userId.toLowerCase()) {
         throw new ConflictException('The counter who submitted the count cannot resolve its variance escalation');
       }
 
