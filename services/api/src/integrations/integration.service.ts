@@ -359,6 +359,12 @@ export class IntegrationService {
     try {
       envelope = validateWebhookEnvelope(request.body, connector.schema_version, connector.payload_schema);
       assertWebhookEventTypeAllowed(envelope.event_type, connector.allowed_event_types);
+      if ((connector.source_system === 'WMS_CARRIER') !== (envelope.event_type === 'WMS.SHIPMENT_DELIVERY')) {
+        throw new IntegrationContractError(
+          'WEBHOOK_EVENT_TYPE_NOT_ALLOWED',
+          'WMS_CARRIER connectors must send WMS.SHIPMENT_DELIVERY events, and only WMS_CARRIER connectors may send them',
+        );
+      }
     } catch (error) {
       throw this.contractException(error);
     }
@@ -417,6 +423,17 @@ export class IntegrationService {
         throw new ServiceUnavailableException('Integration connector is paused; retry this event after the connector is resumed');
       }
 
+      if (connector.source_system === 'WMS_CARRIER') {
+        await this.recordCarrierDeliveryEvent(client, {
+          tenantId: scope.tenant_id,
+          factoryId: scope.factory_id,
+          connector,
+          externalEventId,
+          correlationId: envelope.correlation_id ?? null,
+          payload: envelope.payload,
+        });
+      }
+
       const outboxId = randomUUID();
       const source = {
         system: connector.source_system,
@@ -473,6 +490,217 @@ export class IntegrationService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Maps an authenticated carrier connector envelope into the WMS delivery ledger.
+   * This executes inside the generic webhook receipt/outbox transaction: the carrier receipt
+   * and WMS event either commit together or neither does.
+   */
+  private async recordCarrierDeliveryEvent(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      connector: ConnectorRow;
+      externalEventId: string;
+      correlationId: string | null;
+      payload: Record<string, unknown>;
+    },
+  ) {
+    const payload = input.payload;
+    const requiredText = (field: string, maximum: number): string => {
+      const value = payload[field];
+      if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) {
+        throw new BadRequestException(field + ' must be a non-empty string of at most ' + maximum + ' characters');
+      }
+      return value.trim();
+    };
+    const optionalText = (field: string, maximum: number): string | null => {
+      const value = payload[field];
+      if (value === undefined || value === null) return null;
+      if (typeof value !== 'string' || value.length > maximum) {
+        throw new BadRequestException(field + ' must be a string of at most ' + maximum + ' characters');
+      }
+      return value.trim() || null;
+    };
+    const parseTimestamp = (value: unknown, field: string): Date => {
+      if (typeof value !== 'string'
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+        throw new BadRequestException(field + ' must be an RFC 3339 timestamp with an explicit timezone');
+      }
+      const parts = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+      if (!parts) throw new BadRequestException(field + ' must be a valid RFC 3339 timestamp');
+      const year = Number(parts[1]);
+      const month = Number(parts[2]);
+      const day = Number(parts[3]);
+      const hour = Number(parts[4]);
+      const minute = Number(parts[5]);
+      const second = Number(parts[6]);
+      const calendarDate = new Date(Date.UTC(year, month - 1, day));
+      if (calendarDate.getUTCFullYear() !== year
+        || calendarDate.getUTCMonth() + 1 !== month
+        || calendarDate.getUTCDate() !== day
+        || hour > 23 || minute > 59 || second > 59) {
+        throw new BadRequestException(field + ' must be a valid RFC 3339 calendar date and time');
+      }
+      const offset = value.match(/([+-])(\d{2}):(\d{2})$/);
+      if (offset && (Number(offset[2]) > 23 || Number(offset[3]) > 59)) {
+        throw new BadRequestException(field + ' has an invalid RFC 3339 timezone offset');
+      }
+      const parsed = new Date(value);
+      if (!Number.isFinite(parsed.getTime())) throw new BadRequestException(field + ' must be a valid timestamp');
+      return parsed;
+    };
+
+    const carrierName = requiredText('carrier_name', 255);
+    if (carrierName.toLowerCase() !== input.connector.display_name.trim().toLowerCase()) {
+      throw new BadRequestException('carrier_name must match the WMS_CARRIER connector display name');
+    }
+    const trackingReference = requiredText('tracking_reference', 255);
+    if (!/^[\x20-\x7e]{1,255}$/.test(trackingReference)) {
+      throw new BadRequestException('tracking_reference must contain only visible ASCII characters');
+    }
+    const eventType = requiredText('event_type', 24).toUpperCase();
+    if (!['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'DELIVERED', 'RETURNED'].includes(eventType)) {
+      throw new BadRequestException('event_type is not a supported WMS delivery lifecycle event');
+    }
+    const eventAt = parseTimestamp(payload.event_at, 'event_at');
+    if (eventAt.getTime() > Date.now() + 10 * 60 * 1000) {
+      throw new BadRequestException('event_at cannot be more than ten minutes in the future');
+    }
+
+    const recipientName = optionalText('recipient_name', 255);
+    const proofType = optionalText('proof_type', 32)?.toUpperCase() ?? null;
+    const proofReference = optionalText('proof_reference', 500);
+    const proofSha256 = optionalText('proof_sha256', 64)?.toLowerCase() ?? null;
+    const signedAt = payload.signed_at === undefined || payload.signed_at === null
+      ? null
+      : parseTimestamp(payload.signed_at, 'signed_at');
+    const notes = optionalText('notes', 2000);
+    if (eventType === 'DELIVERED') {
+      if (!recipientName || !proofType || !proofReference || !proofSha256 || !signedAt
+        || signedAt.getTime() > eventAt.getTime()) {
+        throw new BadRequestException(
+          'DELIVERED requires recipient, proof type, storage object key, SHA-256 digest and signed timestamp',
+        );
+      }
+      if (!['SIGNATURE', 'PHOTO', 'DOCUMENT', 'OTP', 'CUSTOMER_ACKNOWLEDGEMENT'].includes(proofType)) {
+        throw new BadRequestException('proof_type is not supported');
+      }
+      if (!/^[a-f0-9]{64}$/.test(proofSha256)) throw new BadRequestException('proof_sha256 must be SHA-256 hex');
+      if (!/^(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9._/-]{0,499}$/.test(proofReference)) {
+        throw new BadRequestException('proof_reference must be a relative storage object key');
+      }
+    } else if (['recipient_name', 'proof_type', 'proof_reference', 'proof_sha256', 'signed_at']
+      .some((field) => payload[field] !== undefined && payload[field] !== null)) {
+      throw new BadRequestException('POD fields may only be supplied for DELIVERED events');
+    }
+
+    const shipmentResult = await client.query<{
+      shipment_unit_id: string;
+      shipment_code: string;
+      status: string;
+    }>(
+      `SELECT shipment_unit_id::text AS shipment_unit_id, shipment_code, status
+       FROM wms_shipments
+       WHERE tenant_id=$1 AND factory_id=$2
+         AND lower(btrim(carrier_name))=lower(btrim($3))
+         AND tracking_reference=$4
+       ORDER BY shipment_unit_id
+       LIMIT 2
+       FOR UPDATE`,
+      [input.tenantId, input.factoryId, carrierName, trackingReference],
+    );
+    if (shipmentResult.rows.length === 0) {
+      throw new NotFoundException('Carrier tracking reference does not resolve to a shipment in this factory');
+    }
+    if (shipmentResult.rows.length > 1) {
+      throw new ConflictException('Carrier tracking reference is ambiguous within this factory');
+    }
+    const shipment = shipmentResult.rows[0]!;
+    if (shipment.status !== 'DISPATCHED') {
+      throw new ConflictException('Carrier delivery events require a dispatched shipment');
+    }
+
+    const idempotencyKey = 'carrier:' + input.connector.id + ':' + input.externalEventId;
+    const correlationId = input.correlationId ?? randomUUID();
+    const requestHash = integrationRequestHash({
+      connector_id: input.connector.id,
+      external_event_id: input.externalEventId,
+      shipment_unit_id: shipment.shipment_unit_id,
+      carrier_name: carrierName,
+      tracking_reference: trackingReference,
+      event_type: eventType,
+      event_at: eventAt.toISOString(),
+      recipient_name: recipientName,
+      proof_type: proofType,
+      proof_reference: proofReference,
+      proof_sha256: proofSha256,
+      signed_at: signedAt?.toISOString() ?? null,
+      notes,
+    });
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO wms_shipment_delivery_events (
+        tenant_id,factory_id,shipment_unit_id,event_type,source_system,event_at,
+        recipient_name,proof_type,proof_reference,proof_sha256,signed_at,notes,
+        idempotency_key,request_hash,recorded_by_user_id,correlation_id
+      ) VALUES ($1,$2,$3,$4,'CARRIER_WEBHOOK',$5::timestamptz,$6,$7,$8,$9,$10::timestamptz,$11,$12,$13,NULL,$14::uuid)
+      RETURNING id::text AS id`,
+      [
+        input.tenantId, input.factoryId, shipment.shipment_unit_id, eventType, eventAt.toISOString(),
+        recipientName, proofType, proofReference, proofSha256, signedAt?.toISOString() ?? null, notes,
+        idempotencyKey, requestHash, correlationId,
+      ],
+    );
+    const eventId = inserted.rows[0]?.id;
+    if (!eventId) throw new Error('WMS_CARRIER_DELIVERY_EVENT_INSERT_FAILED');
+
+    // The signed connector is the actor; do not attribute a provider callback to a human user.
+    // actor_user_id is deliberately NULL and the authenticated connector/event are explicit in payload.
+    await client.query(
+      `INSERT INTO audit_events (
+        tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
+        resource_id,correlation_id,request_id,data_class,payload
+      ) VALUES ($1,$2,NULL,'WMS_FULFILLMENT','RECORDED','WMS_SHIPMENT_DELIVERY_EVENT',$3,$4,NULL,'INTERNAL',$5::jsonb)`,
+      [
+        input.tenantId, input.factoryId, eventId, correlationId,
+        JSON.stringify({
+          shipment_unit_id: shipment.shipment_unit_id,
+          shipment_code: shipment.shipment_code,
+          event_type: eventType,
+          event_at: eventAt.toISOString(),
+          source_system: 'CARRIER_WEBHOOK',
+          connector_id: input.connector.id,
+          external_event_id: input.externalEventId,
+          actor_kind: 'SIGNED_CARRIER_CONNECTOR',
+          proof_type: proofType,
+          proof_reference: proofReference,
+          proof_sha256: proofSha256,
+        }),
+      ],
+    );
+    await client.query(
+      `INSERT INTO outbox_events (
+        tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload
+      ) VALUES ($1,$2,'WMS_SHIPMENT_DELIVERY_EVENT',$3,'WMS.SHIPMENT_DELIVERY_EVENT_RECORDED',$4::jsonb)`,
+      [
+        input.tenantId, input.factoryId, eventId,
+        JSON.stringify({
+          delivery_event_id: eventId,
+          shipment_unit_id: shipment.shipment_unit_id,
+          shipment_code: shipment.shipment_code,
+          event_type: eventType,
+          event_at: eventAt.toISOString(),
+          source_system: 'CARRIER_WEBHOOK',
+          connector_id: input.connector.id,
+          external_event_id: input.externalEventId,
+          proof_type: proofType,
+          proof_reference: proofReference,
+          proof_sha256: proofSha256,
+        }),
+      ],
+    );
   }
 
   async listHistory(userId: string, tenantId: string, factoryId: string, connectorId: string) {
