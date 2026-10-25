@@ -747,12 +747,18 @@ export class TraceabilityService {
           const nodes = new Map<string, { id: string; depth: number }>([
             [String(root.id).toLowerCase(), { id: String(root.id).toLowerCase(), depth: 0 }],
           ]);
+          const graphEdges: Array<{
+            id: string; source_unit_id: string; target_unit_id: string;
+            relationship_type: string; quantity: string;
+          }> = [];
           let frontier = [String(root.id).toLowerCase()];
           for (let currentDepth = 0; currentDepth < depth && frontier.length > 0; currentDepth += 1) {
             const edgeResult = await client.query<QueryResultRow & {
-              source_unit_id: string; target_unit_id: string;
+              id: string; source_unit_id: string; target_unit_id: string;
+              relationship_type: string; quantity: string;
             }>(`
-              SELECT source_unit_id::text AS source_unit_id, target_unit_id::text AS target_unit_id
+              SELECT id::text AS id, source_unit_id::text AS source_unit_id,
+                target_unit_id::text AS target_unit_id, relationship_type, quantity::text AS quantity
               FROM product_genealogy_events
               WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=ANY($3::uuid[])
               ORDER BY source_unit_id, target_unit_id, id
@@ -766,6 +772,13 @@ export class TraceabilityService {
 
             const nextFrontier: string[] = [];
             for (const edge of edgeResult.rows) {
+              graphEdges.push({
+                id: String(edge.id).toLowerCase(),
+                source_unit_id: String(edge.source_unit_id).toLowerCase(),
+                target_unit_id: String(edge.target_unit_id).toLowerCase(),
+                relationship_type: String(edge.relationship_type),
+                quantity: String(edge.quantity),
+              });
               const targetId = String(edge.target_unit_id).toLowerCase();
               if (nodes.has(targetId)) continue;
               if (nodes.size >= limit) {
@@ -810,8 +823,8 @@ export class TraceabilityService {
             throw new ConflictException('Recall declaration refused because genealogy identities changed during assessment');
           }
           const lockedById = new Map(lockedResult.rows.map((row) => [String(row.id).toLowerCase(), row]));
-          const graphFingerprint = this.hash(
-            Array.from(nodes.values())
+          const graphFingerprint = this.hash({
+            units: Array.from(nodes.values())
               .sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id))
               .map((node) => ({
                 unit_id: node.id,
@@ -819,7 +832,8 @@ export class TraceabilityService {
                 unit_code: lockedById.get(node.id)?.unit_code ?? null,
                 status: lockedById.get(node.id)?.status ?? null,
               })),
-          );
+            relationships: graphEdges.sort((a, b) => a.id.localeCompare(b.id)),
+          });
           const caseResult = await client.query<QueryResultRow & {
             id: string; source_unit_id: string; reason: string; max_depth: number;
             node_limit: number; impacted_unit_count: number; impact_fingerprint: string;
