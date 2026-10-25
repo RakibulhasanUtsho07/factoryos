@@ -861,7 +861,7 @@ export class TraceabilityService {
             if (!unit) throw new Error('WMS_RECALL_CASE_UNIT_LOCK_MISSING');
             let unitAction: 'RECALLED' | 'ALREADY_RECALLED' | 'SHIPPED_REVIEW_REQUIRED' | 'ALREADY_DISPOSED';
             let statusEventId: string | null = null;
-            let statusBefore = String(unit.status);
+            const statusBefore = String(unit.status);
 
             if (unit.status === 'ACTIVE' || unit.status === 'QUARANTINED') {
               const update = await client.query<QueryResultRow & { version: string; status: string }>(`
