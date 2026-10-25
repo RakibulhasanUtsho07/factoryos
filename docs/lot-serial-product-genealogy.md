@@ -29,7 +29,9 @@ All routes require authenticated actor, tenant and factory context plus the name
 - `POST /api/v1/traceability/label-templates`, `GET /api/v1/traceability/label-templates` — create/read label templates.
 - `GET /api/v1/traceability/settings`, `PUT /api/v1/traceability/settings` — read/update factory retention and allocation policy using optimistic `expected_version`.
 
-Forward/reverse queries cap depth at 12 and nodes at 500. Relationship `evidence` JSON can hold external quality certificate, inspection and shipment references.
+Forward/reverse/recall-impact queries cap depth at 12 and nodes at 500. Relationship `evidence` JSON can hold external quality certificate, inspection and shipment references.
+
+The recall-impact endpoint requires `traceability.read` and uses the authenticated tenant/factory scope. It never changes stock or identity status and creates no recall record; the response explicitly reports these side effects as false. Treat any node/depth-limit truncation as an incomplete assessment and rerun with appropriate bounded parameters before deciding recall scope. Recall declaration, quarantine/stop-ship decisions, customer notifications/acknowledgements and recall-owner acceptance remain separate operational actions and are not implied by this preview.
 
 ## Work-order production output genealogy (migration 198)
 
