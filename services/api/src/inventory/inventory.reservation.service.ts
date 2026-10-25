@@ -1620,20 +1620,34 @@ export class InventoryReservationService {
       productionReportId: string;
       goodQuantity: string;
       scrapQuantity: string;
+      scrapReason?: string | null;
       yieldPercentage: string;
       cumulativeYieldPercentage: string;
       correlationId: string;
     },
-  ): Promise<{ movementId: string | null; quantityAfter: string | null }> {
-    const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(input.goodQuantity).trim());
-    if (!match) {
-      throw new ConflictException('Finished-good output quantity must use non-negative four-decimal precision');
+  ): Promise<{
+    movementId: string | null;
+    quantityAfter: string | null;
+    traceabilityUnitId: string | null;
+    scrapTraceabilityUnitId: string | null;
+  }> {
+    const parseQuantity = (value: string, name: string): { units: bigint; decimal: string } => {
+      const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
+      if (!match) {
+        throw new ConflictException(name + ' must use non-negative four-decimal precision');
+      }
+      const whole = BigInt(match[1]!);
+      const fraction = BigInt((match[2] ?? '').padEnd(4, '0'));
+      return {
+        units: whole * 10_000n + fraction,
+        decimal: `${whole}.${fraction.toString().padStart(4, '0')}`,
+      };
+    };
+    const good = parseQuantity(input.goodQuantity, 'Finished-good output quantity');
+    const scrap = parseQuantity(input.scrapQuantity, 'Scrap output quantity');
+    if (good.units + scrap.units === 0n) {
+      throw new ConflictException('Production output must include good quantity or scrap quantity');
     }
-    const whole = BigInt(match[1]!);
-    const fraction = BigInt((match[2] ?? '').padEnd(4, '0'));
-    const quantityUnits = whole * 10_000n + fraction;
-    if (quantityUnits === 0n) return { movementId: null, quantityAfter: null };
-    const quantity = `${whole}.${fraction.toString().padStart(4, '0')}`;
 
     const itemResult = await client.query<{ id: string; unit: string; status: string }>(
       `
@@ -1652,98 +1666,565 @@ export class InventoryReservationService {
       throw new ConflictException('Finished-good inventory item must remain active to receive production output');
     }
 
-    // Force the aggregate receipt into the factory's default/UNASSIGNED bucket;
-    // a previous operation in this transaction must never leak a bin selection.
-    await client.query(`SELECT set_config('app.inventory_location_id', '', TRUE)`);
-    const balanceResult = await client.query<{ quantity_on_hand: string }>(
-      `
-      UPDATE inventory_stock_balances
-      SET quantity_on_hand = quantity_on_hand + $1::numeric,
-          version = version + 1,
-          updated_at = clock_timestamp()
-      WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
-        AND quantity_on_hand + $1::numeric >= quantity_reserved
-      RETURNING quantity_on_hand::text AS quantity_on_hand
-      `,
-      [quantity, input.tenantId, input.factoryId, input.finishedItemId],
-    );
-    const balance = balanceResult.rows[0];
-    if (!balance) {
-      throw new ConflictException('Finished-good inventory balance is missing or inconsistent; output was not posted');
+    let movementId: string | null = null;
+    let quantityAfter: string | null = null;
+    if (good.units > 0n) {
+      // Force aggregate receipts into the factory's default/UNASSIGNED bucket;
+      // this cannot inherit a bin selected earlier in the same transaction.
+      await client.query(`SELECT set_config('app.inventory_location_id', '', TRUE)`);
+      const balanceResult = await client.query<{ quantity_on_hand: string }>(
+        `
+        UPDATE inventory_stock_balances
+        SET quantity_on_hand = quantity_on_hand + $1::numeric,
+            version = version + 1,
+            updated_at = clock_timestamp()
+        WHERE tenant_id = $2 AND factory_id = $3 AND item_id = $4
+          AND quantity_on_hand + $1::numeric >= quantity_reserved
+        RETURNING quantity_on_hand::text AS quantity_on_hand
+        `,
+        [good.decimal, input.tenantId, input.factoryId, input.finishedItemId],
+      );
+      const balance = balanceResult.rows[0];
+      if (!balance) {
+        throw new ConflictException('Finished-good inventory balance is missing or inconsistent; output was not posted');
+      }
+
+      const movementKey = `production-output-receipt-${input.productionReportId}`;
+      const movementHash = this.hash({
+        kind: 'PRODUCTION_OUTPUT_RECEIPT',
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        workOrderId: input.workOrderId,
+        productionReportId: input.productionReportId,
+        finishedItemId: input.finishedItemId,
+        goodQuantity: good.decimal,
+      });
+      const movementResult = await client.query<MovementRow>(
+        `
+        INSERT INTO inventory_movements (
+          tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+          quantity_delta, quantity_after, input_quantity, input_unit_code,
+          conversion_rule_id, conversion_factor_numerator, conversion_factor_denominator,
+          conversion_rounding_mode, idempotency_key, request_hash, reference_type,
+          reference_id, notes, created_by_user_id, correlation_id
+        )
+        VALUES (
+          $1, $2, $3, NULL, 'RECEIPT', $4::numeric, $4::numeric, $5::numeric,
+          $4::numeric, $6, NULL, NULL, NULL, NULL, $7, $8,
+          'PRODUCTION_OUTPUT', $9::uuid, $10, $11, $12::uuid
+        )
+        RETURNING id::text AS id, quantity_after::text AS quantity_after
+        `,
+        [
+          input.tenantId, input.factoryId, input.finishedItemId, good.decimal,
+          balance.quantity_on_hand, item.unit, movementKey, movementHash,
+          input.productionReportId,
+          input.workOrderId
+            ? `Finished-good receipt for work order ${input.workOrderNumber}`
+            : `Finished-good receipt for order ${input.orderNumber}, line ${input.orderLineId}`,
+          input.userId, input.correlationId,
+        ],
+      );
+      const movement = movementResult.rows[0];
+      if (!movement) throw new Error('PRODUCTION_FINISHED_GOOD_RECEIPT_INSERT_FAILED');
+      movementId = movement.id;
+      quantityAfter = movement.quantity_after;
+
+      await this.insertOutboxEvent(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        aggregateId: input.finishedItemId,
+        eventType: 'INVENTORY.STOCK_RECEIVED',
+        correlationId: input.correlationId,
+        userId: input.userId,
+        payload: {
+          purpose: 'PRODUCTION_OUTPUT',
+          work_order_id: input.workOrderId,
+          work_order_number: input.workOrderNumber,
+          order_id: input.orderId,
+          order_number: input.orderNumber,
+          order_line_id: input.orderLineId,
+          production_report_id: input.productionReportId,
+          good_quantity: good.decimal,
+          scrap_quantity: scrap.decimal,
+          yield_percentage: input.yieldPercentage,
+          cumulative_yield_percentage: input.cumulativeYieldPercentage,
+          movement: {
+            id: movement.id,
+            item_id: input.finishedItemId,
+            location_id: null,
+            movement_type: 'RECEIPT',
+            quantity: good.decimal,
+            quantity_delta: good.decimal,
+            quantity_after: movement.quantity_after,
+            reference_type: 'PRODUCTION_OUTPUT',
+            reference_id: input.productionReportId,
+          },
+        },
+      });
     }
 
-    const movementKey = `production-output-receipt-${input.productionReportId}`;
-    const movementHash = this.hash({
-      kind: 'PRODUCTION_OUTPUT_RECEIPT',
-      tenantId: input.tenantId,
-      factoryId: input.factoryId,
-      workOrderId: input.workOrderId,
-      productionReportId: input.productionReportId,
-      finishedItemId: input.finishedItemId,
-      goodQuantity: quantity,
+    let traceabilityUnitId: string | null = null;
+    if (good.units > 0n) {
+      traceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        userId: input.userId,
+        correlationId: input.correlationId,
+        unitType: 'LOT',
+        productRole: 'FINISHED_GOOD',
+        unitCode: `FG-${input.productionReportId.toUpperCase()}`,
+        idempotencyKey: `production-report:${input.productionReportId}:finished-good-lot:v1`,
+        inventoryItemId: input.finishedItemId,
+        quantity: good.decimal,
+        unit: item.unit,
+        orderId: input.orderId,
+        orderLineId: input.orderLineId,
+        productionReportId: input.productionReportId,
+        attributes: {
+          kind: 'PRODUCTION_FINISHED_GOOD',
+          work_order_id: input.workOrderId,
+          work_order_number: input.workOrderNumber,
+          production_report_id: input.productionReportId,
+          source_movement_id: movementId,
+          sellable: true,
+        },
+      });
+
+      // Finished-good lot stock shares the existing default virtual location with
+      // the aggregate ledger. The capacity predicate prevents identity registration
+      // from assigning stock already represented by another traceable identity.
+      const trackedBalance = await client.query<{ id: string }>(
+        `
+        INSERT INTO inventory_traceability_location_balances (
+          tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand
+        )
+        SELECT $1, $2, $3, $4, l.id, $5::numeric
+        FROM inventory_locations l
+        JOIN inventory_location_balances lb
+          ON lb.tenant_id = l.tenant_id AND lb.factory_id = l.factory_id
+         AND lb.location_id = l.id AND lb.item_id = $3
+        WHERE l.tenant_id = $1 AND l.factory_id = $2
+          AND l.is_default = TRUE AND l.location_type = 'VIRTUAL' AND l.status = 'ACTIVE'
+          AND lb.quantity_on_hand - COALESCE((
+            SELECT SUM(tlb.quantity_on_hand)
+            FROM inventory_traceability_location_balances tlb
+            WHERE tlb.tenant_id = $1 AND tlb.factory_id = $2
+              AND tlb.item_id = $3 AND tlb.location_id = l.id
+          ), 0) >= $5::numeric
+        RETURNING id::text AS id
+        `,
+        [input.tenantId, input.factoryId, input.finishedItemId, traceabilityUnitId, good.decimal],
+      );
+      if (!trackedBalance.rows[0]) {
+        throw new ConflictException('Finished-good lot could not be bound to unassigned stock without exceeding tracked location quantity');
+      }
+    }
+
+    let scrapTraceabilityUnitId: string | null = null;
+    if (scrap.units > 0n) {
+      scrapTraceabilityUnitId = await this.createProductionTraceabilityIdentity(client, {
+        tenantId: input.tenantId,
+        factoryId: input.factoryId,
+        userId: input.userId,
+        correlationId: input.correlationId,
+        unitType: 'LOT',
+        productRole: 'OTHER',
+        unitCode: `SCRAP-${input.productionReportId.toUpperCase()}`,
+        idempotencyKey: `production-report:${input.productionReportId}:scrap-lot:v1`,
+        inventoryItemId: null,
+        quantity: scrap.decimal,
+        unit: item.unit,
+        orderId: null,
+        orderLineId: null,
+        productionReportId: null,
+        attributes: {
+          kind: 'PRODUCTION_SCRAP',
+          production_report_id: input.productionReportId,
+          work_order_id: input.workOrderId,
+          finished_item_id: input.finishedItemId,
+          scrap_reason: input.scrapReason?.trim() || null,
+          sellable: false,
+        },
+      });
+    }
+
+    return { movementId, quantityAfter, traceabilityUnitId, scrapTraceabilityUnitId };
+  }
+
+  /**
+   * Register a report-derived lot/scrap identity under the caller's PostgreSQL
+   * transaction. The same transaction also persists the required audit and outbox
+   * evidence; deferred traceability constraints then prevent partial registration.
+   */
+  private async createProductionTraceabilityIdentity(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      factoryId: string;
+      userId: string;
+      correlationId: string;
+      unitType: 'LOT';
+      productRole: 'FINISHED_GOOD' | 'OTHER';
+      unitCode: string;
+      idempotencyKey: string;
+      inventoryItemId: string | null;
+      quantity: string;
+      unit: string;
+      orderId: string | null;
+      orderLineId: string | null;
+      productionReportId: string | null;
+      attributes: Record<string, unknown>;
+    },
+  ): Promise<string> {
+    const requestHash = this.hash({
+      unit_type: input.unitType,
+      product_role: input.productRole,
+      unit_code: input.unitCode,
+      barcode_value: input.unitCode,
+      inventory_item_id: input.inventoryItemId,
+      quantity: input.quantity,
+      unit: input.unit,
+      order_id: input.orderId,
+      order_line_id: input.orderLineId,
+      production_report_id: input.productionReportId,
+      attributes: input.attributes,
     });
-    const movementResult = await client.query<MovementRow>(
+    const inserted = await client.query<{ id: string }>(
       `
-      INSERT INTO inventory_movements (
-        tenant_id, factory_id, item_id, location_id, movement_type, quantity,
-        quantity_delta, quantity_after, input_quantity, input_unit_code,
-        conversion_rule_id, conversion_factor_numerator, conversion_factor_denominator,
-        conversion_rounding_mode, idempotency_key, request_hash, reference_type,
-        reference_id, notes, created_by_user_id, correlation_id
+      INSERT INTO traceability_units (
+        tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
+        inventory_item_id, quantity, unit, order_id, order_line_id, production_report_id,
+        attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
+      ) VALUES (
+        $1, $2, $3, $4, $5, $5, $6, $7::numeric, $8, $9::uuid, $10::uuid, $11::uuid,
+        $12::jsonb, $13, $14, $15, $16::uuid
       )
-      VALUES (
-        $1, $2, $3, NULL, 'RECEIPT', $4::numeric, $4::numeric, $5::numeric,
-        $4::numeric, $6, NULL, NULL, NULL, NULL, $7, $8,
-        'PRODUCTION_OUTPUT', $9::uuid, $10, $11, $12::uuid
-      )
-      RETURNING id::text AS id, quantity_after::text AS quantity_after
+      RETURNING id::text AS id
       `,
       [
-        input.tenantId, input.factoryId, input.finishedItemId, quantity,
-        balance.quantity_on_hand, item.unit, movementKey, movementHash,
-        input.productionReportId,
-        input.workOrderId
-          ? `Finished-good receipt for work order ${input.workOrderNumber}`
-          : `Finished-good receipt for order ${input.orderNumber}, line ${input.orderLineId}`,
-        input.userId, input.correlationId,
+        input.tenantId, input.factoryId, input.unitType, input.productRole, input.unitCode,
+        input.inventoryItemId, input.quantity, input.unit, input.orderId, input.orderLineId,
+        input.productionReportId, JSON.stringify(input.attributes), input.idempotencyKey,
+        requestHash, input.userId, input.correlationId,
       ],
     );
-    const movement = movementResult.rows[0];
-    if (!movement) throw new Error('PRODUCTION_FINISHED_GOOD_RECEIPT_INSERT_FAILED');
+    const id = inserted.rows[0]?.id;
+    if (!id) throw new Error('PRODUCTION_TRACEABILITY_UNIT_INSERT_FAILED');
 
-    await this.insertOutboxEvent(client, {
-      tenantId: input.tenantId,
-      factoryId: input.factoryId,
-      aggregateId: input.finishedItemId,
-      eventType: 'INVENTORY.STOCK_RECEIVED',
-      correlationId: input.correlationId,
-      userId: input.userId,
-      payload: {
-        purpose: 'PRODUCTION_OUTPUT',
-        work_order_id: input.workOrderId,
-        work_order_number: input.workOrderNumber,
-        order_id: input.orderId,
-        order_number: input.orderNumber,
-        order_line_id: input.orderLineId,
-        production_report_id: input.productionReportId,
-        good_quantity: quantity,
-        scrap_quantity: input.scrapQuantity,
-        yield_percentage: input.yieldPercentage,
-        cumulative_yield_percentage: input.cumulativeYieldPercentage,
-        movement: {
-          id: movement.id,
-          item_id: input.finishedItemId,
-          location_id: null,
-          movement_type: 'RECEIPT',
+    const auditPayload = {
+      unit_type: input.unitType,
+      product_role: input.productRole,
+      unit_code: input.unitCode,
+      inventory_item_id: input.inventoryItemId,
+      quantity: input.quantity,
+      unit: input.unit,
+      order_id: input.orderId,
+      order_line_id: input.orderLineId,
+      production_report_id: input.productionReportId,
+      attributes: input.attributes,
+    };
+    await client.query(
+      `
+      INSERT INTO audit_events (
+        tenant_id, factory_id, actor_user_id, event_type, action, resource_type,
+        resource_id, correlation_id, request_id, data_class, payload
+      ) VALUES ($1, $2, $3, 'TRACEABILITY', 'REGISTERED', 'TRACEABILITY_UNIT',
+        $4, $5::uuid, NULL, 'INTERNAL', $6::jsonb)
+      `,
+      [input.tenantId, input.factoryId, input.userId, id, input.correlationId, JSON.stringify(auditPayload)],
+    );
+    await client.query(
+      `
+      INSERT INTO outbox_events (
+        tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+      ) VALUES ($1, $2, 'TRACEABILITY_UNIT', $3, 'TRACEABILITY.UNIT_REGISTERED', $4::jsonb)
+      `,
+      [input.tenantId, input.factoryId, id, JSON.stringify({ unit_id: id, ...auditPayload })],
+    );
+    return id;
+  }
+
+  /**
+   * Link actual consumed material lot/serial allocations to each output lot in
+   * the same transaction as work-order completion. Input quantities remain in
+   * the source material UOM; a documented proportional allocation apportions
+   * them over reported good and scrap quantities without losing four-decimal units.
+   */
+  async recordWorkOrderOutputGenealogy(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrderId: string;
+      correlationId: string;
+    },
+  ): Promise<{ genealogyEventCount: number; traceabilityAllocationCount: number }> {
+    const outputs = await client.query<{
+      posting_id: string;
+      production_report_id: string;
+      finished_item_id: string;
+      traceability_unit_id: string | null;
+      scrap_traceability_unit_id: string | null;
+      good_quantity: string;
+      scrap_quantity: string;
+    }>(
+      `
+      SELECT p.id::text AS posting_id, r.id::text AS production_report_id,
+        p.finished_item_id::text AS finished_item_id,
+        p.traceability_unit_id::text AS traceability_unit_id,
+        p.scrap_traceability_unit_id::text AS scrap_traceability_unit_id,
+        r.good_quantity::text AS good_quantity, r.scrap_quantity::text AS scrap_quantity
+      FROM order_production_reports r
+      JOIN production_output_postings p
+        ON p.production_report_id = r.id AND p.tenant_id = r.tenant_id AND p.factory_id = r.factory_id
+      WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.work_order_id = $3
+      ORDER BY p.created_at, p.id
+      FOR UPDATE OF r, p
+      `,
+      [input.tenantId, input.factoryId, input.workOrderId],
+    );
+    if (outputs.rows.length === 0) {
+      throw new ConflictException('Work-order output genealogy cannot be completed without posted output reports');
+    }
+
+    const parseUnits = (value: string, name: string): bigint => {
+      const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(String(value).trim());
+      if (!match) throw new ConflictException(name + ' must use non-negative four-decimal precision');
+      return BigInt(match[1]!) * 10_000n + BigInt((match[2] ?? '').padEnd(4, '0'));
+    };
+    const toDecimal = (units: bigint): string =>
+      `${units / 10_000n}.${String(units % 10_000n).padStart(4, '0')}`;
+
+    type GenealogyTarget = {
+      unitId: string;
+      reportId: string;
+      postingId: string;
+      finishedItemId: string;
+      quantityUnits: bigint;
+      relationshipType: 'CONSUMED_INTO' | 'PROCESSED_INTO';
+      targetKind: 'FINISHED_GOOD' | 'SCRAP';
+    };
+    const targets: GenealogyTarget[] = [];
+    for (const output of outputs.rows) {
+      const goodUnits = parseUnits(output.good_quantity, 'good_quantity');
+      const scrapUnits = parseUnits(output.scrap_quantity, 'scrap_quantity');
+      if (goodUnits > 0n) {
+        if (!output.traceability_unit_id) {
+          throw new ConflictException('A work-order output report is missing its finished-good traceability lot; completion is blocked');
+        }
+        targets.push({
+          unitId: output.traceability_unit_id,
+          reportId: output.production_report_id,
+          postingId: output.posting_id,
+          finishedItemId: output.finished_item_id,
+          quantityUnits: goodUnits,
+          relationshipType: 'CONSUMED_INTO',
+          targetKind: 'FINISHED_GOOD',
+        });
+      } else if (output.traceability_unit_id) {
+        throw new ConflictException('A scrap-only production report cannot link to a sellable finished-good lot');
+      }
+      if (scrapUnits > 0n) {
+        if (!output.scrap_traceability_unit_id) {
+          throw new ConflictException('A work-order output report is missing its scrap traceability identity; completion is blocked');
+        }
+        targets.push({
+          unitId: output.scrap_traceability_unit_id,
+          reportId: output.production_report_id,
+          postingId: output.posting_id,
+          finishedItemId: output.finished_item_id,
+          quantityUnits: scrapUnits,
+          relationshipType: 'PROCESSED_INTO',
+          targetKind: 'SCRAP',
+        });
+      } else if (output.scrap_traceability_unit_id) {
+        throw new ConflictException('A zero-scrap production report cannot link to a scrap identity');
+      }
+    }
+    const totalOutputUnits = targets.reduce((sum, target) => sum + target.quantityUnits, 0n);
+    if (targets.length === 0 || totalOutputUnits <= 0n) {
+      throw new ConflictException('Output genealogy requires positive reported good or scrap quantity');
+    }
+
+    const sources = await client.query<{
+      allocation_id: string;
+      consumption_id: string;
+      reservation_id: string;
+      item_id: string;
+      source_unit_id: string;
+      source_unit_code: string;
+      source_unit: string;
+      source_location_id: string;
+      consumed_quantity: string;
+      source_created_at: string;
+      consumption_created_at: string;
+    }>(
+      `
+      SELECT ca.id::text AS allocation_id, c.id::text AS consumption_id,
+        c.reservation_id::text AS reservation_id, c.item_id::text AS item_id,
+        tu.id::text AS source_unit_id, tu.unit_code AS source_unit_code, tu.unit,
+        ca.location_id::text AS source_location_id,
+        ca.quantity::text AS consumed_quantity, tu.created_at::text AS source_created_at,
+        c.created_at::text AS consumption_created_at
+      FROM inventory_reservation_consumption_traceability_allocations ca
+      JOIN inventory_reservation_consumptions c
+        ON c.id = ca.consumption_id AND c.tenant_id = ca.tenant_id AND c.factory_id = ca.factory_id
+      JOIN work_order_material_reservations mr
+        ON mr.reservation_id = c.reservation_id AND mr.tenant_id = c.tenant_id AND mr.factory_id = c.factory_id
+      JOIN traceability_units tu
+        ON tu.id = ca.traceability_unit_id AND tu.tenant_id = ca.tenant_id AND tu.factory_id = ca.factory_id
+      JOIN inventory_items i
+        ON i.id = c.item_id AND i.tenant_id = c.tenant_id AND i.factory_id = c.factory_id
+      LEFT JOIN goods_receipts gr
+        ON gr.id = tu.goods_receipt_id AND gr.tenant_id = tu.tenant_id AND gr.factory_id = tu.factory_id
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = c.tenant_id AND p.factory_id = c.factory_id
+             AND p.policy_scope = 'MATERIAL' AND p.inventory_item_id = c.item_id),
+          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = c.tenant_id AND p.factory_id = c.factory_id
+             AND p.policy_scope = 'SECTOR' AND lower(p.sector_code) = lower(i.sector_code)),
+          (SELECT p.allocation_policy FROM inventory_material_allocation_policies p
+           WHERE p.tenant_id = c.tenant_id AND p.factory_id = c.factory_id
+             AND p.policy_scope = 'FACTORY'),
+          (SELECT ts.allocation_policy FROM traceability_settings ts
+           WHERE ts.tenant_id = c.tenant_id AND ts.factory_id = c.factory_id),
+          'FIFO'
+        ) AS allocation_policy
+      ) effective_policy ON TRUE
+      WHERE mr.work_order_id = $1 AND mr.tenant_id = $2 AND mr.factory_id = $3
+        AND tu.product_role = 'MATERIAL' AND tu.unit_type IN ('LOT', 'SERIAL')
+      ORDER BY c.item_id,
+        CASE WHEN effective_policy.allocation_policy = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
+        COALESCE(gr.posted_at, gr.received_at, tu.created_at),
+        lower(tu.unit_code), ca.location_id, tu.id,
+        c.created_at, ca.created_at, ca.id
+      FOR UPDATE OF ca, tu
+      `,
+      [input.workOrderId, input.tenantId, input.factoryId],
+    );
+
+    let genealogyEventCount = 0;
+    for (const source of sources.rows) {
+      const consumedUnits = parseUnits(source.consumed_quantity, 'consumed material quantity');
+      if (consumedUnits <= 0n) {
+        throw new ConflictException('Consumed material genealogy quantity must be positive');
+      }
+      let remainingUnits = consumedUnits;
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index]!;
+        const allocationUnits = index === targets.length - 1
+          ? remainingUnits
+          : (consumedUnits * target.quantityUnits) / totalOutputUnits;
+        if (allocationUnits < 0n || allocationUnits > remainingUnits) {
+          throw new ConflictException('Material-to-output genealogy allocation exceeded the consumed input quantity');
+        }
+        remainingUnits -= allocationUnits;
+        if (allocationUnits === 0n) continue;
+
+        const quantity = toDecimal(allocationUnits);
+        const key = `wo:${input.workOrderId}:consumption:${source.consumption_id}:allocation:${source.allocation_id}:target:${target.unitId}:v1`;
+        const evidence = {
+          source: 'WORK_ORDER_MATERIAL_CONSUMPTION',
+          allocation_method: 'PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_QUANTITY_V1',
+          work_order_id: input.workOrderId,
+          reservation_id: source.reservation_id,
+          consumption_id: source.consumption_id,
+          consumption_traceability_allocation_id: source.allocation_id,
+          source_inventory_item_id: source.item_id,
+          source_unit_code: source.source_unit_code,
+          source_location_id: source.source_location_id,
+          source_quantity: quantity,
+          source_unit: source.source_unit,
+          production_report_id: target.reportId,
+          production_output_posting_id: target.postingId,
+          finished_item_id: target.finishedItemId,
+          output_identity_kind: target.targetKind,
+          output_quantity_weight: toDecimal(target.quantityUnits),
+        };
+        const requestHash = this.hash({
+          tenantId: input.tenantId,
+          factoryId: input.factoryId,
+          sourceUnitId: source.source_unit_id,
+          targetUnitId: target.unitId,
+          relationshipType: target.relationshipType,
           quantity,
-          quantity_delta: quantity,
-          quantity_after: movement.quantity_after,
-          reference_type: 'PRODUCTION_OUTPUT',
-          reference_id: input.productionReportId,
-        },
-      },
-    });
-    return { movementId: movement.id, quantityAfter: movement.quantity_after };
+          evidence,
+        });
+        const existing = await client.query<{ id: string; request_hash: string }>(
+          `
+          SELECT id::text AS id, request_hash
+          FROM product_genealogy_events
+          WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+          FOR UPDATE
+          `,
+          [input.tenantId, input.factoryId, key],
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].request_hash.trim() !== requestHash) {
+            throw new ConflictException('A production genealogy idempotency key was reused with different evidence');
+          }
+          continue;
+        }
+
+        const inserted = await client.query<{ id: string }>(
+          `
+          INSERT INTO product_genealogy_events (
+            tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
+            quantity, unit, evidence, notes, idempotency_key, request_hash,
+            created_by_user_id, correlation_id
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6::numeric, $7, $8::jsonb, $9, $10, $11, $12, $13::uuid
+          )
+          RETURNING id::text AS id
+          `,
+          [
+            input.tenantId, input.factoryId, source.source_unit_id, target.unitId,
+            target.relationshipType, quantity, source.source_unit, JSON.stringify(evidence),
+            `Work-order ${input.workOrderId} consumed material lot ${source.source_unit_code} into ${target.targetKind.toLowerCase()} output`,
+            key, requestHash, input.userId, input.correlationId,
+          ],
+        );
+        const eventId = inserted.rows[0]?.id;
+        if (!eventId) throw new Error('PRODUCTION_OUTPUT_GENEALOGY_INSERT_FAILED');
+
+        await client.query(
+          `
+          INSERT INTO audit_events (
+            tenant_id, factory_id, actor_user_id, event_type, action, resource_type,
+            resource_id, correlation_id, request_id, data_class, payload
+          ) VALUES ($1, $2, $3, 'TRACEABILITY', 'RECORDED', 'PRODUCT_GENEALOGY_EVENT',
+            $4, $5::uuid, NULL, 'INTERNAL', $6::jsonb)
+          `,
+          [input.tenantId, input.factoryId, input.userId, eventId, input.correlationId, JSON.stringify(evidence)],
+        );
+        await client.query(
+          `
+          INSERT INTO outbox_events (
+            tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+          ) VALUES ($1, $2, 'PRODUCT_GENEALOGY_EVENT', $3, 'TRACEABILITY.GENEALOGY_RECORDED', $4::jsonb)
+          `,
+          [input.tenantId, input.factoryId, eventId, JSON.stringify({
+            genealogy_event_id: eventId,
+            source_unit_id: source.source_unit_id,
+            target_unit_id: target.unitId,
+            relationship_type: target.relationshipType,
+            quantity,
+            unit: source.source_unit,
+            evidence,
+          })],
+        );
+        genealogyEventCount += 1;
+      }
+      if (remainingUnits !== 0n) {
+        throw new ConflictException('Consumed material quantity was not fully allocated across output genealogy targets');
+      }
+    }
+
+    return { genealogyEventCount, traceabilityAllocationCount: sources.rows.length };
   }
 
   /**
