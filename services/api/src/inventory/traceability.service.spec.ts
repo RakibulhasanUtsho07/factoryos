@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
-  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityUnitDto, UpdateTraceabilitySettingsDto,
+  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityUnitDto, DispatchTraceabilityShipmentDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 
@@ -28,6 +28,18 @@ describe('TraceabilityService input contracts', () => {
   it('requires idempotency before opening a transaction', async () => {
     await expect(service.createUnit(
       USER_ID, TENANT_ID, FACTORY_ID, validUnit(), null, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('requires an idempotency key and valid staging UUID before opening shipment-dispatch transaction', async () => {
+    const dispatch: DispatchTraceabilityShipmentDto = { source_location_id: UNIT_ID };
+    await expect(service.dispatchShipment(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, dispatch, null, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.dispatchShipment(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, { source_location_id: 'not-a-uuid' } as never,
+      'dispatch-invalid-location', null, null,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
