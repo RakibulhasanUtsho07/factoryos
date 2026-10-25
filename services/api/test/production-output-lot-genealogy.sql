@@ -8,6 +8,7 @@ DECLARE
   v_index_count INTEGER;
   v_trigger_enabled BOOLEAN;
   v_function_source TEXT;
+  v_genealogy_function_source TEXT;
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
@@ -85,6 +86,18 @@ BEGIN
       AND c.relrowsecurity AND c.relforcerowsecurity
   ) THEN
     RAISE EXCEPTION 'output genealogy must preserve forced tenant RLS on traceability identities and genealogy edges';
+  END IF;
+
+  SELECT pg_get_functiondef('factoryos_guard_product_genealogy_event()'::regprocedure)
+  INTO v_genealogy_function_source;
+
+  IF position('inventory_material_allocation_policies' IN v_genealogy_function_source) = 0
+    OR position('policy_scope = ''SECTOR''' IN v_genealogy_function_source) = 0
+    OR position('tlb.quantity_on_hand > tlb.quantity_reserved' IN v_genealogy_function_source) = 0
+    OR position('COALESCE(gr.posted_at, gr.received_at, u.created_at)' IN v_genealogy_function_source) = 0
+    OR position('v_source_type' IN v_genealogy_function_source) = 0
+  THEN
+    RAISE EXCEPTION 'genealogy guard must align item/sector/factory FIFO/FEFO policy with eligible unreserved bin stock';
   END IF;
 END $$;
 
