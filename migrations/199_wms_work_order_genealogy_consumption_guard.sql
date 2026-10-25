@@ -34,7 +34,14 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF COALESCE(NEW.evidence->>'output_quantity_weight', '') !~ '^[0-9]+(\\.[0-9]{1,4})?
+  IF COALESCE(NEW.evidence->>'output_quantity_weight', '') !~ '^[0-9]+(\.[0-9]{1,4})?$' THEN
+    RAISE EXCEPTION 'work-order genealogy must include a valid four-decimal output quantity weight'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF v_output.report_work_order_id IS DISTINCT FROM v_output.work_order_id
+     OR NEW.relationship_type <> CASE WHEN v_output.target_kind = 'FINISHED_GOOD'
+                                      THEN 'CONSUMED_INTO' ELSE 'PROCESSED_INTO' END
      OR NEW.evidence->>'source' IS DISTINCT FROM 'WORK_ORDER_MATERIAL_CONSUMPTION'
      OR NEW.evidence->>'work_order_id' IS DISTINCT FROM v_output.work_order_id::text
      OR NEW.evidence->>'production_report_id' IS DISTINCT FROM v_output.production_report_id::text
