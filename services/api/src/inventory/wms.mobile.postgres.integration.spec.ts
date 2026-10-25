@@ -470,14 +470,14 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
     try {
       await adminPool.query(`
         CREATE FUNCTION public.${functionName}() RETURNS trigger
-        LANGUAGE plpgsql AS $
+        LANGUAGE plpgsql AS $wms_test$
         BEGIN
           IF NEW.device_id LIKE 'WMS-RECEIPT-RECOVERY-%' THEN
             RAISE EXCEPTION 'simulated interruption after stock commit' USING ERRCODE = 'P0001';
           END IF;
           RETURN NEW;
         END;
-        $
+        $wms_test$
       `);
       await adminPool.query(`
         CREATE TRIGGER ${triggerName}
