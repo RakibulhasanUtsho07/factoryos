@@ -1441,7 +1441,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     await adminPool.query(
       `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
-       VALUES ($1,$2,$3,$4,$5,3.0000)`,
+       VALUES ($1,$2,$3,$4,$5,2.0000)`,
       [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
     );
     await locationService.transferStock(
@@ -1684,7 +1684,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     await adminPool.query(
       `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
-       VALUES ($1,$2,$3,$4,$5,2.0000)`,
+       VALUES ($1,$2,$3,$4,$5,3.0000)`,
       [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
     );
     await locationService.transferStock(
@@ -1753,7 +1753,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-order-pod-overship-' + randomUUID(), requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
     const balanceAfterRejectedOrder = await readAggregate(fixture.factoryId, fixture.itemId);
-    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('2.0000');
+    // Rejected order-line validation must not consume any of the initial three units.
+    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('3.0000');
 
     const validReference = 'CUSTOMER-ORDER-VALID-' + randomUUID().slice(0, 8);
     const validOrder = await createOrderLine(2, validReference);
