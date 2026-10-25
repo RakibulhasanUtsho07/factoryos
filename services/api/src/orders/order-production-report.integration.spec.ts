@@ -133,6 +133,8 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
         'inventory_movements',
         'inventory_stock_balances',
         'inventory_location_balances',
+        'inventory_traceability_location_balances',
+        'traceability_units',
       ];
       for (const table of triggerTables) {
         await pool.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
@@ -158,6 +160,38 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
            WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])
              AND reference_type = 'PRODUCTION_OUTPUT'`,
           [tenantId, factoryId, itemIds],
+        );
+        // Output postings now hold immutable report-derived traceability lots.
+        // Remove only these random integration fixtures and their tracked-location
+        // balances before deleting the source reports; production data is untouched.
+        await pool.query(
+          `DELETE FROM inventory_traceability_location_balances
+           WHERE tenant_id = $1 AND factory_id = $2
+             AND traceability_unit_id IN (
+               SELECT u.id
+               FROM traceability_units u
+               WHERE u.tenant_id = $1 AND u.factory_id = $2
+                 AND u.production_report_id IN (
+                   SELECT r.id FROM order_production_reports r
+                   WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
+                 )
+             )`,
+          [tenantId, factoryId, orderIds],
+        );
+        await pool.query(
+          `DELETE FROM traceability_units u
+           WHERE u.tenant_id = $1 AND u.factory_id = $2
+             AND (
+               u.production_report_id IN (
+                 SELECT r.id FROM order_production_reports r
+                 WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
+               )
+               OR u.attributes->>'production_report_id' IN (
+                 SELECT r.id::text FROM order_production_reports r
+                 WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
+               )
+             )`,
+          [tenantId, factoryId, orderIds],
         );
         await pool.query(
           'DELETE FROM order_production_reports WHERE tenant_id = $1 AND factory_id = $2 AND order_id = ANY($3::uuid[])',
@@ -212,12 +246,70 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
     expect(created.cumulative_scrap_quantity).toBe('1.0000');
     expect(created.yield_percent).toBe('75.0000');
     expect(created.replayed).toBe(false);
+    expect(created.finished_good_traceability_unit_id).toBeTruthy();
+    expect(created.scrap_traceability_unit_id).toBeTruthy();
+
+    const linkedOutput = await pool.query<{
+      finished_good_traceability_unit_id: string | null;
+      scrap_traceability_unit_id: string | null;
+      finished_good_report_id: string | null;
+      finished_good_role: string | null;
+      finished_good_quantity: string | null;
+      finished_good_item_matches: boolean;
+      finished_good_tracked_quantity: string | null;
+      scrap_role: string | null;
+      scrap_quantity: string | null;
+      scrap_item_id: string | null;
+      scrap_kind: string | null;
+      scrap_report_id: string | null;
+    }>(`
+      SELECT p.traceability_unit_id::text AS finished_good_traceability_unit_id,
+        p.scrap_traceability_unit_id::text AS scrap_traceability_unit_id,
+        fg.production_report_id::text AS finished_good_report_id,
+        fg.product_role AS finished_good_role,
+        fg.quantity::text AS finished_good_quantity,
+        fg.inventory_item_id = p.finished_item_id AS finished_good_item_matches,
+        (SELECT COALESCE(SUM(tlb.quantity_on_hand), 0)::text
+         FROM inventory_traceability_location_balances tlb
+         WHERE tlb.tenant_id = p.tenant_id AND tlb.factory_id = p.factory_id
+           AND tlb.item_id = p.finished_item_id AND tlb.traceability_unit_id = fg.id) AS finished_good_tracked_quantity,
+        scrap.product_role AS scrap_role,
+        scrap.quantity::text AS scrap_quantity,
+        scrap.inventory_item_id::text AS scrap_item_id,
+        scrap.attributes->>'kind' AS scrap_kind,
+        scrap.attributes->>'production_report_id' AS scrap_report_id
+      FROM production_output_postings p
+      JOIN traceability_units fg
+        ON fg.id = p.traceability_unit_id
+       AND fg.tenant_id = p.tenant_id AND fg.factory_id = p.factory_id
+      JOIN traceability_units scrap
+        ON scrap.id = p.scrap_traceability_unit_id
+       AND scrap.tenant_id = p.tenant_id AND scrap.factory_id = p.factory_id
+      WHERE p.tenant_id = $1 AND p.factory_id = $2 AND p.production_report_id = $3
+    `, [tenantId, factoryId, created.id]);
+    expect(linkedOutput.rows).toHaveLength(1);
+    expect(linkedOutput.rows[0]).toMatchObject({
+      finished_good_traceability_unit_id: created.finished_good_traceability_unit_id,
+      scrap_traceability_unit_id: created.scrap_traceability_unit_id,
+      finished_good_report_id: created.id,
+      finished_good_role: 'FINISHED_GOOD',
+      finished_good_quantity: '3.0000',
+      finished_good_item_matches: true,
+      finished_good_tracked_quantity: '3.0000',
+      scrap_role: 'OTHER',
+      scrap_quantity: '1.0000',
+      scrap_item_id: null,
+      scrap_kind: 'PRODUCTION_SCRAP',
+      scrap_report_id: created.id,
+    });
 
     const replay = await service.createReport(
       TEST_USER_ID, tenantId, factoryId, fixture.orderId, dto, 'yield-report-001', randomUUID(), randomUUID(),
     );
     expect(replay.id).toBe(created.id);
     expect(replay.cumulative_good_quantity).toBe(created.cumulative_good_quantity);
+    expect(replay.finished_good_traceability_unit_id).toBe(created.finished_good_traceability_unit_id);
+    expect(replay.scrap_traceability_unit_id).toBe(created.scrap_traceability_unit_id);
     expect(replay.replayed).toBe(true);
 
     await expect(service.createReport(
