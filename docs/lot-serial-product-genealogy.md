@@ -31,7 +31,7 @@ All routes require authenticated actor, tenant and factory context plus the name
 
 Forward/reverse/recall-impact queries cap depth at 12 and nodes at 500. Relationship `evidence` JSON can hold external quality certificate, inspection and shipment references.
 
-The recall-impact endpoint requires `traceability.read` and uses the authenticated tenant/factory scope. It never changes stock or identity status and creates no recall record; the response explicitly reports these side effects as false. Treat any node/depth-limit truncation as an incomplete assessment and rerun with appropriate bounded parameters before deciding recall scope. Recall declaration, quarantine/stop-ship decisions, customer notifications/acknowledgements and recall-owner acceptance remain separate operational actions and are not implied by this preview.
+The recall-impact endpoint requires `traceability.read` and uses the authenticated tenant/factory scope. It never changes stock or identity status and creates no recall record; the response explicitly reports these side effects as false. The response distinguishes `impact_node_limit_reached` / `provenance_node_limit_reached` from `impact_depth_truncated` / `provenance_depth_truncated`; the combined `impact_truncated` and `provenance_truncated` flags are true when either limit prevents a complete traversal. Treat any truncation as an incomplete assessment and rerun with appropriate bounded parameters before deciding recall scope. Recall declaration, quarantine/stop-ship decisions, customer notifications/acknowledgements and recall-owner acceptance remain separate operational actions and are not implied by this preview.
 
 ## Work-order production output genealogy (migration 198)
 
