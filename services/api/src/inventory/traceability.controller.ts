@@ -9,7 +9,8 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto,
-  CreateTraceabilityUnitDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
+  CreateTraceabilityUnitDto, DeclareTraceabilityRecallDto, CreateRecallNotificationIntentDto,
+  RecordRecallNotificationAcknowledgementDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 import { WmsFulfillmentService } from './wms-fulfillment.service';
@@ -81,6 +82,88 @@ export class TraceabilityController {
       rawDepth === undefined ? undefined : Number(rawDepth),
       rawLimit === undefined ? undefined : Number(rawLimit));
   }
+
+  @Get('units/:unitId/recall-impact')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async recallImpact(@Req() request: TraceabilityRequest,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+    @Query('depth') rawDepth?: string, @Query('limit') rawLimit?: string) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.recallImpact(
+      c.userId, c.tenantId, c.factoryId, unitId,
+      rawDepth === undefined ? undefined : Number(rawDepth),
+      rawLimit === undefined ? undefined : Number(rawLimit),
+    );
+  }
+
+  @Post('units/:unitId/recall')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async declareRecall(
+    @Req() request: TraceabilityRequest,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+    @Body() body: DeclareTraceabilityRecallDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.declareRecall(
+      c.userId, c.tenantId, c.factoryId, unitId, body,
+      idempotencyKey ?? null, c.requestId, c.traceId,
+    );
+  }
+
+  @Post('recall-cases/:recallCaseId/notifications')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async requestRecallNotification(
+    @Req() request: TraceabilityRequest,
+    @Param('recallCaseId', new ParseUUIDPipe()) recallCaseId: string,
+    @Body() body: CreateRecallNotificationIntentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.createRecallNotificationIntent(
+      c.userId, c.tenantId, c.factoryId, recallCaseId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
+  @Get('recall-cases/:recallCaseId/notifications')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async listRecallNotifications(
+    @Req() request: TraceabilityRequest,
+    @Param('recallCaseId', new ParseUUIDPipe()) recallCaseId: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.listRecallNotificationIntents(
+      c.userId, c.tenantId, c.factoryId, recallCaseId,
+    );
+  }
+
+  @Post('recall-cases/:recallCaseId/notifications/:notificationIntentId/acknowledgements')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async acknowledgeRecallNotification(
+    @Req() request: TraceabilityRequest,
+    @Param('recallCaseId', new ParseUUIDPipe()) recallCaseId: string,
+    @Param('notificationIntentId', new ParseUUIDPipe()) notificationIntentId: string,
+    @Body() body: RecordRecallNotificationAcknowledgementDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.recordRecallNotificationAcknowledgement(
+      c.userId, c.tenantId, c.factoryId, recallCaseId, notificationIntentId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
 
   @Get('units/:unitId')
   @UseGuards(PermissionGuard)
