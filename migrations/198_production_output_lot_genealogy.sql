@@ -142,7 +142,7 @@ FOR EACH ROW EXECUTE FUNCTION factoryos_guard_production_output_traceability_lin
 CREATE OR REPLACE FUNCTION factoryos_guard_product_genealogy_event()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $
+AS $$
 DECLARE
   v_source_quantity NUMERIC(18,4);
   v_source_unit VARCHAR(50);
