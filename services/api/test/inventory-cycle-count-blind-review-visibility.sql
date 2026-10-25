@@ -29,10 +29,15 @@ BEGIN
     FROM role_permissions rp
     JOIN permissions p ON p.id = rp.permission_id
     JOIN roles r ON r.id = rp.role_id
-    WHERE p.code = 'inventory.cycle-count.review'
-      AND r.code IN ('ORG_ADMIN', 'FACTORY_MANAGER')
+    WHERE p.code = 'inventory.cycle-count.review' AND r.code = 'ORG_ADMIN'
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM role_permissions rp
+    JOIN permissions p ON p.id = rp.permission_id
+    JOIN roles r ON r.id = rp.role_id
+    WHERE p.code = 'inventory.cycle-count.review' AND r.code = 'FACTORY_MANAGER'
   ) THEN
-    RAISE EXCEPTION 'review permission must remain assigned only through explicitly configured reviewer roles';
+    RAISE EXCEPTION 'configured org-admin and factory-manager reviewer permissions must remain present';
   END IF;
 
   SELECT pg_get_functiondef(
