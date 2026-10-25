@@ -690,7 +690,6 @@ export class TraceabilityService {
             throw new ConflictException('Outbound staging does not have item/location stock balances for all shipment contents');
           }
 
-          const identityBalanceByUnit = new Map<string, { quantity_on_hand: string; quantity_reserved: string }>();
           for (const row of contents) {
             const traceBalanceResult = await client.query<{
               quantity_on_hand: string; quantity_reserved: string;
@@ -706,7 +705,6 @@ export class TraceabilityService {
             if (parseUnits(tracked.quantity_on_hand) - parseUnits(tracked.quantity_reserved) < parseUnits(row.quantity)) {
               throw new ConflictException('Outbound STAGING has insufficient unreserved stock for a packed finished-good lot/serial');
             }
-            identityBalanceByUnit.set(row.traceability_unit_id, tracked);
 
             const holdResult = await client.query<{ present: boolean }>(`
               SELECT EXISTS (
