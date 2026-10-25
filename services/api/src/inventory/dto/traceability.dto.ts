@@ -175,3 +175,13 @@ export class ResolveTraceabilityLabelDto {
   @MaxLength(255)
   code!: string;
 }
+
+export class DispatchTraceabilityShipmentDto {
+  @IsUUID()
+  source_location_id!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
+}
