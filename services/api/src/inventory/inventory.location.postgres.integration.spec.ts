@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { jest } from '@jest/globals';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 
@@ -9,6 +10,7 @@ import { InventoryService } from './inventory.service';
 import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
 import { TraceabilityService } from './traceability.service';
+import { WmsFulfillmentService } from './wms-fulfillment.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -21,6 +23,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let inventoryService!: InventoryService;
   let reservationService!: InventoryReservationService;
   let traceabilityService!: TraceabilityService;
+  let fulfillmentService!: WmsFulfillmentService;
   const factoryIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
@@ -53,6 +56,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     inventoryService = new InventoryService(database, audit);
     reservationService = new InventoryReservationService(database, audit);
     traceabilityService = new TraceabilityService(database);
+    fulfillmentService = new WmsFulfillmentService(database);
   }, 60_000);
 
   afterAll(async () => {
@@ -66,6 +70,11 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_traceability_location_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_shipments DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_packing_contents DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_packing_containers DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -100,7 +109,27 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
-            "DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND external_reference='wms-finished-good-putaway-test'",
+            'DELETE FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_packing_contents WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_packing_containers WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -156,6 +185,11 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         } finally {
           await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_genealogy_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_unit_status_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_shipments ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_packing_contents ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_packing_containers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_consumption_traceability_allocations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_consumptions ENABLE TRIGGER USER');
@@ -865,6 +899,416 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
 
     const movements = await locationService.listTransfers(tenantId, fixture.factoryId, fixture.itemId);
     expect(movements.filter((move) => move.traceability_unit_id === finishedLotId)).toHaveLength(3);
+  });
+
+
+  it('packs a finished-good lot into a carton and pallet, then dispatches once with stock and customer traceability', async () => {
+    const fixture = await createStockFixture('5.0000');
+    const { binA } = await createWarehouseAndBins(fixture.factoryId);
+    const finishedLot = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'FINISHED_GOOD',
+        unit_code: 'FG-SHIP-' + randomUUID().slice(0, 8),
+        inventory_item_id: fixture.itemId,
+        quantity: 5,
+        unit: 'PCS',
+        external_reference: 'wms-finished-good-putaway-test',
+      } as never,
+      'fg-ship-register-' + randomUUID(), requestId, traceId,
+    );
+    await adminPool.query(
+      `INSERT INTO inventory_traceability_location_balances
+         (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
+       VALUES ($1,$2,$3,$4,$5,5.0000)`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
+    );
+    await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 5,
+        movement_purpose: 'PUT_AWAY',
+        traceability_unit_id: finishedLot.id,
+      },
+      'fg-ship-putaway-' + randomUUID(), requestId, traceId,
+    );
+
+    const carton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-carton-create-' + randomUUID(), requestId, traceId,
+    );
+    const cartonId = carton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 3 },
+      'wms-carton-content-' + randomUUID(), requestId, traceId,
+    );
+    const duplicateCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-DUP-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-carton-dup-create-' + randomUUID(), requestId, traceId,
+    );
+    await expect(fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, duplicateCarton.container.container_unit_id as string,
+      { source_unit_id: finishedLot.id, quantity: 3 },
+      'wms-carton-dup-content-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    // Container capacity is an independent guard from available stock.
+    await expect(fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 0.1 },
+      'wms-carton-over-capacity-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+    const packingCommitmentClient = await adminPool.connect();
+    try {
+      await packingCommitmentClient.query('BEGIN');
+      await packingCommitmentClient.query(
+        `UPDATE inventory_traceability_location_balances
+         SET quantity_on_hand=2.0000, version=version+1, updated_at=clock_timestamp()
+         WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+           AND traceability_unit_id=$4 AND location_id=$5`,
+        [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+      );
+      await expect(packingCommitmentClient.query('COMMIT'))
+        .rejects.toThrow(/active carton packing commitments/i);
+      await packingCommitmentClient.query('ROLLBACK').catch(() => undefined);
+    } finally {
+      packingCommitmentClient.release();
+    }
+    const afterRejectedIssue = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+    );
+    expect(afterRejectedIssue.rows[0]?.quantity_on_hand).toBe('5.0000');
+    const cartonSealKey = 'wms-carton-seal-' + randomUUID();
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, cartonId, cartonSealKey, requestId, traceId,
+    );
+    const cartonSealReplay = await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, cartonId, cartonSealKey, requestId, traceId,
+    );
+    expect(cartonSealReplay.replayed).toBe(true);
+
+    const pallet = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'PALLET',
+        container_code: 'PALLET-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-pallet-create-' + randomUUID(), requestId, traceId,
+    );
+    const palletId = pallet.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, palletId,
+      { source_unit_id: cartonId, quantity: 3 },
+      'wms-pallet-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, palletId, 'wms-pallet-seal-' + randomUUID(), requestId, traceId,
+    );
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, cartonId,
+      {
+        shipment_code: 'SHIP-CARTON-BLOCK-' + randomUUID().slice(0, 5),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARTON-BLOCK-' + randomUUID().slice(0, 5),
+      },
+      'wms-carton-dispatch-block-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const dispatchKey = 'wms-dispatch-' + randomUUID();
+    const dispatchPayload = {
+      shipment_code: 'SHIP-' + randomUUID().slice(0, 8),
+      customer_name: 'Acceptance Customer',
+      customer_order_reference: 'CUSTOMER-ORDER-' + randomUUID().slice(0, 8),
+      carrier_name: 'Acceptance Carrier',
+      tracking_reference: 'TRACK-' + randomUUID().slice(0, 8),
+    };
+    const dispatched = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, palletId, dispatchPayload,
+      dispatchKey, requestId, traceId,
+    );
+    expect(dispatched).toMatchObject({ replayed: false, shipment: {
+      container_unit_id: palletId,
+      item_id: fixture.itemId,
+      quantity: '3.0000',
+      customer_name: dispatchPayload.customer_name,
+      customer_order_reference: dispatchPayload.customer_order_reference,
+      status: 'DISPATCHED',
+    }});
+    const replayed = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, palletId, dispatchPayload,
+      dispatchKey, requestId, traceId,
+    );
+    expect(replayed).toMatchObject({ replayed: true, shipment: { shipment_unit_id: dispatched.shipment.shipment_unit_id } });
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, palletId,
+      { ...dispatchPayload, shipment_code: 'SHIP-REPLAY-BLOCK' },
+      'wms-dispatch-duplicate-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const locationTotals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(aggregate?.quantity_on_hand).toBe('2.0000');
+    expect(locationTotals?.sum).toBe(aggregate?.quantity_on_hand);
+    const identityBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+    );
+    expect(identityBalance.rows[0]?.quantity_on_hand).toBe('2.0000');
+
+    const shipmentRow = await adminPool.query<{
+      status: string; customer_order_reference: string; quantity: string; inventory_movement_id: string;
+    }>(
+      `SELECT status, customer_order_reference, quantity::text AS quantity, inventory_movement_id::text AS inventory_movement_id
+       FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2 AND shipment_unit_id=$3`,
+      [tenantId, fixture.factoryId, dispatched.shipment.shipment_unit_id],
+    );
+    expect(shipmentRow.rows[0]).toMatchObject({
+      status: 'DISPATCHED',
+      customer_order_reference: dispatchPayload.customer_order_reference,
+      quantity: '3.0000',
+      inventory_movement_id: dispatched.shipment.inventory_movement_id,
+    });
+    const shipmentList = await fulfillmentService.listShipments(
+      userId, tenantId, fixture.factoryId, { search: dispatchPayload.customer_order_reference },
+    );
+    expect(shipmentList.shipments).toHaveLength(1);
+    expect(shipmentList.shipments[0]).toMatchObject({
+      shipment_unit_id: dispatched.shipment.shipment_unit_id,
+      shipment_code: dispatchPayload.shipment_code.toUpperCase(),
+      customer_name: dispatchPayload.customer_name,
+      customer_order_reference: dispatchPayload.customer_order_reference,
+      quantity: '3.0000',
+      status: 'DISPATCHED',
+      traceability_status: 'SHIPPED',
+    });
+    const movement = await adminPool.query<{
+      movement_type: string; quantity_delta: string; reference_type: string; reference_id: string;
+    }>(
+      `SELECT movement_type, quantity_delta::text AS quantity_delta, reference_type, reference_id::text AS reference_id
+       FROM inventory_movements WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [dispatched.shipment.inventory_movement_id, tenantId, fixture.factoryId],
+    );
+    expect(movement.rows[0]).toMatchObject({
+      movement_type: 'ISSUE', quantity_delta: '-3.0000', reference_type: 'WMS_SHIPMENT',
+      reference_id: dispatched.shipment.shipment_unit_id,
+    });
+    const genealogy = await adminPool.query(
+      `SELECT relationship_type FROM product_genealogy_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=$3 AND target_unit_id=$4`,
+      [tenantId, fixture.factoryId, palletId, dispatched.shipment.shipment_unit_id],
+    );
+    expect(genealogy.rows.map(row => row.relationship_type)).toContain('SHIPPED_AS');
+    const statuses = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [palletId, cartonId, dispatched.shipment.shipment_unit_id, finishedLot.id]],
+    );
+    expect(statuses.rows.find(row => row.id === palletId)?.status).toBe('SHIPPED');
+    expect(statuses.rows.find(row => row.id === cartonId)?.status).toBe('SHIPPED');
+    expect(statuses.rows.find(row => row.id === dispatched.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
+    expect(statuses.rows.find(row => row.id === finishedLot.id)?.status).toBe('ACTIVE');
+    const packageStatuses = await adminPool.query<{ container_unit_id: string; status: string }>(
+      `SELECT container_unit_id::text AS container_unit_id, status FROM wms_packing_containers
+       WHERE tenant_id=$1 AND factory_id=$2 AND container_unit_id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [palletId, cartonId]],
+    );
+    expect(packageStatuses.rows.find(row => row.container_unit_id === palletId)?.status).toBe('DISPATCHED');
+    expect(packageStatuses.rows.find(row => row.container_unit_id === cartonId)?.status).toBe('DISPATCHED');
+
+    // A caller from another tenant must not learn container or customer shipment details.
+    const foreignTenantId = randomUUID();
+    await expect(fulfillmentService.getContainer(
+      userId, foreignTenantId, fixture.factoryId, palletId,
+    )).rejects.toThrow(/not found in this factory/i);
+    const foreignShipments = await fulfillmentService.listShipments(
+      userId, foreignTenantId, fixture.factoryId, { search: dispatchPayload.customer_order_reference },
+    );
+    expect(foreignShipments.shipments).toHaveLength(0);
+
+    await expect(fulfillmentService.dispatchContainer(
+      userId, foreignTenantId, fixture.factoryId, palletId,
+      dispatchPayload, 'wms-foreign-dispatch-' + randomUUID(), requestId, traceId,
+    )).rejects.toThrow(/not found in this factory/i);
+
+    const emptyCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-EMPTY-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 1,
+      },
+      'wms-carton-empty-create-' + randomUUID(), requestId, traceId,
+    );
+    await expect(fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId,
+      emptyCarton.container.container_unit_id as string,
+      'wms-carton-empty-seal-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId,
+      emptyCarton.container.container_unit_id as string,
+      {
+        shipment_code: 'SHIP-EMPTY-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-EMPTY-' + randomUUID().slice(0, 8),
+      },
+      'wms-carton-empty-dispatch-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    // The previously packed lot has exactly two units left. Exercise the late-failure
+    // path after stock and shipment rows have been written, and prove transaction rollback.
+    const remainderCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-REMAINDER-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 2,
+      },
+      'wms-carton-remainder-create-' + randomUUID(), requestId, traceId,
+    );
+    const remainderCartonId = remainderCarton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      { source_unit_id: finishedLot.id, quantity: 2 },
+      'wms-carton-remainder-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      'wms-carton-remainder-seal-' + randomUUID(), requestId, traceId,
+    );
+
+    const rollbackPayload = {
+      shipment_code: 'SHIP-ROLLBACK-' + randomUUID().slice(0, 8),
+      customer_name: 'Rollback Acceptance Customer',
+      customer_order_reference: 'ORDER-ROLLBACK-' + randomUUID().slice(0, 8),
+    };
+    const fulfillmentInternals = fulfillmentService as unknown as {
+      insertOutbox: (...args: unknown[]) => Promise<void>;
+    };
+    const originalInsertOutbox = fulfillmentInternals.insertOutbox.bind(fulfillmentService);
+    const outboxSpy = jest.spyOn(fulfillmentInternals, 'insertOutbox').mockImplementation(async (...args: unknown[]) => {
+      if (args[5] === 'WMS.SHIPMENT_DISPATCHED') {
+        throw new Error('forced WMS shipment outbox failure for rollback acceptance');
+      }
+      return originalInsertOutbox(...args);
+    });
+    try {
+      await expect(fulfillmentService.dispatchContainer(
+        userId, tenantId, fixture.factoryId, remainderCartonId, rollbackPayload,
+        'wms-dispatch-rollback-' + randomUUID(), requestId, traceId,
+      )).rejects.toThrow(/forced WMS shipment outbox failure/i);
+    } finally {
+      outboxSpy.mockRestore();
+    }
+
+    const afterRollbackAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(afterRollbackAggregate?.quantity_on_hand).toBe('2.0000');
+    const afterRollbackLotBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+         AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+    );
+    expect(afterRollbackLotBalance.rows[0]?.quantity_on_hand).toBe('2.0000');
+    const afterRollbackContainer = await adminPool.query<{ status: string }>(
+      `SELECT status FROM wms_packing_containers
+       WHERE tenant_id=$1 AND factory_id=$2 AND container_unit_id=$3`,
+      [tenantId, fixture.factoryId, remainderCartonId],
+    );
+    expect(afterRollbackContainer.rows[0]?.status).toBe('SEALED');
+    const rolledBackShipmentCount = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM wms_shipments
+       WHERE tenant_id=$1 AND factory_id=$2
+         AND (container_unit_id=$3 OR shipment_code=$4)`,
+      [tenantId, fixture.factoryId, remainderCartonId, rollbackPayload.shipment_code],
+    );
+    expect(rolledBackShipmentCount.rows[0]?.count).toBe('0');
+    const rolledBackMovementCount = await adminPool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM inventory_movements
+       WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='WMS_SHIPMENT'
+         AND notes=$3`,
+      [tenantId, fixture.factoryId, 'WMS customer dispatch ' + rollbackPayload.shipment_code],
+    );
+    expect(rolledBackMovementCount.rows[0]?.count).toBe('0');
+
+    // Partial-quantity fulfilment can continue as a second shipment, but it must
+    // consume only the remaining two units and leave the stock ledger at zero.
+    const remainderPayload = {
+      shipment_code: 'SHIP-REMAINDER-' + randomUUID().slice(0, 8),
+      customer_name: 'Acceptance Customer',
+      customer_order_reference: 'CUSTOMER-ORDER-REMAINDER-' + randomUUID().slice(0, 8),
+    };
+    const remainderKey = 'wms-dispatch-remainder-' + randomUUID();
+    const remainderDispatch = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      remainderPayload, remainderKey, requestId, traceId,
+    );
+    expect(remainderDispatch).toMatchObject({
+      replayed: false,
+      shipment: { container_unit_id: remainderCartonId, quantity: '2.0000', status: 'DISPATCHED' },
+    });
+    const remainderReplay = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      remainderPayload, remainderKey, requestId, traceId,
+    );
+    expect(remainderReplay).toMatchObject({
+      replayed: true, shipment: { shipment_unit_id: remainderDispatch.shipment.shipment_unit_id },
+    });
+
+    const finalAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const finalLocationTotals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(finalAggregate?.quantity_on_hand).toBe('0.0000');
+    expect(finalLocationTotals?.sum).toBe(finalAggregate?.quantity_on_hand);
+    const finalLotBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT COALESCE(sum(quantity_on_hand),0)::text AS quantity_on_hand
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id],
+    );
+    expect(finalLotBalance.rows[0]?.quantity_on_hand).toBe('0.0000');
+    const allShipments = await adminPool.query<{ quantity: string }>(
+      `SELECT quantity::text AS quantity FROM wms_shipments
+       WHERE tenant_id=$1 AND factory_id=$2
+         AND container_unit_id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [palletId, remainderCartonId]],
+    );
+    expect(allShipments.rows.map(row => Number(row.quantity)).reduce((sum, q) => sum + q, 0)).toBe(5);
+    const finalLotStatus = await adminPool.query<{ status: string }>(
+      `SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [finishedLot.id, tenantId, fixture.factoryId],
+    );
+    expect(finalLotStatus.rows[0]?.status).toBe('SHIPPED');
   });
 
 });
