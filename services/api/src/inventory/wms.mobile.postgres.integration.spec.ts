@@ -330,6 +330,57 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       error: { code: 'IDEMPOTENCY_KEY_REUSED' },
     });
 
+    // Two different payloads racing for a new transaction ID must not race to
+    // persist the first terminal receipt: exactly one payload may move stock.
+    const raceItemId = await createItem('10.0000');
+    const raceVersionResult = await adminPool.query<{ version: string }>(
+      'SELECT version::text AS version FROM inventory_stock_balances WHERE item_id = $1',
+      [raceItemId],
+    );
+    const raceVersion = raceVersionResult.rows[0]?.version;
+    if (!raceVersion) throw new Error('Concurrent conflict test balance version was not found');
+    const racingTransactionId = randomUUID();
+    const raceBase: SyncOfflineBatchDto = {
+      device_id: deviceId,
+      transactions: [{
+        client_transaction_id: racingTransactionId,
+        operation: 'STOCK_MOVEMENT',
+        item_id: raceItemId,
+        movement_type: 'ISSUE',
+        quantity: 2,
+        expected_balance_version: raceVersion,
+      }],
+    };
+    const racePayloadB: SyncOfflineBatchDto = {
+      ...raceBase,
+      transactions: [{ ...raceBase.transactions[0]!, quantity: 3 }],
+    };
+    const [raceResultA, raceResultB] = await Promise.all([
+      mobileService.syncOfflineBatch(
+        TEST_USER_ID, tenantId, factoryId, raceBase, null, correlation(),
+      ),
+      mobileService.syncOfflineBatch(
+        TEST_USER_ID, tenantId, factoryId, racePayloadB, null, correlation(),
+      ),
+    ]);
+    const raceResults = [raceResultA.results[0], raceResultB.results[0]];
+    expect(raceResults.filter((result) => result?.status === 'APPLIED')).toHaveLength(1);
+    expect(raceResults.filter((result) => result?.status === 'CONFLICT')).toHaveLength(1);
+    expect(raceResults.filter((result) => result?.replayed === false)).toHaveLength(2);
+    expect(raceResults.find((result) => result?.status === 'CONFLICT')).toMatchObject({
+      error: { code: 'IDEMPOTENCY_KEY_REUSED' },
+    });
+    const raceBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [raceItemId],
+    );
+    expect(['7.0000', '8.0000']).toContain(raceBalance.rows[0]?.quantity_on_hand);
+    const raceMovementCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1 AND movement_type = \'ISSUE\'',
+      [raceItemId],
+    );
+    expect(raceMovementCount.rows[0]?.count).toBe('1');
+
     // Invalid precision is recorded as a terminal REJECTED result, but its exact
     // request fingerprint must not round away a later, different invalid value.
     const invalidTransactionId = randomUUID();
