@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS wms_shipment_delivery_events (
       OR
       (event_type = 'DELIVERED'
        AND length(btrim(COALESCE(recipient_name, ''))) BETWEEN 1 AND 255
+       AND proof_type IS NOT NULL
        AND proof_type IN ('SIGNATURE', 'PHOTO', 'DOCUMENT', 'OTP', 'CUSTOMER_ACKNOWLEDGEMENT')
        AND length(btrim(COALESCE(proof_reference, ''))) BETWEEN 1 AND 500
        AND proof_sha256 ~ '^[a-f0-9]{64}$'
@@ -130,7 +131,7 @@ BEGIN
 
   SELECT * INTO v_line
   FROM order_lines
-  WHERE id=NEW.order_line_id AND tenant_id=NEW.tenant_id AND order_id=NEW.order_id
+  WHERE id=NEW.order_line_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id AND order_id=NEW.order_id
   FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'order line does not belong to the bound customer order' USING ERRCODE = '23514';
@@ -234,7 +235,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM audit_events a
     WHERE a.tenant_id=NEW.tenant_id AND a.factory_id=NEW.factory_id
-      AND a.resource_type='WMS_SHIPMENT_DELIVERY_EVENT' AND a.resource_id=NEW.id::text
+      AND a.resource_type='WMS_SHIPMENT_DELIVERY_EVENT' AND a.resource_id=NEW.id
       AND a.action='RECORDED'
   ) OR NOT EXISTS (
     SELECT 1 FROM outbox_events o
