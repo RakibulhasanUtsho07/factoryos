@@ -639,8 +639,27 @@ export class TraceabilityService {
             throw new ConflictException('Shipment has no finished-good lot/serial quantity in its package genealogy');
           }
 
+          const contentItemIds = [...new Set(contents.map(row => row.item_id))].sort();
+          const itemMetadataResult = await client.query<{ id: string; unit: string; status: string }>(`
+            SELECT id::text AS id, unit, status
+            FROM inventory_items
+            WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])
+            ORDER BY id FOR UPDATE
+          `, [tenantId, factoryId, contentItemIds]);
+          const itemMetadata = new Map(itemMetadataResult.rows.map(row => [row.id, row]));
+          if (itemMetadata.size !== contentItemIds.length) {
+            throw new ConflictException('One or more packaged inventory items are no longer available in this factory');
+          }
+
           const itemTotals = new Map<string, { unit: string; units: bigint }>();
           for (const row of contents) {
+            const lockedItem = itemMetadata.get(row.item_id);
+            if (!lockedItem || lockedItem.status !== 'ACTIVE') {
+              throw new ConflictException('Disabled inventory items cannot be dispatched');
+            }
+            if (lockedItem.unit !== row.traceability_unit) {
+              throw new ConflictException('Finished-good traceability unit must use its inventory item base unit before dispatch');
+            }
             if (row.item_status !== 'ACTIVE') throw new ConflictException('Disabled inventory items cannot be dispatched');
             if (row.unit_status !== 'ACTIVE' || row.expired) {
               throw new ConflictException('Shipment contains a non-active or expired finished-good identity');
@@ -688,6 +707,38 @@ export class TraceabilityService {
           const locationByItem = new Map(locationBalanceResult.rows.map(row => [row.item_id, row]));
           if (locationByItem.size !== itemIds.length) {
             throw new ConflictException('Outbound staging does not have item/location stock balances for all shipment contents');
+          }
+
+          const identityIds = [...new Set(contents.map(row => row.traceability_unit_id))].sort();
+          const lockedIdentities = await client.query<{
+            id: string; inventory_item_id: string; unit: string; unit_type: string; product_role: string;
+            status: string; expired: boolean; attributes: Record<string, unknown>;
+          }>(`
+            SELECT id::text AS id, inventory_item_id::text AS inventory_item_id, unit, unit_type,
+              product_role, status, (expires_at IS NOT NULL AND expires_at < CURRENT_DATE) AS expired, attributes
+            FROM traceability_units
+            WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])
+            ORDER BY id FOR UPDATE
+          `, [tenantId, factoryId, identityIds]);
+          const identityById = new Map(lockedIdentities.rows.map(row => [row.id, row]));
+          if (identityById.size !== identityIds.length) {
+            throw new ConflictException('One or more packed finished-good identities are no longer available in this factory');
+          }
+          for (const row of contents) {
+            const identity = identityById.get(row.traceability_unit_id);
+            if (!identity || identity.inventory_item_id !== row.item_id
+              || identity.product_role !== 'FINISHED_GOOD'
+              || !['LOT', 'SERIAL', 'FINISHED_GOOD'].includes(identity.unit_type)
+              || identity.status !== 'ACTIVE' || identity.expired
+              || identity.unit !== itemMetadata.get(row.item_id)?.unit) {
+              throw new ConflictException('Shipment contains a non-active, expired or mis-scoped finished-good identity');
+            }
+            const attributes = identity.attributes ?? {};
+            const condition = String(attributes.condition ?? '').toUpperCase();
+            if (attributes.damaged === true || attributes.held === true || attributes.quarantined === true
+              || ['DAMAGED', 'HELD', 'QUARANTINED', 'EXPIRED'].includes(condition)) {
+              throw new ConflictException('Shipment contains damaged, held or quarantined finished-good stock');
+            }
           }
 
           for (const row of contents) {
