@@ -947,6 +947,27 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-carton-create-' + randomUUID(), requestId, traceId,
     );
     const cartonId = carton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 3 },
+      'wms-carton-content-' + randomUUID(), requestId, traceId,
+    );
+    const duplicateCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-DUP-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-carton-dup-create-' + randomUUID(), requestId, traceId,
+    );
+    await expect(fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, duplicateCarton.container.container_unit_id as string,
+      { source_unit_id: finishedLot.id, quantity: 3 },
+      'wms-carton-dup-content-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
     const packingCommitmentClient = await adminPool.connect();
     try {
       await packingCommitmentClient.query('BEGIN');
@@ -971,27 +992,6 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
     );
     expect(afterRejectedIssue.rows[0]?.quantity_on_hand).toBe('5.0000');
-    await fulfillmentService.addContent(
-      userId, tenantId, fixture.factoryId, cartonId,
-      { source_unit_id: finishedLot.id, quantity: 3 },
-      'wms-carton-content-' + randomUUID(), requestId, traceId,
-    );
-    const duplicateCarton = await fulfillmentService.createContainer(
-      userId, tenantId, fixture.factoryId,
-      {
-        container_type: 'CARTON',
-        container_code: 'CARTON-DUP-' + randomUUID().slice(0, 8),
-        item_id: fixture.itemId,
-        location_id: binA.id,
-        capacity_quantity: 3,
-      },
-      'wms-carton-dup-create-' + randomUUID(), requestId, traceId,
-    );
-    await expect(fulfillmentService.addContent(
-      userId, tenantId, fixture.factoryId, duplicateCarton.container.container_unit_id as string,
-      { source_unit_id: finishedLot.id, quantity: 3 },
-      'wms-carton-dup-content-' + randomUUID(), requestId, traceId,
-    )).rejects.toBeInstanceOf(ConflictException);
     const cartonSealKey = 'wms-carton-seal-' + randomUUID();
     await fulfillmentService.sealContainer(
       userId, tenantId, fixture.factoryId, cartonId, cartonSealKey, requestId, traceId,
