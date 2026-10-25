@@ -74,4 +74,87 @@ describe('TraceabilityService input contracts', () => {
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
+
+  it('preserves traceability lifecycle status in the issued label payload', async () => {
+    const templateId = 'b4fbbe44-d33b-4df4-a5ca-fbcb9eb8e9fd';
+    const labelIssueId = '6d03efc0-5671-41b3-a37e-00dc181fd1a9';
+    const labelLayout = { fields: ['unit_code', 'barcode_value', 'status'] };
+    const unit = {
+      id: UNIT_ID,
+      unit_code: 'FG-RECALL-001',
+      barcode_value: 'FG-RECALL-001',
+      rfid_epc: null,
+      unit_type: 'LOT',
+      product_role: 'FINISHED_GOOD',
+      inventory_item_id: UNIT_ID,
+      quantity: '5.0000',
+      unit: 'PCS',
+      expires_at: null,
+      status: 'RECALLED',
+      attributes: {},
+    };
+    const template = {
+      id: templateId,
+      template_code: 'TRACE-QR-V1',
+      symbology: 'QR',
+      supported_unit_types: ['LOT'],
+      label_layout: labelLayout,
+      is_active: true,
+    };
+    const client = {
+      query: jest.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes('FROM traceability_units')) return { rows: [unit] };
+        if (sql.includes('FROM traceability_label_templates')) return { rows: [template] };
+        if (sql.includes('INSERT INTO traceability_label_issues')) {
+          const encodedPayload = JSON.parse(String(params?.[9])) as Record<string, unknown>;
+          return {
+            rows: [{
+              id: labelIssueId,
+              tenant_id: TENANT_ID,
+              factory_id: FACTORY_ID,
+              unit_id: UNIT_ID,
+              inventory_item_id: UNIT_ID,
+              template_id: templateId,
+              template_code: template.template_code,
+              unit_code: unit.unit_code,
+              barcode_value: unit.barcode_value,
+              symbology: template.symbology,
+              encoded_payload: encodedPayload,
+              label_layout: labelLayout,
+              copy_count: 1,
+              created_by_user_id: USER_ID,
+              correlation_id: String(params?.[15]),
+              created_at: '2026-10-25T00:00:00.000Z',
+            }],
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+    const transaction = database.transaction as unknown as {
+      mockImplementation: (fn: (
+        scope: unknown,
+        callback: (client: unknown) => Promise<unknown>,
+      ) => Promise<unknown>) => void;
+    };
+    transaction.mockImplementation(async (_scope, callback) => callback(client));
+
+    const result = await service.issueLabel(
+      USER_ID, TENANT_ID, FACTORY_ID,
+      { unit_id: UNIT_ID, template_id: templateId, copy_count: 1 },
+      'label-recalled-status-001', null, null,
+    );
+
+    expect(result).toMatchObject({
+      replayed: false,
+      print_contract: {
+        symbology: 'QR',
+        identity_payload: {
+          unit_id: UNIT_ID,
+          unit_code: 'FG-RECALL-001',
+          status: 'RECALLED',
+        },
+      },
+    });
+  });
 });
