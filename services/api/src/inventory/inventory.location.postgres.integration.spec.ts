@@ -80,6 +80,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE orders DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_contents DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_containers DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_traceability_recall_notification_acknowledgements DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_traceability_recall_notification_intents DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -135,6 +137,14 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_traceability_recall_notification_acknowledgements WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_traceability_recall_notification_intents WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
