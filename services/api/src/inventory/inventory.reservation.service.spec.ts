@@ -686,9 +686,10 @@ describe('InventoryReservationService', () => {
           consumption_id: consumptionId,
           reservation_id: RESERVATION_ID,
           item_id: ITEM_ID,
-          source_unit_id: BIN_A_ID,
+          source_unit_id: randomUUID(),
           source_unit_code: 'RAW-LOT-01',
           source_unit: 'KG',
+          source_location_id: BIN_A_ID,
           consumed_quantity: '1.0001',
           source_created_at: '2026-10-01T00:00:00.000Z',
           consumption_created_at: '2026-10-24T00:00:00.000Z',
@@ -730,6 +731,35 @@ describe('InventoryReservationService', () => {
       .toBe(10001n);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO audit_events'))).toHaveLength(4);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('TRACEABILITY.GENEALOGY_RECORDED'))).toHaveLength(4);
+  });
+
+  it('fails closed when work-order output postings have no finished-good traceability lot', async () => {
+    client.query.mockImplementation(async (sql: unknown) => {
+      const query = String(sql);
+      if (query.includes('FROM order_production_reports r') && query.includes('JOIN production_output_postings p')) {
+        return queryRows([{
+          posting_id: randomUUID(),
+          production_report_id: randomUUID(),
+          finished_item_id: ITEM_ID,
+          traceability_unit_id: null,
+          scrap_traceability_unit_id: null,
+          good_quantity: '1.0000',
+          scrap_quantity: '0.0000',
+        }]);
+      }
+      throw new Error('The completion gate should fail before reading material allocations: ' + query.slice(0, 100));
+    });
+
+    await expect(service.recordWorkOrderOutputGenealogy(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID,
+      correlationId: TRACE_ID,
+    })).rejects.toThrow('missing its finished-good traceability lot');
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(client.query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO product_genealogy_events'))).toBe(false);
   });
 
   it('requires an idempotency key for reservation creation', async () => {
