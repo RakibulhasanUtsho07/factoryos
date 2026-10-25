@@ -838,7 +838,7 @@ export class TraceabilityService {
           if (!dispatchId) throw new Error('TRACEABILITY_SHIPMENT_DISPATCH_INSERT_FAILED');
 
           await client.query('SELECT set_config(\'app.inventory_location_id\', $1, TRUE)', [sourceLocationId]);
-          const movementByItem = new Map<string, { id: string; quantity: string; quantity_after: string }>();
+          const movementByItem = new Map<string, { id: string }>();
           for (const itemId of itemIds) {
             const total = itemTotals.get(itemId)!;
             const quantity = formatUnits(total.units);
@@ -877,17 +877,32 @@ export class TraceabilityService {
             ]);
             const movementId = movementInsert.rows[0]?.id;
             if (!movementId) throw new Error('SHIPMENT_INVENTORY_MOVEMENT_INSERT_FAILED');
-            movementByItem.set(itemId, { id: movementId, quantity, quantity_after: balance.quantity_after });
+            movementByItem.set(itemId, { id: movementId });
 
             await client.query(`
               INSERT INTO outbox_events (
                 tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
               ) VALUES ($1,$2,'INVENTORY_ITEM',$3,'INVENTORY.STOCK_ISSUED',$4::jsonb)
             `, [tenantId, factoryId, itemId, JSON.stringify({
-              movement_id: movementId, item_id: itemId, location_id: sourceLocationId,
-              movement_type: 'ISSUE', quantity, quantity_delta: '-' + quantity,
-              quantity_after: balance.quantity_after, reference_type: 'SHIPMENT_DISPATCH', reference_id: dispatchId,
+              movement: {
+                id: movementId, item_id: itemId, location_id: sourceLocationId,
+                movement_type: 'ISSUE', quantity, input_quantity: quantity,
+                input_unit_code: total.unit, conversion_rule_id: null,
+                conversion_factor_numerator: null, conversion_factor_denominator: null,
+                conversion_rounding_mode: null, quantity_delta: '-' + quantity,
+                quantity_after: balance.quantity_after,
+                reference_type: 'SHIPMENT_DISPATCH', reference_id: dispatchId,
+              },
             })]);
+            await this.insertAudit(client, {
+              tenantId, factoryId, userId, resourceType: 'INVENTORY_MOVEMENT', resourceId: movementId,
+              action: 'ISSUED', correlationId, requestId: requestUuid,
+              payload: {
+                itemId, sourceLocationId, movementType: 'ISSUE', quantity,
+                quantityDelta: '-' + quantity, quantityAfter: balance.quantity_after,
+                referenceType: 'SHIPMENT_DISPATCH', referenceId: dispatchId,
+              },
+            });
           }
 
           for (const row of contents) {
