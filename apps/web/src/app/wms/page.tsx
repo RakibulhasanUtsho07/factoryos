@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   WmsOfflineQueue,
   createWmsOfflineSyncTransport,
@@ -155,7 +155,7 @@ export default function WmsMobileAcceptancePage() {
     };
   }, [refreshQueue, flushQueue]);
 
-  async function enqueueMovement(event: React.FormEvent<HTMLFormElement>) {
+  async function enqueueMovement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
       setQueueError("");
