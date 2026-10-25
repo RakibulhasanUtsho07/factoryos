@@ -59,6 +59,29 @@ BEGIN
       RAISE EXCEPTION 'PACKED_INTO source must be finished-good stock or a carton nested into a pallet'
         USING ERRCODE = '23514';
     END IF;
+
+    -- Once a package or any enclosing package has been assigned to a shipment,
+    -- freeze its physical contents. Prevents late packing from escaping the
+    -- shipment's transactional stock-issue snapshot.
+    IF EXISTS (
+      WITH RECURSIVE package_ancestors(unit_id) AS (
+        SELECT NEW.target_unit_id
+        UNION
+        SELECT e.target_unit_id
+        FROM product_genealogy_events e
+        JOIN package_ancestors p ON p.unit_id = e.source_unit_id
+        WHERE e.tenant_id = NEW.tenant_id AND e.factory_id = NEW.factory_id
+          AND e.relationship_type = 'PACKED_INTO'
+      )
+      SELECT 1
+      FROM package_ancestors p
+      JOIN product_genealogy_events shipped
+        ON shipped.tenant_id = NEW.tenant_id AND shipped.factory_id = NEW.factory_id
+       AND shipped.source_unit_id = p.unit_id AND shipped.relationship_type = 'SHIPPED_AS'
+    ) THEN
+      RAISE EXCEPTION 'package contents are frozen after the package or its parent pallet is assigned to a shipment'
+        USING ERRCODE = '23514';
+    END IF;
     RETURN NEW;
   END IF;
 
