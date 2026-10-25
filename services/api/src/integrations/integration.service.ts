@@ -558,7 +558,7 @@ export class IntegrationService {
       throw new BadRequestException('carrier_name must match the WMS_CARRIER connector display name');
     }
     const trackingReference = requiredText('tracking_reference', 255);
-    if (!/^[\\x20-\\x7e]{1,255}$/.test(trackingReference)) {
+    if (!/^[\x20-\x7e]{1,255}$/.test(trackingReference)) {
       throw new BadRequestException('tracking_reference must contain only visible ASCII characters');
     }
     const eventType = requiredText('event_type', 24).toUpperCase();
