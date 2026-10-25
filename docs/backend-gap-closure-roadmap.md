@@ -39,11 +39,22 @@
 - Performs no stock mutation. Missing scoped item returns a bounded failure; an absent executor stays fail-closed.
 - Adds the tool to the ordered migration manifest and requires API unit tests plus a PostgreSQL registry contract before promotion.
 
-### After Step 1
+### WP02 current slice — automatic production material genealogy
 
-1. Verify the new executor on the feature PR's exact SHA with API CI and PostgreSQL CI.
-2. Promote through `rakibul-hasan` → `dev` → `main` only after checks pass.
-3. Refresh WP06/SRS evidence without marking the whole AI runtime accepted.
-4. Take the next medium-sized slice from WP02 WMS end-to-end evidence, then proceed by the ordered dependencies above.
+**Status:** Implemented on branch `work/wp02-production-output-genealogy`; awaiting exact-SHA API and PostgreSQL CI acceptance.
+
+- Work-order completion links actual consumed material lot/serial allocation records to ACTIVE finished-good identities already bound to positive-good production reports, within the same PostgreSQL transaction.
+- Bulk material issue quantity is apportioned by finished identity quantity; integer four-decimal arithmetic conserves the full issued amount. A serialized input remains indivisible and is assigned deterministically to one finished-good identity.
+- Each genealogy edge includes its source consumption, reservation, allocation, source bin, production report and allocation method. Audit and outbox evidence are in the same transaction; deterministic idempotency keys protect replay.
+- When tracked material allocations exist, missing/inactive/wrong-item output identity or mismatched output quantity fails completion closed. Register output identities through Traceability after reporting output and before completing the work order.
+- The genealogy database guard now resolves material → sector → factory → factory-default policy, and checks an earlier FIFO/FEFO lot only if eligible, unreserved quantity remains in a pickable bin.
+- Known boundary: all-scrap output with tracked input still needs an explicit scrap/disposition genealogy path. Warehouse offline/RFID/mobile and shipment-to-customer genealogy remain separate gaps.
+
+### After this WP02 slice
+
+1. Verify API unit tests and the ordered migration/PostgreSQL contract on the feature PR's exact SHA; repair and rerun failures.
+2. Promote through `rakibul-hasan` → `dev` → `main` only after the required exact-SHA checks pass.
+3. Keep FR-WMS-06/08 partial until full API/data-path evidence, reverse-trace acceptance and remaining mobile/shipment workflows are independently accepted.
+4. Continue with another medium-sized WP02 gap after this slice is reviewed.
 
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
