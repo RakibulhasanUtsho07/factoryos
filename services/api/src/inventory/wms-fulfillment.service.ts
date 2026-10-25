@@ -556,8 +556,8 @@ export class WmsFulfillmentService {
             }
             const lineResult = await client.query<{ product_code: string; unit: string; quantity: string }>(`
               SELECT product_code, unit, quantity::text AS quantity
-              FROM order_lines WHERE id=$1 AND order_id=$2 AND tenant_id=$3 FOR UPDATE
-            `, [orderLineId, orderId, tenantId]);
+              FROM order_lines WHERE id=$1 AND order_id=$2 AND tenant_id=$3 AND factory_id=$4 FOR UPDATE
+            `, [orderLineId, orderId, tenantId, factoryId]);
             const orderLine = lineResult.rows[0];
             if (!orderLine) throw new NotFoundException('Customer order line not found in the bound order');
             if (orderLine.product_code.trim().toUpperCase() !== item.sku.trim().toUpperCase()
