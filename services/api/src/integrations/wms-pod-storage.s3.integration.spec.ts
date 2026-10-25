@@ -11,19 +11,19 @@ type TestStorageEnv = {
   secretAccessKey: string;
 };
 
-const storageEnv = {
-  endpoint: process.env.WMS_POD_STORAGE_ENDPOINT,
-  bucket: process.env.WMS_POD_STORAGE_BUCKET,
-  region: process.env.WMS_POD_STORAGE_REGION,
-  accessKeyId: process.env.WMS_POD_STORAGE_ACCESS_KEY_ID,
-  secretAccessKey: process.env.WMS_POD_STORAGE_SECRET_ACCESS_KEY,
-};
+function requiredEnv(name: string, value: string | undefined): string {
+  if (!value?.trim()) throw new Error('Required S3 test-storage variable is missing: ' + name);
+  return value.trim();
+}
 
 function requireStorageEnv(): TestStorageEnv {
-  for (const [name, value] of Object.entries(storageEnv)) {
-    if (!value?.trim()) throw new Error('Required live S3 test-storage variable is missing: ' + name);
-  }
-  return storageEnv as TestStorageEnv;
+  return {
+    endpoint: requiredEnv('WMS_POD_STORAGE_ENDPOINT', process.env.WMS_POD_STORAGE_ENDPOINT),
+    bucket: requiredEnv('WMS_POD_STORAGE_BUCKET', process.env.WMS_POD_STORAGE_BUCKET),
+    region: requiredEnv('WMS_POD_STORAGE_REGION', process.env.WMS_POD_STORAGE_REGION),
+    accessKeyId: requiredEnv('WMS_POD_STORAGE_ACCESS_KEY_ID', process.env.WMS_POD_STORAGE_ACCESS_KEY_ID),
+    secretAccessKey: requiredEnv('WMS_POD_STORAGE_SECRET_ACCESS_KEY', process.env.WMS_POD_STORAGE_SECRET_ACCESS_KEY),
+  };
 }
 
 function sha256(bytes: Buffer): string {
