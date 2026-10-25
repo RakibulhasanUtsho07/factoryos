@@ -338,7 +338,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$$;
 
 COMMENT ON COLUMN production_output_postings.traceability_unit_id IS
   'Finished-good lot created atomically with accepted good output; NULL only when the report has zero good quantity or for historical rows predating this gate.';
