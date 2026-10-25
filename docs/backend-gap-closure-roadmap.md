@@ -54,4 +54,12 @@
 
 **Boundary:** this closes the backend directed-movement identity gap for the supported finished-good LOT. It does not claim carton/pallet shipment capture, scanner/RFID hardware acceptance, production-site deployment, or completion of all WP02/SRS requirements.
 
+### WP02 slice — controlled carton/pallet packing and customer shipment traceability
+
+**Gap:** genealogy exposed PACKED_INTO and SHIPPED_AS, but the generic edge accepted arbitrary source/target types, shipment identities could omit customer/order references, and a shipment could be marked SHIPPED before any package was attached.
+
+**Implementation/acceptance:** migration 201 adds a database guard for finished-good LOT/SERIAL → CARTON/PALLET and CARTON → PALLET packing, restricts shipment edges to content-bearing CARTON/PALLET identities, prevents one package from being dispatched under multiple shipment identities, requires customer/customer-order/shipment references, and blocks the SHIPPED lifecycle transition until a valid package edge exists. The API validates reference metadata before starting a DB transaction. PostgreSQL CI checks the function/trigger contract and reruns the migration for idempotency; services/api/test/traceability.sql also checks wrong-type packing rejection, early-dispatch rejection and a valid shipment lifecycle after migration 201 is installed.
+
+**Boundary:** this is a traceability/lifecycle closure, not a physical stock issue. Outbound stock decrement/location movement, carrier/ERP fulfilment integration, scanner/RFID/offline sync, physical-site rehearsal and full WP02/SRS acceptance remain open.
+
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
