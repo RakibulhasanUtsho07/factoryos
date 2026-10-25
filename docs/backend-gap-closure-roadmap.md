@@ -84,4 +84,27 @@
 
 **Boundary:** this adapter is read-only. The carrier/provider must place the bytes at the agreed object key before callback; this code does not create upload URLs or upload the bytes. Actual storage credentials/bucket policy, provider sandbox certification, barcode/QR, offline/RFID and site commissioning evidence remain outstanding. No real external storage was available to certify during this code change.
 
+### WP02 slice — bounded read-only recall impact assessment
+**Gap:** forward/reverse genealogy could be queried, but there was no single bounded operational response joining downstream identities to WMS customer-shipment/delivery evidence for recall triage.
+**Implementation/acceptance:** `GET /api/v1/traceability/units/:unitId/recall-impact` uses `traceability.read` and authenticated tenant/factory scope. It returns the starting identity, downstream genealogy nodes/edges, matching WMS shipments with customer/order/tracking and latest delivery/POD reference metadata, upstream provenance and explicit truncation indicators. PostgreSQL acceptance covers a finished-good lot traced through carton/pallet paths to two separate shipments, conservative node bounds, no stock/status changes, and cross-tenant rejection.
+**Boundary:** impact analysis only. It does not declare a recall, set RECALLED/QUARANTINED status, adjust stock, issue stop-ship commands, notify customers, capture acknowledgements or replace recall-owner/site acceptance. A truncated graph is not a complete recall assessment.
+
+### WP02 slice — bounded recall declaration (migration 205)
+
+**Gap closed in code:** the recall impact preview now has a separate, permission-gated declaration endpoint. It creates a durable recall case rather than making operators infer that a read-only preview itself enacted a recall.
+
+**Implementation/acceptance:** `POST /api/v1/traceability/units/:unitId/recall` requires `traceability.write`, a non-empty reason and an `Idempotency-Key`; the optional depth/node bounds remain within 1–12 and 1–500. The transaction takes the same tenant/factory genealogy graph advisory lock used by graph writes, traverses downstream edges breadth-first, refuses layer fan-out or node-limit overflow and checks for unseen edges beyond the depth boundary before writing any case or status. It locks the selected identities in stable order, snapshots the graph fingerprint, and atomically inserts an immutable case plus membership snapshots, any applicable `RECALLED` status transitions/history, and matching audit/outbox evidence. Exact retries return the original case; a reused key with a different payload conflicts.
+
+**Status boundary:** `ACTIVE` and `QUARANTINED` units transition to `RECALLED`; already-recalled and disposed identities are recorded as such. A `SHIPPED` identity remains `SHIPPED` because the existing state machine intentionally does not permit a shipment fact to be rewritten; the case marks it `SHIPPED_REVIEW_REQUIRED` for separate customer/site disposition. No stock quantity/movement is changed, and this endpoint does not issue stop-ship commands or send customer notifications/acknowledgements. Recall-owner approval, customer communication and site execution remain operational release gates.
+
+**Evidence:** migration `205_wms_traceability_recall_execution.sql`, SQL contract `services/api/test/wms-recall-case.sql`, PostgreSQL integration for node/depth truncation fail-closed, atomic unit status/history, idempotent replay, tenant scope and stock conservation; workflow applies and reapplies migration 205 and its contract. Exact-head CI and independent review are required before promotion.
+
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
+
+### WP02 slice — recall notification intent and acknowledgement ledger (migration 206)
+
+**Gap:** an audited recall case could identify affected units and shipped-unit follow-up, but there was no durable customer/site notification-intent ledger or acknowledgement record linked to a specific recall case.
+
+**Implementation/acceptance:** migration 206 adds tenant/factory-scoped notification intents and a one-per-intent acknowledgement ledger. APIs require authenticated factory scope, `traceability.write` for writes, idempotency keys, constrained non-URL recipient references and explicit acknowledgement outcomes. Notification requests add an outbox event atomically with audit evidence; acknowledgements require an existing intent for the same case and recipient, and likewise commit append-only records with audit/outbox evidence. PostgreSQL checks cover RLS, immutable triggers, recipient binding, uniqueness and migration reapplication.
+
+**Boundary:** `WMS.RECALL_NOTIFICATION_REQUESTED` is an intent, not confirmation that an external provider transmitted or delivered anything. The current acknowledgement source is `OPERATOR_REPORTED`; there is no external customer authentication, delivery receipt, automatic customer email/EDI/portal transmission, stop-ship command or recall-owner approval in this slice. Those remain explicit operational/provider acceptance gates.
