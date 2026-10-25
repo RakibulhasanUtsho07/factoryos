@@ -9,7 +9,7 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto,
-  CreateTraceabilityUnitDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
+  CreateTraceabilityUnitDto, DeclareTraceabilityRecallDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 import { WmsFulfillmentService } from './wms-fulfillment.service';
@@ -94,6 +94,23 @@ export class TraceabilityController {
       c.userId, c.tenantId, c.factoryId, unitId,
       rawDepth === undefined ? undefined : Number(rawDepth),
       rawLimit === undefined ? undefined : Number(rawLimit),
+    );
+  }
+
+  @Post('units/:unitId/recall')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async declareRecall(
+    @Req() request: TraceabilityRequest,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+    @Body() body: DeclareTraceabilityRecallDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.declareRecall(
+      c.userId, c.tenantId, c.factoryId, unitId, body,
+      idempotencyKey ?? null, c.requestId, c.traceId,
     );
   }
 
