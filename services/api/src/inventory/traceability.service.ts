@@ -782,6 +782,7 @@ export class TraceabilityService {
               quantity: unit.quantity,
               unit: unit.unit,
               expires_at: unit.expires_at,
+              status: unit.status,
             };
           } else {
             const itemResult = await client.query<{
