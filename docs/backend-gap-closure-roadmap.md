@@ -108,3 +108,10 @@
 **Implementation/acceptance:** migration 206 adds tenant/factory-scoped notification intents and a one-per-intent acknowledgement ledger. APIs require authenticated factory scope, `traceability.write` for writes, idempotency keys, constrained non-URL recipient references and explicit acknowledgement outcomes. Notification requests add an outbox event atomically with audit evidence; acknowledgements require an existing intent for the same case and recipient, and likewise commit append-only records with audit/outbox evidence. PostgreSQL checks cover RLS, immutable triggers, recipient binding, uniqueness and migration reapplication.
 
 **Boundary:** `WMS.RECALL_NOTIFICATION_REQUESTED` is an intent, not confirmation that an external provider transmitted or delivered anything. The current acknowledgement source is `OPERATOR_REPORTED`; there is no external customer authentication, delivery receipt, automatic customer email/EDI/portal transmission, stop-ship command or recall-owner approval in this slice. Those remain explicit operational/provider acceptance gates.
+
+
+### WP02 cross-feature PostgreSQL regression — SRS v2.1 FR-WMS-02/06/07/08/09
+
+The order-bound shipment PostgreSQL journey now checks the same persisted lifecycle across dispatch, carrier/tracking binding, a DELIVERED event with POD metadata, recall impact, recall declaration and subsequent labels. It asserts that recall impact returns the exact shipment/order/carrier/tracking and POD reference/digest, that the recall case marks shipped carton/shipment as `SHIPPED_REVIEW_REQUIRED` without rewriting their `SHIPPED` states, that the source finished-good identity becomes `RECALLED`, and that subsequent label payloads reflect those current states. Stock and bin totals must be conserved by recall.
+
+This cross-feature regression complements (does not replace) the offline-sync PostgreSQL concurrency/replay suite and the API CI RustFS S3-compatible upload/independent-GET SHA-256 acceptance. Native mobile queue/scanning, physical printer/RFID HIL, real carrier certification, provider-delivered recall notices and recall-owner/site sign-off remain external acceptance gates.
