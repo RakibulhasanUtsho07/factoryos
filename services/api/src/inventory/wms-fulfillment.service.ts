@@ -604,6 +604,7 @@ export class WmsFulfillmentService {
               customer_name: customerName, customer_order_reference: customerOrderReference,
               carrier_name: carrierName, tracking_reference: trackingReference,
               container_unit_id: containerId, item_id: container.item_id,
+              order_id: orderId, order_line_id: orderLineId,
             }), 'wms-shipment-' + this.hash(key), requestHash, userId, correlationId]);
           const shipmentUnitId = unitIdResult.rows[0]?.id;
           if (!shipmentUnitId) throw new Error('WMS_SHIPMENT_TRACEABILITY_IDENTITY_INSERT_FAILED');
@@ -673,13 +674,13 @@ export class WmsFulfillmentService {
           await client.query(`
             INSERT INTO wms_shipments (
               shipment_unit_id, tenant_id, factory_id, container_unit_id, item_id, source_location_id,
-              inventory_movement_id, shipment_code, customer_name, customer_order_reference,
+              inventory_movement_id, shipment_code, customer_name, customer_order_reference, order_id, order_line_id,
               carrier_name, tracking_reference, quantity, unit, status, idempotency_key, request_hash,
               dispatched_by_user_id, correlation_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::numeric,$14,'DISPATCHED',$15,$16,$17,$18)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::numeric,$15,'DISPATCHED',$16,$17,$18,$19)
           `, [shipmentUnitId, tenantId, factoryId, containerId, container.item_id, container.location_id,
-            movementId, shipmentCode, customerName, customerOrderReference, carrierName, trackingReference,
-            quantityDecimal, container.unit, key, requestHash, userId, correlationId]);
+            movementId, shipmentCode, customerName, customerOrderReference, orderId, orderLineId,
+            carrierName, trackingReference, quantityDecimal, container.unit, key, requestHash, userId, correlationId]);
 
           await client.query(`
             UPDATE wms_packing_containers
