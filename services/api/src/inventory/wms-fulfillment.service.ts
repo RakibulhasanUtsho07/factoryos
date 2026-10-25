@@ -830,8 +830,13 @@ export class WmsFulfillmentService {
     if (!['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'DELIVERED', 'RETURNED'].includes(eventType)) {
       throw new BadRequestException('event_type is not supported');
     }
-    const eventAt = dto.event_at ? new Date(dto.event_at) : new Date();
-    if (!Number.isFinite(eventAt.getTime())) throw new BadRequestException('event_at must be a valid timestamp');
+    // Fingerprint the caller's input, not a timestamp synthesized by this server.
+    // If event_at is omitted, a retry must match the original request even though "now" changes.
+    const suppliedEventAt = dto.event_at != null ? new Date(dto.event_at) : null;
+    if (suppliedEventAt && !Number.isFinite(suppliedEventAt.getTime())) {
+      throw new BadRequestException('event_at must be a valid timestamp');
+    }
+    const eventAt = suppliedEventAt ?? new Date();
     if (eventAt.getTime() > Date.now() + 10 * 60 * 1000) {
       throw new BadRequestException('event_at cannot be more than ten minutes in the future');
     }
