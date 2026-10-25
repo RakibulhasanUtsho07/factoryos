@@ -72,7 +72,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_shipment_delivery_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_shipments DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE order_lines DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE orders DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_contents DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_packing_containers DISABLE TRIGGER USER');
         await adminPool.query(
@@ -109,7 +112,19 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
+            'DELETE FROM wms_shipment_delivery_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
             'DELETE FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM order_lines WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM orders WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -187,7 +202,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE product_genealogy_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_unit_status_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_shipment_delivery_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_shipments ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE order_lines ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE orders ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_packing_contents ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_packing_containers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations ENABLE TRIGGER USER');
