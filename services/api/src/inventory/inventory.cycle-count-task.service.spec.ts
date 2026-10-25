@@ -1,5 +1,7 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { jest } from '@jest/globals';
+import { createHash } from 'node:crypto';
+import type { QueryResultRow } from 'pg';
 
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
@@ -10,17 +12,59 @@ const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
 const FACTORY_ID = '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 const ITEM_ID = '69ef2a43-8157-4d91-aa59-7b4260ef1778';
 const TASK_ID = '28c3c8e1-c57a-4ea1-9b9d-1a8c4c52c45d';
+const PROPOSAL_ID = 'e5d197fe-7a4a-44ce-b3c4-9231289c1897';
+const ESCALATION_ID = '6b42d2b9-46ca-4b87-a1b5-0e6db6905b0d';
+
+type QueryResponse = { rows: QueryResultRow[] };
+
+const queryRows = (rows: unknown[]): QueryResponse => ({
+  rows: rows as QueryResultRow[],
+});
+
+const resolutionRequestHash = (taskId: string, resolutionNote: string): string =>
+  createHash('sha256').update(JSON.stringify({
+    taskId: taskId.toLowerCase(),
+    resolutionNote,
+  })).digest('hex');
+
+const escalationRow = (requestHash: string): QueryResultRow => ({
+  id: ESCALATION_ID,
+  tenant_id: TENANT_ID,
+  factory_id: FACTORY_ID,
+  task_id: TASK_ID,
+  proposal_id: PROPOSAL_ID,
+  item_id: ITEM_ID,
+  expected_quantity: '12.0000',
+  counted_quantity: '7.0000',
+  variance_quantity: '-5.0000',
+  threshold_quantity: '2.0000',
+  status: 'RESOLVED',
+  detected_at: '2026-10-25T10:00:00.000Z',
+  resolved_by_user_id: USER_ID,
+  resolved_at: '2026-10-25T10:05:00.000Z',
+  resolution_note: 'Investigated stock variance',
+  resolution_idempotency_key: 'escalation-resolve-1',
+  resolution_request_hash: requestHash,
+  version: '2',
+} as unknown as QueryResultRow);
 
 describe('InventoryCycleCountTaskService', () => {
-  const databaseMock = {
-    transaction: jest.fn(),
-    query: jest.fn(),
-  };
-  const auditMock = { record: jest.fn() };
+  let client: { query: ReturnType<typeof jest.fn> };
+  let databaseMock: { transaction: ReturnType<typeof jest.fn>; query: ReturnType<typeof jest.fn> };
+  let auditMock: { record: ReturnType<typeof jest.fn> };
   let service: InventoryCycleCountTaskService;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    client = { query: jest.fn().mockResolvedValue(queryRows([])) };
+    databaseMock = {
+      transaction: jest.fn(async (first: unknown, second?: unknown) => {
+        const callback = typeof first === 'function' ? first : second;
+        if (typeof callback !== 'function') throw new Error('transaction callback missing');
+        return (callback as (clientArg: typeof client) => Promise<unknown>)(client);
+      }),
+      query: jest.fn(),
+    };
+    auditMock = { record: jest.fn().mockResolvedValue('audit-id') };
     service = new InventoryCycleCountTaskService(
       databaseMock as unknown as DatabaseService,
       auditMock as unknown as AuditService,
@@ -137,5 +181,45 @@ describe('InventoryCycleCountTaskService', () => {
     )).rejects.toBeInstanceOf(BadRequestException);
 
     expect(databaseMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('replays a resolved escalation for the same UUID even when the caller UUID casing differs', async () => {
+    const note = 'Investigated stock variance';
+    client.query.mockResolvedValueOnce(queryRows([
+      escalationRow(resolutionRequestHash(TASK_ID.toUpperCase(), note)),
+    ]));
+
+    const result = await service.resolveVarianceEscalation(
+      USER_ID.toUpperCase(), TENANT_ID, FACTORY_ID, TASK_ID.toUpperCase(),
+      note, 'escalation-resolve-1', null, null,
+    );
+
+    expect(result).toMatchObject({
+      id: ESCALATION_ID,
+      resolved_by_user_id: USER_ID,
+      status: 'RESOLVED',
+      replayed: true,
+    });
+    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(auditMock.record).not.toHaveBeenCalled();
+  });
+
+  it('rejects the original counter from resolving an escalation despite UUID casing differences', async () => {
+    client.query
+      .mockResolvedValueOnce(queryRows([]))
+      .mockResolvedValueOnce(queryRows([{
+        id: TASK_ID,
+        status: 'AWAITING_REVIEW',
+        current_proposal_id: PROPOSAL_ID,
+        submitted_by_user_id: USER_ID,
+      }]));
+
+    await expect(service.resolveVarianceEscalation(
+      USER_ID.toUpperCase(), TENANT_ID, FACTORY_ID, TASK_ID,
+      'Investigated stock variance', 'escalation-resolve-2', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(auditMock.record).not.toHaveBeenCalled();
   });
 });
