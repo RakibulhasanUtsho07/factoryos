@@ -11,6 +11,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { DatabaseService } from '../database/database.service';
 import {
   ChangeTraceabilityUnitStatusDto,
+  DispatchTraceabilityShipmentDto,
   CreateGenealogyEventDto,
   CreateTraceabilityLabelTemplateDto,
   CreateTraceabilityUnitDto,
@@ -477,6 +478,452 @@ export class TraceabilityService {
     `, [eventId, tenantId, factoryId], { tenantId, userId });
     if (!eventResult.rows[0]) throw new NotFoundException('Genealogy event not found in this factory');
     return { ...eventResult.rows[0], replayed };
+  }
+
+
+  async dispatchShipment(
+    userId: string, tenantId: string, factoryId: string, shipmentUnitId: string,
+    dto: DispatchTraceabilityShipmentDto, rawIdempotencyKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const shipmentId = this.requiredUuid(shipmentUnitId, 'shipmentUnitId');
+    const sourceLocationId = this.requiredUuid(dto.source_location_id, 'source_location_id');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const notes = dto.notes?.trim() || null;
+    if (notes && notes.length > 1000) throw new BadRequestException('notes must contain at most 1000 characters');
+
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+    const requestHash = this.hash({
+      shipment_unit_id: shipmentId,
+      source_location_id: sourceLocationId,
+      notes,
+    });
+
+    const parseUnits = (value: string): bigint => {
+      const [wholeText, fractionText = ''] = String(value).split('.');
+      const whole = BigInt(wholeText);
+      const fraction = BigInt((fractionText + '0000').slice(0, 4));
+      return whole * 10000n + (whole < 0n ? -fraction : fraction);
+    };
+    const formatUnits = (value: bigint): string => {
+      const negative = value < 0n;
+      const absolute = negative ? -value : value;
+      return (negative ? '-' : '') + (absolute / 10000n).toString()
+        + '.' + (absolute % 10000n).toString().padStart(4, '0');
+    };
+
+    let dispatchId: string;
+    let replayed: boolean;
+    try {
+      const result = await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':shipment-dispatch-idempotency:' + idempotencyKey],
+          );
+          const existingByKey = await client.query<{ id: string; request_hash: string }>(`
+            SELECT id::text AS id, request_hash
+            FROM traceability_shipment_dispatches
+            WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, idempotencyKey]);
+          if (existingByKey.rows[0]) {
+            if (existingByKey.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Idempotency-Key was already used for a different shipment dispatch');
+            }
+            return { id: existingByKey.rows[0].id, replayed: true };
+          }
+
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':shipment-dispatch-unit:' + shipmentId],
+          );
+          const priorDispatch = await client.query<{ id: string }>(`
+            SELECT id::text AS id
+            FROM traceability_shipment_dispatches
+            WHERE tenant_id=$1 AND factory_id=$2 AND shipment_unit_id=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, shipmentId]);
+          if (priorDispatch.rows[0]) {
+            throw new ConflictException('Shipment has already been dispatched');
+          }
+
+          const shipmentResult = await client.query<{
+            id: string; unit_type: string; product_role: string; status: string;
+            version: string; attributes: Record<string, unknown>;
+          }>(`
+            SELECT id::text AS id, unit_type, product_role, status, version::text AS version, attributes
+            FROM traceability_units
+            WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            FOR UPDATE
+          `, [shipmentId, tenantId, factoryId]);
+          const shipment = shipmentResult.rows[0];
+          if (!shipment) throw new NotFoundException('Shipment identity not found in this factory');
+          if (shipment.unit_type !== 'SHIPMENT' || shipment.product_role !== 'SHIPMENT' || shipment.status !== 'ACTIVE') {
+            throw new ConflictException('Only an active SHIPMENT identity can be dispatched');
+          }
+          for (const field of ['customer_reference', 'customer_order_reference', 'shipment_reference'] as const) {
+            const value = shipment.attributes?.[field];
+            if (typeof value !== 'string' || !value.trim()) {
+              throw new ConflictException('Shipment identity is missing required customer/order references');
+            }
+          }
+
+          const locationResult = await client.query<{
+            id: string; location_type: string; status: string; picking_enabled: boolean;
+          }>(`
+            SELECT id::text AS id, location_type, status, picking_enabled
+            FROM inventory_locations
+            WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            FOR UPDATE
+          `, [sourceLocationId, tenantId, factoryId]);
+          const sourceLocation = locationResult.rows[0];
+          if (!sourceLocation || sourceLocation.location_type !== 'STAGING'
+            || sourceLocation.status !== 'ACTIVE' || sourceLocation.picking_enabled !== true) {
+            throw new BadRequestException('Shipment dispatch must issue from an active pick-enabled STAGING location');
+          }
+
+          const contentsResult = await client.query<{
+            traceability_unit_id: string; item_id: string; item_unit: string; traceability_unit: string;
+            quantity: string; unit_status: string; expires_at: string | null; expired: boolean;
+            attributes: Record<string, unknown>; item_status: string;
+          }>(`
+            WITH RECURSIVE package_nodes(unit_id) AS (
+              SELECT p.id
+              FROM product_genealogy_events shipped
+              JOIN traceability_units p
+                ON p.id=shipped.source_unit_id AND p.tenant_id=shipped.tenant_id AND p.factory_id=shipped.factory_id
+              WHERE shipped.tenant_id=$1 AND shipped.factory_id=$2
+                AND shipped.target_unit_id=$3 AND shipped.relationship_type='SHIPPED_AS'
+                AND p.product_role='PACKAGING' AND p.unit_type IN ('CARTON','PALLET')
+              UNION
+              SELECT child.id
+              FROM product_genealogy_events packed
+              JOIN package_nodes parent ON parent.unit_id=packed.target_unit_id
+              JOIN traceability_units child
+                ON child.id=packed.source_unit_id AND child.tenant_id=packed.tenant_id AND child.factory_id=packed.factory_id
+              WHERE packed.tenant_id=$1 AND packed.factory_id=$2
+                AND packed.relationship_type='PACKED_INTO'
+                AND child.product_role='PACKAGING' AND child.unit_type IN ('CARTON','PALLET')
+            )
+            SELECT
+              u.id::text AS traceability_unit_id,
+              u.inventory_item_id::text AS item_id,
+              i.unit AS item_unit,
+              u.unit AS traceability_unit,
+              SUM(e.quantity)::text AS quantity,
+              u.status AS unit_status,
+              u.expires_at::text AS expires_at,
+              (u.expires_at IS NOT NULL AND u.expires_at < CURRENT_DATE) AS expired,
+              u.attributes,
+              i.status AS item_status
+            FROM product_genealogy_events e
+            JOIN package_nodes p ON p.unit_id=e.target_unit_id
+            JOIN traceability_units u
+              ON u.id=e.source_unit_id AND u.tenant_id=e.tenant_id AND u.factory_id=e.factory_id
+            JOIN inventory_items i
+              ON i.id=u.inventory_item_id AND i.tenant_id=u.tenant_id AND i.factory_id=u.factory_id
+            WHERE e.tenant_id=$1 AND e.factory_id=$2
+              AND e.relationship_type='PACKED_INTO'
+              AND u.product_role='FINISHED_GOOD'
+              AND u.unit_type IN ('LOT','SERIAL','FINISHED_GOOD')
+            GROUP BY u.id, u.inventory_item_id, i.unit, u.unit, u.status, u.expires_at, u.attributes, i.status
+            ORDER BY u.inventory_item_id, u.id
+          `, [tenantId, factoryId, shipmentId]);
+          const contents = contentsResult.rows;
+          if (contents.length === 0) {
+            throw new ConflictException('Shipment has no finished-good lot/serial quantity in its package genealogy');
+          }
+
+          const itemTotals = new Map<string, { unit: string; units: bigint }>();
+          for (const row of contents) {
+            if (row.item_status !== 'ACTIVE') throw new ConflictException('Disabled inventory items cannot be dispatched');
+            if (row.unit_status !== 'ACTIVE' || row.expired) {
+              throw new ConflictException('Shipment contains a non-active or expired finished-good identity');
+            }
+            const attributes = row.attributes ?? {};
+            const condition = String(attributes.condition ?? '').toUpperCase();
+            if (attributes.damaged === true || attributes.held === true || attributes.quarantined === true
+              || ['DAMAGED', 'HELD', 'QUARANTINED', 'EXPIRED'].includes(condition)) {
+              throw new ConflictException('Shipment contains damaged, held or quarantined finished-good stock');
+            }
+            if (row.item_unit !== row.traceability_unit) {
+              throw new ConflictException('Finished-good traceability unit must use its inventory item base unit before dispatch');
+            }
+            const total = itemTotals.get(row.item_id);
+            const units = parseUnits(row.quantity);
+            itemTotals.set(row.item_id, {
+              unit: row.item_unit,
+              units: (total?.units ?? 0n) + units,
+            });
+          }
+
+          const itemIds = [...itemTotals.keys()].sort();
+          const aggregateResult = await client.query<{
+            item_id: string; quantity_on_hand: string; quantity_reserved: string;
+          }>(`
+            SELECT item_id::text AS item_id, quantity_on_hand::text AS quantity_on_hand,
+              quantity_reserved::text AS quantity_reserved
+            FROM inventory_stock_balances
+            WHERE tenant_id=$1 AND factory_id=$2 AND item_id=ANY($3::uuid[])
+            ORDER BY item_id FOR UPDATE
+          `, [tenantId, factoryId, itemIds]);
+          const aggregateByItem = new Map(aggregateResult.rows.map(row => [row.item_id, row]));
+          if (aggregateByItem.size !== itemIds.length) {
+            throw new ConflictException('Inventory aggregate balance is unavailable for one or more shipment items');
+          }
+          const locationBalanceResult = await client.query<{
+            item_id: string; quantity_on_hand: string; quantity_reserved: string;
+          }>(`
+            SELECT item_id::text AS item_id, quantity_on_hand::text AS quantity_on_hand,
+              quantity_reserved::text AS quantity_reserved
+            FROM inventory_location_balances
+            WHERE tenant_id=$1 AND factory_id=$2 AND location_id=$3 AND item_id=ANY($4::uuid[])
+            ORDER BY item_id FOR UPDATE
+          `, [tenantId, factoryId, sourceLocationId, itemIds]);
+          const locationByItem = new Map(locationBalanceResult.rows.map(row => [row.item_id, row]));
+          if (locationByItem.size !== itemIds.length) {
+            throw new ConflictException('Outbound staging does not have item/location stock balances for all shipment contents');
+          }
+
+          const identityBalanceByUnit = new Map<string, { quantity_on_hand: string; quantity_reserved: string }>();
+          for (const row of contents) {
+            const traceBalanceResult = await client.query<{
+              quantity_on_hand: string; quantity_reserved: string;
+            }>(`
+              SELECT quantity_on_hand::text AS quantity_on_hand, quantity_reserved::text AS quantity_reserved
+              FROM inventory_traceability_location_balances
+              WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3
+                AND traceability_unit_id=$4 AND location_id=$5
+              FOR UPDATE
+            `, [tenantId, factoryId, row.item_id, row.traceability_unit_id, sourceLocationId]);
+            const tracked = traceBalanceResult.rows[0];
+            if (!tracked) throw new ConflictException('Packed finished-good lot/serial is not present in outbound STAGING');
+            if (parseUnits(tracked.quantity_on_hand) - parseUnits(tracked.quantity_reserved) < parseUnits(row.quantity)) {
+              throw new ConflictException('Outbound STAGING has insufficient unreserved stock for a packed finished-good lot/serial');
+            }
+            identityBalanceByUnit.set(row.traceability_unit_id, tracked);
+
+            const holdResult = await client.query<{ present: boolean }>(`
+              SELECT EXISTS (
+                SELECT 1 FROM quality_holds qh
+                WHERE qh.tenant_id=$1 AND qh.factory_id=$2 AND qh.status='ACTIVE'
+                  AND (qh.inventory_item_id=$3 OR qh.traceability_unit_id=$4)
+              ) AS present
+            `, [tenantId, factoryId, row.item_id, row.traceability_unit_id]);
+            if (holdResult.rows[0]?.present) {
+              throw new ConflictException('Quality-held finished-good stock cannot be dispatched');
+            }
+          }
+
+          for (const itemId of itemIds) {
+            const aggregate = aggregateByItem.get(itemId)!;
+            const local = locationByItem.get(itemId)!;
+            const total = itemTotals.get(itemId)!;
+            const quantity = formatUnits(total.units);
+            if (parseUnits(aggregate.quantity_on_hand) - parseUnits(aggregate.quantity_reserved) < total.units) {
+              throw new ConflictException('Shipment quantity exceeds unreserved aggregate stock');
+            }
+            if (parseUnits(local.quantity_on_hand) - parseUnits(local.quantity_reserved) < total.units) {
+              throw new ConflictException('Shipment quantity exceeds unreserved stock in outbound STAGING');
+            }
+          }
+
+          const dispatchInsert = await client.query<{ id: string }>(`
+            INSERT INTO traceability_shipment_dispatches (
+              tenant_id, factory_id, shipment_unit_id, source_location_id,
+              status, idempotency_key, request_hash, notes, created_by_user_id, correlation_id
+            ) VALUES ($1,$2,$3,$4,'DISPATCHED',$5,$6,$7,$8,$9::uuid)
+            RETURNING id::text AS id
+          `, [
+            tenantId, factoryId, shipmentId, sourceLocationId,
+            idempotencyKey, requestHash, notes, userId, correlationId,
+          ]);
+          dispatchId = dispatchInsert.rows[0]?.id ?? '';
+          if (!dispatchId) throw new Error('TRACEABILITY_SHIPMENT_DISPATCH_INSERT_FAILED');
+
+          await client.query('SELECT set_config(\'app.inventory_location_id\', $1, TRUE)', [sourceLocationId]);
+          const movementByItem = new Map<string, { id: string; quantity: string; quantity_after: string }>();
+          for (const itemId of itemIds) {
+            const total = itemTotals.get(itemId)!;
+            const quantity = formatUnits(total.units);
+            const balanceUpdated = await client.query<{ quantity_after: string }>(`
+              UPDATE inventory_stock_balances
+              SET quantity_on_hand = quantity_on_hand - $1::numeric,
+                  version = version + 1, updated_at = clock_timestamp()
+              WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4
+                AND quantity_on_hand - quantity_reserved >= $1::numeric
+              RETURNING quantity_on_hand::text AS quantity_after
+            `, [quantity, tenantId, factoryId, itemId]);
+            const balance = balanceUpdated.rows[0];
+            if (!balance) throw new ConflictException('Insufficient available inventory; shipment dispatch was rolled back');
+
+            const movementHash = this.hash({
+              dispatch_id: dispatchId, item_id: itemId, quantity, unit: total.unit,
+              source_location_id: sourceLocationId,
+            });
+            const movementInsert = await client.query<{ id: string }>(`
+              INSERT INTO inventory_movements (
+                tenant_id, factory_id, item_id, location_id, movement_type, quantity,
+                quantity_delta, quantity_after, input_quantity, input_unit_code,
+                conversion_rule_id, conversion_factor_numerator, conversion_factor_denominator,
+                conversion_rounding_mode, idempotency_key, request_hash,
+                reference_type, reference_id, notes, created_by_user_id, correlation_id
+              ) VALUES (
+                $1,$2,$3,$4,'ISSUE',$5::numeric,(-$5::numeric),$6::numeric,$5::numeric,$7,
+                NULL,NULL,NULL,NULL,$8,$9,'SHIPMENT_DISPATCH',$10::uuid,$11,$12,$13::uuid
+              )
+              RETURNING id::text AS id
+            `, [
+              tenantId, factoryId, itemId, sourceLocationId, quantity, balance.quantity_after,
+              total.unit, 'shipment-dispatch:' + dispatchId + ':' + itemId, movementHash,
+              dispatchId, notes ?? ('Customer shipment dispatch ' + shipment.attributes.shipment_reference),
+              userId, correlationId,
+            ]);
+            const movementId = movementInsert.rows[0]?.id;
+            if (!movementId) throw new Error('SHIPMENT_INVENTORY_MOVEMENT_INSERT_FAILED');
+            movementByItem.set(itemId, { id: movementId, quantity, quantity_after: balance.quantity_after });
+
+            await client.query(`
+              INSERT INTO outbox_events (
+                tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+              ) VALUES ($1,$2,'INVENTORY_ITEM',$3,'INVENTORY.STOCK_ISSUED',$4::jsonb)
+            `, [tenantId, factoryId, itemId, JSON.stringify({
+              movement_id: movementId, item_id: itemId, location_id: sourceLocationId,
+              movement_type: 'ISSUE', quantity, quantity_delta: '-' + quantity,
+              quantity_after: balance.quantity_after, reference_type: 'SHIPMENT_DISPATCH', reference_id: dispatchId,
+            })]);
+          }
+
+          for (const row of contents) {
+            const movement = movementByItem.get(row.item_id);
+            if (!movement) throw new Error('SHIPMENT_DISPATCH_ITEM_MOVEMENT_MISSING');
+            const traceUpdate = await client.query<{ id: string }>(`
+              UPDATE inventory_traceability_location_balances
+              SET quantity_on_hand = quantity_on_hand - $1::numeric,
+                  version = version + 1, updated_at = clock_timestamp()
+              WHERE tenant_id=$2 AND factory_id=$3 AND item_id=$4
+                AND traceability_unit_id=$5 AND location_id=$6
+                AND quantity_on_hand - quantity_reserved >= $1::numeric
+              RETURNING id::text AS id
+            `, [row.quantity, tenantId, factoryId, row.item_id, row.traceability_unit_id, sourceLocationId]);
+            if (!traceUpdate.rows[0]) {
+              throw new ConflictException('Packed finished-good quantity changed during dispatch; all stock issues were rolled back');
+            }
+            await client.query(`
+              INSERT INTO traceability_shipment_dispatch_lines (
+                tenant_id, factory_id, dispatch_id, item_id, traceability_unit_id,
+                source_location_id, quantity, unit, inventory_movement_id
+              ) VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9)
+            `, [
+              tenantId, factoryId, dispatchId, row.item_id, row.traceability_unit_id,
+              sourceLocationId, row.quantity, row.item_unit, movement.id,
+            ]);
+          }
+
+          const nextVersion = Number(shipment.version) + 1;
+          const updatedShipment = await client.query<{ id: string }>(`
+            UPDATE traceability_units
+            SET status='SHIPPED', version=version+1, updated_at=clock_timestamp()
+            WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 AND status='ACTIVE'
+            RETURNING id::text AS id
+          `, [shipmentId, tenantId, factoryId]);
+          if (!updatedShipment.rows[0]) throw new ConflictException('Shipment status changed concurrently; dispatch was rolled back');
+
+          const statusReason = 'Shipment dispatched under inventory dispatch ' + dispatchId;
+          const statusKey = 'shipment-dispatch-status:' + dispatchId;
+          const statusHash = this.hash({
+            shipment_unit_id: shipmentId, from_status: 'ACTIVE', to_status: 'SHIPPED',
+            dispatch_id: dispatchId, version: nextVersion,
+          });
+          await client.query(`
+            INSERT INTO traceability_unit_status_events (
+              tenant_id, factory_id, unit_id, version, from_status, to_status, reason,
+              idempotency_key, request_hash, changed_by_user_id, correlation_id
+            ) VALUES ($1,$2,$3,$4,'ACTIVE','SHIPPED',$5,$6,$7,$8,$9::uuid)
+          `, [tenantId, factoryId, shipmentId, nextVersion, statusReason, statusKey, statusHash, userId, correlationId]);
+
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+            ) VALUES ($1,$2,'TRACEABILITY_UNIT',$3,'TRACEABILITY.UNIT_STATUS_CHANGED',$4::jsonb)
+          `, [tenantId, factoryId, shipmentId, JSON.stringify({
+            unit_id: shipmentId, from_status: 'ACTIVE', to_status: 'SHIPPED',
+            reason: statusReason, version: nextVersion, dispatch_id: dispatchId,
+          })]);
+          await this.insertAudit(client, {
+            tenantId, factoryId, userId, resourceType: 'TRACEABILITY_UNIT', resourceId: shipmentId,
+            action: 'STATUS_CHANGED', correlationId, requestId: requestUuid,
+            payload: { fromStatus: 'ACTIVE', toStatus: 'SHIPPED', reason: statusReason, version: nextVersion, dispatchId },
+          });
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+            ) VALUES ($1,$2,'TRACEABILITY_SHIPMENT_DISPATCH',$3,'TRACEABILITY.SHIPMENT_DISPATCHED',$4::jsonb)
+          `, [tenantId, factoryId, dispatchId, JSON.stringify({
+            dispatch_id: dispatchId, shipment_unit_id: shipmentId,
+            source_location_id: sourceLocationId,
+            customer_reference: shipment.attributes.customer_reference,
+            customer_order_reference: shipment.attributes.customer_order_reference,
+            shipment_reference: shipment.attributes.shipment_reference,
+            lines: contents.map(row => ({
+              traceability_unit_id: row.traceability_unit_id, item_id: row.item_id, quantity: row.quantity, unit: row.item_unit,
+            })),
+          })]);
+          await this.insertAudit(client, {
+            tenantId, factoryId, userId, resourceType: 'TRACEABILITY_SHIPMENT_DISPATCH', resourceId: dispatchId,
+            action: 'DISPATCHED', correlationId, requestId: requestUuid,
+            payload: {
+              shipmentUnitId: shipmentId, sourceLocationId,
+              customerReference: shipment.attributes.customer_reference,
+              customerOrderReference: shipment.attributes.customer_order_reference,
+              shipmentReference: shipment.attributes.shipment_reference,
+              itemCount: itemIds.length, lineCount: contents.length,
+            },
+          });
+          return { id: dispatchId, replayed: false };
+        },
+      );
+      dispatchId = result.id;
+      replayed = result.replayed;
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'Shipment dispatch conflicts with existing dispatch, stock, genealogy or idempotency evidence');
+    }
+
+    const dispatched = await this.database.query(`
+      SELECT d.id::text AS id, d.shipment_unit_id::text AS shipment_unit_id,
+        s.unit_code AS shipment_unit_code, d.source_location_id::text AS source_location_id,
+        d.status, d.idempotency_key, d.request_hash, d.notes,
+        d.created_by_user_id::text AS created_by_user_id,
+        d.correlation_id::text AS correlation_id,
+        d.dispatched_at::text AS dispatched_at, d.created_at::text AS created_at,
+        COALESCE(
+          jsonb_agg(jsonb_build_object(
+            'id', l.id::text, 'item_id', l.item_id::text, 'sku', i.sku,
+            'traceability_unit_id', l.traceability_unit_id::text, 'unit_code', u.unit_code,
+            'source_location_id', l.source_location_id::text,
+            'quantity', l.quantity::text, 'unit', l.unit, 'inventory_movement_id', l.inventory_movement_id::text
+          ) ORDER BY l.item_id, l.traceability_unit_id) FILTER (WHERE l.id IS NOT NULL),
+          '[]'::jsonb
+        ) AS lines
+      FROM traceability_shipment_dispatches d
+      JOIN traceability_units s ON s.id=d.shipment_unit_id AND s.tenant_id=d.tenant_id AND s.factory_id=d.factory_id
+      LEFT JOIN traceability_shipment_dispatch_lines l
+        ON l.dispatch_id=d.id AND l.tenant_id=d.tenant_id AND l.factory_id=d.factory_id
+      LEFT JOIN inventory_items i
+        ON i.id=l.item_id AND i.tenant_id=l.tenant_id AND i.factory_id=l.factory_id
+      LEFT JOIN traceability_units u
+        ON u.id=l.traceability_unit_id AND u.tenant_id=l.tenant_id AND u.factory_id=l.factory_id
+      WHERE d.id=$1 AND d.tenant_id=$2 AND d.factory_id=$3
+      GROUP BY d.id, s.unit_code
+    `, [dispatchId, tenantId, factoryId], { tenantId, userId });
+    const dispatch = dispatched.rows[0];
+    if (!dispatch) throw new NotFoundException('Shipment dispatch record not found');
+    return { ...dispatch, replayed };
   }
 
   async trace(
