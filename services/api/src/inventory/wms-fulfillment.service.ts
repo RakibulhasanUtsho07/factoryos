@@ -554,15 +554,16 @@ export class WmsFulfillmentService {
             if (expectedReference.toLowerCase() !== customerOrderReference.trim().toLowerCase()) {
               throw new ConflictException('Shipment customer-order reference must match the bound order reference');
             }
-            const lineResult = await client.query<{ product_code: string; unit: string; quantity: string }>(`
-              SELECT product_code, unit, quantity::text AS quantity
+            const lineResult = await client.query<{ product_code: string; unit: string; quantity: string; inventory_item_id: string | null }>(`
+              SELECT product_code, unit, quantity::text AS quantity, inventory_item_id::text AS inventory_item_id
               FROM order_lines WHERE id=$1 AND order_id=$2 AND tenant_id=$3 AND factory_id=$4 FOR UPDATE
             `, [orderLineId, orderId, tenantId, factoryId]);
             const orderLine = lineResult.rows[0];
             if (!orderLine) throw new NotFoundException('Customer order line not found in the bound order');
             if (orderLine.product_code.trim().toUpperCase() !== item.sku.trim().toUpperCase()
-              || orderLine.unit.trim().toUpperCase() !== item.unit.trim().toUpperCase()) {
-              throw new ConflictException('Shipment item and UOM must match the bound order line SKU and UOM');
+              || orderLine.unit.trim().toUpperCase() !== item.unit.trim().toUpperCase()
+              || (orderLine.inventory_item_id !== null && orderLine.inventory_item_id !== container.item_id)) {
+              throw new ConflictException('Shipment item, SKU and UOM must match the bound order line');
             }
             const priorShipped = await client.query<{ quantity: string }>(`
               SELECT COALESCE(sum(quantity),0)::text AS quantity
