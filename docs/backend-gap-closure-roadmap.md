@@ -78,4 +78,9 @@
 
 **Boundary:** this adapter is read-only. The carrier/provider must place the bytes at the agreed object key before callback; this code does not create upload URLs or upload the bytes. Actual storage credentials/bucket policy, provider sandbox certification, barcode/QR, offline/RFID and site commissioning evidence remain outstanding. No real external storage was available to certify during this code change.
 
+### WP02 slice — bounded read-only recall impact assessment
+**Gap:** forward/reverse genealogy could be queried, but there was no single bounded operational response joining downstream identities to WMS customer-shipment/delivery evidence for recall triage.
+**Implementation/acceptance:** `GET /api/v1/traceability/units/:unitId/recall-impact` uses `traceability.read` and authenticated tenant/factory scope. It returns the starting identity, downstream genealogy nodes/edges, matching WMS shipments with customer/order/tracking and latest delivery/POD reference metadata, upstream provenance and explicit truncation indicators. PostgreSQL acceptance covers a finished-good lot traced through carton/pallet paths to two separate shipments, conservative node bounds, no stock/status changes, and cross-tenant rejection.
+**Boundary:** impact analysis only. It does not declare a recall, set RECALLED/QUARANTINED status, adjust stock, issue stop-ship commands, notify customers, capture acknowledgements or replace recall-owner/site acceptance. A truncated graph is not a complete recall assessment.
+
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
