@@ -969,6 +969,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       { source_unit_id: finishedLot.id, quantity: 3 },
       'wms-carton-dup-content-' + randomUUID(), requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
+
+    // Container capacity is an independent guard from available stock.
+    await expect(fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 0.1 },
+      'wms-carton-over-capacity-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
     const packingCommitmentClient = await adminPool.connect();
     try {
       await packingCommitmentClient.query('BEGIN');
@@ -1143,6 +1150,38 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, foreignTenantId, fixture.factoryId, { search: dispatchPayload.customer_order_reference },
     );
     expect(foreignShipments.shipments).toHaveLength(0);
+
+    await expect(fulfillmentService.dispatchContainer(
+      userId, foreignTenantId, fixture.factoryId, palletId,
+      dispatchPayload, 'wms-foreign-dispatch-' + randomUUID(), requestId, traceId,
+    )).rejects.toThrow(/not found in this factory/i);
+
+    const emptyCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-EMPTY-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 1,
+      },
+      'wms-carton-empty-create-' + randomUUID(), requestId, traceId,
+    );
+    await expect(fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId,
+      emptyCarton.container.container_unit_id as string,
+      'wms-carton-empty-seal-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId,
+      emptyCarton.container.container_unit_id as string,
+      {
+        shipment_code: 'SHIP-EMPTY-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-EMPTY-' + randomUUID().slice(0, 8),
+      },
+      'wms-carton-empty-dispatch-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     // The previously packed lot has exactly two units left. Exercise the late-failure
     // path after stock and shipment rows have been written, and prove transaction rollback.
