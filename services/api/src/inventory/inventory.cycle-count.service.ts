@@ -806,7 +806,7 @@ export class InventoryCycleCountService {
       ) {
         throw new ConflictException('Idempotency-Key was reused for a different cycle-count decision');
       }
-      result = this.toRejectResult(proposal, true);
+      result = this.toRejectResult(proposal, true, userId);
     }
 
     if (!result.replayed) {
