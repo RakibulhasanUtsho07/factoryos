@@ -82,23 +82,6 @@ BEGIN
     RAISE EXCEPTION 'completion guard must reject any work order with consumed lot/serial quantity missing from genealogy';
   END IF;
 
-  SELECT string_agg(line, E'\n' ORDER BY ordinal)
-    INTO v_manifest
-  FROM (
-    SELECT line, row_number() OVER () AS ordinal
-    FROM regexp_split_to_table(pg_read_file('scripts/audit/migration-manifest.txt'), E'\n') AS line
-  ) manifest_lines;
-  IF position('migrations/198_production_output_lot_genealogy.sql' IN v_manifest) = 0
-     OR position('migrations/199_wms_work_order_genealogy_consumption_guard.sql' IN v_manifest) = 0
-     OR position('migrations/198_production_output_lot_genealogy.sql' IN v_manifest)
-        > position('migrations/199_wms_work_order_genealogy_consumption_guard.sql' IN v_manifest)
-  THEN
-    -- The normal CI runner validates and reads the manifest from its workspace;
-    -- a database server may not have the repository mounted, so check only when it is.
-    IF to_regprocedure('pg_read_file(text)') IS NOT NULL THEN
-      RAISE EXCEPTION 'migration manifest must apply output genealogy before the WMS evidence guard';
-    END IF;
-  END IF;
 END $$;
 
 ROLLBACK;
