@@ -29,6 +29,7 @@ DECLARE
   v_missing_shipment_metadata_rejected BOOLEAN := FALSE;
   v_dispatch_without_issue_rejected BOOLEAN := FALSE;
   v_nested_carton_direct_ship_rejected BOOLEAN := FALSE;
+  v_late_pack_rejected BOOLEAN := FALSE;
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
 BEGIN
@@ -238,6 +239,23 @@ BEGIN
     '{"customer_reference":"CUSTOMER-001","customer_order_reference":"CUSTOMER-ORDER-001","shipment_reference":"SHIPMENT-001"}'::jsonb,
     'Pallet included in shipment', 'trace-edge-pallet-shipment', repeat('2',64), v_actor, v_trace
   );
+
+  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
+    BEGIN
+      INSERT INTO product_genealogy_events (
+        tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity, unit,
+        evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
+      ) VALUES (
+        v_tenant, v_factory, v_other_unit, v_carton, 'PACKED_INTO', 1, 'PCS', '{}'::jsonb,
+        'trace-invalid-late-pack', repeat('7',64), v_actor, v_trace
+      );
+    EXCEPTION WHEN check_violation THEN
+      v_late_pack_rejected := TRUE;
+    END;
+    IF NOT v_late_pack_rejected THEN
+      RAISE EXCEPTION 'late contents were allowed into a package already assigned to a shipment';
+    END IF;
+  END IF;
 
   INSERT INTO audit_events (
     tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
