@@ -315,9 +315,6 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/188_inventory_blind_count_variance_escalation.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-blind-variance.sql
 
-          echo "Checking WP02 blind-count reviewer permission and immutable database decision gates"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-blind-review-visibility.sql
-
           echo "Reapplying multi-bin cycle-count session migration and validating transactional session guards"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/189_inventory_cycle_count_sessions.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-sessions.sql
@@ -395,6 +392,9 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f scripts/seed-dev-quality-manager.sql
+
+          echo "Checking WP02 blind-count reviewer grants and immutable database decision gates after role seeding"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/inventory-cycle-count-blind-review-visibility.sql
 
           echo "Reapplying finance workbench migration to verify DDL idempotency and post-seed role grants"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
