@@ -34,6 +34,15 @@ BEGIN
      OR position('own or parent shipment evidence' IN v_function) = 0 THEN
     RAISE EXCEPTION 'Packing container lifecycle must bind nested cartons to parent shipment evidence';
   END IF;
+  v_function := pg_get_functiondef('public.factoryos_guard_wms_packing_content()'::regprocedure);
+  IF position('v_already_packed' IN v_function) = 0
+     OR position('live cartons' IN v_function) = 0 THEN
+    RAISE EXCEPTION 'Packing guard must prevent a finished-good lot from being over-packed';
+  END IF;
+  v_function := pg_get_functiondef('public.factoryos_guard_wms_shipment_insert()'::regprocedure);
+  IF position('assigned to a pallet' IN v_function) = 0 THEN
+    RAISE EXCEPTION 'A carton assigned to a pallet must not be independently dispatched';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version='201_wms_carton_pallet_shipment_traceability') THEN
     RAISE EXCEPTION 'WMS packing/shipment migration marker is missing';
   END IF;

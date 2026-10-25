@@ -952,6 +952,22 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       { source_unit_id: finishedLot.id, quantity: 3 },
       'wms-carton-content-' + randomUUID(), requestId, traceId,
     );
+    const duplicateCarton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-DUP-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-carton-dup-create-' + randomUUID(), requestId, traceId,
+    );
+    await expect(fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, duplicateCarton.container.container_unit_id as string,
+      { source_unit_id: finishedLot.id, quantity: 3 },
+      'wms-carton-dup-content-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
     const cartonSealKey = 'wms-carton-seal-' + randomUUID();
     await fulfillmentService.sealContainer(
       userId, tenantId, fixture.factoryId, cartonId, cartonSealKey, requestId, traceId,
@@ -981,6 +997,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     await fulfillmentService.sealContainer(
       userId, tenantId, fixture.factoryId, palletId, 'wms-pallet-seal-' + randomUUID(), requestId, traceId,
     );
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, cartonId,
+      {
+        shipment_code: 'SHIP-CARTON-BLOCK-' + randomUUID().slice(0, 5),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARTON-BLOCK-' + randomUUID().slice(0, 5),
+      },
+      'wms-carton-dispatch-block-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     const dispatchKey = 'wms-dispatch-' + randomUUID();
     const dispatchPayload = {

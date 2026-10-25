@@ -425,6 +425,17 @@ export class WmsFulfillmentService {
           if (!container) throw new NotFoundException('Packing container not found in this factory');
           if (container.status !== 'SEALED') throw new ConflictException('Only sealed containers can be dispatched');
           if (Number(container.packed_quantity) <= 0) throw new ConflictException('Empty containers cannot be dispatched');
+          if (container.container_type === 'CARTON') {
+            const parent = await client.query<{ present: boolean }>(`
+              SELECT EXISTS (
+                SELECT 1 FROM wms_packing_contents pc
+                WHERE pc.tenant_id=$1 AND pc.factory_id=$2 AND pc.source_container_unit_id=$3
+              ) AS present
+            `, [tenantId, factoryId, containerId]);
+            if (parent.rows[0]?.present) {
+              throw new ConflictException('This carton belongs to a pallet; dispatch the pallet instead');
+            }
+          }
 
           const leafResult = await client.query<WmsLeafRow>(`
             WITH RECURSIVE tree(unit_id, edge_quantity, path) AS (

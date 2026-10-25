@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS wms_packing_containers (
 );
 CREATE INDEX IF NOT EXISTS idx_wms_packing_container_location
   ON wms_packing_containers (tenant_id, factory_id, location_id, status, container_type);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wms_packing_container_seal_idempotency
+  ON wms_packing_containers (tenant_id, factory_id, seal_idempotency_key)
+  WHERE seal_idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS wms_packing_contents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -279,6 +282,7 @@ DECLARE
   v_event product_genealogy_events%ROWTYPE;
   v_location_quantity NUMERIC(18,4);
   v_location_reserved NUMERIC(18,4);
+  v_already_packed NUMERIC(18,4);
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'WMS packing content evidence is append-only'
@@ -319,8 +323,23 @@ BEGIN
     WHERE tenant_id = NEW.tenant_id AND factory_id = NEW.factory_id AND item_id = NEW.item_id
       AND traceability_unit_id = NEW.source_unit_id AND location_id = NEW.location_id
     FOR UPDATE;
-    IF NOT FOUND OR v_location_quantity - v_location_reserved < NEW.quantity THEN
-      RAISE EXCEPTION 'packing quantity exceeds unreserved finished-good lot stock at this location'
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'finished-good lot has no tracked stock at this location'
+        USING ERRCODE = '23514';
+    END IF;
+    SELECT COALESCE(sum(pc.quantity),0)::numeric(18,4)
+      INTO v_already_packed
+    FROM wms_packing_contents pc
+    JOIN wms_packing_containers existing_carton
+      ON existing_carton.container_unit_id=pc.container_unit_id
+     AND existing_carton.tenant_id=pc.tenant_id AND existing_carton.factory_id=pc.factory_id
+    WHERE pc.tenant_id=NEW.tenant_id AND pc.factory_id=NEW.factory_id
+      AND pc.item_id=NEW.item_id AND pc.source_unit_id=NEW.source_unit_id
+      AND pc.source_container_unit_id IS NULL
+      AND existing_carton.container_type='CARTON'
+      AND existing_carton.status <> 'DISPATCHED';
+    IF v_location_quantity - v_location_reserved - v_already_packed < NEW.quantity THEN
+      RAISE EXCEPTION 'packing quantity exceeds finished-good lot quantity not already packed into live cartons'
         USING ERRCODE = '23514';
     END IF;
     IF (v_source.expires_at IS NOT NULL AND v_source.expires_at < CURRENT_DATE)
@@ -455,6 +474,14 @@ BEGIN
      OR v_container.location_id <> NEW.source_location_id
      OR v_container.packed_quantity IS DISTINCT FROM NEW.quantity OR v_container.unit <> NEW.unit THEN
     RAISE EXCEPTION 'only a fully packed sealed same-item container may be dispatched'
+      USING ERRCODE = '23514';
+  END IF;
+  IF v_container.container_type = 'CARTON' AND EXISTS (
+    SELECT 1 FROM wms_packing_contents parent_content
+    WHERE parent_content.tenant_id=NEW.tenant_id AND parent_content.factory_id=NEW.factory_id
+      AND parent_content.source_container_unit_id=NEW.container_unit_id
+  ) THEN
+    RAISE EXCEPTION 'a carton assigned to a pallet must be dispatched through the pallet shipment'
       USING ERRCODE = '23514';
   END IF;
   SELECT * INTO v_shipment FROM traceability_units
