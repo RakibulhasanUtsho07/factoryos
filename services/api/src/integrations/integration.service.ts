@@ -535,6 +535,9 @@ export class IntegrationService {
     };
 
     const carrierName = requiredText('carrier_name', 255);
+    if (carrierName.toLowerCase() !== input.connector.display_name.trim().toLowerCase()) {
+      throw new BadRequestException('carrier_name must match the WMS_CARRIER connector display name');
+    }
     const trackingReference = requiredText('tracking_reference', 255);
     const eventType = requiredText('event_type', 24).toUpperCase();
     if (!['IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERY_FAILED', 'DELIVERED', 'RETURNED'].includes(eventType)) {
