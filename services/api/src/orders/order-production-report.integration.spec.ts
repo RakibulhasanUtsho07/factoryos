@@ -168,14 +168,13 @@ describe('OrderProductionReportService PostgreSQL integration', () => {
           `DELETE FROM inventory_traceability_location_balances
            WHERE tenant_id = $1 AND factory_id = $2
              AND traceability_unit_id IN (
-               SELECT p.traceability_unit_id
-               FROM production_output_postings p
-               WHERE p.tenant_id = $1 AND p.factory_id = $2
-                 AND p.production_report_id IN (
+               SELECT u.id
+               FROM traceability_units u
+               WHERE u.tenant_id = $1 AND u.factory_id = $2
+                 AND u.production_report_id IN (
                    SELECT r.id FROM order_production_reports r
                    WHERE r.tenant_id = $1 AND r.factory_id = $2 AND r.order_id = ANY($3::uuid[])
                  )
-                 AND p.traceability_unit_id IS NOT NULL
              )`,
           [tenantId, factoryId, orderIds],
         );
