@@ -1517,6 +1517,88 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(replay.replayed).toBe(true);
     expect(replay.recall_case.id).toBe(declared.recall_case.id);
+
+    const notificationKey = 'wms-recall-notify-' + randomUUID();
+    const notificationIntent = await traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+      {
+        recipient_type: 'CUSTOMER',
+        recipient_reference: 'CUSTOMER-' + randomUUID().slice(0, 8),
+        channel: 'PORTAL',
+        reason: 'Notify customer for recall case',
+      },
+      notificationKey, requestId, traceId,
+    );
+    expect(notificationIntent.replayed).toBe(false);
+    expect(notificationIntent.dispatch_status).toBe('INTENT_RECORDED_NOT_DELIVERY_CONFIRMED');
+    const notificationReplay = await traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+      {
+        recipient_type: 'CUSTOMER',
+        recipient_reference: notificationIntent.recipient_reference,
+        channel: 'PORTAL',
+        reason: 'Notify customer for recall case',
+      },
+      notificationKey, requestId, traceId,
+    );
+    expect(notificationReplay.replayed).toBe(true);
+    expect(notificationReplay.id).toBe(notificationIntent.id);
+    await expect(traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+      {
+        recipient_type: 'CUSTOMER',
+        recipient_reference: notificationIntent.recipient_reference,
+        channel: 'EMAIL',
+        reason: 'Notify customer for recall case',
+      },
+      notificationKey, requestId, traceId,
+    )).rejects.toThrow(/different recall notification request/i);
+
+    const acknowledgementKey = 'wms-recall-ack-' + randomUUID();
+    const acknowledgement = await traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id, notificationIntent.id,
+      {
+        outcome: 'RECEIVED',
+        notes: 'Customer service operator reported receipt',
+        evidence_reference: 'TICKET-' + randomUUID().slice(0, 8),
+      },
+      acknowledgementKey, requestId, traceId,
+    );
+    expect(acknowledgement.replayed).toBe(false);
+    expect(acknowledgement.acknowledgement_source).toBe('OPERATOR_REPORTED');
+    expect(acknowledgement.externally_authenticated).toBe(false);
+    const acknowledgementReplay = await traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id, notificationIntent.id,
+      {
+        outcome: 'RECEIVED',
+        notes: 'Customer service operator reported receipt',
+        evidence_reference: acknowledgement.evidence_reference,
+      },
+      acknowledgementKey, requestId, traceId,
+    );
+    expect(acknowledgementReplay.replayed).toBe(true);
+    expect(acknowledgementReplay.id).toBe(acknowledgement.id);
+    await expect(traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id, notificationIntent.id,
+      { outcome: 'ACTION_IN_PROGRESS' },
+      acknowledgementKey, requestId, traceId,
+    )).rejects.toThrow(/different recall acknowledgement/i);
+
+    const notificationList = await traceabilityService.listRecallNotificationIntents(
+      userId, tenantId, fixture.factoryId, declared.recall_case.id,
+    );
+    expect(notificationList.items).toHaveLength(1);
+    expect(notificationList.items[0]).toMatchObject({
+      id: notificationIntent.id,
+      acknowledgement_outcome: 'RECEIVED',
+      acknowledgement_source: 'OPERATOR_REPORTED',
+      dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+      acknowledgement_externally_authenticated: false,
+    });
+    await expect(traceabilityService.listRecallNotificationIntents(
+      userId, randomUUID(), fixture.factoryId, declared.recall_case.id,
+    )).rejects.toThrow(/not found in this factory/i);
+
     const statusEventsAfterReplay = await adminPool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM traceability_unit_status_events
        WHERE tenant_id=$1 AND factory_id=$2 AND unit_id=ANY($3::uuid[]) AND to_status='RECALLED'`,

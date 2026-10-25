@@ -15,6 +15,8 @@ import {
   CreateTraceabilityLabelTemplateDto,
   CreateTraceabilityUnitDto,
   DeclareTraceabilityRecallDto,
+  CreateRecallNotificationIntentDto,
+  RecordRecallNotificationAcknowledgementDto,
   IssueTraceabilityLabelDto,
   UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
@@ -648,6 +650,290 @@ export class TraceabilityService {
         records_created: false,
       },
     };
+  }
+
+  /**
+   * Records a durable notification dispatch intent; it is not proof that an
+   * email, portal message, or EDI payload was sent or delivered.
+   */
+  async createRecallNotificationIntent(
+    userId: string, tenantId: string, factoryId: string, recallCaseId: string,
+    dto: CreateRecallNotificationIntentDto, rawIdempotencyKey: string | null,
+    requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(recallCaseId, 'recallCaseId');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const recipientType = String(dto.recipient_type ?? '').trim().toUpperCase();
+    if (!['CUSTOMER', 'SITE'].includes(recipientType)) {
+      throw new BadRequestException('recipient_type must be CUSTOMER or SITE');
+    }
+    const recipientReference = this.requiredText(dto.recipient_reference, 'recipient_reference', 255);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/.test(recipientReference) || /^https?:/i.test(recipientReference)) {
+      throw new BadRequestException('recipient_reference must be a non-URL customer/site reference, not contact data');
+    }
+    const channel = String(dto.channel ?? '').trim().toUpperCase();
+    if (!['EMAIL', 'PORTAL', 'EDI', 'MANUAL'].includes(channel)) {
+      throw new BadRequestException('channel must be EMAIL, PORTAL, EDI or MANUAL');
+    }
+    const reason = dto.reason === undefined ? null : this.requiredText(dto.reason, 'reason', 1800);
+    const requestHash = this.hash({
+      recall_case_id: recallCaseId.toLowerCase(), recipient_type: recipientType,
+      recipient_reference: recipientReference, channel, reason,
+    });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+
+    try {
+      return await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':wms-recall-notification:' + idempotencyKey],
+          );
+          const existing = await client.query<StoredKeyRow>(`
+            SELECT id::text AS id, request_hash
+            FROM wms_traceability_recall_notification_intents
+            WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, idempotencyKey]);
+          if (existing.rows[0]) {
+            if (existing.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Idempotency-Key was already used for a different recall notification request');
+            }
+            const replay = await client.query<QueryResultRow>(`
+              SELECT id::text AS id, recall_case_id::text AS recall_case_id,
+                recipient_type, recipient_reference, channel, reason,
+                requested_by_user_id::text AS requested_by_user_id,
+                correlation_id::text AS correlation_id, created_at::text AS created_at
+              FROM wms_traceability_recall_notification_intents
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            `, [existing.rows[0].id, tenantId, factoryId]);
+            if (!replay.rows[0]) throw new Error('WMS_RECALL_NOTIFICATION_REPLAY_ROW_MISSING');
+            return { ...replay.rows[0], dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED', replayed: true };
+          }
+
+          const recallCase = await client.query(`
+            SELECT id FROM wms_traceability_recall_cases
+            WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            FOR UPDATE
+          `, [recallCaseId.toLowerCase(), tenantId, factoryId]);
+          if (!recallCase.rows[0]) throw new NotFoundException('Recall case not found in this factory');
+
+          const inserted = await client.query<QueryResultRow>(`
+            INSERT INTO wms_traceability_recall_notification_intents (
+              tenant_id, factory_id, recall_case_id, recipient_type,
+              recipient_reference, channel, reason, idempotency_key, request_hash,
+              requested_by_user_id, correlation_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            RETURNING id::text AS id, recall_case_id::text AS recall_case_id,
+              recipient_type, recipient_reference, channel, reason,
+              requested_by_user_id::text AS requested_by_user_id,
+              correlation_id::text AS correlation_id, created_at::text AS created_at
+          `, [
+            tenantId, factoryId, recallCaseId.toLowerCase(), recipientType, recipientReference,
+            channel, reason, idempotencyKey, requestHash, userId, correlationId,
+          ]);
+          const intent = inserted.rows[0];
+          if (!intent) throw new Error('WMS_RECALL_NOTIFICATION_INTENT_INSERT_FAILED');
+
+          await client.query(`
+            INSERT INTO audit_events (
+              tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
+              resource_id,correlation_id,request_id,data_class,payload
+            ) VALUES ($1,$2,$3,'WMS_FULFILLMENT','NOTIFICATION_INTENT_RECORDED',
+              'WMS_RECALL_NOTIFICATION_INTENT',$4,$5,$6,'INTERNAL',$7::jsonb)
+          `, [tenantId, factoryId, userId, intent.id, correlationId, requestUuid, JSON.stringify({
+            recall_case_id: recallCaseId.toLowerCase(), recipient_type: recipientType,
+            recipient_reference: recipientReference, channel,
+            dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+          })]);
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload
+            ) VALUES ($1,$2,'WMS_RECALL_NOTIFICATION_INTENT',$3,'WMS.RECALL_NOTIFICATION_REQUESTED',$4::jsonb)
+          `, [tenantId, factoryId, intent.id, JSON.stringify({
+            notification_intent_id: intent.id, recall_case_id: recallCaseId.toLowerCase(),
+            recipient_type: recipientType, recipient_reference: recipientReference, channel,
+          })]);
+          return { ...intent, dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED', replayed: false };
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'Recall notification request conflicts with existing scope or idempotency evidence');
+    }
+  }
+
+  async listRecallNotificationIntents(
+    userId: string, tenantId: string, factoryId: string, recallCaseId: string,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(recallCaseId, 'recallCaseId');
+    return this.database.transaction(
+      { tenantId, userId },
+      async (client) => {
+        const recallCase = await client.query(`
+          SELECT id FROM wms_traceability_recall_cases
+          WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+        `, [recallCaseId.toLowerCase(), tenantId, factoryId]);
+        if (!recallCase.rows[0]) throw new NotFoundException('Recall case not found in this factory');
+        const result = await client.query<QueryResultRow>(`
+          SELECT n.id::text AS id, n.recall_case_id::text AS recall_case_id,
+            n.recipient_type, n.recipient_reference, n.channel, n.reason,
+            n.requested_by_user_id::text AS requested_by_user_id,
+            n.correlation_id::text AS correlation_id, n.created_at::text AS created_at,
+            a.id::text AS acknowledgement_id, a.outcome AS acknowledgement_outcome,
+            a.notes AS acknowledgement_notes, a.evidence_reference AS acknowledgement_evidence_reference,
+            a.recorded_by_user_id::text AS acknowledgement_recorded_by_user_id,
+            a.acknowledgement_source, a.created_at::text AS acknowledgement_created_at
+          FROM wms_traceability_recall_notification_intents n
+          LEFT JOIN wms_traceability_recall_notification_acknowledgements a
+            ON a.notification_intent_id=n.id AND a.tenant_id=n.tenant_id AND a.factory_id=n.factory_id
+          WHERE n.recall_case_id=$1 AND n.tenant_id=$2 AND n.factory_id=$3
+          ORDER BY n.created_at, n.id
+          LIMIT 500
+        `, [recallCaseId.toLowerCase(), tenantId, factoryId]);
+        return {
+          recall_case_id: recallCaseId.toLowerCase(),
+          items: result.rows.map((row) => ({
+            ...row,
+            dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+            acknowledgement_externally_authenticated: false,
+          })),
+          limit: 500,
+        };
+      },
+    );
+  }
+
+  async recordRecallNotificationAcknowledgement(
+    userId: string, tenantId: string, factoryId: string, recallCaseId: string,
+    notificationIntentId: string, dto: RecordRecallNotificationAcknowledgementDto,
+    rawIdempotencyKey: string | null, requestId: string | null, traceId: string | null,
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    this.validateUuid(recallCaseId, 'recallCaseId');
+    this.validateUuid(notificationIntentId, 'notificationIntentId');
+    const idempotencyKey = this.requiredKey(rawIdempotencyKey);
+    const outcome = String(dto.outcome ?? '').trim().toUpperCase();
+    if (!['RECEIVED', 'NO_ACTION_REQUIRED', 'ACTION_IN_PROGRESS', 'ACTION_COMPLETED', 'UNABLE_TO_CONFIRM'].includes(outcome)) {
+      throw new BadRequestException('Unsupported recall acknowledgement outcome');
+    }
+    const notes = dto.notes === undefined ? null : this.requiredText(dto.notes, 'notes', 1800);
+    const evidenceReference = dto.evidence_reference === undefined
+      ? null
+      : this.requiredText(dto.evidence_reference, 'evidence_reference', 500);
+    if (evidenceReference && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,499}$/.test(evidenceReference)) {
+      throw new BadRequestException('evidence_reference must be a reference token, not a URL');
+    }
+    const requestHash = this.hash({
+      recall_case_id: recallCaseId.toLowerCase(), notification_intent_id: notificationIntentId.toLowerCase(),
+      outcome, notes, evidence_reference: evidenceReference,
+    });
+    const requestUuid = this.uuidOrNull(requestId);
+    const traceUuid = this.uuidOrNull(traceId);
+    const correlationId = traceUuid ?? requestUuid ?? randomUUID();
+
+    try {
+      return await this.database.transaction(
+        { tenantId, userId, requestId: requestUuid, traceId: traceUuid },
+        async (client) => {
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+            [tenantId + ':' + factoryId + ':wms-recall-ack:' + idempotencyKey],
+          );
+          const existing = await client.query<StoredKeyRow>(`
+            SELECT id::text AS id, request_hash
+            FROM wms_traceability_recall_notification_acknowledgements
+            WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+            FOR UPDATE
+          `, [tenantId, factoryId, idempotencyKey]);
+          if (existing.rows[0]) {
+            if (existing.rows[0].request_hash.trim() !== requestHash) {
+              throw new ConflictException('Idempotency-Key was already used for a different recall acknowledgement');
+            }
+            const replay = await client.query<QueryResultRow>(`
+              SELECT id::text AS id, recall_case_id::text AS recall_case_id,
+                notification_intent_id::text AS notification_intent_id, recipient_type,
+                recipient_reference, outcome, notes, evidence_reference, acknowledgement_source,
+                recorded_by_user_id::text AS recorded_by_user_id,
+                correlation_id::text AS correlation_id, created_at::text AS created_at
+              FROM wms_traceability_recall_notification_acknowledgements
+              WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
+            `, [existing.rows[0].id, tenantId, factoryId]);
+            if (!replay.rows[0]) throw new Error('WMS_RECALL_ACK_REPLAY_ROW_MISSING');
+            return { ...replay.rows[0], externally_authenticated: false, replayed: true };
+          }
+
+          const intent = await client.query<QueryResultRow>(`
+            SELECT id::text AS id
+            FROM wms_traceability_recall_notification_intents
+            WHERE id=$1 AND recall_case_id=$2 AND tenant_id=$3 AND factory_id=$4
+            FOR UPDATE
+          `, [notificationIntentId.toLowerCase(), recallCaseId.toLowerCase(), tenantId, factoryId]);
+          if (!intent.rows[0]) throw new NotFoundException('Recall notification intent not found in this factory');
+          const priorAcknowledgement = await client.query(`
+            SELECT id FROM wms_traceability_recall_notification_acknowledgements
+            WHERE notification_intent_id=$1 AND tenant_id=$2 AND factory_id=$3
+            FOR UPDATE
+          `, [notificationIntentId.toLowerCase(), tenantId, factoryId]);
+          if (priorAcknowledgement.rows[0]) {
+            throw new ConflictException('This notification intent already has an acknowledgement; use its original idempotency key to replay');
+          }
+
+          const inserted = await client.query<QueryResultRow>(`
+            INSERT INTO wms_traceability_recall_notification_acknowledgements (
+              tenant_id, factory_id, recall_case_id, notification_intent_id,
+              recipient_type, recipient_reference, outcome, notes, evidence_reference,
+              idempotency_key, request_hash, recorded_by_user_id, correlation_id,
+              acknowledgement_source
+            )
+            SELECT n.tenant_id, n.factory_id, n.recall_case_id, n.id,
+              n.recipient_type, n.recipient_reference, $5, $6, $7,
+              $8, $9, $10, $11, 'OPERATOR_REPORTED'
+            FROM wms_traceability_recall_notification_intents n
+            WHERE n.id=$1 AND n.recall_case_id=$2 AND n.tenant_id=$3 AND n.factory_id=$4
+            RETURNING id::text AS id, recall_case_id::text AS recall_case_id,
+              notification_intent_id::text AS notification_intent_id, recipient_type,
+              recipient_reference, outcome, notes, evidence_reference, acknowledgement_source,
+              recorded_by_user_id::text AS recorded_by_user_id,
+              correlation_id::text AS correlation_id, created_at::text AS created_at
+          `, [
+            notificationIntentId.toLowerCase(), recallCaseId.toLowerCase(), tenantId, factoryId,
+            outcome, notes, evidenceReference, idempotencyKey, requestHash, userId, correlationId,
+          ]);
+          const acknowledgement = inserted.rows[0];
+          if (!acknowledgement) throw new NotFoundException('Recall notification intent not found in this factory');
+
+          await client.query(`
+            INSERT INTO audit_events (
+              tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
+              resource_id,correlation_id,request_id,data_class,payload
+            ) VALUES ($1,$2,$3,'WMS_FULFILLMENT','ACKNOWLEDGEMENT_RECORDED',
+              'WMS_RECALL_NOTIFICATION_ACKNOWLEDGEMENT',$4,$5,$6,'INTERNAL',$7::jsonb)
+          `, [tenantId, factoryId, userId, acknowledgement.id, correlationId, requestUuid, JSON.stringify({
+            recall_case_id: recallCaseId.toLowerCase(), notification_intent_id: notificationIntentId.toLowerCase(),
+            outcome, acknowledgement_source: 'OPERATOR_REPORTED',
+            notes_sha256: notes ? this.hash(notes) : null,
+            evidence_reference: evidenceReference,
+          })]);
+          await client.query(`
+            INSERT INTO outbox_events (
+              tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload
+            ) VALUES ($1,$2,'WMS_RECALL_NOTIFICATION_ACKNOWLEDGEMENT',$3,'WMS.RECALL_NOTIFICATION_ACKNOWLEDGED',$4::jsonb)
+          `, [tenantId, factoryId, acknowledgement.id, JSON.stringify({
+            acknowledgement_id: acknowledgement.id, recall_case_id: recallCaseId.toLowerCase(),
+            notification_intent_id: notificationIntentId.toLowerCase(), outcome,
+            acknowledgement_source: 'OPERATOR_REPORTED',
+          })]);
+          return { ...acknowledgement, externally_authenticated: false, replayed: false };
+        },
+      );
+    } catch (error) {
+      throw this.mapDatabaseError(error, 'Recall acknowledgement conflicts with existing scope, intent or idempotency evidence');
+    }
   }
 
   /**

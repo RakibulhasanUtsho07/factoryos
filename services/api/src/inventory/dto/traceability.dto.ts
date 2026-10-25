@@ -180,6 +180,38 @@ export class ResolveTraceabilityLabelDto {
  * A recall declaration must operate on a complete bounded genealogy. The service
  * refuses the request rather than changing a partial set when either bound is hit.
  */
+export class CreateRecallNotificationIntentDto {
+  @IsIn(['CUSTOMER', 'SITE'])
+  recipient_type!: 'CUSTOMER' | 'SITE';
+
+  @IsString()
+  @MaxLength(255)
+  recipient_reference!: string;
+
+  @IsIn(['EMAIL', 'PORTAL', 'EDI', 'MANUAL'])
+  channel!: 'EMAIL' | 'PORTAL' | 'EDI' | 'MANUAL';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1800)
+  reason?: string;
+}
+
+export class RecordRecallNotificationAcknowledgementDto {
+  @IsIn(['RECEIVED', 'NO_ACTION_REQUIRED', 'ACTION_IN_PROGRESS', 'ACTION_COMPLETED', 'UNABLE_TO_CONFIRM'])
+  outcome!: 'RECEIVED' | 'NO_ACTION_REQUIRED' | 'ACTION_IN_PROGRESS' | 'ACTION_COMPLETED' | 'UNABLE_TO_CONFIRM';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1800)
+  notes?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  evidence_reference?: string;
+}
+
 export class DeclareTraceabilityRecallDto {
   @IsString()
   @MaxLength(1800)

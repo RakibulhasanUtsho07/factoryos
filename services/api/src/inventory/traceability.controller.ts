@@ -9,7 +9,8 @@ import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
   ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto,
-  CreateTraceabilityUnitDto, DeclareTraceabilityRecallDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
+  CreateTraceabilityUnitDto, DeclareTraceabilityRecallDto, CreateRecallNotificationIntentDto,
+  RecordRecallNotificationAcknowledgementDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
 import { WmsFulfillmentService } from './wms-fulfillment.service';
@@ -113,6 +114,56 @@ export class TraceabilityController {
       idempotencyKey ?? null, c.requestId, c.traceId,
     );
   }
+
+  @Post('recall-cases/:recallCaseId/notifications')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async requestRecallNotification(
+    @Req() request: TraceabilityRequest,
+    @Param('recallCaseId', new ParseUUIDPipe()) recallCaseId: string,
+    @Body() body: CreateRecallNotificationIntentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.createRecallNotificationIntent(
+      c.userId, c.tenantId, c.factoryId, recallCaseId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
+  @Get('recall-cases/:recallCaseId/notifications')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async listRecallNotifications(
+    @Req() request: TraceabilityRequest,
+    @Param('recallCaseId', new ParseUUIDPipe()) recallCaseId: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.listRecallNotificationIntents(
+      c.userId, c.tenantId, c.factoryId, recallCaseId,
+    );
+  }
+
+  @Post('recall-cases/:recallCaseId/notifications/:notificationIntentId/acknowledgements')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async acknowledgeRecallNotification(
+    @Req() request: TraceabilityRequest,
+    @Param('recallCaseId', new ParseUUIDPipe()) recallCaseId: string,
+    @Param('notificationIntentId', new ParseUUIDPipe()) notificationIntentId: string,
+    @Body() body: RecordRecallNotificationAcknowledgementDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.recordRecallNotificationAcknowledgement(
+      c.userId, c.tenantId, c.factoryId, recallCaseId, notificationIntentId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
 
   @Get('units/:unitId')
   @UseGuards(PermissionGuard)
