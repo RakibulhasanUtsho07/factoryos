@@ -1441,7 +1441,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     await adminPool.query(
       `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
-       VALUES ($1,$2,$3,$4,$5,2.0000)`,
+       VALUES ($1,$2,$3,$4,$5,3.0000)`,
       [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
     );
     await locationService.transferStock(
@@ -1667,14 +1667,16 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   });
 
   it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
-    const fixture = await createStockFixture('2.0000');
+    // Keep one unit outside the shipment so the source lot remains ACTIVE after
+    // dispatch and exercises the intended ACTIVE -> RECALLED transition below.
+    const fixture = await createStockFixture('3.0000');
     const { binA } = await createWarehouseAndBins(fixture.factoryId);
     const finishedLot = await traceabilityService.createUnit(
       userId, tenantId, fixture.factoryId,
       {
         unit_type: 'LOT', product_role: 'FINISHED_GOOD',
         unit_code: 'FG-ORDER-POD-' + randomUUID().slice(0, 8),
-        inventory_item_id: fixture.itemId, quantity: 2, unit: 'PCS',
+        inventory_item_id: fixture.itemId, quantity: 3, unit: 'PCS',
         external_reference: 'wms-order-pod-acceptance',
       } as never,
       'fg-order-pod-register-' + randomUUID(), requestId, traceId,
