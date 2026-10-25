@@ -9,6 +9,7 @@ import { InventoryService } from './inventory.service';
 import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
 import { TraceabilityService } from './traceability.service';
+import { WmsFulfillmentService } from './wms-fulfillment.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -21,6 +22,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let inventoryService!: InventoryService;
   let reservationService!: InventoryReservationService;
   let traceabilityService!: TraceabilityService;
+  let fulfillmentService!: WmsFulfillmentService;
   const factoryIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
@@ -53,6 +55,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     inventoryService = new InventoryService(database, audit);
     reservationService = new InventoryReservationService(database, audit);
     traceabilityService = new TraceabilityService(database);
+    fulfillmentService = new WmsFulfillmentService(database);
   }, 60_000);
 
   afterAll(async () => {
@@ -66,6 +69,11 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_traceability_location_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_shipments DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_packing_contents DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE wms_packing_containers DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_location_transfers DISABLE TRIGGER USER',
         );
@@ -100,7 +108,27 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
-            "DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2 AND external_reference='wms-finished-good-putaway-test'",
+            'DELETE FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_packing_contents WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_unit_status_events WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM wms_packing_containers WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -156,6 +184,11 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         } finally {
           await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_genealogy_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_unit_status_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_shipments ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_packing_contents ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE wms_packing_containers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_consumption_traceability_allocations ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_reservation_consumptions ENABLE TRIGGER USER');
@@ -865,6 +898,178 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
 
     const movements = await locationService.listTransfers(tenantId, fixture.factoryId, fixture.itemId);
     expect(movements.filter((move) => move.traceability_unit_id === finishedLotId)).toHaveLength(3);
+  });
+
+
+  it('packs a finished-good lot into a carton and pallet, then dispatches once with stock and customer traceability', async () => {
+    const fixture = await createStockFixture('5.0000');
+    const { binA } = await createWarehouseAndBins(fixture.factoryId);
+    const finishedLot = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'FINISHED_GOOD',
+        unit_code: 'FG-SHIP-' + randomUUID().slice(0, 8),
+        inventory_item_id: fixture.itemId,
+        quantity: 5,
+        unit: 'PCS',
+        external_reference: 'wms-finished-good-putaway-test',
+      } as never,
+      'fg-ship-register-' + randomUUID(), requestId, traceId,
+    );
+    await adminPool.query(
+      `INSERT INTO inventory_traceability_location_balances
+         (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
+       VALUES ($1,$2,$3,$4,$5,5.0000)`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
+    );
+    await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 5,
+        movement_purpose: 'PUT_AWAY',
+        traceability_unit_id: finishedLot.id,
+      },
+      'fg-ship-putaway-' + randomUUID(), requestId, traceId,
+    );
+
+    const carton = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'CARTON',
+        container_code: 'CARTON-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-carton-create-' + randomUUID(), requestId, traceId,
+    );
+    const cartonId = carton.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, cartonId,
+      { source_unit_id: finishedLot.id, quantity: 3 },
+      'wms-carton-content-' + randomUUID(), requestId, traceId,
+    );
+    const cartonSealKey = 'wms-carton-seal-' + randomUUID();
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, cartonId, cartonSealKey, requestId, traceId,
+    );
+    const cartonSealReplay = await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, cartonId, cartonSealKey, requestId, traceId,
+    );
+    expect(cartonSealReplay.replayed).toBe(true);
+
+    const pallet = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'PALLET',
+        container_code: 'PALLET-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: binA.id,
+        capacity_quantity: 3,
+      },
+      'wms-pallet-create-' + randomUUID(), requestId, traceId,
+    );
+    const palletId = pallet.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, palletId,
+      { source_unit_id: cartonId, quantity: 3 },
+      'wms-pallet-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, palletId, 'wms-pallet-seal-' + randomUUID(), requestId, traceId,
+    );
+
+    const dispatchKey = 'wms-dispatch-' + randomUUID();
+    const dispatchPayload = {
+      shipment_code: 'SHIP-' + randomUUID().slice(0, 8),
+      customer_name: 'Acceptance Customer',
+      customer_order_reference: 'CUSTOMER-ORDER-' + randomUUID().slice(0, 8),
+      carrier_name: 'Acceptance Carrier',
+      tracking_reference: 'TRACK-' + randomUUID().slice(0, 8),
+    };
+    const dispatched = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, palletId, dispatchPayload,
+      dispatchKey, requestId, traceId,
+    );
+    expect(dispatched).toMatchObject({ replayed: false, shipment: {
+      container_unit_id: palletId,
+      item_id: fixture.itemId,
+      quantity: '3.0000',
+      customer_name: dispatchPayload.customer_name,
+      customer_order_reference: dispatchPayload.customer_order_reference,
+      status: 'DISPATCHED',
+    }});
+    const replayed = await fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, palletId, dispatchPayload,
+      dispatchKey, requestId, traceId,
+    );
+    expect(replayed).toMatchObject({ replayed: true, shipment: { shipment_unit_id: dispatched.shipment.shipment_unit_id } });
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, palletId,
+      { ...dispatchPayload, shipment_code: 'SHIP-REPLAY-BLOCK' },
+      'wms-dispatch-duplicate-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const locationTotals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(aggregate?.quantity_on_hand).toBe('2.0000');
+    expect(locationTotals?.sum).toBe(aggregate?.quantity_on_hand);
+    const identityBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      `SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4 AND location_id=$5`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, binA.id],
+    );
+    expect(identityBalance.rows[0]?.quantity_on_hand).toBe('2.0000');
+
+    const shipmentRow = await adminPool.query<{
+      status: string; customer_order_reference: string; quantity: string; inventory_movement_id: string;
+    }>(
+      `SELECT status, customer_order_reference, quantity::text AS quantity, inventory_movement_id::text AS inventory_movement_id
+       FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2 AND shipment_unit_id=$3`,
+      [tenantId, fixture.factoryId, dispatched.shipment.shipment_unit_id],
+    );
+    expect(shipmentRow.rows[0]).toMatchObject({
+      status: 'DISPATCHED',
+      customer_order_reference: dispatchPayload.customer_order_reference,
+      quantity: '3.0000',
+      inventory_movement_id: dispatched.shipment.inventory_movement_id,
+    });
+    const movement = await adminPool.query<{
+      movement_type: string; quantity_delta: string; reference_type: string; reference_id: string;
+    }>(
+      `SELECT movement_type, quantity_delta::text AS quantity_delta, reference_type, reference_id::text AS reference_id
+       FROM inventory_movements WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [dispatched.shipment.inventory_movement_id, tenantId, fixture.factoryId],
+    );
+    expect(movement.rows[0]).toMatchObject({
+      movement_type: 'ISSUE', quantity_delta: '-3.0000', reference_type: 'WMS_SHIPMENT',
+      reference_id: dispatched.shipment.shipment_unit_id,
+    });
+    const genealogy = await adminPool.query(
+      `SELECT relationship_type FROM product_genealogy_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=$3 AND target_unit_id=$4`,
+      [tenantId, fixture.factoryId, palletId, dispatched.shipment.shipment_unit_id],
+    );
+    expect(genealogy.rows.map(row => row.relationship_type)).toContain('SHIPPED_AS');
+    const statuses = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [palletId, cartonId, dispatched.shipment.shipment_unit_id, finishedLot.id]],
+    );
+    expect(statuses.rows.find(row => row.id === palletId)?.status).toBe('SHIPPED');
+    expect(statuses.rows.find(row => row.id === cartonId)?.status).toBe('SHIPPED');
+    expect(statuses.rows.find(row => row.id === dispatched.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
+    expect(statuses.rows.find(row => row.id === finishedLot.id)?.status).toBe('ACTIVE');
+    const packageStatuses = await adminPool.query<{ container_unit_id: string; status: string }>(
+      `SELECT container_unit_id::text AS container_unit_id, status FROM wms_packing_containers
+       WHERE tenant_id=$1 AND factory_id=$2 AND container_unit_id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [palletId, cartonId]],
+    );
+    expect(packageStatuses.rows.find(row => row.container_unit_id === palletId)?.status).toBe('DISPATCHED');
+    expect(packageStatuses.rows.find(row => row.container_unit_id === cartonId)?.status).toBe('DISPATCHED');
   });
 
 });
