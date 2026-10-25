@@ -1979,6 +1979,73 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(stockAfterRecall?.quantity_on_hand).toBe(stockBeforeRecall?.quantity_on_hand);
     expect(binsAfterRecall?.sum).toBe(binsBeforeRecall?.sum);
 
+    // Continue the same recall through its durable notification-intent and
+    // operator-reported acknowledgement ledger; neither action may touch stock.
+    const notificationKey = 'wp02-e2e-recall-notification-' + randomUUID();
+    const notificationPayload = {
+      recipient_type: 'CUSTOMER' as const,
+      recipient_reference: validReference,
+      channel: 'MANUAL' as const,
+      reason: 'E2E recall follow-up intent for the delivered order-bound shipment',
+    };
+    const notification = await traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, recall.recall_case.id,
+      notificationPayload as never, notificationKey, requestId, traceId,
+    );
+    expect(notification).toMatchObject({
+      recall_case_id: recall.recall_case.id,
+      recipient_type: 'CUSTOMER',
+      recipient_reference: validReference,
+      channel: 'MANUAL',
+      dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+      replayed: false,
+    });
+    const notificationReplay = await traceabilityService.createRecallNotificationIntent(
+      userId, tenantId, fixture.factoryId, recall.recall_case.id,
+      notificationPayload as never, notificationKey, requestId, traceId,
+    );
+    expect(notificationReplay).toMatchObject({ id: notification.id, replayed: true });
+
+    const acknowledgementKey = 'wp02-e2e-recall-ack-' + randomUUID();
+    const acknowledgementPayload = {
+      outcome: 'ACTION_IN_PROGRESS' as const,
+      notes: 'Site operator reports that affected stock isolation is in progress',
+    };
+    const acknowledgement = await traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, recall.recall_case.id, notification.id,
+      acknowledgementPayload as never, acknowledgementKey, requestId, traceId,
+    );
+    expect(acknowledgement).toMatchObject({
+      recall_case_id: recall.recall_case.id,
+      notification_intent_id: notification.id,
+      outcome: 'ACTION_IN_PROGRESS',
+      acknowledgement_source: 'OPERATOR_REPORTED',
+      externally_authenticated: false,
+      replayed: false,
+    });
+    const acknowledgementReplay = await traceabilityService.recordRecallNotificationAcknowledgement(
+      userId, tenantId, fixture.factoryId, recall.recall_case.id, notification.id,
+      acknowledgementPayload as never, acknowledgementKey, requestId, traceId,
+    );
+    expect(acknowledgementReplay).toMatchObject({ id: acknowledgement.id, replayed: true });
+
+    const notificationHistory = await traceabilityService.listRecallNotificationIntents(
+      userId, tenantId, fixture.factoryId, recall.recall_case.id,
+    );
+    expect(notificationHistory.items).toHaveLength(1);
+    expect(notificationHistory.items[0]).toMatchObject({
+      id: notification.id,
+      acknowledgement_id: acknowledgement.id,
+      acknowledgement_outcome: 'ACTION_IN_PROGRESS',
+      acknowledgement_source: 'OPERATOR_REPORTED',
+      dispatch_status: 'INTENT_RECORDED_NOT_DELIVERY_CONFIRMED',
+      acknowledgement_externally_authenticated: false,
+    });
+    const stockAfterNotification = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsAfterNotification = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(stockAfterNotification?.quantity_on_hand).toBe(stockBeforeRecall?.quantity_on_hand);
+    expect(binsAfterNotification?.sum).toBe(binsBeforeRecall?.sum);
+
     const foreignTenantId = randomUUID();
     await expect(fulfillmentService.listDeliveryEvents(
       userId, foreignTenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
