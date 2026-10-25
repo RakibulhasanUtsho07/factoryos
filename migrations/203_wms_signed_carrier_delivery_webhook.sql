@@ -5,6 +5,12 @@ BEGIN;
 ALTER TABLE wms_shipment_delivery_events
   ALTER COLUMN recorded_by_user_id DROP NOT NULL;
 
+-- Keep carrier tracking resolution tenant/factory-scoped and indexed without
+-- permitting cross-tenant fallback matching.
+CREATE INDEX IF NOT EXISTS idx_wms_shipments_carrier_tracking
+  ON wms_shipments (tenant_id, factory_id, lower(btrim(carrier_name)), tracking_reference)
+  WHERE carrier_name IS NOT NULL AND tracking_reference IS NOT NULL;
+
 CREATE OR REPLACE FUNCTION factoryos_guard_wms_shipment_delivery_event()
 RETURNS trigger
 LANGUAGE plpgsql
