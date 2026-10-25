@@ -31,7 +31,7 @@ import {
   recordOperationalWebhookReplay,
   type OperationalWebhookInput,
 } from './integration-reconciliation.store';
-import { verifyWmsPodObjectDigest } from './wms-pod-storage';
+import { uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest } from './wms-pod-storage';
 
 interface ConnectorRow {
   id: string;
@@ -87,6 +87,86 @@ export class IntegrationService {
     private readonly database: DatabaseService,
     private readonly config: ConfigService,
   ) {}
+
+  async uploadWmsShipmentPodObject(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    shipmentUnitId: string,
+    file: { buffer: Buffer; size: number; mimetype: string },
+    requestId: string | null,
+    traceId: string | null,
+  ) {
+    this.assertScope(userId, tenantId, factoryId);
+    if (!isUUID(shipmentUnitId)) throw new BadRequestException('shipmentUnitId must be a UUID');
+    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.byteLength) {
+      throw new BadRequestException('A single in-memory POD file is required');
+    }
+    const shipmentResult = await this.database.query<{
+      shipment_unit_id: string;
+      status: string;
+    }>(
+      `SELECT shipment_unit_id::text AS shipment_unit_id,status
+       FROM wms_shipments
+       WHERE shipment_unit_id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [shipmentUnitId.toLowerCase(), tenantId, factoryId],
+      { tenantId, userId },
+    );
+    const shipment = shipmentResult.rows[0];
+    if (!shipment) throw new NotFoundException('Shipment not found in this factory');
+    if (shipment.status !== 'DISPATCHED') throw new ConflictException('POD files may only be uploaded for dispatched shipments');
+
+    const objectId = randomUUID();
+    const objectKey = 'pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId.toLowerCase() + '/' + objectId;
+    const stored = await uploadWmsPodObjectAndVerify(this.config, objectKey, file.buffer, file.mimetype);
+    const correlationId = (traceId && isUUID(traceId) ? traceId : null) ??
+      (requestId && isUUID(requestId) ? requestId : null) ?? objectId;
+    const safeRequestId = requestId && isUUID(requestId) ? requestId : null;
+
+    await this.database.transaction(async (client) => {
+      await client.query(
+        `INSERT INTO audit_events (
+          tenant_id,factory_id,actor_user_id,event_type,action,resource_type,
+          resource_id,correlation_id,request_id,data_class,payload
+        ) VALUES ($1,$2,$3,'WMS_FULFILLMENT','UPLOADED_AND_VERIFIED',
+          'WMS_SHIPMENT_POD_OBJECT',$4,$5,$6,'INTERNAL',$7::jsonb)`,
+        [tenantId, factoryId, userId, objectId, correlationId, safeRequestId, JSON.stringify({
+          shipment_unit_id: shipmentUnitId.toLowerCase(),
+          proof_reference: objectKey,
+          proof_sha256: stored.sha256,
+          byte_length: stored.byteLength,
+          content_type: stored.contentType,
+          verification: 'READ_BACK_SHA256_MATCH',
+        })],
+      );
+      await client.query(
+        `INSERT INTO outbox_events (
+          tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload
+        ) VALUES ($1,$2,'WMS_SHIPMENT_POD_OBJECT',$3,'WMS.SHIPMENT_POD_OBJECT_VERIFIED',$4::jsonb)`,
+        [tenantId, factoryId, objectId, JSON.stringify({
+          object_id: objectId,
+          shipment_unit_id: shipmentUnitId.toLowerCase(),
+          proof_reference: objectKey,
+          proof_sha256: stored.sha256,
+          byte_length: stored.byteLength,
+          content_type: stored.contentType,
+        })],
+      );
+    }, {
+      tenantId, userId, requestId: safeRequestId,
+      traceId: traceId && isUUID(traceId) ? traceId : null,
+    });
+
+    return {
+      object_id: objectId,
+      shipment_unit_id: shipmentUnitId.toLowerCase(),
+      proof_reference: objectKey,
+      proof_sha256: stored.sha256,
+      byte_length: stored.byteLength,
+      content_type: stored.contentType,
+      verified: true,
+    };
+  }
 
   async registerConnector(
     userId: string,

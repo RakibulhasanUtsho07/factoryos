@@ -26,6 +26,10 @@ export interface VerifiedPodObject {
   byteLength: number;
 }
 
+export interface UploadedVerifiedPodObject extends VerifiedPodObject {
+  contentType: 'image/jpeg' | 'image/png' | 'application/pdf';
+}
+
 function sha256Hex(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -267,4 +271,117 @@ export async function verifyWmsPodObjectDigest(
     throw new UnprocessableEntityException('Stored POD object SHA-256 does not match the signed carrier digest');
   }
   return { sha256: actualSha256, byteLength: bytes.byteLength };
+}
+
+
+function validatePodContentType(bytes: Buffer, declaredContentType: string): UploadedVerifiedPodObject['contentType'] {
+  let detected: UploadedVerifiedPodObject['contentType'] | null = null;
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    detected = 'image/jpeg';
+  } else if (
+    bytes.length >= 8 &&
+    bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    detected = 'image/png';
+  } else if (bytes.length >= 5 && bytes.subarray(0, 5).toString('ascii') === '%PDF-') {
+    detected = 'application/pdf';
+  }
+
+  if (!detected || detected !== declaredContentType.trim().toLowerCase()) {
+    throw new BadRequestException('POD uploads must be a valid JPEG, PNG or PDF whose bytes match the declared content type');
+  }
+  return detected;
+}
+
+/**
+ * Uploads bounded POD bytes to the configured S3-compatible bucket with SigV4,
+ * then performs a separate GET and hashes the bytes returned by storage. The
+ * caller must generate a tenant/factory/shipment-scoped object key; this helper
+ * never accepts a caller-controlled URL or follows redirects.
+ */
+export async function uploadWmsPodObjectAndVerify(
+  config: ConfigReader,
+  objectKey: string,
+  bytes: Buffer,
+  declaredContentType: string,
+  fetcher: typeof fetch = globalThis.fetch,
+): Promise<UploadedVerifiedPodObject> {
+  assertSafeObjectKey(objectKey);
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    throw new UnprocessableEntityException('POD upload must contain a non-empty file');
+  }
+  const contentType = validatePodContentType(bytes, declaredContentType);
+  const storage = readConfiguration(config);
+  if (bytes.byteLength > storage.maxBytes) {
+    throw new UnprocessableEntityException('POD object exceeds the configured byte limit');
+  }
+
+  const basePath = storage.endpoint.pathname === '/'
+    ? ''
+    : storage.endpoint.pathname.replace(/\/+$/, '');
+  const encodedKey = objectKey.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket) + '/' + encodedKey;
+  const target = new URL(storage.endpoint.origin);
+  target.pathname = canonicalUri;
+  const payloadHash = sha256Hex(bytes);
+  const amzDate = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const dateStamp = amzDate.slice(0, 8);
+  const canonicalHeadersByName: Record<string, string> = {
+    host: target.host.toLowerCase(),
+    'content-type': contentType,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+  if (storage.sessionToken) canonicalHeadersByName['x-amz-security-token'] = storage.sessionToken;
+  const signedHeaderNames = Object.keys(canonicalHeadersByName).sort();
+  const canonicalHeaders = signedHeaderNames
+    .map((name) => name + ':' + canonicalHeadersByName[name]!.trim().replace(/\s+/g, ' ') + '\n')
+    .join('');
+  const signedHeaders = signedHeaderNames.join(';');
+  const canonicalRequest = ['PUT', canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = dateStamp + '/' + storage.region + '/s3/aws4_request';
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest)].join('\n');
+  const dateKey = hmac('AWS4' + storage.secretAccessKey, dateStamp);
+  const regionKey = hmac(dateKey, storage.region);
+  const serviceKey = hmac(regionKey, 's3');
+  const signingKey = hmac(serviceKey, 'aws4_request');
+  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
+  const authorization = 'AWS4-HMAC-SHA256 Credential=' +
+    storage.accessKeyId + '/' + scope +
+    ', SignedHeaders=' + signedHeaders +
+    ', Signature=' + signature;
+  const headers: Record<string, string> = {
+    'content-type': contentType,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    'accept-encoding': 'identity',
+    Authorization: authorization,
+  };
+  if (storage.sessionToken) headers['x-amz-security-token'] = storage.sessionToken;
+
+  let response: Response;
+  try {
+    response = await fetcher(target, {
+      method: 'PUT',
+      headers,
+      body: bytes as unknown as BodyInit,
+      redirect: 'error',
+      signal: AbortSignal.timeout(storage.timeoutMs),
+    });
+  } catch {
+    throw new ServiceUnavailableException('Unable to upload POD object to configured storage');
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ServiceUnavailableException('POD storage rejected object upload; check storage write policy');
+  }
+  await response.body?.cancel().catch(() => undefined);
+
+  // Do not trust the local upload digest or S3 ETag as proof of persisted bytes.
+  // Read the exact object back and independently hash the response body.
+  const verified = await verifyWmsPodObjectDigest(config, objectKey, payloadHash, fetcher);
+  if (verified.byteLength !== bytes.byteLength) {
+    throw new UnprocessableEntityException('Stored POD object length differs from the uploaded file');
+  }
+  return { ...verified, contentType };
 }
