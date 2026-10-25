@@ -598,6 +598,7 @@ export class InventoryLocationService {
           allocation_policy: 'FIFO' | 'FEFO' | 'LOT' | 'SERIAL';
           require_traceability: boolean;
           has_material_identity: boolean;
+          has_finished_good_identity: boolean;
         }>(
           `
           SELECT COALESCE(
@@ -632,19 +633,29 @@ export class InventoryLocationService {
               SELECT 1 FROM traceability_units tu
               WHERE tu.tenant_id=$1 AND tu.factory_id=$2 AND tu.inventory_item_id=$3
                 AND tu.product_role='MATERIAL' AND tu.unit_type IN ('LOT','SERIAL')
-            ) AS has_material_identity
+            ) AS has_material_identity,
+            EXISTS (
+              SELECT 1 FROM inventory_traceability_location_balances tlb
+              JOIN traceability_units tu
+                ON tu.id=tlb.traceability_unit_id AND tu.tenant_id=tlb.tenant_id
+               AND tu.factory_id=tlb.factory_id AND tu.inventory_item_id=tlb.item_id
+              WHERE tlb.tenant_id=$1 AND tlb.factory_id=$2 AND tlb.item_id=$3
+                AND tlb.location_id=$4 AND tlb.quantity_on_hand > 0
+                AND tu.product_role='FINISHED_GOOD' AND tu.unit_type='LOT'
+            ) AS has_finished_good_identity
           FROM inventory_items i
           WHERE i.id=$3 AND i.tenant_id=$1 AND i.factory_id=$2
           `,
-          [tenantId, factoryId, itemId],
+          [tenantId, factoryId, itemId, sourceId],
         );
         const traceabilityRule = traceabilityPolicy.rows[0];
         if (!traceabilityUnitId && traceabilityRule
           && (traceabilityRule.require_traceability
             || traceabilityRule.allocation_policy === 'LOT'
             || traceabilityRule.allocation_policy === 'SERIAL'
-            || traceabilityRule.has_material_identity)) {
-          throw new ConflictException('This material requires an explicit lot/serial identity for put-away, picking or transfer');
+            || traceabilityRule.has_material_identity
+            || traceabilityRule.has_finished_good_identity)) {
+          throw new ConflictException('Traceable stock requires an explicit lot/serial identity for put-away, picking or transfer');
         }
 
         const locationResult = await client.query<InventoryLocationRow>(
@@ -767,11 +778,15 @@ export class InventoryLocationService {
           const unit = unitResult.rows[0];
           const attributes = unit?.attributes ?? {};
           const condition = String(attributes.condition ?? '').toUpperCase();
-          if (!unit || unit.product_role !== 'MATERIAL' || !['LOT', 'SERIAL'].includes(unit.unit_type)
+          const allowedMaterialIdentity = unit?.product_role === 'MATERIAL'
+            && ['LOT', 'SERIAL'].includes(unit.unit_type);
+          const allowedFinishedGoodIdentity = unit?.product_role === 'FINISHED_GOOD'
+            && unit.unit_type === 'LOT';
+          if (!unit || (!allowedMaterialIdentity && !allowedFinishedGoodIdentity)
             || unit.status !== 'ACTIVE'
             || attributes.damaged === true || attributes.held === true || attributes.quarantined === true
             || ['DAMAGED', 'HELD', 'QUARANTINED', 'EXPIRED'].includes(condition)) {
-            throw new ConflictException('Put-away/picking cannot move an inactive, expired, damaged, quarantined or held lot/serial');
+            throw new ConflictException('Put-away/picking requires an active eligible material lot/serial or finished-good lot');
           }
           const hold = await client.query<{ present: boolean }>(
             `
@@ -996,13 +1011,13 @@ export class InventoryLocationService {
   ): InventoryLocationTransferResult {
     const {
       id, tenant_id, factory_id, item_id, source_location_id, destination_location_id,
-      movement_purpose, quantity, source_quantity_before, source_quantity_after,
+      traceability_unit_id, movement_purpose, quantity, source_quantity_before, source_quantity_after,
       destination_quantity_before, destination_quantity_after,
       notes, created_by_user_id, correlation_id, created_at,
     } = row;
     return {
       id, tenant_id, factory_id, item_id, source_location_id, destination_location_id,
-      movement_purpose, quantity, source_quantity_before, source_quantity_after,
+      traceability_unit_id, movement_purpose, quantity, source_quantity_before, source_quantity_after,
       destination_quantity_before, destination_quantity_after,
       notes, created_by_user_id, correlation_id, created_at, replayed,
     };

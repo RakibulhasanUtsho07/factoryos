@@ -12,6 +12,8 @@ import {
   CreateTraceabilityUnitDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
+import { WmsFulfillmentService } from './wms-fulfillment.service';
+import { AddWmsPackingContentDto, CreateWmsPackingContainerDto, DispatchWmsShipmentDto } from './dto/wms-packing-shipment.dto';
 
 interface TraceabilityRequestContext {
   requestId?: string | null;
@@ -24,7 +26,10 @@ type TraceabilityRequest = Request & { factoryos?: TraceabilityRequestContext };
 
 @Controller('traceability')
 export class TraceabilityController {
-  constructor(private readonly traceabilityService: TraceabilityService) {}
+  constructor(
+    private readonly traceabilityService: TraceabilityService,
+    private readonly wmsFulfillmentService: WmsFulfillmentService,
+  ) {}
 
   @Post('units')
   @UseGuards(PermissionGuard)
@@ -213,6 +218,100 @@ export class TraceabilityController {
     const c = this.requireContext(request);
     return this.traceabilityService.updateSettings(
       c.userId, c.tenantId, c.factoryId, body, c.requestId, c.traceId,
+    );
+  }
+
+
+  @Post('containers')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async createWmsContainer(
+    @Req() request: TraceabilityRequest,
+    @Body() body: CreateWmsPackingContainerDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.createContainer(
+      c.userId, c.tenantId, c.factoryId, body, idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
+  @Get('shipments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async listWmsShipments(
+    @Req() request: TraceabilityRequest,
+    @Query('search') search?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.listShipments(
+      c.userId, c.tenantId, c.factoryId,
+      { search, limit: rawLimit === undefined ? undefined : Number(rawLimit) },
+    );
+  }
+
+  @Get('containers/:containerUnitId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async getWmsContainer(
+    @Req() request: TraceabilityRequest,
+    @Param('containerUnitId', new ParseUUIDPipe()) containerUnitId: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.getContainer(c.userId, c.tenantId, c.factoryId, containerUnitId);
+  }
+
+  @Post('containers/:containerUnitId/contents')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async addWmsContainerContent(
+    @Req() request: TraceabilityRequest,
+    @Param('containerUnitId', new ParseUUIDPipe()) containerUnitId: string,
+    @Body() body: AddWmsPackingContentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.addContent(
+      c.userId, c.tenantId, c.factoryId, containerUnitId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
+  @Post('containers/:containerUnitId/seal')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async sealWmsContainer(
+    @Req() request: TraceabilityRequest,
+    @Param('containerUnitId', new ParseUUIDPipe()) containerUnitId: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.sealContainer(
+      c.userId, c.tenantId, c.factoryId, containerUnitId,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
+    );
+  }
+
+  @Post('containers/:containerUnitId/dispatch')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.write')
+  @RequireFactoryScope()
+  async dispatchWmsContainer(
+    @Req() request: TraceabilityRequest,
+    @Param('containerUnitId', new ParseUUIDPipe()) containerUnitId: string,
+    @Body() body: DispatchWmsShipmentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.dispatchContainer(
+      c.userId, c.tenantId, c.factoryId, containerUnitId, body,
+      idempotencyKey ?? null, c.requestId ?? null, c.traceId ?? null,
     );
   }
 

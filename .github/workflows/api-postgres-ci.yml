@@ -371,6 +371,20 @@ jobs:
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/199_wms_work_order_genealogy_consumption_guard.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/work-order-genealogy-consumption-guard.sql
 
+          echo "Checking finished-good lot put-away, pick and transfer traceability guards"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/200_wms_finished_good_putaway_traceability.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finished-good-putaway-traceability.sql
+          echo "Reapplying finished-good location traceability migration and SQL contract to verify idempotency"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/200_wms_finished_good_putaway_traceability.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/finished-good-putaway-traceability.sql
+
+          echo "Checking guarded carton/pallet packing and customer shipment stock dispatch"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/201_wms_carton_pallet_shipment_traceability.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-packing-shipment-traceability.sql
+          echo "Reapplying carton/pallet and shipment migration to verify idempotency"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/201_wms_carton_pallet_shipment_traceability.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-packing-shipment-traceability.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'

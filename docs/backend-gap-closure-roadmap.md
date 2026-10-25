@@ -46,4 +46,12 @@
 3. Refresh WP06/SRS evidence without marking the whole AI runtime accepted.
 4. Take the next medium-sized slice from WP02 WMS end-to-end evidence, then proceed by the ordered dependencies above.
 
+### WP02 slice — finished-good lot put-away and directed movement
+
+**Gap:** production output creates a finished-good lot in traceability, but directed inventory movement treated every supplied identity as a raw-material LOT/SERIAL and did not return `traceability_unit_id` to API callers. An identity could also be omitted from a generic move when the tracked stock at the source was a finished-good lot.
+
+**Implementation/acceptance:** migration 200 adds a database guard for scoped, active material LOT/SERIAL and finished-good LOT identities, rejects tracked movements without an explicit identity, and blocks active quality-held/expired/damaged stock. The location service now transfers finished-good lot balances with the aggregate per-location balances and returns the selected identity in API results. Unit/PostgreSQL integration coverage checks put-away from UNASSIGNED to BIN, BIN-to-BIN transfer, BIN-to-STAGING pick, idempotent replay, aggregate/location/identity quantity conservation, and missing-identity rejection. Migration 200 is part of the explicit manifest and its SQL contract is re-run to test migration idempotency.
+
+**Boundary:** this closes the backend directed-movement identity gap for the supported finished-good LOT. It does not claim carton/pallet shipment capture, scanner/RFID hardware acceptance, production-site deployment, or completion of all WP02/SRS requirements.
+
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
