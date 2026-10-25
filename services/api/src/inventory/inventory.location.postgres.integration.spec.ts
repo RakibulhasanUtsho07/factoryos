@@ -1327,6 +1327,42 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       [finishedLot.id, tenantId, fixture.factoryId],
     );
     expect(finalLotStatus.rows[0]?.status).toBe('SHIPPED');
+
+    const recallImpact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 200,
+    );
+    expect(recallImpact).toMatchObject({
+      requested_unit: { id: finishedLot.id, unit_code: finishedLot.unit_code },
+      side_effects: { stock_changed: false, statuses_changed: false, records_created: false },
+    });
+    const impactShipmentIds = recallImpact.affected_shipments.map(
+      (shipment: { shipment_unit_id: string }) => shipment.shipment_unit_id,
+    );
+    expect(impactShipmentIds).toEqual(expect.arrayContaining([
+      dispatched.shipment.shipment_unit_id,
+      remainderDispatch.shipment.shipment_unit_id,
+    ]));
+    expect(recallImpact.impacted_units.map((unit: { id: string }) => unit.id)).toEqual(
+      expect.arrayContaining([cartonId, palletId, remainderCartonId,
+        dispatched.shipment.shipment_unit_id, remainderDispatch.shipment.shipment_unit_id]),
+    );
+
+    // The recall preview is bounded and read-only; callers must not mistake it for a recall decision.
+    const boundedImpact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 1,
+    );
+    expect(boundedImpact.impact_truncated).toBe(true);
+    expect(boundedImpact.impacted_unit_count).toBe(0);
+    const afterImpactAggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    expect(afterImpactAggregate?.quantity_on_hand).toBe(finalAggregate?.quantity_on_hand);
+    const afterImpactStatus = await adminPool.query<{ status: string }>(
+      `SELECT status FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [tenantId, fixture.factoryId, finishedLot.id],
+    );
+    expect(afterImpactStatus.rows[0]?.status).toBe(finalLotStatus.rows[0]?.status);
+    await expect(traceabilityService.recallImpact(
+      userId, randomUUID(), fixture.factoryId, finishedLot.id, 12, 200,
+    )).rejects.toThrow(/not found in this factory/i);
   });
 
   it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
