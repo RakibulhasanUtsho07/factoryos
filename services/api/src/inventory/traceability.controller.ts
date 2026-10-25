@@ -82,6 +82,21 @@ export class TraceabilityController {
       rawLimit === undefined ? undefined : Number(rawLimit));
   }
 
+  @Get('units/:unitId/recall-impact')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async recallImpact(@Req() request: TraceabilityRequest,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+    @Query('depth') rawDepth?: string, @Query('limit') rawLimit?: string) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.recallImpact(
+      c.userId, c.tenantId, c.factoryId, unitId,
+      rawDepth === undefined ? undefined : Number(rawDepth),
+      rawLimit === undefined ? undefined : Number(rawLimit),
+    );
+  }
+
   @Get('units/:unitId')
   @UseGuards(PermissionGuard)
   @RequirePermission('traceability.read')
