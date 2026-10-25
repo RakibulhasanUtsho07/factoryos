@@ -523,6 +523,23 @@ export class TraceabilityService {
       ORDER BY e.created_at, e.id
       LIMIT 1000
     `, [unitIds, tenantId, factoryId], context);
+    const boundaryIds = units
+      .filter(row => Number((row as QueryResultRow & { depth?: number }).depth) === depth)
+      .map(row => String((row as QueryResultRow & { id: string }).id));
+    let depthTruncated = false;
+    if (boundaryIds.length > 0) {
+      const outwardEdge = direction === 'FORWARD'
+        ? 'e.source_unit_id = ANY($1::uuid[]) AND NOT (e.target_unit_id = ANY($1::uuid[]))'
+        : 'e.target_unit_id = ANY($1::uuid[]) AND NOT (e.source_unit_id = ANY($1::uuid[]))';
+      const boundaryResult = await this.database.query<{ truncated: boolean }>(`
+        SELECT EXISTS (
+          SELECT 1 FROM product_genealogy_events e
+          WHERE ${outwardEdge} AND e.tenant_id = $2 AND e.factory_id = $3
+        ) AS truncated
+      `, [boundaryIds, tenantId, factoryId], context);
+      depthTruncated = boundaryResult.rows[0]?.truncated === true;
+    }
+    const nodeLimitReached = units.length >= limit;
     const settings = await this.getSettings(userId, tenantId, factoryId);
     return {
       root: root.rows[0],
@@ -530,7 +547,9 @@ export class TraceabilityService {
       max_depth: depth,
       limit,
       retention_years: settings.retention_years,
-      truncated: units.length >= limit,
+      truncated: nodeLimitReached || depthTruncated,
+      node_limit_reached: nodeLimitReached,
+      depth_truncated: depthTruncated,
       units,
       relationships: edgesResult.rows,
     };
