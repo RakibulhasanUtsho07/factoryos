@@ -136,6 +136,9 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'order line does not belong to the bound customer order' USING ERRCODE = '23514';
   END IF;
+  IF v_line.inventory_item_id IS NOT NULL AND v_line.inventory_item_id <> NEW.item_id THEN
+    RAISE EXCEPTION 'shipment inventory item must match the explicit order-line inventory item binding' USING ERRCODE = '23514';
+  END IF;
   SELECT sku, unit INTO v_sku, v_item_unit
   FROM inventory_items
   WHERE id=NEW.item_id AND tenant_id=NEW.tenant_id AND factory_id=NEW.factory_id;
