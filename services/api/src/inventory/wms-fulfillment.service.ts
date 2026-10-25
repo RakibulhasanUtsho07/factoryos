@@ -862,7 +862,8 @@ export class WmsFulfillmentService {
       throw new BadRequestException('POD fields may only be provided for DELIVERED events');
     }
     const requestHash = this.hash({
-      shipment_unit_id: shipmentId, event_type: eventType, event_at: eventAt.toISOString(),
+      shipment_unit_id: shipmentId, event_type: eventType,
+      event_at: suppliedEventAt?.toISOString() ?? null,
       recipient_name: recipientName, proof_type: proofType, proof_reference: proofReference,
       proof_sha256: proofSha256, signed_at: signedAt?.toISOString() ?? null, notes,
     });
