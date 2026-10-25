@@ -38,6 +38,16 @@ BEGIN
     RAISE EXCEPTION 'variance escalation evidence table is missing';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid = 'public.inventory_cycle_count_variance_escalations'::regclass
+      AND attname = 'resolved_by_user_id'
+      AND atttypid = 'uuid'::regtype
+      AND attnum > 0 AND NOT attisdropped
+  ) THEN
+    RAISE EXCEPTION 'variance escalation resolver identity must remain a native UUID';
+  END IF;
+
   SELECT c.relrowsecurity, c.relforcerowsecurity INTO v_rls_enabled, v_rls_forced
   FROM pg_class c
   WHERE c.oid = 'public.inventory_cycle_count_variance_escalations'::regclass;
@@ -112,8 +122,10 @@ BEGIN
     INTO v_definition;
   IF position('must be resolved before approval or rejection' IN v_definition) = 0
     OR position('a different reviewer must decide the escalated cycle count' IN v_definition) = 0
+    OR position('NEW.reviewed_by_user_id IS NULL' IN v_definition) = 0
+    OR position('escalation_row.resolved_by_user_id = NEW.reviewed_by_user_id' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'variance escalation decision gate is incomplete';
+    RAISE EXCEPTION 'variance escalation decision gate must require an independently identified reviewer using UUID equality';
   END IF;
 
   SELECT pg_get_functiondef('public.factoryos_guard_inventory_cycle_count_variance_escalation()'::regprocedure)
