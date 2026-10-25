@@ -1,5 +1,6 @@
 import { BadRequestException, HttpException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
 import { jest } from '@jest/globals';
+import { createHash } from 'node:crypto';
 import {
   createWebhookSignature,
   integrationRequestHash,
@@ -54,6 +55,7 @@ describe('IntegrationService signed webhook ingress', () => {
     allowedEventTypes?: string[];
     payloadSchema?: Record<string, unknown>;
     shipmentRows?: Array<{ shipment_unit_id: string; shipment_code: string; status: string }>;
+    podStorageConfigured?: boolean;
   } = {}) {
     const testConnector = {
       ...connector,
@@ -88,6 +90,9 @@ describe('IntegrationService signed webhook ingress', () => {
         if (sql.includes('factoryos_resolve_integration_webhook')) {
           return { rows: [{ tenant_id: tenantId, factory_id: factoryId }], rowCount: 1 };
         }
+        if (sql.includes('FROM integration_webhook_receipts')) {
+          return { rows: existingReceipt ? [existingReceipt] : [], rowCount: existingReceipt ? 1 : 0 };
+        }
         return { rows: [testConnector], rowCount: 1 };
       }),
       transaction: jest.fn(async (...args: unknown[]) => {
@@ -96,7 +101,23 @@ describe('IntegrationService signed webhook ingress', () => {
         return callback(client);
       }),
     };
-    const config = { get: jest.fn((key: string) => key === 'WEBHOOK_SECRET_MES' ? secret : key === 'WEBHOOK_RATE_LIMIT_PER_MINUTE' ? options.rateLimit : undefined) };
+    const configValues: Record<string, string | undefined> = {
+      WEBHOOK_SECRET_MES: secret,
+      WEBHOOK_RATE_LIMIT_PER_MINUTE: options.rateLimit,
+    };
+    if (options.podStorageConfigured) {
+      Object.assign(configValues, {
+        NODE_ENV: 'test',
+        WMS_POD_STORAGE_ENDPOINT: 'https://pod-storage.example.test',
+        WMS_POD_STORAGE_BUCKET: 'factoryos-pod',
+        WMS_POD_STORAGE_REGION: 'us-east-1',
+        WMS_POD_STORAGE_ACCESS_KEY_ID: 'test-access-key',
+        WMS_POD_STORAGE_SECRET_ACCESS_KEY: 'test-secret-key',
+        WMS_POD_STORAGE_MAX_BYTES: '10485760',
+        WMS_POD_STORAGE_TIMEOUT_MS: '5000',
+      });
+    }
+    const config = { get: jest.fn((key: string) => configValues[key]) };
     return {
       service: new IntegrationService(database as never, config as never),
       database,
@@ -324,6 +345,102 @@ describe('IntegrationService signed webhook ingress', () => {
       String(sql).includes("'WMS.SHIPMENT_DELIVERY_EVENT_RECORDED'"))).toBe(true);
     expect(harness.clientQuery.mock.calls.some(([sql]) =>
       String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(true);
+  });
+
+  it('verifies actual stored POD bytes before committing a DELIVERED carrier event', async () => {
+    const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
+    const bytes = Buffer.from('verified carrier proof bytes', 'utf8');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const eventAt = new Date();
+    const signedAt = new Date(eventAt.getTime() - 1000);
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      podStorageConfigured: true,
+      shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-CARRIER-POD', status: 'DISPATCHED' }],
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.length) } }),
+    );
+    try {
+      const signed = signedRequest('carrier-event-delivered-pod', {
+        event_type: 'WMS.SHIPMENT_DELIVERY',
+        schema_version: 1,
+        payload: {
+          carrier_name: 'Acme Logistics',
+          tracking_reference: 'ACME-TRACK-POD',
+          event_type: 'DELIVERED',
+          event_at: eventAt.toISOString(),
+          recipient_name: 'Warehouse Receiver',
+          proof_type: 'PHOTO',
+          proof_reference: 'pod/ACME-TRACK-POD/photo.png',
+          proof_sha256: digest,
+          signed_at: signedAt.toISOString(),
+        },
+      });
+      const result = await harness.service.receiveWebhook(
+        connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+      );
+      expect(result).toEqual(expect.objectContaining({ accepted: true, duplicate: false }));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+        'https://pod-storage.example.test/factoryos-pod/pod/ACME-TRACK-POD/photo.png',
+      );
+      const deliveryInsert = harness.clientQuery.mock.calls.find(([sql]) =>
+        String(sql).includes('INSERT INTO wms_shipment_delivery_events'));
+      expect(deliveryInsert?.[1]?.[8]).toBe(digest);
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('rejects a DELIVERED event when stored proof bytes do not match the carrier SHA-256', async () => {
+    const declaredBytes = Buffer.from('carrier-claimed-proof', 'utf8');
+    const storedBytes = Buffer.from('different-stored-proof', 'utf8');
+    const declaredDigest = createHash('sha256').update(declaredBytes).digest('hex');
+    const eventAt = new Date();
+    const harness = setup(undefined, {
+      sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
+      allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
+      payloadSchema: carrierPayloadSchema,
+      podStorageConfigured: true,
+      shipmentRows: [{ shipment_unit_id: '51c58ea7-1207-4ac2-8b68-a4e13883cf81', shipment_code: 'SHIP-CARRIER-BAD-POD', status: 'DISPATCHED' }],
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(storedBytes, { status: 200, headers: { 'content-length': String(storedBytes.length) } }),
+    );
+    try {
+      const signed = signedRequest('carrier-event-bad-pod-digest', {
+        event_type: 'WMS.SHIPMENT_DELIVERY',
+        schema_version: 1,
+        payload: {
+          carrier_name: 'Acme Logistics',
+          tracking_reference: 'ACME-TRACK-BAD-POD',
+          event_type: 'DELIVERED',
+          event_at: eventAt.toISOString(),
+          recipient_name: 'Warehouse Receiver',
+          proof_type: 'PHOTO',
+          proof_reference: 'pod/ACME-TRACK-BAD-POD/photo.png',
+          proof_sha256: declaredDigest,
+          signed_at: new Date(eventAt.getTime() - 1000).toISOString(),
+        },
+      });
+      await expect(harness.service.receiveWebhook(
+        connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
+      )).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('INSERT INTO wms_shipment_delivery_events'))).toBe(false);
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('INSERT INTO integration_webhook_receipts'))).toBe(false);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it('rejects carrier DELIVERED events without complete proof-of-delivery metadata', async () => {
