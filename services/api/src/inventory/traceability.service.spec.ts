@@ -32,6 +32,25 @@ describe('TraceabilityService input contracts', () => {
     expect(database.transaction).not.toHaveBeenCalled();
   });
 
+  it('requires customer, customer-order and shipment references before a shipment identity can be registered', async () => {
+    const shipment: CreateTraceabilityUnitDto = {
+      unit_type: 'SHIPMENT',
+      product_role: 'SHIPMENT',
+      unit_code: 'SHIP-0001',
+      quantity: 1,
+      unit: 'EA',
+      external_reference: 'SHIPMENT-EXT-0001',
+      attributes: {
+        customer_reference: 'CUSTOMER-001',
+        shipment_reference: 'SHIPMENT-0001',
+      },
+    };
+    await expect(service.createUnit(
+      USER_ID, TENANT_ID, FACTORY_ID, shipment, 'trace-shipment-missing-order', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
   it('requires serialized identities to represent exactly one unit', async () => {
     await expect(service.createUnit(
       USER_ID, TENANT_ID, FACTORY_ID, { ...validUnit(), unit_type: 'SERIAL', quantity: 2 },
