@@ -178,6 +178,7 @@ WHERE r.code = 'ORG_ADMIN'
     'finance.close.write',
     'finance.close.submit',
     'finance.close.approve',
+    'inventory.cycle-count.review',
     'mrp.read',
     'mrp.write',
     'production.workorders.read',
