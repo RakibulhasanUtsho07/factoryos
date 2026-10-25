@@ -21,8 +21,12 @@ BEGIN
     IF NEW.recorded_by_user_id IS DISTINCT FROM factoryos_current_user_id() THEN
       RAISE EXCEPTION 'manual delivery event actor must match the authenticated user' USING ERRCODE = '23514';
     END IF;
-  ELSIF NEW.recorded_by_user_id IS NOT NULL THEN
-    RAISE EXCEPTION 'system and carrier delivery events must not assert a human actor' USING ERRCODE = '23514';
+  ELSIF NEW.source_system = 'CARRIER_WEBHOOK' OR NEW.source_system = 'SYSTEM' THEN
+    IF NEW.recorded_by_user_id IS NOT NULL THEN
+      RAISE EXCEPTION 'system and carrier delivery events must not assert a human actor' USING ERRCODE = '23514';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'unsupported shipment delivery event source system' USING ERRCODE = '23514';
   END IF;
 
   SELECT status INTO v_shipment_status
