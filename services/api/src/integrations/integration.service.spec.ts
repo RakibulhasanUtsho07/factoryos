@@ -69,6 +69,9 @@ describe('IntegrationService signed webhook ingress', () => {
         const rows = options.shipmentRows ?? [];
         return { rows, rowCount: rows.length };
       }
+      if (sql.includes('INSERT INTO wms_shipment_delivery_events')) {
+        return { rows: [{ id: 'ddf352b2-bc42-41f8-b2a9-477bd220d3c1' }], rowCount: 1 };
+      }
       if (sql.includes('FROM integration_webhook_receipts')) {
         return { rows: existingReceipt ? [existingReceipt] : [], rowCount: existingReceipt ? 1 : 0 };
       }
@@ -302,8 +305,11 @@ describe('IntegrationService signed webhook ingress', () => {
     expect(String(deliveryInsert?.[0])).toContain("'CARRIER_WEBHOOK'");
     expect(String(deliveryInsert?.[0])).toContain('recorded_by_user_id,correlation_id');
     expect(deliveryInsert?.[1]).toEqual(expect.arrayContaining([
-      tenantId, factoryId, shipmentUnitId, 'IN_TRANSIT', 'ACME-TRACK-101',
+      tenantId, factoryId, shipmentUnitId, 'IN_TRANSIT',
     ]));
+    const shipmentLookup = harness.clientQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'));
+    expect(shipmentLookup?.[1]).toEqual([tenantId, factoryId, 'Acme Logistics', 'ACME-TRACK-101']);
     expect(harness.clientQuery.mock.calls.some(([sql]) =>
       String(sql).includes("INSERT INTO outbox_events") &&
       String(sql).includes("'WMS.SHIPMENT_DELIVERY_EVENT_RECORDED'"))).toBe(true);
