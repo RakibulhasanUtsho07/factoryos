@@ -8,6 +8,7 @@ import { DatabaseService } from '../database/database.service';
 import { InventoryService } from './inventory.service';
 import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
+import { TraceabilityService } from './traceability.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -19,6 +20,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let locationService!: InventoryLocationService;
   let inventoryService!: InventoryService;
   let reservationService!: InventoryReservationService;
+  let traceabilityService!: TraceabilityService;
   const factoryIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
@@ -50,6 +52,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     locationService = new InventoryLocationService(database, audit);
     inventoryService = new InventoryService(database, audit);
     reservationService = new InventoryReservationService(database, audit);
+    traceabilityService = new TraceabilityService(database);
   }, 60_000);
 
   afterAll(async () => {
@@ -713,6 +716,143 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const moves = await locationService.listTransfers(tenantId, fixture.factoryId, fixture.itemId);
     expect(moves.filter((move) => move.movement_purpose === 'PUT_AWAY')).toHaveLength(1);
     expect(moves.filter((move) => move.movement_purpose === 'PICK')).toHaveLength(1);
+  });
+
+
+  it('puts away, transfers and picks finished-good lots without losing location-level identity', async () => {
+    const fixture = await createStockFixture('5.0000');
+    const { binA, binB } = await createWarehouseAndBins(fixture.factoryId);
+    const staging = await locationService.createLocation(
+      userId, tenantId, fixture.factoryId,
+      {
+        location_code: 'FG-STAGE-' + randomUUID().slice(0, 8),
+        name: 'Finished goods staging',
+        location_type: 'STAGING',
+      },
+      requestId, traceId,
+    );
+
+    const createdLot = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'FINISHED_GOOD',
+        unit_code: 'FG-LOT-' + randomUUID().slice(0, 8),
+        inventory_item_id: fixture.itemId,
+        quantity: 5,
+        unit: 'PCS',
+        external_reference: 'wms-finished-good-putaway-test',
+      } as never,
+      'fg-lot-register-' + randomUUID(), requestId, traceId,
+    );
+    const finishedLotId = createdLot.id;
+    await adminPool.query(
+      `INSERT INTO inventory_traceability_location_balances
+         (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
+       VALUES ($1, $2, $3, $4, $5, 5.0000)`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLotId, fixture.defaultLocationId],
+    );
+
+    await expect(locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: fixture.defaultLocationId,
+        destination_location_id: binA.id,
+        quantity: 1,
+        movement_purpose: 'PUT_AWAY',
+      },
+      'fg-lot-missing-id-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(adminPool.query(
+      `INSERT INTO inventory_location_transfers (
+         tenant_id, factory_id, item_id, source_location_id, destination_location_id,
+         quantity, source_quantity_before, source_quantity_after,
+         destination_quantity_before, destination_quantity_after,
+         idempotency_key, request_hash, created_by_user_id, correlation_id,
+         movement_purpose
+       ) VALUES ($1,$2,$3,$4,$5,1,5,4,0,1,$6,$7,$8,$9,'PUT_AWAY')`,
+      [
+        tenantId, fixture.factoryId, fixture.itemId, fixture.defaultLocationId, binA.id,
+        'fg-lot-db-bypass-' + randomUUID(), 'a'.repeat(64), userId, traceId,
+      ],
+    )).rejects.toMatchObject({ code: '23514' });
+
+    const putAwayPayload = {
+      source_location_id: fixture.defaultLocationId,
+      destination_location_id: binA.id,
+      quantity: 3,
+      movement_purpose: 'PUT_AWAY' as const,
+      traceability_unit_id: finishedLotId,
+    };
+    const putAwayKey = 'fg-lot-putaway-' + randomUUID();
+    const putAway = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      putAwayPayload, putAwayKey, requestId, traceId,
+    );
+    expect(putAway).toMatchObject({
+      movement_purpose: 'PUT_AWAY',
+      traceability_unit_id: finishedLotId,
+      source_quantity_after: '2.0000',
+      destination_quantity_after: '3.0000',
+      replayed: false,
+    });
+    const putAwayReplay = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      putAwayPayload, putAwayKey, requestId, traceId,
+    );
+    expect(putAwayReplay).toMatchObject({ id: putAway.id, traceability_unit_id: finishedLotId, replayed: true });
+
+    const moved = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: binA.id,
+        destination_location_id: binB.id,
+        quantity: 1,
+        traceability_unit_id: finishedLotId,
+      },
+      'fg-lot-bin-transfer-' + randomUUID(), requestId, traceId,
+    );
+    expect(moved.traceability_unit_id).toBe(finishedLotId);
+
+    const picked = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: binA.id,
+        destination_location_id: staging.id,
+        quantity: 1,
+        movement_purpose: 'PICK',
+        traceability_unit_id: finishedLotId,
+      },
+      'fg-lot-pick-' + randomUUID(), requestId, traceId,
+    );
+    expect(picked).toMatchObject({ movement_purpose: 'PICK', traceability_unit_id: finishedLotId });
+
+    const identityBalances = await adminPool.query<{
+      location_id: string; quantity_on_hand: string; quantity_reserved: string;
+    }>(
+      `SELECT location_id::text AS location_id, quantity_on_hand::text AS quantity_on_hand,
+              quantity_reserved::text AS quantity_reserved
+       FROM inventory_traceability_location_balances
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND traceability_unit_id=$4
+       ORDER BY location_id`,
+      [tenantId, fixture.factoryId, fixture.itemId, finishedLotId],
+    );
+    expect(identityBalances.rows).toHaveLength(4);
+    expect(identityBalances.rows.reduce((sum, row) => sum + Number(row.quantity_on_hand), 0)).toBeCloseTo(5, 4);
+    expect(identityBalances.rows.every((row) => row.quantity_reserved === '0.0000')).toBe(true);
+    expect(identityBalances.rows.find((row) => row.location_id === fixture.defaultLocationId)?.quantity_on_hand).toBe('2.0000');
+    expect(identityBalances.rows.find((row) => row.location_id === binA.id)?.quantity_on_hand).toBe('1.0000');
+    expect(identityBalances.rows.find((row) => row.location_id === binB.id)?.quantity_on_hand).toBe('1.0000');
+    expect(identityBalances.rows.find((row) => row.location_id === staging.id)?.quantity_on_hand).toBe('1.0000');
+
+    const aggregate = await readAggregate(fixture.factoryId, fixture.itemId);
+    const totals = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(aggregate?.quantity_on_hand).toBe('5.0000');
+    expect(totals?.sum).toBe(aggregate?.quantity_on_hand);
+
+    const movements = await locationService.listTransfers(tenantId, fixture.factoryId, fixture.itemId);
+    expect(movements.filter((move) => move.traceability_unit_id === finishedLotId)).toHaveLength(3);
   });
 
 });
