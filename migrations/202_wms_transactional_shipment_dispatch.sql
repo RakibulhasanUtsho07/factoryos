@@ -242,7 +242,7 @@ AS $$
 DECLARE
   v_location_id UUID;
 BEGIN
-  IF NEW.reference_type <> 'SHIPMENT_DISPATCH' THEN
+  IF NEW.reference_type IS DISTINCT FROM 'SHIPMENT_DISPATCH' THEN
     RETURN NEW;
   END IF;
 
@@ -374,9 +374,9 @@ BEGIN
 END;
 $$;
 
-CREATE COMMENT ON FUNCTION factoryos_guard_inventory_shipment_dispatch_movement() IS
+COMMENT ON FUNCTION factoryos_guard_inventory_shipment_dispatch_movement() IS
   'Allows shipment-dispatch inventory issues only when they are bound to a scoped dispatch and its outbound staging location.';
-CREATE COMMENT ON FUNCTION factoryos_assert_traceability_shipment_dispatch_evidence() IS
+COMMENT ON FUNCTION factoryos_assert_traceability_shipment_dispatch_evidence() IS
   'Requires immutable shipment dispatch evidence, issue movements reconciled by item, shipment status, audit and outbox before commit.';
 
 INSERT INTO schema_migrations(version, checksum)
