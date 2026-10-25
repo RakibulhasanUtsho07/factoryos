@@ -439,6 +439,106 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
     ]);
   });
 
+  it('repairs a missing terminal receipt after the stock movement has already committed', async () => {
+    const itemId = await createItem('10.0000');
+    const versionResult = await adminPool.query<{ version: string }>(
+      'SELECT version::text AS version FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    const initialVersion = versionResult.rows[0]?.version;
+    if (!initialVersion) throw new Error('Receipt recovery initial balance version was not found');
+
+    const deviceId = 'WMS-RECEIPT-RECOVERY-' + randomUUID();
+    deviceIds.push(deviceId);
+    const clientTransactionId = randomUUID();
+    const batch: SyncOfflineBatchDto = {
+      device_id: deviceId,
+      transactions: [{
+        client_transaction_id: clientTransactionId,
+        operation: 'STOCK_MOVEMENT',
+        item_id: itemId,
+        movement_type: 'ISSUE',
+        quantity: 2,
+        expected_balance_version: initialVersion,
+      }],
+    };
+
+    const suffix = randomUUID().replace(/-/g, '');
+    const functionName = 'test_fail_mobile_receipt_' + suffix;
+    const triggerName = 'trg_test_fail_mobile_receipt_' + suffix;
+    let triggerCreated = false;
+    try {
+      await adminPool.query(`
+        CREATE FUNCTION public.${functionName}() RETURNS trigger
+        LANGUAGE plpgsql AS $
+        BEGIN
+          IF NEW.device_id LIKE 'WMS-RECEIPT-RECOVERY-%' THEN
+            RAISE EXCEPTION 'simulated interruption after stock commit' USING ERRCODE = 'P0001';
+          END IF;
+          RETURN NEW;
+        END;
+        $
+      `);
+      await adminPool.query(`
+        CREATE TRIGGER ${triggerName}
+        BEFORE INSERT ON mobile_offline_sync_receipts
+        FOR EACH ROW EXECUTE FUNCTION public.${functionName}()
+      `);
+      triggerCreated = true;
+
+      let firstAttemptError: unknown;
+      try {
+        await mobileService.syncOfflineBatch(
+          TEST_USER_ID, tenantId, factoryId, batch, null, correlation(),
+        );
+      } catch (error) {
+        firstAttemptError = error;
+      }
+      expect(firstAttemptError).toBeDefined();
+
+      const movementBeforeRetry = await adminPool.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1 AND idempotency_key = $2',
+        [itemId, 'offline:' + deviceId + ':' + clientTransactionId],
+      );
+      expect(movementBeforeRetry.rows[0]?.count).toBe('1');
+      const receiptBeforeRetry = await adminPool.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM mobile_offline_sync_receipts WHERE tenant_id = $1 AND factory_id = $2 AND device_id = $3 AND client_transaction_id = $4::uuid',
+        [tenantId, factoryId, deviceId, clientTransactionId],
+      );
+      expect(receiptBeforeRetry.rows[0]?.count).toBe('0');
+    } finally {
+      if (triggerCreated) {
+        await adminPool.query(`DROP TRIGGER IF EXISTS ${triggerName} ON mobile_offline_sync_receipts`);
+      }
+      await adminPool.query(`DROP FUNCTION IF EXISTS public.${functionName}()`);
+    }
+
+    const retried = await mobileService.syncOfflineBatch(
+      TEST_USER_ID, tenantId, factoryId, batch, null, correlation(),
+    );
+    expect(retried.results[0]).toMatchObject({
+      status: 'APPLIED',
+      replayed: false,
+      result: { movement: { replayed: true } },
+    });
+
+    const balance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(balance.rows[0]?.quantity_on_hand).toBe('8.0000');
+    const movementCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM inventory_movements WHERE item_id = $1',
+      [itemId],
+    );
+    expect(movementCount.rows[0]?.count).toBe('1');
+    const receiptCount = await adminPool.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM mobile_offline_sync_receipts WHERE tenant_id = $1 AND factory_id = $2 AND device_id = $3 AND client_transaction_id = $4::uuid',
+      [tenantId, factoryId, deviceId, clientTransactionId],
+    );
+    expect(receiptCount.rows[0]?.count).toBe('1');
+  });
+
   it('issues labels for identities, resolves the same barcode into genealogy, and suppresses repeated RFID reads', async () => {
     const itemId = await createItem('3.0000');
     const template = await createTemplate(['MATERIAL', 'LOT', 'BUNDLE']);
