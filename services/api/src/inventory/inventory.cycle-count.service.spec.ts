@@ -44,7 +44,7 @@ const proposalRow = (blindCountSnapshot: boolean) => ({
 });
 
 describe('InventoryCycleCountService blind-count response protection', () => {
-  const query = jest.fn();
+  const query = jest.fn<(...args: unknown[]) => Promise<{ rows: unknown[] }>>();
   const service = new InventoryCycleCountService(
     { query } as unknown as DatabaseService,
     {} as unknown as AuditService,
