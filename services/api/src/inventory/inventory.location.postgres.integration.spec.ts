@@ -1450,8 +1450,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId, customer_order_reference: validReference,
     });
 
-    const transitAt = new Date(Date.now() - 120_000).toISOString();
-    const transitPayload = { event_type: 'IN_TRANSIT' as const, event_at: transitAt, notes: 'Shipment handed to carrier' };
+    // The server assigns event_at once; an identical retry with the timestamp omitted must replay.
+    const transitPayload = { event_type: 'IN_TRANSIT' as const, notes: 'Shipment handed to carrier' };
     const transitKey = 'wms-delivery-transit-' + randomUUID();
     const transit = await fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
