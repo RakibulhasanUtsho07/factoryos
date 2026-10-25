@@ -1470,6 +1470,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       [tenantId, fixture.factoryId],
     );
     expect(casesAfterRejected.rows[0]?.count).toBe(casesBefore.rows[0]?.count);
+    const statusesAfterRejected = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, palletId]],
+    );
+    expect(statusesAfterRejected.rows).toHaveLength(3);
+    expect(statusesAfterRejected.rows.every((row) => row.status === 'ACTIVE')).toBe(true);
 
     const idempotencyKey = 'wms-recall-declare-' + randomUUID();
     const declared = await traceabilityService.declareRecall(
