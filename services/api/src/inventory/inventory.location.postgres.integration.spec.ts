@@ -24,6 +24,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let reservationService!: InventoryReservationService;
   let traceabilityService!: TraceabilityService;
   let fulfillmentService!: WmsFulfillmentService;
+  let podStorageVerifier!: { verifyObjectDigest: ReturnType<typeof jest.fn> };
   const factoryIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
@@ -56,7 +57,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     inventoryService = new InventoryService(database, audit);
     reservationService = new InventoryReservationService(database, audit);
     traceabilityService = new TraceabilityService(database);
-    fulfillmentService = new WmsFulfillmentService(database);
+    podStorageVerifier = {
+      verifyObjectDigest: jest.fn(async (_objectKey: string, expectedSha256: string) => ({
+        sha256: expectedSha256.toLowerCase(),
+        byteLength: 14,
+      })),
+    };
+    fulfillmentService = new WmsFulfillmentService(database, podStorageVerifier as never);
   }, 60_000);
 
   afterAll(async () => {
@@ -1830,7 +1837,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const proofPayload = {
       event_type: 'DELIVERED' as const, event_at: deliveredAt,
       recipient_name: 'Acceptance Recipient', proof_type: 'SIGNATURE' as const,
-      proof_reference: 'pod/' + dispatch.shipment.shipment_unit_id + '/signature.png',
+      proof_reference: 'pod/' + tenantId.toLowerCase() + '/' + fixture.factoryId.toLowerCase() + '/' + dispatch.shipment.shipment_unit_id.toLowerCase() + '/' + randomUUID() + '.png',
       proof_sha256: 'a'.repeat(64), signed_at: signedAt, notes: 'POD acceptance evidence',
     };
     const proofKey = 'wms-delivery-proof-' + randomUUID();
@@ -1851,6 +1858,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       proofPayload, proofKey, requestId, traceId,
     );
     expect(proofReplay).toMatchObject({ replayed: true, event: { id: proof.event.id } });
+    expect(podStorageVerifier.verifyObjectDigest).toHaveBeenCalledWith(proofPayload.proof_reference, proofPayload.proof_sha256);
+    expect(podStorageVerifier.verifyObjectDigest).toHaveBeenCalledTimes(1);
     await expect(fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
       { event_type: 'IN_TRANSIT', event_at: new Date().toISOString() },
