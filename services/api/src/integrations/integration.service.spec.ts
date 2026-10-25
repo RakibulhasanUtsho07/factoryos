@@ -323,6 +323,7 @@ describe('IntegrationService signed webhook ingress', () => {
   it('rejects carrier DELIVERED events without complete proof-of-delivery metadata', async () => {
     const harness = setup(undefined, {
       sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
       allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
       payloadSchema: carrierPayloadSchema,
       shipmentRows: [{ shipment_unit_id: '51c58ea7-1207-4ac2-8b68-a4e13883cf81', shipment_code: 'SHIP-CARRIER-2', status: 'DISPATCHED' }],
@@ -349,6 +350,7 @@ describe('IntegrationService signed webhook ingress', () => {
   it('does not resolve carrier tracking references outside the connector factory shipment scope', async () => {
     const harness = setup(undefined, {
       sourceSystem: 'WMS_CARRIER',
+      displayName: 'Acme Logistics',
       allowedEventTypes: ['WMS.SHIPMENT_DELIVERY'],
       payloadSchema: carrierPayloadSchema,
       shipmentRows: [],
