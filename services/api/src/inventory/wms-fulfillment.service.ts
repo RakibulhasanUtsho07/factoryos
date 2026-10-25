@@ -678,7 +678,7 @@ export class WmsFulfillmentService {
               inventory_movement_id, shipment_code, customer_name, customer_order_reference, order_id, order_line_id,
               carrier_name, tracking_reference, quantity, unit, status, idempotency_key, request_hash,
               dispatched_by_user_id, correlation_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::numeric,$15,'DISPATCHED',$16,$17,$18,$19)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::numeric,$16,'DISPATCHED',$17,$18,$19,$20)
           `, [shipmentUnitId, tenantId, factoryId, containerId, container.item_id, container.location_id,
             movementId, shipmentCode, customerName, customerOrderReference, orderId, orderLineId,
             carrierName, trackingReference, quantityDecimal, container.unit, key, requestHash, userId, correlationId]);
