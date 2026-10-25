@@ -143,6 +143,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             'DELETE FROM inventory_locations WHERE tenant_id = $1 AND factory_id = $2 AND is_default = TRUE',
             [tenantId, factoryId],
           );
+          // location/transfer audit records hold a restrictive FK to the factory.
+          // Remove only this isolated test factory's evidence before deleting its fixture.
+          await adminPool.query(
+            'DELETE FROM audit_events WHERE tenant_id = $1 AND factory_id = $2',
+            [tenantId, factoryId],
+          );
           await adminPool.query(
             'DELETE FROM factories WHERE tenant_id = $1 AND id = $2',
             [tenantId, factoryId],
