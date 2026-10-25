@@ -175,3 +175,27 @@ export class ResolveTraceabilityLabelDto {
   @MaxLength(255)
   code!: string;
 }
+
+/**
+ * A recall declaration must operate on a complete bounded genealogy. The service
+ * refuses the request rather than changing a partial set when either bound is hit.
+ */
+export class DeclareTraceabilityRecallDto {
+  @IsString()
+  @MaxLength(1800)
+  reason!: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  depth?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  limit?: number;
+}
