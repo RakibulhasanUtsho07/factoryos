@@ -62,8 +62,14 @@ BEGIN
      OR NEW.evidence->>'output_identity_kind' IS DISTINCT FROM v_output.target_kind
      OR NEW.evidence->>'source_quantity' IS DISTINCT FROM NEW.quantity::text
      OR NEW.evidence->>'source_unit' IS DISTINCT FROM NEW.unit
-     OR COALESCE(NEW.evidence->>'reservation_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
-
+     OR COALESCE(NEW.evidence->>'reservation_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     OR COALESCE(NEW.evidence->>'consumption_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     OR COALESCE(NEW.evidence->>'consumption_traceability_allocation_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     OR COALESCE(NEW.evidence->>'source_inventory_item_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  THEN
+    RAISE EXCEPTION 'work-order output genealogy must bind the canonical report, output identity and WMS consumption evidence'
+      USING ERRCODE = '23514';
+  END IF;
   SELECT ca.id AS allocation_id, ca.quantity AS allocated_quantity,
          ca.traceability_unit_id, c.id AS consumption_id,
          c.reservation_id, c.item_id, tu.unit AS source_unit,
