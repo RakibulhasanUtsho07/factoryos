@@ -24,6 +24,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let reservationService!: InventoryReservationService;
   let traceabilityService!: TraceabilityService;
   let fulfillmentService!: WmsFulfillmentService;
+  let podStorageVerifier!: { verifyObjectDigest: ReturnType<typeof jest.fn> };
   const factoryIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
@@ -56,7 +57,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     inventoryService = new InventoryService(database, audit);
     reservationService = new InventoryReservationService(database, audit);
     traceabilityService = new TraceabilityService(database);
-    fulfillmentService = new WmsFulfillmentService(database);
+    podStorageVerifier = {
+      verifyObjectDigest: jest.fn(async (_objectKey: string, expectedSha256: string) => ({
+        sha256: expectedSha256.toLowerCase(),
+        byteLength: 14,
+      })),
+    };
+    fulfillmentService = new WmsFulfillmentService(database, podStorageVerifier as never);
   }, 60_000);
 
   afterAll(async () => {
@@ -70,6 +77,11 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE inventory_reservation_traceability_allocations DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE inventory_traceability_location_balances DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_units DISABLE TRIGGER USER');
+        // Label issue records are append-only in production; disable their guard only
+        // for isolated integration-fixture cleanup at the end of this suite.
+        await adminPool.query('ALTER TABLE traceability_label_issues DISABLE TRIGGER USER');
+        // Label templates are immutable too; disable that guard only in teardown.
+        await adminPool.query('ALTER TABLE traceability_label_templates DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE product_genealogy_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE traceability_unit_status_events DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE wms_shipment_delivery_events DISABLE TRIGGER USER');
@@ -140,6 +152,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
           await adminPool.query(
+            'DELETE FROM traceability_label_issues WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
             'DELETE FROM wms_traceability_recall_notification_acknowledgements WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
@@ -165,6 +181,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2',
+            [tenantId, factoryId],
+          );
+          await adminPool.query(
+            'DELETE FROM traceability_label_templates WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -220,6 +240,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         } finally {
           await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_label_issues ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE traceability_label_templates ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE product_genealogy_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_unit_status_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE wms_shipment_delivery_events ENABLE TRIGGER USER');
@@ -1659,14 +1681,16 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   });
 
   it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
-    const fixture = await createStockFixture('2.0000');
+    // Keep one unit outside the shipment so the source lot remains ACTIVE after
+    // dispatch and exercises the intended ACTIVE -> RECALLED transition below.
+    const fixture = await createStockFixture('3.0000');
     const { binA } = await createWarehouseAndBins(fixture.factoryId);
     const finishedLot = await traceabilityService.createUnit(
       userId, tenantId, fixture.factoryId,
       {
         unit_type: 'LOT', product_role: 'FINISHED_GOOD',
         unit_code: 'FG-ORDER-POD-' + randomUUID().slice(0, 8),
-        inventory_item_id: fixture.itemId, quantity: 2, unit: 'PCS',
+        inventory_item_id: fixture.itemId, quantity: 3, unit: 'PCS',
         external_reference: 'wms-order-pod-acceptance',
       } as never,
       'fg-order-pod-register-' + randomUUID(), requestId, traceId,
@@ -1674,7 +1698,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     await adminPool.query(
       `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
-       VALUES ($1,$2,$3,$4,$5,2.0000)`,
+       VALUES ($1,$2,$3,$4,$5,3.0000)`,
       [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
     );
     await locationService.transferStock(
@@ -1743,7 +1767,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-order-pod-overship-' + randomUUID(), requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
     const balanceAfterRejectedOrder = await readAggregate(fixture.factoryId, fixture.itemId);
-    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('2.0000');
+    // Rejected order-line validation must not consume any of the initial three units.
+    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('3.0000');
 
     const validReference = 'CUSTOMER-ORDER-VALID-' + randomUUID().slice(0, 8);
     const validOrder = await createOrderLine(2, validReference);
@@ -1761,6 +1786,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       shipment_code: 'SHIP-ORDER-POD-' + randomUUID().slice(0, 8),
       customer_name: 'Acceptance Customer', customer_order_reference: validReference,
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
+      carrier_name: 'Acme Logistics',
+      tracking_reference: 'ACME-TRACK-' + randomUUID().slice(0, 8),
     };
     const dispatch = await fulfillmentService.dispatchContainer(
       userId, tenantId, fixture.factoryId, cartonId, payload,
@@ -1810,7 +1837,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const proofPayload = {
       event_type: 'DELIVERED' as const, event_at: deliveredAt,
       recipient_name: 'Acceptance Recipient', proof_type: 'SIGNATURE' as const,
-      proof_reference: 'pod/' + dispatch.shipment.shipment_unit_id + '/signature.png',
+      proof_reference: 'pod/' + tenantId.toLowerCase() + '/' + fixture.factoryId.toLowerCase() + '/' + dispatch.shipment.shipment_unit_id.toLowerCase() + '/' + randomUUID() + '.png',
       proof_sha256: 'a'.repeat(64), signed_at: signedAt, notes: 'POD acceptance evidence',
     };
     const proofKey = 'wms-delivery-proof-' + randomUUID();
@@ -1831,6 +1858,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       proofPayload, proofKey, requestId, traceId,
     );
     expect(proofReplay).toMatchObject({ replayed: true, event: { id: proof.event.id } });
+    expect(podStorageVerifier.verifyObjectDigest).toHaveBeenCalledWith(proofPayload.proof_reference, proofPayload.proof_sha256);
+    expect(podStorageVerifier.verifyObjectDigest).toHaveBeenCalledTimes(1);
     await expect(fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
       { event_type: 'IN_TRANSIT', event_at: new Date().toISOString() },
@@ -1851,7 +1880,105 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(shipmentList.shipments[0]).toMatchObject({
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
       latest_delivery_event_type: 'DELIVERED',
+      carrier_name: payload.carrier_name,
+      tracking_reference: payload.tracking_reference,
     });
+
+    // Cross-feature SRS regression: the same order-bound shipment, persisted POD
+    // metadata, recall assessment/declaration and lifecycle-aware label snapshots
+    // must agree on the persisted shipment and identity state.
+    const labelTemplate = await traceabilityService.createLabelTemplate(
+      userId, tenantId, fixture.factoryId,
+      {
+        template_code: 'WP02-E2E-' + randomUUID().slice(0, 8),
+        name: 'WP02 end-to-end lifecycle label',
+        symbology: 'QR',
+        supported_unit_types: ['LOT', 'SHIPMENT'],
+        label_layout: {
+          page: { width_mm: 50, height_mm: 30 },
+          fields: ['unit_code', 'barcode_value', 'status'],
+        },
+      } as never,
+      requestId, traceId,
+    );
+    const labelBeforeRecall = await traceabilityService.issueLabel(
+      userId, tenantId, fixture.factoryId,
+      { unit_id: finishedLot.id, template_id: labelTemplate.id, copy_count: 1 } as never,
+      'wp02-e2e-label-before-' + randomUUID(), requestId, traceId,
+    );
+    expect(labelBeforeRecall.print_contract.identity_payload).toMatchObject({
+      unit_id: finishedLot.id,
+      status: 'ACTIVE',
+    });
+
+    const impact = await traceabilityService.recallImpact(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 200,
+    );
+    expect(impact.affected_shipment_count).toBe(1);
+    expect(impact.affected_shipments[0]).toMatchObject({
+      shipment_unit_id: dispatch.shipment.shipment_unit_id,
+      container_unit_id: cartonId,
+      order_id: validOrder.orderId,
+      order_line_id: validOrder.orderLineId,
+      carrier_name: payload.carrier_name,
+      tracking_reference: payload.tracking_reference,
+      latest_delivery_event_type: 'DELIVERED',
+      pod_reference: proofPayload.proof_reference,
+      pod_sha256: 'a'.repeat(64),
+    });
+    expect(impact).toMatchObject({
+      impact_truncated: false,
+      provenance_truncated: false,
+      side_effects: { stock_changed: false, statuses_changed: false, records_created: false },
+    });
+
+    const stockBeforeRecall = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsBeforeRecall = await readBinTotals(fixture.factoryId, fixture.itemId);
+    const recallKey = 'wp02-e2e-recall-' + randomUUID();
+    const recall = await traceabilityService.declareRecall(
+      userId, tenantId, fixture.factoryId, finishedLot.id,
+      { reason: 'E2E regression: delivered shipment requires recall review', depth: 12, limit: 200 },
+      recallKey, requestId, traceId,
+    );
+    expect(recall.replayed).toBe(false);
+    const recallActions = new Map(recall.units.map((row: { unit_id: string; unit_action: string }) => [row.unit_id, row.unit_action]));
+    expect(recallActions.get(finishedLot.id)).toBe('RECALLED');
+    expect(recallActions.get(cartonId)).toBe('SHIPPED_REVIEW_REQUIRED');
+    expect(recallActions.get(dispatch.shipment.shipment_unit_id)).toBe('SHIPPED_REVIEW_REQUIRED');
+
+    const labelAfterRecall = await traceabilityService.issueLabel(
+      userId, tenantId, fixture.factoryId,
+      { unit_id: finishedLot.id, template_id: labelTemplate.id, copy_count: 1 } as never,
+      'wp02-e2e-label-after-' + randomUUID(), requestId, traceId,
+    );
+    expect(labelAfterRecall.print_contract.identity_payload).toMatchObject({
+      unit_id: finishedLot.id,
+      status: 'RECALLED',
+    });
+    const shippedLabelAfterRecall = await traceabilityService.issueLabel(
+      userId, tenantId, fixture.factoryId,
+      { unit_id: dispatch.shipment.shipment_unit_id, template_id: labelTemplate.id, copy_count: 1 } as never,
+      'wp02-e2e-shipment-label-after-recall-' + randomUUID(), requestId, traceId,
+    );
+    expect(shippedLabelAfterRecall.print_contract.identity_payload).toMatchObject({
+      unit_id: dispatch.shipment.shipment_unit_id,
+      status: 'SHIPPED',
+    });
+
+    const persistedLifecycle = await adminPool.query<{ id: string; status: string }>(
+      `SELECT id::text AS id, status FROM traceability_units
+       WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
+      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, dispatch.shipment.shipment_unit_id]],
+    );
+    expect(persistedLifecycle.rows).toHaveLength(3);
+    expect(persistedLifecycle.rows.find((row) => row.id === finishedLot.id)?.status).toBe('RECALLED');
+    expect(persistedLifecycle.rows.find((row) => row.id === cartonId)?.status).toBe('SHIPPED');
+    expect(persistedLifecycle.rows.find((row) => row.id === dispatch.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
+    const stockAfterRecall = await readAggregate(fixture.factoryId, fixture.itemId);
+    const binsAfterRecall = await readBinTotals(fixture.factoryId, fixture.itemId);
+    expect(stockAfterRecall?.quantity_on_hand).toBe(stockBeforeRecall?.quantity_on_hand);
+    expect(binsAfterRecall?.sum).toBe(binsBeforeRecall?.sum);
+
     const foreignTenantId = randomUUID();
     await expect(fulfillmentService.listDeliveryEvents(
       userId, foreignTenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
