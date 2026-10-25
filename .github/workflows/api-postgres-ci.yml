@@ -403,6 +403,19 @@ jobs:
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/204_wms_carrier_tracking_integrity.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-carrier-tracking-integrity.sql
 
+          echo "Checking bounded, tenant-scoped recall declaration and status evidence"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/205_wms_traceability_recall_execution.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-recall-case.sql
+          echo "Reapplying recall migration and contract to verify idempotency"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/205_wms_traceability_recall_execution.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-recall-case.sql
+          echo "Checking recall notification intents and operator-reported acknowledgements"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/206_wms_recall_notification_acknowledgements.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-recall-notification-ack.sql
+          echo "Reapplying recall notification migration and contract to verify idempotency"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/206_wms_recall_notification_acknowledgements.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-recall-notification-ack.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
