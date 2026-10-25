@@ -162,6 +162,17 @@ export class TraceabilityService {
       throw new BadRequestException('expires_at must not be earlier than manufactured_at');
     }
     const attributes = this.objectValue(dto.attributes);
+    if (dto.unit_type === 'SHIPMENT') {
+      for (const field of ['customer_reference', 'customer_order_reference', 'shipment_reference'] as const) {
+        const value = attributes[field];
+        if (typeof value !== 'string' || !value.trim() || value.trim().length > 255) {
+          throw new BadRequestException(
+            'SHIPMENT attributes must include non-empty customer_reference, customer_order_reference and shipment_reference values of at most 255 characters',
+          );
+        }
+        attributes[field] = value.trim();
+      }
+    }
     const externalReference = dto.external_reference?.trim() || null;
     if (externalReference && externalReference.length > 255) {
       throw new BadRequestException('external_reference must contain at most 255 characters');
