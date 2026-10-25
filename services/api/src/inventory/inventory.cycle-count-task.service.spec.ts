@@ -8,6 +8,7 @@ import { DatabaseService } from '../database/database.service';
 import { InventoryCycleCountTaskService } from './inventory.cycle-count-task.service';
 
 const USER_ID = '921382b8-e83f-43ab-a576-e3db6a06b70c';
+const OTHER_REVIEWER_ID = 'ac26f304-c4e2-4c2e-a1d8-eafedc78f714';
 const TENANT_ID = 'faaab63d-c447-46ce-950d-deebdd7f5f30';
 const FACTORY_ID = '24f17c4f-b34f-4d6b-8ebd-37fbf73e36e7';
 const ITEM_ID = '69ef2a43-8157-4d91-aa59-7b4260ef1778';
@@ -220,6 +221,21 @@ describe('InventoryCycleCountTaskService', () => {
     )).rejects.toBeInstanceOf(ConflictException);
 
     expect(client.query).toHaveBeenCalledTimes(2);
+    expect(auditMock.record).not.toHaveBeenCalled();
+  });
+
+  it('does not allow a different reviewer to replay another reviewer’s resolution key', async () => {
+    const note = 'Investigated stock variance';
+    client.query.mockResolvedValueOnce(queryRows([
+      escalationRow(resolutionRequestHash(TASK_ID, note)),
+    ]));
+
+    await expect(service.resolveVarianceEscalation(
+      OTHER_REVIEWER_ID.toUpperCase(), TENANT_ID, FACTORY_ID, TASK_ID,
+      note, 'escalation-resolve-1', null, null,
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    expect(client.query).toHaveBeenCalledTimes(1);
     expect(auditMock.record).not.toHaveBeenCalled();
   });
 });
