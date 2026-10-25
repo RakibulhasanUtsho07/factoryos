@@ -1245,6 +1245,30 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-carton-remainder-seal-' + randomUUID(), requestId, traceId,
     );
 
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      {
+        shipment_code: 'SHIP-CARRIER-PAIR-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARRIER-PAIR-' + randomUUID().slice(0, 8),
+        carrier_name: 'Acceptance Carrier',
+      } as never,
+      'wms-carrier-missing-tracking-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(BadRequestException);
+
+    // The dispatch lookup and database index normalize carrier/tracking case.
+    await expect(fulfillmentService.dispatchContainer(
+      userId, tenantId, fixture.factoryId, remainderCartonId,
+      {
+        shipment_code: 'SHIP-CARRIER-DUP-' + randomUUID().slice(0, 8),
+        customer_name: 'Acceptance Customer',
+        customer_order_reference: 'ORDER-CARRIER-DUP-' + randomUUID().slice(0, 8),
+        carrier_name: dispatchPayload.carrier_name.toLowerCase(),
+        tracking_reference: dispatchPayload.tracking_reference.toLowerCase(),
+      },
+      'wms-carrier-duplicate-tracking-' + randomUUID(), requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
+
     const rollbackPayload = {
       shipment_code: 'SHIP-ROLLBACK-' + randomUUID().slice(0, 8),
       customer_name: 'Rollback Acceptance Customer',
@@ -1755,8 +1779,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId, customer_order_reference: validReference,
     });
 
-    const transitAt = new Date(Date.now() - 120_000).toISOString();
-    const transitPayload = { event_type: 'IN_TRANSIT' as const, event_at: transitAt, notes: 'Shipment handed to carrier' };
+    // The server assigns event_at once; an identical retry with the timestamp omitted must replay.
+    const transitPayload = { event_type: 'IN_TRANSIT' as const, notes: 'Shipment handed to carrier' };
     const transitKey = 'wms-delivery-transit-' + randomUUID();
     const transit = await fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
@@ -1768,6 +1792,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       transitPayload, transitKey, requestId, traceId,
     );
     expect(transitReplay).toMatchObject({ replayed: true, event: { id: transit.event.id } });
+    expect(transitReplay.event.event_at).toBe(transit.event.event_at);
+    await expect(fulfillmentService.recordDeliveryEvent(
+      userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
+      { ...transitPayload, notes: 'Changed payload must not replay' },
+      transitKey, requestId, traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
 
     await expect(fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
