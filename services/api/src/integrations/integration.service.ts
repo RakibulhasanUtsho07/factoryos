@@ -635,7 +635,7 @@ export class IntegrationService {
        FROM wms_shipments
        WHERE tenant_id=$1 AND factory_id=$2
          AND lower(btrim(carrier_name))=lower(btrim($3))
-         AND tracking_reference=$4
+         AND upper(btrim(tracking_reference))=upper(btrim($4))
        ORDER BY shipment_unit_id
        LIMIT 2
        FOR UPDATE`,
