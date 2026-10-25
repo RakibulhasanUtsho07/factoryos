@@ -22,6 +22,8 @@ DECLARE
   v_overconsumption_rejected BOOLEAN := FALSE;
   v_immutable_rejected BOOLEAN := FALSE;
   v_duplicate_rejected BOOLEAN := FALSE;
+  v_bad_pack_rejected BOOLEAN := FALSE;
+  v_early_dispatch_rejected BOOLEAN := FALSE;
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
 BEGIN
@@ -93,21 +95,23 @@ BEGIN
 
   INSERT INTO traceability_units (
     id, tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value,
-    inventory_item_id, quantity, unit, external_reference, label_template_id,
+    inventory_item_id, quantity, unit, external_reference, attributes, label_template_id,
     idempotency_key, request_hash, created_by_user_id, correlation_id
   ) VALUES
     (v_material, v_tenant, v_factory, 'LOT', 'MATERIAL', 'MAT-LOT-001', 'QR-MAT-LOT-001',
-     v_material_item, 10, 'PCS', 'SUPPLIER-LOT-EXT-001', v_template, 'trace-unit-material', repeat('a',64), v_actor, v_trace),
+     v_material_item, 10, 'PCS', 'SUPPLIER-LOT-EXT-001', '{}'::jsonb, v_template, 'trace-unit-material', repeat('a',64), v_actor, v_trace),
     (v_finished, v_tenant, v_factory, 'FINISHED_GOOD', 'FINISHED_GOOD', 'FG-LOT-001', 'QR-FG-LOT-001',
-     v_finished_item, 5, 'PCS', 'PRODUCTION-BATCH-001', v_template, 'trace-unit-finished', repeat('b',64), v_actor, v_trace),
+     v_finished_item, 5, 'PCS', 'PRODUCTION-BATCH-001', '{}'::jsonb, v_template, 'trace-unit-finished', repeat('b',64), v_actor, v_trace),
     (v_carton, v_tenant, v_factory, 'CARTON', 'PACKAGING', 'CARTON-001', 'QR-CARTON-001',
-     NULL, 1, 'EA', 'CARTON-EXT-001', v_template, 'trace-unit-carton', repeat('c',64), v_actor, v_trace),
+     NULL, 1, 'EA', 'CARTON-EXT-001', '{}'::jsonb, v_template, 'trace-unit-carton', repeat('c',64), v_actor, v_trace),
     (v_shipment, v_tenant, v_factory, 'SHIPMENT', 'SHIPMENT', 'SHIPMENT-001', 'QR-SHIPMENT-001',
-     NULL, 1, 'EA', 'CUSTOMER-SHIPMENT-EXT-001', v_template, 'trace-unit-shipment', repeat('d',64), v_actor, v_trace),
+     NULL, 1, 'EA', 'CUSTOMER-SHIPMENT-EXT-001',
+     '{"customer_reference":"CUSTOMER-001","customer_order_reference":"CUSTOMER-ORDER-001","shipment_reference":"SHIPMENT-001"}'::jsonb,
+     v_template, 'trace-unit-shipment', repeat('d',64), v_actor, v_trace),
     (v_other_unit, v_tenant, v_factory, 'FINISHED_GOOD', 'FINISHED_GOOD', 'FG-LOT-002', 'QR-FG-LOT-002',
-     v_finished_item, 1, 'PCS', 'PRODUCTION-BATCH-002', v_template, 'trace-unit-finished-2', repeat('e',64), v_actor, v_trace),
+     v_finished_item, 1, 'PCS', 'PRODUCTION-BATCH-002', '{}'::jsonb, v_template, 'trace-unit-finished-2', repeat('e',64), v_actor, v_trace),
     (v_serial, v_tenant, v_factory, 'SERIAL', 'MATERIAL', 'MAT-SERIAL-001', 'QR-MAT-SERIAL-001',
-     v_material_item, 1, 'PCS', 'SERIAL-EXT-001', v_template, 'trace-unit-material-serial', repeat('8',64), v_actor, v_trace);
+     v_material_item, 1, 'PCS', 'SERIAL-EXT-001', '{}'::jsonb, v_template, 'trace-unit-material-serial', repeat('8',64), v_actor, v_trace);
 
   INSERT INTO audit_events (
     tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
@@ -135,6 +139,34 @@ BEGIN
     v_duplicate_rejected := TRUE;
   END;
   IF NOT v_duplicate_rejected THEN RAISE EXCEPTION 'duplicate traceability idempotency key was not rejected'; END IF;
+
+  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
+    BEGIN
+      UPDATE traceability_units
+      SET status = 'SHIPPED', version = version + 1, updated_at = clock_timestamp()
+      WHERE id = v_shipment AND tenant_id = v_tenant AND factory_id = v_factory;
+    EXCEPTION WHEN check_violation THEN
+      v_early_dispatch_rejected := TRUE;
+    END;
+    IF NOT v_early_dispatch_rejected THEN
+      RAISE EXCEPTION 'shipment was allowed to become SHIPPED before any packaged identity was linked';
+    END IF;
+
+    BEGIN
+      INSERT INTO product_genealogy_events (
+        tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity, unit,
+        evidence, idempotency_key, request_hash, created_by_user_id, correlation_id
+      ) VALUES (
+        v_tenant, v_factory, v_material, v_carton, 'PACKED_INTO', 1, 'PCS', '{}'::jsonb,
+        'trace-invalid-material-pack', repeat('9',64), v_actor, v_trace
+      );
+    EXCEPTION WHEN check_violation THEN
+      v_bad_pack_rejected := TRUE;
+    END;
+    IF NOT v_bad_pack_rejected THEN
+      RAISE EXCEPTION 'raw material was allowed to be packed as finished-goods packaging';
+    END IF;
+  END IF;
 
   INSERT INTO product_genealogy_events (
     id, tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type, quantity,
@@ -222,6 +254,32 @@ BEGIN
     v_immutable_rejected := TRUE;
   END;
   IF NOT v_immutable_rejected THEN RAISE EXCEPTION 'traceability unit identity mutation was not rejected'; END IF;
+
+  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
+    UPDATE traceability_units
+    SET status = 'SHIPPED', version = version + 1, updated_at = clock_timestamp()
+    WHERE id = v_shipment AND tenant_id = v_tenant AND factory_id = v_factory;
+    INSERT INTO traceability_unit_status_events (
+      tenant_id, factory_id, unit_id, version, from_status, to_status, reason,
+      idempotency_key, request_hash, changed_by_user_id, correlation_id
+    ) VALUES (
+      v_tenant, v_factory, v_shipment, 2, 'ACTIVE', 'SHIPPED', 'Packaged customer shipment dispatched',
+      'trace-status-shipment-dispatched', repeat('6',64), v_actor, v_trace
+    );
+    INSERT INTO audit_events (
+      tenant_id, factory_id, actor_user_id, event_type, action, resource_type, resource_id,
+      correlation_id, request_id, data_class, payload
+    ) VALUES (
+      v_tenant, v_factory, v_actor, 'TRACEABILITY', 'STATUS_CHANGED', 'TRACEABILITY_UNIT', v_shipment,
+      v_trace, v_request, 'INTERNAL',
+      jsonb_build_object('from_status','ACTIVE','to_status','SHIPPED','reason','Packaged customer shipment dispatched','version',2)
+    );
+    INSERT INTO outbox_events (tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload)
+    VALUES (
+      v_tenant, v_factory, 'TRACEABILITY_UNIT', v_shipment, 'TRACEABILITY.UNIT_STATUS_CHANGED',
+      jsonb_build_object('unit_id',v_shipment,'from_status','ACTIVE','to_status','SHIPPED','version',2)
+    );
+  END IF;
 
   UPDATE traceability_units
   SET status = 'RECALLED', version = version + 1, updated_at = clock_timestamp()
