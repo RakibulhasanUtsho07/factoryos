@@ -61,7 +61,7 @@ The current backend accepts only `STOCK_MOVEMENT` in the mobile sync route. Each
 | `CONFLICT` | Stale stock version, conflicting reuse of a transaction ID, or another business-state conflict | Keep evidence; require refresh/user resolution before creating a new transaction ID. Do not blindly mutate and resend the original payload. |
 | `REJECTED` | Invalid/unsupported request or an item/resource that cannot be used | Preserve the result for audit/support; a corrected operation must use a new transaction ID. |
 
-A repeated matching transaction ID returns the original terminal result, never repeats the stock effect, and records a `REPLAYED` attempt. Reuse of the same transaction ID for a different request is a deterministic `CONFLICT` and gets an immutable `IDEMPOTENCY_CONFLICT` attempt. First terminal receipts, attempt history, audit events and outbox events are persisted server-side. Expected balance version should be treated as a decimal string to avoid JSON number precision loss.
+A repeated matching transaction ID returns the original terminal result, never repeats the stock effect, and records a `REPLAYED` attempt. Concurrent deliveries of the same tenant/factory/device/transaction ID are serialized by a PostgreSQL session advisory lock acquired before the transaction snapshot; this prevents different payloads racing to claim the first terminal receipt. Reuse of the same transaction ID for a different request is a deterministic `CONFLICT` and gets an immutable `IDEMPOTENCY_CONFLICT` attempt. The request fingerprint preserves the exact numeric quantity supplied instead of rounding it before validation, so distinct invalid values cannot accidentally replay as the same rejected request. Quantity must be positive, fit four-decimal inventory precision and remain safely representable in JavaScript integer units. First terminal receipts, attempt history, audit events and outbox events are persisted server-side. If a process stops after the stock movement commits but before the receipt commits, retrying the same transaction is safe because the stock movement's idempotency key replays the already-committed movement; the mobile receipt can then be completed without another stock effect. Expected balance version should be treated as a decimal string to avoid JSON number precision loss.
 
 The API processes a batch one transaction at a time. Each transaction has its own terminal receipt; the batch summary can therefore contain successes, conflicts and rejections together. Clients must reconcile every returned transaction ID individually.
 
@@ -88,8 +88,10 @@ The PostgreSQL integration suite covers:
 
 1. Offline enqueue applies one issue and saves its receipt.
 2. Repeating the same queued transaction replays its durable result without another issue movement.
-3. An old expected version returns `CONFLICT`; an unknown item returns `REJECTED`.
-4. Final stock ledger remains exactly reconciled with one effective issue and records APPLIED/REPLAYED/CONFLICT/REJECTED attempts.
+3. Two concurrent requests with the same transaction ID and same payload serialize to one applied movement and one replay; reusing that ID with a different payload returns `CONFLICT`.
+4. Distinct invalid precision values such as `1.00001` and `1.00002` do not collapse to the same request fingerprint; the first terminal rejection remains durable and the changed payload becomes an idempotency conflict.
+5. An old expected version returns `CONFLICT`; an unknown item returns `REJECTED`.
+6. Final stock ledger remains exactly reconciled with one effective issue and records APPLIED/REPLAYED/CONFLICT/REJECTED/IDEMPOTENCY_CONFLICT attempts.
 5. A label issue replays by key, the scanned canonical barcode resolves to the same unit ID, and a `PACKED_INTO` genealogy event is traversable from that identity.
 6. A material master SKU label resolves back to the same inventory item and has its own label history without creating fake traceability stock.
 7. Three repeated reads of one EPC count as one tag with two suppressed reads; a repeated session request replays, and an unknown EPC produces an explicit variance without changing stock.
