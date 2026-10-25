@@ -3,7 +3,7 @@ BEGIN;
 -- A shipment dispatch is the atomic boundary tying package genealogy to actual
 -- inventory ISSUE movements. Only inventory that is already in outbound STAGING
 -- and represented by finished-good lot/serial identities may leave stock.
-CREATE TABLE traceability_shipment_dispatches (
+CREATE TABLE IF NOT EXISTS traceability_shipment_dispatches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -34,10 +34,10 @@ CREATE TABLE traceability_shipment_dispatches (
   CONSTRAINT chk_traceability_shipment_dispatch_hash CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );
 
-CREATE INDEX idx_traceability_shipment_dispatch_created
+CREATE INDEX IF NOT EXISTS idx_traceability_shipment_dispatch_created
   ON traceability_shipment_dispatches (tenant_id, factory_id, dispatched_at DESC, id DESC);
 
-CREATE TABLE traceability_shipment_dispatch_lines (
+CREATE TABLE IF NOT EXISTS traceability_shipment_dispatch_lines (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL,
   factory_id UUID NOT NULL,
@@ -70,11 +70,12 @@ CREATE TABLE traceability_shipment_dispatch_lines (
   CONSTRAINT chk_traceability_shipment_dispatch_line_unit CHECK (length(btrim(unit)) > 0)
 );
 
-CREATE INDEX idx_traceability_shipment_dispatch_line_item
+CREATE INDEX IF NOT EXISTS idx_traceability_shipment_dispatch_line_item
   ON traceability_shipment_dispatch_lines (tenant_id, factory_id, item_id, source_location_id);
 
 ALTER TABLE traceability_shipment_dispatches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE traceability_shipment_dispatches FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS traceability_shipment_dispatch_tenant_isolation ON traceability_shipment_dispatches;
 CREATE POLICY traceability_shipment_dispatch_tenant_isolation
   ON traceability_shipment_dispatches
   USING (tenant_id = factoryos_current_tenant_id())
@@ -82,6 +83,7 @@ CREATE POLICY traceability_shipment_dispatch_tenant_isolation
 
 ALTER TABLE traceability_shipment_dispatch_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE traceability_shipment_dispatch_lines FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS traceability_shipment_dispatch_line_tenant_isolation ON traceability_shipment_dispatch_lines;
 CREATE POLICY traceability_shipment_dispatch_line_tenant_isolation
   ON traceability_shipment_dispatch_lines
   USING (tenant_id = factoryos_current_tenant_id())
@@ -97,10 +99,12 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS traceability_shipment_dispatch_immutable ON traceability_shipment_dispatches;
 CREATE TRIGGER traceability_shipment_dispatch_immutable
 BEFORE UPDATE OR DELETE ON traceability_shipment_dispatches
 FOR EACH ROW EXECUTE FUNCTION factoryos_reject_traceability_dispatch_mutation();
 
+DROP TRIGGER IF EXISTS traceability_shipment_dispatch_line_immutable ON traceability_shipment_dispatch_lines;
 CREATE TRIGGER traceability_shipment_dispatch_line_immutable
 BEFORE UPDATE OR DELETE ON traceability_shipment_dispatch_lines
 FOR EACH ROW EXECUTE FUNCTION factoryos_reject_traceability_dispatch_mutation();
@@ -166,6 +170,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS traceability_shipment_dispatch_guard ON traceability_shipment_dispatches;
 CREATE TRIGGER traceability_shipment_dispatch_guard
 BEFORE INSERT ON traceability_shipment_dispatches
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_traceability_shipment_dispatch();
@@ -231,6 +236,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS traceability_shipment_dispatch_line_guard ON traceability_shipment_dispatch_lines;
 CREATE TRIGGER traceability_shipment_dispatch_line_guard
 BEFORE INSERT ON traceability_shipment_dispatch_lines
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_traceability_shipment_dispatch_line();
@@ -259,6 +265,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS inventory_shipment_dispatch_movement_guard ON inventory_movements;
 CREATE TRIGGER inventory_shipment_dispatch_movement_guard
 BEFORE INSERT ON inventory_movements
 FOR EACH ROW EXECUTE FUNCTION factoryos_guard_inventory_shipment_dispatch_movement();
@@ -329,6 +336,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS ctr_traceability_shipment_dispatch_evidence ON traceability_shipment_dispatches;
 CREATE CONSTRAINT TRIGGER ctr_traceability_shipment_dispatch_evidence
 AFTER INSERT ON traceability_shipment_dispatches
 DEFERRABLE INITIALLY DEFERRED
