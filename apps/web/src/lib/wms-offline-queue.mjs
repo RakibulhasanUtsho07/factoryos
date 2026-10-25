@@ -302,7 +302,7 @@ export class WmsOfflineQueue {
         syncedCount += 1;
         continue;
       }
-      if (result && (result.status === "CONFLICT" || result.status === "REJECTED") && isUuid(result.receipt_id)) {
+      if (result && result.operation === entry.payload.operation && (result.status === "CONFLICT" || result.status === "REJECTED") && isUuid(result.receipt_id)) {
         const status = result.status;
         await this.store.put({
           ...entry,
