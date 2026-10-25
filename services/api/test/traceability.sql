@@ -27,6 +27,7 @@ DECLARE
   v_bad_pack_rejected BOOLEAN := FALSE;
   v_early_dispatch_rejected BOOLEAN := FALSE;
   v_missing_shipment_metadata_rejected BOOLEAN := FALSE;
+  v_dispatch_without_issue_rejected BOOLEAN := FALSE;
   v_request UUID := gen_random_uuid();
   v_trace UUID := gen_random_uuid();
 BEGIN
@@ -293,7 +294,18 @@ BEGIN
   END;
   IF NOT v_immutable_rejected THEN RAISE EXCEPTION 'traceability unit identity mutation was not rejected'; END IF;
 
-  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
+  IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '202_wms_transactional_shipment_dispatch') THEN
+    BEGIN
+      UPDATE traceability_units
+      SET status = 'SHIPPED', version = version + 1, updated_at = clock_timestamp()
+      WHERE id = v_shipment AND tenant_id = v_tenant AND factory_id = v_factory;
+    EXCEPTION WHEN check_violation THEN
+      v_dispatch_without_issue_rejected := TRUE;
+    END;
+    IF NOT v_dispatch_without_issue_rejected THEN
+      RAISE EXCEPTION 'shipment was allowed to become SHIPPED without a stock issue and dispatch record';
+    END IF;
+  ELSIF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '201_wms_pack_ship_customer_traceability') THEN
     UPDATE traceability_units
     SET status = 'SHIPPED', version = version + 1, updated_at = clock_timestamp()
     WHERE id = v_shipment AND tenant_id = v_tenant AND factory_id = v_factory;
