@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   HttpException,
+  Injectable,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 interface ConfigReader {
@@ -384,4 +386,18 @@ export async function uploadWmsPodObjectAndVerify(
     throw new UnprocessableEntityException('Stored POD object length differs from the uploaded file');
   }
   return { ...verified, contentType };
+}
+
+/**
+ * Injectable verification facade used by the shipment-delivery lifecycle.
+ * Keeps the S3 adapter and ConfigService behind one explicit dependency so a
+ * DELIVERED event cannot be persisted without verifying the stored object.
+ */
+@Injectable()
+export class WmsPodStorageVerifier {
+  constructor(private readonly config: ConfigService) {}
+
+  verifyObjectDigest(objectKey: string, expectedSha256: string): Promise<VerifiedPodObject> {
+    return verifyWmsPodObjectDigest(this.config, objectKey, expectedSha256);
+  }
 }
