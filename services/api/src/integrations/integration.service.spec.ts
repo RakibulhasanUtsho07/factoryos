@@ -313,8 +313,8 @@ describe('IntegrationService signed webhook ingress', () => {
       event_type: 'WMS.SHIPMENT_DELIVERY',
       schema_version: 1,
       payload: {
-        carrier_name: 'Acme Logistics',
-        tracking_reference: 'ACME-TRACK-101',
+        carrier_name: 'acme logistics',
+        tracking_reference: 'acme-track-101',
         event_type: 'IN_TRANSIT',
         event_at: new Date().toISOString(),
       },
@@ -332,8 +332,8 @@ describe('IntegrationService signed webhook ingress', () => {
       tenantId, factoryId, shipmentUnitId, 'IN_TRANSIT',
     ]));
     const shipmentLookup = harness.clientQuery.mock.calls.find(([sql]) =>
-      String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'));
-    expect(shipmentLookup?.[1]).toEqual([tenantId, factoryId, 'Acme Logistics', 'ACME-TRACK-101']);
+      String(sql).includes('FROM wms_shipments') && String(sql).includes('upper(btrim(tracking_reference))=upper(btrim($4))'));
+    expect(shipmentLookup?.[1]).toEqual([tenantId, factoryId, 'acme logistics', 'acme-track-101']);
     const auditInsert = harness.clientQuery.mock.calls.find(([sql]) =>
       String(sql).includes('INSERT INTO audit_events') &&
       String(sql).includes('WMS_SHIPMENT_DELIVERY_EVENT'));
@@ -492,7 +492,7 @@ describe('IntegrationService signed webhook ingress', () => {
       connectorId, signed.request, signed.timestamp, signed.eventId, signed.signature,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(harness.clientQuery.mock.calls.some(([sql]) =>
-      String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'))).toBe(false);
+      String(sql).includes('FROM wms_shipments') && String(sql).includes('upper(btrim(tracking_reference))=upper(btrim($4))'))).toBe(false);
   });
 
   it('does not resolve carrier tracking references outside the connector factory shipment scope', async () => {
