@@ -8,7 +8,7 @@ import { PermissionGuard } from '../iam/guards/permission.guard';
 import { RequireFactoryScope } from '../iam/require-factory-scope.decorator';
 import { RequirePermission } from '../iam/require-permission.decorator';
 import {
-  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto,
+  ChangeTraceabilityUnitStatusDto, CreateGenealogyEventDto, CreateTraceabilityLabelTemplateDto, DispatchTraceabilityShipmentDto,
   CreateTraceabilityUnitDto, IssueTraceabilityLabelDto, UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
 import { TraceabilityService } from './traceability.service';
@@ -96,6 +96,23 @@ export class TraceabilityController {
     const c = this.requireContext(request);
     return this.traceabilityService.recordGenealogyEvent(
       c.userId, c.tenantId, c.factoryId, body, idempotencyKey ?? null, c.requestId, c.traceId,
+    );
+  }
+
+  @Post('units/:shipmentId/dispatch')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('inventory.write')
+  @RequireFactoryScope()
+  async dispatchShipment(
+    @Req() request: TraceabilityRequest,
+    @Param('shipmentId', new ParseUUIDPipe()) shipmentId: string,
+    @Body() body: DispatchTraceabilityShipmentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.traceabilityService.dispatchShipment(
+      c.userId, c.tenantId, c.factoryId, shipmentId, body,
+      idempotencyKey ?? null, c.requestId, c.traceId,
     );
   }
 
