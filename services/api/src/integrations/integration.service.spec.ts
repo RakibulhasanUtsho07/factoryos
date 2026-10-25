@@ -90,6 +90,10 @@ describe('IntegrationService signed webhook ingress', () => {
         if (sql.includes('factoryos_resolve_integration_webhook')) {
           return { rows: [{ tenant_id: tenantId, factory_id: factoryId }], rowCount: 1 };
         }
+        if (sql.includes('FROM wms_shipments') && sql.includes('shipment_unit_id')) {
+          const rows = options.shipmentRows ?? [];
+          return { rows, rowCount: rows.length };
+        }
         if (sql.includes('FROM integration_webhook_receipts')) {
           return { rows: existingReceipt ? [existingReceipt] : [], rowCount: existingReceipt ? 1 : 0 };
         }
@@ -518,6 +522,71 @@ describe('IntegrationService signed webhook ingress', () => {
     )).rejects.toMatchObject({ status: 404 });
     expect(harness.clientQuery.mock.calls.some(([sql]) =>
       String(sql).includes('INSERT INTO wms_shipment_delivery_events'))).toBe(false);
+  });
+
+
+  it('uploads a POD only for a dispatched shipment, verifies stored bytes, and emits audit/outbox evidence', async () => {
+    const userId = '822753dc-ef72-44a0-a23d-04748105c92a';
+    const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
+    const bytes = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x01,0x02]);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const harness = setup(undefined, {
+      podStorageConfigured: true,
+      shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-POD-UPLOAD', status: 'DISPATCHED' }],
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(bytes, { status: 200, headers: { 'content-length': String(bytes.byteLength) } }));
+    try {
+      const result = await harness.service.uploadWmsShipmentPodObject(
+        userId, tenantId, factoryId, shipmentUnitId,
+        { buffer: bytes, size: bytes.byteLength, mimetype: 'image/png' }, null, null,
+      );
+      expect(result).toEqual(expect.objectContaining({
+        object_id: expect.any(String), shipment_unit_id: shipmentUnitId, proof_sha256: digest,
+        byte_length: bytes.byteLength, content_type: 'image/png', verified: true,
+      }));
+      expect(result.proof_reference).toContain('pod/' + tenantId + '/' + factoryId + '/' + shipmentUnitId + '/');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe('PUT');
+      expect((fetchMock.mock.calls[1]?.[1] as RequestInit).method).toBe('GET');
+      expect(harness.database.query).toHaveBeenCalledWith(
+        expect.stringContaining('FROM wms_shipments'), [shipmentUnitId, tenantId, factoryId], { tenantId, userId },
+      );
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('INSERT INTO audit_events') && String(sql).includes('UPLOADED_AND_VERIFIED'))).toBe(true);
+      expect(harness.clientQuery.mock.calls.some(([sql]) =>
+        String(sql).includes('WMS.SHIPMENT_POD_OBJECT_VERIFIED'))).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('does not record upload evidence if the storage read-back digest fails', async () => {
+    const userId = '822753dc-ef72-44a0-a23d-04748105c92a';
+    const shipmentUnitId = '51c58ea7-1207-4ac2-8b68-a4e13883cf81';
+    const uploaded = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x01,0x02]);
+    const stored = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0x00,0x01,0x03]);
+    const harness = setup(undefined, {
+      podStorageConfigured: true,
+      shipmentRows: [{ shipment_unit_id: shipmentUnitId, shipment_code: 'SHIP-POD-MISMATCH', status: 'DISPATCHED' }],
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(stored, { status: 200, headers: { 'content-length': String(stored.byteLength) } }));
+    try {
+      await expect(harness.service.uploadWmsShipmentPodObject(
+        userId, tenantId, factoryId, shipmentUnitId,
+        { buffer: uploaded, size: uploaded.byteLength, mimetype: 'image/png' }, null, null,
+      )).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO audit_events'))).toBe(false);
+      expect(harness.clientQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO outbox_events'))).toBe(false);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
 });

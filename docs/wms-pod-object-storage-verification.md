@@ -27,7 +27,15 @@ The API's credential needs should be limited to GetObject for the dedicated proo
 
 Before sending a DELIVERED callback, the carrier/provider workflow must place the exact proof bytes at the agreed object key in the configured bucket. The signed callback contains that relative key in proof_reference and SHA-256 hex of the exact stored bytes in proof_sha256. The provider must not send arbitrary URLs; keys are validated and the server constructs the request against the fixed configured endpoint. HTTP redirects are rejected, response size is bounded, and no caller-controlled host or URL is fetched.
 
-This implementation is a read-and-verify adapter. It does not yet provide a browser/mobile upload endpoint, mint upload URLs, upload bytes into the bucket, or independently certify a carrier's real sandbox callback format. Those remain separately testable integration/release gates.
+## Authenticated POD upload endpoint
+
+The API now exposes \`POST /api/integrations/wms/shipments/:shipmentUnitId/pod-object\` for a user with the factory-scoped \`inventory.write\` permission. Send one multipart field named \`file\`; the upload is accepted only when the shipment belongs to the caller's tenant/factory and is already \`DISPATCHED\`. The endpoint accepts JPEG, PNG or PDF only, confirms the file signature matches the declared media type, and applies a 25 MiB HTTP hard limit plus the configured \`WMS_POD_STORAGE_MAX_BYTES\` application limit.
+
+The server creates the storage key under \`pod/{tenant_id}/{factory_id}/{shipment_unit_id}/{object_id}\`; clients cannot supply an object key, bucket, endpoint or URL. The adapter signs an S3-compatible \`PUT\` with SigV4, sends the exact uploaded bytes, then performs a separate \`GET\` and hashes the stored response bytes. A successful response includes \`object_id\`, \`shipment_unit_id\`, \`proof_reference\`, \`proof_sha256\`, \`byte_length\`, \`content_type\` and \`verified: true\`. The operation is recorded in audit and outbox evidence only after the read-back digest matches.
+
+Uploading a file is not itself a delivery event and must not mark a shipment delivered. The carrier's signed \`WMS.SHIPMENT_DELIVERY\` callback must reference this object key and digest; the existing webhook path performs a fresh storage GET/SHA-256 verification before it commits the immutable delivery event and webhook receipt. A carrier may also place the object directly in the agreed bucket using its approved workflow, but it must follow the same key/digest contract.
+
+This code proves the bounded adapter contract and mocked regression behavior only. No live storage account, credentials, object lifecycle policy, carrier sandbox certification or production bucket has been provisioned or verified by this change; those remain deployment and external-certification gates.
 
 ## Regression coverage
 
