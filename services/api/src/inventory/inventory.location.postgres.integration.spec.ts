@@ -1487,9 +1487,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       replayed: false,
       event: {
         event_type: 'DELIVERED', recipient_name: 'Acceptance Recipient', proof_type: 'SIGNATURE',
-        proof_reference: proofPayload.proof_reference, proof_sha256: 'a'.repeat(64), signed_at: signedAt,
+        proof_reference: proofPayload.proof_reference, proof_sha256: 'a'.repeat(64),
       },
     });
+    expect(new Date(proof.event.signed_at as string).getTime()).toBe(new Date(signedAt).getTime());
     const proofReplay = await fulfillmentService.recordDeliveryEvent(
       userId, tenantId, fixture.factoryId, dispatch.shipment.shipment_unit_id,
       proofPayload, proofKey, requestId, traceId,
