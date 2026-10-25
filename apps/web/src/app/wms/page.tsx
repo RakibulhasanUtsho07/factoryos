@@ -156,7 +156,7 @@ export default function WmsMobileAcceptancePage() {
   }, [flushQueue]);
 
   useEffect(() => {
-    void refreshQueue();
+    queueMicrotask(() => { void refreshQueue(); });
     const onOnline = () => {
       setQueueMessage("Connection restored. Attempting receipt-safe queue synchronization.");
       void flushQueue();
