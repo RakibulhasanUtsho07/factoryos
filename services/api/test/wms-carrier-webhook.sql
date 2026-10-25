@@ -25,6 +25,17 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_class
+    WHERE oid='public.idx_wms_shipments_carrier_tracking'::regclass
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_index
+    WHERE indexrelid='public.idx_wms_shipments_carrier_tracking'::regclass
+      AND indisvalid
+  ) THEN
+    RAISE EXCEPTION 'Tenant/factory-scoped carrier tracking index is missing or invalid';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_trigger
     WHERE tgrelid='public.wms_shipment_delivery_events'::regclass
       AND tgname='trg_wms_shipment_delivery_event_guard' AND tgenabled='O'
