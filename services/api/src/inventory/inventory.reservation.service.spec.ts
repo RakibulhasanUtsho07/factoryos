@@ -663,7 +663,9 @@ describe('InventoryReservationService', () => {
     const scrapB = randomUUID();
     const consumptionId = randomUUID();
     const allocationId = randomUUID();
+    const sourceUnitId = randomUUID();
     const insertedEvents: Array<{ target: string; relation: string; quantity: string }> = [];
+    const insertedEvidence: Array<Record<string, unknown>> = [];
     client.query.mockImplementation(async (sql: unknown, values?: unknown[]) => {
       const query = String(sql);
       if (query.includes('FROM order_production_reports r') && query.includes('JOIN production_output_postings p')) {
@@ -686,7 +688,7 @@ describe('InventoryReservationService', () => {
           consumption_id: consumptionId,
           reservation_id: RESERVATION_ID,
           item_id: ITEM_ID,
-          source_unit_id: randomUUID(),
+          source_unit_id: sourceUnitId,
           source_unit_code: 'RAW-LOT-01',
           source_unit: 'KG',
           source_location_id: BIN_A_ID,
@@ -704,6 +706,7 @@ describe('InventoryReservationService', () => {
           relation: String(values?.[4]),
           quantity: String(values?.[5]),
         });
+        insertedEvidence.push(JSON.parse(String(values?.[7])) as Record<string, unknown>);
         return queryRows([{ id: randomUUID() }]);
       }
       if (query.includes('INSERT INTO audit_events') || query.includes('INSERT INTO outbox_events')) {
@@ -729,6 +732,25 @@ describe('InventoryReservationService', () => {
     ]);
     expect(insertedEvents.reduce((sum, edge) => sum + BigInt(edge.quantity.replace('.', '')), 0n))
       .toBe(10001n);
+    expect(insertedEvidence).toHaveLength(4);
+    expect(insertedEvidence.every((evidence) =>
+      evidence.source === 'WORK_ORDER_MATERIAL_CONSUMPTION'
+      && evidence.work_order_id === ORDER_ID
+      && evidence.reservation_id === RESERVATION_ID
+      && evidence.consumption_id === consumptionId
+      && evidence.consumption_traceability_allocation_id === allocationId
+      && evidence.source_inventory_item_id === ITEM_ID
+      && evidence.source_unit === 'KG'
+      && evidence.source_quantity === evidence.source_quantity
+    )).toBe(true);
+    expect(insertedEvidence.map((evidence) => evidence.output_identity_kind))
+      .toEqual(['FINISHED_GOOD', 'SCRAP', 'FINISHED_GOOD', 'SCRAP']);
+    expect(insertedEvidence.map((evidence) => evidence.output_quantity_weight))
+      .toEqual(['3.0000', '1.0000', '5.0000', '1.0000']);
+    expect(insertedEvidence.map((evidence) => evidence.production_report_id))
+      .toEqual([reportA, reportA, reportB, reportB]);
+    expect(insertedEvidence.map((evidence) => evidence.production_output_posting_id))
+      .toEqual([postingA, postingA, postingB, postingB]);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO audit_events'))).toHaveLength(4);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('TRACEABILITY.GENEALOGY_RECORDED'))).toHaveLength(4);
   });
