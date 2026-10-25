@@ -313,6 +313,12 @@ describe('IntegrationService signed webhook ingress', () => {
     const shipmentLookup = harness.clientQuery.mock.calls.find(([sql]) =>
       String(sql).includes('FROM wms_shipments') && String(sql).includes('tracking_reference=$4'));
     expect(shipmentLookup?.[1]).toEqual([tenantId, factoryId, 'Acme Logistics', 'ACME-TRACK-101']);
+    const auditInsert = harness.clientQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO audit_events') &&
+      String(sql).includes('WMS_SHIPMENT_DELIVERY_EVENT'));
+    expect(String(auditInsert?.[0])).toContain("VALUES ($1,$2,NULL,'WMS_FULFILLMENT'");
+    expect(auditInsert?.[1]).toEqual(expect.arrayContaining([tenantId, factoryId]));
+    expect(auditInsert?.[1]).not.toContain(connector.created_by_user_id);
     expect(harness.clientQuery.mock.calls.some(([sql]) =>
       String(sql).includes("INSERT INTO outbox_events") &&
       String(sql).includes("'WMS.SHIPMENT_DELIVERY_EVENT_RECORDED'"))).toBe(true);
