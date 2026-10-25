@@ -106,7 +106,23 @@ function testConfig() {
 
 jest.setTimeout(30000);
 
-describe('WMS POD upload against a real S3-compatible test server', () => {
+const storageVariableNames = [
+  'WMS_POD_STORAGE_ENDPOINT',
+  'WMS_POD_STORAGE_BUCKET',
+  'WMS_POD_STORAGE_REGION',
+  'WMS_POD_STORAGE_ACCESS_KEY_ID',
+  'WMS_POD_STORAGE_SECRET_ACCESS_KEY',
+] as const;
+const anyStorageVariableProvided = storageVariableNames.some((name) =>
+  Boolean(process.env[name]?.trim()),
+);
+// The dedicated API CI job supplies a complete ephemeral storage configuration.
+// The PostgreSQL suite intentionally has no storage service, so it skips this
+// suite only when *none* of the required settings are supplied. Partial config
+// still runs and fails validation rather than silently hiding a broken setup.
+const storageDescribe = anyStorageVariableProvided ? describe : describe.skip;
+
+storageDescribe('WMS POD upload against a real S3-compatible test server', () => {
   beforeAll(async () => {
     await createTestBucket();
   });
