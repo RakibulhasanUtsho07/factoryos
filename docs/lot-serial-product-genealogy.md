@@ -89,3 +89,10 @@ Migration: `074_lot_serial_product_genealogy.sql`. PostgreSQL regression: `servi
 - `POST /api/v1/traceability/recall-cases/:recallCaseId/notifications/:notificationIntentId/acknowledgements` records one append-only operator-reported response per intent. Supported outcomes are `RECEIVED`, `NO_ACTION_REQUIRED`, `ACTION_IN_PROGRESS`, `ACTION_COMPLETED` and `UNABLE_TO_CONFIRM`.
 - Notification targets are reference tokens, not arbitrary URLs or email addresses. Intent and acknowledgement records are protected by FORCE RLS, immutable triggers, same-case/same-recipient foreign keys, idempotency constraints, and deferred audit/outbox evidence checks.
 - **Boundary:** requesting an intent does not prove that a message was sent or delivered. Acknowledgements created through this endpoint are marked `OPERATOR_REPORTED` and are not externally authenticated. Provider delivery receipts, customer/site portal authentication, stop-ship execution and recall-owner acceptance remain separate release gates.
+
+
+## Cross-feature PostgreSQL regression — SRS v2.1 FR-WMS-02/06/07/08/09
+
+`services/api/src/inventory/inventory.location.postgres.integration.spec.ts` now links the order-bound shipment test to carrier/tracking metadata, delivery/POD evidence, a bounded recall-impact response, an audited recall declaration and labels issued before and after the lifecycle transition. It checks that the recall source is labelled `RECALLED` while dispatched carton/shipment identities retain `SHIPPED` and are captured as `SHIPPED_REVIEW_REQUIRED` in the recall case; recall does not change inventory or bin totals. The POD reference/digest returned by impact analysis must match the DELIVERED event persisted for that exact shipment.
+
+Actual object-byte upload/read-back SHA-256 acceptance remains independently exercised against isolated S3-compatible RustFS in API CI. Offline-sync concurrent replay and conflicting-payload conservation remain covered by the WMS mobile PostgreSQL suite. This does not claim physical label rendering, a native offline client, live carrier certification or external customer-notification delivery.
