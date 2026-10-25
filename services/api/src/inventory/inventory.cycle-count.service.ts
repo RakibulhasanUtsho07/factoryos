@@ -284,7 +284,7 @@ export class InventoryCycleCountService {
             if (task.item_id !== normalizedItemId || task.location_id !== locationId) {
               throw new ConflictException('Cycle-count submission item/bin does not match the scheduled task');
             }
-            if (task.assigned_to_user_id !== userId) {
+            if (!this.sameUuid(task.assigned_to_user_id, userId)) {
               throw new ConflictException('Cycle-count task must be started by its assigned counter');
             }
           } else {
@@ -466,6 +466,32 @@ export class InventoryCycleCountService {
     itemId: string,
     options: { status?: string; limit?: number } = {},
   ): Promise<InventoryCycleCountProposal[]> {
+    return this.queryCycleCounts(userId, tenantId, factoryId, itemId, options, false);
+  }
+
+  /**
+   * Review-only projection. Callers must pass the review permission guard at
+   * the controller boundary; the submitter still never sees expected stock on
+   * their own blind count, even when they also hold the reviewer permission.
+   */
+  async listCycleCountsForReview(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+    options: { status?: string; limit?: number } = {},
+  ): Promise<InventoryCycleCountProposal[]> {
+    return this.queryCycleCounts(userId, tenantId, factoryId, itemId, options, true);
+  }
+
+  private async queryCycleCounts(
+    userId: string,
+    tenantId: string,
+    factoryId: string,
+    itemId: string,
+    options: { status?: string; limit?: number },
+    allowReviewerSnapshotAccess: boolean,
+  ): Promise<InventoryCycleCountProposal[]> {
     this.validateReadScope(tenantId, factoryId);
     this.validateUuid(itemId, 'itemId');
     const limit = options.limit ?? 50;
@@ -491,7 +517,7 @@ export class InventoryCycleCountService {
       [tenantId, factoryId, itemId, status, limit],
       { tenantId },
     );
-    return result.rows.map((row) => this.toProposal(row, userId));
+    return result.rows.map((row) => this.toProposal(row, userId, allowReviewerSnapshotAccess));
   }
 
   async approveCycleCount(
@@ -534,7 +560,7 @@ export class InventoryCycleCountService {
         locationVersionAtCount: proposal.location_version_at_count,
       }
       : {};
-    if (proposal.created_by_user_id === userId) {
+    if (this.sameUuid(proposal.created_by_user_id, userId)) {
       throw new ConflictException('The user who submitted a cycle count cannot approve it');
     }
     if (proposal.status === 'REJECTED') {
@@ -654,17 +680,17 @@ export class InventoryCycleCountService {
           );
           const proposal = proposalResult.rows[0];
           if (!proposal) throw new NotFoundException('Cycle-count proposal not found in this factory');
-          if (proposal.created_by_user_id === userId) {
+          if (this.sameUuid(proposal.created_by_user_id, userId)) {
             throw new ConflictException('The user who submitted a cycle count cannot reject it');
           }
 
           if (proposal.status === 'REJECTED') {
             if (
-              proposal.reviewed_by_user_id === userId
+              this.sameUuid(proposal.reviewed_by_user_id, userId)
               && proposal.review_idempotency_key === idempotencyKey
               && proposal.review_request_hash === reviewRequestHash
             ) {
-              return this.toRejectResult(proposal, true);
+              return this.toRejectResult(proposal, true, userId);
             }
             throw new ConflictException('Cycle count already has a review decision');
           }
@@ -685,7 +711,7 @@ export class InventoryCycleCountService {
             if (escalation?.status === 'OPEN') {
               throw new ConflictException('Variance escalation must be resolved before rejecting this count');
             }
-            if (escalation?.status === 'RESOLVED' && escalation.resolved_by_user_id === userId) {
+            if (escalation?.status === 'RESOLVED' && this.sameUuid(escalation.resolved_by_user_id, userId)) {
               throw new ConflictException('A different reviewer must reject the escalated cycle count');
             }
           }
@@ -755,7 +781,7 @@ export class InventoryCycleCountService {
               },
             },
           });
-          return this.toRejectResult(reviewed, false);
+          return this.toRejectResult(reviewed, false, userId);
         },
       );
     } catch (error) {
@@ -776,11 +802,11 @@ export class InventoryCycleCountService {
       const proposal = stored.rows[0];
       if (
         proposal.review_request_hash !== reviewRequestHash
-        || proposal.reviewed_by_user_id !== userId
+        || !this.sameUuid(proposal.reviewed_by_user_id, userId)
       ) {
         throw new ConflictException('Idempotency-Key was reused for a different cycle-count decision');
       }
-      result = this.toRejectResult(proposal, true);
+      result = this.toRejectResult(proposal, true, userId);
     }
 
     if (!result.replayed) {
@@ -826,7 +852,7 @@ export class InventoryCycleCountService {
     if (escalation?.status === 'OPEN') {
       throw new ConflictException('Variance escalation must be resolved before approving this count');
     }
-    if (escalation?.status === 'RESOLVED' && escalation.resolved_by_user_id === userId) {
+    if (escalation?.status === 'RESOLVED' && this.sameUuid(escalation.resolved_by_user_id, userId)) {
       throw new ConflictException('A different reviewer must approve the escalated cycle count');
     }
   }
@@ -893,13 +919,15 @@ export class InventoryCycleCountService {
   private toRejectResult(
     row: CycleCountProposalRow,
     replayed: boolean,
+    reviewerUserId: string,
   ): InventoryCycleCountRejectResult {
-    return { ...this.toProposal(row), replayed };
+    return { ...this.toProposal(row, reviewerUserId, true), replayed };
   }
 
   private toProposal(
     row: CycleCountProposalRow,
     viewerUserId?: string,
+    allowReviewerSnapshotAccess = false,
   ): InventoryCycleCountProposal {
     const {
       idempotency_key,
@@ -917,7 +945,8 @@ export class InventoryCycleCountService {
     void request_hash;
     void review_idempotency_key;
     void review_request_hash;
-    const hideExpectedBalance = blind_count_snapshot && viewerUserId === row.created_by_user_id;
+    const hideExpectedBalance = blind_count_snapshot
+      && (this.sameUuid(viewerUserId, row.created_by_user_id) || !allowReviewerSnapshotAccess);
     return {
       ...proposal,
       ledger_quantity_at_count: hideExpectedBalance ? null : ledger_quantity_at_count,
@@ -1035,6 +1064,13 @@ export class InventoryCycleCountService {
     if (traceId && isUUID(traceId)) return traceId;
     if (requestId && isUUID(requestId)) return requestId;
     return randomUUID();
+  }
+
+  private sameUuid(
+    left: string | null | undefined,
+    right: string | null | undefined,
+  ): boolean {
+    return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
   }
 
   private validateScope(userId: string, tenantId: string, factoryId: string): void {
