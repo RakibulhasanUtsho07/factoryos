@@ -1062,6 +1062,19 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       quantity: '3.0000',
       inventory_movement_id: dispatched.shipment.inventory_movement_id,
     });
+    const shipmentList = await fulfillmentService.listShipments(
+      userId, tenantId, fixture.factoryId, { search: dispatchPayload.customer_order_reference },
+    );
+    expect(shipmentList.shipments).toHaveLength(1);
+    expect(shipmentList.shipments[0]).toMatchObject({
+      shipment_unit_id: dispatched.shipment.shipment_unit_id,
+      shipment_code: dispatchPayload.shipment_code,
+      customer_name: dispatchPayload.customer_name,
+      customer_order_reference: dispatchPayload.customer_order_reference,
+      quantity: '3.0000',
+      status: 'DISPATCHED',
+      traceability_status: 'SHIPPED',
+    });
     const movement = await adminPool.query<{
       movement_type: string; quantity_delta: string; reference_type: string; reference_id: string;
     }>(

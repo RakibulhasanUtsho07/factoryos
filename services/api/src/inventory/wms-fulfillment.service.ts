@@ -710,6 +710,50 @@ export class WmsFulfillmentService {
     }
   }
 
+  async listShipments(
+    userId: string, tenantId: string, factoryId: string,
+    options: { search?: string; limit?: number } = {},
+  ) {
+    this.validateScope(userId, tenantId, factoryId);
+    const limit = options.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new BadRequestException('limit must be an integer between 1 and 100');
+    }
+    const search = options.search?.trim() || null;
+    if (search && search.length > 255) {
+      throw new BadRequestException('search must contain at most 255 characters');
+    }
+    const result = await this.database.query(`
+      SELECT s.shipment_unit_id::text AS shipment_unit_id,
+        s.shipment_code, s.container_unit_id::text AS container_unit_id,
+        container_unit.unit_code AS container_code,
+        s.item_id::text AS item_id, s.source_location_id::text AS source_location_id,
+        s.inventory_movement_id::text AS inventory_movement_id,
+        s.customer_name, s.customer_order_reference, s.carrier_name, s.tracking_reference,
+        s.quantity::text AS quantity, s.unit, s.status,
+        s.dispatched_at::text AS dispatched_at,
+        shipment_unit.status AS traceability_status
+      FROM wms_shipments s
+      JOIN traceability_units shipment_unit
+        ON shipment_unit.id=s.shipment_unit_id
+       AND shipment_unit.tenant_id=s.tenant_id AND shipment_unit.factory_id=s.factory_id
+      JOIN traceability_units container_unit
+        ON container_unit.id=s.container_unit_id
+       AND container_unit.tenant_id=s.tenant_id AND container_unit.factory_id=s.factory_id
+      WHERE s.tenant_id=$1 AND s.factory_id=$2
+        AND (
+          $3::text IS NULL
+          OR s.shipment_code ILIKE '%' || $3 || '%'
+          OR s.customer_name ILIKE '%' || $3 || '%'
+          OR s.customer_order_reference ILIKE '%' || $3 || '%'
+          OR COALESCE(s.tracking_reference, '') ILIKE '%' || $3 || '%'
+        )
+      ORDER BY s.dispatched_at DESC, s.shipment_unit_id DESC
+      LIMIT $4
+    `, [tenantId, factoryId, search, limit], { tenantId, userId });
+    return { shipments: result.rows, limit };
+  }
+
   async getContainer(userId: string, tenantId: string, factoryId: string, containerUnitId: string) {
     this.validateScope(userId, tenantId, factoryId);
     const id = this.uuid(containerUnitId, 'containerUnitId');

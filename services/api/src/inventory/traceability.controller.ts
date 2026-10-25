@@ -237,6 +237,22 @@ export class TraceabilityController {
     );
   }
 
+  @Get('shipments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('traceability.read')
+  @RequireFactoryScope()
+  async listWmsShipments(
+    @Req() request: TraceabilityRequest,
+    @Query('search') search?: string,
+    @Query('limit') rawLimit?: string,
+  ) {
+    const c = this.requireContext(request);
+    return this.wmsFulfillmentService.listShipments(
+      c.userId, c.tenantId, c.factoryId,
+      { search, limit: rawLimit === undefined ? undefined : Number(rawLimit) },
+    );
+  }
+
   @Get('containers/:containerUnitId')
   @UseGuards(PermissionGuard)
   @RequirePermission('traceability.read')
