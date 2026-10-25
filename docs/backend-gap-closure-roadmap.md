@@ -94,3 +94,12 @@
 **Evidence:** migration `205_wms_traceability_recall_execution.sql`, SQL contract `services/api/test/wms-recall-case.sql`, PostgreSQL integration for node/depth truncation fail-closed, atomic unit status/history, idempotent replay, tenant scope and stock conservation; workflow applies and reapplies migration 205 and its contract. Exact-head CI and independent review are required before promotion.
 
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
+
+
+### WP02 slice — recall notification intent and acknowledgement ledger (migration 206)
+
+**Gap:** an audited recall case could identify affected units and shipped-unit follow-up, but there was no durable customer/site notification-intent ledger or acknowledgement record linked to a specific recall case.
+
+**Implementation/acceptance:** migration 206 adds tenant/factory-scoped notification intents and a one-per-intent acknowledgement ledger. APIs require authenticated factory scope, `traceability.write` for writes, idempotency keys, constrained non-URL recipient references and explicit acknowledgement outcomes. Notification requests add an outbox event atomically with audit evidence; acknowledgements require an existing intent for the same case and recipient, and likewise commit append-only records with audit/outbox evidence. PostgreSQL checks cover RLS, immutable triggers, recipient binding, uniqueness and migration reapplication.
+
+**Boundary:** `WMS.RECALL_NOTIFICATION_REQUESTED` is an intent, not confirmation that an external provider transmitted or delivered anything. The current acknowledgement source is `OPERATOR_REPORTED`; there is no external customer authentication, delivery receipt, automatic customer email/EDI/portal transmission, stop-ship command or recall-owner approval in this slice. Those remain explicit operational/provider acceptance gates.

@@ -105,4 +105,30 @@ describe('TraceabilityService input contracts', () => {
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(database.transaction).not.toHaveBeenCalled();
   });
+  it('rejects unsafe recall notification recipients and missing idempotency before transactions', async () => {
+    await expect(service.createRecallNotificationIntent(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      { recipient_type: 'CUSTOMER', recipient_reference: 'https://evil.test', channel: 'EMAIL' },
+      'notification-unsafe-ref', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.createRecallNotificationIntent(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID,
+      { recipient_type: 'CUSTOMER', recipient_reference: 'CUSTOMER-001', channel: 'EMAIL' },
+      null, null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported recall acknowledgement outcomes and URL evidence references before transactions', async () => {
+    await expect(service.recordRecallNotificationAcknowledgement(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, UNIT_ID,
+      { outcome: 'DELIVERED_BY_EMAIL' as never }, 'ack-invalid-outcome', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.recordRecallNotificationAcknowledgement(
+      USER_ID, TENANT_ID, FACTORY_ID, UNIT_ID, UNIT_ID,
+      { outcome: 'RECEIVED', evidence_reference: 'https://example.test/evidence' }, 'ack-invalid-evidence', null, null,
+    )).rejects.toBeInstanceOf(BadRequestException);
+    expect(database.transaction).not.toHaveBeenCalled();
+  });
+
 });

@@ -78,3 +78,12 @@ The repository now has first-class quality inspections, immutable defect-to-lot/
 ## Verification
 
 Migration: `074_lot_serial_product_genealogy.sql`. PostgreSQL regression: `services/api/test/traceability.sql`, plus accepted-GRN lot registration coverage in `services/api/test/goods-receipt.sql`. API input regression: `services/api/src/inventory/traceability.service.spec.ts`.
+
+
+## Recall notification and acknowledgement evidence (migration 206)
+
+- `POST /api/v1/traceability/recall-cases/:recallCaseId/notifications` records a tenant/factory-scoped, idempotent notification intent for a customer or site and emits `WMS.RECALL_NOTIFICATION_REQUESTED` through the transactional outbox.
+- `GET /api/v1/traceability/recall-cases/:recallCaseId/notifications` returns recorded intents and any linked acknowledgement evidence.
+- `POST /api/v1/traceability/recall-cases/:recallCaseId/notifications/:notificationIntentId/acknowledgements` records one append-only operator-reported response per intent. Supported outcomes are `RECEIVED`, `NO_ACTION_REQUIRED`, `ACTION_IN_PROGRESS`, `ACTION_COMPLETED` and `UNABLE_TO_CONFIRM`.
+- Notification targets are reference tokens, not arbitrary URLs or email addresses. Intent and acknowledgement records are protected by FORCE RLS, immutable triggers, same-case/same-recipient foreign keys, idempotency constraints, and deferred audit/outbox evidence checks.
+- **Boundary:** requesting an intent does not prove that a message was sent or delivered. Acknowledgements created through this endpoint are marked `OPERATOR_REPORTED` and are not externally authenticated. Provider delivery receipts, customer/site portal authentication, stop-ship execution and recall-owner acceptance remain separate release gates.
