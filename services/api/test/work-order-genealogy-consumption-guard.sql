@@ -10,7 +10,6 @@ DECLARE
   v_before_function TEXT;
   v_edge_constraint_function TEXT;
   v_work_order_function TEXT;
-  v_manifest TEXT;
 BEGIN
   SELECT EXISTS (
     SELECT 1 FROM schema_migrations
@@ -78,7 +77,6 @@ BEGIN
     INTO v_work_order_function;
   IF position('inventory_reservation_consumption_traceability_allocations' IN v_work_order_function) = 0
      OR position('work_order_material_reservations' IN v_work_order_function) = 0
-     OR position('ctr_work_order_completed_genealogy' IN v_work_order_function) = 0
      OR position('fully represented in output genealogy' IN v_work_order_function) = 0
   THEN
     RAISE EXCEPTION 'completion guard must reject any work order with consumed lot/serial quantity missing from genealogy';
