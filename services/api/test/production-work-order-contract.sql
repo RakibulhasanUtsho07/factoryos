@@ -191,6 +191,19 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM schema_migrations
+    WHERE version = '198_production_output_genealogy_completion_guard'
+  ) OR to_regprocedure('factoryos_assert_work_order_output_genealogy()') IS NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM pg_trigger
+      WHERE tgrelid = 'work_orders'::regclass
+        AND tgname = 'ctr_work_order_output_genealogy_completion_guard'
+        AND NOT tgisinternal AND tgenabled <> 'D' AND tgdeferrable AND tginitdeferred
+    ) THEN
+    RAISE EXCEPTION 'Completed work orders must enforce output trace identities and lot/serial genealogy';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM schema_migrations
     WHERE version = '092_order_production_report_work_order_routing_guard'
   ) OR NOT EXISTS (
     SELECT 1 FROM pg_trigger t

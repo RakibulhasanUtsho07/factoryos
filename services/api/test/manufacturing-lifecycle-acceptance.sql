@@ -59,7 +59,8 @@ BEGIN
     '095_quality_ncr_resolution_gate',
     '096_quality_capa_action_lifecycle',
     '097_quality_defect_order_traceability',
-    '098_quality_rework_execution_and_verification'
+    '098_quality_rework_execution_and_verification',
+    '198_production_output_genealogy_completion_guard'
   ]) AS required(version)
   WHERE NOT EXISTS (
     SELECT 1 FROM schema_migrations sm WHERE sm.version = required.version
@@ -258,7 +259,8 @@ BEGIN
     OR to_regprocedure('factoryos_require_production_output_posting()') IS NULL
     OR to_regprocedure('factoryos_guard_quality_hold()') IS NULL
     OR to_regprocedure('factoryos_quality_sync_traceability_hold()') IS NULL
-    OR to_regprocedure('factoryos_guard_quality_disposition()') IS NULL THEN
+    OR to_regprocedure('factoryos_guard_quality_disposition()') IS NULL
+    OR to_regprocedure('factoryos_assert_work_order_output_genealogy()') IS NULL THEN
     RAISE EXCEPTION 'Manufacturing lifecycle cross-domain integrity functions are missing';
   END IF;
 
@@ -322,6 +324,7 @@ BEGIN
       ('product_bom_alternates', 'trg_product_bom_alternate_guard', FALSE),
       ('product_routing_steps', 'trg_product_routing_step_guard', FALSE),
       ('work_orders', 'trg_work_order_lifecycle', FALSE),
+      ('work_orders', 'ctr_work_order_output_genealogy_completion_guard', TRUE),
       ('work_order_operations', 'trg_work_order_operation_lifecycle', FALSE),
       ('work_order_events', 'trg_work_order_event_payload_guard', FALSE),
       ('production_output_postings', 'trg_production_output_posting_guard', FALSE),

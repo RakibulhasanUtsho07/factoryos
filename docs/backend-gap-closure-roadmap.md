@@ -47,3 +47,12 @@
 4. Take the next medium-sized slice from WP02 WMS end-to-end evidence, then proceed by the ordered dependencies above.
 
 **Release status remains OPEN** until the source/priority reconciliation and all applicable release gates above have direct evidence and authorized review. This roadmap intentionally records external blockers as external rather than inventing acceptance.
+
+## WP02 slice: production output → finished-good/scrap genealogy
+
+**Status: implementation added on `feat/wp02-production-output-genealogy`; exact-SHA CI and promotion evidence pending.**
+
+Requirement linkage: FR-WMS-06, FR-WMS-08 and Blueprint WP02. On work-order completion, each positive-good production report receives a factory-scoped finished-good lot identity; each positive-scrap report receives a separate non-saleable scrap trace identity. The service links the material lot/serial quantities found in the same work order's immutable consumption-allocation ledger to those targets and records audit/outbox evidence in the completion transaction. A deferred PostgreSQL constraint trigger fails completion if a report lacks the exact output/scrap identity, if a tracked reservation's consumed quantity does not match its lot/serial issue records, or if genealogy edge totals do not reconcile to the consumed quantities. The ordered migration manifest and PostgreSQL idempotency replay include migration 198.
+
+**Evidence boundary:** the allocation basis is explicitly marked `PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_OUTPUT`. This closes the batch-level source-to-output link and conserves recorded quantities; it does not claim that each individual piece/serial was scanned at its physical operation. Offline mobile/RFID commissioning, exact per-unit assembly scans, shipment/pallet/carton chain, quality-owner recall acceptance and full WP02 end-to-end sign-off remain separate acceptance items.
+

@@ -14,6 +14,7 @@ import { CreateWorkOrderDto } from './dto/create-work-order.dto';
 import { OperationEventDto } from './dto/operation-event.dto';
 import { WorkOrderOutputReportDto } from './dto/work-order-output-report.dto';
 import { WorkOrderTransitionDto } from './dto/work-order-transition.dto';
+import { allocateWorkOrderOutputGenealogy, type WorkOrderGenealogySource, type WorkOrderGenealogyTarget } from './work-order-output-genealogy';
 import {
   assertPrecedingOperationsComplete,
   assertTargetQuantityNotExceeded,
@@ -1037,6 +1038,13 @@ export class ProductionWorkOrdersService {
         }
         payload.material_reservation_count = consumedMaterials.reservationCount;
         payload.consumed_material_quantities = consumedMaterials.quantityByItem;
+
+        const outputGenealogy = await this.recordWorkOrderOutputGenealogy(client, {
+          userId, tenantId, factoryId, workOrder, correlationId, requestId,
+        });
+        payload.output_traceability_unit_count = outputGenealogy.traceabilityUnitCount;
+        payload.output_genealogy_event_count = outputGenealogy.genealogyEventCount;
+        payload.output_genealogy_allocation_basis = 'PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_OUTPUT';
       }
 
       if (command !== 'CANCEL' && command !== 'COMPLETE' && command !== 'RELEASE' && command !== 'HOLD' && command !== 'RESUME') {
@@ -1954,6 +1962,389 @@ export class ProductionWorkOrdersService {
     `, [orderId, orderLineId, tenantId, factoryId]);
     if (!result.rows[0]) throw new NotFoundException('Source sales order or line was not found in this factory');
     return result.rows[0];
+  }
+
+  /**
+   * Build source-backed output batch identities and link the material lots/serials
+   * actually consumed by this work order. This method runs on the work-order's
+   * existing transaction so failed genealogy rolls back stock issue and completion.
+   */
+  private async recordWorkOrderOutputGenealogy(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrder: WorkOrderRow;
+      correlationId: string;
+      requestId: string | null;
+    },
+  ): Promise<{ traceabilityUnitCount: number; genealogyEventCount: number }> {
+    const { userId, tenantId, factoryId, workOrder, correlationId, requestId } = input;
+    const requestUuid = requestId && isUUID(requestId) ? requestId : null;
+    const reportsResult = await client.query<{
+      id: string;
+      order_id: string;
+      order_line_id: string;
+      good_quantity: string;
+      scrap_quantity: string;
+      finished_item_unit: string;
+      output_posting_id: string | null;
+    }>(`
+      SELECT r.id::text AS id, r.order_id::text AS order_id, r.order_line_id::text AS order_line_id,
+        r.good_quantity::text AS good_quantity, r.scrap_quantity::text AS scrap_quantity,
+        i.unit AS finished_item_unit, p.id::text AS output_posting_id
+      FROM order_production_reports r
+      JOIN inventory_items i
+        ON i.id = $4 AND i.tenant_id = r.tenant_id AND i.factory_id = r.factory_id
+      LEFT JOIN production_output_postings p
+        ON p.production_report_id = r.id AND p.tenant_id = r.tenant_id AND p.factory_id = r.factory_id
+      WHERE r.work_order_id = $1 AND r.tenant_id = $2 AND r.factory_id = $3
+      ORDER BY r.created_at, r.id
+      FOR UPDATE OF r
+    `, [workOrder.id, tenantId, factoryId, workOrder.finished_item_id]);
+    const reports = reportsResult.rows;
+    if (reports.length === 0) {
+      throw new ConflictException('Work-order output genealogy requires at least one committed production report');
+    }
+
+    // A tracked item must have a one-for-one match between consumed quantity and
+    // its immutable material-lot/serial issue evidence. Never silently downgrade.
+    const untracedReservation = await client.query<{ reservation_id: string; item_id: string }>(`
+      WITH tracked_reservations AS (
+        SELECT DISTINCT ir.id AS reservation_id, ir.item_id
+        FROM work_order_material_reservations mr
+        JOIN inventory_reservations ir
+          ON ir.id = mr.reservation_id AND ir.tenant_id = mr.tenant_id AND ir.factory_id = mr.factory_id
+        WHERE mr.work_order_id = $1 AND mr.tenant_id = $2 AND mr.factory_id = $3
+          AND ir.status = 'CONSUMED'
+          AND EXISTS (
+            SELECT 1 FROM traceability_units tu
+            WHERE tu.tenant_id = ir.tenant_id AND tu.factory_id = ir.factory_id
+              AND tu.inventory_item_id = ir.item_id AND tu.product_role = 'MATERIAL'
+              AND tu.unit_type IN ('LOT', 'SERIAL')
+          )
+      )
+      SELECT tr.reservation_id::text AS reservation_id, tr.item_id::text AS item_id
+      FROM tracked_reservations tr
+      WHERE COALESCE((
+        SELECT SUM(c.quantity) FROM inventory_reservation_consumptions c
+        WHERE c.reservation_id = tr.reservation_id AND c.tenant_id = $2 AND c.factory_id = $3
+      ), 0) <> COALESCE((
+        SELECT SUM(a.quantity)
+        FROM inventory_reservation_consumptions c
+        JOIN inventory_reservation_consumption_traceability_allocations a
+          ON a.consumption_id = c.id AND a.tenant_id = c.tenant_id AND a.factory_id = c.factory_id
+        WHERE c.reservation_id = tr.reservation_id AND c.tenant_id = $2 AND c.factory_id = $3
+      ), 0)
+      LIMIT 1
+    `, [workOrder.id, tenantId, factoryId]);
+    if (untracedReservation.rows[0]) {
+      throw new ConflictException(
+        'A tracked material reservation lacks complete lot/serial issue evidence; work-order genealogy cannot be completed',
+      );
+    }
+
+    const targets: WorkOrderGenealogyTarget[] = [];
+    for (const report of reports) {
+      if (this.toUnits(report.good_quantity) > 0n) {
+        targets.push(await this.ensureProductionOutputTraceabilityUnit(client, {
+          userId, tenantId, factoryId, workOrder, report, targetKind: 'FINISHED_GOOD',
+          quantity: report.good_quantity, correlationId, requestUuid,
+        }));
+      }
+      if (this.toUnits(report.scrap_quantity) > 0n) {
+        targets.push(await this.ensureProductionOutputTraceabilityUnit(client, {
+          userId, tenantId, factoryId, workOrder, report, targetKind: 'SCRAP',
+          quantity: report.scrap_quantity, correlationId, requestUuid,
+        }));
+      }
+    }
+
+    const sourceResult = await client.query<{
+      source_unit_id: string;
+      item_id: string;
+      unit_type: 'LOT' | 'SERIAL';
+      unit: string;
+      unit_code: string;
+      quantity: string;
+      consumption_ids: string[];
+      reservation_ids: string[];
+    }>(`
+      SELECT tu.id::text AS source_unit_id, tu.inventory_item_id::text AS item_id,
+        tu.unit_type, tu.unit, tu.unit_code,
+        SUM(a.quantity)::numeric(18,4)::text AS quantity,
+        array_agg(DISTINCT c.id::text ORDER BY c.id::text) AS consumption_ids,
+        array_agg(DISTINCT ir.id::text ORDER BY ir.id::text) AS reservation_ids
+      FROM inventory_reservation_consumption_traceability_allocations a
+      JOIN inventory_reservation_consumptions c
+        ON c.id = a.consumption_id AND c.tenant_id = a.tenant_id AND c.factory_id = a.factory_id
+      JOIN inventory_reservations ir
+        ON ir.id = c.reservation_id AND ir.tenant_id = c.tenant_id AND ir.factory_id = c.factory_id
+      JOIN work_order_material_reservations mr
+        ON mr.reservation_id = ir.id AND mr.tenant_id = ir.tenant_id AND mr.factory_id = ir.factory_id
+        AND mr.work_order_id = $1
+      JOIN traceability_units tu
+        ON tu.id = a.traceability_unit_id AND tu.tenant_id = a.tenant_id
+        AND tu.factory_id = a.factory_id AND tu.inventory_item_id = ir.item_id
+      LEFT JOIN goods_receipts gr
+        ON gr.id = tu.goods_receipt_id AND gr.tenant_id = tu.tenant_id AND gr.factory_id = tu.factory_id
+      LEFT JOIN traceability_settings ts
+        ON ts.tenant_id = tu.tenant_id AND ts.factory_id = tu.factory_id
+      WHERE a.tenant_id = $2 AND a.factory_id = $3 AND tu.product_role = 'MATERIAL'
+        AND tu.unit_type IN ('LOT', 'SERIAL')
+      GROUP BY tu.id, tu.inventory_item_id, tu.unit_type, tu.unit, tu.unit_code, tu.expires_at,
+        COALESCE(gr.posted_at, gr.received_at, tu.created_at), ts.allocation_policy
+      ORDER BY tu.inventory_item_id,
+        CASE WHEN ts.allocation_policy = 'FEFO' THEN tu.expires_at END ASC NULLS LAST,
+        CASE WHEN ts.allocation_policy IN ('FIFO', 'FEFO')
+          THEN COALESCE(gr.posted_at, gr.received_at, tu.created_at) END ASC NULLS LAST,
+        lower(tu.unit_code), tu.id
+    `, [workOrder.id, tenantId, factoryId]);
+    const sources: (WorkOrderGenealogySource & {
+      unitCode: string; consumptionIds: string[]; reservationIds: string[];
+    })[] = sourceResult.rows.map(row => ({
+      unitId: row.source_unit_id,
+      itemId: row.item_id,
+      unitType: row.unit_type,
+      unit: row.unit,
+      quantity: row.quantity,
+      unitCode: row.unit_code,
+      consumptionIds: row.consumption_ids,
+      reservationIds: row.reservation_ids,
+    }));
+    const edges = allocateWorkOrderOutputGenealogy(sources, targets);
+    const sourcesById = new Map(sources.map(source => [source.unitId, source]));
+    const targetsById = new Map(targets.map(target => [target.unitId, target]));
+    let genealogyEventCount = 0;
+
+    for (const edge of edges) {
+      const source = sourcesById.get(edge.sourceUnitId);
+      const target = targetsById.get(edge.targetUnitId);
+      if (!source || !target) throw new ConflictException('Output genealogy allocation references a missing source or target identity');
+      const evidence = {
+        allocation_basis: 'PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_OUTPUT',
+        work_order_id: workOrder.id,
+        work_order_number: workOrder.work_order_number,
+        production_report_id: target.reportId,
+        target_kind: target.kind,
+        source_item_id: source.itemId,
+        source_unit_code: source.unitCode,
+        source_reservation_ids: source.reservationIds,
+        source_consumption_ids: source.consumptionIds,
+      };
+      const idempotencyKey = 'work-order-genealogy:' + workOrder.id + ':' + edge.sourceUnitId + ':' + edge.targetUnitId;
+      const requestHash = this.hash({
+        tenant_id: tenantId, factory_id: factoryId, source_unit_id: edge.sourceUnitId,
+        target_unit_id: edge.targetUnitId, relationship_type: edge.relationshipType,
+        quantity: edge.quantity, unit: source.unit, evidence,
+      });
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+        [tenantId + ':' + factoryId + ':genealogy-idempotency:' + idempotencyKey],
+      );
+      const existing = await client.query<{ id: string; request_hash: string }>(`
+        SELECT id::text AS id, request_hash FROM product_genealogy_events
+        WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+        FOR UPDATE
+      `, [tenantId, factoryId, idempotencyKey]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].request_hash.trim() !== requestHash) {
+          throw new ConflictException('Work-order genealogy idempotency key was reused with different evidence');
+        }
+        const previousEvidence = await client.query<{ audit_exists: boolean; outbox_exists: boolean }>(`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM audit_events a
+              WHERE a.tenant_id = $1 AND a.factory_id = $2
+                AND a.resource_type = 'PRODUCT_GENEALOGY_EVENT' AND a.resource_id = $3 AND a.action = 'RECORDED'
+            ) AS audit_exists,
+            EXISTS (
+              SELECT 1 FROM outbox_events o
+              WHERE o.tenant_id = $1 AND o.factory_id = $2
+                AND o.aggregate_type = 'PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id = $3
+                AND o.event_type = 'TRACEABILITY.GENEALOGY_RECORDED'
+            ) AS outbox_exists
+        `, [tenantId, factoryId, existing.rows[0].id]);
+        if (!previousEvidence.rows[0]?.audit_exists || !previousEvidence.rows[0]?.outbox_exists) {
+          throw new ConflictException('Existing work-order genealogy event is missing its audit or outbox evidence');
+        }
+        genealogyEventCount += 1;
+        continue;
+      }
+
+      const inserted = await client.query<{ id: string }>(`
+        INSERT INTO product_genealogy_events (
+          tenant_id, factory_id, source_unit_id, target_unit_id, relationship_type,
+          quantity, unit, evidence, notes, idempotency_key, request_hash, created_by_user_id, correlation_id
+        ) VALUES ($1,$2,$3,$4,$5,$6::numeric,$7,$8::jsonb,$9,$10,$11,$12,$13::uuid)
+        RETURNING id::text AS id
+      `, [
+        tenantId, factoryId, edge.sourceUnitId, edge.targetUnitId, edge.relationshipType,
+        edge.quantity, source.unit, JSON.stringify(evidence),
+        'Work-order batch genealogy allocated from reported good and scrap output',
+        idempotencyKey, requestHash, userId, correlationId,
+      ]);
+      const event = inserted.rows[0];
+      if (!event) throw new Error('WORK_ORDER_GENEALOGY_EVENT_INSERT_FAILED');
+      await client.query(`
+        INSERT INTO outbox_events (
+          tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+        ) VALUES ($1,$2,'PRODUCT_GENEALOGY_EVENT',$3,'TRACEABILITY.GENEALOGY_RECORDED',$4::jsonb)
+      `, [tenantId, factoryId, event.id, JSON.stringify({
+        genealogy_event_id: event.id, work_order_id: workOrder.id,
+        source_unit_id: edge.sourceUnitId, target_unit_id: edge.targetUnitId,
+        relationship_type: edge.relationshipType, quantity: edge.quantity, unit: source.unit,
+      })]);
+      await client.query(`
+        INSERT INTO audit_events (
+          tenant_id, factory_id, actor_user_id, event_type, action, resource_type,
+          resource_id, correlation_id, request_id, data_class, payload
+        ) VALUES ($1,$2,$3,'TRACEABILITY','RECORDED','PRODUCT_GENEALOGY_EVENT',$4,$5::uuid,$6,'INTERNAL',$7::jsonb)
+      `, [
+        tenantId, factoryId, userId, event.id, correlationId, requestUuid, JSON.stringify(evidence),
+      ]);
+      genealogyEventCount += 1;
+    }
+
+    return { traceabilityUnitCount: targets.length, genealogyEventCount };
+  }
+
+  private async ensureProductionOutputTraceabilityUnit(
+    client: PoolClient,
+    input: {
+      userId: string;
+      tenantId: string;
+      factoryId: string;
+      workOrder: WorkOrderRow;
+      report: {
+        id: string;
+        order_id: string;
+        order_line_id: string;
+        good_quantity: string;
+        scrap_quantity: string;
+        finished_item_unit: string;
+        output_posting_id: string | null;
+      };
+      targetKind: 'FINISHED_GOOD' | 'SCRAP';
+      quantity: string;
+      correlationId: string;
+      requestUuid: string | null;
+    },
+  ): Promise<WorkOrderGenealogyTarget> {
+    const isFinishedGood = input.targetKind === 'FINISHED_GOOD';
+    const role = isFinishedGood ? 'FINISHED_GOOD' : 'OTHER';
+    const unitCode = (isFinishedGood ? 'FG-' : 'SCRAP-') + input.report.id.toUpperCase();
+    const externalReference = 'production-report:' + input.report.id;
+    const attributes = {
+      record_kind: isFinishedGood ? 'PRODUCTION_OUTPUT' : 'PRODUCTION_SCRAP',
+      work_order_id: input.workOrder.id,
+      work_order_number: input.workOrder.work_order_number,
+      production_report_id: input.report.id,
+      production_output_posting_id: input.report.output_posting_id,
+      allocation_basis: 'PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_OUTPUT',
+    };
+    const requestHash = this.hash({
+      unit_type: 'LOT', product_role: role, unit_code: unitCode, barcode_value: unitCode,
+      inventory_item_id: isFinishedGood ? input.workOrder.finished_item_id : null,
+      quantity: input.quantity, unit: input.report.finished_item_unit,
+      order_id: input.report.order_id, order_line_id: input.report.order_line_id,
+      production_report_id: isFinishedGood ? input.report.id : null,
+      external_reference: externalReference, attributes,
+    });
+    const idempotencyKey = 'work-order-output-trace:' + (isFinishedGood ? 'fg:' : 'scrap:') + input.report.id;
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+      [input.tenantId + ':' + input.factoryId + ':traceability-unit:' + idempotencyKey],
+    );
+    const existing = await client.query<{ id: string; request_hash: string }>(`
+      SELECT id::text AS id, request_hash FROM traceability_units
+      WHERE tenant_id = $1 AND factory_id = $2 AND idempotency_key = $3
+      FOR UPDATE
+    `, [input.tenantId, input.factoryId, idempotencyKey]);
+    let unitId: string;
+    if (existing.rows[0]) {
+      if (existing.rows[0].request_hash.trim() !== requestHash) {
+        throw new ConflictException('Work-order output traceability idempotency key was reused with different evidence');
+      }
+      const previousEvidence = await client.query<{ audit_exists: boolean; outbox_exists: boolean }>(`
+        SELECT
+          EXISTS (
+            SELECT 1 FROM audit_events a
+            WHERE a.tenant_id = $1 AND a.factory_id = $2
+              AND a.resource_type = 'TRACEABILITY_UNIT' AND a.resource_id = $3 AND a.action = 'REGISTERED'
+          ) AS audit_exists,
+          EXISTS (
+            SELECT 1 FROM outbox_events o
+            WHERE o.tenant_id = $1 AND o.factory_id = $2
+              AND o.aggregate_type = 'TRACEABILITY_UNIT' AND o.aggregate_id = $3
+              AND o.event_type = 'TRACEABILITY.UNIT_REGISTERED'
+          ) AS outbox_exists
+      `, [input.tenantId, input.factoryId, existing.rows[0].id]);
+      if (!previousEvidence.rows[0]?.audit_exists || !previousEvidence.rows[0]?.outbox_exists) {
+        throw new ConflictException('Existing output traceability identity is missing audit or outbox evidence');
+      }
+      unitId = existing.rows[0].id;
+    } else {
+      const conflicting = await client.query<{ id: string }>(`
+        SELECT id::text AS id FROM traceability_units
+        WHERE tenant_id = $1 AND factory_id = $2
+          AND (
+            ($3 = 'FINISHED_GOOD' AND production_report_id = $4::uuid AND product_role = 'FINISHED_GOOD')
+            OR ($3 = 'OTHER' AND external_reference = $5 AND product_role = 'OTHER'
+                AND attributes->>'record_kind' = 'PRODUCTION_SCRAP')
+          )
+        LIMIT 1
+        FOR UPDATE
+      `, [input.tenantId, input.factoryId, role, input.report.id, externalReference]);
+      if (conflicting.rows[0]) {
+        throw new ConflictException(
+          'Production report already has a different traceability identity; reconcile the existing identity before completing the work order',
+        );
+      }
+      const inserted = await client.query<{ id: string }>(`
+        INSERT INTO traceability_units (
+          tenant_id, factory_id, unit_type, product_role, unit_code, barcode_value, inventory_item_id,
+          quantity, unit, order_id, order_line_id, production_report_id, external_reference,
+          manufactured_at, attributes, idempotency_key, request_hash, created_by_user_id, correlation_id
+        ) VALUES (
+          $1,$2,'LOT',$3,$4,$4,$5,$6::numeric,$7,$8,$9,$10,$11,clock_timestamp(),
+          $12::jsonb,$13,$14,$15,$16::uuid
+        )
+        RETURNING id::text AS id
+      `, [
+        input.tenantId, input.factoryId, role, unitCode,
+        isFinishedGood ? input.workOrder.finished_item_id : null,
+        input.quantity, input.report.finished_item_unit,
+        input.report.order_id, input.report.order_line_id,
+        isFinishedGood ? input.report.id : null, externalReference,
+        JSON.stringify(attributes), idempotencyKey, requestHash, input.userId, input.correlationId,
+      ]);
+      unitId = inserted.rows[0]?.id ?? '';
+      if (!unitId) throw new Error('WORK_ORDER_OUTPUT_TRACEABILITY_UNIT_INSERT_FAILED');
+      await client.query(`
+        INSERT INTO outbox_events (
+          tenant_id, factory_id, aggregate_type, aggregate_id, event_type, payload
+        ) VALUES ($1,$2,'TRACEABILITY_UNIT',$3,'TRACEABILITY.UNIT_REGISTERED',$4::jsonb)
+      `, [input.tenantId, input.factoryId, unitId, JSON.stringify({
+        unit_id: unitId, unit_type: 'LOT', product_role: role, unit_code: unitCode,
+        barcode_value: unitCode, quantity: input.quantity, unit: input.report.finished_item_unit,
+        production_report_id: isFinishedGood ? input.report.id : null,
+        work_order_id: input.workOrder.id, record_kind: attributes.record_kind,
+      })]);
+      await client.query(`
+        INSERT INTO audit_events (
+          tenant_id, factory_id, actor_user_id, event_type, action, resource_type,
+          resource_id, correlation_id, request_id, data_class, payload
+        ) VALUES ($1,$2,$3,'TRACEABILITY','REGISTERED','TRACEABILITY_UNIT',$4,$5::uuid,$6,'INTERNAL',$7::jsonb)
+      `, [
+        input.tenantId, input.factoryId, input.userId, unitId, input.correlationId,
+        input.requestUuid, JSON.stringify(attributes),
+      ]);
+    }
+    return {
+      unitId, reportId: input.report.id, kind: input.targetKind, quantity: input.quantity,
+    };
   }
 
   private async lastOperationStep(client: PoolClient, workOrderId: string, tenantId: string, factoryId: string) {
