@@ -2268,7 +2268,140 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const quarantinedSource = await traceabilityService.getUnit(
       userId, tenantId, fixture.factoryId, quarantinedSourceUnitId,
     );
+
     expect(quarantinedSource.status).toBe('QUARANTINED');
+
+    // Exercise the separate, item-level SCRAP disposition path too. This uses
+    // a dedicated test item so scrap can remove its entire balance without
+    // touching the recovered lot that must continue to shipment.
+    const scrapItemResult = await adminPool.query<{ id: string }>(
+      `INSERT INTO inventory_items (tenant_id, factory_id, sku, name, unit, created_by_user_id)
+       VALUES ($1,$2,$3,'E2E nonconforming scrap item','PCS',$4) RETURNING id::text AS id`,
+      [tenantId, fixture.factoryId, 'SCRAP-E2E-' + suffix, userId],
+    );
+    const scrapItemId = scrapItemResult.rows[0]?.id;
+    if (!scrapItemId) throw new Error('Factory E2E scrap item fixture was not created');
+    await adminPool.query(
+      `INSERT INTO inventory_stock_balances (tenant_id,factory_id,item_id,quantity_on_hand)
+       VALUES ($1,$2,$3,1.0000)`,
+      [tenantId, fixture.factoryId, scrapItemId],
+    );
+    await adminPool.query(
+      `INSERT INTO inventory_location_balances (tenant_id,factory_id,item_id,location_id,quantity_on_hand)
+       VALUES ($1,$2,$3,$4,1.0000)`,
+      [tenantId, fixture.factoryId, scrapItemId, binA.id],
+    );
+    const scrapInspection = await qualityService.createInspection(
+      qualityContext,
+      {
+        inspection_type: 'INVENTORY',
+        target_type: 'INVENTORY_ITEM',
+        target_id: scrapItemId,
+        sample_quantity: 1,
+        notes: 'Factory E2E unrecoverable item inspection for explicit SCRAP disposition',
+      } as never,
+      'factory-e2e-quality-scrap-inspection-' + suffix,
+    );
+    let heldScrapInspection = await qualityService.decideInspection(
+      qualityContext, scrapInspection.id,
+      { expected_version: Number(scrapInspection.row_version), action: 'START' } as never,
+      'factory-e2e-quality-scrap-start-' + suffix,
+    );
+    const scrapDefect = await qualityService.recordDefect(
+      qualityContext, scrapInspection.id,
+      {
+        defect_code: 'E2E-UNRECOVERABLE-DEFECT',
+        severity: 'MAJOR',
+        affected_quantity: 1,
+        description: 'Acceptance fixture: material is not recoverable and must be scrapped',
+        evidence: { fixture: 'factory-e2e', disposition: 'SCRAP' },
+      } as never,
+      'factory-e2e-quality-scrap-defect-' + suffix,
+    );
+    heldScrapInspection = await qualityService.decideInspection(
+      qualityContext, scrapInspection.id,
+      {
+        expected_version: Number(heldScrapInspection.row_version),
+        action: 'HOLD',
+        reason: 'Quarantine unrecoverable item before approved scrap',
+      } as never,
+      'factory-e2e-quality-scrap-hold-' + suffix,
+    );
+    expect(heldScrapInspection.holds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'ACTIVE', inventory_item_id: scrapItemId }),
+    ]));
+    const scrapDispositionResult = await qualityService.disposeInspection(
+      qualityContext, scrapInspection.id,
+      {
+        expected_version: Number(heldScrapInspection.row_version),
+        action: 'SCRAP',
+        quantity: 1,
+        reason: 'Approved full-balance scrap for unrecoverable nonconforming item',
+      } as never,
+      'factory-e2e-quality-scrap-disposition-' + suffix,
+    );
+    expect(scrapDispositionResult.disposition).toMatchObject({
+      action: 'SCRAP',
+      status: 'PENDING_INVENTORY',
+      quantity: '1.0000',
+    });
+    expect(scrapDispositionResult.next_inventory_action).toMatchObject({
+      method: 'POST',
+      movement_type: 'ISSUE',
+      reference_type: 'QUALITY_DISPOSITION',
+      reference_id: scrapDispositionResult.disposition.id,
+      quantity: 1,
+    });
+    const scrapMovement = await inventoryService.createStockMovement(
+      userId, tenantId, fixture.factoryId, scrapItemId,
+      {
+        movement_type: 'ISSUE',
+        quantity: 1,
+        location_id: binA.id,
+        reference_type: 'QUALITY_DISPOSITION',
+        reference_id: scrapDispositionResult.disposition.id,
+        notes: 'Factory E2E approved SCRAP disposition',
+      } as never,
+      'factory-e2e-quality-scrap-movement-' + suffix,
+      requestId,
+      traceId,
+    );
+    expect(scrapMovement).toMatchObject({
+      movement_type: 'ISSUE',
+      quantity_delta: '-1.0000',
+      reference_type: 'QUALITY_DISPOSITION',
+      reference_id: scrapDispositionResult.disposition.id,
+    });
+    const completedScrapInspection = await qualityService.getInspection(qualityContext, scrapInspection.id);
+    expect(completedScrapInspection).toMatchObject({ status: 'DISPOSITIONED' });
+    expect(completedScrapInspection.defects[0]).toMatchObject({
+      id: scrapDefect.id,
+      status: 'SCRAPPED',
+    });
+    expect(completedScrapInspection.holds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'DISPOSED', inventory_item_id: scrapItemId }),
+    ]));
+    expect(completedScrapInspection.dispositions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: scrapDispositionResult.disposition.id,
+        action: 'SCRAP',
+        status: 'COMPLETED',
+        inventory_movement_id: scrapMovement.id,
+        quantity: '1.0000',
+      }),
+    ]));
+    const scrappedBalance = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3',
+      [tenantId, fixture.factoryId, scrapItemId],
+    );
+    expect(scrappedBalance.rows[0]?.quantity_on_hand).toBe('0.0000');
+    const scrapMovementCount = await adminPool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM inventory_movements
+       WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_DISPOSITION'
+         AND reference_id=$3 AND movement_type='ISSUE'`,
+      [tenantId, fixture.factoryId, scrapDispositionResult.disposition.id],
+    );
+    expect(scrapMovementCount.rows[0]?.count).toBe(1);
 
     // Downstream warehouse operations now use the separately accepted recovered lot,
     // never the quarantined source lot that was consumed into rework/scrap.
