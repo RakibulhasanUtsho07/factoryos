@@ -25,6 +25,20 @@ const SCENARIOS = {
   rf_burst_disconnect_reconnect: ["rfid"],
 };
 
+const SCENARIO_DEVICE_TYPES = {
+  airplane_mode_queue_reload_reconnect: ["handhelds"],
+  lost_response_duplicate_tap_retry: ["handhelds"],
+  multi_tab_and_cross_device_sync: ["handhelds"],
+  server_conflict_receipt_reconciliation: ["handhelds"],
+  qr_and_code128_physical_print_scan: ["handhelds", "scanners", "printers"],
+  damaged_or_stale_label_rejection: ["handhelds", "scanners"],
+  reprint_after_lifecycle_change: ["handhelds", "printers"],
+  epc_repeat_dedup_and_unknown_tag: ["rfid_readers"],
+  wrong_or_ineligible_tag_rejected: ["rfid_readers"],
+  quantity_reconciliation: ["rfid_readers"],
+  rf_burst_disconnect_reconnect: ["rfid_readers"],
+};
+
 const SCENARIO_EVIDENCE = {
   airplane_mode_queue_reload_reconnect: ["screen-recording", "api-sync-receipts"],
   lost_response_duplicate_tap_retry: ["screen-recording", "api-sync-receipts", "stock-ledger-reconciliation"],
@@ -116,7 +130,7 @@ function applicableScenarios(scope) {
     .map(([id]) => id);
 }
 
-function validateScenarioResults(manifest, expectedScenarioIds, knownDeviceIds, issues) {
+function validateScenarioResults(manifest, expectedScenarioIds, knownDeviceIds, knownDeviceTypes, issues) {
   if (!Array.isArray(manifest.scenarios)) {
     addIssue(issues, "SCENARIO_RESULTS_REQUIRED", "$.scenarios");
     return;
@@ -144,6 +158,11 @@ function validateScenarioResults(manifest, expectedScenarioIds, knownDeviceIds, 
     } else {
       for (const deviceId of scenario.device_ids) {
         if (!knownDeviceIds.has(deviceId)) addIssue(issues, "SCENARIO_REFERENCES_UNKNOWN_DEVICE", path + ".device_ids");
+      }
+      const requiredTypes = SCENARIO_DEVICE_TYPES[scenario.id] ?? [];
+      if (requiredTypes.length > 0 &&
+          !scenario.device_ids.some((deviceId) => requiredTypes.includes(knownDeviceTypes.get(deviceId)))) {
+        addIssue(issues, "SCENARIO_MISSING_REQUIRED_PHYSICAL_DEVICE_TYPE", path + ".device_ids");
       }
     }
   });
@@ -301,20 +320,27 @@ export async function validateWmsHardwareAcceptanceManifest(manifest, {
 
   const devices = isRecord(manifest.devices) ? manifest.devices : {};
   const knownDeviceIds = new Set();
+  const knownDeviceTypes = new Map();
+  function registerDevices(key, fields) {
+    for (const id of validateDeviceList(devices, key, fields, issues)) {
+      if (knownDeviceTypes.has(id)) addIssue(issues, "DUPLICATE_ASSET_ID_ACROSS_DEVICE_TYPES", "$.devices." + key);
+      knownDeviceIds.add(id);
+      knownDeviceTypes.set(id, key);
+    }
+  }
   if (scope.offline_mobile === true || scope.label_print_scan === true) {
-    for (const id of validateDeviceList(devices, "handhelds", ["manufacturer", "model", "firmware", "os_version", "browser_version"], issues)) knownDeviceIds.add(id);
+    registerDevices("handhelds", ["manufacturer", "model", "firmware", "os_version", "browser_version"]);
   }
   if (scope.label_print_scan === true) {
-    for (const id of validateDeviceList(devices, "scanners", ["manufacturer", "model", "firmware", "interface"], issues)) knownDeviceIds.add(id);
-    for (const id of validateDeviceList(devices, "printers", ["manufacturer", "model", "firmware", "driver", "dpi", "media"], issues)) knownDeviceIds.add(id);
+    registerDevices("scanners", ["manufacturer", "model", "firmware", "interface"]);
+    registerDevices("printers", ["manufacturer", "model", "firmware", "driver", "dpi", "media"]);
   }
   if (scope.rfid === true) {
-    for (const id of validateDeviceList(devices, "rfid_readers", ["manufacturer", "model", "firmware", "interface", "antenna_configuration"], issues)) knownDeviceIds.add(id);
+    registerDevices("rfid_readers", ["manufacturer", "model", "firmware", "interface", "antenna_configuration"]);
   }
 
-  validateScenarioResults(manifest, expectedScenarios, knownDeviceIds, issues);
+  validateScenarioResults(manifest, expectedScenarios, knownDeviceIds, knownDeviceTypes, issues);
   const attachmentFilesChecked = await validateAttachments(manifest, evidenceRoot, expectedScenarios, issues);
-  void requiredKinds;
 
   const approvalRoles = [...REQUIRED_APPROVALS, ...(scope.rfid === true ? ["rfid_specialist"] : [])];
   if (!Array.isArray(manifest.approvals)) {
