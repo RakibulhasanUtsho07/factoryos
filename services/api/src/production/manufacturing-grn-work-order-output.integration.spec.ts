@@ -663,7 +663,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
         ) VALUES ($1,$2,$3,'SUBMITTED','APPROVED',3,$4,'Independently approve manufacturing acceptance PO',$5,$6)
       `, [tenantId, factoryId, purchaseOrderId, approvalUserId, requestId, correlationId]);
 
-      await client.query('SELECT set_config($1, $2, true)', ['app.user_id', TEST_USER_ID]);
+      // GRN posting uses the independent approver as the authenticated posting actor.
       await client.query('SELECT set_config($1, $2, true)', ['app.inventory_location_id', defaultLocationId]);
       await client.query(`
         INSERT INTO goods_receipts (
@@ -674,7 +674,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
           'Posted GRN material used by the manufacturing acceptance', $8,$9,$10,$11,$12,$13)
       `, [
         receiptId, tenantId, factoryId, purchaseOrderId, defaultLocationId,
-        `MTO-GRN-${suffix}`, `MTO-DELIVERY-${suffix}`, TEST_USER_ID,
+        `MTO-GRN-${suffix}`, `MTO-DELIVERY-${suffix}`, approvalUserId,
         `mto-grn-${suffix}`, 'a'.repeat(64), requestId, correlationId, correlationId,
       ]);
       const receiptLine = await client.query<{ id: string }>(`
@@ -723,6 +723,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
         WHERE id=$1 AND tenant_id=$2 AND factory_id=$3
       `, [receiptId, tenantId, factoryId]);
 
+      await client.query('SELECT set_config($1, $2, true)', ['app.user_id', TEST_USER_ID]);
       await client.query(`
         INSERT INTO traceability_units (
           id,tenant_id,factory_id,unit_type,product_role,unit_code,barcode_value,inventory_item_id,
