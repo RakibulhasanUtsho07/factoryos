@@ -73,6 +73,12 @@ BEGIN
     -- output creates the finished stock later, so do not apply the stock-led
     -- shipment rule to a planned production order.
     IF v_line.production_managed THEN
+      IF v_line.reserved_quantity <> 0 OR v_line.consumed_quantity <> 0 THEN
+        RAISE EXCEPTION
+          'production-managed order line % cannot reserve finished-good stock against ORDER_LINE; use the work-order BOM material reservation lifecycle',
+          v_line.line_id
+          USING ERRCODE = '23514';
+      END IF;
       CONTINUE;
     END IF;
 
@@ -102,7 +108,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION factoryos_assert_order_line_inventory_allocation() IS
-  'Deferred order inventory-allocation guard. Stock-led order lines must be exactly reserved/consumed; a line linked to a production work order is fulfilled through BOM reservation, raw-material consumption and posted output genealogy instead.';
+  'Deferred order inventory-allocation guard. Stock-led order lines must be exactly reserved/consumed; a production-managed line must not reserve finished-good stock at ORDER_LINE scope and is fulfilled through BOM reservation, raw-material consumption and posted output genealogy instead.';
 
 INSERT INTO schema_migrations (version, checksum)
 VALUES ('207_production_order_finished_good_reservation_boundary', NULL)
