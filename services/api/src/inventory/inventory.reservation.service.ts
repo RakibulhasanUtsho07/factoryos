@@ -2064,7 +2064,7 @@ export class InventoryReservationService {
       `
       SELECT ca.id::text AS allocation_id, c.id::text AS consumption_id,
         c.reservation_id::text AS reservation_id, c.item_id::text AS item_id,
-        tu.id::text AS source_unit_id, tu.unit_code AS source_unit_code, tu.unit,
+        tu.id::text AS source_unit_id, tu.unit_code AS source_unit_code, tu.unit AS source_unit,
         ca.location_id::text AS source_location_id,
         ca.quantity::text AS consumed_quantity, tu.created_at::text AS source_created_at,
         c.created_at::text AS consumption_created_at
