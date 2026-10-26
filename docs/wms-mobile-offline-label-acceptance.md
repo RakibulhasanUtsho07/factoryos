@@ -90,3 +90,19 @@ The evidence pack needs real target asset IDs and manufacturer/model/firmware/OS
 Three distinct owners must approve the same release SHA: \`wms_process_owner\`, \`device_security_owner\`, and \`site_owner\`. When RFID is in scope, an additional distinct \`rfid_specialist\` approval is required. If the field run uses production, the manifest must also record explicit authorization for production side effects and its approval reference.
 
 **Interpretation:** \`PASS_PHYSICAL_HARDWARE_ACCEPTANCE_BUNDLE\` confirms manifest completeness, exact-release binding, required physical scenario declarations, attachment integrity and owner-approval coverage. It does not prove that a submitted video/log is genuine. Do not change a scenario from simulator to physical merely to satisfy the schema. An authorized site/device owner must inspect the original recordings/logs and sign off independently. Automated Node tests use fixtures only and do not count as hardware-in-the-loop evidence; no actual handheld, printer, scanner or RFID reader was available to the software validation run.
+
+
+## Real-browser IndexedDB multi-tab lab
+
+The route \`/wms/browser-acceptance\` is now available for a browser-backed local-store check. Unlike the Node \`MemoryStore\` unit tests, it uses the browser's actual IndexedDB engine and two separately opened page instances, while keeping all payloads and responses local to the browser.
+
+1. Use a dedicated test browser profile and open \`/wms/browser-acceptance\`.
+2. Click **Open second tab** and keep both pages on the same \`run\` URL and run ID. Do not open two unrelated run IDs: each run ID selects a separate local database.
+3. Seed one local test movement. Reload tab B and click **Refresh IndexedDB**; both tabs should show the same transaction ID as PENDING.
+4. In tab A, click **Start primary claim** and wait until it reports that the transaction is CLAIMED and awaiting release.
+5. While A's transport is intentionally held, click **Try competing claim** in tab B. It must report PASS with \`sent=0\` and \`transport called=false\`. Save the visible run logs from both tabs.
+6. In tab A, click **Release primary as APPLIED**. Both tabs should converge to an empty queue after refresh. Save both run logs and the screen recording.
+
+This test uses synthetic local receipts and a fixed fixture scope. It does **not** contact the API, mutate inventory, prove server idempotency, or count as a managed handheld/site acceptance. It only verifies actual browser IndexedDB cross-tab claim behavior. To prove server-side correctness, separately run the authenticated \`/wms\` workflow against a dedicated staging factory and reconcile each unique client transaction ID, returned server receipt, persisted stock movement, and before/after stock balance from PostgreSQL. The two-device retry after a real lost response still requires physical device evidence.
+
+If the browser is closed while the primary claim is held, the lease is finite and a later tab can eventually reclaim it. Allow the claim lease to expire before restarting a held scenario; do not manually delete IndexedDB rows during the evidence run.
