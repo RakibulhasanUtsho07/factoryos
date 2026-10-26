@@ -28,8 +28,8 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
   const workCentreCode = 'MFG-E2E-WC-' + runKey;
   const workOrderKey = 'mfg-e2e-work-order-' + runKey;
   const outputKey = 'mfg-e2e-output-' + runKey;
-  const supplierCode = 'MFG-E2E-SUP-' + runKey;
-  const purchaseOrderNumber = 'MFG-E2E-PO-' + runKey;
+  const supplierCode = ('MFG-E2E-SUP-' + runKey).toUpperCase();
+  const purchaseOrderNumber = ('MFG-E2E-PO-' + runKey).toUpperCase();
   const goodsReceiptKey = 'mfg-e2e-grn-' + runKey;
   const qualityInspectionKey = 'mfg-e2e-inspection-' + runKey;
 
