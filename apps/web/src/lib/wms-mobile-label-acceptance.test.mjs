@@ -36,6 +36,43 @@ class MemoryStore {
     this.entries.set(entry.key, structuredClone(entry));
     return { inserted: true, entry: structuredClone(entry) };
   }
+  async claimPending(scopeKey, now, leaseUntil, claimToken, batchSize, attemptedAt) {
+    const eligible = [...this.entries.values()]
+      .filter((entry) => {
+        const activeClaim = typeof entry.syncClaimToken === "string"
+          && entry.syncClaimToken.length > 0
+          && Number(entry.syncClaimUntil ?? 0) > now;
+        return entry.scopeKey === scopeKey
+          && entry.status === "PENDING"
+          && Number(entry.nextRetryAt ?? 0) <= now
+          && !activeClaim;
+      })
+      .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.transactionId.localeCompare(b.transactionId))
+      .slice(0, batchSize)
+      .map((entry) => ({
+        ...entry,
+        attemptCount: Number(entry.attemptCount ?? 0) + 1,
+        lastAttemptAt: attemptedAt,
+        updatedAt: attemptedAt,
+        syncClaimToken: claimToken,
+        syncClaimUntil: leaseUntil,
+      }));
+    for (const entry of eligible) this.entries.set(entry.key, structuredClone(entry));
+    return structuredClone(eligible);
+  }
+  async updateClaimed(scopeKey, transactionId, claimToken, now, updates) {
+    const key = scopeKey + ":" + transactionId;
+    const entry = this.entries.get(key);
+    if (!entry || entry.syncClaimToken !== claimToken || Number(entry.syncClaimUntil ?? 0) <= now) return false;
+    this.entries.set(key, structuredClone({ ...entry, ...updates, syncClaimToken: null, syncClaimUntil: 0 }));
+    return true;
+  }
+  async removeClaimed(scopeKey, transactionId, claimToken, now) {
+    const key = scopeKey + ":" + transactionId;
+    const entry = this.entries.get(key);
+    if (!entry || entry.syncClaimToken !== claimToken || Number(entry.syncClaimUntil ?? 0) <= now) return false;
+    return this.entries.delete(key);
+  }
   async remove(scopeKey, transactionId) {
     return this.entries.delete(scopeKey + ":" + transactionId);
   }
@@ -159,6 +196,81 @@ test("duplicate and mismatched response receipts are never treated as terminal a
   const duplicateResponse = await queue.flush(scope(), async () => ({ results: [applied(TX1), applied(TX1, "99999999-9999-4999-8999-999999999999")] }));
   assert.equal(duplicateResponse.syncedCount, 0);
   assert.equal((await queue.list(scope()))[0].status, "PENDING");
+});
+
+test("concurrent queue instances atomically claim a pending sync batch once", async () => {
+  const store = new MemoryStore();
+  const now = Date.parse("2026-10-26T00:00:00.000Z");
+  const queueA = new WmsOfflineQueue({ store, now: () => now });
+  const queueB = new WmsOfflineQueue({ store, now: () => now });
+  await queueA.enqueue(scope(), payload());
+
+  let announceFirst;
+  const firstStarted = new Promise((resolve) => { announceFirst = resolve; });
+  let finishFirst;
+  const firstResponse = new Promise((resolve) => { finishFirst = resolve; });
+  const firstFlush = queueA.flush(scope(), async (body) => {
+    announceFirst(body);
+    return firstResponse;
+  }, { claimLeaseMs: 10000, createClaimToken: () => "claim-tab-a" });
+
+  const firstBody = await firstStarted;
+  assert.equal(firstBody.transactions.length, 1);
+  assert.equal(firstBody.transactions[0].client_transaction_id, TX1);
+
+  let secondSendCount = 0;
+  const secondResult = await queueB.flush(scope(), async () => {
+    secondSendCount += 1;
+    return { results: [applied(TX1)] };
+  }, { claimLeaseMs: 10000, createClaimToken: () => "claim-tab-b" });
+
+  assert.equal(secondSendCount, 0);
+  assert.equal(secondResult.sentCount, 0);
+  assert.equal((await queueB.list(scope()))[0].syncClaimToken, "claim-tab-a");
+
+  finishFirst({ results: [applied(TX1)] });
+  const firstResult = await firstFlush;
+  assert.equal(firstResult.syncedCount, 1);
+  assert.equal((await queueA.list(scope())).length, 0);
+});
+
+test("expired claim can be reclaimed and a stale sync response cannot overwrite the new owner", async () => {
+  const store = new MemoryStore();
+  let clock = Date.parse("2026-10-26T00:00:00.000Z");
+  const queueA = new WmsOfflineQueue({ store, now: () => clock });
+  const queueB = new WmsOfflineQueue({ store, now: () => clock });
+  await queueA.enqueue(scope(), payload());
+
+  let announceFirst;
+  const firstStarted = new Promise((resolve) => { announceFirst = resolve; });
+  let finishFirst;
+  const firstResponse = new Promise((resolve) => { finishFirst = resolve; });
+  const firstFlush = queueA.flush(scope(), async () => {
+    announceFirst();
+    return firstResponse;
+  }, { claimLeaseMs: 1000, createClaimToken: () => "expired-owner" });
+  await firstStarted;
+
+  clock += 1001;
+  let announceSecond;
+  const secondStarted = new Promise((resolve) => { announceSecond = resolve; });
+  let finishSecond;
+  const secondResponse = new Promise((resolve) => { finishSecond = resolve; });
+  const secondFlush = queueB.flush(scope(), async () => {
+    announceSecond();
+    return secondResponse;
+  }, { claimLeaseMs: 1000, createClaimToken: () => "replacement-owner" });
+  await secondStarted;
+
+  finishFirst({ results: [applied(TX1)] });
+  const staleResult = await firstFlush;
+  assert.equal(staleResult.syncedCount, 0);
+  assert.equal((await queueA.list(scope()))[0].syncClaimToken, "replacement-owner");
+
+  finishSecond({ results: [applied(TX1)] });
+  const currentResult = await secondFlush;
+  assert.equal(currentResult.syncedCount, 1);
+  assert.equal((await queueA.list(scope())).length, 0);
 });
 
 function labelIssue(symbology = "QR", overrides = {}) {
