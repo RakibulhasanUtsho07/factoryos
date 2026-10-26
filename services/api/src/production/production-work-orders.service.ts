@@ -1446,13 +1446,8 @@ export class ProductionWorkOrdersService {
         startedAt = operation.started_at ?? null;
         activeStartedAt = null;
       }
-      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, clock_timestamp())' : '$6::timestamptz';
-      const activeAtExpression = nextStatus === 'IN_PROGRESS'
-        && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END')
-        ? 'clock_timestamp()'
-        : '$7::timestamptz';
-      const completedAtExpression = command === 'COMPLETE' ? 'clock_timestamp()' : '$8::timestamptz';
-      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'clock_timestamp()' : '$9::timestamptz';
+      const activateTimer = nextStatus === 'IN_PROGRESS'
+        && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END');
       const operationUpdate = await client.query<{
         row_version: number;
         started_at: string | null;
@@ -1465,10 +1460,14 @@ export class ProductionWorkOrdersService {
       }>(`
         UPDATE work_order_operations
         SET status = $1,
-            started_at = ${startedAtExpression},
-            active_started_at = ${activeAtExpression},
-            completed_at = ${completedAtExpression},
-            downtime_started_at = ${downtimeAtExpression},
+            started_at = CASE WHEN $13::text = 'START'
+              THEN COALESCE(started_at, clock_timestamp()) ELSE $6::timestamptz END,
+            active_started_at = CASE WHEN $14::boolean
+              THEN clock_timestamp() ELSE $7::timestamptz END,
+            completed_at = CASE WHEN $13::text = 'COMPLETE'
+              THEN clock_timestamp() ELSE $8::timestamptz END,
+            downtime_started_at = CASE WHEN $13::text = 'DOWNTIME_START'
+              THEN clock_timestamp() ELSE $9::timestamptz END,
             actual_run_minutes = ${actualRunExpression},
             downtime_minutes = ${downtimeExpression},
             wip_quantity = CASE WHEN $11::boolean THEN $12::numeric ELSE wip_quantity END,
@@ -1486,6 +1485,8 @@ export class ProductionWorkOrdersService {
         startedAt, activeStartedAt, completedAt, downtimeStartedAt, operation.row_version,
         ['WIP_REPORTED', 'WIP_TRANSFERRED'].includes(command) && wipSnapshotToSet !== null,
         wipSnapshotToSet,
+        command,
+        activateTimer,
       ]);
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
       payload.started_at = operationUpdate.rows[0].started_at;
