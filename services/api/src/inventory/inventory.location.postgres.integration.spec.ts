@@ -1954,7 +1954,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const productEnvelope = await productDefinitionsService.createProduct(
       userId, tenantId, fixture.factoryId,
       {
-        inventory_item_id: fixture.itemId, product_code: 'FG-E2E-' + suffix,
+        inventory_item_id: fixture.itemId, product_code: finishedItem.sku,
         product_name: 'Factory E2E Finished Good', product_type: 'STANDARD', base_unit: 'PCS',
       } as never,
       'factory-e2e-product-' + suffix, requestId, traceId,
@@ -2008,7 +2008,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         currency: 'BDT',
         lines: [{
           line_number: 1,
-          product_code: 'FG-E2E-' + suffix,
+          product_code: finishedItem.sku,
           product_name: 'Factory E2E Finished Good',
           quantity: 3,
           unit: 'PCS',
