@@ -109,6 +109,8 @@ From Actions, dispatch the workflow with target `staging` or `sandbox`, enter a 
 
 The policy-shape checker accepts only explicit `s3:GetObject` and `s3:PutObject` allow actions on the requested bucket/object prefix and rejects wildcard/bucket-wide/sibling-prefix grants plus list/delete actions. It prints a SHA-256 fingerprint and non-secret summary rather than the policy body. This is **shape-only**: it does not prove the exported policy is attached to the running identity, resolve bucket/session/organization/KMS policy interactions, or certify credential rotation/revocation.
 
+**Provider-format limitation:** the current checker expects an AWS-IAM-style identity policy document with S3 ARN resources. If the selected S3-compatible vendor uses a different native authorization format, do not convert it into AWS-shaped JSON and treat that conversion as certification. Attach the vendor-native policy export, add/run a provider-specific checker, and have the storage owner verify effective permissions against the deployed identity.
+
 The evidence safety guard fails if configured connector tokens/secrets appear in either artifact, if the policy shape does not pass, or if the smoke tries to upgrade the result to real-carrier certification. A successful workflow artifact therefore still explicitly records `carrier_sandbox_origin=NOT_PROVEN` and `storage_iam_least_privilege_review=NOT_VERIFIED_BY_SCRIPT`.
 
 ## Live carrier acceptance still needs provider-owned evidence
