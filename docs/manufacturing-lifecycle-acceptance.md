@@ -1,6 +1,6 @@
 # Manufacturing lifecycle cross-slice acceptance
 
-**Status: PARTIAL — a shared persisted order-to-genealogy integration scenario has been added, but it is not accepted until PostgreSQL CI passes; purchase receipt and quality disposition/rework are not yet in that same journey.**
+**Status: PARTIAL overall; persisted order-to-genealogy slice: PASS on exact commit `35bc20b29f5856f330417ad6afb0ad3756f844e3` (API CI and API PostgreSQL CI green; 1,716 tests passed, 2 skipped). The complete factory lifecycle remains partial because purchase receipt/GRN and quality disposition/rework are not yet in the same journey.**
 
 ## Scope
 
@@ -8,7 +8,7 @@ The targeted acceptance path connects these records through the real API service
 
 `sales order → approved product revision/BOM/routing → work order → material reservation and lot consumption → operation events → production output/inventory posting → output lot genealogy`.
 
-The scenario uses one order line, work order, reserved material lot, output report/posting and correlated genealogy evidence. It also checks that a production-linked sales order cannot be completed early, the same output idempotency key replays the original report/posting, and reusing that key with changed output quantities is rejected.
+The scenario uses one order line, work order, reserved material lot, output report/posting and correlated genealogy evidence. It physically puts the tracked raw-material lot away from the factory's default unassigned location into an enabled warehouse BIN before the work-order reservation, so the acceptance does not bypass the location/lot availability policy. It also checks that a production-linked sales order cannot be completed early, the same output idempotency key replays the original report/posting, and reusing that key with changed output quantities is rejected.
 
 Quantities remain four-decimal fixed-point. The final database assertions compare reservation consumption, reported versus posted good output, raw/finished stock balances and the material-to-output genealogy edge quantity.
 
@@ -20,7 +20,7 @@ Quantities remain four-decimal fixed-point. The final database assertions compar
 
 ## Remaining acceptance boundary
 
-Keep the lifecycle status **PARTIAL** until the new integration test has passed against the CI PostgreSQL database and its exact commit SHA has a green required check.
+The order-to-genealogy acceptance slice is **PASS** on exact commit `35bc20b29f5856f330417ad6afb0ad3756f844e3`: the new integration test passes against CI PostgreSQL and both API CI and API PostgreSQL CI are green on that SHA. Keep the *overall factory lifecycle* **PARTIAL** until the purchase-order/GRN stock-receipt path and required quality inspection, hold, disposition, rework and scrap are stitched into this same persisted journey.
 
 The new scenario intentionally covers the requested order/reservation/consumption/operations/output/genealogy slice; it does not yet stitch the purchase-order/GRN stock-receipt path or quality inspection, hold, disposition, rework and scrap into the same persisted journey. Those are still separately tested domain paths, and their presence in separate fixtures is not evidence that the complete factory lifecycle is end-to-end accepted.
 
