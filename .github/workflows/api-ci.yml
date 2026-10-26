@@ -6,6 +6,7 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'docs/ai-artifact-provenance-and-production-admission.md'
       - 'docs/ai-provider-live-release-acceptance.md'
+      - 'docs/wms-provider-certification.md'
       - 'services/api/**'
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
@@ -29,6 +30,7 @@ on:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'docs/ai-artifact-provenance-and-production-admission.md'
       - 'docs/ai-provider-live-release-acceptance.md'
+      - 'docs/wms-provider-certification.md'
       - 'services/api/**'
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
@@ -126,12 +128,17 @@ jobs:
           node --check scripts/integrations/wms-provider-certification.mjs
           node --check scripts/integrations/wms-provider-certification.test.mjs
           node --test scripts/integrations/wms-provider-certification.test.mjs
-      - name: Test strict POD storage IAM policy contract
+      - name: Test POD storage policy, evidence redaction, and live-workflow safety
         run: |
           node --check scripts/integrations/wms-storage-iam-policy-check.mjs
           node --check scripts/integrations/wms-storage-iam-policy-check.test.mjs
+          node --check scripts/integrations/wms-provider-evidence-safety-check.mjs
+          node --check scripts/integrations/wms-provider-evidence-safety-check.test.mjs
           node --check scripts/integrations/wms-provider-live-smoke.workflow.test.mjs
-          node --test scripts/integrations/wms-storage-iam-policy-check.test.mjs scripts/integrations/wms-provider-live-smoke.workflow.test.mjs
+          node --test \
+            scripts/integrations/wms-storage-iam-policy-check.test.mjs \
+            scripts/integrations/wms-provider-evidence-safety-check.test.mjs \
+            scripts/integrations/wms-provider-live-smoke.workflow.test.mjs
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
         run: |

@@ -416,6 +416,21 @@ jobs:
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/206_wms_recall_notification_acknowledgements.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f services/api/test/wms-recall-notification-ack.sql
 
+          echo "Reapplying make-to-order and scoped quality-hold migrations to verify idempotency"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/207_production_order_finished_good_reservation_boundary.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/208_wms_traceability_scoped_quality_holds.sql
+
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/212_quality_rework_genealogy_link_guard.sql
+
+          echo "Reapplying scoped quality/WMS guard migrations for early idempotency coverage"
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/212_quality_rework_genealogy_link_guard.sql
+
           # The target importer is tested against a distinct database with the same reviewed schema.
           psql "postgresql://postgres@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
             'CREATE DATABASE factoryos_transfer_target_test_ci'
@@ -695,6 +710,17 @@ jobs:
           echo "Reapplying sampling binding state guard migration to verify safe schema replay"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/167_quality_sampling_binding_state_guard.sql
+
+          # Migrations 165/166 redefine factoryos_quality_guard_inventory_issue().
+          # Therefore 207-212 must be replayed AFTER those legacy quality idempotency checks,
+          # otherwise the older item-wide issue guard silently overwrites the shipment leaf-scope fix. Migration 212 then governs verified rework lineage.
+          echo "Reapplying final make-to-order and shipment quality-hold guards after legacy quality migrations"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/207_production_order_finished_good_reservation_boundary.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/208_wms_traceability_scoped_quality_holds.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/212_quality_rework_genealogy_link_guard.sql
 
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
