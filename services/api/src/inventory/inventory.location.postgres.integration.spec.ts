@@ -2206,7 +2206,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id=$3) AS rework_event_count,
+          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id::text=$3::text) AS rework_event_count,
         (SELECT count(*)::int FROM outbox_events
           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
             AND aggregate_id=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
@@ -2251,7 +2251,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id=$3) AS rework_event_count,
+          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id::text=$3::text) AS rework_event_count,
         (SELECT count(*)::int FROM outbox_events
           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
             AND aggregate_id=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
