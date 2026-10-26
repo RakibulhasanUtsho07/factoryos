@@ -615,16 +615,16 @@ export class ProcurementService {
       }
       const update = await client.query<{ version: string }>(`
         UPDATE purchase_orders SET status = $1, updated_at = clock_timestamp(), version = version + 1,
-          submitted_by_user_id = CASE WHEN $1 = 'SUBMITTED' THEN $2::uuid ELSE submitted_by_user_id END,
-          submitted_at = CASE WHEN $1 = 'SUBMITTED' THEN clock_timestamp() ELSE submitted_at END,
-          approved_by_user_id = CASE WHEN $1 = 'APPROVED' THEN $2::uuid ELSE approved_by_user_id END,
-          approved_at = CASE WHEN $1 = 'APPROVED' THEN clock_timestamp() ELSE approved_at END,
-          rejected_by_user_id = CASE WHEN $1 = 'REJECTED' THEN $2::uuid ELSE rejected_by_user_id END,
-          rejected_at = CASE WHEN $1 = 'REJECTED' THEN clock_timestamp() ELSE rejected_at END,
-          rejection_reason = CASE WHEN $1 = 'REJECTED' THEN $3::text ELSE rejection_reason END,
-          cancelled_by_user_id = CASE WHEN $1 = 'CANCELLED' THEN $2::uuid ELSE cancelled_by_user_id END,
-          cancelled_at = CASE WHEN $1 = 'CANCELLED' THEN clock_timestamp() ELSE cancelled_at END,
-          cancellation_reason = CASE WHEN $1 = 'CANCELLED' THEN $3::text ELSE cancellation_reason END
+          submitted_by_user_id = CASE WHEN $1::text = 'SUBMITTED' THEN $2::uuid ELSE submitted_by_user_id END,
+          submitted_at = CASE WHEN $1::text = 'SUBMITTED' THEN clock_timestamp() ELSE submitted_at END,
+          approved_by_user_id = CASE WHEN $1::text = 'APPROVED' THEN $2::uuid ELSE approved_by_user_id END,
+          approved_at = CASE WHEN $1::text = 'APPROVED' THEN clock_timestamp() ELSE approved_at END,
+          rejected_by_user_id = CASE WHEN $1::text = 'REJECTED' THEN $2::uuid ELSE rejected_by_user_id END,
+          rejected_at = CASE WHEN $1::text = 'REJECTED' THEN clock_timestamp() ELSE rejected_at END,
+          rejection_reason = CASE WHEN $1::text = 'REJECTED' THEN $3::text ELSE rejection_reason END,
+          cancelled_by_user_id = CASE WHEN $1::text = 'CANCELLED' THEN $2::uuid ELSE cancelled_by_user_id END,
+          cancelled_at = CASE WHEN $1::text = 'CANCELLED' THEN clock_timestamp() ELSE cancelled_at END,
+          cancellation_reason = CASE WHEN $1::text = 'CANCELLED' THEN $3::text ELSE cancellation_reason END
         WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND version = $7
         RETURNING version::text AS version
       `, [targetStatus, userId, normalizedReason, purchaseOrderId, tenantId, factoryId, current.version]);
