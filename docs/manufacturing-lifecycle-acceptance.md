@@ -20,7 +20,7 @@ Quantities use four-decimal fixed point. Identical idempotency-key replays must 
 - A separate recovered lot requires follow-up inspection PASS and independent verification. Replaying the verification key must not post a duplicate movement.
 - The original quarantined lot stays held. Only the accepted recovered lot proceeds through put-away/pick, carton/pallet packing, order-bound shipment, delivery/POD evidence and recall.
 - The test injects a database failure during rework verification/output posting and compares the rework state/version, quality-event, audit/outbox counts and stock balance before retrying.
-- Item-level quality holds block all lots for an item; a traceability-unit hold blocks that unit only, so a separate accepted recovered lot with the same SKU can proceed while the original lot remains quarantined.
+- Item-level quality holds block all lots for an item; a traceability-unit hold blocks that unit only, so a separate accepted recovered lot with the same SKU can proceed while the original lot remains quarantined. This scope is consistent across the InventoryLocationService transfer path, WmsFulfillmentService packing/dispatch checks, and the database transfer, genealogy and packing guards.
 
 ### Zero-finished-stock make-to-order boundary
 
