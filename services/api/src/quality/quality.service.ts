@@ -692,7 +692,7 @@ export class QualityService {
         update=await client.query("UPDATE quality_rework_orders SET status='CANCELLED',row_version=row_version+1,cancelled_by_user_id=$1,cancelled_at=clock_timestamp(),cancellation_reason=$2,completed_by_user_id=NULL,completed_at=NULL,completion_reason=NULL,recovered_quantity=0,scrap_quantity=0,output_traceability_unit_id=NULL,follow_up_inspection_id=NULL,verified_by_user_id=NULL,verified_at=NULL,verification_reason=NULL,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",[c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
       }else throw new BadRequestException('Unsupported rework transition');
       const version=Number(update.rows[0]?.row_version??0);if(!version)throw new ConflictException('Rework task changed during transition');
-      await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action,reason,evidence,
+      await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action==='VERIFY'?(to==='VERIFIED'?'VERIFY_PASS':'VERIFY_FAIL'):dto.action,reason,evidence,
         payload:{input_quantity:r.input_quantity,recovered_quantity:recovered,scrap_quantity:scrap,output_traceability_unit_id:outputId,follow_up_inspection_id:followupId},
         key,hash,correlation});
       if (dto.action==='CANCEL' && ['IN_PROGRESS','REWORK_REQUIRED'].includes(from) && r.source_inventory_item_id) {
