@@ -2400,6 +2400,22 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       } as never,
       'factory-e2e-quality-rework-complete-' + suffix,
     );
+    // A quarantined source and ACTIVE recovered lot alone must not authorize
+    // a REWORKED_INTO edge; it stays blocked until the specific rework is VERIFIED
+    // by another actor and the follow-up inspection is PASSED.
+    await expect(traceabilityService.recordGenealogyEvent(
+      userId, tenantId, fixture.factoryId,
+      {
+        source_unit_id: quarantinedSourceUnitId,
+        target_unit_id: recoveredUnit.id,
+        relationship_type: 'REWORKED_INTO',
+        quantity: 2,
+        notes: 'Negative acceptance: rework is completed but not yet verified',
+        evidence: { rework_order_id: reworkOrder.id },
+      } as never,
+      'factory-e2e-rework-genealogy-premature-' + suffix, requestId, traceId,
+    )).rejects.toThrow(/REWORKED_INTO requires matching VERIFIED rework and passed follow-up inspection/i);
+
     let followUp = await qualityService.decideInspection(
       qualityContext, followUpInspection.id,
       { expected_version: Number(followUpInspection.row_version), action: 'START' } as never,
