@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -248,7 +248,7 @@ export async function runProviderCertification({
   env = process.env,
   fetcher = globalThis.fetch,
   now = () => new Date(),
-  uuid = () => crypto.randomUUID(),
+  uuid = () => randomUUID(),
   writeEvidence = defaultWriteEvidence,
 } = {}) {
   const config = readCertificationConfig(env);
