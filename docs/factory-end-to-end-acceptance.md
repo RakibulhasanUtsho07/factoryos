@@ -9,8 +9,9 @@ The integration scenario in `services/api/src/inventory/inventory.location.postg
 1. Active supplier → purchase order submission and maker/checker approval → posted GRN and accepted quantity.
 2. Material lot linked to the posted GRN line → active finished-good product → effective-dated product revision, BOM and routing approval.
 3. Production work order → material reservation from location/lot → operation start and finished-good output posting → material consumption and genealogy event(s).
-4. Reverse trace from finished output back to the received material lot, forward trace from the material lot, and negative cross-tenant read tests.
-5. Finished-good put-away into a directed BIN → explicit PICK to a staging location → carton packing → carton-in-pallet packing and sealing → order-line-bound pallet shipment → order-line-bound shipment and delivery/POD flow → recall impact/declaration, lifecycle label checks and durable recall-notification acknowledgement.
+4. The same persisted finished-good source lot enters INVENTORY inspection, records a defect, is put ON_HOLD with an ACTIVE quality hold/quarantine, receives a REWORK disposition, and has its quarantined input consumed by a rework order. Completion records 3.0000 input = 2.0000 recovered + 1.0000 scrap, creates a separate recovered traceability lot, requires a follow-up inspection PASS and a different verifier, and proves exact-key replay does not post a second stock movement. The quarantined source lot must not be packed or shipped.
+5. Reverse trace from the original finished output back to the received material lot, forward trace from the material lot, quality defect/rework links, and negative cross-tenant read tests.
+6. The separately verified recovered lot—not the held source lot—moves through put-away, pick, carton/pallet packing, shipment/POD and recall lifecycle.
 
 The existing WMS portion still injects a test storage verifier for POD digest confirmation. It tests the application flow, not a live storage provider. CI must run the PostgreSQL suite on the exact PR head before the code journey can be marked passing.
 
@@ -18,7 +19,8 @@ The existing WMS portion still injects a test storage verifier for POD digest co
 
 - [ ] Exact PR head passes API CI, PostgreSQL integration CI, production dependency security, and SRS/HLD/Blueprint traceability workflows.
 - [ ] The integration output confirms GRN accepted quantity, work-order material reservations consumed exactly once, posted finished-good output, and persisted reverse/forward genealogy.
-- [ ] The same finished-good traceability identity moves through `PUT_AWAY` and `PICK` movements with source/destination quantities checked and the pick persisted before carton packing.
+- [ ] The quality inspection, hold/quarantine, REWORK disposition, rework input/output movements, 2.0000 recovered plus 1.0000 scrap, follow-up PASS, independent verification and idempotent verification replay are persisted and asserted. The source lot remains held and is never shipped.
+- [ ] Only the separately accepted recovered lot moves through `PUT_AWAY` and `PICK` with source/destination quantities checked and the pick persisted before carton packing.
 - [ ] The carton is sealed, packed into a sealed pallet, and the pallet (not the inner carton) is bound to the customer order line and dispatched; recall impact reaches both package identities.
 - [ ] Cross-tenant access to the finished lot and work order fails closed.
 - [ ] Shipment matches the exact customer order line; POD digest verification is asserted; recall reaches the material lot, finished lot, carton/pallet and shipment as expected; notification acknowledgement is persisted.
@@ -37,9 +39,15 @@ The following maps the shared journey to the authoritative requirement IDs in [t
 | `FR-WMS-08` — forward trace | Material lot forward trace reaches the production output; recall impact carries the downstream order/shipment context | Sector-specific genealogy, every material/quality relationship and external customer confirmation still need their own evidence. |
 | `FR-WMS-09` — reverse trace | Finished output reverse trace reaches the GRN-linked raw material lot; relationship and cross-tenant negative assertions are checked | Broader retention policy and production-site acceptance remain separate release gates. |
 | `FR-LOG-01` — carrier/shipment delivery state | Shipment binds customer/order line, carrier and tracking reference; delivery events/POD metadata, digest-verifier contract, replay and recall context are asserted | The journey uses a mocked storage-verifier dependency and manual delivery service contract; it is not a real carrier sandbox or cloud-storage certification. |
-| Manufacturing lifecycle acceptance (task 14; no normative SRS ID assigned in the evidence register) | One PostgreSQL flow joins PO/GRN, effective product revision/BOM/routing, work order, operations/output, material consumption, genealogy, put-away/pick, carton/pallet shipment, POD and recall acknowledgement | Quality inspection/hold/disposition/rework/scrap plus failure-injection rollback in this same flow, and authorized site/quality owner sign-off, remain open. |
+| Manufacturing lifecycle acceptance (task 14; no normative SRS ID assigned in the evidence register) | One PostgreSQL flow joins PO/GRN, effective product revision/BOM/routing, work order, operations/output, material consumption, genealogy, quality inspection/hold/disposition/rework/scrap, recovered output, put-away/pick, carton/pallet shipment, POD and recall acknowledgement | A fault injected after a partial multi-table write (not just rejection of an invalid request) plus authorized site/quality owner sign-off remain open. |
 
 **Traceability rule:** the automated SRS/HLD/Blueprint audit workflow must pass on this exact PR head, but its green result validates source-ID / evidence-register consistency; it does not certify external hardware, provider accounts, customer delivery, or a named factory signatory.
+
+## Quality lifecycle evidence in the shared persisted journey
+
+The shared PostgreSQL test now uses the work-order output identity as the inspection and hold source. It persists a quality defect and ACTIVE hold, applies REWORK disposition, consumes the quarantined source lot, records the 3.0000 = 2.0000 recovered + 1.0000 scrap split, and creates a separate recovered traceability lot. That recovered lot must pass follow-up inspection and be independently verified before its stock receipt is accepted. Replaying the same verification key must return the prior terminal result without adding another movement. Downstream put-away, pick, packing, shipment and POD use only the recovered lot; the original lot remains quarantined.
+
+An invalid recovered/scrap split is rejected before completion; the test asserts the rework order stays IN_PROGRESS and no output movement is posted. This verifies rejected-transition safety, not a simulated fault after one table has already been mutated. A post-write failure-injection/rollback evidence run remains open.
 
 ## Live storage and carrier exit criteria
 
@@ -54,7 +62,7 @@ Attach separate evidence for:
 
 ## Remaining acceptance gates
 
-- [ ] Same-identifier quality inspection and hold/disposition/rework/scrap path with stock and genealogy reconciliation; replay-without-duplicate-stock and injected-failure rollback in the shared journey.
+- [ ] Inject a failure after partial persistence in the quality/rework or downstream WMS flow and prove quality state, stock movements/balances, genealogy, audit and outbox all roll back together. The invalid-split guard above does not close this post-write fault-injection gate.
 - [ ] Physical barcode/QR/mobile offline and RFID hardware-in-the-loop evidence where those devices are in the release scope.
 - [ ] SRS traceability matrix exported for the release commit; every exception remains explicitly marked, never silently set to PASS.
 - [ ] Final merge-SHA workflow result is visible and green after promotion. PR-head success does not establish that a push-triggered post-merge workflow ran.
