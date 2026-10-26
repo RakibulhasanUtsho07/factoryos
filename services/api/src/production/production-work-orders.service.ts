@@ -1054,7 +1054,7 @@ export class ProductionWorkOrdersService {
             row_version = row_version + 1,
             updated_by_user_id = $2,
             updated_at = clock_timestamp(),
-            hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END,
+            hold_reason = CASE WHEN $1::varchar = 'ON_HOLD' THEN $3 ELSE NULL END,
             released_by_user_id = CASE WHEN $4 THEN $2 ELSE released_by_user_id END,
             released_at = CASE WHEN $4 THEN clock_timestamp() ELSE released_at END,
             completed_at = CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END,
