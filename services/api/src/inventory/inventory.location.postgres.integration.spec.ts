@@ -2520,6 +2520,27 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(replayedReworkVerification.replayed).toBe(true);
 
+    const persistedReworkGenealogy = await adminPool.query<{
+      relationship_type: string; quantity: string; unit: string; audit_count: number; outbox_count: number;
+    }>(
+      `SELECT e.relationship_type,e.quantity::text AS quantity,e.unit,
+        (SELECT count(*)::int FROM audit_events a
+          WHERE a.tenant_id=e.tenant_id AND a.factory_id=e.factory_id
+            AND a.resource_type='PRODUCT_GENEALOGY_EVENT' AND a.resource_id=e.id AND a.action='RECORDED') AS audit_count,
+        (SELECT count(*)::int FROM outbox_events o
+          WHERE o.tenant_id=e.tenant_id AND o.factory_id=e.factory_id
+            AND o.aggregate_type='PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id=e.id
+            AND o.event_type='TRACEABILITY.GENEALOGY_RECORDED') AS outbox_count
+       FROM product_genealogy_events e
+       WHERE e.tenant_id=$1 AND e.factory_id=$2 AND e.source_unit_id=$3 AND e.target_unit_id=$4
+         AND e.relationship_type='REWORKED_INTO'
+         AND e.idempotency_key=$5`,
+      [tenantId, fixture.factoryId, quarantinedSourceUnitId, recoveredUnit.id, 'quality-rework-genealogy:' + reworkOrder.id],
+    );
+    expect(persistedReworkGenealogy.rows).toEqual([{
+      relationship_type: 'REWORKED_INTO', quantity: '2.0000', unit: 'PCS', audit_count: 1, outbox_count: 1,
+    }]);
+
     const persistedDefectTrace = await qualityService.getDefectTraceability(qualityContext, sourceDefect.id);
     expect(persistedDefectTrace.links).toEqual(expect.arrayContaining([
       expect.objectContaining({
