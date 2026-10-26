@@ -1742,7 +1742,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     )).rejects.toThrow(/not found in this factory/i);
   });
 
-  it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
+  it('runs GRN-to-work-order output through put-away, shipment POD, recall and reverse genealogy', async () => {
     // The journey begins with no finished goods. The lot shipped below is
     // created only by the approved BOM/routing work-order output transaction.
     const fixture = await createStockFixture('0.0000');
