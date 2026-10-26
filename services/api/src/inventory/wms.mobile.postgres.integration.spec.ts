@@ -632,7 +632,7 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       session_id: randomUUID(),
       item_id: itemId,
       location_id: locationId,
-      reads: [rfidEpc, rfidEpc, rfidEpc],
+      reads: [rfidEpc, rfidEpc.toLowerCase(), rfidEpc],
     };
     const rfidKey = 'mobile-rfid-' + randomUUID();
     const reconciled = await mobileService.ingestRfidReadBatch(
@@ -648,6 +648,15 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       excluded_tag_count: 0,
       replayed: false,
     });
+    expect(reconciled.observations).toEqual([
+      expect.objectContaining({
+        epc: rfidEpc,
+        traceability_unit_id: lot.id,
+        observed_quantity: '3.0000',
+        duplicate_read_count: 2,
+        disposition: 'MATCHED',
+      }),
+    ]);
     const rfidReplay = await mobileService.ingestRfidReadBatch(
       TEST_USER_ID, tenantId, factoryId, rfidBatch, rfidKey, null, correlation(),
     );
@@ -666,5 +675,48 @@ postgresDescribe('WMS mobile offline sync, labels, genealogy and RFID PostgreSQL
       reconciliation_status: 'VARIANCE',
       excluded_tag_count: 1,
     });
+    expect(variance.observations).toEqual([
+      expect.objectContaining({
+        disposition: 'UNKNOWN_TAG',
+        traceability_unit_id: null,
+        observed_quantity: '0.0000',
+      }),
+    ]);
+
+    const otherItemId = await createItem('1.0000');
+    const wrongItemEpc = 'E280-WRONG-' + randomUUID().slice(0, 10).toUpperCase();
+    await createUnit({
+      unitType: 'LOT', productRole: 'MATERIAL',
+      code: 'RFID-WRONG-ITEM-' + randomUUID().slice(0, 8),
+      barcode: 'QR-RFID-WRONG-' + randomUUID().slice(0, 8),
+      itemId: otherItemId, quantity: 1, rfidEpc: wrongItemEpc,
+    });
+    const wrongItemBatch: CreateRfidReadBatchDto = {
+      ...rfidBatch,
+      session_id: randomUUID(),
+      reads: [wrongItemEpc],
+    };
+    const wrongItem = await mobileService.ingestRfidReadBatch(
+      TEST_USER_ID, tenantId, factoryId, wrongItemBatch,
+      'mobile-rfid-wrong-item-' + randomUUID(), null, correlation(),
+    );
+    expect(wrongItem).toMatchObject({
+      expected_quantity: '3.0000',
+      observed_quantity: '0.0000',
+      variance_quantity: '-3.0000',
+      reconciliation_status: 'VARIANCE',
+      matched_tag_count: 0,
+      excluded_tag_count: 1,
+    });
+    expect(wrongItem.observations[0]).toMatchObject({
+      epc: wrongItemEpc,
+      disposition: 'WRONG_ITEM',
+      observed_quantity: '0.0000',
+    });
+    const stockAfterRfidReconciliation = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE item_id = $1',
+      [itemId],
+    );
+    expect(stockAfterRfidReconciliation.rows[0]?.quantity_on_hand).toBe('3.0000');
   });
 });
