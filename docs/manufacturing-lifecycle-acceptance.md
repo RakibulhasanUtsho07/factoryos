@@ -19,6 +19,7 @@ The scenario uses one tenant/factory and connected persisted identities:
 1. **GRN provenance and incoming quality:** supplier and approved PO → posted GRN → traceability lot tied to the exact supplier, GRN header, GRN line and accepted quantity. A supplier inspection HOLD is persisted against the received line, and work-order release is asserted to fail while that hold is active. A recorded RELEASE disposition removes the hold before the same work order can be released.
 2. **Make-to-order guard:** a draft sales order line is created with zero finished-good stock. The work order is planned before confirmation. Order confirmation is asserted to leave finished-good on-hand/reserved quantities at `0.0000` and create zero `ORDER_LINE` reservations. The work-order BOM reservation is the material allocation boundary.
 3. **Production and genealogy:** the exact GRN-linked material lot is consumed once by the released work order; operation events, output posting and the material-to-output genealogy connect to the same sales order/work order.
+   The output idempotency test confirms an identical key returns the original production-report/output-posting IDs; a changed-payload reuse is rejected and a persisted query confirms exactly one production report and one output posting remain for the work order.
 4. **Quality/rework:** the output lot is inspected, defected, held and quarantined; REWORK consumes `3.0000` source units and records exactly `2.0000` recovered plus `1.0000` scrap. The recovered lot is separately identified, requires follow-up inspection PASS and an independent verifier. Verification replay does not create a duplicate movement.
 5. **WMS shipment:** only the separately accepted recovered lot proceeds through put-away/pick, carton/pallet packing, order-line-bound shipment, delivery/POD and recall. Shipment persistence must reference the same sales `order_id` and `order_line_id` created for the make-to-order flow; the quarantined source identity is never packed or shipped.
 6. **Failure and isolation:** injected failure during rework verification/output posting compares rework state/version, quality-event, audit/outbox counts and stock balances to prove rollback. Cross-tenant reads fail closed.
@@ -56,7 +57,7 @@ The forecast/planning APIs must remain non-committing: planning must not create 
 
 ## Useful evidence
 
-- `services/api/src/inventory/inventory.location.postgres.integration.spec.ts`
+- `services/api/src/inventory/inventory.location.postgres.integration.spec.ts` (including tenant cleanup of `order_idempotency_keys` so failed assertions do not leave the test tenant undeletable)
 - `services/api/test/manufacturing-lifecycle-acceptance.sql`
 - `.github/workflows/api-postgres-ci.yml`
 - `scripts/audit/migration-manifest.txt`
