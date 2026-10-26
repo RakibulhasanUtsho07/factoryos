@@ -68,3 +68,25 @@ Record each actual run with site, date/time, operator, hardware model and firmwa
 ## Third-party source notices
 
 The offline QR encoder is based on qrcode-generator by Kazuhiko Arase and retains its MIT license in apps/web/src/lib/vendor/qrcode-generator-LICENSE.txt. The Code 128 pattern table is derived from the MIT-licensed JsBarcode implementation by Johan Lindell; the license is retained in apps/web/src/lib/vendor/JsBarcode-MIT-LICENSE.txt.
+
+
+## Physical hardware acceptance evidence bundle validator
+
+The checklist above remains **OPEN** until the selected site has run the target devices and an authorized owner has reviewed the evidence. To reduce incomplete or wrongly promoted evidence packs, the repository now includes:
+
+- \`apps/web/src/lib/wms-hardware-acceptance.mjs\`
+- \`apps/web/src/lib/wms-hardware-acceptance.test.mjs\`
+
+Run the validator from an approved, access-controlled evidence workspace:
+
+    node apps/web/src/lib/wms-hardware-acceptance.mjs --manifest "C:\secure-evidence\wms-hil-manifest.json" --evidence-root "C:\secure-evidence\attachments" --release-sha "<exact-tested-release-sha>"
+
+Use manifest schema \`factoryos.wms.hardware-acceptance/v1\`. Its \`release_sha\` and each owner approval must match the exact tested candidate release. \`scope.offline_mobile\` and \`scope.label_print_scan\` are mandatory for this WMS acceptance bundle. RFID can be included with the physical reader tests, or excluded only with a written reason confirming it is outside the approved release scope.
+
+Every in-scope scenario must be marked \`PHYSICAL_HARDWARE\` and PASS. Required scenario IDs cover airplane-mode queue/reload/reconnect, lost response/duplicate tap/retry, cross-tab and cross-device sync, server conflict and receipt reconciliation, physical QR/Code 128 print-and-scan, damaged/stale-label handling, lifecycle reprint, and (when RFID is in scope) EPC repeat/dedup/unknown tags, wrong/ineligible tags, quantity reconciliation and RF burst/disconnect/reconnect.
+
+The evidence pack needs real target asset IDs and manufacturer/model/firmware/OS/browser or printer/scanner interface settings, plus attachments tied to the test scenarios. Required attachments include screen recordings, API sync receipts, stock-ledger reconciliation, actual printed-label photos, scanner decode logs, printer settings and, if RFID is in scope, reader logs, EPC/stock reconciliation and RF-burst/reconnect logs. Every attachment's SHA-256 is recalculated from the local file; path traversal, symlinks, missing/empty/oversized files, hash mismatches and secret-bearing manifest field names fail validation.
+
+Three distinct owners must approve the same release SHA: \`wms_process_owner\`, \`device_security_owner\`, and \`site_owner\`. When RFID is in scope, an additional distinct \`rfid_specialist\` approval is required. If the field run uses production, the manifest must also record explicit authorization for production side effects and its approval reference.
+
+**Interpretation:** \`PASS_PHYSICAL_HARDWARE_ACCEPTANCE_BUNDLE\` confirms manifest completeness, exact-release binding, required physical scenario declarations, attachment integrity and owner-approval coverage. It does not prove that a submitted video/log is genuine. Do not change a scenario from simulator to physical merely to satisfy the schema. An authorized site/device owner must inspect the original recordings/logs and sign off independently. Automated Node tests use fixtures only and do not count as hardware-in-the-loop evidence; no actual handheld, printer, scanner or RFID reader was available to the software validation run.
