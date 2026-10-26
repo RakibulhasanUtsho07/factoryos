@@ -2219,14 +2219,14 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     await adminPool.query(`
       CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
-      RETURNS trigger LANGUAGE plpgsql AS $
+      RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.reference_type = 'QUALITY_REWORK_OUTPUT' THEN
           RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_OUTPUT_FAILURE';
         END IF;
         RETURN NEW;
       END;
-      $;
+      $$;
     `);
     await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
     await adminPool.query(`
