@@ -187,13 +187,13 @@ function validateUpload(upload, config) {
   return { proofReference: upload.proof_reference, proofSha256: upload.proof_sha256, byteLength: upload.byte_length };
 }
 
-function buildEnvelope(config, upload, now) {
+function buildEnvelope(config, upload, now, uuid) {
   const eventAt = now();
   const signedAt = new Date(eventAt.getTime() - 1000);
   return {
     event_type: 'WMS.SHIPMENT_DELIVERY',
     schema_version: config.schemaVersion,
-    correlation_id: 'wms-cert-' + config.shipmentUnitId,
+    correlation_id: uuid(),
     payload: {
       carrier_name: config.carrierName,
       tracking_reference: config.trackingReference,
@@ -332,7 +332,7 @@ export async function runProviderCertification({
     delete_permission_checked: false,
   };
 
-  const envelope = buildEnvelope(config, uploadEvidence, now);
+  const envelope = buildEnvelope(config, uploadEvidence, now, uuid);
   const eventId = 'wms-cert-' + uuid().replace(/-/g, '');
   const invalidSignatureBody = Buffer.from(JSON.stringify(envelope), 'utf8');
   const invalidTimestamp = String(Math.floor(now().getTime() / 1000));
