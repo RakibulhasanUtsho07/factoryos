@@ -156,6 +156,8 @@ test('configured-provider smoke proves storage read-back, authorization, signatu
   const replayWebhook = requests[6];
   const conflictWebhook = requests[7];
   assert.equal(firstWebhook.url, 'https://factoryos-staging.example.test/api/integrations/webhooks/' + CONNECTOR_ID);
+  const firstEnvelope = JSON.parse(Buffer.from(firstWebhook.options.body).toString());
+  assert.match(firstEnvelope.correlation_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   assert.equal(Buffer.from(firstWebhook.options.body).toString(), Buffer.from(replayWebhook.options.body).toString());
   assert.notEqual(
     firstWebhook.options.headers['X-FactoryOS-Timestamp'],
