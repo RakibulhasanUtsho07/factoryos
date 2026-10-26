@@ -311,8 +311,8 @@ export class ProductionWorkOrdersService {
       `, [tenantId, factoryId, dto.order_line_id, plannedStart]);
       const source = sourceResult.rows[0];
       if (!source) throw new NotFoundException('Sales order line was not found in this factory');
-      if (!['CONFIRMED', 'IN_PROGRESS'].includes(source.order_status)) {
-        throw new ConflictException('A work order can only be planned for a confirmed or in-progress sales order');
+      if (!['DRAFT', 'CONFIRMED', 'IN_PROGRESS'].includes(source.order_status)) {
+        throw new ConflictException('A work order can only be planned for a draft, confirmed or in-progress sales order');
       }
       if (!source.finished_item_id) {
         throw new ConflictException('Bind the sales order line to an inventory finished-good item before creating production work');
@@ -1050,11 +1050,11 @@ export class ProductionWorkOrdersService {
       }
       const update = await client.query<{ id: string; row_version: number }>(`
         UPDATE work_orders
-        SET status = $1,
+        SET status = $1::varchar(24),
             row_version = row_version + 1,
             updated_by_user_id = $2,
             updated_at = clock_timestamp(),
-            hold_reason = CASE WHEN $11 THEN $3 ELSE NULL END,
+            hold_reason = CASE WHEN $11::boolean THEN $3 ELSE NULL END,
             released_by_user_id = CASE WHEN $4 THEN $2 ELSE released_by_user_id END,
             released_at = CASE WHEN $4 THEN clock_timestamp() ELSE released_at END,
             completed_at = CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END,
@@ -1527,7 +1527,7 @@ export class ProductionWorkOrdersService {
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
           UPDATE work_orders
-          SET status = $1, row_version = row_version + 1,
+          SET status = $1::varchar(24), row_version = row_version + 1,
               updated_by_user_id = $2, updated_at = clock_timestamp(),
               hold_reason = CASE WHEN $8::boolean THEN $3 ELSE NULL END
           WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND row_version = $7
