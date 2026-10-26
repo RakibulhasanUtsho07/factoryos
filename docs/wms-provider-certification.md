@@ -83,3 +83,20 @@ Capture all of the following as separate provider/site evidence; do not infer th
 | Independent sign-off | Storage/security owner, carrier integration owner and WMS process owner sign the evidence pack; record unresolved provider limitations explicitly. |
 
 If the chosen carrier signs webhooks in a provider-specific format rather than the FactoryOS timestamp/event-ID/raw-body HMAC contract, do not disable signature checks or reuse a secret across trust domains. Implement and test a dedicated verified adapter first. Carrier certification stays **OPEN** until the real provider-originated callback and retry evidence, storage/IAM review and named approvals are present.
+
+
+## Protected GitHub Actions staging/sandbox run
+
+The repository also has a manual workflow at `.github/workflows/wms-provider-live-smoke.yml`. It is intentionally named a *smoke* workflow: it executes the same configured storage PUT/independent GET digest checks, authorization denials, invalid-signature rejection, synthetic FactoryOS-HMAC callback, idempotent replay and conflicting replay tests. It does **not** turn a synthetic callback into carrier-origin certification.
+
+Before dispatching it, a repository administrator must:
+
+1. Promote this workflow to the repository's default branch so GitHub exposes `workflow_dispatch`; then select the `rakibul-hasan` ref when launching it.
+2. Create the GitHub Environment named `wms-certification`, require approval from the storage/security or release owner, and restrict deployments to the intended protected branch. The workflow references the environment, but required reviewers and branch restrictions are repository settings and must be configured by an administrator.
+3. Set the environment variable `FACTORYOS_CERT_API_ORIGIN` to the approved non-production API origin. Its hostname must visibly contain a `staging` or `sandbox` segment; ambiguous hostnames are rejected by the harness. Confirm independently that the hostname does not route to production.
+4. Add only short-lived, least-privilege environment secrets: `FACTORYOS_CERT_WEBHOOK_SECRET`, `FACTORYOS_CERT_BEARER_TOKEN`, and `FACTORYOS_CERT_READONLY_BEARER_TOKEN`. The read-only token must be allowed to read connector configuration but not upload PODs; the writer token must be factory-scoped. Use a dedicated connector and a dedicated already-dispatched sandbox shipment.
+5. Launch **Actions → WMS configured storage and webhook receiver smoke** with `target_environment` set to `staging` or `sandbox`, type `YES` in `confirm_side_effects`, and supply the connector/shipment IDs, exact carrier name/tracking reference, provider labels, site and operator/ticket ID. Do not use a customer shipment or production credential.
+
+On successful completion, the workflow re-checks that the evidence JSON does not contain the configured secrets, verifies that the result retains the external-carrier limitation, and uploads only that JSON artifact for 30 days. The upload step is skipped if the smoke or redaction check fails. A failed attempt is not a certification result.
+
+The workflow does not have access to carrier-native sandbox credentials, does not ask the carrier platform to emit a genuine callback, does not prove provider-side retry delivery, and cannot inspect or test storage IAM list/delete permissions or credential rotation. Complete the provider-owned evidence table above independently. **Do not close the external certification gate solely because this workflow passed.**
