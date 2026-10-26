@@ -2053,6 +2053,28 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-order-pod-seal-' + randomUUID(), requestId, traceId,
     );
 
+    const pallet = await fulfillmentService.createContainer(
+      userId, tenantId, fixture.factoryId,
+      {
+        container_type: 'PALLET',
+        container_code: 'PALLET-ORDER-POD-' + randomUUID().slice(0, 8),
+        item_id: fixture.itemId,
+        location_id: pickStaging.id,
+        capacity_quantity: 2,
+      },
+      'wms-order-pod-pallet-create-' + randomUUID(), requestId, traceId,
+    );
+    const palletId = pallet.container.container_unit_id as string;
+    await fulfillmentService.addContent(
+      userId, tenantId, fixture.factoryId, palletId,
+      { source_unit_id: cartonId, quantity: 2 },
+      'wms-order-pod-pallet-content-' + randomUUID(), requestId, traceId,
+    );
+    await fulfillmentService.sealContainer(
+      userId, tenantId, fixture.factoryId, palletId,
+      'wms-order-pod-pallet-seal-' + randomUUID(), requestId, traceId,
+    );
+
     const itemResult = await adminPool.query<{ sku: string; name: string; unit: string }>(
       `SELECT sku, name, unit FROM inventory_items
        WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
@@ -2088,7 +2110,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       order_id: tooSmallOrder.orderId, order_line_id: tooSmallOrder.orderLineId,
     };
     await expect(fulfillmentService.dispatchContainer(
-      userId, tenantId, fixture.factoryId, cartonId, tooSmallPayload,
+      userId, tenantId, fixture.factoryId, palletId, tooSmallPayload,
       'wms-order-pod-overship-' + randomUUID(), requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
     const balanceAfterRejectedOrder = await readAggregate(fixture.factoryId, fixture.itemId);
@@ -2103,7 +2125,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
     };
     await expect(fulfillmentService.dispatchContainer(
-      userId, tenantId, fixture.factoryId, cartonId, invalidCustomerPayload,
+      userId, tenantId, fixture.factoryId, palletId, invalidCustomerPayload,
       'wms-order-pod-customer-mismatch-' + randomUUID(), requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
 
@@ -2115,7 +2137,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       tracking_reference: 'ACME-TRACK-' + randomUUID().slice(0, 8),
     };
     const dispatch = await fulfillmentService.dispatchContainer(
-      userId, tenantId, fixture.factoryId, cartonId, payload,
+      userId, tenantId, fixture.factoryId, palletId, payload,
       'wms-order-pod-dispatch-' + randomUUID(), requestId, traceId,
     );
     expect(dispatch).toMatchObject({
@@ -2240,9 +2262,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId, materialLot.id, 12, 200,
     );
     expect(impact.affected_shipment_count).toBe(1);
+    expect(impact.impacted_units.map((unit: { id: string }) => unit.id)).toEqual(expect.arrayContaining([cartonId, palletId]));
     expect(impact.affected_shipments[0]).toMatchObject({
       shipment_unit_id: dispatch.shipment.shipment_unit_id,
-      container_unit_id: cartonId,
+      container_unit_id: palletId,
       order_id: validOrder.orderId,
       order_line_id: validOrder.orderLineId,
       carrier_name: payload.carrier_name,
@@ -2269,6 +2292,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const recallActions = new Map(recall.units.map((row: { unit_id: string; unit_action: string }) => [row.unit_id, row.unit_action]));
     expect(recallActions.get(finishedLot.id)).toBe('RECALLED');
     expect(recallActions.get(cartonId)).toBe('SHIPPED_REVIEW_REQUIRED');
+    expect(recallActions.get(palletId)).toBe('SHIPPED_REVIEW_REQUIRED');
     expect(recallActions.get(dispatch.shipment.shipment_unit_id)).toBe('SHIPPED_REVIEW_REQUIRED');
 
     const labelAfterRecall = await traceabilityService.issueLabel(
@@ -2293,12 +2317,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const persistedLifecycle = await adminPool.query<{ id: string; status: string }>(
       `SELECT id::text AS id, status FROM traceability_units
        WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
-      [tenantId, fixture.factoryId, [materialLot.id, finishedLot.id, cartonId, dispatch.shipment.shipment_unit_id]],
+      [tenantId, fixture.factoryId, [materialLot.id, finishedLot.id, cartonId, palletId, dispatch.shipment.shipment_unit_id]],
     );
-    expect(persistedLifecycle.rows).toHaveLength(4);
+    expect(persistedLifecycle.rows).toHaveLength(5);
     expect(persistedLifecycle.rows.find((row) => row.id === materialLot.id)?.status).toBe('RECALLED');
     expect(persistedLifecycle.rows.find((row) => row.id === finishedLot.id)?.status).toBe('RECALLED');
     expect(persistedLifecycle.rows.find((row) => row.id === cartonId)?.status).toBe('SHIPPED');
+    expect(persistedLifecycle.rows.find((row) => row.id === palletId)?.status).toBe('SHIPPED');
     expect(persistedLifecycle.rows.find((row) => row.id === dispatch.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
     const stockAfterRecall = await readAggregate(fixture.factoryId, fixture.itemId);
     const binsAfterRecall = await readBinTotals(fixture.factoryId, fixture.itemId);

@@ -10,7 +10,7 @@ The integration scenario in `services/api/src/inventory/inventory.location.postg
 2. Material lot linked to the posted GRN line → active finished-good product → effective-dated product revision, BOM and routing approval.
 3. Production work order → material reservation from location/lot → operation start and finished-good output posting → material consumption and genealogy event(s).
 4. Reverse trace from finished output back to the received material lot, forward trace from the material lot, and negative cross-tenant read tests.
-5. Finished-good put-away into a directed BIN → explicit PICK to a staging location → carton/pallet packing at the pick staging location → order-line-bound shipment and delivery/POD flow → recall impact/declaration, lifecycle label checks and durable recall-notification acknowledgement.
+5. Finished-good put-away into a directed BIN → explicit PICK to a staging location → carton packing → carton-in-pallet packing and sealing → order-line-bound pallet shipment → order-line-bound shipment and delivery/POD flow → recall impact/declaration, lifecycle label checks and durable recall-notification acknowledgement.
 
 The existing WMS portion still injects a test storage verifier for POD digest confirmation. It tests the application flow, not a live storage provider. CI must run the PostgreSQL suite on the exact PR head before the code journey can be marked passing.
 
@@ -19,6 +19,7 @@ The existing WMS portion still injects a test storage verifier for POD digest co
 - [ ] Exact PR head passes API CI, PostgreSQL integration CI, production dependency security, and SRS/HLD/Blueprint traceability workflows.
 - [ ] The integration output confirms GRN accepted quantity, work-order material reservations consumed exactly once, posted finished-good output, and persisted reverse/forward genealogy.
 - [ ] The same finished-good traceability identity moves through `PUT_AWAY` and `PICK` movements with source/destination quantities checked and the pick persisted before carton packing.
+- [ ] The carton is sealed, packed into a sealed pallet, and the pallet (not the inner carton) is bound to the customer order line and dispatched; recall impact reaches both package identities.
 - [ ] Cross-tenant access to the finished lot and work order fails closed.
 - [ ] Shipment matches the exact customer order line; POD digest verification is asserted; recall reaches the material lot, finished lot, carton/pallet and shipment as expected; notification acknowledgement is persisted.
 - [ ] Any CI failure is fixed at source and all checks rerun against the new exact head. A skipped PostgreSQL test is not acceptance.
