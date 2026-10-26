@@ -422,6 +422,8 @@ jobs:
 
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
+          psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
 
           echo "Reapplying final quality/WMS guard migrations to verify idempotency"
           psql "postgresql://postgres:ci-postgres-only@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
