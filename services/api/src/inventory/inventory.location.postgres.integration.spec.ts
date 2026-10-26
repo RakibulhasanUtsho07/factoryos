@@ -11,6 +11,10 @@ import { InventoryLocationService } from './inventory.location.service';
 import { InventoryReservationService } from './inventory.reservation.service';
 import { TraceabilityService } from './traceability.service';
 import { WmsFulfillmentService } from './wms-fulfillment.service';
+import { GoodsReceiptService } from '../procurement/goods-receipt.service';
+import { ProcurementService } from '../procurement/procurement.service';
+import { ProductDefinitionsService } from '../products/products.service';
+import { ProductionWorkOrdersService } from '../production/production-work-orders.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -26,6 +30,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   let fulfillmentService!: WmsFulfillmentService;
   let podStorageVerifier!: { verifyObjectDigest: ReturnType<typeof jest.fn> };
   const factoryIds: string[] = [];
+  const extraUserIds: string[] = [];
   const traceId = randomUUID();
   const requestId = randomUUID();
 
@@ -103,6 +108,24 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query(
           'ALTER TABLE inventory_locations DISABLE TRIGGER USER',
         );
+        await adminPool.query('ALTER TABLE production_output_postings DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE work_order_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE work_order_operations DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE work_order_material_reservations DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE work_order_material_requirements DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE work_orders DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE order_production_reports DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE goods_receipt_lines DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE goods_receipts DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE purchase_order_status_history DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE purchase_order_lines DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE purchase_orders DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_routing_steps DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_bom_lines DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_versions DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_definition_idempotency DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE product_definitions DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE manufacturing_work_centres DISABLE TRIGGER USER');
         try {
           await adminPool.query(
             'DELETE FROM inventory_location_transfers WHERE tenant_id = $1 AND factory_id = $2',
@@ -133,14 +156,6 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           );
           await adminPool.query(
             'DELETE FROM wms_shipments WHERE tenant_id=$1 AND factory_id=$2',
-            [tenantId, factoryId],
-          );
-          await adminPool.query(
-            'DELETE FROM order_lines WHERE tenant_id=$1 AND factory_id=$2',
-            [tenantId, factoryId],
-          );
-          await adminPool.query(
-            'DELETE FROM orders WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
           await adminPool.query(
@@ -179,10 +194,30 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             'DELETE FROM wms_packing_containers WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
+          await adminPool.query('DELETE FROM production_output_postings WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query(
             'DELETE FROM traceability_units WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
           );
+          await adminPool.query('DELETE FROM order_production_reports WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM work_order_events WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM work_order_material_reservations WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM work_order_material_requirements WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM work_order_operations WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM work_orders WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM order_lines WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM orders WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM goods_receipt_lines WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM goods_receipts WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM purchase_order_status_history WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM purchase_order_lines WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM product_routing_steps WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM product_bom_lines WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM product_versions WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM product_definition_idempotency WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM product_definitions WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM manufacturing_work_centres WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query(
             'DELETE FROM traceability_label_templates WHERE tenant_id=$1 AND factory_id=$2',
             [tenantId, factoryId],
@@ -257,10 +292,37 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           await adminPool.query('ALTER TABLE inventory_location_transfers ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_movements ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_locations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE production_output_postings ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE work_order_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE work_order_operations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE work_order_material_reservations ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE work_order_material_requirements ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE work_orders ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE order_production_reports ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE goods_receipt_lines ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE goods_receipts ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE purchase_order_status_history ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE purchase_order_lines ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE purchase_orders ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_routing_steps ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_bom_lines ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_versions ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_definition_idempotency ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE product_definitions ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE manufacturing_work_centres ENABLE TRIGGER USER');
         }
       }
     }
     if (adminPool) {
+      await adminPool.query('ALTER TABLE suppliers DISABLE TRIGGER USER');
+      try {
+        await adminPool.query('DELETE FROM suppliers WHERE tenant_id = $1', [tenantId]);
+      } finally {
+        await adminPool.query('ALTER TABLE suppliers ENABLE TRIGGER USER');
+      }
+      for (const extraUserId of extraUserIds) {
+        await adminPool.query('DELETE FROM users WHERE id = $1', [extraUserId]);
+      }
       await adminPool.query('DELETE FROM users WHERE id = $1', [userId]);
       await adminPool.query('DELETE FROM tenants WHERE id = $1', [tenantId]);
     }
@@ -1681,26 +1743,242 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   });
 
   it('binds shipment to the exact customer order line and records immutable proof-of-delivery events', async () => {
-    // Keep one unit outside the shipment so the source lot remains ACTIVE after
-    // dispatch and exercises the intended ACTIVE -> RECALLED transition below.
-    const fixture = await createStockFixture('3.0000');
+    // The journey begins with no finished goods. The lot shipped below is
+    // created only by the approved BOM/routing work-order output transaction.
+    const fixture = await createStockFixture('0.0000');
     const { binA } = await createWarehouseAndBins(fixture.factoryId);
-    const finishedLot = await traceabilityService.createUnit(
+    const suffix = randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase();
+    const audit = { record: async () => randomUUID() } as unknown as AuditService;
+    const procurementService = new ProcurementService(database);
+    const goodsReceiptService = new GoodsReceiptService(database);
+    const productDefinitionsService = new ProductDefinitionsService(database, audit);
+    const workOrdersService = new ProductionWorkOrdersService(database, audit, reservationService);
+
+    const approverId = randomUUID();
+    extraUserIds.push(approverId);
+    await adminPool.query(
+      `INSERT INTO users (id, external_subject, email, display_name, status)
+       VALUES ($1, $2, $3, 'Factory E2E acceptance approver', 'ACTIVE')`,
+      [approverId, 'factory-e2e-approver-' + approverId, 'factory-e2e-approver-' + approverId + '@factoryos.test'],
+    );
+
+    const materialItemResult = await adminPool.query<{ id: string }>(
+      `INSERT INTO inventory_items (tenant_id, factory_id, sku, name, unit, created_by_user_id)
+       VALUES ($1,$2,$3,'E2E raw material','PCS',$4) RETURNING id::text AS id`,
+      [tenantId, fixture.factoryId, 'RAW-E2E-' + suffix, userId],
+    );
+    const materialItemId = materialItemResult.rows[0]?.id;
+    if (!materialItemId) throw new Error('Factory E2E raw material fixture was not created');
+    await adminPool.query(
+      `INSERT INTO inventory_stock_balances (tenant_id, factory_id, item_id, quantity_on_hand)
+       VALUES ($1,$2,$3,0.0000)`,
+      [tenantId, fixture.factoryId, materialItemId],
+    );
+
+    const supplier = await procurementService.createSupplier(
+      userId, tenantId,
+      { code: 'SUP-E2E-' + suffix, name: 'Factory E2E Raw Material Supplier' } as never,
+      requestId, traceId,
+    );
+    const po = await procurementService.createPurchaseOrder(
       userId, tenantId, fixture.factoryId,
       {
-        unit_type: 'LOT', product_role: 'FINISHED_GOOD',
-        unit_code: 'FG-ORDER-POD-' + randomUUID().slice(0, 8),
-        inventory_item_id: fixture.itemId, quantity: 3, unit: 'PCS',
-        external_reference: 'wms-order-pod-acceptance',
+        supplier_id: supplier.id, po_number: 'PO-E2E-' + suffix,
+        lines: [{
+          line_number: 1, inventory_item_id: materialItemId,
+          description: 'E2E material for approved work order',
+          quantity: 3, unit: 'PCS', unit_price: 1,
+        }],
       } as never,
-      'fg-order-pod-register-' + randomUUID(), requestId, traceId,
+      'factory-e2e-po-' + suffix, requestId, traceId,
+    );
+    const poLineId = (po.lines as Array<{ id: string }>)[0]?.id;
+    if (!poLineId) throw new Error('Factory E2E purchase-order line was not created');
+    const submittedPo = await procurementService.transitionPurchaseOrder(
+      userId, tenantId, fixture.factoryId, po.id, 'SUBMITTED',
+      Number(po.version), 'Submit the E2E material order', requestId, traceId,
+    );
+    const approvedPo = await procurementService.transitionPurchaseOrder(
+      approverId, tenantId, fixture.factoryId, po.id, 'APPROVED',
+      Number(submittedPo.version), 'Approve the E2E material order', requestId, traceId,
+    );
+    expect(approvedPo.status).toBe('APPROVED');
+    const receipt = await goodsReceiptService.postGoodsReceipt(
+      userId, tenantId, fixture.factoryId, po.id,
+      {
+        location_id: fixture.defaultLocationId,
+        supplier_delivery_reference: 'SUP-DELIVERY-E2E-' + suffix,
+        notes: 'Factory E2E acceptance receipt',
+        lines: [{ purchase_order_line_id: poLineId, received_quantity: 3, rejected_quantity: 0 }],
+      } as never,
+      'factory-e2e-grn-' + suffix, requestId, traceId,
+    );
+    expect(receipt.status).toBe('POSTED');
+    expect(receipt.lines[0]?.accepted_quantity).toBe('3.0000');
+    const materialLot = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT', product_role: 'MATERIAL',
+        unit_code: 'MAT-E2E-' + suffix, inventory_item_id: materialItemId,
+        goods_receipt_line_id: receipt.lines[0].id,
+        quantity: 3, unit: 'PCS', external_reference: 'factory-e2e-grn-' + receipt.id,
+      } as never,
+      'factory-e2e-material-lot-' + suffix, requestId, traceId,
     );
     await adminPool.query(
       `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
        VALUES ($1,$2,$3,$4,$5,3.0000)`,
-      [tenantId, fixture.factoryId, fixture.itemId, finishedLot.id, fixture.defaultLocationId],
+      [tenantId, fixture.factoryId, materialItemId, materialLot.id, fixture.defaultLocationId],
     );
+
+    const finishedItemResult = await adminPool.query<{ sku: string; name: string; unit: string }>(
+      `SELECT sku, name, unit FROM inventory_items WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+      [fixture.itemId, tenantId, fixture.factoryId],
+    );
+    const finishedItem = finishedItemResult.rows[0];
+    if (!finishedItem) throw new Error('Factory E2E finished-good inventory item was not created');
+    const productEnvelope = await productDefinitionsService.createProduct(
+      userId, tenantId, fixture.factoryId,
+      {
+        inventory_item_id: fixture.itemId, product_code: 'FG-E2E-' + suffix,
+        product_name: 'Factory E2E Finished Good', product_type: 'STANDARD', base_unit: 'PCS',
+      } as never,
+      'factory-e2e-product-' + suffix, requestId, traceId,
+    );
+    const productId = productEnvelope.product.id as string;
+    const plannedStart = new Date().toISOString().slice(0, 10);
+    const versionEnvelope = await productDefinitionsService.createVersion(
+      userId, tenantId, fixture.factoryId, productId,
+      { effective_from: plannedStart, expected_yield_percent: 100, change_summary: 'Factory E2E approved manufacturing baseline' } as never,
+      'factory-e2e-product-version-' + suffix, requestId, traceId,
+    );
+    const workCentreEnvelope = await productDefinitionsService.createWorkCentre(
+      userId, tenantId, fixture.factoryId,
+      { code: 'WC-E2E-' + suffix, name: 'E2E assembly work centre', capacity_units_per_hour: 100 } as never,
+      'factory-e2e-work-centre-' + suffix, requestId, traceId,
+    );
+    const bom = await productDefinitionsService.replaceBom(
+      userId, tenantId, fixture.factoryId, productId, versionEnvelope.version.id,
+      {
+        expected_version: Number(versionEnvelope.version.row_version),
+        lines: [{ line_number: 1, component_item_id: materialItemId, quantity_per: 1, unit: 'PCS', wastage_percent: 0 }],
+      } as never, requestId, traceId,
+    );
+    const route = await productDefinitionsService.replaceRouting(
+      userId, tenantId, fixture.factoryId, productId, versionEnvelope.version.id,
+      {
+        expected_version: Number(bom.row_version),
+        steps: [{
+          step_number: 1, operation_code: 'ASSEMBLY', operation_name: 'E2E assembly',
+          work_centre_id: workCentreEnvelope.work_centre.id,
+          setup_minutes: 1, run_minutes_per_unit: 1, queue_minutes: 0, transfer_minutes: 0,
+          is_quality_gate: false,
+        }],
+      } as never, requestId, traceId,
+    );
+    const approvedVersion = await productDefinitionsService.approveVersion(
+      approverId, tenantId, fixture.factoryId, productId, versionEnvelope.version.id,
+      { expected_version: Number(route.row_version) } as never,
+      'factory-e2e-approve-version-' + suffix, requestId, traceId,
+    );
+    expect(approvedVersion.version.state).toBe('APPROVED');
+
+    const sourceOrderResult = await adminPool.query<{ id: string }>(
+      `INSERT INTO orders (tenant_id, factory_id, order_number, customer_name, customer_reference, status, order_date, currency, created_by_user_id)
+       VALUES ($1,$2,$3,'Factory E2E Production Customer',$4,'IN_PROGRESS',CURRENT_DATE,'BDT',$5)
+       RETURNING id::text AS id`,
+      [tenantId, fixture.factoryId, 'SO-E2E-' + suffix, 'WORK-ORDER-' + suffix, userId],
+    );
+    const sourceOrderId = sourceOrderResult.rows[0]?.id;
+    if (!sourceOrderId) throw new Error('Factory E2E production order was not created');
+    const sourceLineResult = await adminPool.query<{ id: string }>(
+      `INSERT INTO order_lines (tenant_id, factory_id, order_id, line_number, product_code, product_name, inventory_item_id, quantity, unit)
+       VALUES ($1,$2,$3,1,$4,$5,$6,3.0000,'PCS') RETURNING id::text AS id`,
+      [tenantId, fixture.factoryId, sourceOrderId, finishedItem.sku, finishedItem.name, fixture.itemId],
+    );
+    const sourceOrderLineId = sourceLineResult.rows[0]?.id;
+    if (!sourceOrderLineId) throw new Error('Factory E2E production order line was not created');
+    const draftWorkOrder = await workOrdersService.createWorkOrder(
+      userId, tenantId, fixture.factoryId,
+      { order_line_id: sourceOrderLineId, target_quantity: 3, planned_start_date: plannedStart } as never,
+      'factory-e2e-create-work-order-' + suffix, requestId, traceId,
+    );
+    let workOrder = await workOrdersService.transitionWorkOrder(
+      userId, tenantId, fixture.factoryId, draftWorkOrder.id, 'RELEASE',
+      { expected_version: Number(draftWorkOrder.row_version) } as never,
+      'factory-e2e-release-work-order-' + suffix, requestId, traceId,
+    );
+    expect(workOrder.status).toBe('RELEASED');
+    const initialOperation = workOrder.operations[0] as { id: string; row_version: number };
+    if (!initialOperation?.id) throw new Error('Factory E2E work order has no routing operation');
+    workOrder = await workOrdersService.reportOperationEvent(
+      userId, tenantId, fixture.factoryId, workOrder.id, initialOperation.id,
+      {
+        command: 'START', expected_work_order_version: Number(workOrder.row_version),
+        expected_operation_version: Number(initialOperation.row_version),
+      } as never,
+      'factory-e2e-start-operation-' + suffix, requestId, traceId,
+    );
+    const activeOperation = workOrder.operations[0] as { id: string; row_version: number };
+    const output = await workOrdersService.reportOutput(
+      userId, tenantId, fixture.factoryId, workOrder.id,
+      {
+        operation_id: activeOperation.id,
+        expected_work_order_version: Number(workOrder.row_version),
+        expected_operation_version: Number(activeOperation.row_version),
+        good_quantity: 3, scrap_quantity: 0, notes: 'Factory E2E finished-good output',
+      } as never,
+      'factory-e2e-output-' + suffix, requestId, traceId,
+    );
+    expect(output.finished_good_traceability_unit_id).toEqual(expect.any(String));
+    const outputOperation = output.operations[0] as { id: string; row_version: number };
+    workOrder = await workOrdersService.reportOperationEvent(
+      userId, tenantId, fixture.factoryId, workOrder.id, outputOperation.id,
+      {
+        command: 'COMPLETE', expected_work_order_version: Number(output.row_version),
+        expected_operation_version: Number(outputOperation.row_version),
+      } as never,
+      'factory-e2e-complete-operation-' + suffix, requestId, traceId,
+    );
+    workOrder = await workOrdersService.transitionWorkOrder(
+      userId, tenantId, fixture.factoryId, workOrder.id, 'COMPLETE',
+      { expected_version: Number(workOrder.row_version) } as never,
+      'factory-e2e-complete-work-order-' + suffix, requestId, traceId,
+    );
+    expect(workOrder.status).toBe('COMPLETED');
+    const consumedMaterials = await adminPool.query<{ status: string; quantity: string }>(
+      `SELECT ir.status, ir.quantity::text AS quantity
+       FROM work_order_material_reservations mr
+       JOIN inventory_reservations ir ON ir.id=mr.reservation_id AND ir.tenant_id=mr.tenant_id AND ir.factory_id=mr.factory_id
+       WHERE mr.tenant_id=$1 AND mr.factory_id=$2 AND mr.work_order_id=$3`,
+      [tenantId, fixture.factoryId, workOrder.id],
+    );
+    expect(consumedMaterials.rows).toHaveLength(1);
+    expect(consumedMaterials.rows[0]).toMatchObject({ status: 'CONSUMED', quantity: '3.0000' });
+
+    const finishedLot = await traceabilityService.getUnit(
+      userId, tenantId, fixture.factoryId, output.finished_good_traceability_unit_id,
+    );
+    const reverseTrace = await traceabilityService.trace(
+      userId, tenantId, fixture.factoryId, finishedLot.id, 'REVERSE', 12, 200,
+    );
+    expect(reverseTrace.units.some((unit: { id: string }) => unit.id === materialLot.id)).toBe(true);
+    expect(reverseTrace.relationships.some((edge: { source_unit_id: string; target_unit_id: string }) =>
+      edge.source_unit_id === materialLot.id && edge.target_unit_id === finishedLot.id)).toBe(true);
+    const forwardTrace = await traceabilityService.trace(
+      userId, tenantId, fixture.factoryId, materialLot.id, 'FORWARD', 12, 200,
+    );
+    expect(forwardTrace.units.some((unit: { id: string }) => unit.id === finishedLot.id)).toBe(true);
+
+    const foreignTenantId = randomUUID();
+    await expect(traceabilityService.getUnit(
+      userId, foreignTenantId, fixture.factoryId, finishedLot.id,
+    )).rejects.toThrow(/not found in this factory/i);
+    await expect(workOrdersService.getWorkOrder(
+      userId, foreignTenantId, fixture.factoryId, workOrder.id,
+    )).rejects.toThrow(/not found in this factory/i);
+
     await locationService.transferStock(
       userId, tenantId, fixture.factoryId, fixture.itemId,
       {
@@ -1709,7 +1987,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       },
       'fg-order-pod-putaway-' + randomUUID(), requestId, traceId,
     );
-    const carton = await fulfillmentService.createContainer(
+
       userId, tenantId, fixture.factoryId,
       {
         container_type: 'CARTON', container_code: 'CARTON-ORDER-POD-' + randomUUID().slice(0, 8),
@@ -1936,7 +2214,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const binsBeforeRecall = await readBinTotals(fixture.factoryId, fixture.itemId);
     const recallKey = 'wp02-e2e-recall-' + randomUUID();
     const recall = await traceabilityService.declareRecall(
-      userId, tenantId, fixture.factoryId, finishedLot.id,
+      userId, tenantId, fixture.factoryId, materialLot.id,
       { reason: 'E2E regression: delivered shipment requires recall review', depth: 12, limit: 200 },
       recallKey, requestId, traceId,
     );
@@ -1968,9 +2246,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const persistedLifecycle = await adminPool.query<{ id: string; status: string }>(
       `SELECT id::text AS id, status FROM traceability_units
        WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
-      [tenantId, fixture.factoryId, [finishedLot.id, cartonId, dispatch.shipment.shipment_unit_id]],
+      [tenantId, fixture.factoryId, [materialLot.id, finishedLot.id, cartonId, dispatch.shipment.shipment_unit_id]],
     );
-    expect(persistedLifecycle.rows).toHaveLength(3);
+    expect(persistedLifecycle.rows).toHaveLength(4);
+    expect(persistedLifecycle.rows.find((row) => row.id === materialLot.id)?.status).toBe('RECALLED');
     expect(persistedLifecycle.rows.find((row) => row.id === finishedLot.id)?.status).toBe('RECALLED');
     expect(persistedLifecycle.rows.find((row) => row.id === cartonId)?.status).toBe('SHIPPED');
     expect(persistedLifecycle.rows.find((row) => row.id === dispatch.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
