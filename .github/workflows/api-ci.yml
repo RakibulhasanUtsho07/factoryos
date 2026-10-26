@@ -13,6 +13,9 @@ on:
       - 'deploy/security/**'
       - 'deploy/event-bus/**'
       - 'scripts/event-bus/**'
+      - 'scripts/integrations/**'
+      - 'docs/wms-provider-certification.md'
+      - '.github/workflows/wms-provider-live-smoke.yml'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
       - 'docs/central-observability-slo-capacity.md'
@@ -21,6 +24,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/api-ci.yml'
+      - '.github/workflows/wms-provider-live-smoke.yml'
   push:
     branches: [main, dev, rakibul-hasan]
     paths:
@@ -31,6 +35,8 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/integrations/**'
+      - 'docs/wms-provider-certification.md'
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
@@ -40,6 +46,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/api-ci.yml'
+      - '.github/workflows/wms-provider-live-smoke.yml'
 
 permissions:
   contents: read
@@ -114,6 +121,13 @@ jobs:
           node --check scripts/event-bus/provision-kafka-topics.mjs
           node --check scripts/event-bus/staging-fault-injection.mjs
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+      - name: Validate protected WMS provider smoke workflow YAML
+        run: ruby -e "require 'yaml'; YAML.parse_file('.github/workflows/wms-provider-live-smoke.yml')"
+      - name: Test WMS provider certification smoke harness
+        run: |
+          node --check scripts/integrations/wms-provider-certification.mjs
+          node --check scripts/integrations/wms-provider-certification.test.mjs
+          node --test scripts/integrations/wms-provider-certification.test.mjs
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
         run: |

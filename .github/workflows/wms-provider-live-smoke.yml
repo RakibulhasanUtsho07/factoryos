@@ -1,0 +1,150 @@
+name: WMS configured storage and webhook receiver smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Dedicated non-production target only
+        required: true
+        type: choice
+        options:
+          - staging
+          - sandbox
+      confirm_side_effects:
+        description: Type YES after confirming this is a dedicated dispatched test shipment
+        required: true
+        type: string
+        default: NO
+      connector_id:
+        description: UUID of the active WMS_CARRIER connector
+        required: true
+        type: string
+      shipment_unit_id:
+        description: UUID of the dedicated dispatched non-production shipment
+        required: true
+        type: string
+      schema_version:
+        description: Registered connector schema version
+        required: true
+        type: string
+        default: "1"
+      storage_provider:
+        description: Operator-declared storage provider and non-production account label
+        required: true
+        type: string
+      carrier_provider:
+        description: Operator-declared carrier sandbox provider label
+        required: true
+        type: string
+      carrier_name:
+        description: Exact carrier connector display name
+        required: true
+        type: string
+      tracking_reference:
+        description: Exact tracking reference bound to the test shipment
+        required: true
+        type: string
+      site:
+        description: Test site code
+        required: true
+        type: string
+      operator:
+        description: Operator or change-ticket identifier
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wms-provider-smoke-${{ inputs.shipment_unit_id }}
+  cancel-in-progress: false
+
+jobs:
+  configured-provider-smoke:
+    name: Configured storage PUT/GET and FactoryOS callback receiver
+    if: github.ref == 'refs/heads/rakibul-hasan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: wms-certification
+    steps:
+      - name: Checkout selected release branch
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Validate certification harness syntax
+        run: node --check scripts/integrations/wms-provider-certification.mjs
+
+      - name: Run configured storage and webhook receiver smoke
+        env:
+          FACTORYOS_CERT_ENVIRONMENT: ${{ inputs.target_environment }}
+          FACTORYOS_CERT_ALLOW_SIDE_EFFECTS: ${{ inputs.confirm_side_effects }}
+          FACTORYOS_CERT_API_ORIGIN: ${{ vars.FACTORYOS_CERT_API_ORIGIN }}
+          FACTORYOS_CERT_CONNECTOR_ID: ${{ inputs.connector_id }}
+          FACTORYOS_CERT_SHIPMENT_UNIT_ID: ${{ inputs.shipment_unit_id }}
+          FACTORYOS_CERT_SCHEMA_VERSION: ${{ inputs.schema_version }}
+          FACTORYOS_CERT_WEBHOOK_SECRET: ${{ secrets.FACTORYOS_CERT_WEBHOOK_SECRET }}
+          FACTORYOS_CERT_BEARER_TOKEN: ${{ secrets.FACTORYOS_CERT_BEARER_TOKEN }}
+          FACTORYOS_CERT_READONLY_BEARER_TOKEN: ${{ secrets.FACTORYOS_CERT_READONLY_BEARER_TOKEN }}
+          FACTORYOS_CERT_STORAGE_PROVIDER: ${{ inputs.storage_provider }}
+          FACTORYOS_CERT_CARRIER_PROVIDER: ${{ inputs.carrier_provider }}
+          FACTORYOS_CERT_CARRIER_NAME: ${{ inputs.carrier_name }}
+          FACTORYOS_CERT_TRACKING_REFERENCE: ${{ inputs.tracking_reference }}
+          FACTORYOS_CERT_SITE: ${{ inputs.site }}
+          FACTORYOS_CERT_OPERATOR: ${{ inputs.operator }}
+          FACTORYOS_CERT_EVIDENCE_PATH: artifacts/wms-provider-certification-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: node scripts/integrations/wms-provider-certification.mjs
+
+      - name: Verify evidence redaction and preserve the certification boundary
+        if: success()
+        env:
+          EVIDENCE_PATH: artifacts/wms-provider-certification-${{ github.run_id }}-${{ github.run_attempt }}.json
+          FACTORYOS_CERT_WEBHOOK_SECRET: ${{ secrets.FACTORYOS_CERT_WEBHOOK_SECRET }}
+          FACTORYOS_CERT_BEARER_TOKEN: ${{ secrets.FACTORYOS_CERT_BEARER_TOKEN }}
+          FACTORYOS_CERT_READONLY_BEARER_TOKEN: ${{ secrets.FACTORYOS_CERT_READONLY_BEARER_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const evidenceText = readFileSync(process.env.EVIDENCE_PATH, 'utf8');
+          for (const name of [
+            'FACTORYOS_CERT_WEBHOOK_SECRET',
+            'FACTORYOS_CERT_BEARER_TOKEN',
+            'FACTORYOS_CERT_READONLY_BEARER_TOKEN',
+          ]) {
+            const value = process.env[name];
+            if (value && evidenceText.includes(value)) {
+              throw new Error('Evidence contains secret material (' + name + '); refusing artifact publication');
+            }
+          }
+          const evidence = JSON.parse(evidenceText);
+          if (evidence.credentials_recorded !== false || evidence.secret_values_recorded !== false) {
+            throw new Error('Evidence secret-redaction assertions are not satisfied');
+          }
+          if (evidence.result !== 'PASS_FOR_CONFIGURED_STORAGE_AND_FACTORYOS_RECEIVER_CONTRACT_ONLY') {
+            throw new Error('Unexpected evidence result; refusing artifact publication');
+          }
+          if (!Array.isArray(evidence.explicit_limitations) ||
+              !evidence.explicit_limitations.some((item) => item.includes('not evidence that the named carrier sandbox sent a callback'))) {
+            throw new Error('Evidence must explicitly retain the external-carrier certification limitation');
+          }
+          console.log('Evidence redaction verified; external carrier-origin certification remains unproven.');
+          NODE
+
+      - name: Upload redacted smoke evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wms-provider-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/wms-provider-certification-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: State remaining external certification gates
+        if: success()
+        run: |
+          echo "Configured storage PUT/GET digest and FactoryOS receiver replay smoke passed."
+          echo "This run does not prove a carrier-originated callback, provider-side retry, or IAM least privilege."
