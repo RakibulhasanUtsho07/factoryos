@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../database/database.service';
 import { createIntegrationDatabase } from '../database/integration-database.adapter';
+import { InventoryLocationService } from '../inventory/inventory.location.service';
 import { InventoryReservationService } from '../inventory/inventory.reservation.service';
 import { TraceabilityService } from '../inventory/traceability.service';
 import { OrderIdempotencyService } from '../orders/order-idempotency.service';
@@ -37,12 +38,15 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
   let productId = '';
   let productVersionId = '';
   let workCentreId = '';
+  let warehouseId = '';
+  let binId = '';
   let orderId = '';
   let orderLineId = '';
   let workOrderId = '';
   let materialTraceabilityUnitId = '';
 
   let inventoryReservationService: InventoryReservationService;
+  let inventoryLocationService: InventoryLocationService;
   let traceabilityService: TraceabilityService;
   let ordersService: OrdersService;
   let productService: ProductDefinitionsService;
@@ -91,6 +95,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
 
     database = createIntegrationDatabase(appPool) as unknown as DatabaseService;
     inventoryReservationService = new InventoryReservationService(database, auditService);
+    inventoryLocationService = new InventoryLocationService(database, auditService);
     traceabilityService = new TraceabilityService(database);
     ordersService = new OrdersService(
       database,
@@ -115,11 +120,13 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
         'order_production_reports',
         'inventory_reservation_consumption_traceability_allocations',
         'inventory_reservation_consumptions',
+        'product_definition_idempotency',
         'inventory_reservation_traceability_allocations',
         'work_order_material_reservations',
         'inventory_reservations',
         'inventory_location_transfers',
         'inventory_traceability_location_balances',
+        'inventory_locations',
         'traceability_units',
         'inventory_movements',
         'inventory_location_balances',
@@ -163,7 +170,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
               [tenantId, factoryId, orderNumber],
             );
         const cleanupOrderId = foundOrderId.rows[0]?.id ?? '';
-        const idsForOutbox = [...itemIds, ...productIds, productVersionId, workCentreId, cleanupOrderId, ...workOrderIds].filter(Boolean);
+        const idsForOutbox = [...itemIds, ...productIds, productVersionId, workCentreId, warehouseId, binId, cleanupOrderId, ...workOrderIds].filter(Boolean);
         if (idsForOutbox.length > 0) {
           await adminPool.query(
             'DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 ' +
@@ -276,6 +283,11 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
             [tenantId, factoryId, itemIds],
           );
           await adminPool.query(
+            'DELETE FROM product_definition_idempotency WHERE tenant_id=$1 AND factory_id=$2 AND product_id IN ' +
+              '(SELECT id FROM product_definitions WHERE inventory_item_id = ANY($3::uuid[]))',
+            [tenantId, factoryId, itemIds],
+          );
+          await adminPool.query(
             'DELETE FROM product_definitions WHERE tenant_id=$1 AND factory_id=$2 AND inventory_item_id = ANY($3::uuid[])',
             [tenantId, factoryId, itemIds],
           );
@@ -299,6 +311,12 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
             'DELETE FROM inventory_location_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
             [tenantId, factoryId, itemIds],
           );
+          if (binId) {
+            await adminPool.query('DELETE FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND id=$3::uuid', [tenantId, factoryId, binId]);
+          }
+          if (warehouseId) {
+            await adminPool.query('DELETE FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND id=$3::uuid', [tenantId, factoryId, warehouseId]);
+          }
           await adminPool.query(
             'DELETE FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id = ANY($3::uuid[])',
             [tenantId, factoryId, itemIds],
@@ -360,6 +378,42 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
       correlationId,
     );
     materialTraceabilityUnitId = materialUnit.id;
+
+    const defaultLocation = await adminPool.query<{ id: string }>(
+      'SELECT id::text AS id FROM inventory_locations WHERE tenant_id=$1 AND factory_id=$2 AND is_default=TRUE LIMIT 1',
+      [tenantId, factoryId],
+    );
+    const defaultLocationId = defaultLocation.rows[0]?.id;
+    if (!defaultLocationId) throw new Error('Factory UNASSIGNED inventory location is missing.');
+
+    const warehouse = await inventoryLocationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'MFG-E2E-WH-' + runKey, name: 'Acceptance warehouse', location_type: 'WAREHOUSE' },
+      correlationId, correlationId,
+    );
+    warehouseId = warehouse.id;
+    const bin = await inventoryLocationService.createLocation(
+      TEST_USER_ID, tenantId, factoryId,
+      { location_code: 'MFG-E2E-BIN-' + runKey, name: 'Acceptance raw-material bin', location_type: 'BIN', parent_location_id: warehouseId },
+      correlationId, correlationId,
+    );
+    binId = bin.id;
+    const putAway = await inventoryLocationService.transferStock(
+      TEST_USER_ID, tenantId, factoryId, materialItemId,
+      {
+        movement_purpose: 'PUT_AWAY',
+        source_location_id: defaultLocationId,
+        destination_location_id: binId,
+        traceability_unit_id: materialTraceabilityUnitId,
+        quantity: 4,
+        notes: 'Put acceptance material lot away before production reservation',
+      },
+      'mfg-e2e-put-away-' + runKey,
+      correlationId,
+      correlationId,
+    );
+    expect(putAway.movement_purpose).toBe('PUT_AWAY');
+    expect(putAway.traceability_unit_id).toBe(materialTraceabilityUnitId);
 
     await productService.createProduct(
       TEST_USER_ID,
