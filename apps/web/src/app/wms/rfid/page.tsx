@@ -63,6 +63,8 @@ export default function RfidHardwareAcceptancePage() {
   const [hilNotes, setHilNotes] = useState("");
   const [baudRate, setBaudRate] = useState("115200");
   const [sessionId, setSessionId] = useState("");
+  const [captureStartedAt, setCaptureStartedAt] = useState<string | null>(null);
+  const [captureStoppedAt, setCaptureStoppedAt] = useState<string | null>(null);
   const [state, setState] = useState<ReaderState>("DISCONNECTED");
   const [readCount, setReadCount] = useState(0);
   const [uniqueCount, setUniqueCount] = useState(0);
@@ -96,6 +98,8 @@ export default function RfidHardwareAcceptancePage() {
     setIgnoredCount(0);
     setIgnoredExamples([]);
     setSessionId(crypto.randomUUID());
+    setCaptureStartedAt(null);
+    setCaptureStoppedAt(null);
     setResult(null);
     setError("");
   }
@@ -150,9 +154,11 @@ export default function RfidHardwareAcceptancePage() {
           setState(isConnected ? "READING" : "DISCONNECTED");
           if (isConnected) {
             readerPortOpenedRef.current = true;
+            setCaptureStartedAt((value) => value ?? new Date().toISOString());
             setMessage("RFID reader connected. Raw EPC reads are being captured locally; stock is not changed by capture.");
           }
           else {
+            setCaptureStoppedAt(new Date().toISOString());
             setReads([...readsRef.current]);
             setMessage("Reader disconnected. Captured EPCs remain available for reconciliation.");
           }
@@ -191,6 +197,10 @@ export default function RfidHardwareAcceptancePage() {
       reader_port_opened_by_browser: readerPortOpenedRef.current,
       physical_hardware_identity_independently_attested: false,
       site: { site_code: siteCode.trim(), operator_name: operatorName.trim() },
+      capture_started_at: captureStartedAt,
+      capture_stopped_at: captureStoppedAt,
+      capture_duration_ms: captureStartedAt && captureStoppedAt ? Math.max(0, Date.parse(captureStoppedAt) - Date.parse(captureStartedAt)) : null,
+      raw_read_rate_per_second: captureStartedAt && captureStoppedAt && Date.parse(captureStoppedAt) > Date.parse(captureStartedAt) ? Number((readCount * 1000 / (Date.parse(captureStoppedAt) - Date.parse(captureStartedAt))).toFixed(3)) : null,
       device: {
         reader_id: readerId.trim(),
         manufacturer: manufacturer.trim(),
