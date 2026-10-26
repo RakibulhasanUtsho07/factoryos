@@ -83,3 +83,38 @@ Capture all of the following as separate provider/site evidence; do not infer th
 | Independent sign-off | Storage/security owner, carrier integration owner and WMS process owner sign the evidence pack; record unresolved provider limitations explicitly. |
 
 If the chosen carrier signs webhooks in a provider-specific format rather than the FactoryOS timestamp/event-ID/raw-body HMAC contract, do not disable signature checks or reuse a secret across trust domains. Implement and test a dedicated verified adapter first. Carrier certification stays **OPEN** until the real provider-originated callback and retry evidence, storage/IAM review and named approvals are present.
+
+
+## Protected GitHub Actions run (configured storage + receiver smoke)
+
+A manual runner is now defined at [WMS configured-provider certification smoke](../.github/workflows/wms-provider-live-smoke.yml). It is intentionally **manual-only** and is not a real-carrier certification job. It runs the existing deployed-API storage PUT/read-back digest and FactoryOS webhook receiver checks, evaluates a supplied storage identity-policy document for strict shape, checks the evidence artifacts for credential leakage, and uploads only the redacted JSON reports after all checks succeed.
+
+Before running it, create the GitHub environment named `wms-provider-certification`. Require an authorized reviewer/approver for this environment and scope every value below to a disposable staging/sandbox deployment. Environment protection is a repository setting and must be reviewed by an administrator.
+
+**Environment variables** (non-secret test configuration):
+
+- `FACTORYOS_CERT_API_ORIGIN`: credential-free HTTPS origin of the staging/sandbox API.
+- `FACTORYOS_CERT_CONNECTOR_ID`, `FACTORYOS_CERT_SHIPMENT_UNIT_ID`, `FACTORYOS_CERT_SCHEMA_VERSION`: the active connector and dedicated dispatched test shipment.
+- `FACTORYOS_CERT_STORAGE_PROVIDER`, `FACTORYOS_CERT_CARRIER_PROVIDER`, `FACTORYOS_CERT_CARRIER_NAME`, `FACTORYOS_CERT_TRACKING_REFERENCE`: selected provider/account labels and exact fixture binding.
+- `WMS_POD_STORAGE_BUCKET`, `WMS_POD_STORAGE_PREFIX`: policy target (prefix must end in `/`, normally `pod/`).
+
+**Environment secrets** (short-lived / restricted credentials only):
+
+- `FACTORYOS_CERT_WEBHOOK_SECRET`: the configured FactoryOS connector secret used by its current webhook contract.
+- `FACTORYOS_CERT_BEARER_TOKEN`: short-lived factory-scoped upload token.
+- `FACTORYOS_CERT_READONLY_BEARER_TOKEN`: token that can read the connector but cannot upload.
+- `WMS_POD_STORAGE_POLICY_JSON`: reviewed identity policy JSON for the deployed POD runtime principal; it is written to a temporary file with owner-only permissions, checked, and deleted. The policy itself is not uploaded.
+
+From Actions, dispatch the workflow with target `staging` or `sandbox`, enter a non-sensitive site/ticket value and operator/ticket identifier, and explicitly select `YES` only after confirming the shipment is a disposable test fixture. The script refuses production targets. Do not dispatch against a production API or a production shipment. The smoke performs real side effects: POD upload, delivery event insertion and a conflicting-replay reconciliation record.
+
+The policy-shape checker accepts only explicit `s3:GetObject` and `s3:PutObject` allow actions on the requested bucket/object prefix and rejects wildcard/bucket-wide/sibling-prefix grants plus list/delete actions. It prints a SHA-256 fingerprint and non-secret summary rather than the policy body. This is **shape-only**: it does not prove the exported policy is attached to the running identity, resolve bucket/session/organization/KMS policy interactions, or certify credential rotation/revocation.
+
+The evidence safety guard fails if configured connector tokens/secrets appear in either artifact, if the policy shape does not pass, or if the smoke tries to upgrade the result to real-carrier certification. A successful workflow artifact therefore still explicitly records `carrier_sandbox_origin=NOT_PROVEN` and `storage_iam_least_privilege_review=NOT_VERIFIED_BY_SCRIPT`.
+
+## Live carrier acceptance still needs provider-owned evidence
+
+This repository does not include a selected carrier-specific API/SDK, carrier sandbox credentials, or a vendor-native signature adapter. The current webhook endpoint verifies the **FactoryOS** timestamp/event-ID/raw-body HMAC contract; the synthetic harness signs with that FactoryOS secret. Do not treat that as validation of DHL/FedEx/UPS/another carrier's native signature, nor as proof of provider retry delivery.
+
+To close the carrier gate, the carrier integration owner must select the provider and implement or verify its native adapter, configure the provider sandbox callback to the approved staging endpoint, and attach the provider's own callback-delivery/request ID, signature-verification result, raw-payload digest, and observed retry/replay records. A same-event/same-payload replay must not create a second delivery receipt; same-event/different-payload replay must fail/reconcile. Storage/security must separately review the identity actually attached to the deployed runtime, permission scope, expiry, rotation and revocation evidence.
+
+**Certification disposition remains OPEN** until a genuine provider-originated sandbox callback/retry, independent storage read-back, effective-credential/IAM review, and authorized carrier/WMS/storage sign-offs are tied to the exact release SHA. The manual smoke workflow is a repeatable precondition/evidence tool, not a substitute for that acceptance.
