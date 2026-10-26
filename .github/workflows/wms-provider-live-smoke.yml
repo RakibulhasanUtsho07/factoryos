@@ -77,7 +77,31 @@ jobs:
           node-version: 24
 
       - name: Validate certification harness syntax
-        run: node --check scripts/integrations/wms-provider-certification.mjs
+        run: |
+          node --check scripts/integrations/wms-provider-certification.mjs
+          node --check scripts/integrations/wms-storage-iam-policy-check.mjs
+
+      - name: Verify POD storage identity policy shape before shipment side effects
+        env:
+          WMS_POD_STORAGE_POLICY_JSON: ${{ secrets.WMS_POD_STORAGE_POLICY_JSON }}
+          WMS_POD_STORAGE_BUCKET: ${{ vars.WMS_POD_STORAGE_BUCKET }}
+          WMS_POD_STORAGE_PREFIX: ${{ vars.WMS_POD_STORAGE_PREFIX }}
+        run: |
+          set -euo pipefail
+          test -n "${WMS_POD_STORAGE_POLICY_JSON:-}" || { echo "::error::Configure WMS_POD_STORAGE_POLICY_JSON in the protected wms-certification environment."; exit 1; }
+          test -n "${WMS_POD_STORAGE_BUCKET:-}" || { echo "::error::Configure WMS_POD_STORAGE_BUCKET in wms-certification variables."; exit 1; }
+          test -n "${WMS_POD_STORAGE_PREFIX:-}" || { echo "::error::Configure WMS_POD_STORAGE_PREFIX (normally pod/) in wms-certification variables."; exit 1; }
+          mkdir -p artifacts
+          umask 077
+          policy_file="$(mktemp "$RUNNER_TEMP/pod-storage-policy.XXXXXX")"
+          trap 'rm -f "$policy_file"' EXIT
+          printf '%s' "$WMS_POD_STORAGE_POLICY_JSON" > "$policy_file"
+          node scripts/integrations/wms-storage-iam-policy-check.mjs \
+            --policy "$policy_file" \
+            --bucket "$WMS_POD_STORAGE_BUCKET" \
+            --prefix "$WMS_POD_STORAGE_PREFIX" \
+            > "artifacts/wms-storage-policy-report-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          cat "artifacts/wms-storage-policy-report-${{ github.run_id }}-${{ github.run_attempt }}.json"
 
       - name: Run configured storage and webhook receiver smoke
         env:
@@ -139,7 +163,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wms-provider-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/wms-provider-certification-${{ github.run_id }}-${{ github.run_attempt }}.json
+          path: |
+            artifacts/wms-provider-certification-${{ github.run_id }}-${{ github.run_attempt }}.json
+            artifacts/wms-storage-policy-report-${{ github.run_id }}-${{ github.run_attempt }}.json
           if-no-files-found: error
           retention-days: 30
 

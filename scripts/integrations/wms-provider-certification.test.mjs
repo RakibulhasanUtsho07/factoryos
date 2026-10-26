@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { validateExternalCertificationManifest } from './wms-provider-evidence-pack.mjs';
 import {
   createFactoryOsWebhookSignature,
   readCertificationConfig,
@@ -187,4 +191,198 @@ test('configured-provider smoke proves storage read-back, authorization, signatu
   assert.equal(encodedEvidence.includes('writer-token-never-store'), false);
   assert.equal(encodedEvidence.includes('reader-token-never-store'), false);
   assert.equal(encodedEvidence.includes('PROVEN_CARRIER'), false);
+});
+
+
+const EXTERNAL_RELEASE_SHA = 'a'.repeat(40);
+const evidenceKinds = [
+  'carrier-callback',
+  'carrier-retry-replay',
+  'carrier-conflicting-replay',
+  'storage-independent-readback',
+  'storage-effective-iam',
+  'storage-credential-rotation',
+  'owner-signoffs',
+];
+
+function evidenceDigest(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+async function createValidExternalEvidence(directory) {
+  const attachments = evidenceKinds.map((kind, index) => ({
+    kind,
+    path: kind + '.json',
+    body: JSON.stringify({ kind, fixture: 'redacted-test-evidence-' + index }),
+  }));
+  for (const attachment of attachments) {
+    await writeFile(join(directory, attachment.path), attachment.body, { flag: 'wx', mode: 0o600 });
+  }
+  const uploadedDigest = evidenceDigest('exact object bytes');
+  return {
+    schema: 'factoryos.wms.external-certification-evidence/v1',
+    environment: 'sandbox',
+    release_sha: EXTERNAL_RELEASE_SHA,
+    tested_at: '2026-10-26T10:00:00Z',
+    carrier: {
+      provider_name: 'ExampleCarrier Sandbox',
+      account_reference: 'sandbox-account-reference',
+      tracking_reference: 'sandbox-tracking-reference',
+      callback: {
+        origin: 'PROVIDER_NATIVE',
+        signature_validation: 'PASS',
+        adapter: 'ExampleCarrierNativeWebhookVerifier',
+        signature_algorithm: 'ed25519',
+        provider_request_id: 'provider-request-123',
+        provider_event_id: 'provider-event-123',
+        payload_sha256: evidenceDigest('carrier-native-payload'),
+        received_at: '2026-10-26T10:00:00Z',
+        retry: {
+          attempt_count: 2,
+          same_provider_event_id: true,
+          same_payload_sha256: true,
+          initial_attempt_transient_failure: true,
+          stored_receipt_reused: true,
+          persisted_delivery_event_count: 1,
+        },
+        conflicting_replay: {
+          same_provider_event_id: true,
+          payload_sha256_differs: true,
+          accepted: false,
+          http_status: 409,
+          persisted_delivery_event_count: 1,
+        },
+      },
+    },
+    storage: {
+      provider_name: 'Example S3-compatible staging',
+      account_reference: 'storage-account-reference',
+      bucket: 'factoryos-pod-staging',
+      prefix: 'pod/tenant-1/factory-1/',
+      object_key: 'pod/tenant-1/factory-1/shipment-1/proof.png',
+      runtime_principal_sha256: evidenceDigest('runtime-principal-fingerprint'),
+      policy_sha256: evidenceDigest('effective-policy-export'),
+      effective_permissions_review: 'PASS',
+      review_items: {
+        bucket_policy: { status: 'PASS' },
+        permissions_boundary: { status: 'PASS' },
+        organization_policy: { status: 'PASS' },
+        session_policy: { status: 'PASS' },
+        kms_policy: { status: 'NOT_APPLICABLE_WITH_REASON', reason: 'Provider confirms this sandbox bucket uses no customer-managed KMS key.' },
+      },
+      upload: {
+        method: 'FACTORYOS_STORAGE_ADAPTER',
+        request_id: 'upload-request-123',
+        sha256: uploadedDigest,
+        byte_length: 123,
+      },
+      readback: {
+        method: 'DIRECT_PROVIDER_SDK',
+        factoryos_api_used: false,
+        request_id: 'direct-readback-request-456',
+        principal_fingerprint_sha256: evidenceDigest('independent-readback-principal'),
+        sha256: uploadedDigest,
+        byte_length: 123,
+      },
+      credential_rotation: {
+        rotated_at: '2026-10-26T10:00:00Z',
+        old_credential_denied: true,
+        new_credential_put_get_pass: true,
+        old_credential_fingerprint_sha256: evidenceDigest('old-credential-fingerprint'),
+        new_credential_fingerprint_sha256: evidenceDigest('new-credential-fingerprint'),
+      },
+    },
+    evidence_files: attachments.map(({ kind, path, body }) => ({
+      kind,
+      path,
+      sha256: evidenceDigest(body),
+    })),
+    approvals: [
+      { role: 'carrier_integration_owner', identity_reference: 'approval-ref-carrier', decision: 'APPROVED', approved_at: '2026-10-26T10:00:00Z', release_sha: EXTERNAL_RELEASE_SHA },
+      { role: 'storage_security_owner', identity_reference: 'approval-ref-storage', decision: 'APPROVED', approved_at: '2026-10-26T10:00:00Z', release_sha: EXTERNAL_RELEASE_SHA },
+      { role: 'wms_process_owner', identity_reference: 'approval-ref-wms', decision: 'APPROVED', approved_at: '2026-10-26T10:00:00Z', release_sha: EXTERNAL_RELEASE_SHA },
+    ],
+  };
+}
+
+async function withExternalEvidence(run) {
+  const directory = await mkdtemp(join(tmpdir(), 'factoryos-external-cert-'));
+  try {
+    const manifest = await createValidExternalEvidence(directory);
+    await run(directory, manifest);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test('external evidence-pack gate accepts complete integrity-checked provider evidence bound to exact release', async () => {
+  await withExternalEvidence(async (evidenceRoot, manifest) => {
+    const report = await validateExternalCertificationManifest(manifest, {
+      evidenceRoot,
+      expectedReleaseSha: EXTERNAL_RELEASE_SHA,
+    });
+    assert.equal(report.pass, true, JSON.stringify(report.issues));
+    assert.equal(report.result, 'PASS_EVIDENCE_BUNDLE_COMPLETE');
+    assert.equal(report.evidence_files_checked, 7);
+  });
+});
+
+test('external evidence-pack gate rejects the synthetic FactoryOS callback smoke as carrier proof', async () => {
+  await withExternalEvidence(async (evidenceRoot, manifest) => {
+    manifest.carrier.callback.origin = 'SYNTHETIC_FACTORYOS_HMAC';
+    manifest.carrier.callback.signature_algorithm = 'FactoryOS HMAC-SHA256';
+    const report = await validateExternalCertificationManifest(manifest, {
+      evidenceRoot,
+      expectedReleaseSha: EXTERNAL_RELEASE_SHA,
+    });
+    assert.equal(report.pass, false);
+    assert.ok(report.issues.some((issue) => issue.code === 'CARRIER_ORIGIN_NOT_PROVIDER_NATIVE'));
+    assert.ok(report.issues.some((issue) => issue.code === 'SYNTHETIC_FACTORYOS_SIGNATURE_NOT_ACCEPTED'));
+  });
+});
+
+test('external evidence-pack gate rejects API-mediated read-back and object digest mismatch', async () => {
+  await withExternalEvidence(async (evidenceRoot, manifest) => {
+    manifest.storage.readback.method = 'FACTORYOS_API';
+    manifest.storage.readback.factoryos_api_used = true;
+    manifest.storage.readback.sha256 = evidenceDigest('different bytes');
+    const report = await validateExternalCertificationManifest(manifest, {
+      evidenceRoot,
+      expectedReleaseSha: EXTERNAL_RELEASE_SHA,
+    });
+    assert.equal(report.pass, false);
+    assert.ok(report.issues.some((issue) => issue.code === 'READBACK_NOT_DIRECT_TO_PROVIDER'));
+    assert.ok(report.issues.some((issue) => issue.code === 'READBACK_MUST_BYPASS_FACTORYOS_API'));
+    assert.ok(report.issues.some((issue) => issue.code === 'UPLOAD_READBACK_DIGEST_MISMATCH'));
+  });
+});
+
+test('external evidence-pack gate verifies local evidence attachment SHA-256 and rejects traversal paths', async () => {
+  await withExternalEvidence(async (evidenceRoot, manifest) => {
+    manifest.evidence_files[0].path = '../outside.json';
+    manifest.evidence_files[1].sha256 = '0'.repeat(64);
+    const report = await validateExternalCertificationManifest(manifest, {
+      evidenceRoot,
+      expectedReleaseSha: EXTERNAL_RELEASE_SHA,
+    });
+    assert.equal(report.pass, false);
+    assert.ok(report.issues.some((issue) => issue.code === 'UNSAFE_EVIDENCE_PATH'));
+    assert.ok(report.issues.some((issue) => issue.code === 'EVIDENCE_FILE_DIGEST_MISMATCH'));
+  });
+});
+
+test('external evidence-pack gate rejects stale release approvals, failed key rotation and secret-bearing fields', async () => {
+  await withExternalEvidence(async (evidenceRoot, manifest) => {
+    manifest.approvals[0].release_sha = 'b'.repeat(40);
+    manifest.storage.credential_rotation.old_credential_denied = false;
+    manifest.private_key = 'must-not-be-present';
+    const report = await validateExternalCertificationManifest(manifest, {
+      evidenceRoot,
+      expectedReleaseSha: EXTERNAL_RELEASE_SHA,
+    });
+    assert.equal(report.pass, false);
+    assert.ok(report.issues.some((issue) => issue.code === 'APPROVAL_RELEASE_SHA_MISMATCH'));
+    assert.ok(report.issues.some((issue) => issue.code === 'CREDENTIAL_ROTATION_NOT_PROVEN'));
+    assert.ok(report.issues.some((issue) => issue.code === 'FORBIDDEN_SECRET_FIELD_NAME'));
+  });
 });
