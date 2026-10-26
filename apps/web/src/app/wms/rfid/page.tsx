@@ -73,6 +73,7 @@ export default function RfidHardwareAcceptancePage() {
   const [posting, setPosting] = useState(false);
   const [result, setResult] = useState<ReconciliationResult | null>(null);
   const readerRef = useRef<InstanceType<typeof WebSerialRfidReader> | null>(null);
+  const readerPortOpenedRef = useRef(false);
   const readsRef = useRef<string[]>([]);
   const idempotencyKeyRef = useRef<string | null>(null);
 
@@ -85,6 +86,7 @@ export default function RfidHardwareAcceptancePage() {
   function clearCapture() {
     readsRef.current = [];
     idempotencyKeyRef.current = null;
+    readerPortOpenedRef.current = false;
     setReads([]);
     setReadCount(0);
     setIgnoredCount(0);
@@ -138,7 +140,10 @@ export default function RfidHardwareAcceptancePage() {
         },
         onStatus: ({ connected: isConnected }: ReaderStatusEvent) => {
           setState(isConnected ? "READING" : "DISCONNECTED");
-          if (isConnected) setMessage("RFID reader connected. Raw EPC reads are being captured locally; stock is not changed by capture.");
+          if (isConnected) {
+            readerPortOpenedRef.current = true;
+            setMessage("RFID reader connected. Raw EPC reads are being captured locally; stock is not changed by capture.");
+          }
           else {
             setReads([...readsRef.current]);
             setMessage("Reader disconnected. Captured EPCs remain available for reconciliation.");
@@ -175,7 +180,8 @@ export default function RfidHardwareAcceptancePage() {
       schema: "factoryos.wms.rfid-hil-evidence/v1",
       evidence_type: "OPERATOR_REPORTED_HARDWARE_IN_LOOP",
       generated_at: generatedAt,
-      physical_hardware_was_connected_by_this_page: Boolean(readerRef.current),
+      reader_port_opened_by_browser: readerPortOpenedRef.current,
+      physical_hardware_identity_independently_attested: false,
       site: { site_code: siteCode.trim(), operator_name: operatorName.trim() },
       device: {
         reader_id: readerId.trim(),
