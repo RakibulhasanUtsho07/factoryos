@@ -16,7 +16,7 @@ Authoritative integration path: `services/api/src/inventory/inventory.location.p
 
 The scenario uses one tenant/factory and connected persisted identities:
 
-1. **GRN provenance:** supplier and approved PO → posted GRN → traceability lot tied to the exact supplier, GRN header, GRN line and accepted quantity. The test queries the persisted foreign-key identities rather than relying on a free-form reference.
+1. **GRN provenance and incoming quality:** supplier and approved PO → posted GRN → traceability lot tied to the exact supplier, GRN header, GRN line and accepted quantity. A supplier inspection HOLD is persisted against the received line, and work-order release is asserted to fail while that hold is active. A recorded RELEASE disposition removes the hold before the same work order can be released.
 2. **Make-to-order guard:** a draft sales order line is created with zero finished-good stock. The work order is planned before confirmation. Order confirmation is asserted to leave finished-good on-hand/reserved quantities at `0.0000` and create zero `ORDER_LINE` reservations. The work-order BOM reservation is the material allocation boundary.
 3. **Production and genealogy:** the exact GRN-linked material lot is consumed once by the released work order; operation events, output posting and the material-to-output genealogy connect to the same sales order/work order.
 4. **Quality/rework:** the output lot is inspected, defected, held and quarantined; REWORK consumes `3.0000` source units and records exactly `2.0000` recovered plus `1.0000` scrap. The recovered lot is separately identified, requires follow-up inspection PASS and an independent verifier. Verification replay does not create a duplicate movement.
@@ -40,14 +40,14 @@ The existing SQL fixtures continue to cover:
 
 - **PR #240** is the consolidation branch for the persisted rework/WMS journey and the zero-stock make-to-order guard. Review its current combined diff and exact-head checks as the source of truth for this merged acceptance path.
 - **PR #243** provides the narrower make-to-order/GRN-to-genealogy slice. Do not merge its duplicate test or re-apply migration 207 independently after the combined path is accepted. Close/supersede it only after verifying its guard implementation and test expectations are present in the consolidation branch.
-- **PR #244** overlaps with the order-to-genealogy journey but additionally reports incoming-material inspection HOLD/RELEASE before work-order release. That distinct behaviour must be explicitly preserved in the shared fixture or kept as a narrow, non-duplicative test before #244 is considered superseded. Do not merge its whole duplicate manufacturing journey solely to obtain that one assertion.
+- **PR #244** overlaps with the order-to-genealogy journey and its unique incoming-material inspection HOLD/RELEASE behaviour is now represented in the consolidated fixture. Review the remaining diff for any other unique acceptance requirement; do not merge its whole duplicate manufacturing journey solely for the duplicate flow.
 
 ## Remaining acceptance boundary
 
 Overall factory lifecycle remains **PARTIAL** until:
 
 1. API CI, PostgreSQL integration CI, production dependency/security checks and SRS/HLD/Blueprint traceability all pass on the exact current PR head; rerun after every source change.
-2. Review confirms no duplicate/conflicting migrations, and the distinct incoming-material inspection HOLD/RELEASE behaviour from PR #244 is either integrated into the shared scenario or preserved in a focused test.
+2. Review confirms no duplicate/conflicting migrations and verifies that the incoming-material HOLD/RELEASE block-and-retry assertions pass in the consolidated fixture.
 3. Provider-originated carrier sandbox callbacks/native signature/retry evidence, effective object-storage IAM, independent upload/read-back digest verification and authorized factory/site sign-off are recorded against the tested release SHA.
 4. Physical barcode/QR/printer/mobile-offline/RFID hardware-in-the-loop acceptance is completed where required by the release scope.
 5. Branch promotion `rakibul-hasan → dev → main` is reviewed with exact-head CI and post-merge commit verification.
