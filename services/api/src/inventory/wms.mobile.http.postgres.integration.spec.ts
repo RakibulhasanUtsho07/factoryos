@@ -118,11 +118,11 @@ postgresDescribe('WMS mobile offline sync HTTP + PostgreSQL acceptance', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [WmsMobileController],
-      providers: [
-        { provide: WmsMobileService, useValue: mobileService },
-        { provide: PermissionGuard, useValue: testGuard },
-      ],
-    }).compile();
+      providers: [{ provide: WmsMobileService, useValue: mobileService }],
+    })
+      .overrideGuard(PermissionGuard)
+      .useValue(testGuard)
+      .compile();
 
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api');
