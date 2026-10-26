@@ -712,8 +712,8 @@ jobs:
             -v ON_ERROR_STOP=1 -f migrations/167_quality_sampling_binding_state_guard.sql
 
           # Migrations 165/166 redefine factoryos_quality_guard_inventory_issue().
-          # Therefore 207-211 must be replayed AFTER those legacy quality idempotency checks,
-          # otherwise the older item-wide issue guard silently overwrites the shipment leaf-scope fix.
+          # Therefore 207-212 must be replayed AFTER those legacy quality idempotency checks,
+          # otherwise the older item-wide issue guard silently overwrites the shipment leaf-scope fix. Migration 212 then governs verified rework lineage.
           echo "Reapplying final make-to-order and shipment quality-hold guards after legacy quality migrations"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/207_production_order_finished_good_reservation_boundary.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/208_wms_traceability_scoped_quality_holds.sql
