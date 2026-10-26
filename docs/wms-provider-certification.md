@@ -112,3 +112,20 @@ The checker accepts only explicit s3:GetObject and s3:PutObject allows for the n
 
 **Interpretation:** PASS_POLICY_SHAPE_ONLY proves only the supplied JSON has the supported narrow shape. It does not prove the export is attached to the deployed identity, nor compute effective permissions across bucket policies, permission boundaries, organization/session policies or KMS grants. The live authenticated upload plus independent read-back is still required to prove effective write/read access. A storage/security owner must separately verify the deployed principal, bucket policy, scope, expiry/rotation, and revocation owner. Do not commit the policy export or any credentials to Git.
 
+
+
+## Storage IAM policy preflight added to the protected smoke
+
+The manual workflow now runs the policy-shape checker **before** posting a POD or creating delivery/reconciliation events. Configure these protected `wms-certification` environment values:
+
+- Secret `WMS_POD_STORAGE_POLICY_JSON`: JSON export of the identity policy intended to be attached to the actual POD runtime principal.
+- Variable `WMS_POD_STORAGE_BUCKET`: exact target bucket.
+- Variable `WMS_POD_STORAGE_PREFIX`: exact approved object prefix ending in `/` (usually `pod/`).
+
+The workflow writes the policy to an owner-readable temporary file, evaluates it, removes the temporary file, and uploads only the redacted shape report alongside the existing smoke evidence. It refuses to proceed to the shipment-side-effect smoke when the required policy inputs are absent or the policy shape fails. The report includes a policy fingerprint, bucket/prefix and required action summary; it does not include policy JSON or credentials.
+
+The API CI suite also includes a regression test that checks this preflight appears before the side-effecting smoke and that both redacted reports are retained. The static checker rejects conditional `Allow` statements because it cannot resolve their effective semantics; it intentionally handles no provider-side policy evaluation.
+
+**This is still not live provider certification.** A passed shape check is not proof that the policy is attached to the active runtime identity, or that bucket policies, organization/session policies, permission boundaries, encryption-key grants, expiry, rotation and revocation behave as intended. A real upload followed by independent provider-side read-back plus an authorized storage/security owner's effective-permissions and credential review is still required. The configured callback harness signs its synthetic callback with the FactoryOS secret, so genuine carrier sandbox origin, the carrier-native signature algorithm, carrier-side retry/replay and carrier credential scope require provider-owned evidence and an approved provider-specific adapter.
+
+Do not upload this PR's policy JSON, API tokens, webhook secret or vendor credentials to Git, workflow output or the evidence artifact. Keep the external certification disposition **OPEN** until the named carrier, storage/security and WMS owners sign the evidence pack against the exact release SHA.
