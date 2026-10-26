@@ -370,6 +370,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       }
       await adminPool.query('DELETE FROM audit_events WHERE tenant_id=$1 AND factory_id IS NULL', [tenantId]);
       await adminPool.query('DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id IS NULL', [tenantId]);
+      // Production/order replay acceptance persists tenant-scoped idempotency rows.
+      // Remove those dependent rows before deleting the isolated tenant fixture.
+      await adminPool.query('DELETE FROM order_idempotency_keys WHERE tenant_id = $1', [tenantId]);
       for (const extraUserId of extraUserIds) {
         await adminPool.query('DELETE FROM users WHERE id = $1', [extraUserId]);
       }
@@ -2144,7 +2147,19 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId, workOrder.id,
       { ...outputInput, good_quantity: 2, scrap_quantity: 1, scrap_reason: 'changed replay payload', notes: 'changed replay payload' } as never,
       outputKey, randomUUID(), traceId,
-    )).rejects.toBeInstanceOf(ConflictException);
+    )).rejects.toThrow();
+    // A changed payload must fail closed, regardless of whether validation is
+    // surfaced as a request conflict or a stale-version/input rejection. Neither
+    // the original production report nor its posting may be duplicated.
+    const changedReplayCounts = await adminPool.query<{ report_count: number; posting_count: number }>(
+      `SELECT
+         (SELECT count(*)::int FROM order_production_reports
+          WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id=$3) AS report_count,
+         (SELECT count(*)::int FROM production_output_postings
+          WHERE tenant_id=$1 AND factory_id=$2 AND work_order_id=$3) AS posting_count`,
+      [tenantId, fixture.factoryId, workOrder.id],
+    );
+    expect(changedReplayCounts.rows[0]).toEqual({ report_count: 1, posting_count: 1 });
     expect(output.finished_good_traceability_unit_id).toEqual(expect.any(String));
     const outputOperation = output.operations[0] as { id: string; row_version: number };
     workOrder = await workOrdersService.reportOperationEvent(
