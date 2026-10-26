@@ -316,7 +316,6 @@ export async function validateWmsHardwareAcceptanceManifest(manifest, {
   if (scope.label_print_scan !== true) addIssue(issues, "LABEL_PRINT_SCAN_ACCEPTANCE_REQUIRED", "$.scope.label_print_scan");
   if (scope.rfid === false) requireText(scope.rfid_exclusion_reason, "$.scope.rfid_exclusion_reason", issues, 1000);
   const expectedScenarios = applicableScenarios(scope);
-  const requiredKinds = new Set(expectedScenarios.flatMap((id) => SCENARIO_EVIDENCE[id]));
 
   const devices = isRecord(manifest.devices) ? manifest.devices : {};
   const knownDeviceIds = new Set();
