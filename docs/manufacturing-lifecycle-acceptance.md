@@ -1,6 +1,6 @@
 # Manufacturing lifecycle cross-slice acceptance
 
-**Status: PARTIAL — database contract gate is wired; one shared data fixture covering the full lifecycle is still required for end-to-end acceptance.**
+**Status: PARTIAL — one persisted GRN → make-to-order work-order → output/genealogy path is now covered; quality disposition/rework/scrap and downstream fulfilment still need one shared acceptance flow.**
 
 ## Scope
 
@@ -12,12 +12,13 @@ Quantity must remain four-decimal fixed-point, a replay must not post a second m
 
 ## PostgreSQL CI coverage
 
-The `api-postgres` workflow runs the domain SQL checks and then `services/api/test/manufacturing-lifecycle-acceptance.sql`. Existing domain fixtures cover:
+The `api-postgres` workflow runs the ordered migration manifest, domain SQL checks and the API PostgreSQL integration suite, including `services/api/test/manufacturing-lifecycle-acceptance.sql`. Existing domain fixtures cover:
 
 - `purchase-order-lifecycle.sql` and `goods-receipt.sql`: PO approval, partial/rejected GRN, accepted-quantity stock movement, over-receipt and duplicate-key rejection, audit/outbox evidence.
 - `uom-conversion.sql`: approved dimensional conversion, exact/reverse conversion, approval separation and precision enforcement.
 - `product-bom-routing-contract.sql` and `product-change-order-contract.sql`: BOM/routing snapshots, approved product revision and effective-date guards.
 - `production-work-order-contract.sql`: tenant isolation, work-order/operation state guards, WIP event evidence, output-to-final-operation links and deferred inventory-output posting.
+- `manufacturing-grn-work-order-output.integration.spec.ts`: one shared persisted supplier PO/posted GRN/material lot is put away, reserved to a product BOM, consumed on work-order completion, and linked to one accepted finished-good output lot through immutable genealogy. The test also proves that a production-linked sales-order line does not reserve nonexistent finished-good stock at confirmation and that an identical output retry does not post a second report.
 - `traceability.sql`: lot/serial identities, forward/reverse genealogy, duplicate/cycle/over-consumption rejection and recall evidence.
 - `quality-management-contract.sql`: quality target/event/hold/disposition/rework controls, inspection criteria, tenant isolation and cross-domain enforcement.
 
@@ -25,9 +26,9 @@ The acceptance SQL adds a single cross-slice contract gate for ordered migration
 
 ## Acceptance boundary
 
-These SQL regression files currently use independent fixtures and each rolls back its own work. The added gate proves that the durable schema and enforcement hooks needed to connect the slices exist; it does **not** claim that one persisted sales order, reservation, posted GRN, work order, output posting, quality disposition and genealogy graph have already been exercised using the same identifiers in one shared end-to-end fixture.
+The new common fixture now exercises one persisted path using the same business identifiers: approved supplier PO/posted GRN → supplier material lot → product revision/BOM/routing → draft sales order → work order planned before confirmation → order confirmation/in-progress → BOM material reservation and issue → accepted output receipt/finished-good lot → material-to-output genealogy → work-order completion. It asserts exact balances (1 unit raw material left, 4 finished-good units posted), 4 units consumed and represented in genealogy, no finished-good order reservation, and idempotent output replay.
 
-Therefore, the task remains **PARTIAL** until a dedicated common-fixture PostgreSQL integration scenario creates the lifecycle in order, replays the same GRN/reservation/output requests, injects a failure and verifies rollback, and checks the final inventory balance and lot genealogy after the hold/rework/scrap path. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders.
+The task remains **PARTIAL** because this common fixture does not yet include quality inspection/hold/disposition/rework/scrap, carton/pallet/shipment, proof of delivery, customer recall, or real factory/hardware acceptance in the same persisted journey. Those boundaries must not be inferred from the subset that passes. Forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders.
 
 ## Useful evidence
 
