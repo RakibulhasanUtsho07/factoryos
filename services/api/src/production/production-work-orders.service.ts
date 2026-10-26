@@ -311,8 +311,8 @@ export class ProductionWorkOrdersService {
       `, [tenantId, factoryId, dto.order_line_id, plannedStart]);
       const source = sourceResult.rows[0];
       if (!source) throw new NotFoundException('Sales order line was not found in this factory');
-      if (!['CONFIRMED', 'IN_PROGRESS'].includes(source.order_status)) {
-        throw new ConflictException('A work order can only be planned for a confirmed or in-progress sales order');
+      if (!['DRAFT', 'CONFIRMED', 'IN_PROGRESS'].includes(source.order_status)) {
+        throw new ConflictException('A work order can only be planned for a draft, confirmed or in-progress sales order');
       }
       if (!source.finished_item_id) {
         throw new ConflictException('Bind the sales order line to an inventory finished-good item before creating production work');
@@ -1050,11 +1050,11 @@ export class ProductionWorkOrdersService {
       }
       const update = await client.query<{ id: string; row_version: number }>(`
         UPDATE work_orders
-        SET status = $1,
+        SET status = $1::varchar(24),
             row_version = row_version + 1,
             updated_by_user_id = $2,
             updated_at = clock_timestamp(),
-            hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END,
+            hold_reason = CASE WHEN $11::boolean THEN $3 ELSE NULL END,
             released_by_user_id = CASE WHEN $4 THEN $2 ELSE released_by_user_id END,
             released_at = CASE WHEN $4 THEN clock_timestamp() ELSE released_at END,
             completed_at = CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END,
@@ -1064,7 +1064,7 @@ export class ProductionWorkOrdersService {
         RETURNING id::text AS id, row_version::int AS row_version
       `, [
         targetStatus, userId, reason, command === 'RELEASE', command === 'COMPLETE', command === 'CANCEL',
-        workOrder.id, tenantId, factoryId, workOrder.row_version,
+        workOrder.id, tenantId, factoryId, workOrder.row_version, command === 'HOLD',
       ]);
       if (!update.rows[0]) throw new ConflictException('Work order changed during its transition');
 
@@ -1446,13 +1446,17 @@ export class ProductionWorkOrdersService {
         startedAt = operation.started_at ?? null;
         activeStartedAt = null;
       }
-      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, clock_timestamp())' : '$6::timestamptz';
-      const activeAtExpression = nextStatus === 'IN_PROGRESS'
-        && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END')
-        ? 'clock_timestamp()'
-        : '$7::timestamptz';
-      const completedAtExpression = command === 'COMPLETE' ? 'clock_timestamp()' : '$8::timestamptz';
-      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'clock_timestamp()' : '$9::timestamptz';
+      // Keep every bound timestamp parameter referenced for every command.
+      // Avoid query-plan type inference depending on the dynamic command branch.
+      const startedAtExpression = `CASE WHEN $13::text = 'START'
+        THEN COALESCE(started_at, clock_timestamp()) ELSE $6::timestamptz END`;
+      const activeAtExpression = `CASE WHEN $1::varchar(20) = 'IN_PROGRESS'
+        AND $13::text IN ('START', 'RESUME', 'DOWNTIME_END')
+        THEN clock_timestamp() ELSE $7::timestamptz END`;
+      const completedAtExpression = `CASE WHEN $13::text = 'COMPLETE'
+        THEN clock_timestamp() ELSE $8::timestamptz END`;
+      const downtimeAtExpression = `CASE WHEN $13::text = 'DOWNTIME_START'
+        THEN clock_timestamp() ELSE $9::timestamptz END`;
       const operationUpdate = await client.query<{
         row_version: number;
         started_at: string | null;
@@ -1485,7 +1489,7 @@ export class ProductionWorkOrdersService {
         nextStatus, operation.id, workOrder.id, tenantId, factoryId,
         startedAt, activeStartedAt, completedAt, downtimeStartedAt, operation.row_version,
         ['WIP_REPORTED', 'WIP_TRANSFERRED'].includes(command) && wipSnapshotToSet !== null,
-        wipSnapshotToSet,
+        wipSnapshotToSet, command,
       ]);
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
       payload.started_at = operationUpdate.rows[0].started_at;
@@ -1527,12 +1531,12 @@ export class ProductionWorkOrdersService {
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
           UPDATE work_orders
-          SET status = $1, row_version = row_version + 1,
+          SET status = $1::varchar(24), row_version = row_version + 1,
               updated_by_user_id = $2, updated_at = clock_timestamp(),
-              hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END
+              hold_reason = CASE WHEN $8::boolean THEN $3 ELSE NULL END
           WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND row_version = $7
           RETURNING row_version::int AS row_version
-        `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version]);
+        `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version, nextWorkOrderStatus === 'ON_HOLD']);
         if (!woUpdate.rows[0]) throw new ConflictException('Work order changed while recording the operation event');
         payload.work_order_row_version = woUpdate.rows[0].row_version;
         if (workOrder.status === 'RELEASED' && nextWorkOrderStatus === 'IN_PROGRESS') {
