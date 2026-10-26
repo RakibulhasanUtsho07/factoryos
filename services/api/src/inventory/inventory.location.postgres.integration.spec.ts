@@ -2022,6 +2022,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     // The produced lot enters a persisted quality hold. Rework consumes the
     // quarantined source quantity, records explicit recovered + scrap amounts,
     // and releases only a separately identified lot after independent inspection.
+    const quarantinedSourceUnitId = finishedLot.id;
     const qualityContext = {
       userId, tenantId, factoryId: fixture.factoryId, requestId, traceId,
     };
@@ -2210,6 +2211,30 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(replayedReworkVerification.replayed).toBe(true);
 
+    const persistedDefectTrace = await qualityService.getDefectTraceability(qualityContext, sourceDefect.id);
+    expect(persistedDefectTrace.links).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        link_type: 'TRACEABILITY_UNIT',
+        target_id: quarantinedSourceUnitId,
+      }),
+      expect.objectContaining({
+        link_type: 'REWORK_OUTPUT',
+        target_id: recoveredUnit.id,
+        rework_order_id: reworkOrder.id,
+        affected_quantity: '2.0000',
+      }),
+    ]));
+    expect(persistedDefectTrace.rework_orders).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: reworkOrder.id,
+        status: 'VERIFIED',
+        input_quantity: '3.0000',
+        recovered_quantity: '2.0000',
+        scrap_quantity: '1.0000',
+        output_traceability_unit_id: recoveredUnit.id,
+      }),
+    ]));
+
     const reworkMovements = await adminPool.query<{
       reference_type: string; movement_count: number; quantity_delta: string;
     }>(
@@ -2238,8 +2263,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       expect.objectContaining({ action: 'REWORK', status: 'RECORDED', quantity: null }),
     ]));
     expect(persistedSourceInspection.holds).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: 'ACTIVE', traceability_unit_id: finishedLot.id }),
+      expect.objectContaining({ status: 'ACTIVE', traceability_unit_id: quarantinedSourceUnitId }),
     ]));
+    const quarantinedSource = await traceabilityService.getUnit(
+      userId, tenantId, fixture.factoryId, quarantinedSourceUnitId,
+    );
+    expect(quarantinedSource.status).toBe('QUARANTINED');
 
     // Downstream warehouse operations now use the separately accepted recovered lot,
     // never the quarantined source lot that was consumed into rework/scrap.
@@ -2322,6 +2351,16 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       { source_unit_id: finishedLot.id, quantity: 2 },
       'wms-order-pod-content-' + randomUUID(), requestId, traceId,
     );
+    const sourcePackingCount = await adminPool.query<{ count: number }>(
+      'SELECT count(*)::int AS count FROM wms_packing_contents WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=$3',
+      [tenantId, fixture.factoryId, quarantinedSourceUnitId],
+    );
+    expect(sourcePackingCount.rows[0]?.count).toBe(0);
+    const recoveredPackingCount = await adminPool.query<{ count: number }>(
+      'SELECT count(*)::int AS count FROM wms_packing_contents WHERE tenant_id=$1 AND factory_id=$2 AND source_unit_id=$3',
+      [tenantId, fixture.factoryId, recoveredUnit.id],
+    );
+    expect(recoveredPackingCount.rows[0]?.count).toBe(1);
     await fulfillmentService.sealContainer(
       userId, tenantId, fixture.factoryId, cartonId,
       'wms-order-pod-seal-' + randomUUID(), requestId, traceId,
