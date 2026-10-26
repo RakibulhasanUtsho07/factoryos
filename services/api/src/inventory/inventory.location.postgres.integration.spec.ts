@@ -238,6 +238,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           await adminPool.query('DELETE FROM work_order_material_requirements WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query('DELETE FROM work_order_operations WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query('DELETE FROM work_orders WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM order_idempotency_keys WHERE tenant_id=$1', [tenantId]);
           await adminPool.query('DELETE FROM order_lines WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query('DELETE FROM orders WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query('DELETE FROM goods_receipt_lines WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
@@ -2141,7 +2142,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(replayedOutput.production_output_posting_id).toBe(output.production_output_posting_id);
     await expect(workOrdersService.reportOutput(
       userId, tenantId, fixture.factoryId, workOrder.id,
-      { ...outputInput, good_quantity: 2, scrap_quantity: 1, notes: 'changed replay payload' } as never,
+      { ...outputInput, good_quantity: 2, scrap_quantity: 1, scrap_reason: 'changed replay payload', notes: 'changed replay payload' } as never,
       outputKey, randomUUID(), traceId,
     )).rejects.toBeInstanceOf(ConflictException);
     expect(output.finished_good_traceability_unit_id).toEqual(expect.any(String));
