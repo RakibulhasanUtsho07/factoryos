@@ -36,6 +36,7 @@ export default function WmsBrowserAcceptancePage() {
   const [primaryState, setPrimaryState] = useState("Not started");
   const [competingState, setCompetingState] = useState("Not run");
   const [refreshing, setRefreshing] = useState(false);
+  const [primaryHeld, setPrimaryHeld] = useState(false);
   const primaryResolver = useRef<((response: { results: SendResult[] }) => void) | null>(null);
   const primaryBatch = useRef<Batch | null>(null);
   const primaryPromise = useRef<Promise<unknown> | null>(null);
@@ -88,18 +89,26 @@ export default function WmsBrowserAcceptancePage() {
 
   useEffect(() => {
     if (!runId) return;
-    void refreshEntries();
-    const onFocus = () => { void refreshEntries(); };
-    window.addEventListener("focus", onFocus);
+    let cancelled = false;
+    const loadEntries = () => {
+      void queue().list(scope).then((current) => {
+        if (!cancelled) setEntries(current as unknown as QueueEntry[]);
+      }).catch((error: unknown) => {
+        if (!cancelled) record("Queue inspection failed: " + (error instanceof Error ? error.message : "unknown error"));
+      });
+    };
+    loadEntries();
+    window.addEventListener("focus", loadEntries);
     const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(channelName) : null;
     if (channel) channel.onmessage = (event: MessageEvent) => {
-      if (event.data?.type === "QUEUE_CHANGED") void refreshEntries();
+      if (event.data?.type === "QUEUE_CHANGED") loadEntries();
     };
     return () => {
-      window.removeEventListener("focus", onFocus);
+      cancelled = true;
+      window.removeEventListener("focus", loadEntries);
       channel?.close();
     };
-  }, [channelName, refreshEntries, runId]);
+  }, [channelName, queue, record, runId, scope]);
 
   const notifyOtherTabs = useCallback((type: string) => {
     if (typeof BroadcastChannel === "undefined" || !runId) return;
@@ -165,6 +174,7 @@ export default function WmsBrowserAcceptancePage() {
       record("Primary tab holds its real IndexedDB claim lease. Switch to the second tab and try the competing claim.");
       return new Promise<{ results: SendResult[] }>((resolve) => {
         primaryResolver.current = resolve;
+        setPrimaryHeld(true);
       });
     }, { claimLeaseMs: 60_000 });
 
@@ -183,6 +193,7 @@ export default function WmsBrowserAcceptancePage() {
       primaryPromise.current = null;
       primaryResolver.current = null;
       primaryBatch.current = null;
+      setPrimaryHeld(false);
     });
   }, [markerKey, notifyOtherTabs, queue, record, refreshEntries, scope]);
 
@@ -246,7 +257,6 @@ export default function WmsBrowserAcceptancePage() {
   }, [record]);
 
   const pendingCount = entries.filter((entry) => entry.status === "PENDING").length;
-  const held = primaryResolver.current !== null && primaryBatch.current !== null;
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
@@ -286,9 +296,9 @@ export default function WmsBrowserAcceptancePage() {
           <li>Return to tab A and release the synthetic APPLIED response. Refresh both tabs to verify receipt-gated local removal.</li>
         </ol>
         <div className="flex flex-wrap gap-2">
-          <button className="rounded-lg bg-blue-700 px-4 py-2 font-medium text-white disabled:opacity-50" onClick={startPrimaryClaim} disabled={!runId || held || pendingCount === 0}>Start primary claim (tab A)</button>
+          <button className="rounded-lg bg-blue-700 px-4 py-2 font-medium text-white disabled:opacity-50" onClick={startPrimaryClaim} disabled={!runId || primaryHeld || pendingCount === 0}>Start primary claim (tab A)</button>
           <button className="rounded-lg bg-indigo-700 px-4 py-2 font-medium text-white disabled:opacity-50" onClick={() => void tryCompetingClaim()} disabled={!runId}>Try competing claim (tab B)</button>
-          <button className="rounded-lg bg-emerald-700 px-4 py-2 font-medium text-white disabled:opacity-50" onClick={releasePrimaryAsApplied} disabled={!held}>Release primary as APPLIED</button>
+          <button className="rounded-lg bg-emerald-700 px-4 py-2 font-medium text-white disabled:opacity-50" onClick={releasePrimaryAsApplied} disabled={!primaryHeld}>Release primary as APPLIED</button>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-lg bg-slate-50 p-3"><p className="text-sm text-slate-600">Tab A</p><p className="font-semibold">{primaryState}</p></div>
