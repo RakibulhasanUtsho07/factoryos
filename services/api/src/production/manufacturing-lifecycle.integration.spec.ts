@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { ConflictException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
