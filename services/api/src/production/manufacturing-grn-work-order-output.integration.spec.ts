@@ -139,6 +139,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
       'purchase_order_status_history',
       'purchase_order_lines',
       'purchase_orders',
+      'suppliers',
       'product_routing_steps',
       'product_bom_lines',
       'product_versions',
