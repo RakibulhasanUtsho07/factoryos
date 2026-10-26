@@ -1529,10 +1529,10 @@ export class ProductionWorkOrdersService {
           UPDATE work_orders
           SET status = $1, row_version = row_version + 1,
               updated_by_user_id = $2, updated_at = clock_timestamp(),
-              hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END
+              hold_reason = CASE WHEN $8::boolean THEN $3 ELSE NULL END
           WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND row_version = $7
           RETURNING row_version::int AS row_version
-        `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version]);
+        `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version, nextWorkOrderStatus === 'ON_HOLD']);
         if (!woUpdate.rows[0]) throw new ConflictException('Work order changed while recording the operation event');
         payload.work_order_row_version = woUpdate.rows[0].row_version;
         if (workOrder.status === 'RELEASED' && nextWorkOrderStatus === 'IN_PROGRESS') {
