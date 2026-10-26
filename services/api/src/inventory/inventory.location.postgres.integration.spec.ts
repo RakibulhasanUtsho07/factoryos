@@ -2193,6 +2193,87 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       reason: 'Independent QA verifies recovered output and scrap accounting',
       evidence: { verification_sheet: 'FACTORY-E2E-QA-01', verifier: 'independent-approver' },
     };
+
+    // Inject a database failure after the VERIFY transaction has updated the
+    // rework row, inserted lifecycle/audit/outbox evidence, and incremented the
+    // output stock balance, but before the output movement can be inserted.
+    // The whole transaction must roll back, not leave a phantom stock balance.
+    const beforeInjectedFailure = await adminPool.query<{
+      rework_event_count: number;
+      rework_outbox_count: number;
+      rework_audit_count: number;
+      item_stock_quantity: string;
+    }>(
+      `SELECT
+        (SELECT count(*)::int FROM quality_rework_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id=$3) AS rework_event_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
+            AND aggregate_id=$3 AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
+        (SELECT count(*)::int FROM quality_audit_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND action_type='QUALITY_REWORK_EVENT'
+            AND payload->>'rework_order_id'=$3) AS rework_audit_count,
+        (SELECT quantity_on_hand::text FROM inventory_stock_balances
+          WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS item_stock_quantity`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
+    );
+    await adminPool.query(`
+      CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
+      RETURNS trigger LANGUAGE plpgsql AS $
+      BEGIN
+        IF NEW.reference_type = 'QUALITY_REWORK_OUTPUT' THEN
+          RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_OUTPUT_FAILURE';
+        END IF;
+        RETURN NEW;
+      END;
+      $;
+    `);
+    await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
+    await adminPool.query(`
+      CREATE TRIGGER zz_test_fail_quality_rework_output
+      BEFORE INSERT ON inventory_movements
+      FOR EACH ROW EXECUTE FUNCTION factoryos_test_fail_quality_rework_output()
+    `);
+    try {
+      await expect(qualityService.transitionReworkOrder(
+        qualityVerifierContext, reworkOrder.id, verificationPayload as never,
+        'factory-e2e-quality-rework-verify-injected-failure-' + suffix,
+      )).rejects.toThrow(/INJECTED_QUALITY_REWORK_OUTPUT_FAILURE/i);
+    } finally {
+      await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
+      await adminPool.query('DROP FUNCTION IF EXISTS factoryos_test_fail_quality_rework_output()');
+    }
+    const afterInjectedFailure = await adminPool.query<{
+      rework_event_count: number;
+      rework_outbox_count: number;
+      rework_audit_count: number;
+      item_stock_quantity: string;
+    }>(
+      `SELECT
+        (SELECT count(*)::int FROM quality_rework_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id=$3) AS rework_event_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
+            AND aggregate_id=$3 AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
+        (SELECT count(*)::int FROM quality_audit_events
+          WHERE tenant_id=$1 AND factory_id=$2 AND action_type='QUALITY_REWORK_EVENT'
+            AND payload->>'rework_order_id'=$3) AS rework_audit_count,
+        (SELECT quantity_on_hand::text FROM inventory_stock_balances
+          WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS item_stock_quantity`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
+    );
+    expect(afterInjectedFailure.rows[0]).toEqual(beforeInjectedFailure.rows[0]);
+    const afterFailedVerify = await qualityService.getReworkOrder(qualityContext, reworkOrder.id);
+    expect(afterFailedVerify).toMatchObject({
+      status: 'COMPLETED',
+      row_version: Number(reworkOrder.row_version),
+    });
+    const noFailedOutputMovement = await adminPool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=$3",
+      [tenantId, fixture.factoryId, reworkOrder.id],
+    );
+    expect(noFailedOutputMovement.rows[0]?.count).toBe(0);
+
     const verifiedRework = await qualityService.transitionReworkOrder(
       qualityVerifierContext, reworkOrder.id, verificationPayload as never,
       'factory-e2e-quality-rework-verify-' + suffix,
