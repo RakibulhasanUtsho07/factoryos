@@ -2063,7 +2063,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId, draftWorkOrder.id, 'RELEASE',
       { expected_version: Number(draftWorkOrder.row_version) } as never,
       'factory-e2e-release-held-material-' + suffix, requestId, traceId,
-    )).rejects.toThrow(/Insufficient eligible FIFO lot\\/serial stock.*held, damaged, quarantined.*excluded/i);
+    )).rejects.toThrow(/Insufficient eligible FIFO lot\/serial stock.*held, damaged, quarantined.*excluded/i);
     const blockedIncomingRelease = await adminPool.query<{ active_hold_count: number }>(
       `SELECT count(*)::int AS active_hold_count FROM quality_holds
        WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id=$3 AND status='ACTIVE'`,
