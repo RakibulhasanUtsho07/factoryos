@@ -162,7 +162,7 @@ test("reader can reconnect after disconnect and starts a fresh serial session", 
       if (epc === EPC_A) firstReadResolve();
     },
   });
-  firstPort.emit(EPC_A + "\\r\\n");
+  firstPort.emit(EPC_A + "\r\n");
   await firstRead;
   await reader.disconnect();
   assert.equal(firstPort.closeCount, 1);
@@ -177,7 +177,7 @@ test("reader can reconnect after disconnect and starts a fresh serial session", 
       if (epc === EPC_B) secondReadResolve();
     },
   });
-  secondPort.emit(EPC_B + "\\n");
+  secondPort.emit(EPC_B + "\n");
   await secondRead;
   await reader.disconnect();
 
