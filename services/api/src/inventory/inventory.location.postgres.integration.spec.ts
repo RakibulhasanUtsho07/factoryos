@@ -3023,7 +3023,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(labelBeforeRecall.print_contract.identity_payload).toMatchObject({
       unit_id: finishedLot.id,
-      status: 'ACTIVE',
+      // This journey issues the label after dispatch and POD; the persisted lot
+      // must already be SHIPPED before recall changes it to RECALLED.
+      status: 'SHIPPED',
     });
 
     const impact = await traceabilityService.recallImpact(
