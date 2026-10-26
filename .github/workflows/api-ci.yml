@@ -22,6 +22,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/api-ci.yml'
+      - '.github/workflows/wms-provider-live-smoke.yml'
   push:
     branches: [main, dev, rakibul-hasan]
     paths:
@@ -42,6 +43,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/api-ci.yml'
+      - '.github/workflows/wms-provider-live-smoke.yml'
 
 permissions:
   contents: read
