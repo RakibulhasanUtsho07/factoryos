@@ -2005,7 +2005,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     // sole material-allocation boundary for this make-to-order journey.
     const confirmedOrder = await ordersService.transitionOrderStatus(
       userId, tenantId, sourceOrderId, 'CONFIRMED', randomUUID(), traceId,
-      Number(sourceOrder.version),
+      1,
     );
     expect(confirmedOrder.status).toBe('CONFIRMED');
     const makeToOrderGuard = await adminPool.query<{
