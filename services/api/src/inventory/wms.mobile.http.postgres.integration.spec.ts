@@ -144,6 +144,9 @@ postgresDescribe('WMS mobile offline sync HTTP + PostgreSQL acceptance', () => {
           'mobile_offline_sync_attempts',
           'mobile_offline_sync_receipts',
           'inventory_movements',
+          'inventory_traceability_location_balances',
+          'inventory_location_transfers',
+          'inventory_location_balances',
           'inventory_stock_balances',
           'inventory_items',
           'outbox_events',
@@ -164,6 +167,15 @@ postgresDescribe('WMS mobile offline sync HTTP + PostgreSQL acceptance', () => {
             [deviceIds],
           );
           await adminPool.query('DELETE FROM inventory_movements WHERE item_id = ANY($1::uuid[])', [itemIds]);
+          await adminPool.query(
+            'DELETE FROM inventory_traceability_location_balances WHERE item_id = ANY($1::uuid[])',
+            [itemIds],
+          );
+          await adminPool.query(
+            'DELETE FROM inventory_location_transfers WHERE item_id = ANY($1::uuid[])',
+            [itemIds],
+          );
+          await adminPool.query('DELETE FROM inventory_location_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_stock_balances WHERE item_id = ANY($1::uuid[])', [itemIds]);
           await adminPool.query('DELETE FROM inventory_items WHERE id = ANY($1::uuid[])', [itemIds]);
         } finally {
