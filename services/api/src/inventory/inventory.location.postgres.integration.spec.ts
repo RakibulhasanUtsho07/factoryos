@@ -14,6 +14,8 @@ import { WmsFulfillmentService } from './wms-fulfillment.service';
 import { GoodsReceiptService } from '../procurement/goods-receipt.service';
 import { ProcurementService } from '../procurement/procurement.service';
 import { ProductDefinitionsService } from '../products/products.service';
+import { OrderIdempotencyService } from '../orders/order-idempotency.service';
+import { OrdersService } from '../orders/orders.service';
 import { ProductionWorkOrdersService } from '../production/production-work-orders.service';
 import { QualityService } from '../quality/quality.service';
 
@@ -1800,6 +1802,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const goodsReceiptService = new GoodsReceiptService(database);
     const productDefinitionsService = new ProductDefinitionsService(database, audit);
     const workOrdersService = new ProductionWorkOrdersService(database, audit, reservationService);
+    const ordersService = new OrdersService(
+      database, audit, new OrderIdempotencyService(database), reservationService,
+    );
     const qualityService = new QualityService(database);
 
     const approverId = randomUUID();
@@ -1932,18 +1937,32 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(approvedVersion.version.state).toBe('APPROVED');
 
-    const sourceOrderResult = await adminPool.query<{ id: string }>(
-      `INSERT INTO orders (tenant_id, factory_id, order_number, customer_name, customer_reference, status, order_date, currency, created_by_user_id)
-       VALUES ($1,$2,$3,'Factory E2E Production Customer',$4,'IN_PROGRESS',CURRENT_DATE,'BDT',$5)
-       RETURNING id::text AS id`,
-      [tenantId, fixture.factoryId, 'SO-E2E-' + suffix, 'WORK-ORDER-' + suffix, userId],
+    const salesOrderReference = 'SO-E2E-' + suffix;
+    const sourceOrder = await ordersService.createOrder(
+      userId, tenantId,
+      {
+        factory_id: fixture.factoryId,
+        order_number: salesOrderReference,
+        customer_name: 'Factory E2E Production Customer',
+        customer_reference: salesOrderReference,
+        currency: 'BDT',
+        lines: [{
+          line_number: 1,
+          product_code: 'FG-E2E-' + suffix,
+          product_name: 'Factory E2E Finished Good',
+          quantity: 3,
+          unit: 'PCS',
+          inventory_item_id: fixture.itemId,
+          unit_price: 0,
+        }],
+      } as never,
+      randomUUID(), traceId, 'factory-e2e-order-' + suffix,
     );
-    const sourceOrderId = sourceOrderResult.rows[0]?.id;
+    const sourceOrderId = sourceOrder.id as string;
     if (!sourceOrderId) throw new Error('Factory E2E production order was not created');
     const sourceLineResult = await adminPool.query<{ id: string }>(
-      `INSERT INTO order_lines (tenant_id, factory_id, order_id, line_number, product_code, product_name, inventory_item_id, quantity, unit)
-       VALUES ($1,$2,$3,1,$4,$5,$6,3.0000,'PCS') RETURNING id::text AS id`,
-      [tenantId, fixture.factoryId, sourceOrderId, finishedItem.sku, finishedItem.name, fixture.itemId],
+      'SELECT id::text AS id FROM order_lines WHERE tenant_id=$1 AND factory_id=$2 AND order_id=$3',
+      [tenantId, fixture.factoryId, sourceOrderId],
     );
     const sourceOrderLineId = sourceLineResult.rows[0]?.id;
     if (!sourceOrderLineId) throw new Error('Factory E2E production order line was not created');
@@ -1952,6 +1971,38 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       { order_line_id: sourceOrderLineId, target_quantity: 3, planned_start_date: plannedStart } as never,
       'factory-e2e-create-work-order-' + suffix, requestId, traceId,
     );
+
+    // A production-managed order line must pass confirmation with zero finished-good
+    // stock and no ORDER_LINE reservation. The BOM work-order reservation is the
+    // sole material-allocation boundary for this make-to-order journey.
+    const confirmedOrder = await ordersService.transitionOrderStatus(
+      userId, tenantId, sourceOrderId, 'CONFIRMED', randomUUID(), traceId,
+      Number(sourceOrder.version),
+    );
+    expect(confirmedOrder.status).toBe('CONFIRMED');
+    const makeToOrderGuard = await adminPool.query<{
+      status: string; finished_stock: string; reserved: string; reservation_count: string;
+    }>(`
+      SELECT o.status, b.quantity_on_hand::text AS finished_stock,
+        b.quantity_reserved::text AS reserved,
+        (SELECT count(*)::text FROM inventory_reservations r
+          WHERE r.tenant_id=ol.tenant_id AND r.factory_id=ol.factory_id
+            AND r.reference_type='ORDER_LINE' AND r.reference_id=ol.id) AS reservation_count
+      FROM orders o
+      JOIN order_lines ol ON ol.order_id=o.id AND ol.tenant_id=o.tenant_id AND ol.factory_id=o.factory_id
+      JOIN inventory_stock_balances b ON b.item_id=ol.inventory_item_id
+        AND b.tenant_id=ol.tenant_id AND b.factory_id=ol.factory_id
+      WHERE o.id=$1 AND o.tenant_id=$2 AND o.factory_id=$3
+    `, [sourceOrderId, tenantId, fixture.factoryId]);
+    expect(makeToOrderGuard.rows[0]).toEqual({
+      status: 'CONFIRMED', finished_stock: '0.0000', reserved: '0.0000', reservation_count: '0',
+    });
+    const inProgressOrder = await ordersService.transitionOrderStatus(
+      userId, tenantId, sourceOrderId, 'IN_PROGRESS', randomUUID(), traceId,
+      Number(confirmedOrder.version),
+    );
+    expect(inProgressOrder.status).toBe('IN_PROGRESS');
+
     let workOrder = await workOrdersService.transitionWorkOrder(
       userId, tenantId, fixture.factoryId, draftWorkOrder.id, 'RELEASE',
       { expected_version: Number(draftWorkOrder.row_version) } as never,
@@ -2645,8 +2696,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     // The upstream shared journey scrapped 1.0000 from the original 3.0000 output.
     expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('2.0000');
 
-    const validReference = 'CUSTOMER-ORDER-VALID-' + randomUUID().slice(0, 8);
-    const validOrder = await createOrderLine(2, validReference);
+    // Ship the recovered output against the very same production-managed sales
+    // order line that was confirmed above with no finished-good stock.
+    const validReference = salesOrderReference;
+    const validOrder = {
+      orderId: sourceOrderId,
+      orderLineId: sourceOrderLineId,
+      orderNumber: salesOrderReference,
+      reference: validReference,
+    };
     const invalidCustomerPayload = {
       shipment_code: 'SHIP-ORDER-CUSTOMER-MISMATCH-' + randomUUID().slice(0, 8),
       customer_name: 'Different Customer', customer_order_reference: validReference,
@@ -2659,7 +2717,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
 
     const payload = {
       shipment_code: 'SHIP-ORDER-POD-' + randomUUID().slice(0, 8),
-      customer_name: 'Acceptance Customer', customer_order_reference: validReference,
+      customer_name: 'Factory E2E Production Customer', customer_order_reference: validReference,
       order_id: validOrder.orderId, order_line_id: validOrder.orderLineId,
       carrier_name: 'Acme Logistics',
       tracking_reference: 'ACME-TRACK-' + randomUUID().slice(0, 8),
@@ -2670,7 +2728,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(dispatch).toMatchObject({
       replayed: false,
-      shipment: { order_id: validOrder.orderId, order_line_id: validOrder.orderLineId, quantity: '2.0000', status: 'DISPATCHED' },
+      shipment: {
+        order_id: sourceOrderId, order_line_id: sourceOrderLineId,
+        customer_name: 'Factory E2E Production Customer',
+        customer_order_reference: salesOrderReference,
+        quantity: '2.0000', status: 'DISPATCHED',
+      },
     });
     const storedOrderBinding = await adminPool.query<{ order_id: string; order_line_id: string; customer_order_reference: string }>(
       `SELECT order_id::text AS order_id, order_line_id::text AS order_line_id, customer_order_reference
