@@ -2206,15 +2206,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id::text=$3::text) AS rework_event_count,
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND rework_order_id::text=$3::text) AS rework_event_count,
         (SELECT count(*)::int FROM outbox_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND aggregate_type='QUALITY_REWORK'
             AND aggregate_id::text=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
         (SELECT count(*)::int FROM quality_audit_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND action_type='QUALITY_REWORK_EVENT'
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
             AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
-          WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS item_stock_quantity`,
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity`,
       [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
     );
     await adminPool.query(`
@@ -2251,15 +2251,15 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id::text=$3::text) AS rework_event_count,
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND rework_order_id::text=$3::text) AS rework_event_count,
         (SELECT count(*)::int FROM outbox_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND aggregate_type='QUALITY_REWORK'
             AND aggregate_id::text=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
         (SELECT count(*)::int FROM quality_audit_events
-          WHERE tenant_id=$1 AND factory_id=$2 AND action_type='QUALITY_REWORK_EVENT'
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
             AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
-          WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS item_stock_quantity`,
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity`,
       [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
     );
     expect(afterInjectedFailure.rows[0]).toEqual(beforeInjectedFailure.rows[0]);
@@ -2269,7 +2269,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       row_version: Number(reworkOrder.row_version),
     });
     const noFailedOutputMovement = await adminPool.query<{ count: number }>(
-      "SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=$3",
+      "SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id::text=$3::text",
       [tenantId, fixture.factoryId, reworkOrder.id],
     );
     expect(noFailedOutputMovement.rows[0]?.count).toBe(0);
