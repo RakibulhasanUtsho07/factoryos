@@ -125,61 +125,7 @@ BEGIN
   END IF;
 
   IF NEW.reference_type <> 'QUALITY_DISPOSITION' OR NEW.reference_id IS NULL THEN
-    RAISE EXCEPTION 'inventory item is on quality hold; issue is only allowed through an approved SCRAP/RETURN disposition or in-progress rework input (active_hold_scopes=%; shipment_edge_matches=%; held_units_in_shipment=%)',
-      (SELECT COALESCE(string_agg(COALESCE(h.traceability_unit_id::text, '<item-level>'), ','), 'none')
-       FROM quality_holds h
-       WHERE h.tenant_id=NEW.tenant_id AND h.factory_id=NEW.factory_id
-         AND h.inventory_item_id=NEW.item_id AND h.status='ACTIVE'),
-      (SELECT count(*)
-       FROM product_genealogy_events shipment_edge
-       JOIN traceability_units shipment_unit
-         ON shipment_unit.id=shipment_edge.target_unit_id
-        AND shipment_unit.tenant_id=shipment_edge.tenant_id
-        AND shipment_unit.factory_id=shipment_edge.factory_id
-       JOIN wms_packing_containers shipment_container
-         ON shipment_container.container_unit_id=shipment_edge.source_unit_id
-        AND shipment_container.tenant_id=shipment_edge.tenant_id
-        AND shipment_container.factory_id=shipment_edge.factory_id
-       WHERE shipment_edge.tenant_id=NEW.tenant_id
-         AND shipment_edge.factory_id=NEW.factory_id
-         AND shipment_edge.relationship_type='SHIPPED_AS'
-         AND shipment_edge.target_unit_id=NEW.reference_id
-         AND shipment_unit.unit_type='SHIPMENT'
-         AND shipment_unit.product_role='SHIPMENT'
-         AND shipment_container.item_id=NEW.item_id
-         AND shipment_container.status IN ('SEALED','DISPATCHED')),
-      (WITH RECURSIVE shipment_units(unit_id) AS (
-         SELECT shipment_edge.source_unit_id
-         FROM product_genealogy_events shipment_edge
-         JOIN traceability_units shipment_unit
-           ON shipment_unit.id=shipment_edge.target_unit_id
-          AND shipment_unit.tenant_id=shipment_edge.tenant_id
-          AND shipment_unit.factory_id=shipment_edge.factory_id
-         JOIN wms_packing_containers shipment_container
-           ON shipment_container.container_unit_id=shipment_edge.source_unit_id
-          AND shipment_container.tenant_id=shipment_edge.tenant_id
-          AND shipment_container.factory_id=shipment_edge.factory_id
-         WHERE shipment_edge.tenant_id=NEW.tenant_id
-           AND shipment_edge.factory_id=NEW.factory_id
-           AND shipment_edge.relationship_type='SHIPPED_AS'
-           AND shipment_edge.target_unit_id=NEW.reference_id
-           AND shipment_unit.unit_type='SHIPMENT'
-           AND shipment_unit.product_role='SHIPMENT'
-           AND shipment_container.item_id=NEW.item_id
-           AND shipment_container.status IN ('SEALED','DISPATCHED')
-         UNION
-         SELECT packed.source_unit_id
-         FROM shipment_units current_unit
-         JOIN wms_packing_contents packed
-           ON packed.container_unit_id=current_unit.unit_id
-          AND packed.tenant_id=NEW.tenant_id
-          AND packed.factory_id=NEW.factory_id
-       )
-       SELECT count(*)
-       FROM shipment_units shipment_leaf
-       JOIN quality_holds h ON h.traceability_unit_id=shipment_leaf.unit_id
-         AND h.tenant_id=NEW.tenant_id AND h.factory_id=NEW.factory_id
-       WHERE h.inventory_item_id=NEW.item_id AND h.status='ACTIVE')
+    RAISE EXCEPTION 'inventory item is on quality hold; issue is only allowed through an approved SCRAP/RETURN disposition or in-progress rework input'
       USING ERRCODE='23514';
   END IF;
 
