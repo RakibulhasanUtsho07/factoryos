@@ -84,6 +84,31 @@ test("Web Serial reader opens a real port stream and forwards EPC frames while i
   assert.equal(reader.connected, false);
 });
 
+test("does not accept a partial EPC that has no line terminator", async () => {
+  const readable = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(EPC_A));
+      controller.close();
+    },
+  });
+  const port = {
+    readable,
+    async open() {},
+    async close() {},
+  };
+  const reader = new WebSerialRfidReader({ serialProvider: { async requestPort() { return port; } } });
+  const reads = [];
+  const ignored = [];
+  await reader.connect({
+    onEpc: (epc) => reads.push(epc),
+    onInvalidLine: (frame) => ignored.push(frame),
+  });
+  await reader.waitUntilStopped();
+  assert.deepEqual(reads, []);
+  assert.equal(ignored.length, 1);
+  assert.equal(ignored[0].code, "INCOMPLETE_READER_FRAME");
+});
+
 test("Web Serial adapter rejects missing browser support and invalid baud rates", async () => {
   const unsupported = new WebSerialRfidReader({ serialProvider: null });
   await assert.rejects(
