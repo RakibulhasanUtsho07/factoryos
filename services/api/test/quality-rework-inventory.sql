@@ -220,7 +220,8 @@ BEGIN
     'Hold source stock pending controlled rework',v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,hold_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_hold,'QWR_SOURCE_HOLD_RECORDED','{"status":"ACTIVE","source_traceability_unit_id":"' || v_source_unit::text || '"}'::jsonb,v_actor,v_correlation);
+  VALUES (v_tenant,v_factory,v_source_inspection,v_hold,'QWR_SOURCE_HOLD_RECORDED',
+    jsonb_build_object('status','ACTIVE','source_traceability_unit_id',v_source_unit),v_actor,v_correlation);
 
   -- Record the authorized REWORK disposition against the same held GRN-sourced lot.
   INSERT INTO quality_dispositions (
