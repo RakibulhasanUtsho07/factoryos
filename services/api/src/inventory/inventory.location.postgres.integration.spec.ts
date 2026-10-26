@@ -1981,20 +1981,64 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, foreignProductionTenantId, fixture.factoryId, workOrder.id,
     )).rejects.toThrow(/not found in this factory/i);
 
-    await locationService.transferStock(
+    const e2ePutAway = await locationService.transferStock(
       userId, tenantId, fixture.factoryId, fixture.itemId,
       {
         source_location_id: fixture.defaultLocationId, destination_location_id: binA.id,
         quantity: 2, movement_purpose: 'PUT_AWAY', traceability_unit_id: finishedLot.id,
       },
-      'fg-order-pod-putaway-' + randomUUID(), requestId, traceId,
+      'factory-e2e-output-putaway-' + suffix, requestId, traceId,
     );
+    expect(e2ePutAway).toMatchObject({
+      movement_purpose: 'PUT_AWAY',
+      traceability_unit_id: finishedLot.id,
+      source_quantity_after: '1.0000',
+      destination_quantity_after: '2.0000',
+    });
+
+    const pickStaging = await locationService.createLocation(
+      userId, tenantId, fixture.factoryId,
+      {
+        location_code: 'FG-PICK-STAGE-' + suffix,
+        name: 'Factory E2E finished goods pick staging',
+        location_type: 'STAGING',
+      },
+      requestId, traceId,
+    );
+    const e2ePickKey = 'factory-e2e-output-pick-' + suffix;
+    const e2ePick = await locationService.transferStock(
+      userId, tenantId, fixture.factoryId, fixture.itemId,
+      {
+        source_location_id: binA.id,
+        destination_location_id: pickStaging.id,
+        quantity: 2,
+        movement_purpose: 'PICK',
+        traceability_unit_id: finishedLot.id,
+      },
+      e2ePickKey, requestId, traceId,
+    );
+    expect(e2ePick).toMatchObject({
+      movement_purpose: 'PICK',
+      traceability_unit_id: finishedLot.id,
+      source_quantity_after: '0.0000',
+      destination_quantity_after: '2.0000',
+    });
+    const persistedPick = await adminPool.query<{ movement_purpose: string; traceability_unit_id: string }>(
+      `SELECT movement_purpose, traceability_unit_id::text AS traceability_unit_id
+       FROM inventory_location_transfers
+       WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3 AND idempotency_key=$4`,
+      [tenantId, fixture.factoryId, fixture.itemId, e2ePickKey],
+    );
+    expect(persistedPick.rows).toEqual([{
+      movement_purpose: 'PICK',
+      traceability_unit_id: finishedLot.id,
+    }]);
 
     const carton = await fulfillmentService.createContainer(
       userId, tenantId, fixture.factoryId,
       {
         container_type: 'CARTON', container_code: 'CARTON-ORDER-POD-' + randomUUID().slice(0, 8),
-        item_id: fixture.itemId, location_id: binA.id, capacity_quantity: 2,
+        item_id: fixture.itemId, location_id: pickStaging.id, capacity_quantity: 2,
       },
       'wms-order-pod-carton-create-' + randomUUID(), requestId, traceId,
     );
