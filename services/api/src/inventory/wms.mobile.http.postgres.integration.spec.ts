@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import type { CanActivate, ExecutionContext, INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { randomUUID } from 'node:crypto';
 import type { Request } from 'express';
 import { Pool } from 'pg';
 import request from 'supertest';
