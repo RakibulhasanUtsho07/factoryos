@@ -248,16 +248,6 @@ jobs:
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/167_quality_sampling_binding_state_guard.sql
 
-          # Migrations 165/166 redefine factoryos_quality_guard_inventory_issue().
-          # Therefore 207-211 must be replayed AFTER those legacy quality idempotency checks,
-          # otherwise the older item-wide issue guard silently overwrites the shipment leaf-scope fix.
-          echo "Reapplying final make-to-order and shipment quality-hold guards after legacy quality migrations"
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/207_production_order_finished_good_reservation_boundary.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/208_wms_traceability_scoped_quality_holds.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
-          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
-
           echo "Reapplying energy/EHS lifecycle closure migration to verify policy, RLS and trigger idempotency"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/168_energy_utility_ehs_lifecycle_closure.sql
@@ -718,6 +708,16 @@ jobs:
           echo "Reapplying sampling binding state guard migration to verify safe schema replay"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f migrations/167_quality_sampling_binding_state_guard.sql
+
+          # Migrations 165/166 redefine factoryos_quality_guard_inventory_issue().
+          # Therefore 207-211 must be replayed AFTER those legacy quality idempotency checks,
+          # otherwise the older item-wide issue guard silently overwrites the shipment leaf-scope fix.
+          echo "Reapplying final make-to-order and shipment quality-hold guards after legacy quality migrations"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/207_production_order_finished_good_reservation_boundary.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/208_wms_traceability_scoped_quality_holds.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/209_wms_scoped_quality_hold_guards.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/210_quality_guard_wms_shipment_leaf_holds.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" -v ON_ERROR_STOP=1 -f migrations/211_quality_guard_wms_shipment_hold_scope.sql
 
           echo "Checking finite-capacity MRP calendar, scenario and frozen-horizon contracts"
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
