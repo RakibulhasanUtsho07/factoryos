@@ -1,6 +1,6 @@
 # Manufacturing lifecycle cross-slice acceptance
 
-**Status: PARTIAL — database contract gate is wired; one shared data fixture covering the full lifecycle is still required for end-to-end acceptance.**
+**Status: PARTIAL — a shared PostgreSQL WMS acceptance journey now covers GRN-to-work-order output through put-away, shipment/POD, recall and reverse material genealogy; wider quality/rollback acceptance and external provider/site sign-off remain open.**
 
 ## Scope
 
@@ -25,9 +25,9 @@ The acceptance SQL adds a single cross-slice contract gate for ordered migration
 
 ## Acceptance boundary
 
-These SQL regression files currently use independent fixtures and each rolls back its own work. The added gate proves that the durable schema and enforcement hooks needed to connect the slices exist; it does **not** claim that one persisted sales order, reservation, posted GRN, work order, output posting, quality disposition and genealogy graph have already been exercised using the same identifiers in one shared end-to-end fixture.
+The SQL domain checks use independent fixtures. A separate shared PostgreSQL integration journey now uses persisted PO/GRN/material-lot IDs, approved product revision/BOM/routing, work-order material reservation/consumption, output posting, forward/reverse genealogy, put-away and the downstream packing/shipment/POD/recall scenario. It does not yet exercise quality inspection/hold/disposition/rework/scrap in that same persisted journey, nor provider-originated carrier callbacks or deployed storage IAM policy.
 
-Therefore, the task remains **PARTIAL** until a dedicated common-fixture PostgreSQL integration scenario creates the lifecycle in order, replays the same GRN/reservation/output requests, injects a failure and verifies rollback, and checks the final inventory balance and lot genealogy after the hold/rework/scrap path. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders.
+Therefore, the task remains **PARTIAL** until the shared scenario also includes replay-without-duplicate-stock assertions, injected-failure rollback, quality disposition/rework/scrap and final stock reconciliation. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders. The separate live carrier/storage runbook and authorized factory sign-off also remain mandatory external release gates.
 
 ## Useful evidence
 
