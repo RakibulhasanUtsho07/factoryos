@@ -1446,13 +1446,13 @@ export class ProductionWorkOrdersService {
         startedAt = operation.started_at ?? null;
         activeStartedAt = null;
       }
-      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, clock_timestamp())' : '$6::timestamptz';
+      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, COALESCE($6::timestamptz, clock_timestamp()))' : '$6::timestamptz';
       const activeAtExpression = nextStatus === 'IN_PROGRESS'
         && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END')
-        ? 'clock_timestamp()'
+        ? 'COALESCE($7::timestamptz, clock_timestamp())'
         : '$7::timestamptz';
-      const completedAtExpression = command === 'COMPLETE' ? 'clock_timestamp()' : '$8::timestamptz';
-      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'clock_timestamp()' : '$9::timestamptz';
+      const completedAtExpression = command === 'COMPLETE' ? 'COALESCE($8::timestamptz, clock_timestamp())' : '$8::timestamptz';
+      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'COALESCE($9::timestamptz, clock_timestamp())' : '$9::timestamptz';
       const operationUpdate = await client.query<{
         row_version: number;
         started_at: string | null;
