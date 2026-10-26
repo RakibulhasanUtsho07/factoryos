@@ -288,7 +288,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
-          'DELETE FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3',
+          'DELETE FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND upper(po_number)=upper($3)',
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
