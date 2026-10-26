@@ -11,6 +11,18 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const MAX_READS_PER_BATCH = 1000;
 
 type ReaderState = "DISCONNECTED" | "CONNECTING" | "READING" | "STOPPING" | "LIMIT_REACHED";
+type HILStatus = "NOT_RUN" | "PASS" | "FAIL";
+type HILCaseId = "KNOWN_TAG" | "REPEATED_EPC" | "UNKNOWN_TAG" | "WRONG_ITEM" | "NOT_PRESENT" | "QUANTITY_RECONCILIATION" | "DISCONNECT_RECONNECT" | "AUTH_SCOPE";
+const HIL_CASES: Array<{ id: HILCaseId; label: string; evidence: string }> = [
+  { id: "KNOWN_TAG", label: "Known tag resolves to the correct traceability unit", evidence: "EPC, unit ID and disposition MATCHED" },
+  { id: "REPEATED_EPC", label: "Repeated EPC reads are deduplicated", evidence: "Raw read count, unique EPC count and duplicate_read_count" },
+  { id: "UNKNOWN_TAG", label: "Unknown EPC is excluded", evidence: "Observation disposition UNKNOWN_TAG" },
+  { id: "WRONG_ITEM", label: "Tag belonging to another item is rejected", evidence: "Observation disposition WRONG_ITEM" },
+  { id: "NOT_PRESENT", label: "Known tag absent from the selected bin contributes zero", evidence: "Observation disposition NOT_PRESENT" },
+  { id: "QUANTITY_RECONCILIATION", label: "Expected / observed / variance quantities reconcile", evidence: "Server batch ID and final quantities" },
+  { id: "DISCONNECT_RECONNECT", label: "Reader disconnect/reconnect and partial line are handled", evidence: "Timestamped operator note and raw sample" },
+  { id: "AUTH_SCOPE", label: "Unauthorized scope or credentials are rejected", evidence: "HTTP result and no cross-factory identity disclosure" },
+];
 type ReaderStatusEvent = { connected: boolean; baudRate: number };
 type RfidObservation = {
   epc: string;
@@ -38,6 +50,17 @@ export default function RfidHardwareAcceptancePage() {
   const [readerId, setReaderId] = useState("");
   const [itemId, setItemId] = useState("");
   const [locationId, setLocationId] = useState("");
+  const [siteCode, setSiteCode] = useState("");
+  const [operatorName, setOperatorName] = useState("");
+  const [manufacturer, setManufacturer] = useState("");
+  const [model, setModel] = useState("");
+  const [serialNumber, setSerialNumber] = useState("");
+  const [firmwareVersion, setFirmwareVersion] = useState("");
+  const [hilStatuses, setHilStatuses] = useState<Record<HILCaseId, HILStatus>>({
+    KNOWN_TAG: "NOT_RUN", REPEATED_EPC: "NOT_RUN", UNKNOWN_TAG: "NOT_RUN", WRONG_ITEM: "NOT_RUN",
+    NOT_PRESENT: "NOT_RUN", QUANTITY_RECONCILIATION: "NOT_RUN", DISCONNECT_RECONNECT: "NOT_RUN", AUTH_SCOPE: "NOT_RUN",
+  });
+  const [hilNotes, setHilNotes] = useState("");
   const [baudRate, setBaudRate] = useState("115200");
   const [sessionId, setSessionId] = useState("");
   const [state, setState] = useState<ReaderState>("DISCONNECTED");
@@ -146,6 +169,49 @@ export default function RfidHardwareAcceptancePage() {
     }
   }
 
+  function exportHardwareEvidence() {
+    const generatedAt = new Date().toISOString();
+    const artifact = {
+      schema: "factoryos.wms.rfid-hil-evidence/v1",
+      evidence_type: "OPERATOR_REPORTED_HARDWARE_IN_LOOP",
+      generated_at: generatedAt,
+      physical_hardware_was_connected_by_this_page: Boolean(readerRef.current),
+      site: { site_code: siteCode.trim(), operator_name: operatorName.trim() },
+      device: {
+        reader_id: readerId.trim(),
+        manufacturer: manufacturer.trim(),
+        model: model.trim(),
+        serial_number: serialNumber.trim(),
+        firmware_version: firmwareVersion.trim(),
+        interface: "USB_SERIAL_WEB_SERIAL",
+        protocol_profile: "HEX_EPC_LINE_OR_EPC_PREFIX_OR_JSON_EPC",
+        baud_rate: Number(baudRate),
+        browser_user_agent: typeof navigator === "undefined" ? null : navigator.userAgent,
+      },
+      context: { api_origin: apiOrigin.trim(), session_id: sessionId, item_id: itemId.trim(), location_id: locationId.trim() },
+      capture: {
+        raw_read_count: readCount,
+        unique_epc_count: uniqueCount,
+        duplicate_reads_client_preview: duplicateCount,
+        ignored_frame_count: ignoredCount,
+        distinct_epcs: summary,
+        ignored_frame_examples: ignoredExamples,
+      },
+      server_reconciliation: result,
+      operator_reported_checks: HIL_CASES.map((item) => ({ id: item.id, status: hilStatuses[item.id], expected_evidence: item.evidence })),
+      notes: hilNotes.trim(),
+      evidence_is_operator_reported_and_not_independently_attested: true,
+    };
+    const blob = new Blob([JSON.stringify(artifact, null, 2)], { type: "application/json" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = "factoryos-rfid-hil-" + (sessionId || generatedAt.replace(/[:.]/g, "-")) + ".json";
+    link.click();
+    URL.revokeObjectURL(objectUrl);
+    setMessage("Operator-reported RFID HIL evidence JSON exported. Attach physical photos/logs and review scenario results before sign-off.");
+  }
+
   async function submitReads() {
     const origin = apiOrigin.trim();
     if (!origin) {
@@ -238,7 +304,7 @@ export default function RfidHardwareAcceptancePage() {
           <label className="text-sm font-medium">Bearer token (optional for cookie-authenticated deployments)
             <input type="password" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} autoComplete="off" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
           </label>
-          <label className="text-sm font-medium">Registered RFID reader UUID
+          <label className="text-sm font-medium">RFID reader UUID (must stay stable across retries)
             <input value={readerId} onChange={(event) => setReaderId(event.target.value)} placeholder="reader UUID" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
           </label>
           <label className="text-sm font-medium">Serial baud rate
@@ -251,6 +317,24 @@ export default function RfidHardwareAcceptancePage() {
           </label>
           <label className="text-sm font-medium">Target inventory location/bin UUID
             <input value={locationId} onChange={(event) => setLocationId(event.target.value)} placeholder="location UUID" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
+          </label>
+          <label className="text-sm font-medium">Site / warehouse code
+            <input value={siteCode} onChange={(event) => setSiteCode(event.target.value)} placeholder="e.g. DHAKA-WH-01" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
+          </label>
+          <label className="text-sm font-medium">Test operator
+            <input value={operatorName} onChange={(event) => setOperatorName(event.target.value)} placeholder="operator or technician identifier" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
+          </label>
+          <label className="text-sm font-medium">Reader manufacturer
+            <input value={manufacturer} onChange={(event) => setManufacturer(event.target.value)} placeholder="manufacturer" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
+          </label>
+          <label className="text-sm font-medium">Reader model
+            <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="exact model / SKU" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
+          </label>
+          <label className="text-sm font-medium">Hardware serial number
+            <input value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} placeholder="hardware serial number" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
+          </label>
+          <label className="text-sm font-medium">Reader firmware version
+            <input value={firmwareVersion} onChange={(event) => setFirmwareVersion(event.target.value)} placeholder="firmware version" className="mt-1 w-full rounded-lg border border-zinc-300 px-3 py-2 font-normal" />
           </label>
         </div>
         <div className="mt-4 flex flex-wrap gap-3">
@@ -310,8 +394,28 @@ export default function RfidHardwareAcceptancePage() {
         </section>
       )}
 
+      <section className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-semibold">4. Hardware-in-the-loop acceptance record</h2>
+        <p className="mt-1 text-sm leading-6 text-zinc-600">Mark a scenario PASS/FAIL only after carrying it out on the target reader at the target site. These results are operator-reported and are not independently attested by this UI.</p>
+        <div className="mt-4 space-y-3">
+          {HIL_CASES.map((item) => <div key={item.id} className="grid gap-2 rounded-xl border border-zinc-200 p-3 sm:grid-cols-[1fr_150px] sm:items-center">
+            <div><p className="text-sm font-semibold">{item.label}</p><p className="mt-1 text-xs text-zinc-500">Evidence: {item.evidence}</p></div>
+            <select aria-label={item.label + " result"} value={hilStatuses[item.id]} onChange={(event) => setHilStatuses((current) => ({ ...current, [item.id]: event.target.value as HILStatus }))} className="rounded-lg border border-zinc-300 px-3 py-2 text-sm">
+              <option value="NOT_RUN">NOT RUN</option><option value="PASS">PASS</option><option value="FAIL">FAIL</option>
+            </select>
+          </div>)}
+        </div>
+        <label className="mt-4 block text-sm font-medium">Test notes / evidence artifact references
+          <textarea value={hilNotes} onChange={(event) => setHilNotes(event.target.value)} rows={4} placeholder="Record distance, tag placement, expected/actual values, photos/log names, defects and operator notes." className="mt-1 w-full rounded-lg border border-zinc-300 p-3 font-normal" />
+        </label>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button onClick={exportHardwareEvidence} className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white">Export HIL evidence JSON</button>
+          <span className="text-xs text-zinc-500">Export includes hardware metadata, raw/unique EPC summary, server batch/observations and manually reported test results.</span>
+        </div>
+      </section>
+
       <footer className="mt-8 rounded-xl bg-zinc-100 p-4 text-sm leading-6 text-zinc-700">
-        Device acceptance is not complete until the exact reader model/firmware, interface, serial protocol, site, browser and operator are recorded with known/unknown/wrong-item tag evidence and final quantity reconciliation. The page uses a physical Web Serial port at runtime, but the repository CI uses a simulated serial stream; it cannot certify hardware that was not connected during testing.
+        Device acceptance is not complete until the exact reader model/firmware, interface, serial protocol, site, browser and operator are recorded with known/unknown/wrong-item tag evidence and final quantity reconciliation. The page uses a physical Web Serial port at runtime, but repository CI uses a simulated serial stream; CI cannot certify hardware that was not connected during testing. This page does not persist hardware metadata as an attested API commissioning record; keep the exported artifact and approved physical evidence with the site release pack.
       </footer>
     </main>
   );
