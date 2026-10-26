@@ -497,6 +497,12 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
     );
     expect(completed.status).toBe('COMPLETED');
 
+    const orderCompleted = await ordersService.transitionOrderStatus(
+      TEST_USER_ID, tenantId, orderId!, 'COMPLETED', randomUUID(), correlationId,
+      Number(inProgress.version),
+    );
+    expect(orderCompleted.status).toBe('COMPLETED');
+
     const persisted = await adminPool.query<{
       order_status: string;
       work_order_status: string;
@@ -573,7 +579,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
 
     expect(persisted.rows).toHaveLength(1);
     expect(persisted.rows[0]).toMatchObject({
-      order_status: 'IN_PROGRESS',
+      order_status: 'COMPLETED',
       work_order_status: 'COMPLETED',
       receipt_status: 'POSTED',
       receipt_quantity: '5.0000',
