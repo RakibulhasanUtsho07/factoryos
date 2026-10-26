@@ -845,7 +845,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
         correlationId,
         correlationId,
       ),
-    ).rejects.toThrow(/quality hold/i);
+    ).rejects.toThrow(/Insufficient eligible FIFO lot\/serial stock.*held, damaged, quarantined.*excluded/i);
 
     const blockedByQualityHold = await adminPool.query<{ active_hold_count: number }>(
       'SELECT count(*)::int AS active_hold_count FROM quality_holds ' +
