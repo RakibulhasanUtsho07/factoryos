@@ -2431,7 +2431,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       movement_type: 'ISSUE',
       reference_type: 'QUALITY_DISPOSITION',
       reference_id: scrapDispositionResult.disposition.id,
-      quantity: 1,
+      quantity: '1.0000',
     });
     const scrapMovement = await inventoryService.createStockMovement(
       userId, tenantId, fixture.factoryId, scrapItemId,
