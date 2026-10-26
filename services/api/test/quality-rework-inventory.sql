@@ -21,6 +21,7 @@ DECLARE
   v_source_inspection UUID := gen_random_uuid();
   v_followup_inspection UUID := gen_random_uuid();
   v_hold UUID := gen_random_uuid();
+  v_rework_disposition UUID := gen_random_uuid();
   v_defect UUID := gen_random_uuid();
   v_source_link UUID := gen_random_uuid();
   v_output_link UUID := gen_random_uuid();
@@ -219,7 +220,30 @@ BEGIN
     'Hold source stock pending controlled rework',v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,hold_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_hold,'QWR_SOURCE_HOLD_RECORDED','{"status":"ACTIVE"}'::jsonb,v_actor,v_correlation);
+  VALUES (v_tenant,v_factory,v_source_inspection,v_hold,'QWR_SOURCE_HOLD_RECORDED','{"status":"ACTIVE","source_traceability_unit_id":"' || v_source_unit::text || '"}'::jsonb,v_actor,v_correlation);
+
+  -- Record the authorized REWORK disposition against the same held GRN-sourced lot.
+  INSERT INTO quality_dispositions (
+    id,tenant_id,factory_id,inspection_id,hold_id,inventory_item_id,action,status,reason,
+    idempotency_key,request_hash,created_by_user_id,correlation_id
+  ) VALUES (
+    v_rework_disposition,v_tenant,v_factory,v_source_inspection,v_hold,v_item,'REWORK','RECORDED',
+    'Route the quarantined GRN material through controlled rework and follow-up inspection',
+    'qwr-source-rework-disposition',repeat('d',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (
+    tenant_id,factory_id,inspection_id,hold_id,action_type,payload,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_source_inspection,v_hold,'QWR_REWORK_DISPOSITION_RECORDED',
+    jsonb_build_object('disposition_id',v_rework_disposition,'action','REWORK',
+      'goods_receipt_id',v_receipt,'goods_receipt_line_id',v_receipt_line),v_actor,v_correlation
+  );
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (
+    v_tenant,v_factory,'QUALITY_DISPOSITION',v_rework_disposition,'QUALITY.DISPOSITION_CHANGED',
+    jsonb_build_object('disposition_id',v_rework_disposition,'action','REWORK','status','RECORDED',
+      'goods_receipt_id',v_receipt,'goods_receipt_line_id',v_receipt_line)
+  );
 
   INSERT INTO quality_defects (
     id,tenant_id,factory_id,inspection_id,defect_code,severity,affected_quantity,description,evidence,
@@ -821,6 +845,49 @@ BEGIN
   SET CONSTRAINTS ctr_goods_receipt_posted_integrity, ctr_quality_inspection_evidence,
     ctr_traceability_unit_evidence, ctr_quality_rework_inventory_reconciliation,
     ctr_quality_defect_link_audit IMMEDIATE;
+
+  IF (SELECT status FROM purchase_orders WHERE id=v_purchase_order AND tenant_id=v_tenant AND factory_id=v_factory)
+       IS DISTINCT FROM 'APPROVED'
+    OR (SELECT status FROM goods_receipts WHERE id=v_receipt AND tenant_id=v_tenant AND factory_id=v_factory)
+       IS DISTINCT FROM 'POSTED'
+    OR NOT EXISTS (
+      SELECT 1 FROM goods_receipt_lines gl
+      WHERE gl.id=v_receipt_line AND gl.goods_receipt_id=v_receipt
+        AND gl.purchase_order_id=v_purchase_order AND gl.purchase_order_line_id=v_po_line
+        AND gl.inventory_item_id=v_item AND gl.received_quantity=5 AND gl.rejected_quantity=0
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM inventory_movements im
+      WHERE im.tenant_id=v_tenant AND im.factory_id=v_factory
+        AND im.reference_type='GOODS_RECEIPT' AND im.reference_id=v_receipt
+        AND im.item_id=v_item AND im.movement_type='RECEIPT'
+        AND im.quantity=5 AND im.quantity_delta=5
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM traceability_units tu
+      WHERE tu.id=v_source_unit AND tu.tenant_id=v_tenant AND tu.factory_id=v_factory
+        AND tu.inventory_item_id=v_item AND tu.product_role='MATERIAL' AND tu.quantity=5
+        AND tu.supplier_id=v_supplier AND tu.goods_receipt_id=v_receipt
+        AND tu.goods_receipt_line_id=v_receipt_line
+    )
+    OR (SELECT count(*) FROM quality_rework_orders r
+        WHERE r.tenant_id=v_tenant AND r.factory_id=v_factory
+          AND r.id IN (v_rework,v_cancel_rework)
+          AND r.source_goods_receipt_id=v_receipt
+          AND r.source_goods_receipt_line_id=v_receipt_line) <> 2
+    OR (SELECT action FROM quality_dispositions WHERE id=v_rework_disposition) IS DISTINCT FROM 'REWORK'
+    OR (SELECT status FROM quality_dispositions WHERE id=v_rework_disposition) IS DISTINCT FROM 'RECORDED'
+    OR NOT EXISTS (
+      SELECT 1 FROM audit_events a WHERE a.tenant_id=v_tenant AND a.factory_id=v_factory
+        AND a.resource_type='GOODS_RECEIPT' AND a.resource_id=v_receipt AND a.action='POSTED'
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM outbox_events o WHERE o.tenant_id=v_tenant AND o.factory_id=v_factory
+        AND o.aggregate_type='GOODS_RECEIPT' AND o.aggregate_id=v_receipt
+        AND o.event_type='PROCUREMENT.GOODS_RECEIPT_POSTED'
+    ) THEN
+    RAISE EXCEPTION 'Shared GRN/quality acceptance failed: approved PO, posted GRN, accepted stock, supplier genealogy and source-bound REWORK disposition must reconcile';
+  END IF;
 
   SELECT quantity_on_hand INTO v_quantity_after FROM inventory_stock_balances
   WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item;
