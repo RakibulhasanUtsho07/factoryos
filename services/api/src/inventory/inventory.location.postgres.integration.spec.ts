@@ -1913,6 +1913,34 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       accepted_quantity: '3.0000',
     }]);
 
+    // Preserve PR #244's distinct incoming-quality gate inside this same
+    // persisted journey: supplier HOLD must block BOM reservation/release until
+    // an explicit quality disposition releases the accepted GRN line.
+    const incomingQualityContext = {
+      userId, tenantId, factoryId: fixture.factoryId, requestId, traceId,
+    };
+    const incomingInspection = await qualityService.createInspection(
+      incomingQualityContext,
+      {
+        inspection_type: 'SUPPLIER',
+        target_type: 'GOODS_RECEIPT_LINE',
+        target_id: receipt.lines[0].id,
+        sample_quantity: 1,
+        notes: 'Incoming supplier quality gate in the consolidated factory journey',
+      } as never,
+      'factory-e2e-incoming-inspection-' + suffix,
+    );
+    const heldIncomingInspection = await qualityService.decideInspection(
+      incomingQualityContext, incomingInspection.id,
+      {
+        expected_version: Number(incomingInspection.row_version),
+        action: 'HOLD',
+        reason: 'Block material allocation pending incoming inspection disposition',
+      } as never,
+      'factory-e2e-incoming-inspection-hold-' + suffix,
+    );
+    expect(heldIncomingInspection.status).toBe('ON_HOLD');
+
     const finishedItemResult = await adminPool.query<{ sku: string; name: string; unit: string }>(
       `SELECT sku, name, unit FROM inventory_items WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
       [fixture.itemId, tenantId, fixture.factoryId],
@@ -2030,6 +2058,43 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       Number(confirmedOrder.version),
     );
     expect(inProgressOrder.status).toBe('IN_PROGRESS');
+
+    await expect(workOrdersService.transitionWorkOrder(
+      userId, tenantId, fixture.factoryId, draftWorkOrder.id, 'RELEASE',
+      { expected_version: Number(draftWorkOrder.row_version) } as never,
+      'factory-e2e-release-held-material-' + suffix, requestId, traceId,
+    )).rejects.toThrow(/Insufficient eligible FIFO lot\\/serial stock.*held, damaged, quarantined.*excluded/i);
+    const blockedIncomingRelease = await adminPool.query<{ active_hold_count: number }>(
+      `SELECT count(*)::int AS active_hold_count FROM quality_holds
+       WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id=$3 AND status='ACTIVE'`,
+      [tenantId, fixture.factoryId, incomingInspection.id],
+    );
+    expect(blockedIncomingRelease.rows[0]?.active_hold_count).toBe(1);
+
+    const inspectionBeforeIncomingRelease = await qualityService.getInspection(
+      incomingQualityContext, incomingInspection.id,
+    );
+    expect(inspectionBeforeIncomingRelease.status).toBe('ON_HOLD');
+    const releasedIncomingInspection = await qualityService.disposeInspection(
+      incomingQualityContext,
+      incomingInspection.id,
+      {
+        expected_version: Number(inspectionBeforeIncomingRelease.row_version),
+        action: 'RELEASE',
+        reason: 'Incoming quality review accepted the supplier material',
+      } as never,
+      'factory-e2e-incoming-inspection-release-' + suffix,
+    );
+    expect(releasedIncomingInspection.disposition.action).toBe('RELEASE');
+    const releasedIncomingHold = await adminPool.query<{
+      active_hold_count: number; released_hold_count: number;
+    }>(
+      `SELECT count(*) FILTER (WHERE status='ACTIVE')::int AS active_hold_count,
+         count(*) FILTER (WHERE status='RELEASED')::int AS released_hold_count
+       FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id=$3`,
+      [tenantId, fixture.factoryId, incomingInspection.id],
+    );
+    expect(releasedIncomingHold.rows[0]).toEqual({ active_hold_count: 0, released_hold_count: 1 });
 
     let workOrder = await workOrdersService.transitionWorkOrder(
       userId, tenantId, fixture.factoryId, draftWorkOrder.id, 'RELEASE',
