@@ -320,6 +320,8 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       } finally {
         await adminPool.query('ALTER TABLE suppliers ENABLE TRIGGER USER');
       }
+      await adminPool.query('DELETE FROM audit_events WHERE tenant_id=$1 AND factory_id IS NULL', [tenantId]);
+      await adminPool.query('DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id IS NULL', [tenantId]);
       for (const extraUserId of extraUserIds) {
         await adminPool.query('DELETE FROM users WHERE id = $1', [extraUserId]);
       }
@@ -1988,6 +1990,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'fg-order-pod-putaway-' + randomUUID(), requestId, traceId,
     );
 
+    const carton = await fulfillmentService.createContainer(
       userId, tenantId, fixture.factoryId,
       {
         container_type: 'CARTON', container_code: 'CARTON-ORDER-POD-' + randomUUID().slice(0, 8),
@@ -2190,7 +2193,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     });
 
     const impact = await traceabilityService.recallImpact(
-      userId, tenantId, fixture.factoryId, finishedLot.id, 12, 200,
+      userId, tenantId, fixture.factoryId, materialLot.id, 12, 200,
     );
     expect(impact.affected_shipment_count).toBe(1);
     expect(impact.affected_shipments[0]).toMatchObject({
