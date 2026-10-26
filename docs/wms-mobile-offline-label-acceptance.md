@@ -24,6 +24,14 @@ Run from the repository root:
 
 The Node test contract covers queue persistence across instances, duplicate prevention, malformed/mismatched/ambiguous receipts, receipt-gated deletion, conflict parking and resolution with a new ID, network retry/backoff, QR and Code 128 SVG generation, print-copy/layout contract, invalid/stale label rejection, and unknown/ambiguous scan lookup. The existing API PostgreSQL suite covers concurrent duplicate retries, different-payload races, stale-version conflicts, terminal receipts, and one-stock-movement conservation.
 
+## HTTP-to-PostgreSQL retry acceptance
+
+The API PostgreSQL suite also exercises the actual `POST /api/wms/mobile/offline-sync/batches` route using a test-only authenticated request-context guard, the production controller and DTO validation pipe, and the real PostgreSQL integration adapter. This is deliberately different from a service-only integration test.
+
+The acceptance scenario sends an `ISSUE` operation, discards the first HTTP response as a lost-response simulation, then retries the identical batch. It checks that the second response reuses the durable receipt, the authoritative stock balance changes only once, there is one inventory movement, and the receipt has exactly one audit and outbox evidence row. Reusing the transaction UUID with a changed quantity must return `IDEMPOTENCY_KEY_REUSED` without another movement. Unauthenticated requests and DTOs with unknown fields are rejected before stock mutation.
+
+The test-only guard only supplies an identity context for this integration fixture; it does **not** test a deployed issuer/JWT, production permission assignments, staging network behavior, or physical hardware. The separate staging run still requires a non-production API, approved test item/device, and real deployment credentials. Do not mark live staging certification PASS based on this CI scenario.
+
 ## Label creation and scan lookup
 
 The API already issues durable label records with a template/layout snapshot, symbology, encoded value, copy count, and identity payload. apps/web/src/lib/wms-label-renderer.mjs consumes that persisted print contract and now creates a local QR SVG or Code 128 B SVG without needing a remote rendering service. It builds a self-contained browser HTML print payload with the template page dimensions, identity fields, copy count, and conspicuous current-at-issue lifecycle status. Values are escaped before they enter the HTML. When a caller supplies a freshly read identity, status/code/identity mismatch rejects printing as stale.
