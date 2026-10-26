@@ -2641,8 +2641,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'wms-order-pod-overship-' + randomUUID(), requestId, traceId,
     )).rejects.toBeInstanceOf(ConflictException);
     const balanceAfterRejectedOrder = await readAggregate(fixture.factoryId, fixture.itemId);
-    // Rejected order-line validation must not consume any of the initial three units.
-    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('3.0000');
+    // Rejected order-line validation must not consume any of the two recovered units.
+    // The upstream shared journey scrapped 1.0000 from the original 3.0000 output.
+    expect(balanceAfterRejectedOrder?.quantity_on_hand).toBe('2.0000');
 
     const validReference = 'CUSTOMER-ORDER-VALID-' + randomUUID().slice(0, 8);
     const validOrder = await createOrderLine(2, validReference);
