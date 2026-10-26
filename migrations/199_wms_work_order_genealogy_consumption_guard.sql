@@ -68,7 +68,7 @@ BEGIN
      OR COALESCE(NEW.evidence->>'source_inventory_item_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   THEN
     RAISE EXCEPTION
-      'work-order output genealogy must bind canonical report and WMS evidence (report_work_order_match=%, source_match=%, work_order_match=%, report_match=%, posting_match=%, finished_item_match=%, output_kind_match=%, source_quantity_match=%, source_unit_match=%, reservation_uuid=%, consumption_uuid=%, allocation_uuid=%, source_item_uuid=%)',
+      'work-order output genealogy evidence mismatch (report_work_order_match=%, source_match=%, work_order_match=%, report_match=%, posting_match=%, finished_item_match=%, output_kind_match=%, source_quantity_match=%, source_unit_match=%)',
       v_output.report_work_order_id IS NOT DISTINCT FROM v_output.work_order_id,
       NEW.evidence->>'source' IS NOT DISTINCT FROM 'WORK_ORDER_MATERIAL_CONSUMPTION',
       NEW.evidence->>'work_order_id' IS NOT DISTINCT FROM v_output.work_order_id::text,
@@ -77,8 +77,8 @@ BEGIN
       NEW.evidence->>'finished_item_id' IS NOT DISTINCT FROM v_output.finished_item_id::text,
       NEW.evidence->>'output_identity_kind' IS NOT DISTINCT FROM v_output.target_kind,
       NEW.evidence->>'source_quantity' IS NOT DISTINCT FROM NEW.quantity::text,
-      NEW.evidence->>'source_unit' IS NOT DISTINCT FROM NEW.unit,
-      COALESCE(NEW.evidence->>'reservation_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+      NEW.evidence->>'source_unit' IS NOT DISTINCT FROM NEW.unit
+      USING ERRCODE = '23514';
   END IF;
   SELECT ca.id AS allocation_id, ca.quantity AS allocated_quantity,
          ca.traceability_unit_id, c.id AS consumption_id,
