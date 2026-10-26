@@ -95,6 +95,10 @@ export function evaluateWmsPodStoragePolicy(policy, { bucket, prefix = 'pod/' } 
     }
 
     const effect = typeof statement.Effect === 'string' ? statement.Effect.toLowerCase() : '';
+    if (effect === 'allow' && Object.hasOwn(statement, 'Condition')) {
+      addIssue(issues, 'UNSUPPORTED_ALLOW_CONDITION', index);
+      return;
+    }
     if (effect === 'deny') {
       // Explicit Deny can reduce access but cannot grant privileges. The live
       // upload/read-back smoke remains necessary to verify effective access.
