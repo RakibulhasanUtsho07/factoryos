@@ -1973,12 +1973,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(forwardTrace.units.some((unit: { id: string }) => unit.id === finishedLot.id)).toBe(true);
 
-    const foreignTenantId = randomUUID();
+    const foreignProductionTenantId = randomUUID();
     await expect(traceabilityService.getUnit(
-      userId, foreignTenantId, fixture.factoryId, finishedLot.id,
+      userId, foreignProductionTenantId, fixture.factoryId, finishedLot.id,
     )).rejects.toThrow(/not found in this factory/i);
     await expect(workOrdersService.getWorkOrder(
-      userId, foreignTenantId, fixture.factoryId, workOrder.id,
+      userId, foreignProductionTenantId, fixture.factoryId, workOrder.id,
     )).rejects.toThrow(/not found in this factory/i);
 
     await locationService.transferStock(
