@@ -1532,9 +1532,9 @@ export class ProductionWorkOrdersService {
       if (nextWorkOrderStatus !== workOrder.status) {
         const woUpdate = await client.query<{ row_version: number }>(`
           UPDATE work_orders
-          SET status = $1, row_version = row_version + 1,
+          SET status = $1::varchar(24), row_version = row_version + 1,
               updated_by_user_id = $2, updated_at = clock_timestamp(),
-              hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END
+              hold_reason = CASE WHEN $1::varchar(24) = 'ON_HOLD' THEN $3 ELSE NULL END
           WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND row_version = $7
           RETURNING row_version::int AS row_version
         `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version]);
