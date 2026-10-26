@@ -90,9 +90,9 @@ jobs:
           WMS_POD_STORAGE_PREFIX: ${{ vars.WMS_POD_STORAGE_PREFIX }}
         run: |
           set -euo pipefail
-          test -n "${WMS_POD_STORAGE_POLICY_JSON:-" || { echo "::error::Configure WMS_POD_STORAGE_POLICY_JSON in the protected environment."; exit 1; }
-          test -n "${WMS_POD_STORAGE_BUCKET:-" || { echo "::error::Configure WMS_POD_STORAGE_BUCKET as an environment variable."; exit 1; }
-          test -n "${WMS_POD_STORAGE_PREFIX:-" || { echo "::error::Configure WMS_POD_STORAGE_PREFIX as an environment variable (normally pod/)."; exit 1; }
+          test -n "${WMS_POD_STORAGE_POLICY_JSON:-}" || { echo "::error::Configure WMS_POD_STORAGE_POLICY_JSON in the protected environment."; exit 1; }
+          test -n "${WMS_POD_STORAGE_BUCKET:-}" || { echo "::error::Configure WMS_POD_STORAGE_BUCKET as an environment variable."; exit 1; }
+          test -n "${WMS_POD_STORAGE_PREFIX:-}" || { echo "::error::Configure WMS_POD_STORAGE_PREFIX as an environment variable (normally pod/)."; exit 1; }
           umask 077
           policy_file="$(mktemp "$RUNNER_TEMP/pod-storage-policy.XXXXXX")"
           trap 'rm -f "$policy_file"' EXIT
