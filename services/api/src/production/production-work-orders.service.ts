@@ -311,8 +311,8 @@ export class ProductionWorkOrdersService {
       `, [tenantId, factoryId, dto.order_line_id, plannedStart]);
       const source = sourceResult.rows[0];
       if (!source) throw new NotFoundException('Sales order line was not found in this factory');
-      if (!['CONFIRMED', 'IN_PROGRESS'].includes(source.order_status)) {
-        throw new ConflictException('A work order can only be planned for a confirmed or in-progress sales order');
+      if (!['DRAFT', 'CONFIRMED', 'IN_PROGRESS'].includes(source.order_status)) {
+        throw new ConflictException('A work order can only be planned for a draft, confirmed or in-progress sales order');
       }
       if (!source.finished_item_id) {
         throw new ConflictException('Bind the sales order line to an inventory finished-good item before creating production work');
