@@ -22,6 +22,7 @@ DECLARE
   v_cycle BOOLEAN;
   v_prior_quantity NUMERIC(18,4);
   v_earlier_candidate BOOLEAN;
+  v_verified_rework BOOLEAN := FALSE;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'product genealogy evidence is append-only'
@@ -58,41 +59,52 @@ BEGIN
     RAISE EXCEPTION 'genealogy target unit is missing from this factory'
       USING ERRCODE = '23503';
   END IF;
+
+  -- REWORKED_INTO is never a generic/manual edge. It must match a completed,
+  -- independently verified rework order and a passed inspection for that output.
+  IF NEW.relationship_type = 'REWORKED_INTO' THEN
+    SELECT EXISTS (
+      SELECT 1
+      FROM quality_rework_orders r
+      JOIN quality_inspections qi
+        ON qi.id = r.follow_up_inspection_id
+       AND qi.tenant_id = r.tenant_id
+       AND qi.factory_id = r.factory_id
+      WHERE r.tenant_id = NEW.tenant_id
+        AND r.factory_id = NEW.factory_id
+        AND r.status = 'VERIFIED'
+        AND r.source_traceability_unit_id = NEW.source_unit_id
+        AND r.output_traceability_unit_id = NEW.target_unit_id
+        AND r.recovered_quantity = NEW.quantity
+        AND r.source_inventory_item_id IS NOT NULL
+        AND r.verified_by_user_id = NEW.created_by_user_id
+        AND r.completed_by_user_id IS DISTINCT FROM r.verified_by_user_id
+        AND qi.target_type = 'TRACEABILITY_UNIT'
+        AND qi.target_id = NEW.target_unit_id
+        AND qi.status = 'PASSED'
+        AND EXISTS (
+          SELECT 1
+          FROM quality_holds h
+          WHERE h.tenant_id = r.tenant_id
+            AND h.factory_id = r.factory_id
+            AND h.traceability_unit_id = NEW.source_unit_id
+            AND h.status = 'ACTIVE'
+        )
+    ) INTO v_verified_rework;
+    IF NOT v_verified_rework THEN
+      RAISE EXCEPTION 'REWORKED_INTO requires matching VERIFIED rework and passed follow-up inspection'
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
   IF (
        v_source_status IN ('QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED')
        OR v_target_status IN ('QUARANTINED', 'RECALLED', 'DISPOSED', 'SHIPPED')
      ) AND NOT (
        NEW.relationship_type = 'REWORKED_INTO'
+       AND v_verified_rework
        AND v_source_status = 'QUARANTINED'
        AND v_target_status = 'ACTIVE'
-       AND EXISTS (
-         SELECT 1
-         FROM quality_rework_orders r
-         JOIN quality_inspections qi
-           ON qi.id = r.follow_up_inspection_id
-          AND qi.tenant_id = r.tenant_id
-          AND qi.factory_id = r.factory_id
-         WHERE r.tenant_id = NEW.tenant_id
-           AND r.factory_id = NEW.factory_id
-           AND r.status = 'VERIFIED'
-           AND r.source_traceability_unit_id = NEW.source_unit_id
-           AND r.output_traceability_unit_id = NEW.target_unit_id
-           AND r.recovered_quantity = NEW.quantity
-           AND r.source_inventory_item_id IS NOT NULL
-           AND r.verified_by_user_id = NEW.created_by_user_id
-           AND r.completed_by_user_id IS DISTINCT FROM r.verified_by_user_id
-           AND qi.target_type = 'TRACEABILITY_UNIT'
-           AND qi.target_id = NEW.target_unit_id
-           AND qi.status = 'PASSED'
-           AND EXISTS (
-             SELECT 1
-             FROM quality_holds h
-             WHERE h.tenant_id = r.tenant_id
-               AND h.factory_id = r.factory_id
-               AND h.traceability_unit_id = NEW.source_unit_id
-               AND h.status = 'ACTIVE'
-           )
-       )
      ) THEN
     RAISE EXCEPTION 'genealogy cannot be changed using quarantined, recalled, disposed or shipped identities except a verified, quantity-matched rework recovery'
       USING ERRCODE = '23514';
