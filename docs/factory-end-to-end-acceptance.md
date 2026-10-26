@@ -7,11 +7,12 @@
 The integration scenario in `services/api/src/inventory/inventory.location.postgres.integration.spec.ts` uses a fresh tenant/factory and ties together these persisted identifiers:
 
 1. Active supplier → purchase order submission and maker/checker approval → posted GRN and accepted quantity.
-2. Material lot linked to the posted GRN line → active finished-good product → effective-dated product revision, BOM and routing approval.
-3. Production work order → material reservation from location/lot → operation start and finished-good output posting → material consumption and genealogy event(s).
-4. The same persisted finished-good source lot enters INVENTORY inspection, records a defect, is put ON_HOLD with an ACTIVE quality hold/quarantine, receives a REWORK disposition, and has its quarantined input consumed by a rework order. Completion records 3.0000 input = 2.0000 recovered + 1.0000 scrap, creates a separate recovered traceability lot, requires a follow-up inspection PASS and a different verifier, and proves exact-key replay does not post a second stock movement. The quarantined source lot must not be packed or shipped.
-5. Reverse trace from the original finished output back to the received material lot, forward trace from the material lot, quality defect/rework links, and negative cross-tenant read tests.
-6. The separately verified recovered lot—not the held source lot—moves through put-away, pick, carton/pallet packing, shipment/POD and recall lifecycle.
+2. The material traceability lot is linked by persisted foreign keys to the supplier, GRN header and exact accepted GRN line; a direct query asserts this provenance.
+3. A draft sales order line starts with zero finished-good stock. Its work order is planned before confirmation; order confirmation must leave finished-good on-hand/reserved quantities at 0.0000 and create no ORDER_LINE reservation. The same order then proceeds IN_PROGRESS.
+4. The approved product revision, BOM and routing drive the work-order material reservation from that exact GRN lot, operation start/completion, accepted output posting, material consumption and genealogy.
+5. The output enters INVENTORY inspection, records a defect, is put ON_HOLD with an ACTIVE quality hold/quarantine, receives a REWORK disposition, and has its quarantined input consumed by a rework order. Completion records 3.0000 input = 2.0000 recovered + 1.0000 scrap, creates a separate recovered traceability lot, requires follow-up inspection PASS and a different verifier, and proves exact-key replay does not post a second stock movement. The quarantined source lot must not be packed or shipped.
+6. Reverse trace from the original finished output back to the received material lot, forward trace from the material lot, quality defect/rework links, and negative cross-tenant read tests.
+7. The separately verified recovered lot—not the held source lot—moves through put-away, pick, carton/pallet packing, shipment/POD and recall. The shipment must bind to the same sales order and order line created at the start of this journey.
 
 The existing WMS portion still injects a test storage verifier for POD digest confirmation. It tests the application flow, not a live storage provider. CI must run the PostgreSQL suite on the exact PR head before the code journey can be marked passing.
 
