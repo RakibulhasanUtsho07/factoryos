@@ -2147,10 +2147,9 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId, workOrder.id,
       { ...outputInput, good_quantity: 2, scrap_quantity: 1, scrap_reason: 'changed replay payload', notes: 'changed replay payload' } as never,
       outputKey, randomUUID(), traceId,
-    )).rejects.toThrow();
-    // A changed payload must fail closed, regardless of whether validation is
-    // surfaced as a request conflict or a stale-version/input rejection. Neither
-    // the original production report nor its posting may be duplicated.
+    )).rejects.toBeInstanceOf(ConflictException);
+    // Changed-payload reuse of the same idempotency key must surface as a conflict;
+    // neither the original production report nor its posting may be duplicated.
     const changedReplayCounts = await adminPool.query<{ report_count: number; posting_count: number }>(
       `SELECT
          (SELECT count(*)::int FROM order_production_reports
