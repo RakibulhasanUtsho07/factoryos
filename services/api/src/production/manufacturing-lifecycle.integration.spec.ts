@@ -269,22 +269,22 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
         const poNumber = purchaseOrderNumber;
         await adminPool.query(
           'DELETE FROM goods_receipt_lines WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
-            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND upper(po_number)=upper($3))',
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
           'DELETE FROM goods_receipts WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
-            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND upper(po_number)=upper($3))',
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
           'DELETE FROM purchase_order_status_history WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
-            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND upper(po_number)=upper($3))',
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
           'DELETE FROM purchase_order_lines WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
-            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND upper(po_number)=upper($3))',
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
@@ -292,7 +292,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
           [tenantId, factoryId, poNumber],
         );
         await adminPool.query(
-          'DELETE FROM suppliers WHERE tenant_id=$1 AND code=$2',
+          'DELETE FROM suppliers WHERE tenant_id=$1 AND upper(code)=upper($2)',
           [tenantId, supplierCode],
         );
 
@@ -490,7 +490,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
       correlationId,
     );
     const supplierRow = await adminPool.query<{ id: string; status: string }>(
-      'SELECT id::text AS id, status FROM suppliers WHERE tenant_id=$1 AND code=$2',
+      'SELECT id::text AS id, status FROM suppliers WHERE tenant_id=$1 AND upper(code)=upper($2)',
       [tenantId, supplierCode],
     );
     supplierId = supplierRow.rows[0]?.id ?? '';
@@ -521,7 +521,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
       correlationId,
     );
     const purchaseOrderRow = await adminPool.query<{ id: string }>(
-      'SELECT id::text AS id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3',
+      'SELECT id::text AS id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND upper(po_number)=upper($3)',
       [tenantId, factoryId, purchaseOrderNumber],
     );
     purchaseOrderId = purchaseOrderRow.rows[0]?.id ?? '';
