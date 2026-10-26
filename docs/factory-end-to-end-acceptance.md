@@ -85,3 +85,5 @@ Use a release-controlled ticket or protected evidence store for the completed re
 | Approvals | Name, role, organization/site, timestamp, signature/ticket ID and exact release SHA |
 
 **Release rule:** without the live provider evidence and valid authorized sign-off, storage/carrier certification and full factory end-to-end acceptance remain OPEN, even if all repository CI checks pass.
+
+<!-- Temporary CI validation marker; no FactoryOS behavior or acceptance result is changed by this line. -->
