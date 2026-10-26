@@ -83,6 +83,17 @@ function newClaimToken() {
   return "wms-claim-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
 }
 
+function nextPendingRetryAt(entry, now) {
+  const backoffUntil = Number(entry.nextRetryAt ?? 0);
+  const activeClaimUntil = typeof entry.syncClaimToken === "string"
+    && entry.syncClaimToken.length > 0
+    && Number(entry.syncClaimUntil ?? 0) > now
+    ? Number(entry.syncClaimUntil)
+    : 0;
+  const dueAt = Math.max(backoffUntil, activeClaimUntil);
+  return Number.isFinite(dueAt) && dueAt > now ? dueAt : null;
+}
+
 /**
  * IndexedDB-backed queue store. Each record is partitioned by authenticated
  * tenant, factory, user, and device; no stock operation is applied locally.
@@ -328,7 +339,11 @@ export class WmsOfflineQueue {
         sentCount: 0, syncedCount: 0, conflictCount: 0, rejectedCount: 0,
         pendingCount: current.filter((x) => x.status === "PENDING").length,
         parkedCount: current.filter((x) => x.status === "CONFLICT" || x.status === "REJECTED").length,
-        retryAt: null,
+        retryAt: current
+          .filter((x) => x.status === "PENDING")
+          .map((x) => nextPendingRetryAt(x, now))
+          .filter((x) => x !== null)
+          .reduce((min, x) => min === null || x < min ? x : min, null),
       };
     }
 
@@ -427,7 +442,11 @@ export class WmsOfflineQueue {
       rejectedCount,
       pendingCount: afterSync.filter((x) => x.status === "PENDING").length,
       parkedCount: afterSync.filter((x) => x.status === "CONFLICT" || x.status === "REJECTED").length,
-      retryAt: afterSync.filter((x) => x.status === "PENDING" && Number(x.nextRetryAt ?? 0) > this.now()).reduce((min, x) => min === null || x.nextRetryAt < min ? x.nextRetryAt : min, null),
+      retryAt: afterSync
+        .filter((x) => x.status === "PENDING")
+        .map((x) => nextPendingRetryAt(x, this.now()))
+        .filter((x) => x !== null)
+        .reduce((min, x) => min === null || x < min ? x : min, null),
     };
   }
 
