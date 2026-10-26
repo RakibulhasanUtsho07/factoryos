@@ -55,10 +55,13 @@ function device(asset_id, extra = {}) {
 }
 
 async function makeBundle(root, { rfid = true } = {}) {
-  const activeScenarios = scenarios.filter((id) => rfid || !id.startsWith("epc_") &&
-    id !== "wrong_or_ineligible_tag_rejected" &&
-    id !== "quantity_reconciliation" &&
-    id !== "rf_burst_disconnect_reconnect");
+  const rfidScenarios = new Set([
+    "epc_repeat_dedup_and_unknown_tag",
+    "wrong_or_ineligible_tag_rejected",
+    "quantity_reconciliation",
+    "rf_burst_disconnect_reconnect",
+  ]);
+  const activeScenarios = scenarios.filter((id) => rfid || !rfidScenarios.has(id));
   const neededKinds = new Map();
   for (const id of activeScenarios) {
     for (const kind of scenarioEvidence[id]) {
