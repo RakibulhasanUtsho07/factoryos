@@ -15,6 +15,7 @@ import { GoodsReceiptService } from '../procurement/goods-receipt.service';
 import { ProcurementService } from '../procurement/procurement.service';
 import { ProductDefinitionsService } from '../products/products.service';
 import { ProductionWorkOrdersService } from '../production/production-work-orders.service';
+import { QualityService } from '../quality/quality.service';
 
 const postgresDescribe = process.env.TEST_ADMIN_DATABASE_URL ? describe : describe.skip;
 
@@ -74,6 +75,20 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
   afterAll(async () => {
     if (adminPool && factoryIds.length) {
       for (const factoryId of factoryIds) {
+        await adminPool.query('ALTER TABLE quality_audit_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_rework_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_defect_links DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_rework_orders DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_ncr_action_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_ncr_actions DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_ncrs DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_dispositions DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_holds DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_inspection_results DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_defect_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_defects DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_inspection_events DISABLE TRIGGER USER');
+        await adminPool.query('ALTER TABLE quality_inspections DISABLE TRIGGER USER');
         await adminPool.query(
           'ALTER TABLE inventory_reservations DISABLE TRIGGER USER',
         );
@@ -127,6 +142,22 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
         await adminPool.query('ALTER TABLE product_definitions DISABLE TRIGGER USER');
         await adminPool.query('ALTER TABLE manufacturing_work_centres DISABLE TRIGGER USER');
         try {
+          // Quality rows are append-only during normal operation. Triggers are disabled
+          // only for cleanup of this isolated PostgreSQL integration fixture.
+          await adminPool.query('DELETE FROM quality_audit_events WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_rework_events WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_defect_links WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_rework_orders WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_ncr_action_events WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_ncr_actions WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_ncrs WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_dispositions WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_inspection_results WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_defect_events WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_defects WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_inspection_events WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
+          await adminPool.query('DELETE FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2', [tenantId, factoryId]);
           await adminPool.query(
             'DELETE FROM inventory_location_transfers WHERE tenant_id = $1 AND factory_id = $2',
             [tenantId, factoryId],
@@ -273,6 +304,20 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             [tenantId, factoryId],
           );
         } finally {
+          await adminPool.query('ALTER TABLE quality_inspections ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_inspection_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_defects ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_defect_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_inspection_results ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_holds ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_dispositions ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_ncrs ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_ncr_actions ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_ncr_action_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_rework_orders ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_defect_links ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_rework_events ENABLE TRIGGER USER');
+          await adminPool.query('ALTER TABLE quality_audit_events ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE inventory_traceability_location_balances ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_units ENABLE TRIGGER USER');
           await adminPool.query('ALTER TABLE traceability_label_issues ENABLE TRIGGER USER');
@@ -1755,6 +1800,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const goodsReceiptService = new GoodsReceiptService(database);
     const productDefinitionsService = new ProductDefinitionsService(database, audit);
     const workOrdersService = new ProductionWorkOrdersService(database, audit, reservationService);
+    const qualityService = new QualityService(database);
 
     const approverId = randomUUID();
     extraUserIds.push(approverId);
@@ -1959,7 +2005,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(consumedMaterials.rows).toHaveLength(1);
     expect(consumedMaterials.rows[0]).toMatchObject({ status: 'CONSUMED', quantity: '3.0000' });
 
-    const finishedLot = await traceabilityService.getUnit(
+    let finishedLot = await traceabilityService.getUnit(
       userId, tenantId, fixture.factoryId, output.finished_good_traceability_unit_id,
     );
     const reverseTrace = await traceabilityService.trace(
@@ -1972,6 +2018,234 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       userId, tenantId, fixture.factoryId, materialLot.id, 'FORWARD', 12, 200,
     );
     expect(forwardTrace.units.some((unit: { id: string }) => unit.id === finishedLot.id)).toBe(true);
+
+    // The produced lot enters a persisted quality hold. Rework consumes the
+    // quarantined source quantity, records explicit recovered + scrap amounts,
+    // and releases only a separately identified lot after independent inspection.
+    const qualityContext = {
+      userId, tenantId, factoryId: fixture.factoryId, requestId, traceId,
+    };
+    const qualityVerifierContext = {
+      userId: approverId, tenantId, factoryId: fixture.factoryId, requestId, traceId,
+    };
+    const sourceInspection = await qualityService.createInspection(
+      qualityContext,
+      {
+        inspection_type: 'INVENTORY',
+        target_type: 'TRACEABILITY_UNIT',
+        target_id: finishedLot.id,
+        sample_quantity: 3,
+        notes: 'Factory E2E final visual and dimensional inspection',
+      } as never,
+      'factory-e2e-quality-inspection-' + suffix,
+    );
+    let heldInspection = await qualityService.decideInspection(
+      qualityContext, sourceInspection.id,
+      { expected_version: Number(sourceInspection.row_version), action: 'START' } as never,
+      'factory-e2e-quality-start-' + suffix,
+    );
+    const sourceDefect = await qualityService.recordDefect(
+      qualityContext, sourceInspection.id,
+      {
+        defect_code: 'E2E-SURFACE-DEFECT',
+        severity: 'MAJOR',
+        affected_quantity: 3,
+        description: 'Acceptance fixture: surface defect requiring controlled rework',
+        evidence: { fixture: 'factory-e2e', inspection: 'final-visual' },
+      } as never,
+      'factory-e2e-quality-defect-' + suffix,
+    );
+    heldInspection = await qualityService.decideInspection(
+      qualityContext, sourceInspection.id,
+      {
+        expected_version: Number(heldInspection.row_version),
+        action: 'HOLD',
+        reason: 'Quarantine lot while disposition is decided',
+      } as never,
+      'factory-e2e-quality-hold-' + suffix,
+    );
+    expect(heldInspection.status).toBe('ON_HOLD');
+    expect(heldInspection.holds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'ACTIVE', traceability_unit_id: finishedLot.id }),
+    ]));
+
+    const qualityDisposition = await qualityService.disposeInspection(
+      qualityContext, sourceInspection.id,
+      {
+        expected_version: Number(heldInspection.row_version),
+        action: 'REWORK',
+        reason: 'Recover conforming quantity; record actual scrap separately',
+      } as never,
+      'factory-e2e-quality-disposition-rework-' + suffix,
+    );
+    expect(qualityDisposition.disposition).toMatchObject({
+      action: 'REWORK',
+      status: 'RECORDED',
+    });
+
+    let reworkOrder = await qualityService.createReworkOrder(
+      qualityContext, sourceDefect.id,
+      {
+        input_quantity: 3,
+        source_traceability_unit_id: finishedLot.id,
+        reason: 'Rework quarantined finished-good lot under approved disposition',
+        instructions: 'Recover 2.0000 PCS and record 1.0000 PCS as scrap',
+        evidence: { route: 'factory-e2e', work_order_id: workOrder.id },
+      } as never,
+      'factory-e2e-quality-rework-create-' + suffix,
+    );
+    reworkOrder = await qualityService.transitionReworkOrder(
+      qualityContext, reworkOrder.id,
+      {
+        expected_version: Number(reworkOrder.row_version), action: 'APPROVE',
+        reason: 'Quality owner approves controlled rework',
+        evidence: { approval: 'E2E quality approver' },
+      } as never,
+      'factory-e2e-quality-rework-approve-' + suffix,
+    );
+    reworkOrder = await qualityService.transitionReworkOrder(
+      qualityContext, reworkOrder.id,
+      {
+        expected_version: Number(reworkOrder.row_version), action: 'START',
+        reason: 'Begin rework and consume the quarantined source quantity',
+        evidence: { source_unit_id: finishedLot.id },
+      } as never,
+      'factory-e2e-quality-rework-start-' + suffix,
+    );
+
+    const recoveredUnit = await traceabilityService.createUnit(
+      userId, tenantId, fixture.factoryId,
+      {
+        unit_type: 'LOT',
+        product_role: 'FINISHED_GOOD',
+        unit_code: 'FG-E2E-REWORK-' + suffix,
+        inventory_item_id: fixture.itemId,
+        quantity: 2,
+        unit: 'PCS',
+        external_reference: 'factory-e2e-quality-rework-' + reworkOrder.id,
+      } as never,
+      'factory-e2e-quality-rework-output-' + suffix, requestId, traceId,
+    );
+    const followUpInspection = await qualityService.createInspection(
+      qualityContext,
+      {
+        inspection_type: 'INVENTORY',
+        target_type: 'TRACEABILITY_UNIT',
+        target_id: recoveredUnit.id,
+        sample_quantity: 2,
+        notes: 'Independent follow-up inspection for recovered rework output',
+      } as never,
+      'factory-e2e-quality-followup-' + suffix,
+    );
+
+    // An invalid recovered/scrap split must not complete the order or post output.
+    await expect(qualityService.transitionReworkOrder(
+      qualityContext, reworkOrder.id,
+      {
+        expected_version: Number(reworkOrder.row_version), action: 'COMPLETE',
+        reason: 'Injected invalid completion split',
+        recovered_quantity: 2, scrap_quantity: 0,
+        output_traceability_unit_id: recoveredUnit.id,
+        follow_up_inspection_id: followUpInspection.id,
+        evidence: { attempt: 'rollback-guard' },
+      } as never,
+      'factory-e2e-quality-rework-invalid-complete-' + suffix,
+    )).rejects.toThrow(/Recovered plus scrap quantity must exactly equal rework input quantity/i);
+    const unchangedRework = await qualityService.getReworkOrder(qualityContext, reworkOrder.id);
+    expect(unchangedRework).toMatchObject({ status: 'IN_PROGRESS', row_version: Number(reworkOrder.row_version) });
+    const noPrematureOutput = await adminPool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND factory_id=$2 AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id=$3",
+      [tenantId, fixture.factoryId, reworkOrder.id],
+    );
+    expect(noPrematureOutput.rows[0]?.count).toBe(0);
+
+    reworkOrder = await qualityService.transitionReworkOrder(
+      qualityContext, reworkOrder.id,
+      {
+        expected_version: Number(reworkOrder.row_version), action: 'COMPLETE',
+        reason: 'Record measured recovered and scrap quantities',
+        recovered_quantity: 2, scrap_quantity: 1,
+        output_traceability_unit_id: recoveredUnit.id,
+        follow_up_inspection_id: followUpInspection.id,
+        evidence: { recovered_quantity: '2.0000', scrap_quantity: '1.0000', scale_record: 'E2E-QA-01' },
+      } as never,
+      'factory-e2e-quality-rework-complete-' + suffix,
+    );
+    let followUp = await qualityService.decideInspection(
+      qualityContext, followUpInspection.id,
+      { expected_version: Number(followUpInspection.row_version), action: 'START' } as never,
+      'factory-e2e-quality-followup-start-' + suffix,
+    );
+    followUp = await qualityService.decideInspection(
+      qualityContext, followUpInspection.id,
+      {
+        expected_version: Number(followUp.row_version), action: 'PASS',
+        reason: 'Independent inspection accepted the recovered output',
+      } as never,
+      'factory-e2e-quality-followup-pass-' + suffix,
+    );
+    expect(followUp.status).toBe('PASSED');
+
+    const verificationPayload = {
+      expected_version: Number(reworkOrder.row_version),
+      action: 'VERIFY',
+      reason: 'Independent QA verifies recovered output and scrap accounting',
+      evidence: { verification_sheet: 'FACTORY-E2E-QA-01', verifier: 'independent-approver' },
+    };
+    const verifiedRework = await qualityService.transitionReworkOrder(
+      qualityVerifierContext, reworkOrder.id, verificationPayload as never,
+      'factory-e2e-quality-rework-verify-' + suffix,
+    );
+    expect(verifiedRework).toMatchObject({
+      status: 'VERIFIED',
+      input_quantity: '3.0000',
+      recovered_quantity: '2.0000',
+      scrap_quantity: '1.0000',
+      output_traceability_unit_id: recoveredUnit.id,
+      follow_up_inspection_id: followUpInspection.id,
+    });
+    const replayedReworkVerification = await qualityService.transitionReworkOrder(
+      qualityVerifierContext, reworkOrder.id, verificationPayload as never,
+      'factory-e2e-quality-rework-verify-' + suffix,
+    );
+    expect(replayedReworkVerification.replayed).toBe(true);
+
+    const reworkMovements = await adminPool.query<{
+      reference_type: string; movement_count: number; quantity_delta: string;
+    }>(
+      `SELECT reference_type, count(*)::int AS movement_count,
+              sum(quantity_delta)::numeric(18,4)::text AS quantity_delta
+       FROM inventory_movements
+       WHERE tenant_id=$1 AND factory_id=$2 AND reference_id=$3
+         AND reference_type IN ('QUALITY_REWORK_INPUT','QUALITY_REWORK_OUTPUT')
+       GROUP BY reference_type ORDER BY reference_type`,
+      [tenantId, fixture.factoryId, reworkOrder.id],
+    );
+    expect(reworkMovements.rows).toEqual([
+      { reference_type: 'QUALITY_REWORK_INPUT', movement_count: 1, quantity_delta: '-3.0000' },
+      { reference_type: 'QUALITY_REWORK_OUTPUT', movement_count: 1, quantity_delta: '2.0000' },
+    ]);
+    const recoveredStock = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3',
+      [tenantId, fixture.factoryId, fixture.itemId],
+    );
+    expect(recoveredStock.rows[0]?.quantity_on_hand).toBe('2.0000');
+
+    const persistedSourceInspection = await qualityService.getInspection(qualityContext, sourceInspection.id);
+    expect(persistedSourceInspection).toMatchObject({ status: 'ON_HOLD' });
+    expect(persistedSourceInspection.defects[0]).toMatchObject({ status: 'RESOLVED' });
+    expect(persistedSourceInspection.dispositions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'REWORK', status: 'RECORDED', quantity: null }),
+    ]));
+    expect(persistedSourceInspection.holds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'ACTIVE', traceability_unit_id: finishedLot.id }),
+    ]));
+
+    // Downstream warehouse operations now use the separately accepted recovered lot,
+    // never the quarantined source lot that was consumed into rework/scrap.
+    finishedLot = await traceabilityService.getUnit(
+      userId, tenantId, fixture.factoryId, recoveredUnit.id,
+    );
 
     const foreignProductionTenantId = randomUUID();
     await expect(traceabilityService.getUnit(
@@ -1992,7 +2266,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     expect(e2ePutAway).toMatchObject({
       movement_purpose: 'PUT_AWAY',
       traceability_unit_id: finishedLot.id,
-      source_quantity_after: '1.0000',
+      source_quantity_after: '0.0000',
       destination_quantity_after: '2.0000',
     });
 
