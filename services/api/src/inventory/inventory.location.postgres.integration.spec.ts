@@ -2113,16 +2113,37 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       'factory-e2e-start-operation-' + suffix, requestId, traceId,
     );
     const activeOperation = workOrder.operations[0] as { id: string; row_version: number };
+    // A sales order cannot be completed before its production output is accepted.
+    await expect(ordersService.transitionOrderStatus(
+      userId, tenantId, sourceOrderId, 'COMPLETED', randomUUID(), traceId,
+      Number(inProgressOrder.version),
+    )).rejects.toBeInstanceOf(ConflictException);
+
+    const outputKey = 'factory-e2e-output-' + suffix;
+    const outputInput = {
+      operation_id: activeOperation.id,
+      expected_work_order_version: Number(workOrder.row_version),
+      expected_operation_version: Number(activeOperation.row_version),
+      good_quantity: 3,
+      scrap_quantity: 0,
+      notes: 'Factory E2E finished-good output',
+    };
     const output = await workOrdersService.reportOutput(
       userId, tenantId, fixture.factoryId, workOrder.id,
-      {
-        operation_id: activeOperation.id,
-        expected_work_order_version: Number(workOrder.row_version),
-        expected_operation_version: Number(activeOperation.row_version),
-        good_quantity: 3, scrap_quantity: 0, notes: 'Factory E2E finished-good output',
-      } as never,
-      'factory-e2e-output-' + suffix, requestId, traceId,
+      outputInput as never, outputKey, requestId, traceId,
     );
+    const replayedOutput = await workOrdersService.reportOutput(
+      userId, tenantId, fixture.factoryId, workOrder.id,
+      outputInput as never, outputKey, randomUUID(), traceId,
+    );
+    expect(replayedOutput.replayed).toBe(true);
+    expect(replayedOutput.production_report_id).toBe(output.production_report_id);
+    expect(replayedOutput.production_output_posting_id).toBe(output.production_output_posting_id);
+    await expect(workOrdersService.reportOutput(
+      userId, tenantId, fixture.factoryId, workOrder.id,
+      { ...outputInput, good_quantity: 2, scrap_quantity: 1, notes: 'changed replay payload' } as never,
+      outputKey, randomUUID(), traceId,
+    )).rejects.toBeInstanceOf(ConflictException);
     expect(output.finished_good_traceability_unit_id).toEqual(expect.any(String));
     const outputOperation = output.operations[0] as { id: string; row_version: number };
     workOrder = await workOrdersService.reportOperationEvent(
@@ -2148,6 +2169,54 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(consumedMaterials.rows).toHaveLength(1);
     expect(consumedMaterials.rows[0]).toMatchObject({ status: 'CONSUMED', quantity: '3.0000' });
+
+    const persistedProductionState = await adminPool.query<{
+      material_on_hand: string; material_reserved: string;
+      finished_on_hand: string; finished_reserved: string;
+      output_count: string; output_quantity: string;
+      consumption_count: string; consumed_quantity: string;
+      genealogy_count: string; genealogy_quantity: string;
+    }>(`
+      SELECT material_balance.quantity_on_hand::text AS material_on_hand,
+        material_balance.quantity_reserved::text AS material_reserved,
+        finished_balance.quantity_on_hand::text AS finished_on_hand,
+        finished_balance.quantity_reserved::text AS finished_reserved,
+        (SELECT count(*)::text FROM production_output_postings p
+          WHERE p.work_order_id=wo.id AND p.tenant_id=wo.tenant_id AND p.factory_id=wo.factory_id) AS output_count,
+        (SELECT COALESCE(sum(p.good_quantity),0)::text FROM production_output_postings p
+          WHERE p.work_order_id=wo.id AND p.tenant_id=wo.tenant_id AND p.factory_id=wo.factory_id) AS output_quantity,
+        (SELECT count(*)::text FROM inventory_reservation_consumptions c
+          JOIN work_order_material_reservations mr ON mr.reservation_id=c.reservation_id
+            AND mr.tenant_id=c.tenant_id AND mr.factory_id=c.factory_id
+          WHERE mr.work_order_id=wo.id AND c.item_id=$4
+            AND c.tenant_id=wo.tenant_id AND c.factory_id=wo.factory_id) AS consumption_count,
+        (SELECT COALESCE(sum(c.quantity),0)::text FROM inventory_reservation_consumptions c
+          JOIN work_order_material_reservations mr ON mr.reservation_id=c.reservation_id
+            AND mr.tenant_id=c.tenant_id AND mr.factory_id=c.factory_id
+          WHERE mr.work_order_id=wo.id AND c.item_id=$4
+            AND c.tenant_id=wo.tenant_id AND c.factory_id=wo.factory_id) AS consumed_quantity,
+        (SELECT count(*)::text FROM product_genealogy_events g
+          WHERE g.source_unit_id=$5 AND g.target_unit_id=$6
+            AND g.tenant_id=wo.tenant_id AND g.factory_id=wo.factory_id
+            AND g.relationship_type='CONSUMED_INTO') AS genealogy_count,
+        (SELECT COALESCE(sum(g.quantity),0)::text FROM product_genealogy_events g
+          WHERE g.source_unit_id=$5 AND g.target_unit_id=$6
+            AND g.tenant_id=wo.tenant_id AND g.factory_id=wo.factory_id
+            AND g.relationship_type='CONSUMED_INTO') AS genealogy_quantity
+      FROM work_orders wo
+      JOIN inventory_stock_balances material_balance
+        ON material_balance.item_id=$4 AND material_balance.tenant_id=wo.tenant_id AND material_balance.factory_id=wo.factory_id
+      JOIN inventory_stock_balances finished_balance
+        ON finished_balance.item_id=wo.finished_item_id AND finished_balance.tenant_id=wo.tenant_id AND finished_balance.factory_id=wo.factory_id
+      WHERE wo.id=$1 AND wo.tenant_id=$2 AND wo.factory_id=$3
+    `, [workOrder.id, tenantId, fixture.factoryId, materialItemId, materialLot.id, output.finished_good_traceability_unit_id]);
+    expect(persistedProductionState.rows).toEqual([{
+      material_on_hand: '0.0000', material_reserved: '0.0000',
+      finished_on_hand: '3.0000', finished_reserved: '0.0000',
+      output_count: '1', output_quantity: '3.0000',
+      consumption_count: '1', consumed_quantity: '3.0000',
+      genealogy_count: '1', genealogy_quantity: '3.0000',
+    }]);
 
     let finishedLot = await traceabilityService.getUnit(
       userId, tenantId, fixture.factoryId, output.finished_good_traceability_unit_id,
