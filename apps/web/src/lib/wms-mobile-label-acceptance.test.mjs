@@ -181,6 +181,7 @@ test("network retry retains queue and backs off rather than dropping an unconfir
   const premature = await queue.flush(scope(), async () => { sendCount += 1; return { results: [applied(TX1)] }; }, { baseRetryMs: 500, maxRetryMs: 5000 });
   assert.equal(sendCount, 0);
   assert.equal(premature.sentCount, 0);
+  assert.equal(premature.retryAt, clock + 500);
 
   clock += 501;
   const recovered = await queue.flush(scope(), async () => { sendCount += 1; return { results: [applied(TX1)] }; }, { baseRetryMs: 500, maxRetryMs: 5000 });
@@ -226,6 +227,7 @@ test("concurrent queue instances atomically claim a pending sync batch once", as
 
   assert.equal(secondSendCount, 0);
   assert.equal(secondResult.sentCount, 0);
+  assert.equal(secondResult.retryAt, now + 10000);
   assert.equal((await queueB.list(scope()))[0].syncClaimToken, "claim-tab-a");
 
   finishFirst({ results: [applied(TX1)] });
