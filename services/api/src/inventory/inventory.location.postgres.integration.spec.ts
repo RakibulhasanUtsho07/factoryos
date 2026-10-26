@@ -2209,10 +2209,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id=$3) AS rework_event_count,
         (SELECT count(*)::int FROM outbox_events
           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
-            AND aggregate_id=$3 AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
+            AND aggregate_id=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
         (SELECT count(*)::int FROM quality_audit_events
           WHERE tenant_id=$1 AND factory_id=$2 AND action_type='QUALITY_REWORK_EVENT'
-            AND payload->>'rework_order_id'=$3) AS rework_audit_count,
+            AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
           WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS item_stock_quantity`,
       [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
@@ -2254,10 +2254,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           WHERE tenant_id=$1 AND factory_id=$2 AND rework_order_id=$3) AS rework_event_count,
         (SELECT count(*)::int FROM outbox_events
           WHERE tenant_id=$1 AND factory_id=$2 AND aggregate_type='QUALITY_REWORK'
-            AND aggregate_id=$3 AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
+            AND aggregate_id=$3::text AND event_type='QUALITY.REWORK_CHANGED') AS rework_outbox_count,
         (SELECT count(*)::int FROM quality_audit_events
           WHERE tenant_id=$1 AND factory_id=$2 AND action_type='QUALITY_REWORK_EVENT'
-            AND payload->>'rework_order_id'=$3) AS rework_audit_count,
+            AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
           WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$4) AS item_stock_quantity`,
       [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
