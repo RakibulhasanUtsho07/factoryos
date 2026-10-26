@@ -76,6 +76,24 @@ function isUuid(value) {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+function newClaimToken() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return "wms-claim-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+}
+
+function nextPendingRetryAt(entry, now) {
+  const backoffUntil = Number(entry.nextRetryAt ?? 0);
+  const activeClaimUntil = typeof entry.syncClaimToken === "string"
+    && entry.syncClaimToken.length > 0
+    && Number(entry.syncClaimUntil ?? 0) > now
+    ? Number(entry.syncClaimUntil)
+    : 0;
+  const dueAt = Math.max(backoffUntil, activeClaimUntil);
+  return Number.isFinite(dueAt) && dueAt > now ? dueAt : null;
+}
+
 /**
  * IndexedDB-backed queue store. Each record is partitioned by authenticated
  * tenant, factory, user, and device; no stock operation is applied locally.
@@ -164,6 +182,76 @@ export class IndexedDbWmsQueueStore {
     });
   }
 
+  /**
+   * Atomically claims due entries in a single IndexedDB read/write transaction.
+   * IndexedDB serializes overlapping read/write transactions across tabs and
+   * queue instances, so only one live claimant gets a given pending entry.
+   */
+  claimPending(scopeKey, now, leaseUntil, claimToken, batchSize, attemptedAt) {
+    return this.runTransaction("readwrite", (store, set) => {
+      const request = store.index("by_scope").getAll(scopeKey);
+      request.onsuccess = () => {
+        const eligible = (request.result ?? [])
+          .filter((entry) => {
+            const activeClaim = typeof entry.syncClaimToken === "string"
+              && entry.syncClaimToken.length > 0
+              && Number(entry.syncClaimUntil ?? 0) > now;
+            return entry.status === "PENDING"
+              && Number(entry.nextRetryAt ?? 0) <= now
+              && !activeClaim;
+          })
+          .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt)
+            || a.transactionId.localeCompare(b.transactionId))
+          .slice(0, batchSize);
+        const claimed = eligible.map((entry) => ({
+          ...entry,
+          attemptCount: Number(entry.attemptCount ?? 0) + 1,
+          lastAttemptAt: attemptedAt,
+          updatedAt: attemptedAt,
+          syncClaimToken: claimToken,
+          syncClaimUntil: leaseUntil,
+        }));
+        for (const entry of claimed) store.put(entry);
+        set(claimed);
+      };
+    });
+  }
+
+  /**
+   * Update an entry only when this sync attempt still owns its unexpired
+   * claim. A late response from a slow tab cannot overwrite a newer claimant.
+   */
+  updateClaimed(scopeKey, transactionId, claimToken, now, updates) {
+    return this.runTransaction("readwrite", (store, set) => {
+      const request = store.get(makeKey(scopeKey, transactionId));
+      request.onsuccess = () => {
+        const entry = request.result;
+        if (!entry || entry.syncClaimToken !== claimToken || Number(entry.syncClaimUntil ?? 0) <= now) {
+          set(false);
+          return;
+        }
+        const updated = { ...entry, ...updates, syncClaimToken: null, syncClaimUntil: 0 };
+        const put = store.put(updated);
+        put.onsuccess = () => set(true);
+      };
+    });
+  }
+
+  removeClaimed(scopeKey, transactionId, claimToken, now) {
+    return this.runTransaction("readwrite", (store, set) => {
+      const request = store.get(makeKey(scopeKey, transactionId));
+      request.onsuccess = () => {
+        const entry = request.result;
+        if (!entry || entry.syncClaimToken !== claimToken || Number(entry.syncClaimUntil ?? 0) <= now) {
+          set(false);
+          return;
+        }
+        const deletion = store.delete(entry.key);
+        deletion.onsuccess = () => set(true);
+      };
+    });
+  }
+
   remove(scopeKey, transactionId) {
     return this.runTransaction("readwrite", (store, set) => {
       const request = store.delete(makeKey(scopeKey, transactionId));
@@ -229,21 +317,34 @@ export class WmsOfflineQueue {
     const batchSize = Math.max(1, Math.min(100, Math.floor(options.batchSize ?? 100)));
     const baseRetryMs = Math.max(100, options.baseRetryMs ?? 1000);
     const maxRetryMs = Math.max(baseRetryMs, options.maxRetryMs ?? 60000);
-    const current = await this.store.list(scope.key);
-    const pending = current
-      .filter((entry) => entry.status === "PENDING" && Number(entry.nextRetryAt ?? 0) <= now)
-      .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt))
-      .slice(0, batchSize);
-    if (pending.length === 0) {
-      return { sentCount: 0, syncedCount: 0, conflictCount: 0, rejectedCount: 0, pendingCount: current.filter((x) => x.status === "PENDING").length, parkedCount: current.filter((x) => x.status === "CONFLICT" || x.status === "REJECTED").length, retryAt: null };
+    const claimLeaseMs = Math.max(1000, Math.min(10 * 60 * 1000, Math.floor(options.claimLeaseMs ?? 120000)));
+    const claimToken = typeof options.createClaimToken === "function"
+      ? String(options.createClaimToken())
+      : newClaimToken();
+    if (!claimToken) {
+      throw new WmsOfflineQueueError("INVALID_CLAIM_TOKEN", "A unique local sync claim token is required.");
     }
-
     const attemptedAt = new Date(now).toISOString();
-    const attempted = [];
-    for (const entry of pending) {
-      const updated = { ...entry, attemptCount: entry.attemptCount + 1, lastAttemptAt: attemptedAt, updatedAt: attemptedAt };
-      await this.store.put(updated);
-      attempted.push(updated);
+    const attempted = await this.store.claimPending(
+      scope.key,
+      now,
+      now + claimLeaseMs,
+      claimToken,
+      batchSize,
+      attemptedAt,
+    );
+    const current = await this.store.list(scope.key);
+    if (attempted.length === 0) {
+      return {
+        sentCount: 0, syncedCount: 0, conflictCount: 0, rejectedCount: 0,
+        pendingCount: current.filter((x) => x.status === "PENDING").length,
+        parkedCount: current.filter((x) => x.status === "CONFLICT" || x.status === "REJECTED").length,
+        retryAt: current
+          .filter((x) => x.status === "PENDING")
+          .map((x) => nextPendingRetryAt(x, now))
+          .filter((x) => x !== null)
+          .reduce((min, x) => min === null || x < min ? x : min, null),
+      };
     }
 
     let response;
@@ -256,7 +357,11 @@ export class WmsOfflineQueue {
       const message = error instanceof Error ? error.message : "Network or API request failed.";
       const retryAt = this.now() + retryDelay(attempted[0].attemptCount, baseRetryMs, maxRetryMs);
       for (const entry of attempted) {
-        await this.store.put({ ...entry, nextRetryAt: retryAt, lastError: message, updatedAt: new Date(this.now()).toISOString() });
+        await this.store.updateClaimed(scope.key, entry.transactionId, claimToken, this.now(), {
+          nextRetryAt: retryAt,
+          lastError: message,
+          updatedAt: new Date(this.now()).toISOString(),
+        });
       }
       const afterError = await this.store.list(scope.key);
       return {
@@ -270,7 +375,11 @@ export class WmsOfflineQueue {
     if (!response || !Array.isArray(response.results)) {
       const retryAt = this.now() + retryDelay(attempted[0].attemptCount, baseRetryMs, maxRetryMs);
       for (const entry of attempted) {
-        await this.store.put({ ...entry, nextRetryAt: retryAt, lastError: "INVALID_SYNC_RESPONSE", updatedAt: new Date(this.now()).toISOString() });
+        await this.store.updateClaimed(scope.key, entry.transactionId, claimToken, this.now(), {
+          nextRetryAt: retryAt,
+          lastError: "INVALID_SYNC_RESPONSE",
+          updatedAt: new Date(this.now()).toISOString(),
+        });
       }
       const afterInvalid = await this.store.list(scope.key);
       return {
@@ -296,14 +405,14 @@ export class WmsOfflineQueue {
       const matches = grouped.get(entry.transactionId) ?? [];
       const result = matches.length === 1 ? matches[0] : null;
       if (result && result.status === "APPLIED" && isUuid(result.receipt_id) && result.operation === entry.payload.operation) {
-        await this.store.remove(scope.key, entry.transactionId);
-        syncedCount += 1;
+        if (await this.store.removeClaimed(scope.key, entry.transactionId, claimToken, this.now())) {
+          syncedCount += 1;
+        }
         continue;
       }
       if (result && result.operation === entry.payload.operation && (result.status === "CONFLICT" || result.status === "REJECTED") && isUuid(result.receipt_id)) {
         const status = result.status;
-        await this.store.put({
-          ...entry,
+        const parked = await this.store.updateClaimed(scope.key, entry.transactionId, claimToken, this.now(), {
           status,
           receiptId: result.receipt_id,
           nextRetryAt: 0,
@@ -312,13 +421,17 @@ export class WmsOfflineQueue {
           serverReceiptMatchesOperation: result.operation === entry.payload.operation,
           updatedAt: new Date(this.now()).toISOString(),
         });
-        if (status === "CONFLICT") conflictCount += 1;
-        else rejectedCount += 1;
+        if (parked && status === "CONFLICT") conflictCount += 1;
+        else if (parked && status === "REJECTED") rejectedCount += 1;
         continue;
       }
       const retryAt = this.now() + retryDelay(entry.attemptCount, baseRetryMs, maxRetryMs);
       const reason = matches.length > 1 ? "AMBIGUOUS_TRANSACTION_RECEIPT" : "MISSING_OR_MISMATCHED_TRANSACTION_RECEIPT";
-      await this.store.put({ ...entry, nextRetryAt: retryAt, lastError: reason, updatedAt: new Date(this.now()).toISOString() });
+      await this.store.updateClaimed(scope.key, entry.transactionId, claimToken, this.now(), {
+        nextRetryAt: retryAt,
+        lastError: reason,
+        updatedAt: new Date(this.now()).toISOString(),
+      });
     }
 
     const afterSync = await this.store.list(scope.key);
@@ -329,7 +442,11 @@ export class WmsOfflineQueue {
       rejectedCount,
       pendingCount: afterSync.filter((x) => x.status === "PENDING").length,
       parkedCount: afterSync.filter((x) => x.status === "CONFLICT" || x.status === "REJECTED").length,
-      retryAt: afterSync.filter((x) => x.status === "PENDING" && Number(x.nextRetryAt ?? 0) > this.now()).reduce((min, x) => min === null || x.nextRetryAt < min ? x.nextRetryAt : min, null),
+      retryAt: afterSync
+        .filter((x) => x.status === "PENDING")
+        .map((x) => nextPendingRetryAt(x, this.now()))
+        .filter((x) => x !== null)
+        .reduce((min, x) => min === null || x < min ? x : min, null),
     };
   }
 

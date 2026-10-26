@@ -122,3 +122,66 @@ test("Web Serial adapter rejects missing browser support and invalid baud rates"
     (error) => error instanceof RfidReaderError && error.code === "INVALID_BAUD_RATE",
   );
 });
+
+test("reader can reconnect after disconnect and starts a fresh serial session", async () => {
+  const encoder = new TextEncoder();
+  const ports = [];
+  const provider = {
+    async requestPort() {
+      const next = ports.shift();
+      if (!next) throw new Error("No test port available.");
+      return next;
+    },
+  };
+  function controllablePort() {
+    let controller;
+    let closeCount = 0;
+    const port = {
+      readable: new ReadableStream({
+        start(value) { controller = value; },
+      }),
+      async open() {},
+      async close() { closeCount += 1; },
+      emit(line) { controller.enqueue(encoder.encode(line)); },
+      get closeCount() { return closeCount; },
+    };
+    return port;
+  }
+
+  const firstPort = controllablePort();
+  const secondPort = controllablePort();
+  ports.push(firstPort, secondPort);
+  const reader = new WebSerialRfidReader({ serialProvider: provider });
+  const reads = [];
+  let firstReadResolve;
+  const firstRead = new Promise((resolve) => { firstReadResolve = resolve; });
+  await reader.connect({
+    baudRate: 9600,
+    onEpc: (epc) => {
+      reads.push(epc);
+      if (epc === EPC_A) firstReadResolve();
+    },
+  });
+  firstPort.emit(EPC_A + "\r\n");
+  await firstRead;
+  await reader.disconnect();
+  assert.equal(firstPort.closeCount, 1);
+  assert.equal(reader.connected, false);
+
+  let secondReadResolve;
+  const secondRead = new Promise((resolve) => { secondReadResolve = resolve; });
+  await reader.connect({
+    baudRate: 9600,
+    onEpc: (epc) => {
+      reads.push(epc);
+      if (epc === EPC_B) secondReadResolve();
+    },
+  });
+  secondPort.emit(EPC_B + "\n");
+  await secondRead;
+  await reader.disconnect();
+
+  assert.deepEqual(reads, [EPC_A, EPC_B]);
+  assert.equal(secondPort.closeCount, 1);
+  assert.equal(reader.connected, false);
+});
