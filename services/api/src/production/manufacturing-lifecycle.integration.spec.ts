@@ -12,6 +12,9 @@ import { TraceabilityService } from '../inventory/traceability.service';
 import { OrderIdempotencyService } from '../orders/order-idempotency.service';
 import { OrdersService } from '../orders/orders.service';
 import { ProductDefinitionsService } from '../products/products.service';
+import { GoodsReceiptService } from '../procurement/goods-receipt.service';
+import { ProcurementService } from '../procurement/procurement.service';
+import { QualityService } from '../quality/quality.service';
 import { ProductionWorkOrdersService } from './production-work-orders.service';
 
 describe('persisted manufacturing order-to-genealogy acceptance', () => {
@@ -25,6 +28,10 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
   const workCentreCode = 'MFG-E2E-WC-' + runKey;
   const workOrderKey = 'mfg-e2e-work-order-' + runKey;
   const outputKey = 'mfg-e2e-output-' + runKey;
+  const supplierCode = 'MFG-E2E-SUP-' + runKey;
+  const purchaseOrderNumber = 'MFG-E2E-PO-' + runKey;
+  const goodsReceiptKey = 'mfg-e2e-grn-' + runKey;
+  const qualityInspectionKey = 'mfg-e2e-inspection-' + runKey;
 
   let adminPool: Pool | null = null;
   let appPool: Pool | null = null;
@@ -44,6 +51,11 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
   let orderLineId = '';
   let workOrderId = '';
   let materialTraceabilityUnitId = '';
+  let supplierId = '';
+  let purchaseOrderId = '';
+  let goodsReceiptId = '';
+  let goodsReceiptLineId = '';
+  let qualityInspectionId = '';
 
   let inventoryReservationService: InventoryReservationService;
   let inventoryLocationService: InventoryLocationService;
@@ -51,6 +63,9 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
   let ordersService: OrdersService;
   let productService: ProductDefinitionsService;
   let productionService: ProductionWorkOrdersService;
+  let goodsReceiptService: GoodsReceiptService;
+  let procurementService: ProcurementService;
+  let qualityService: QualityService;
 
   const auditService = {
     record: async () => undefined,
@@ -109,11 +124,30 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
       auditService,
       inventoryReservationService,
     );
+    goodsReceiptService = new GoodsReceiptService(database);
+    procurementService = new ProcurementService(database);
+    qualityService = new QualityService(database);
   });
 
   afterAll(async () => {
     if (adminPool && tenantId && factoryId) {
       const mutableTables = [
+        'quality_audit_events',
+        'quality_inspection_events',
+        'quality_defect_events',
+        'quality_defects',
+        'quality_dispositions',
+        'quality_holds',
+        'quality_ncr_actions',
+        'quality_ncrs',
+        'quality_inspection_results',
+        'quality_inspections',
+        'goods_receipt_lines',
+        'goods_receipts',
+        'purchase_order_status_history',
+        'purchase_order_lines',
+        'purchase_orders',
+        'suppliers',
         'product_genealogy_events',
         'work_order_events',
         'production_output_postings',
@@ -170,7 +204,7 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
               [tenantId, factoryId, orderNumber],
             );
         const cleanupOrderId = foundOrderId.rows[0]?.id ?? '';
-        const idsForOutbox = [...itemIds, ...productIds, productVersionId, workCentreId, warehouseId, binId, cleanupOrderId, ...workOrderIds].filter(Boolean);
+        const idsForOutbox = [...itemIds, ...productIds, productVersionId, workCentreId, warehouseId, binId, cleanupOrderId, supplierId, purchaseOrderId, goodsReceiptId, goodsReceiptLineId, qualityInspectionId, ...workOrderIds].filter(Boolean);
         if (idsForOutbox.length > 0) {
           await adminPool.query(
             'DELETE FROM outbox_events WHERE tenant_id=$1 AND factory_id=$2 ' +
@@ -178,6 +212,89 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
             [tenantId, factoryId, idsForOutbox, '%' + (cleanupOrderId || orderNumber) + '%', '%' + (workOrderIds[0] || workOrderKey) + '%'],
           );
         }
+
+        const inspectionKey = qualityInspectionKey;
+        await adminPool.query(
+          'DELETE FROM quality_audit_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_defect_events WHERE tenant_id=$1 AND factory_id=$2 AND defect_id IN ' +
+            '(SELECT id FROM quality_defects WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3))',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_inspection_events WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_inspection_results WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_ncr_actions WHERE tenant_id=$1 AND factory_id=$2 AND ncr_id IN ' +
+            '(SELECT id FROM quality_ncrs WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3))',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_dispositions WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_defects WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_ncrs WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id IN ' +
+            '(SELECT id FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3)',
+          [tenantId, factoryId, inspectionKey],
+        );
+        await adminPool.query(
+          'DELETE FROM quality_inspections WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3',
+          [tenantId, factoryId, inspectionKey],
+        );
+
+        const poNumber = purchaseOrderNumber;
+        await adminPool.query(
+          'DELETE FROM goods_receipt_lines WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+          [tenantId, factoryId, poNumber],
+        );
+        await adminPool.query(
+          'DELETE FROM goods_receipts WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+          [tenantId, factoryId, poNumber],
+        );
+        await adminPool.query(
+          'DELETE FROM purchase_order_status_history WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+          [tenantId, factoryId, poNumber],
+        );
+        await adminPool.query(
+          'DELETE FROM purchase_order_lines WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id IN ' +
+            '(SELECT id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3)',
+          [tenantId, factoryId, poNumber],
+        );
+        await adminPool.query(
+          'DELETE FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3',
+          [tenantId, factoryId, poNumber],
+        );
+        await adminPool.query(
+          'DELETE FROM suppliers WHERE tenant_id=$1 AND code=$2',
+          [tenantId, supplierCode],
+        );
 
         if (itemIds.length > 0) {
           await adminPool.query(
@@ -358,7 +475,111 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
     };
 
     finishedItemId = await createItem('MFG-E2E-FG-' + runKey, 'Acceptance finished good', '4.0000');
-    materialItemId = await createItem('MFG-E2E-MAT-' + runKey, 'Acceptance raw material', '4.0000');
+    materialItemId = await createItem('MFG-E2E-MAT-' + runKey, 'Acceptance raw material', '0.0000');
+
+    await procurementService.createSupplier(
+      TEST_USER_ID,
+      tenantId,
+      {
+        code: supplierCode,
+        name: 'Manufacturing acceptance supplier',
+        country_code: 'BD',
+        currency: 'BDT',
+      },
+      correlationId,
+      correlationId,
+    );
+    const supplierRow = await adminPool.query<{ id: string; status: string }>(
+      'SELECT id::text AS id, status FROM suppliers WHERE tenant_id=$1 AND code=$2',
+      [tenantId, supplierCode],
+    );
+    supplierId = supplierRow.rows[0]?.id ?? '';
+    if (!supplierId) throw new Error('Supplier fixture was not persisted.');
+    expect(supplierRow.rows[0]?.status).toBe('ACTIVE');
+
+    await procurementService.createPurchaseOrder(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      {
+        supplier_id: supplierId,
+        po_number: purchaseOrderNumber,
+        order_date: today,
+        expected_delivery_date: today,
+        currency: 'BDT',
+        lines: [{
+          line_number: 1,
+          inventory_item_id: materialItemId,
+          description: 'Traceable acceptance raw material',
+          quantity: 4,
+          unit: 'PCS',
+          unit_price: 1,
+        }],
+      },
+      'mfg-e2e-purchase-order-' + runKey,
+      correlationId,
+      correlationId,
+    );
+    const purchaseOrderRow = await adminPool.query<{ id: string }>(
+      'SELECT id::text AS id FROM purchase_orders WHERE tenant_id=$1 AND factory_id=$2 AND po_number=$3',
+      [tenantId, factoryId, purchaseOrderNumber],
+    );
+    purchaseOrderId = purchaseOrderRow.rows[0]?.id ?? '';
+    if (!purchaseOrderId) throw new Error('Purchase order was not persisted.');
+
+    let purchaseOrder = await procurementService.getPurchaseOrder(tenantId, factoryId, purchaseOrderId);
+    expect(purchaseOrder.status).toBe('DRAFT');
+    await procurementService.transitionPurchaseOrder(
+      TEST_USER_ID, tenantId, factoryId, purchaseOrderId, 'SUBMITTED',
+      Number(purchaseOrder.version), undefined, correlationId, correlationId,
+    );
+    purchaseOrder = await procurementService.getPurchaseOrder(tenantId, factoryId, purchaseOrderId);
+    expect(purchaseOrder.status).toBe('SUBMITTED');
+    await procurementService.transitionPurchaseOrder(
+      approverUserId, tenantId, factoryId, purchaseOrderId, 'APPROVED',
+      Number(purchaseOrder.version), undefined, correlationId, correlationId,
+    );
+    purchaseOrder = await procurementService.getPurchaseOrder(tenantId, factoryId, purchaseOrderId);
+    expect(purchaseOrder.status).toBe('APPROVED');
+
+    const purchaseOrderLine = await adminPool.query<{ id: string }>(
+      'SELECT id::text AS id FROM purchase_order_lines WHERE tenant_id=$1 AND factory_id=$2 AND purchase_order_id=$3 AND inventory_item_id=$4',
+      [tenantId, factoryId, purchaseOrderId, materialItemId],
+    );
+    const purchaseOrderLineId = purchaseOrderLine.rows[0]?.id;
+    if (!purchaseOrderLineId) throw new Error('Purchase-order material line was not persisted.');
+
+    const postedReceipt = await goodsReceiptService.postGoodsReceipt(
+      TEST_USER_ID,
+      tenantId,
+      factoryId,
+      purchaseOrderId,
+      {
+        supplier_delivery_reference: 'MFG-E2E-DELIVERY-' + runKey,
+        notes: 'Accepted material receipt for persisted manufacturing journey',
+        lines: [{ purchase_order_line_id: purchaseOrderLineId, received_quantity: 4, rejected_quantity: 0 }],
+      },
+      goodsReceiptKey,
+      correlationId,
+      correlationId,
+    );
+    goodsReceiptId = postedReceipt.id;
+    expect(postedReceipt.status).toBe('POSTED');
+    const goodsReceiptLine = await adminPool.query<{ id: string; accepted_quantity: string }>(
+      'SELECT id::text AS id, accepted_quantity::text AS accepted_quantity FROM goods_receipt_lines ' +
+        'WHERE tenant_id=$1 AND factory_id=$2 AND goods_receipt_id=$3',
+      [tenantId, factoryId, goodsReceiptId],
+    );
+    goodsReceiptLineId = goodsReceiptLine.rows[0]?.id ?? '';
+    if (!goodsReceiptLineId) throw new Error('Posted goods-receipt line was not persisted.');
+    expect(goodsReceiptLine.rows[0]?.accepted_quantity).toBe('4.0000');
+
+    const receivedStock = await adminPool.query<{ quantity_on_hand: string }>(
+      'SELECT quantity_on_hand::text AS quantity_on_hand FROM inventory_stock_balances ' +
+        'WHERE tenant_id=$1 AND factory_id=$2 AND item_id=$3',
+      [tenantId, factoryId, materialItemId],
+    );
+    expect(receivedStock.rows[0]?.quantity_on_hand).toBe('4.0000');
 
     const materialUnit = await traceabilityService.createUnit(
       TEST_USER_ID,
@@ -414,6 +635,37 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
     );
     expect(putAway.movement_purpose).toBe('PUT_AWAY');
     expect(putAway.traceability_unit_id).toBe(materialTraceabilityUnitId);
+
+    const qualityContext = {
+      userId: TEST_USER_ID,
+      tenantId,
+      factoryId,
+      requestId: correlationId,
+      traceId: correlationId,
+    };
+    const incomingInspection = await qualityService.createInspection(
+      qualityContext,
+      {
+        inspection_type: 'SUPPLIER',
+        target_type: 'GOODS_RECEIPT_LINE',
+        target_id: goodsReceiptLineId,
+        sample_quantity: 1,
+        notes: 'Supplier material quality gate for manufacturing acceptance',
+      },
+      qualityInspectionKey,
+    );
+    qualityInspectionId = incomingInspection.id;
+    const heldInspection = await qualityService.decideInspection(
+      qualityContext,
+      qualityInspectionId,
+      {
+        expected_version: Number(incomingInspection.row_version),
+        action: 'HOLD',
+        reason: 'Hold supplier material until incoming quality disposition',
+      },
+      'mfg-e2e-inspection-hold-' + runKey,
+    );
+    expect(heldInspection.status).toBe('ON_HOLD');
 
     await productService.createProduct(
       TEST_USER_ID,
@@ -581,6 +833,51 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
     if (!workOrderId) throw new Error('Work order was not persisted.');
 
     let workOrder = await productionService.getWorkOrder(TEST_USER_ID, tenantId, factoryId, workOrderId);
+    await expect(
+      productionService.transitionWorkOrder(
+        TEST_USER_ID,
+        tenantId,
+        factoryId,
+        workOrderId,
+        'RELEASE',
+        { expected_version: Number(workOrder.row_version) },
+        'mfg-e2e-release-held-' + runKey,
+        correlationId,
+        correlationId,
+      ),
+    ).rejects.toThrow(/quality hold/i);
+
+    const blockedByQualityHold = await adminPool.query<{ active_hold_count: number }>(
+      'SELECT count(*)::int AS active_hold_count FROM quality_holds ' +
+        'WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id=$3 AND status=\'ACTIVE\'',
+      [tenantId, factoryId, qualityInspectionId],
+    );
+    expect(blockedByQualityHold.rows[0]?.active_hold_count).toBe(1);
+
+    const inspectionBeforeRelease = await qualityService.getInspection(qualityContext, qualityInspectionId);
+    expect(inspectionBeforeRelease.status).toBe('ON_HOLD');
+    const releasedInspection = await qualityService.disposeInspection(
+      qualityContext,
+      qualityInspectionId,
+      {
+        expected_version: Number(inspectionBeforeRelease.row_version),
+        action: 'RELEASE',
+        reason: 'Incoming quality review accepted the supplier lot',
+      },
+      'mfg-e2e-disposition-release-' + runKey,
+    );
+    expect(releasedInspection.disposition.action).toBe('RELEASE');
+
+    const afterDispositionHold = await adminPool.query<{ active_hold_count: number; released_hold_count: number }>(
+      'SELECT count(*) FILTER (WHERE status=\'ACTIVE\')::int AS active_hold_count, ' +
+        'count(*) FILTER (WHERE status=\'RELEASED\')::int AS released_hold_count ' +
+        'FROM quality_holds WHERE tenant_id=$1 AND factory_id=$2 AND inspection_id=$3',
+      [tenantId, factoryId, qualityInspectionId],
+    );
+    expect(afterDispositionHold.rows[0]?.active_hold_count).toBe(0);
+    expect(afterDispositionHold.rows[0]?.released_hold_count).toBe(1);
+
+    workOrder = await productionService.getWorkOrder(TEST_USER_ID, tenantId, factoryId, workOrderId);
     await productionService.transitionWorkOrder(
       TEST_USER_ID,
       tenantId,
@@ -786,6 +1083,36 @@ describe('persisted manufacturing order-to-genealogy acceptance', () => {
     expect(row?.genealogy_quantity).toBe('4.0000');
     expect(row?.genealogy_source_count).toBe(1);
     expect(row?.genealogy_target_count).toBe(1);
+
+    const intakeQualityProof = await adminPool.query<{
+      purchase_order_status: string;
+      goods_receipt_status: string;
+      received_quantity: string;
+      accepted_quantity: string;
+      inspection_status: string;
+      active_hold_count: number;
+      released_hold_count: number;
+      release_disposition_count: number;
+    }>(
+      'SELECT ' +
+        '(SELECT status FROM purchase_orders WHERE id=$3 AND tenant_id=$1 AND factory_id=$2) AS purchase_order_status, ' +
+        '(SELECT status FROM goods_receipts WHERE id=$4 AND tenant_id=$1 AND factory_id=$2) AS goods_receipt_status, ' +
+        '(SELECT received_quantity::text FROM goods_receipt_lines WHERE goods_receipt_id=$4 AND tenant_id=$1 AND factory_id=$2 LIMIT 1) AS received_quantity, ' +
+        '(SELECT accepted_quantity::text FROM goods_receipt_lines WHERE goods_receipt_id=$4 AND tenant_id=$1 AND factory_id=$2 LIMIT 1) AS accepted_quantity, ' +
+        '(SELECT status FROM quality_inspections WHERE id=$5 AND tenant_id=$1 AND factory_id=$2) AS inspection_status, ' +
+        '(SELECT count(*)::int FROM quality_holds WHERE inspection_id=$5 AND tenant_id=$1 AND factory_id=$2 AND status=\'ACTIVE\') AS active_hold_count, ' +
+        '(SELECT count(*)::int FROM quality_holds WHERE inspection_id=$5 AND tenant_id=$1 AND factory_id=$2 AND status=\'RELEASED\') AS released_hold_count, ' +
+        '(SELECT count(*)::int FROM quality_dispositions WHERE inspection_id=$5 AND tenant_id=$1 AND factory_id=$2 AND action=\'RELEASE\' AND status=\'RECORDED\') AS release_disposition_count',
+      [tenantId, factoryId, purchaseOrderId, goodsReceiptId, qualityInspectionId],
+    );
+    expect(intakeQualityProof.rows[0]?.purchase_order_status).toBe('APPROVED');
+    expect(intakeQualityProof.rows[0]?.goods_receipt_status).toBe('POSTED');
+    expect(intakeQualityProof.rows[0]?.received_quantity).toBe('4.0000');
+    expect(intakeQualityProof.rows[0]?.accepted_quantity).toBe('4.0000');
+    expect(intakeQualityProof.rows[0]?.inspection_status).toBe('DISPOSITIONED');
+    expect(intakeQualityProof.rows[0]?.active_hold_count).toBe(0);
+    expect(intakeQualityProof.rows[0]?.released_hold_count).toBe(1);
+    expect(intakeQualityProof.rows[0]?.release_disposition_count).toBe(1);
     expect(materialTraceabilityUnitId).toBeTruthy();
   });
 });
