@@ -1446,13 +1446,17 @@ export class ProductionWorkOrdersService {
         startedAt = operation.started_at ?? null;
         activeStartedAt = null;
       }
-      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, COALESCE($6::timestamptz, clock_timestamp()))' : '$6::timestamptz';
-      const activeAtExpression = nextStatus === 'IN_PROGRESS'
-        && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END')
-        ? 'COALESCE($7::timestamptz, clock_timestamp())'
-        : '$7::timestamptz';
-      const completedAtExpression = command === 'COMPLETE' ? 'COALESCE($8::timestamptz, clock_timestamp())' : '$8::timestamptz';
-      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'COALESCE($9::timestamptz, clock_timestamp())' : '$9::timestamptz';
+      // Keep every bound timestamp parameter referenced for every command.
+      // Avoid query-plan type inference depending on the dynamic command branch.
+      const startedAtExpression = `CASE WHEN $13::text = 'START'
+        THEN COALESCE(started_at, clock_timestamp()) ELSE $6::timestamptz END`;
+      const activeAtExpression = `CASE WHEN $1::varchar(20) = 'IN_PROGRESS'
+        AND $13::text IN ('START', 'RESUME', 'DOWNTIME_END')
+        THEN clock_timestamp() ELSE $7::timestamptz END`;
+      const completedAtExpression = `CASE WHEN $13::text = 'COMPLETE'
+        THEN clock_timestamp() ELSE $8::timestamptz END`;
+      const downtimeAtExpression = `CASE WHEN $13::text = 'DOWNTIME_START'
+        THEN clock_timestamp() ELSE $9::timestamptz END`;
       const operationUpdate = await client.query<{
         row_version: number;
         started_at: string | null;
@@ -1485,7 +1489,7 @@ export class ProductionWorkOrdersService {
         nextStatus, operation.id, workOrder.id, tenantId, factoryId,
         startedAt, activeStartedAt, completedAt, downtimeStartedAt, operation.row_version,
         ['WIP_REPORTED', 'WIP_TRANSFERRED'].includes(command) && wipSnapshotToSet !== null,
-        wipSnapshotToSet,
+        wipSnapshotToSet, command,
       ]);
       if (!operationUpdate.rows[0]) throw new ConflictException('Operation changed while the shop-floor event was being recorded');
       payload.started_at = operationUpdate.rows[0].started_at;
