@@ -175,9 +175,8 @@ BEGIN
     v_tenant,v_factory,'TRACEABILITY_UNIT',v_source_unit,'TRACEABILITY.UNIT_REGISTERED',
     jsonb_build_object('unit_id',v_source_unit,'quantity',5,'goods_receipt_id',v_receipt,'supplier_id',v_supplier)
   );
-  INSERT INTO inventory_traceability_location_balances (
-    tenant_id,factory_id,item_id,traceability_unit_id,location_id,quantity_on_hand,quantity_reserved
-  ) VALUES (v_tenant,v_factory,v_item,v_source_unit,v_location,5,0);
+  -- MATERIAL lot registration seeds its bounded quantity into the default UNASSIGNED
+  -- bucket through traceability_unit_seed_inventory_location_balance; do not insert it twice.
 
   INSERT INTO quality_inspections (
     id,tenant_id,factory_id,inspection_type,target_type,target_id,inventory_item_id,traceability_unit_id,
