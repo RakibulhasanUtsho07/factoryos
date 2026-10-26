@@ -1451,7 +1451,7 @@ export class ProductionWorkOrdersService {
       // without a PostgreSQL type on START/RESUME/COMPLETE commands.
       const startedAtExpression = `CASE WHEN $13::text = 'START'
         THEN COALESCE(started_at, clock_timestamp()) ELSE $6::timestamptz END`;
-      const activeAtExpression = `CASE WHEN $1::text = 'IN_PROGRESS'
+      const activeAtExpression = `CASE WHEN $1::varchar(20) = 'IN_PROGRESS'
         AND $13::text IN ('START', 'RESUME', 'DOWNTIME_END')
         THEN clock_timestamp() ELSE $7::timestamptz END`;
       const completedAtExpression = `CASE WHEN $13::text = 'COMPLETE'
