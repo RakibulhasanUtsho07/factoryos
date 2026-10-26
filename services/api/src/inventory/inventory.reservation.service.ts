@@ -848,6 +848,17 @@ export class InventoryReservationService {
       FROM order_lines ol
       WHERE ol.order_id = $1 AND ol.tenant_id = $2 AND ol.factory_id = $3
         AND ol.inventory_item_id IS NOT NULL
+        -- Make-to-order finished goods are produced by a work order. Reserving
+        -- the same finished item at order confirmation creates a circular
+        -- dependency; the work order instead reserves its raw BOM material.
+        AND NOT EXISTS (
+          SELECT 1
+          FROM work_orders wo
+          WHERE wo.source_order_id = ol.order_id
+            AND wo.source_order_line_id = ol.id
+            AND wo.tenant_id = ol.tenant_id
+            AND wo.factory_id = ol.factory_id
+        )
       ORDER BY ol.inventory_item_id, ol.id
       FOR UPDATE
       `,
