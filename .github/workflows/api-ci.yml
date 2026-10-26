@@ -35,6 +35,8 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/integrations/**'
+      - 'docs/wms-provider-certification.md'
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
