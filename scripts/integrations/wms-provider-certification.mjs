@@ -45,6 +45,11 @@ export function readCertificationConfig(env = process.env) {
       apiOrigin.search || apiOrigin.hash || apiOrigin.pathname !== '/') {
     throw new Error('FACTORYOS_CERT_API_ORIGIN must be a credential-free HTTPS origin with no path, query, or fragment');
   }
+  // Fail closed on ambiguous hostnames: the non-production label alone is
+  // operator-supplied and must not be able to relabel a production hostname.
+  if (!/(^|[.-])(staging|sandbox)([.-]|$)/i.test(apiOrigin.hostname)) {
+    throw new Error('FACTORYOS_CERT_API_ORIGIN hostname must visibly identify staging or sandbox');
+  }
 
   const connectorId = required(env, 'FACTORYOS_CERT_CONNECTOR_ID');
   const shipmentUnitId = required(env, 'FACTORYOS_CERT_SHIPMENT_UNIT_ID');
