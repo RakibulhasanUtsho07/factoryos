@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { IndexedDbWmsQueueStore, WmsOfflineQueue } from "@/lib/wms-offline-queue.mjs";
 
 type QueueEntry = {
@@ -28,9 +28,24 @@ function uuid() {
 function safeRunId(value: string | null) {
   return value && RUN_PATTERN.test(value) ? value : uuid().replace(/-/g, "").slice(0, 20);
 }
+function subscribeToRunId(callback: () => void) {
+  window.addEventListener("factoryos-wms-hil-run-changed", callback);
+  window.addEventListener("popstate", callback);
+  return () => {
+    window.removeEventListener("factoryos-wms-hil-run-changed", callback);
+    window.removeEventListener("popstate", callback);
+  };
+}
+function getRunIdSnapshot() {
+  const value = new URLSearchParams(window.location.search).get("run");
+  return value && RUN_PATTERN.test(value) ? value : "";
+}
+function getServerRunIdSnapshot() {
+  return "";
+}
 
 export default function WmsBrowserAcceptancePage() {
-  const [runId, setRunId] = useState("");
+  const runId = useSyncExternalStore(subscribeToRunId, getRunIdSnapshot, getServerRunIdSnapshot);
   const [entries, setEntries] = useState<QueueEntry[]>([]);
   const [events, setEvents] = useState<string[]>([]);
   const [primaryState, setPrimaryState] = useState("Not started");
@@ -81,10 +96,10 @@ export default function WmsBrowserAcceptancePage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const id = safeRunId(params.get("run"));
-    setRunId(id);
     if (params.get("run") !== id) {
       window.history.replaceState(null, "", window.location.pathname + "?run=" + encodeURIComponent(id));
     }
+    window.dispatchEvent(new Event("factoryos-wms-hil-run-changed"));
   }, []);
 
   useEffect(() => {
