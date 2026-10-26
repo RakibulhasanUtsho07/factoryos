@@ -1346,10 +1346,12 @@ export class QualityService {
   private async auditOutbox(client:PoolClient,c:QualityContext,i:{inspectionId?:string;defectId?:string;holdId?:string|null;dispositionId?:string|null;ncrId?:string;action:string;correlation:string;payload:Record<string,unknown>;aggregateType?:string;aggregateId?:string;outboxEvent?:string}){
     await client.query("INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,hold_id,disposition_id,ncr_id,action_type,payload,actor_user_id,correlation_id) VALUES ($1,$2,$3::uuid,$4::uuid,$5::uuid,$6::uuid,$7::uuid,$8,$9::jsonb,$10,$11::uuid)",
       [c.tenantId,c.factoryId,i.inspectionId??null,i.defectId??null,i.holdId??null,i.dispositionId??null,i.ncrId??null,i.action,JSON.stringify(i.payload),c.userId,i.correlation]);
-    const aggregateType=i.aggregateType??'QUALITY_INSPECTION',aggregateId=i.aggregateId??i.inspectionId;
-    if(!aggregateId)throw new Error('QUALITY_OUTBOX_AGGREGATE_REQUIRED');
+    const aggregateType = i.aggregateType ?? (i.inspectionId ? 'QUALITY_INSPECTION' : i.defectId ? 'QUALITY_DEFECT' : i.ncrId ? 'QUALITY_NCR' : i.holdId ? 'QUALITY_HOLD' : 'QUALITY_DISPOSITION');
+    const aggregateId = i.aggregateId ?? i.inspectionId ?? i.defectId ?? i.ncrId ?? i.holdId ?? i.dispositionId;
+    if (!aggregateId) throw new Error('QUALITY_OUTBOX_AGGREGATE_REQUIRED');
+    const outboxEvent = i.outboxEvent ?? (i.inspectionId ? 'QUALITY.INSPECTION_CHANGED' : i.defectId ? 'QUALITY.DEFECT_CHANGED' : i.ncrId ? 'QUALITY.NCR_CHANGED' : i.holdId ? 'QUALITY.HOLD_CHANGED' : 'QUALITY.DISPOSITION_CHANGED');
     await client.query("INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",
-      [c.tenantId,c.factoryId,aggregateType,aggregateId,i.outboxEvent??'QUALITY.INSPECTION_CHANGED',JSON.stringify({...i.payload,action:i.action,correlation_id:i.correlation})]);
+      [c.tenantId,c.factoryId,aggregateType,aggregateId,outboxEvent,JSON.stringify({...i.payload,action:i.action,correlation_id:i.correlation})]);
   }
 
   private async lockKey(client:PoolClient,c:QualityContext,namespace:string,key:string){
