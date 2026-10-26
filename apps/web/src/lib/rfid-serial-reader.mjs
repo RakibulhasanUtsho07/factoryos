@@ -143,7 +143,9 @@ export class WebSerialRfidReader {
         for (const line of lines) processLine(line);
       }
       buffer += decoder.decode();
-      if (buffer.trim()) processLine(buffer);
+      if (buffer.trim()) {
+        options.onInvalidLine?.({ line: buffer.slice(0, 256), code: "INCOMPLETE_READER_FRAME" });
+      }
     } catch (error) {
       if (this.running) {
         options.onError?.(error instanceof Error ? error : new Error("RFID serial read failed."));
