@@ -77,6 +77,17 @@ BEGIN
         AND r.output_traceability_unit_id = NEW.target_unit_id
         AND r.recovered_quantity = NEW.quantity
         AND r.source_inventory_item_id IS NOT NULL
+        AND r.source_inventory_item_id = v_source_item
+        AND EXISTS (
+          SELECT 1
+          FROM traceability_units recovered
+          WHERE recovered.id = NEW.target_unit_id
+            AND recovered.tenant_id = r.tenant_id
+            AND recovered.factory_id = r.factory_id
+            AND recovered.inventory_item_id = r.source_inventory_item_id
+            AND recovered.quantity = r.recovered_quantity
+            AND recovered.unit = v_source_unit
+        )
         AND r.verified_by_user_id = NEW.created_by_user_id
         AND r.completed_by_user_id IS DISTINCT FROM r.verified_by_user_id
         AND qi.target_type = 'TRACEABILITY_UNIT'
