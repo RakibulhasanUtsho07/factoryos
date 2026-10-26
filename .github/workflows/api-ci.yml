@@ -10,6 +10,7 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/integrations/**'
       - 'deploy/security/**'
       - 'deploy/event-bus/**'
       - 'scripts/event-bus/**'
@@ -31,6 +32,7 @@ on:
       - 'services/edge-agent/**'
       - 'scripts/performance/**'
       - 'scripts/security/**'
+      - 'scripts/integrations/**'
       - 'deploy/security/**'
       - 'docs/production-security-configuration-and-independent-review.md'
       - 'deploy/observability/**'
@@ -114,6 +116,11 @@ jobs:
           node --check scripts/event-bus/provision-kafka-topics.mjs
           node --check scripts/event-bus/staging-fault-injection.mjs
           bash -n scripts/recovery/postgres-backup-restore-rehearsal.sh
+      - name: Test WMS provider certification smoke harness
+        run: |
+          node --check scripts/integrations/wms-provider-certification.mjs
+          node --check scripts/integrations/wms-provider-certification.test.mjs
+          node --test scripts/integrations/wms-provider-certification.test.mjs
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
         run: |
