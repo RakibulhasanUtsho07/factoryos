@@ -3097,7 +3097,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(recall.replayed).toBe(false);
     const recallActions = new Map(recall.units.map((row: { unit_id: string; unit_action: string }) => [row.unit_id, row.unit_action]));
-    expect(recallActions.get(finishedLot.id)).toBe('RECALLED');
+    expect(recallActions.get(quarantinedSourceUnitId)).toBe('RECALLED');
+    // The recovered lot has already shipped. Recall must preserve that logistics fact
+    // and create a customer/site review action instead of rewriting SHIPPED to RECALLED.
+    expect(recallActions.get(finishedLot.id)).toBe('SHIPPED_REVIEW_REQUIRED');
     expect(recallActions.get(cartonId)).toBe('SHIPPED_REVIEW_REQUIRED');
     expect(recallActions.get(palletId)).toBe('SHIPPED_REVIEW_REQUIRED');
     expect(recallActions.get(dispatch.shipment.shipment_unit_id)).toBe('SHIPPED_REVIEW_REQUIRED');
@@ -3109,7 +3112,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     );
     expect(labelAfterRecall.print_contract.identity_payload).toMatchObject({
       unit_id: finishedLot.id,
-      status: 'RECALLED',
+      status: 'SHIPPED',
     });
     const shippedLabelAfterRecall = await traceabilityService.issueLabel(
       userId, tenantId, fixture.factoryId,
@@ -3124,11 +3127,12 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const persistedLifecycle = await adminPool.query<{ id: string; status: string }>(
       `SELECT id::text AS id, status FROM traceability_units
        WHERE tenant_id=$1 AND factory_id=$2 AND id=ANY($3::uuid[])`,
-      [tenantId, fixture.factoryId, [materialLot.id, finishedLot.id, cartonId, palletId, dispatch.shipment.shipment_unit_id]],
+      [tenantId, fixture.factoryId, [materialLot.id, quarantinedSourceUnitId, finishedLot.id, cartonId, palletId, dispatch.shipment.shipment_unit_id]],
     );
-    expect(persistedLifecycle.rows).toHaveLength(5);
+    expect(persistedLifecycle.rows).toHaveLength(6);
     expect(persistedLifecycle.rows.find((row) => row.id === materialLot.id)?.status).toBe('RECALLED');
-    expect(persistedLifecycle.rows.find((row) => row.id === finishedLot.id)?.status).toBe('RECALLED');
+    expect(persistedLifecycle.rows.find((row) => row.id === quarantinedSourceUnitId)?.status).toBe('RECALLED');
+    expect(persistedLifecycle.rows.find((row) => row.id === finishedLot.id)?.status).toBe('SHIPPED');
     expect(persistedLifecycle.rows.find((row) => row.id === cartonId)?.status).toBe('SHIPPED');
     expect(persistedLifecycle.rows.find((row) => row.id === palletId)?.status).toBe('SHIPPED');
     expect(persistedLifecycle.rows.find((row) => row.id === dispatch.shipment.shipment_unit_id)?.status).toBe('SHIPPED');
