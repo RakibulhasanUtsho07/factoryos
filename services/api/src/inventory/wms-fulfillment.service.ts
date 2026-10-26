@@ -248,7 +248,9 @@ export class WmsFulfillmentService {
             }
             const hold = await client.query<{ present: boolean }>(`
               SELECT EXISTS (SELECT 1 FROM quality_holds qh WHERE qh.tenant_id=$1 AND qh.factory_id=$2
-                AND qh.status='ACTIVE' AND (qh.inventory_item_id=$3 OR qh.traceability_unit_id=$4)) AS present
+                AND qh.status='ACTIVE'
+                AND (qh.traceability_unit_id=$4
+                  OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=$3))) AS present
             `, [tenantId, factoryId, container.item_id, sourceUnitId]);
             if (hold.rows[0]?.present) throw new ConflictException('Quality-held inventory cannot be packed');
             const balance = await client.query<{ quantity_on_hand: string; quantity_reserved: string }>(`
@@ -521,7 +523,9 @@ export class WmsFulfillmentService {
             }
             const hold = await client.query<{ present: boolean }>(`
               SELECT EXISTS (SELECT 1 FROM quality_holds qh WHERE qh.tenant_id=$1 AND qh.factory_id=$2
-                AND qh.status='ACTIVE' AND (qh.inventory_item_id=$3 OR qh.traceability_unit_id=$4)) AS present
+                AND qh.status='ACTIVE'
+                AND (qh.traceability_unit_id=$4
+                  OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=$3))) AS present
             `, [tenantId, factoryId, container.item_id, leaf.id]);
             if (hold.rows[0]?.present) throw new ConflictException('Quality-held inventory cannot be dispatched');
 
