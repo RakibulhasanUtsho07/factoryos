@@ -25,7 +25,7 @@ The acceptance SQL adds a single cross-slice contract gate for ordered migration
 
 ## Acceptance boundary
 
-The SQL domain checks use independent fixtures. A separate shared PostgreSQL integration journey now uses persisted PO/GRN/material-lot IDs, approved product revision/BOM/routing, work-order material reservation/consumption, output posting, forward/reverse genealogy, put-away and the downstream packing/shipment/POD/recall scenario. It does not yet exercise quality inspection/hold/disposition/rework/scrap in that same persisted journey, nor provider-originated carrier callbacks or deployed storage IAM policy.
+The SQL domain checks use independent fixtures. A separate shared PostgreSQL integration journey now uses persisted PO/GRN/material-lot IDs, approved product revision/BOM/routing, work-order material reservation/consumption, output posting, forward/reverse genealogy, directed put-away and pick-to-staging, carton-in-pallet packing, order-bound pallet shipment, delivery/POD and recall. It does not yet exercise quality inspection/hold/disposition/rework/scrap in that same persisted journey, nor provider-originated carrier callbacks or deployed storage IAM policy.
 
 Therefore, the task remains **PARTIAL** until the shared scenario also includes replay-without-duplicate-stock assertions, injected-failure rollback, quality disposition/rework/scrap and final stock reconciliation. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders. The separate live carrier/storage runbook and authorized factory sign-off also remain mandatory external release gates.
 

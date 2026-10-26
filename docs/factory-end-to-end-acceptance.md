@@ -24,6 +24,23 @@ The existing WMS portion still injects a test storage verifier for POD digest co
 - [ ] Shipment matches the exact customer order line; POD digest verification is asserted; recall reaches the material lot, finished lot, carton/pallet and shipment as expected; notification acknowledgement is persisted.
 - [ ] Any CI failure is fixed at source and all checks rerun against the new exact head. A skipped PostgreSQL test is not acceptance.
 
+## SRS traceability evidence mapping
+
+The following maps the shared journey to the authoritative requirement IDs in [the SRS v2.1 requirement/evidence matrix](./srs-v2.1-requirement-evidence-matrix.md) and the [requirement evidence register](./requirement-evidence-register.md). This table records test evidence only; it does **not** change the source matrix's existing `Partial` dispositions to `PASS`.
+
+| Requirement / scope | Journey evidence | Remaining boundary |
+| --- | --- | --- |
+| `FR-MAT-01` — material requirements and receipt | Purchase order approval, posted GRN accepted quantity, GRN-linked material lot, BOM requirement, reservation and consumption | This single-item fixture does not prove every style/size consumption, wastage, shortage, supplier scorecard or material sector rule. |
+| `FR-WMS-01` — location-level inventory movements | Directed `PUT_AWAY` to BIN and persisted `PICK` from BIN to STAGING, with source/destination quantity assertions | Cycle counting, quarantine/disposition, mobile/offline and RFID acceptance are separate. |
+| `FR-WMS-02` — lot/carton/pallet identities and labels | Finished-good lot, sealed carton and sealed pallet identities; lifecycle-aware QR label print-contract snapshots before and after recall | A print contract is not a physical QR scan, printer calibration or scanner/device acceptance. |
+| `FR-WMS-06` — carton/pallet genealogy through shipment and recall | Finished-good lot → carton → pallet → order-line-bound shipment; recall impact asserts both package identities and the shipment | Live carrier-originated events, real storage account permissions and hardware/site acceptance are not exercised by this injected-verifier PostgreSQL journey. |
+| `FR-WMS-08` — forward trace | Material lot forward trace reaches the production output; recall impact carries the downstream order/shipment context | Sector-specific genealogy, every material/quality relationship and external customer confirmation still need their own evidence. |
+| `FR-WMS-09` — reverse trace | Finished output reverse trace reaches the GRN-linked raw material lot; relationship and cross-tenant negative assertions are checked | Broader retention policy and production-site acceptance remain separate release gates. |
+| `FR-LOG-01` — carrier/shipment delivery state | Shipment binds customer/order line, carrier and tracking reference; delivery events/POD metadata, digest-verifier contract, replay and recall context are asserted | The journey uses a mocked storage-verifier dependency and manual delivery service contract; it is not a real carrier sandbox or cloud-storage certification. |
+| Manufacturing lifecycle acceptance (task 14; no normative SRS ID assigned in the evidence register) | One PostgreSQL flow joins PO/GRN, effective product revision/BOM/routing, work order, operations/output, material consumption, genealogy, put-away/pick, carton/pallet shipment, POD and recall acknowledgement | Quality inspection/hold/disposition/rework/scrap plus failure-injection rollback in this same flow, and authorized site/quality owner sign-off, remain open. |
+
+**Traceability rule:** the automated SRS/HLD/Blueprint audit workflow must pass on this exact PR head, but its green result validates source-ID / evidence-register consistency; it does not certify external hardware, provider accounts, customer delivery, or a named factory signatory.
+
 ## Live storage and carrier exit criteria
 
 Follow [`docs/wms-provider-certification.md`](./wms-provider-certification.md) against an approved dedicated staging/sandbox deployment and shipment only. Do not run the side-effectful harness on production. Do not place tokens or webhook secrets in chat, Git, PR comments or evidence artifacts.

@@ -43,6 +43,8 @@ on:
       - 'docs/srs-traceability-release-evidence-2026-10-20.md'
       - 'docs/requirement-evidence-register.md'
       - 'docs/operational-rounds-35-43-traceability.md'
+      - 'docs/factory-end-to-end-acceptance.md'
+      - 'docs/manufacturing-lifecycle-acceptance.md'
       - 'docs/release-readiness.md'
       - 'scripts/audit/**'
       - '.github/workflows/traceability-audit-ci.yml'
