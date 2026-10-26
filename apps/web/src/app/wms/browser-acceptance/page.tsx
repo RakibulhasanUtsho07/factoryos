@@ -157,6 +157,7 @@ export default function WmsBrowserAcceptancePage() {
       localStorage.setItem(markerKey, JSON.stringify({
         status: "ACTIVE",
         claimedAt: new Date().toISOString(),
+        expiresAt: Date.now() + 60_000,
         transactionIds: batch.transactions.map((transaction) => transaction.client_transaction_id),
       }));
       notifyOtherTabs("QUEUE_CHANGED");
@@ -186,12 +187,12 @@ export default function WmsBrowserAcceptancePage() {
   }, [markerKey, notifyOtherTabs, queue, record, refreshEntries, scope]);
 
   const tryCompetingClaim = useCallback(async () => {
-    let marker: { status?: string } | null = null;
+    let marker: { status?: string; expiresAt?: number } | null = null;
     try {
       const raw = localStorage.getItem(markerKey);
-      marker = raw ? JSON.parse(raw) as { status?: string } : null;
+      marker = raw ? JSON.parse(raw) as { status?: string; expiresAt?: number } : null;
     } catch { marker = null; }
-    if (marker?.status !== "ACTIVE") {
+    if (marker?.status !== "ACTIVE" || !Number.isFinite(marker.expiresAt) || Number(marker.expiresAt) <= Date.now()) {
       setCompetingState("BLOCKED — start the primary claim in tab A first");
       record("Competing attempt refused because no active primary claim marker exists.");
       return;
