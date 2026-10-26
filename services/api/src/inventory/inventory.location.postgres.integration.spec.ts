@@ -1808,7 +1808,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
     const receipt = await goodsReceiptService.postGoodsReceipt(
       userId, tenantId, fixture.factoryId, po.id,
       {
-        location_id: fixture.defaultLocationId,
+        location_id: binA.id,
         supplier_delivery_reference: 'SUP-DELIVERY-E2E-' + suffix,
         notes: 'Factory E2E acceptance receipt',
         lines: [{ purchase_order_line_id: poLineId, received_quantity: 3, rejected_quantity: 0 }],
@@ -1831,7 +1831,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       `INSERT INTO inventory_traceability_location_balances
          (tenant_id, factory_id, item_id, traceability_unit_id, location_id, quantity_on_hand)
        VALUES ($1,$2,$3,$4,$5,3.0000)`,
-      [tenantId, fixture.factoryId, materialItemId, materialLot.id, fixture.defaultLocationId],
+      [tenantId, fixture.factoryId, materialItemId, materialLot.id, binA.id],
     );
 
     const finishedItemResult = await adminPool.query<{ sku: string; name: string; unit: string }>(
