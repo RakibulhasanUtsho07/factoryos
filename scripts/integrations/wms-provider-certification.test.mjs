@@ -76,6 +76,10 @@ test('certification configuration rejects production and unsafe API origins', ()
   }), /credential-free HTTPS origin/);
   assert.throws(() => readCertificationConfig({
     ...baseEnv,
+    FACTORYOS_CERT_API_ORIGIN: 'https://api.factoryos.example.test',
+  }), /hostname must visibly identify staging or sandbox/);
+  assert.throws(() => readCertificationConfig({
+    ...baseEnv,
     FACTORYOS_CERT_ALLOW_SIDE_EFFECTS: 'NO',
   }), /dedicated dispatched test shipment/);
 });
