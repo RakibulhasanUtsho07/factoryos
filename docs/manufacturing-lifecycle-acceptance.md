@@ -23,11 +23,17 @@ The `api-postgres` workflow runs the domain SQL checks and then `services/api/te
 
 The acceptance SQL adds a single cross-slice contract gate for ordered migration markers, required relations, forced tenant RLS, factory-scoped foreign-key links, NUMERIC(18,4) quantity columns, idempotency uniqueness, and enabled lifecycle triggers including commit-deferred GRN, UoM, output, genealogy, quality and rework evidence. A deterministic BOM/yield/wastage arithmetic oracle guards the shared four-decimal rules.
 
+## Shared GRN → quality hold → rework fixture
+
+`services/api/test/quality-rework-inventory.sql` now creates a real, persisted supplier purchase order and moves it through DRAFT → SUBMITTED → APPROVED, receives the source material through a POSTED goods receipt, posts the accepted quantity to the inventory ledger, and registers the exact accepted lot with supplier, GRN header and GRN-line provenance. The fixture then uses those same receipt and line IDs for the source quality hold, a recorded REWORK disposition, and both the verified-rework and cancellation rework orders.
+
+The same transaction checks that the PO is approved, the GRN is posted, received/rejected quantity reconciles, the receipt movement is linked to the GRN, the lot preserves the supplier/receipt/line identity, the rework tasks keep the same source receipt references, and GRN audit/outbox evidence exists. The physical quantity path still verifies 5.0000 received, 2.0000 issued for rework, 1.5000 recovered and accepted only after independent follow-up PASS, and 0.5000 recorded as rework scrap, plus a separate cancellation issue/restore that returns the full input to stock. The script runs in PostgreSQL CI and rolls back its fixture.
+
 ## Acceptance boundary
 
-These SQL regression files currently use independent fixtures and each rolls back its own work. The added gate proves that the durable schema and enforcement hooks needed to connect the slices exist; it does **not** claim that one persisted sales order, reservation, posted GRN, work order, output posting, quality disposition and genealogy graph have already been exercised using the same identifiers in one shared end-to-end fixture.
+This is meaningful shared-fixture progress, but the manufacturing lifecycle is **still PARTIAL**, not FULL PASS. The new fixture connects the supplier/PO/GRN/source-lot lineage to quality hold, disposition, rework and recovered-stock accounting; it does not yet create one common sales order, material reservation/consumption, released work order, routed operation sequence, good/scrap output posting, output genealogy edges and final shipment/recall flow with the same persisted identifiers.
 
-Therefore, the task remains **PARTIAL** until a dedicated common-fixture PostgreSQL integration scenario creates the lifecycle in order, replays the same GRN/reservation/output requests, injects a failure and verifies rollback, and checks the final inventory balance and lot genealogy after the hold/rework/scrap path. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders.
+Those connected production/output steps remain split across existing regression files. Close the remaining gap by extending the shared fixture through the order, reservation, work-order routing and output-posting path; replay the GRN/reservation/output requests and assert no duplicate movement; inject a failed write and prove all associated ledger/audit/outbox rows roll back; and reconcile the final lot/serial genealogy and stock balances after the hold/rework/scrap path. Forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders.
 
 ## Useful evidence
 
