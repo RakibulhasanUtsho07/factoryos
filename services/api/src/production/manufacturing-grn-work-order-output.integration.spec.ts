@@ -698,7 +698,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
         ) VALUES ($1,$2,$3,$4,'RECEIPT',5,5,5,$5,$6,'GOODS_RECEIPT',$7,
           'Accepted material receipt for make-to-order production',$8,$9)
       `, [
-        tenantId, factoryId, materialItemId, defaultLocationId, `MTO-GRN-MOVE-${suffix}`,
+        tenantId, factoryId, materialItemId, defaultLocationId, `GRN:${receiptId}:${purchaseOrderLineId}`,
         'b'.repeat(64), receiptId, approvalUserId, correlationId,
       ]);
       await client.query(`
