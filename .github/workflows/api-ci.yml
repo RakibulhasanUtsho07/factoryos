@@ -125,6 +125,11 @@ jobs:
           node --check scripts/integrations/wms-provider-certification.mjs
           node --check scripts/integrations/wms-provider-certification.test.mjs
           node --test scripts/integrations/wms-provider-certification.test.mjs
+      - name: Test strict POD storage IAM policy contract
+        run: |
+          node --check scripts/integrations/wms-storage-iam-policy-check.mjs
+          node --check scripts/integrations/wms-storage-iam-policy-check.test.mjs
+          node --test scripts/integrations/wms-storage-iam-policy-check.test.mjs
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
         run: |

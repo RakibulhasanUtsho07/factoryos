@@ -100,3 +100,15 @@ Before dispatching it, a repository administrator must:
 On successful completion, the workflow re-checks that the evidence JSON does not contain the configured secrets, verifies that the result retains the external-carrier limitation, and uploads only that JSON artifact for 30 days. The upload step is skipped if the smoke or redaction check fails. A failed attempt is not a certification result.
 
 The workflow does not have access to carrier-native sandbox credentials, does not ask the carrier platform to emit a genuine callback, does not prove provider-side retry delivery, and cannot inspect or test storage IAM list/delete permissions or credential rotation. Complete the provider-owned evidence table above independently. **Do not close the external certification gate solely because this workflow passed.**
+
+
+## Automated storage IAM policy-shape check
+
+Before a staging smoke run, export the identity policy attached to the deployed POD storage runtime principal to a protected local file and run the checker. It prints a policy SHA-256 and a redacted summary; it never copies policy JSON into the evidence output.
+
+    node scripts/integrations/wms-storage-iam-policy-check.mjs --policy "C:\secure-evidence\pod-runtime-policy.json" --bucket "factoryos-pod-staging" --prefix "pod/"
+
+The checker accepts only explicit s3:GetObject and s3:PutObject allows for the named bucket under the exact requested POD object prefix. It rejects wildcard actions/resources, bucket-wide grants, sibling prefixes, s3:ListBucket, s3:DeleteObject, unsupported NotAction/NotResource constructs, and extra allow actions. A narrower prefix can be checked by passing a trailing-slash prefix such as pod/tenant/factory/.
+
+**Interpretation:** PASS_POLICY_SHAPE_ONLY proves only the supplied JSON has the supported narrow shape. It does not prove the export is attached to the deployed identity, nor compute effective permissions across bucket policies, permission boundaries, organization/session policies or KMS grants. The live authenticated upload plus independent read-back is still required to prove effective write/read access. A storage/security owner must separately verify the deployed principal, bucket policy, scope, expiry/rotation, and revocation owner. Do not commit the policy export or any credentials to Git.
+
