@@ -169,8 +169,18 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
       );
       await adminPool.query(
         `DELETE FROM outbox_events WHERE tenant_id = $1 AND factory_id = $2
-           AND (correlation_id = $3 OR aggregate_id = ANY($4::uuid[]))`,
-        [tenantId, factoryId, correlationId, relatedIds],
+           AND (
+             correlation_id = $3
+             OR aggregate_id = ANY($4::uuid[])
+             OR (
+               event_type = 'TRACEABILITY.GENEALOGY_RECORDED'
+               AND (
+                 payload->>'source_unit_id' = $5::text
+                 OR payload->>'target_unit_id' = $6::text
+               )
+             )
+           )`,
+        [tenantId, factoryId, correlationId, relatedIds, sourceLotId, outputLotId],
       );
 
       if (materialItemId || finishedItemId) {
