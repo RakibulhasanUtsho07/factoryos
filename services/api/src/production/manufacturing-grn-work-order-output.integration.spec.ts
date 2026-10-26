@@ -737,6 +737,29 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
         `mto-grn-lot-${suffix}`, JSON.stringify({ origin: 'posted-grn', fixture: 'make-to-order-production' }),
         `mto-source-lot-${suffix}`, 'c'.repeat(64), TEST_USER_ID, correlationId,
       ]);
+      await client.query(`
+        INSERT INTO audit_events (
+          tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,
+          correlation_id,request_id,data_class,payload
+        ) VALUES ($1,$2,$3,'TRACEABILITY','REGISTERED','TRACEABILITY_UNIT',$4,$5,$6,'INTERNAL',$7::jsonb)
+      `, [
+        tenantId, factoryId, TEST_USER_ID, sourceLotId, correlationId, requestId,
+        JSON.stringify({
+          unit_id: sourceLotId, quantity: 5, unit: 'PCS',
+          goods_receipt_id: receiptId, goods_receipt_line_id: receiptLineId,
+        }),
+      ]);
+      await client.query(`
+        INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload,correlation_id)
+        VALUES ($1,$2,'TRACEABILITY_UNIT',$3,'TRACEABILITY.UNIT_REGISTERED',$4::jsonb,$5)
+      `, [
+        tenantId, factoryId, sourceLotId,
+        JSON.stringify({
+          unit_id: sourceLotId, quantity: 5,
+          goods_receipt_id: receiptId, supplier_id: supplierId,
+        }),
+        correlationId,
+      ]);
       await client.query('SET CONSTRAINTS ALL IMMEDIATE');
       await client.query('COMMIT');
     } catch (error) {
