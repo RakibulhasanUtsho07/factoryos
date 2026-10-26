@@ -108,6 +108,17 @@ test('rejects invalid bucket names, non-POD prefixes and malformed policy docume
   assert.equal(evaluateWmsPodStoragePolicy(null, { bucket: BUCKET, prefix: 'pod/' }).pass, false);
 });
 
+test('rejects Allow statements with conditions it cannot resolve', () => {
+  const report = evaluateWmsPodStoragePolicy(policy([{
+    Effect: 'Allow',
+    Action: ['s3:GetObject', 's3:PutObject'],
+    Resource: TARGET,
+    Condition: { StringEquals: { 'aws:PrincipalTag/factory': 'allowed' } },
+  }]), { bucket: BUCKET, prefix: 'pod/' });
+  assert.equal(report.pass, false);
+  assert.ok(report.issues.some((issue) => issue.code === 'UNSUPPORTED_ALLOW_CONDITION'));
+});
+
 test('broad explicit Deny statements do not grant privileges or replace live smoke', () => {
   const report = evaluateWmsPodStoragePolicy(policy([
     { Effect: 'Allow', Action: ['s3:GetObject', 's3:PutObject'], Resource: TARGET },
