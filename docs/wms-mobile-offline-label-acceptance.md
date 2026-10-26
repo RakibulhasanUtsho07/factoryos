@@ -14,6 +14,12 @@ The web workbench is available at /wms. Its IndexedDB queue is implemented in ap
 - A server-receipted CONFLICT or REJECTED operation is parked rather than retried automatically. Resolution requires a fresh client transaction UUID and a corrected expected balance version (or other corrected payload); the original receipt/history is preserved as RESOLVED. Rejection is not silently treated as success.
 - The server remains authoritative for stock mutation, transaction locking, idempotency, balance-version conflicts, durable terminal receipts, and repair of the interrupted-movement/receipt case. The client does not optimistically post stock.
 
+### Cross-tab and concurrent reconnect protection
+
+A due batch is claimed inside one IndexedDB read/write transaction before the network request starts. The claim has a per-attempt token and a bounded lease (default 120 seconds, maximum 10 minutes). Overlapping tabs using the same origin/database cannot both claim the same live pending entry. Only the current unexpired token owner can remove an APPLIED item, park a terminal result, or reschedule an ambiguous/network-failed item. If a tab closes or stalls, another tab can reclaim the entry after lease expiry; a late response from the expired owner cannot overwrite the replacement owner's local state.
+
+The lease is a local coordination guard, not server authorization and not a substitute for idempotency. A request can outlive its lease or run from another physical device. The API's durable `client_transaction_id` / device-scoped idempotency contract must still guarantee that duplicate delivery causes no second stock movement. IndexedDB claims coordinate tabs sharing the same browser profile; server-side locking protects cross-device concurrency.
+
 ### Automated verification
 
 Run from the repository root:
@@ -22,7 +28,7 @@ Run from the repository root:
     npm --workspace web run lint
     npm --workspace web run build
 
-The Node test contract covers queue persistence across instances, duplicate prevention, malformed/mismatched/ambiguous receipts, receipt-gated deletion, conflict parking and resolution with a new ID, network retry/backoff, QR and Code 128 SVG generation, print-copy/layout contract, invalid/stale label rejection, and unknown/ambiguous scan lookup. The existing API PostgreSQL suite covers concurrent duplicate retries, different-payload races, stale-version conflicts, terminal receipts, and one-stock-movement conservation.
+The Node test contract covers queue persistence across instances, duplicate prevention, malformed/mismatched/ambiguous receipts, receipt-gated deletion, conflict parking and resolution with a new ID, network retry/backoff, atomic claims across two queue instances, expired-lease recovery, stale-owner response protection, QR and Code 128 SVG generation, print-copy/layout contract, invalid/stale label rejection, and unknown/ambiguous scan lookup. The API PostgreSQL suite covers concurrent duplicate retries, different-payload races, stale-version conflicts, terminal receipts, and one-stock-movement conservation. The concurrent-claim tests use a shared test store to exercise the state machine; a browser run is still required to validate real IndexedDB behavior across actual tabs.
 
 ## Label creation and scan lookup
 
@@ -38,6 +44,8 @@ The scan workbench accepts keyboard-wedge scanner input or text delivered by a c
 | --- | --- | --- |
 | Airplane mode: queue 10 distinct movements, reload browser, confirm all persist | Screen recording plus exact transaction IDs | Not run here |
 | Duplicate taps, reconnect during a batch, lost response then retry | API receipts, movement count and final stock reconciliation | Automated API/PostgreSQL contracts exist; target-handheld run not done |
+| Two tabs or app windows reconnect at once in one browser profile | Record both sync correlation IDs, sent transaction IDs, terminal receipts and final ledger count | Two-instance unit test added; browser + target-handheld concurrency run still NOT RUN |
+| Two physical devices submit the same transaction ID after a timeout / lost response | Device IDs, exact client transaction ID, server receipt/replay attempt and before/after stock ledger | API idempotency/concurrency contract exists; cross-device field acceptance NOT RUN |
 | Server returns conflict/rejection/partial or malformed receipt | Queue retains/parks correct rows and no unreceipted row disappears | Automated client tests added; on-device run not done |
 | Browser/app restart and browser-storage clearing | Persistence across restart; documented recovery when storage is erased | Persistence covered by client test; device restart not done |
 | Print QR / Code 128 to each supported site printer and media size | Printer model/firmware/DPI, media, actual print sample and measured dimensions | Not run here |
