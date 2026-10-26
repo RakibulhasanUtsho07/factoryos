@@ -12,6 +12,9 @@ test('live provider smoke is manually dispatched only and requires protected env
   assert.match(source, /actions\/upload-artifact@v4/);
   assert.match(source, /FACTORYOS_CERT_ALLOW_SIDE_EFFECTS/);
   assert.match(source, /WMS_POD_STORAGE_POLICY_JSON/);
+  assert.match(source, /\\$\\{WMS_POD_STORAGE_POLICY_JSON:-\\}/);
+  assert.match(source, /\\$\\{WMS_POD_STORAGE_BUCKET:-\\}/);
+  assert.match(source, /\\$\\{WMS_POD_STORAGE_PREFIX:-\\}/);
   assert.match(source, /wms-provider-evidence-safety-check\.mjs/);
   assert.match(source, /carrier-native sandbox callback\/retry is not generated/i);
 });
