@@ -56,7 +56,6 @@ jobs:
       FACTORYOS_CERT_TRACKING_REFERENCE: ${{ vars.FACTORYOS_CERT_TRACKING_REFERENCE }}
       FACTORYOS_CERT_SITE: ${{ inputs.site }}
       FACTORYOS_CERT_OPERATOR: ${{ inputs.operator }}
-      FACTORYOS_CERT_EVIDENCE_PATH: ${{ runner.temp }}/wms-provider-certification.json
     steps:
       - name: Checkout exact requested revision
         uses: actions/checkout@v7
@@ -105,6 +104,8 @@ jobs:
           cat "$RUNNER_TEMP/wms-storage-policy-report.json"
 
       - name: Run configured storage and receiver-contract smoke
+        env:
+          FACTORYOS_CERT_EVIDENCE_PATH: ${{ runner.temp }}/wms-provider-certification.json
         run: node scripts/integrations/wms-provider-certification.mjs
 
       - name: Validate evidence redaction and release-boundary declarations
