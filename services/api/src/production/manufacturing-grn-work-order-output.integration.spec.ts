@@ -214,6 +214,14 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
           [tenantId, factoryId, workOrderId],
         );
         await adminPool.query(
+          'DELETE FROM inventory_location_transfers WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, items],
+        );
+        await adminPool.query(
+          'DELETE FROM inventory_traceability_location_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
+          [tenantId, factoryId, items],
+        );
+        await adminPool.query(
           'DELETE FROM traceability_units WHERE tenant_id = $1 AND factory_id = $2 AND id = ANY($3::uuid[])',
           [tenantId, factoryId, [sourceLotId, outputLotId].filter((id): id is string => id !== null)],
         );
@@ -222,15 +230,7 @@ describe('Manufacturing GRN → make-to-order work-order output PostgreSQL accep
           [tenantId, factoryId, orderId],
         );
         await adminPool.query(
-          'DELETE FROM inventory_location_transfers WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
-          [tenantId, factoryId, items],
-        );
-        await adminPool.query(
           'DELETE FROM inventory_movements WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
-          [tenantId, factoryId, items],
-        );
-        await adminPool.query(
-          'DELETE FROM inventory_traceability_location_balances WHERE tenant_id = $1 AND factory_id = $2 AND item_id = ANY($3::uuid[])',
           [tenantId, factoryId, items],
         );
         await adminPool.query(
