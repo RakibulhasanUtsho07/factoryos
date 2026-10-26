@@ -1,0 +1,138 @@
+name: WMS configured-provider certification smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target FactoryOS environment. Production is never accepted by the harness.
+        required: true
+        type: choice
+        options:
+          - staging
+          - sandbox
+      allow_side_effects:
+        description: Type YES only for a dedicated dispatched test shipment; this run uploads a POD and records delivery/replay events.
+        required: true
+        type: choice
+        options:
+          - "NO"
+          - "YES"
+      site:
+        description: Non-sensitive site code or test ticket.
+        required: true
+        type: string
+      operator:
+        description: Operator/ticket identifier; do not enter secrets or personal information.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wms-provider-certification-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  configured-provider-smoke:
+    name: Storage PUT/GET + FactoryOS receiver smoke (not carrier certification)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: wms-provider-certification
+    env:
+      FACTORYOS_CERT_ENVIRONMENT: ${{ inputs.target }}
+      FACTORYOS_CERT_ALLOW_SIDE_EFFECTS: ${{ inputs.allow_side_effects }}
+      FACTORYOS_CERT_API_ORIGIN: ${{ vars.FACTORYOS_CERT_API_ORIGIN }}
+      FACTORYOS_CERT_CONNECTOR_ID: ${{ vars.FACTORYOS_CERT_CONNECTOR_ID }}
+      FACTORYOS_CERT_SHIPMENT_UNIT_ID: ${{ vars.FACTORYOS_CERT_SHIPMENT_UNIT_ID }}
+      FACTORYOS_CERT_SCHEMA_VERSION: ${{ vars.FACTORYOS_CERT_SCHEMA_VERSION }}
+      FACTORYOS_CERT_WEBHOOK_SECRET: ${{ secrets.FACTORYOS_CERT_WEBHOOK_SECRET }}
+      FACTORYOS_CERT_BEARER_TOKEN: ${{ secrets.FACTORYOS_CERT_BEARER_TOKEN }}
+      FACTORYOS_CERT_READONLY_BEARER_TOKEN: ${{ secrets.FACTORYOS_CERT_READONLY_BEARER_TOKEN }}
+      FACTORYOS_CERT_STORAGE_PROVIDER: ${{ vars.FACTORYOS_CERT_STORAGE_PROVIDER }}
+      FACTORYOS_CERT_CARRIER_PROVIDER: ${{ vars.FACTORYOS_CERT_CARRIER_PROVIDER }}
+      FACTORYOS_CERT_CARRIER_NAME: ${{ vars.FACTORYOS_CERT_CARRIER_NAME }}
+      FACTORYOS_CERT_TRACKING_REFERENCE: ${{ vars.FACTORYOS_CERT_TRACKING_REFERENCE }}
+      FACTORYOS_CERT_SITE: ${{ inputs.site }}
+      FACTORYOS_CERT_OPERATOR: ${{ inputs.operator }}
+      FACTORYOS_CERT_EVIDENCE_PATH: ${{ runner.temp }}/wms-provider-certification.json
+    steps:
+      - name: Checkout exact requested revision
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Require explicit sandbox side-effect acknowledgement
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$FACTORYOS_CERT_ALLOW_SIDE_EFFECTS" != "YES" ]]; then
+            echo "::error::Re-run only after selecting YES for a dedicated staging/sandbox dispatched test shipment."
+            exit 1
+          fi
+          if [[ "$FACTORYOS_CERT_ENVIRONMENT" != "staging" && "$FACTORYOS_CERT_ENVIRONMENT" != "sandbox" ]]; then
+            echo "::error::Only staging and sandbox targets are permitted."
+            exit 1
+          fi
+
+      - name: Install repository dependencies
+        run: npm ci
+
+      - name: Verify narrow POD storage identity policy shape
+        shell: bash
+        env:
+          WMS_POD_STORAGE_POLICY_JSON: ${{ secrets.WMS_POD_STORAGE_POLICY_JSON }}
+          WMS_POD_STORAGE_BUCKET: ${{ vars.WMS_POD_STORAGE_BUCKET }}
+          WMS_POD_STORAGE_PREFIX: ${{ vars.WMS_POD_STORAGE_PREFIX }}
+        run: |
+          set -euo pipefail
+          test -n "${WMS_POD_STORAGE_POLICY_JSON:-" || { echo "::error::Configure WMS_POD_STORAGE_POLICY_JSON in the protected environment."; exit 1; }
+          test -n "${WMS_POD_STORAGE_BUCKET:-" || { echo "::error::Configure WMS_POD_STORAGE_BUCKET as an environment variable."; exit 1; }
+          test -n "${WMS_POD_STORAGE_PREFIX:-" || { echo "::error::Configure WMS_POD_STORAGE_PREFIX as an environment variable (normally pod/)."; exit 1; }
+          umask 077
+          policy_file="$(mktemp "$RUNNER_TEMP/pod-storage-policy.XXXXXX")"
+          trap 'rm -f "$policy_file"' EXIT
+          printf '%s' "$WMS_POD_STORAGE_POLICY_JSON" > "$policy_file"
+          node scripts/integrations/wms-storage-iam-policy-check.mjs \
+            --policy "$policy_file" \
+            --bucket "$WMS_POD_STORAGE_BUCKET" \
+            --prefix "$WMS_POD_STORAGE_PREFIX" \
+            > "$RUNNER_TEMP/wms-storage-policy-report.json"
+          cat "$RUNNER_TEMP/wms-storage-policy-report.json"
+
+      - name: Run configured storage and receiver-contract smoke
+        run: node scripts/integrations/wms-provider-certification.mjs
+
+      - name: Validate evidence redaction and release-boundary declarations
+        run: |
+          node scripts/integrations/wms-provider-evidence-safety-check.mjs \
+            --evidence "$FACTORYOS_CERT_EVIDENCE_PATH" \
+            --policy-report "$RUNNER_TEMP/wms-storage-policy-report.json"
+
+      - name: Upload redacted evidence only
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wms-provider-smoke-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/wms-provider-certification.json
+            ${{ runner.temp }}/wms-storage-policy-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write release-boundary summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## WMS provider smoke result"
+            echo
+            echo "- This run can prove configured storage PUT/GET read-back and FactoryOS receiver behavior only."
+            echo "- A carrier-native sandbox callback/retry is not generated or authenticated by this workflow."
+            echo "- Effective IAM permissions, credential rotation/revocation, and provider-side callback evidence still require owner review."
+            echo "- Do not mark the provider/factory certification gate closed from this workflow alone."
+          } >> "$GITHUB_STEP_SUMMARY"
