@@ -1,6 +1,6 @@
 # Manufacturing lifecycle cross-slice acceptance
 
-**Status: PARTIAL — database contract gate is wired; one shared data fixture covering the full lifecycle is still required for end-to-end acceptance.**
+**Status: PARTIAL — the shared PostgreSQL journey now includes persisted quality hold/disposition/rework/scrap between work-order output and downstream WMS shipment; post-write fault-injection rollback and external provider/site sign-off remain open.**
 
 ## Scope
 
@@ -25,9 +25,9 @@ The acceptance SQL adds a single cross-slice contract gate for ordered migration
 
 ## Acceptance boundary
 
-These SQL regression files currently use independent fixtures and each rolls back its own work. The added gate proves that the durable schema and enforcement hooks needed to connect the slices exist; it does **not** claim that one persisted sales order, reservation, posted GRN, work order, output posting, quality disposition and genealogy graph have already been exercised using the same identifiers in one shared end-to-end fixture.
+The SQL domain checks use independent fixtures. The shared PostgreSQL journey uses persisted PO/GRN/material-lot IDs, approved product revision/BOM/routing, work-order material reservation/consumption, output posting and genealogy. The same output lot then enters quality inspection/hold/quarantine and REWORK disposition; a rework order consumes the 3.0000 source quantity, records 2.0000 recovered plus 1.0000 scrap, creates a separate recovered traceability unit, and requires follow-up PASS plus independent verification. Exact-key verification replay is checked for no duplicate stock movement. Only the recovered lot continues through directed put-away/pick, carton-in-pallet packing, order-bound pallet shipment, delivery/POD and recall. Provider-originated carrier callbacks and effective permissions on a real storage identity are still not covered.
 
-Therefore, the task remains **PARTIAL** until a dedicated common-fixture PostgreSQL integration scenario creates the lifecycle in order, replays the same GRN/reservation/output requests, injects a failure and verifies rollback, and checks the final inventory balance and lot genealogy after the hold/rework/scrap path. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders.
+Therefore, the task remains **PARTIAL**: quality disposition/rework/scrap, recovered-stock reconciliation and no-duplicate replay are now in the shared scenario, but a fault injected after partial persistence still needs explicit rollback evidence across quality, stock, genealogy, audit and outbox. The forecast/planning APIs must remain non-committing: they must not create reservations or purchase orders. The separate live carrier/storage runbook and authorized factory sign-off also remain mandatory external release gates.
 
 ## Useful evidence
 
