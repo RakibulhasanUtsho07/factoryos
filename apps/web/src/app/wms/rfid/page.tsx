@@ -65,6 +65,8 @@ export default function RfidHardwareAcceptancePage() {
   const [sessionId, setSessionId] = useState("");
   const [state, setState] = useState<ReaderState>("DISCONNECTED");
   const [readCount, setReadCount] = useState(0);
+  const [uniqueCount, setUniqueCount] = useState(0);
+  const [duplicateCount, setDuplicateCount] = useState(0);
   const [reads, setReads] = useState<string[]>([]);
   const [ignoredCount, setIgnoredCount] = useState(0);
   const [ignoredExamples, setIgnoredExamples] = useState<string[]>([]);
@@ -75,20 +77,22 @@ export default function RfidHardwareAcceptancePage() {
   const readerRef = useRef<InstanceType<typeof WebSerialRfidReader> | null>(null);
   const readerPortOpenedRef = useRef(false);
   const readsRef = useRef<string[]>([]);
+  const seenEpcsRef = useRef<Map<string, number>>(new Map());
   const idempotencyKeyRef = useRef<string | null>(null);
 
   const summary = useMemo(() => aggregateEpcReads(reads), [reads]);
-  const uniqueCount = summary.length;
-  const duplicateCount = Math.max(0, readCount - uniqueCount);
   const scopeReady = uuidPattern.test(readerId.trim()) && uuidPattern.test(itemId.trim()) && uuidPattern.test(locationId.trim());
   const connected = state === "READING" || state === "LIMIT_REACHED";
 
   function clearCapture() {
     readsRef.current = [];
+    seenEpcsRef.current.clear();
     idempotencyKeyRef.current = null;
     readerPortOpenedRef.current = false;
     setReads([]);
     setReadCount(0);
+    setUniqueCount(0);
+    setDuplicateCount(0);
     setIgnoredCount(0);
     setIgnoredExamples([]);
     setSessionId(crypto.randomUUID());
@@ -123,6 +127,10 @@ export default function RfidHardwareAcceptancePage() {
             return;
           }
           current.push(epc);
+          const priorReadCount = seenEpcsRef.current.get(epc) ?? 0;
+          seenEpcsRef.current.set(epc, priorReadCount + 1);
+          setUniqueCount(seenEpcsRef.current.size);
+          if (priorReadCount > 0) setDuplicateCount((count) => count + 1);
           const count = current.length;
           setReadCount(count);
           if (count % 5 === 0 || count === 1 || count === MAX_READS_PER_BATCH) {
@@ -415,7 +423,7 @@ export default function RfidHardwareAcceptancePage() {
           <textarea value={hilNotes} onChange={(event) => setHilNotes(event.target.value)} rows={4} placeholder="Record distance, tag placement, expected/actual values, photos/log names, defects and operator notes." className="mt-1 w-full rounded-lg border border-zinc-300 p-3 font-normal" />
         </label>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button onClick={exportHardwareEvidence} className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white">Export HIL evidence JSON</button>
+          <button onClick={exportHardwareEvidence} disabled={connected || state === "CONNECTING" || posting} className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Export HIL evidence JSON</button>
           <span className="text-xs text-zinc-500">Export includes hardware metadata, raw/unique EPC summary, server batch/observations and manually reported test results.</span>
         </div>
       </section>
