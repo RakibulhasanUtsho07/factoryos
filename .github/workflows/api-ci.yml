@@ -129,7 +129,8 @@ jobs:
         run: |
           node --check scripts/integrations/wms-storage-iam-policy-check.mjs
           node --check scripts/integrations/wms-storage-iam-policy-check.test.mjs
-          node --test scripts/integrations/wms-storage-iam-policy-check.test.mjs
+          node --check scripts/integrations/wms-provider-live-smoke.workflow.test.mjs
+          node --test scripts/integrations/wms-storage-iam-policy-check.test.mjs scripts/integrations/wms-provider-live-smoke.workflow.test.mjs
       - name: Test bounded load and backup/restore safety contracts
         working-directory: services/api
         run: |
