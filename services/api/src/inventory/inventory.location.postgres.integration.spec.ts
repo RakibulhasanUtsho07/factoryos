@@ -1885,6 +1885,34 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       [tenantId, fixture.factoryId, materialItemId, materialLot.id, binA.id],
     );
 
+    // Assert the traceability identity is linked to the exact accepted supplier/GRN
+    // line, rather than deriving provenance from a free-form external reference.
+    const materialLotProvenance = await adminPool.query<{
+      supplier_id: string; goods_receipt_id: string; goods_receipt_line_id: string;
+      receipt_status: string; accepted_quantity: string;
+    }>(`
+      SELECT po.supplier_id::text AS supplier_id,
+        gr.id::text AS goods_receipt_id, grl.id::text AS goods_receipt_line_id,
+        gr.status AS receipt_status, grl.accepted_quantity::text AS accepted_quantity
+      FROM traceability_units tu
+      JOIN goods_receipt_lines grl
+        ON grl.id=tu.goods_receipt_line_id AND grl.tenant_id=tu.tenant_id AND grl.factory_id=tu.factory_id
+      JOIN goods_receipts gr
+        ON gr.id=tu.goods_receipt_id AND gr.id=grl.goods_receipt_id
+          AND gr.tenant_id=tu.tenant_id AND gr.factory_id=tu.factory_id
+      JOIN purchase_orders po
+        ON po.id=gr.purchase_order_id AND po.tenant_id=gr.tenant_id AND po.factory_id=gr.factory_id
+      WHERE tu.id=$1 AND tu.tenant_id=$2 AND tu.factory_id=$3
+        AND tu.inventory_item_id=$4
+    `, [materialLot.id, tenantId, fixture.factoryId, materialItemId]);
+    expect(materialLotProvenance.rows).toEqual([{
+      supplier_id: supplier.id,
+      goods_receipt_id: receipt.id,
+      goods_receipt_line_id: receipt.lines[0].id,
+      receipt_status: 'POSTED',
+      accepted_quantity: '3.0000',
+    }]);
+
     const finishedItemResult = await adminPool.query<{ sku: string; name: string; unit: string }>(
       `SELECT sku, name, unit FROM inventory_items WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
       [fixture.itemId, tenantId, fixture.factoryId],
