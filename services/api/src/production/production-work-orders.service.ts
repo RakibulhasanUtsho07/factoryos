@@ -1054,7 +1054,7 @@ export class ProductionWorkOrdersService {
             row_version = row_version + 1,
             updated_by_user_id = $2,
             updated_at = clock_timestamp(),
-            hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END,
+            hold_reason = CASE WHEN $11 THEN $3 ELSE NULL END,
             released_by_user_id = CASE WHEN $4 THEN $2 ELSE released_by_user_id END,
             released_at = CASE WHEN $4 THEN clock_timestamp() ELSE released_at END,
             completed_at = CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END,
@@ -1064,7 +1064,7 @@ export class ProductionWorkOrdersService {
         RETURNING id::text AS id, row_version::int AS row_version
       `, [
         targetStatus, userId, reason, command === 'RELEASE', command === 'COMPLETE', command === 'CANCEL',
-        workOrder.id, tenantId, factoryId, workOrder.row_version,
+        workOrder.id, tenantId, factoryId, workOrder.row_version, command === 'HOLD',
       ]);
       if (!update.rows[0]) throw new ConflictException('Work order changed during its transition');
 
@@ -1446,13 +1446,13 @@ export class ProductionWorkOrdersService {
         startedAt = operation.started_at ?? null;
         activeStartedAt = null;
       }
-      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, clock_timestamp())' : '$6::timestamptz';
+      const startedAtExpression = command === 'START' ? 'COALESCE(started_at, COALESCE($6::timestamptz, clock_timestamp()))' : '$6::timestamptz';
       const activeAtExpression = nextStatus === 'IN_PROGRESS'
         && (command === 'START' || command === 'RESUME' || command === 'DOWNTIME_END')
-        ? 'clock_timestamp()'
+        ? 'COALESCE($7::timestamptz, clock_timestamp())'
         : '$7::timestamptz';
-      const completedAtExpression = command === 'COMPLETE' ? 'clock_timestamp()' : '$8::timestamptz';
-      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'clock_timestamp()' : '$9::timestamptz';
+      const completedAtExpression = command === 'COMPLETE' ? 'COALESCE($8::timestamptz, clock_timestamp())' : '$8::timestamptz';
+      const downtimeAtExpression = command === 'DOWNTIME_START' ? 'COALESCE($9::timestamptz, clock_timestamp())' : '$9::timestamptz';
       const operationUpdate = await client.query<{
         row_version: number;
         started_at: string | null;
@@ -1529,10 +1529,10 @@ export class ProductionWorkOrdersService {
           UPDATE work_orders
           SET status = $1, row_version = row_version + 1,
               updated_by_user_id = $2, updated_at = clock_timestamp(),
-              hold_reason = CASE WHEN $1 = 'ON_HOLD' THEN $3 ELSE NULL END
+              hold_reason = CASE WHEN $8::boolean THEN $3 ELSE NULL END
           WHERE id = $4 AND tenant_id = $5 AND factory_id = $6 AND row_version = $7
           RETURNING row_version::int AS row_version
-        `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version]);
+        `, [nextWorkOrderStatus, userId, reason, workOrder.id, tenantId, factoryId, workOrder.row_version, nextWorkOrderStatus === 'ON_HOLD']);
         if (!woUpdate.rows[0]) throw new ConflictException('Work order changed while recording the operation event');
         payload.work_order_row_version = woUpdate.rows[0].row_version;
         if (workOrder.status === 'RELEASED' && nextWorkOrderStatus === 'IN_PROGRESS') {
