@@ -1,4 +1,5 @@
 import qrcode from "./vendor/qrcode.mjs";
+import dataMatrixSvg from "./vendor/datamatrix-svg.mjs";
 
 const CODE128_PATTERNS = [
   11011001100,11001101100,11001100110,10010011000,10010001100,10001001100,10011001000,10011000100,10001100100,11001001000,
@@ -201,7 +202,6 @@ export function validateWmsLabelIssue(issue, options = {}) {
   const contract = extractContract(issue);
   const symbology = String(contract.symbology ?? "").toUpperCase();
   requireCondition(["QR", "CODE128", "DATAMATRIX", "GS1_128"].includes(symbology), "UNSUPPORTED_SYMBOLOGY", "The label issue has an unsupported symbology.");
-  requireCondition(symbology !== "DATAMATRIX", "ENCODER_NOT_IMPLEMENTED", "Data Matrix is accepted by the API template contract but does not yet have a verified client renderer.");
   const value = String(contract.encoded_value ?? "").trim();
   requireCondition(value.length > 0 && value.length <= 512, "INVALID_LABEL_VALUE", "Label encoded value must contain 1–512 characters.");
   requireCondition(/^[\x20-\x7e]+$/.test(value), "INVALID_LABEL_VALUE", "Label encoded value must contain printable ASCII for a portable print payload.");
@@ -238,6 +238,37 @@ export function renderWmsLabel(issue, options = {}) {
         .replace("<svg ", '<svg role="img" aria-label="' + escapeHtml(description) + '" ');
     } catch {
       throw new WmsLabelRenderError("QR_ENCODING_FAILED", "QR payload could not be encoded by the local renderer.");
+    }
+  } else if (label.symbology === "DATAMATRIX") {
+    try {
+      const symbol = dataMatrixSvg({
+        msg: label.value,
+        dim: 256,
+        pad: 2,
+        pal: ["#000000", "#ffffff"],
+      });
+      const source = symbol?.outerHTML;
+      const dimensions = typeof source === "string"
+        ? source.match(/viewBox="0 0 (\d+) (\d+)"/)
+        : null;
+      requireCondition(
+        dimensions
+          && Number(dimensions[1]) > 4
+          && Number(dimensions[2]) > 4
+          && /<path[^>]*transform="matrix\([^"]+\)"[^>]*d="M/.test(source),
+        "DATAMATRIX_ENCODING_FAILED",
+        "Data Matrix encoder did not produce a non-empty ECC 200 SVG symbol.",
+      );
+      svg = source.replace(
+        "<svg ",
+        '<svg role="img" aria-label="' + escapeHtml(description) + '" ',
+      );
+    } catch (error) {
+      if (error instanceof WmsLabelRenderError) throw error;
+      throw new WmsLabelRenderError(
+        "DATAMATRIX_ENCODING_FAILED",
+        "Label payload could not be encoded as a Data Matrix ECC 200 symbol.",
+      );
     }
   } else if (label.symbology === "GS1_128") {
     svg = gs1_128Svg(label.value, description);
