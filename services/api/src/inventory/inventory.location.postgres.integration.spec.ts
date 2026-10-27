@@ -2743,10 +2743,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       evidence: { verification_sheet: 'FACTORY-E2E-QA-01', verifier: 'independent-approver' },
     };
 
-    // Inject a database failure after the VERIFY transaction has updated the
-    // rework row, inserted lifecycle/audit/outbox evidence, and incremented the
-    // output stock balance, but before the output movement can be inserted.
-    // The whole transaction must roll back, not leave a phantom stock balance.
+    // Inject a database failure at the final genealogy outbox write, after
+    // output stock, movement, lot balance, quality evidence, genealogy edge and
+    // genealogy audit have all been attempted in this same transaction. The
+    // snapshot below must prove that every write is rolled back together.
     const beforeInjectedFailure = await adminPool.query<{
       rework_event_count: number;
       rework_outbox_count: number;
@@ -2806,31 +2806,36 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count`,
       [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id],
     );
+    awa    // Fail at the last durable write in this flow, after stock, movement,
+    // traceability balance, quality evidence, genealogy edge and genealogy audit
+    // have been attempted. This makes the snapshot prove transactional rollback
+    // for those writes rather than only proving an earlier statement failed.
     await adminPool.query(`
-      CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
+      CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_genealogy_outbox()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF NEW.reference_type = 'QUALITY_REWORK_OUTPUT' THEN
-          RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_OUTPUT_FAILURE';
+        IF NEW.event_type = 'TRACEABILITY.GENEALOGY_RECORDED'
+          AND NEW.payload->>'rework_order_id' = '${reworkOrder.id}' THEN
+          RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_GENEALOGY_OUTBOX_FAILURE';
         END IF;
         RETURN NEW;
       END;
       $$;
     `);
-    await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
+    await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_genealogy_outbox ON outbox_events');
     await adminPool.query(`
-      CREATE TRIGGER zz_test_fail_quality_rework_output
-      BEFORE INSERT ON inventory_movements
-      FOR EACH ROW EXECUTE FUNCTION factoryos_test_fail_quality_rework_output()
+      CREATE TRIGGER zz_test_fail_quality_rework_genealogy_outbox
+      BEFORE INSERT ON outbox_events
+      FOR EACH ROW EXECUTE FUNCTION factoryos_test_fail_quality_rework_genealogy_outbox()
     `);
     try {
       await expect(qualityService.transitionReworkOrder(
         qualityVerifierContext, reworkOrder.id, verificationPayload as never,
         'factory-e2e-quality-rework-verify-injected-failure-' + suffix,
-      )).rejects.toThrow(/INJECTED_QUALITY_REWORK_OUTPUT_FAILURE/i);
+      )).rejects.toThrow(/INJECTED_QUALITY_REWORK_GENEALOGY_OUTBOX_FAILURE/i);
     } finally {
-      await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
-      await adminPool.query('DROP FUNCTION IF EXISTS factoryos_test_fail_quality_rework_output()');
+      await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_genealogy_outbox ON outbox_events');
+      await adminPool.query('DROP FUNCTION IF EXISTS factoryos_test_fail_quality_rework_genealogy_outbox()');
     }
     const afterInjectedFailure = await adminPool.query<{
       rework_event_count: number;
