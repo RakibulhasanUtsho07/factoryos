@@ -654,7 +654,7 @@ export class SaasTenantPropagationService {
     }, {
       tenantId,
       userId: actorUserId,
-      advisoryLockKey: 'saas-external-predelete:' + tenantId + ':' requestId + ':' + runId + ':' + target.targetId,
+      advisoryLockKey: 'saas-external-predelete:' + tenantId + ':' + requestId + ':' + runId + ':' + target.targetId,
     });
   }
 
