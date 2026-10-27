@@ -141,7 +141,19 @@ describe('SaasTenantPostgresDatasetSource', () => {
     const categoryRead = calls.findIndex((item) => item.sql.includes('FROM public.ai_decision_envelopes AS dataset_row'));
     expect(coverageCheck).toBeGreaterThan(-1);
     expect(categoryRead).toBe(-1);
-    expect(calls[coverageCheck]?.values).toEqual([SaasTransferDatasetCategory.AI_CONTEXT]);
+    expect(calls[coverageCheck]?.values).toEqual([
+      SaasTransferDatasetCategory.AI_CONTEXT,
+      [
+        'ai_decision_envelopes',
+        'ai_context_packages',
+        'ai_verification_runs',
+        'research_sources',
+        'research_claims',
+        'research_claim_links',
+        'research_knowledge_releases',
+        'research_relevance_mappings',
+      ],
+    ]);
     expect(calls.some((item) => item.sql === 'ROLLBACK')).toBe(true);
     expect(calls.some((item) => item.sql === 'COMMIT')).toBe(false);
     expect(client.release).toHaveBeenCalledTimes(1);
