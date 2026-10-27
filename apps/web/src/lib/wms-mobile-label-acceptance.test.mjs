@@ -345,6 +345,31 @@ test("GS1-128 encodes FNC1 start/separators and validates the supported AI profi
   assert.throws(() => invalid("(10)" + "A".repeat(20) + "(21)" + "B".repeat(20) + "(01)09506000134352"), errorCode("GS1_128_TOO_LONG"));
 });
 
+test("GS1-128 supports bounded measurement AI families with six numeric data characters", () => {
+  const renderGs1 = (value) => renderWmsLabel(labelIssue("GS1_128", {
+    identity: { barcode_value: value, unit_code: value },
+    issue: { barcode_value: value },
+  }));
+
+  const netWeight = "(01)09506000134352(3102)001250";
+  const renderedWeight = renderGs1(netWeight);
+  assert.equal(renderedWeight.symbology, "GS1_128");
+  assert.match(renderedWeight.svg, /viewBox="0 0 352 82"/);
+  assert.match(renderedWeight.print_html, /001250/);
+
+  const variableLotThenGrossWeight = "(10)LOT-01(3300)000125";
+  const renderedLot = renderGs1(variableLotThenGrossWeight);
+  assert.equal(renderedLot.encoded_value, variableLotThenGrossWeight);
+  assert.match(renderedLot.svg, /viewBox="0 0 275 82"/);
+
+  const pounds = "(3205)000125";
+  assert.match(renderGs1(pounds).svg, /<rect/);
+
+  assert.throws(() => renderGs1("(3106)001250"), errorCode("UNSUPPORTED_GS1_AI"));
+  assert.throws(() => renderGs1("(3102)12AB50"), errorCode("INVALID_GS1_FIELD_FORMAT"));
+  assert.throws(() => renderGs1("(3300)00125"), errorCode("INVALID_GS1_FIELD_LENGTH"));
+});
+
 test("label rendering fails closed for bad identity, status, geometry, and copy count", () => {
   assert.throws(() => renderWmsLabel(labelIssue("QR", { identity: { barcode_value: "OTHER" } })), errorCode("LABEL_IDENTITY_MISMATCH"));
   assert.throws(() => renderWmsLabel(labelIssue("QR", { identity: { status: "UNKNOWN" } })), errorCode("INVALID_IDENTITY_STATUS"));
