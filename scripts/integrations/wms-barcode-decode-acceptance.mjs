@@ -32,6 +32,20 @@ const FIXTURES = [
     value: "(3300)000125",
     expected: "3300000125",
   },
+  {
+    name: "Data Matrix ECC 200 lot identifier",
+    symbology: "DATAMATRIX",
+    value: "LOT-TEST-01",
+    expected: "LOT-TEST-01",
+    decoder: "dmtxread",
+  },
+  {
+    name: "Data Matrix ECC 200 printable punctuation",
+    symbology: "DATAMATRIX",
+    value: "WMS:LOT-01/FR-02_2026.10",
+    expected: "WMS:LOT-01/FR-02_2026.10",
+    decoder: "dmtxread",
+  },
 ];
 
 function run(command, args) {
@@ -42,7 +56,7 @@ function run(command, args) {
   if (result.error) {
     throw new Error(
       "Required independent decode tool \"" + command +
-      "\" is unavailable. Install zbar-tools and librsvg2-bin. Details: " +
+      "\" is unavailable. Install zbar-tools, dmtx-utils and librsvg2-bin. Details: " +
       result.error.message,
     );
   }
@@ -77,7 +91,7 @@ function makeLabelIssue(fixture) {
 }
 
 async function main() {
-  const workspace = await mkdtemp(join(tmpdir(), "factoryos-wms-zbar-"));
+  const workspace = await mkdtemp(join(tmpdir(), "factoryos-wms-barcode-"));
   try {
     for (const [index, fixture] of FIXTURES.entries()) {
       const rendered = renderWmsLabel(makeLabelIssue(fixture));
@@ -102,12 +116,14 @@ async function main() {
         "--output", pngPath,
         svgPath,
       ]);
-      const decodedResult = run("zbarimg", [
-        "--raw",
-        "--quiet",
-        "--set=code128.enable=1",
-        pngPath,
-      ]);
+      const decodedResult = fixture.decoder === "dmtxread"
+        ? run("dmtxread", ["-n", pngPath])
+        : run("zbarimg", [
+          "--raw",
+          "--quiet",
+          "--set=code128.enable=1",
+          pngPath,
+        ]);
       const decoded = decodedResult.stdout.replace(/\r?\n$/, "");
       assert.equal(
         decoded,
@@ -116,9 +132,9 @@ async function main() {
         ": expected " + JSON.stringify(fixture.expected) +
         ", received " + JSON.stringify(decoded),
       );
-      console.log("PASS independent ZBar decode: " + fixture.name + " -> " + JSON.stringify(decoded));
+      console.log("PASS independent " + (fixture.decoder === "dmtxread" ? "libdmtx" : "ZBar") + " decode: " + fixture.name + " -> " + JSON.stringify(decoded));
     }
-    console.log("PASS: " + FIXTURES.length + " rendered Code 128 / GS1-128 vectors decoded from rasterized pixels.");
+    console.log("PASS: " + FIXTURES.length + " rendered Code 128, GS1-128 and Data Matrix ECC 200 vectors decoded from rasterized pixels.");
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
