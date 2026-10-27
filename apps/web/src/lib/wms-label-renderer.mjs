@@ -76,7 +76,7 @@ function code128SvgFromCodes(codes, value, ariaLabel) {
 }
 
 function code128Svg(value, ariaLabel) {
-  requireCondition(/^[\\x20-\\x7e]{1,128}$/.test(value), "INVALID_CODE128_VALUE", "Code 128 B accepts 1–128 printable ASCII characters in this renderer.");
+  requireCondition(/^[\x20-\x7e]{1,128}$/.test(value), "INVALID_CODE128_VALUE", "Code 128 B accepts 1–128 printable ASCII characters in this renderer.");
   return code128SvgFromCodes([104, ...Array.from(value, (character) => character.charCodeAt(0) - 32)], value, ariaLabel);
 }
 
@@ -112,7 +112,7 @@ function hasValidGs1CheckDigit(value) {
 }
 
 function isValidGs1Date(value) {
-  if (!/^\\d{6}$/.test(value)) return false;
+  if (!/^\d{6}$/.test(value)) return false;
   const year = 2000 + Number(value.slice(0, 2));
   const month = Number(value.slice(2, 4));
   const day = Number(value.slice(4, 6));
@@ -130,7 +130,7 @@ function parseGs1ElementString(value) {
   let dataCharacterCount = 0;
 
   while (offset < value.length) {
-    const aiMatch = value.slice(offset).match(/^\\((\\d{2,4})\\)/);
+    const aiMatch = value.slice(offset).match(/^\((\d{2,4})\)/);
     requireCondition(aiMatch, "INVALID_GS1_128_VALUE", "Each GS1 element must start with a parenthesized numeric Application Identifier.");
     const ai = aiMatch[1];
     const spec = GS1_AI_SPECS[ai];
@@ -146,9 +146,9 @@ function parseGs1ElementString(value) {
     const maxLength = spec.length ?? spec.maxLength;
     requireCondition(field.length >= minLength && field.length <= maxLength, "INVALID_GS1_FIELD_LENGTH", "GS1 Application Identifier " + ai + " has an invalid data-field length.");
     if (spec.numeric) {
-      requireCondition(/^\\d+$/.test(field), "INVALID_GS1_FIELD_FORMAT", "GS1 Application Identifier " + ai + " requires numeric data.");
+      requireCondition(/^\d+$/.test(field), "INVALID_GS1_FIELD_FORMAT", "GS1 Application Identifier " + ai + " requires numeric data.");
     } else {
-      requireCondition(/^[A-Za-z0-9 ._\\/-]+$/.test(field), "INVALID_GS1_FIELD_FORMAT", "This renderer supports only alphanumeric, space, dot, underscore, slash and hyphen in variable GS1 fields.");
+      requireCondition(/^[A-Za-z0-9 ._\/-]+$/.test(field), "INVALID_GS1_FIELD_FORMAT", "This renderer supports only alphanumeric, space, dot, underscore, slash and hyphen in variable GS1 fields.");
     }
     if (spec.checkDigit) {
       requireCondition(hasValidGs1CheckDigit(field), "INVALID_GS1_CHECK_DIGIT", "GS1 Application Identifier " + ai + " has an invalid check digit.");
