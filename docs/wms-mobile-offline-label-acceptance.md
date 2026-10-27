@@ -44,7 +44,7 @@ The API already issues durable label records with a template/layout snapshot, sy
 
 The scan workbench accepts keyboard-wedge scanner input or text delivered by a camera-decoder adapter and calls GET /api/v1/traceability/labels/resolve?code=... against the authenticated API. Blank/control input is rejected client-side; unknown labels return a controlled not-found error; ambiguous codes are rejected by the API rather than guessed. This is a resolver, not a claim that this commit implements browser camera decoding.
 
-**Supported generated images:** QR and Code 128 B only. The API's template schema also accepts Data Matrix and GS1-128, but this renderer intentionally fails closed for those values until conformant encoders and independent test vectors are added. No label is silently printed with a different symbology than the stored template.
+**Supported generated images:** QR, Code 128 B and a bounded GS1-128 profile. GS1-128 requires parenthesized Application Identifier fields and currently supports AIs 00, 01, 02, 10, 11, 13, 15, 17, 20, 21, 30, 37, 240, 241, 400, 401, 420 and 422. Unsupported AIs, duplicate AIs, unsupported variable-field characters, bad field lengths, invalid GTIN/SSCC check digits, invalid YYMMDD dates and payloads over 48 encoded AI/data characters fail closed. Data Matrix remains fail-closed until a conformant encoder and independent test vectors are added. No label is silently printed with a different symbology than the stored template.
 
 ## Physical acceptance checklist — do not mark PASS without a device run
 
