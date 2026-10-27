@@ -398,6 +398,48 @@ test("GS1-128 encodes FNC1 start/separators and validates the supported AI profi
   assert.throws(() => invalid("(10)" + "A".repeat(20) + "(21)" + "B".repeat(20) + "(01)09506000134352"), errorCode("GS1_128_TOO_LONG"));
 });
 
+test("GS1 Data Matrix applies FNC1 first, GS separator rules, and bounded AI validation", () => {
+  const value = "(10)LOT-01(01)09506000134352";
+  const rendered = withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
+    identity: { barcode_value: value, unit_code: value },
+    issue: { barcode_value: value },
+  })));
+  assert.equal(rendered.symbology, "GS1_DATAMATRIX");
+  assert.match(rendered.svg, /aria-label="GS1_DATAMATRIX label/);
+  assert.match(rendered.svg, /viewBox="0 0 \d+ \d+"/);
+  assert.match(rendered.print_html, /GS1_DATAMATRIX label/);
+  assert.equal(rendered.encoded_value, value);
+  const plainValue = "0109506000134352";
+  const plain = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX", {
+    identity: { barcode_value: plainValue, unit_code: plainValue },
+    issue: { barcode_value: plainValue },
+  })));
+  const symbolPath = (svg) => svg.match(/<path[^>]*d="([^"]+)"/)?.[1];
+  assert.ok(symbolPath(rendered.svg));
+  assert.ok(symbolPath(plain.svg));
+  assert.notEqual(symbolPath(rendered.svg), symbolPath(plain.svg), "GS1 mode must alter encoded symbol modules for FNC1");
+
+  const fixedFields = "(01)09506000134352(17)271231";
+  assert.match(withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
+    identity: { barcode_value: fixedFields, unit_code: fixedFields },
+    issue: { barcode_value: fixedFields },
+  }))).svg, /<path/);
+
+  const fixedNonPredefinedAi = "(422)840(01)09506000134352";
+  assert.match(withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
+    identity: { barcode_value: fixedNonPredefinedAi, unit_code: fixedNonPredefinedAi },
+    issue: { barcode_value: fixedNonPredefinedAi },
+  }))).svg, /<path/);
+
+  const invalid = (badValue) => withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
+    identity: { barcode_value: badValue, unit_code: badValue },
+    issue: { barcode_value: badValue },
+  })));
+  assert.throws(() => invalid("(99)ABC"), errorCode("UNSUPPORTED_GS1_AI"));
+  assert.throws(() => invalid("(01)09506000134353"), errorCode("INVALID_GS1_CHECK_DIGIT"));
+  assert.throws(() => invalid("(10)"), errorCode("INVALID_GS1_FIELD"));
+});
+
 test("GS1-128 supports bounded measurement AI families with six numeric data characters", () => {
   const renderGs1 = (value) => renderWmsLabel(labelIssue("GS1_128", {
     identity: { barcode_value: value, unit_code: value },
