@@ -643,7 +643,7 @@ export class QualityService {
         if(String(old.rows[0].request_hash).trim()!==hash)throw new ConflictException('Idempotency-Key was already used for another rework transition');
         return{id:String(old.rows[0].rework_order_id),replayed:true};
       }
-      const q=await client.query("SELECT r.id::text AS id,r.defect_id::text AS defect_id,r.inspection_id::text AS inspection_id,r.ncr_id::text AS ncr_id,r.status,r.row_version::int AS row_version,r.input_quantity::text AS input_quantity,r.source_inventory_item_id::text AS source_inventory_item_id,r.source_traceability_unit_id::text AS source_traceability_unit_id,r.completed_by_user_id::text AS completed_by_user_id,r.output_traceability_unit_id::text AS output_traceability_unit_id,r.follow_up_inspection_id::text AS follow_up_inspection_id,r.recovered_quantity::text AS recovered_quantity,d.status AS defect_status,d.row_version::int AS defect_row_version FROM quality_rework_orders r JOIN quality_defects d ON d.id=r.defect_id AND d.tenant_id=r.tenant_id AND d.factory_id=r.factory_id WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 FOR UPDATE OF r,d",
+      const q=await client.query("SELECT r.id::text AS id,r.defect_id::text AS defect_id,r.inspection_id::text AS inspection_id,r.ncr_id::text AS ncr_id,r.status,r.row_version::int AS row_version,r.input_quantity::text AS input_quantity,r.source_inventory_item_id::text AS source_inventory_item_id,r.source_traceability_unit_id::text AS source_traceability_unit_id,r.completed_by_user_id::text AS completed_by_user_id,r.output_traceability_unit_id::text AS output_traceability_unit_id,r.follow_up_inspection_id::text AS follow_up_inspection_id,r.recovered_quantity::text AS recovered_quantity,r.scrap_quantity::text AS scrap_quantity,d.status AS defect_status,d.row_version::int AS defect_row_version FROM quality_rework_orders r JOIN quality_defects d ON d.id=r.defect_id AND d.tenant_id=r.tenant_id AND d.factory_id=r.factory_id WHERE r.id=$1 AND r.tenant_id=$2 AND r.factory_id=$3 FOR UPDATE OF r,d",
         [reworkOrderId,c.tenantId,c.factoryId]);
       const r=q.rows[0];if(!r)throw new NotFoundException('Quality rework order was not found in this factory');
       if(Number(r.row_version)!==dto.expected_version)throw new ConflictException('Rework order version is stale');
@@ -692,7 +692,7 @@ export class QualityService {
         update=await client.query("UPDATE quality_rework_orders SET status='CANCELLED',row_version=row_version+1,cancelled_by_user_id=$1,cancelled_at=clock_timestamp(),cancellation_reason=$2,completed_by_user_id=NULL,completed_at=NULL,completion_reason=NULL,recovered_quantity=0,scrap_quantity=0,output_traceability_unit_id=NULL,follow_up_inspection_id=NULL,verified_by_user_id=NULL,verified_at=NULL,verification_reason=NULL,updated_by_user_id=$1,updated_at=clock_timestamp() WHERE id=$3 AND tenant_id=$4 AND factory_id=$5 AND row_version=$6 RETURNING row_version::int AS row_version",[c.userId,reason,reworkOrderId,c.tenantId,c.factoryId,r.row_version]);
       }else throw new BadRequestException('Unsupported rework transition');
       const version=Number(update.rows[0]?.row_version??0);if(!version)throw new ConflictException('Rework task changed during transition');
-      await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action,reason,evidence,
+      await this.insertQualityReworkEvent(client,c,{reworkOrderId,defectId:String(r.defect_id),version,from,to,command:dto.action==='VERIFY'?(to==='VERIFIED'?'VERIFY_PASS':'VERIFY_FAIL'):dto.action,reason,evidence,
         payload:{input_quantity:r.input_quantity,recovered_quantity:recovered,scrap_quantity:scrap,output_traceability_unit_id:outputId,follow_up_inspection_id:followupId},
         key,hash,correlation});
       if (dto.action==='CANCEL' && ['IN_PROGRESS','REWORK_REQUIRED'].includes(from) && r.source_inventory_item_id) {
@@ -708,6 +708,84 @@ export class QualityService {
           outputTraceabilityUnitId:String(r.output_traceability_unit_id),
           recoveredQuantity:String(r.recovered_quantity),actorId:c.userId,correlation,
         });
+      }
+      // Keep recall/forward genealogy connected across the verified rework boundary.
+      // The database guard admits this edge only when the source is still quarantined,
+      // the recovered lot is ACTIVE, the exact rework is VERIFIED by a different actor,
+      // and its follow-up inspection is PASSED.
+      if (dto.action==='VERIFY' && to==='VERIFIED' && this.units(String(r.recovered_quantity))>0n
+        && r.source_traceability_unit_id && r.output_traceability_unit_id) {
+        const sourceUnitId=String(r.source_traceability_unit_id);
+        const outputUnitId=String(r.output_traceability_unit_id);
+        const recoveredQuantity=String(r.recovered_quantity);
+        const relationshipType='REWORKED_INTO';
+        const notes='Verified recovered output linked to quarantined rework source';
+        const sourceUnit=await client.query(
+          "SELECT unit FROM traceability_units WHERE id=$1 AND tenant_id=$2 AND factory_id=$3 FOR SHARE",
+          [sourceUnitId,c.tenantId,c.factoryId],
+        );
+        if(!sourceUnit.rows[0])throw new ConflictException('Rework genealogy source lot was not found in this factory');
+        const unit=String(sourceUnit.rows[0].unit);
+        const genealogyEvidence={
+          source:'QUALITY_REWORK_VERIFICATION',
+          rework_order_id:reworkOrderId,
+          defect_id:String(r.defect_id),
+          source_traceability_unit_id:sourceUnitId,
+          output_traceability_unit_id:outputUnitId,
+          follow_up_inspection_id:String(r.follow_up_inspection_id),
+          recovered_quantity:recoveredQuantity,
+          scrap_quantity:String(r.scrap_quantity),
+          verified_by_user_id:c.userId,
+        };
+        const genealogyKey='quality-rework-genealogy:'+reworkOrderId;
+        const genealogyHash=this.hash({
+          source_unit_id:sourceUnitId,
+          target_unit_id:outputUnitId,
+          relationship_type:relationshipType,
+          quantity:recoveredQuantity,
+          notes,
+          evidence:genealogyEvidence,
+        });
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1::text,0))',
+          [c.tenantId+':'+c.factoryId+':genealogy-idempotency:'+genealogyKey],
+        );
+        const existingGenealogy=await client.query(
+          "SELECT id::text AS id,request_hash FROM product_genealogy_events WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3 FOR UPDATE",
+          [c.tenantId,c.factoryId,genealogyKey],
+        );
+        let genealogyId:string;
+        if(existingGenealogy.rows[0]){
+          if(String(existingGenealogy.rows[0].request_hash).trim()!==genealogyHash){
+            throw new ConflictException('Rework genealogy idempotency key was reused with different evidence');
+          }
+          genealogyId=String(existingGenealogy.rows[0].id);
+        }else{
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1::text,0))',
+            [c.tenantId+':'+c.factoryId+':product-genealogy-graph'],
+          );
+          const insertedGenealogy=await client.query(
+            "INSERT INTO product_genealogy_events (tenant_id,factory_id,source_unit_id,target_unit_id,relationship_type,quantity,unit,evidence,notes,idempotency_key,request_hash,created_by_user_id,correlation_id) VALUES ($1,$2,$3::uuid,$4::uuid,'REWORKED_INTO',$5::numeric,$6,$7::jsonb,$8,$9,$10,$11,$12::uuid) RETURNING id::text AS id",
+            [c.tenantId,c.factoryId,sourceUnitId,outputUnitId,recoveredQuantity,unit,JSON.stringify(genealogyEvidence),notes,genealogyKey,genealogyHash,c.userId,correlation],
+          );
+          genealogyId=String(insertedGenealogy.rows[0]?.id??'');
+          if(!genealogyId)throw new Error('QUALITY_REWORK_GENEALOGY_INSERT_FAILED');
+          await client.query(
+            "INSERT INTO audit_events (tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,correlation_id,request_id,data_class,payload) VALUES ($1,$2,$3,'TRACEABILITY','RECORDED','PRODUCT_GENEALOGY_EVENT',$4,$5,$6,'INTERNAL',$7::jsonb)",
+            [c.tenantId,c.factoryId,c.userId,genealogyId,correlation,c.requestId??null,JSON.stringify({
+              source_unit_id:sourceUnitId,target_unit_id:outputUnitId,relationship_type:relationshipType,
+              quantity:recoveredQuantity,unit,rework_order_id:reworkOrderId,defect_id:String(r.defect_id),
+            })],
+          );
+          await client.query(
+            "INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload) VALUES ($1,$2,'PRODUCT_GENEALOGY_EVENT',$3,'TRACEABILITY.GENEALOGY_RECORDED',$4::jsonb)",
+            [c.tenantId,c.factoryId,genealogyId,JSON.stringify({
+              genealogy_event_id:genealogyId,source_unit_id:sourceUnitId,target_unit_id:outputUnitId,
+              relationship_type:relationshipType,quantity:recoveredQuantity,unit,rework_order_id:reworkOrderId,
+            })],
+          );
+        }
       }
       if(dto.action==='COMPLETE'&&Number(recovered)>0){
         await this.insertDefectLink(client,c,{defectId:String(r.defect_id),linkType:'REWORK_OUTPUT',targetId:String(outputId),source:'REWORK_OUTPUT',quantity:recovered,
@@ -1346,10 +1424,12 @@ export class QualityService {
   private async auditOutbox(client:PoolClient,c:QualityContext,i:{inspectionId?:string;defectId?:string;holdId?:string|null;dispositionId?:string|null;ncrId?:string;action:string;correlation:string;payload:Record<string,unknown>;aggregateType?:string;aggregateId?:string;outboxEvent?:string}){
     await client.query("INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,defect_id,hold_id,disposition_id,ncr_id,action_type,payload,actor_user_id,correlation_id) VALUES ($1,$2,$3::uuid,$4::uuid,$5::uuid,$6::uuid,$7::uuid,$8,$9::jsonb,$10,$11::uuid)",
       [c.tenantId,c.factoryId,i.inspectionId??null,i.defectId??null,i.holdId??null,i.dispositionId??null,i.ncrId??null,i.action,JSON.stringify(i.payload),c.userId,i.correlation]);
-    const aggregateType=i.aggregateType??'QUALITY_INSPECTION',aggregateId=i.aggregateId??i.inspectionId;
-    if(!aggregateId)throw new Error('QUALITY_OUTBOX_AGGREGATE_REQUIRED');
+    const aggregateType = i.aggregateType ?? (i.inspectionId ? 'QUALITY_INSPECTION' : i.defectId ? 'QUALITY_DEFECT' : i.ncrId ? 'QUALITY_NCR' : i.holdId ? 'QUALITY_HOLD' : 'QUALITY_DISPOSITION');
+    const aggregateId = i.aggregateId ?? i.inspectionId ?? i.defectId ?? i.ncrId ?? i.holdId ?? i.dispositionId;
+    if (!aggregateId) throw new Error('QUALITY_OUTBOX_AGGREGATE_REQUIRED');
+    const outboxEvent = i.outboxEvent ?? (i.inspectionId ? 'QUALITY.INSPECTION_CHANGED' : i.defectId ? 'QUALITY.DEFECT_CHANGED' : i.ncrId ? 'QUALITY.NCR_CHANGED' : i.holdId ? 'QUALITY.HOLD_CHANGED' : 'QUALITY.DISPOSITION_CHANGED');
     await client.query("INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",
-      [c.tenantId,c.factoryId,aggregateType,aggregateId,i.outboxEvent??'QUALITY.INSPECTION_CHANGED',JSON.stringify({...i.payload,action:i.action,correlation_id:i.correlation})]);
+      [c.tenantId,c.factoryId,aggregateType,aggregateId,outboxEvent,JSON.stringify({...i.payload,action:i.action,correlation_id:i.correlation})]);
   }
 
   private async lockKey(client:PoolClient,c:QualityContext,namespace:string,key:string){

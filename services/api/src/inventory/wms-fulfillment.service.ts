@@ -1,9 +1,10 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { isUUID } from 'class-validator';
 import type { PoolClient } from 'pg';
 
 import { DatabaseService } from '../database/database.service';
+import { WmsPodStorageVerifier } from '../integrations/wms-pod-storage';
 import {
   AddWmsPackingContentDto, CreateWmsPackingContainerDto, DispatchWmsShipmentDto,
   RecordWmsShipmentDeliveryEventDto,
@@ -48,7 +49,10 @@ interface WmsLeafRow extends TraceUnitRow {
 
 @Injectable()
 export class WmsFulfillmentService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    @Optional() private readonly podStorageVerifier?: WmsPodStorageVerifier,
+  ) {}
 
   async createContainer(
     userId: string, tenantId: string, factoryId: string,
@@ -244,7 +248,9 @@ export class WmsFulfillmentService {
             }
             const hold = await client.query<{ present: boolean }>(`
               SELECT EXISTS (SELECT 1 FROM quality_holds qh WHERE qh.tenant_id=$1 AND qh.factory_id=$2
-                AND qh.status='ACTIVE' AND (qh.inventory_item_id=$3 OR qh.traceability_unit_id=$4)) AS present
+                AND qh.status='ACTIVE'
+                AND (qh.traceability_unit_id=$4
+                  OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=$3))) AS present
             `, [tenantId, factoryId, container.item_id, sourceUnitId]);
             if (hold.rows[0]?.present) throw new ConflictException('Quality-held inventory cannot be packed');
             const balance = await client.query<{ quantity_on_hand: string; quantity_reserved: string }>(`
@@ -517,7 +523,9 @@ export class WmsFulfillmentService {
             }
             const hold = await client.query<{ present: boolean }>(`
               SELECT EXISTS (SELECT 1 FROM quality_holds qh WHERE qh.tenant_id=$1 AND qh.factory_id=$2
-                AND qh.status='ACTIVE' AND (qh.inventory_item_id=$3 OR qh.traceability_unit_id=$4)) AS present
+                AND qh.status='ACTIVE'
+                AND (qh.traceability_unit_id=$4
+                  OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=$3))) AS present
             `, [tenantId, factoryId, container.item_id, leaf.id]);
             if (hold.rows[0]?.present) throw new ConflictException('Quality-held inventory cannot be dispatched');
 
@@ -875,6 +883,51 @@ export class WmsFulfillmentService {
       recipient_name: recipientName, proof_type: proofType, proof_reference: proofReference,
       proof_sha256: proofSha256, signed_at: signedAt?.toISOString() ?? null, notes,
     });
+
+    // Idempotent replays return the committed receipt without depending on a
+    // storage round-trip that may be temporarily unavailable after first save.
+    // The same key with changed input is rejected before doing any external IO.
+    const previous = await this.database.query<{ id: string; request_hash: string }>(
+      `SELECT id::text AS id, request_hash
+       FROM wms_shipment_delivery_events
+       WHERE tenant_id=$1 AND factory_id=$2 AND idempotency_key=$3
+       LIMIT 1`,
+      [tenantId, factoryId, key],
+      { tenantId, userId },
+    );
+    if (previous.rows[0]) {
+      if (previous.rows[0].request_hash.trim() !== requestHash) {
+        throw new ConflictException('Delivery event idempotency key was used for a different request');
+      }
+      const prior = await this.database.query(
+        `SELECT id::text AS id, shipment_unit_id::text AS shipment_unit_id, event_type,
+          source_system, event_at::text AS event_at, recipient_name, proof_type, proof_reference,
+          proof_sha256, signed_at::text AS signed_at, notes,
+          recorded_by_user_id::text AS recorded_by_user_id, created_at::text AS created_at
+         FROM wms_shipment_delivery_events
+         WHERE id=$1 AND tenant_id=$2 AND factory_id=$3`,
+        [previous.rows[0].id, tenantId, factoryId],
+        { tenantId, userId },
+      );
+      if (!prior.rows[0]) throw new Error('WMS_DELIVERY_EVENT_REPLAY_ROW_MISSING');
+      return { event: prior.rows[0], replayed: true };
+    }
+
+    if (eventType === 'DELIVERED') {
+      const expectedPrefix = 'pod/' + tenantId.toLowerCase() + '/' +
+        factoryId.toLowerCase() + '/' + shipmentId + '/';
+      if (!proofReference || !proofReference.startsWith(expectedPrefix) ||
+        proofReference.length <= expectedPrefix.length) {
+        throw new BadRequestException('proof_reference must identify an uploaded POD object for this shipment');
+      }
+      if (!this.podStorageVerifier) {
+        throw new ServiceUnavailableException('POD object verification is unavailable; delivered events are disabled');
+      }
+      // Verify stored bytes before opening the lifecycle transaction. A caller's
+      // claimed digest or the successful metadata insert alone is not evidence.
+      await this.podStorageVerifier.verifyObjectDigest(proofReference, proofSha256!);
+    }
+
     const requestUuid = this.uuidOrNull(requestId);
     const correlationId = this.correlation(requestId, traceId);
     try {

@@ -5,11 +5,12 @@ import { IamModule } from '../iam/iam.module';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationService } from './integration.service';
 import { IntegrationReconciliationService } from './integration-reconciliation.service';
+import { WmsPodStorageVerifier } from './wms-pod-storage';
 
 @Module({
   imports: [DatabaseModule, AuditModule, IamModule],
   controllers: [IntegrationsController],
-  providers: [IntegrationService, IntegrationReconciliationService],
-  exports: [IntegrationService],
+  providers: [IntegrationService, IntegrationReconciliationService, WmsPodStorageVerifier],
+  exports: [IntegrationService, WmsPodStorageVerifier],
 })
 export class IntegrationsModule {}
