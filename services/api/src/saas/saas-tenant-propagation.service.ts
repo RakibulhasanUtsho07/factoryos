@@ -333,8 +333,15 @@ export class SaasTenantPropagationService {
 
       try {
         if (planEntry && !plan) throw new ConflictException('Persisted external deletion plan is malformed; recovery must be reviewed');
-        if (plan) await adapter.recover({ ...context, plan });
-        else {
+        if (plan) {
+          // Recovery can reconcile or resume an uncertain provider operation, so it
+          // is destructive-capable and must pass the same fresh scope/hold check.
+          await this.assertExternalDeletionPreconditions({
+            tenantId, actorUserId, requestId, expectedVersion,
+            request: prepared.request, runId: prepared.run.run_id, target, plan,
+          });
+          await adapter.recover({ ...context, plan });
+        } else {
           plan = await adapter.prepare(context);
           this.validatePlan(plan);
           currentManifest = {
@@ -352,6 +359,14 @@ export class SaasTenantPropagationService {
         }
         plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
         planDigest = plan.manifestDigest;
+
+        // A legal hold can be activated while the provider plan is being prepared.
+        // Re-read the approval, hold, target inventory and exact persisted manifest
+        // immediately before the irreversible provider call.
+        await this.assertExternalDeletionPreconditions({
+          tenantId, actorUserId, requestId, expectedVersion,
+          request: prepared.request, runId: prepared.run.run_id, target, plan,
+        });
         const deletion = await adapter.erase({ ...context, plan });
         deletedCopies = this.count(deletion.deletedCopies, 'deletedCopies');
         providerReceiptReference = this.reference(deletion.providerReceiptReference, 'providerReceiptReference');
@@ -508,6 +523,139 @@ export class SaasTenantPropagationService {
       [tenantId, requestId, limit], { tenantId, userId: actorUserId },
     );
     return { items: result.rows.map((row) => this.mapRun(row)), count: result.rows.length, limit };
+  }
+
+  private async assertExternalDeletionPreconditions(input: {
+    tenantId: string;
+    actorUserId: string;
+    requestId: string;
+    expectedVersion: number;
+    request: ErasureRequestRow;
+    runId: string;
+    target: SaasTenantExternalDataTarget;
+    plan: SaasExternalPropagationPlan;
+  }) {
+    const { tenantId, actorUserId, requestId, expectedVersion, request, runId, target, plan } = input;
+
+    await this.database.transaction(async (client) => {
+      await this.lockTenant(client, tenantId);
+
+      const currentRequestResult = await client.query<ErasureRequestRow>(
+        `SELECT * FROM saas_tenant_data_erasure_requests
+         WHERE tenant_id=$1 AND request_id=$2 AND version=$3 FOR UPDATE`,
+        [tenantId, requestId, Number(request.version)],
+      );
+      const currentRequest = currentRequestResult.rows[0];
+      if (!currentRequest || currentRequest.status !== 'PROPAGATION_PENDING') {
+        throw new ConflictException('Erasure approval is no longer eligible for external deletion');
+      }
+      if (Number(currentRequest.row_version) !== expectedVersion
+        || currentRequest.export_bundle_digest !== request.export_bundle_digest
+        || currentRequest.export_transfer_id !== request.export_transfer_id
+        || Number(currentRequest.export_transfer_version) !== Number(request.export_transfer_version)
+        || currentRequest.execution_run_id !== request.execution_run_id
+        || currentRequest.execution_manifest_digest !== request.execution_manifest_digest
+        || JSON.stringify([...this.parseCategories(currentRequest.categories)].sort())
+          !== JSON.stringify([...this.parseCategories(request.categories)].sort())) {
+        throw new ConflictException('Approved erasure request, export digest, PostgreSQL receipt or categories changed before external deletion');
+      }
+
+      const transferResult = await client.query<TransferRow>(
+        `SELECT t.source_manifest, t.source_bundle_digest, t.actor_user_id
+         FROM saas_tenant_data_transfers t
+         WHERE t.tenant_id=$1 AND t.transfer_id=$2 AND t.version=$3
+           AND t.operation_type='EXPORT' AND t.status='COMPLETED' AND t.source_bundle_digest=$4
+         FOR SHARE`,
+        [tenantId, currentRequest.export_transfer_id, Number(currentRequest.export_transfer_version), currentRequest.export_bundle_digest],
+      );
+      const transfer = transferResult.rows[0];
+      if (!transfer || transfer.source_bundle_digest !== currentRequest.export_bundle_digest) {
+        throw new ConflictException('Exact completed source export changed or is no longer available before external deletion');
+      }
+
+      const sourceManifest = this.jsonObject(transfer.source_manifest);
+      const attestationResult = await client.query<{ verified_by_user_id: string }>(
+        `SELECT verified_by_user_id FROM saas_tenant_data_export_preservation_attestations
+         WHERE tenant_id=$1 AND transfer_id=$2 AND transfer_version=$3 AND bundle_digest=$4
+         ORDER BY verified_at DESC FOR SHARE`,
+        [tenantId, currentRequest.export_transfer_id, Number(currentRequest.export_transfer_version), currentRequest.export_bundle_digest],
+      );
+      if (!attestationResult.rows.some((row) =>
+        row.verified_by_user_id !== currentRequest.requested_by_user_id
+        && row.verified_by_user_id !== currentRequest.reviewed_by_user_id
+        && row.verified_by_user_id !== currentRequest.execution_started_by_user_id
+        && row.verified_by_user_id !== actorUserId)) {
+        throw new ConflictException('Independent export-preservation attestation is missing or no longer independent before external deletion');
+      }
+
+      const categories = this.parseCategories(currentRequest.categories);
+      const holdResult = await client.query<{ categories: SaasTransferDatasetCategory[] | string }>(
+        `SELECT categories FROM saas_tenant_data_legal_holds
+         WHERE tenant_id=$1 AND status='ACTIVE' FOR SHARE`,
+        [tenantId],
+      );
+      if (holdResult.rows.some((hold) =>
+        categories.some((category) => this.parseCategories(hold.categories).includes(category)))) {
+        throw new ConflictException('An active legal hold blocks external deletion for one or more categories');
+      }
+
+      const targetResult = await client.query<TargetRow>(
+        `SELECT * FROM saas_tenant_external_data_targets
+         WHERE tenant_id=$1 AND required=true AND status='ACTIVE'
+         ORDER BY store_kind,target_id FOR SHARE`,
+        [tenantId],
+      );
+      const currentTargets = targetResult.rows.map((row) => this.mapTarget(row))
+        .filter((candidate) => candidate.categories.some((category) => categories.includes(category)));
+      this.assertTargetCoverage(categories, currentTargets);
+
+      const runResult = await client.query<PropagationRunRow>(
+        `SELECT * FROM saas_tenant_external_propagation_runs
+         WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 FOR UPDATE`,
+        [tenantId, requestId, runId],
+      );
+      const currentRun = runResult.rows[0];
+      if (!currentRun || currentRun.status !== 'RUNNING') {
+        throw new ConflictException('External propagation run is no longer RUNNING before provider deletion');
+      }
+      const manifest = this.jsonObject(currentRun.external_manifest);
+      const persistedTargets = Array.isArray(manifest.targetIds) ? manifest.targetIds.map(String).sort() : [];
+      const currentTargetIds = currentTargets.map((candidate) => candidate.targetId).sort();
+      if (Number(currentRun.request_version) !== Number(currentRequest.version)
+        || currentRun.source_export_digest !== currentRequest.export_bundle_digest
+        || manifest.sourceExportDigest !== currentRequest.export_bundle_digest
+        || manifest.requestId !== requestId
+        || Number(manifest.requestVersion) !== Number(currentRequest.version)
+        || manifest.sourceManifestDigest !== this.hash(sourceManifest)
+        || JSON.stringify(persistedTargets) !== JSON.stringify(currentTargetIds)) {
+        throw new ConflictException('External target inventory or exact approved manifest changed before provider deletion');
+      }
+
+      const liveTarget = currentTargets.find((candidate) => candidate.targetId === target.targetId);
+      if (!liveTarget
+        || liveTarget.storeKind !== target.storeKind
+        || liveTarget.adapterKey !== target.adapterKey
+        || liveTarget.configReference !== target.configReference
+        || liveTarget.required !== target.required
+        || JSON.stringify([...liveTarget.categories].sort()) !== JSON.stringify([...target.categories].sort())) {
+        throw new ConflictException('The external target registration changed or is no longer active before provider deletion');
+      }
+
+      const plans = this.jsonObject(manifest.plans ?? {});
+      const persistedPlan = this.jsonObject(plans[target.targetId] ?? {});
+      if (persistedPlan.manifestDigest !== plan.manifestDigest
+        || String(persistedPlan.plannedCopies ?? '') !== String(plan.plannedCopies)
+        || persistedPlan.planReference !== plan.planReference
+        || persistedPlan.storeKind !== target.storeKind
+        || persistedPlan.adapterKey !== target.adapterKey
+        || persistedPlan.configReference !== target.configReference) {
+        throw new ConflictException('The exact prepared external deletion plan changed before provider deletion');
+      }
+    }, {
+      tenantId,
+      userId: actorUserId,
+      advisoryLockKey: 'saas-external-predelete:' + tenantId + ':' requestId + ':' + runId + ':' + target.targetId,
+    });
   }
 
   private async persistRunManifest(tenantId: string, actorUserId: string, requestId: string, runId: string, manifest: Record<string, unknown>) {
