@@ -89,22 +89,22 @@ function resolveGs1AiSpec(ai) {
   // 330n (logistic/gross weight kg) encode a six-digit numeric value.
   // The final AI digit n denotes decimal precision and is limited here to 0–5.
   if (/^(310|320|330)[0-5]$/.test(ai)) {
-    return { length: 6, numeric: true, decimalIndicator: Number(ai[3]) };
+    return { length: 6, numeric: true, predefinedLength: true, decimalIndicator: Number(ai[3]) };
   }
 
   return undefined;
 }
 
 const GS1_AI_SPECS = Object.freeze({
-  "00": { length: 18, numeric: true, checkDigit: true },
-  "01": { length: 14, numeric: true, checkDigit: true },
-  "02": { length: 14, numeric: true, checkDigit: true },
+  "00": { length: 18, numeric: true, checkDigit: true, predefinedLength: true },
+  "01": { length: 14, numeric: true, checkDigit: true, predefinedLength: true },
+  "02": { length: 14, numeric: true, checkDigit: true, predefinedLength: true },
   "10": { maxLength: 20, variable: true },
-  "11": { length: 6, numeric: true, date: true },
-  "13": { length: 6, numeric: true, date: true },
-  "15": { length: 6, numeric: true, date: true },
-  "17": { length: 6, numeric: true, date: true },
-  "20": { length: 2, numeric: true },
+  "11": { length: 6, numeric: true, date: true, predefinedLength: true },
+  "13": { length: 6, numeric: true, date: true, predefinedLength: true },
+  "15": { length: 6, numeric: true, date: true, predefinedLength: true },
+  "17": { length: 6, numeric: true, date: true, predefinedLength: true },
+  "20": { length: 2, numeric: true, predefinedLength: true },
   "21": { maxLength: 20, variable: true },
   "30": { maxLength: 8, numeric: true, variable: true },
   "37": { maxLength: 8, numeric: true, variable: true },
@@ -113,7 +113,7 @@ const GS1_AI_SPECS = Object.freeze({
   "400": { maxLength: 30, variable: true },
   "401": { maxLength: 30, variable: true },
   "420": { maxLength: 20, variable: true },
-  "422": { length: 3, numeric: true },
+  "422": { length: 3, numeric: true, predefinedLength: false },
 });
 
 function hasValidGs1CheckDigit(value) {
@@ -137,8 +137,13 @@ function isValidGs1Date(value) {
   return day <= daysInMonth;
 }
 
-function parseGs1ElementString(value) {
-  requireCondition(typeof value === "string" && value.length > 0, "INVALID_GS1_128_VALUE", "GS1-128 requires parenthesized GS1 Application Identifier element strings.");
+function parseGs1ElementString(value, options = {}) {
+  const profile = options.profile ?? "GS1_128";
+  const isDataMatrix = profile === "GS1_DATAMATRIX";
+  const profileLabel = isDataMatrix ? "GS1 Data Matrix" : "GS1-128";
+  const valueErrorCode = isDataMatrix ? "INVALID_GS1_DATAMATRIX_VALUE" : "INVALID_GS1_128_VALUE";
+  const maxDataCharacters = options.maxDataCharacters ?? 48;
+  requireCondition(typeof value === "string" && value.length > 0, valueErrorCode, profileLabel + " requires parenthesized GS1 Application Identifier element strings.");
   const elements = [];
   const seenAis = new Set();
   let offset = 0;
@@ -146,7 +151,7 @@ function parseGs1ElementString(value) {
 
   while (offset < value.length) {
     const aiMatch = value.slice(offset).match(/^\((\d{2,4})\)/);
-    requireCondition(aiMatch, "INVALID_GS1_128_VALUE", "Each GS1 element must start with a parenthesized numeric Application Identifier.");
+    requireCondition(aiMatch, valueErrorCode, "Each GS1 element must start with a parenthesized numeric Application Identifier.");
     const ai = aiMatch[1];
     const spec = resolveGs1AiSpec(ai);
     requireCondition(spec, "UNSUPPORTED_GS1_AI", "This renderer does not support GS1 Application Identifier " + ai + ".");
@@ -173,21 +178,81 @@ function parseGs1ElementString(value) {
     }
 
     dataCharacterCount += ai.length + field.length;
-    elements.push({ ai, field, variable: Boolean(spec.variable) });
+    elements.push({
+      ai,
+      field,
+      variable: Boolean(spec.variable),
+      predefinedLength: Boolean(spec.predefinedLength),
+    });
     offset = nextElement < 0 ? value.length : nextElement;
   }
 
-  requireCondition(dataCharacterCount <= 48, "GS1_128_TOO_LONG", "GS1-128 symbols are limited to 48 encoded Application Identifier and data characters.");
+  requireCondition(
+    dataCharacterCount <= maxDataCharacters,
+    isDataMatrix ? "GS1_DATAMATRIX_TOO_LONG" : "GS1_128_TOO_LONG",
+    isDataMatrix
+      ? "GS1 Data Matrix payload exceeds the 512 encoded AI/data character profile."
+      : "GS1-128 symbols are limited to 48 encoded Application Identifier and data characters.",
+  );
   const codes = [104, 102];
   elements.forEach((element, index) => {
     for (const character of element.ai + element.field) codes.push(character.charCodeAt(0) - 32);
     if (element.variable && index < elements.length - 1) codes.push(102);
   });
-  return codes;
+  return { elements, codes, dataCharacterCount };
 }
 
 function gs1_128Svg(value, ariaLabel) {
-  return code128SvgFromCodes(parseGs1ElementString(value), value, ariaLabel);
+  return code128SvgFromCodes(parseGs1ElementString(value).codes, value, ariaLabel);
+}
+
+function gs1DataMatrixPayload(value) {
+  const { elements } = parseGs1ElementString(value, {
+    profile: "GS1_DATAMATRIX",
+    maxDataCharacters: 512,
+  });
+  return elements.map((element, index) =>
+    element.ai + element.field
+      + (!element.predefinedLength && index < elements.length - 1 ? String.fromCharCode(29) : "")
+  ).join("");
+}
+
+function renderDataMatrixSvg(value, ariaLabel, gs1 = false) {
+  try {
+    const symbol = dataMatrixSvg({
+      msg: value,
+      gs1,
+      dim: 256,
+      pad: 2,
+      pal: ["#000000", "#ffffff"],
+    });
+    const source = symbol?.outerHTML;
+    const dimensions = typeof source === "string"
+      ? source.match(/viewBox="0 0 (\d+) (\d+)"/)
+      : null;
+    requireCondition(
+      dimensions
+        && Number(dimensions[1]) > 4
+        && Number(dimensions[2]) > 4
+        && /<path[^>]*transform="matrix\([^"]+"\)[^>]*d="M/.test(source),
+      gs1 ? "GS1_DATAMATRIX_ENCODING_FAILED" : "DATAMATRIX_ENCODING_FAILED",
+      gs1
+        ? "GS1 Data Matrix encoder did not produce a non-empty ECC 200 SVG symbol."
+        : "Data Matrix encoder did not produce a non-empty ECC 200 SVG symbol.",
+    );
+    return source.replace(
+      "<svg ",
+      '<svg role="img" aria-label="' + escapeHtml(ariaLabel) + '" ',
+    );
+  } catch (error) {
+    if (error instanceof WmsLabelRenderError) throw error;
+    throw new WmsLabelRenderError(
+      gs1 ? "GS1_DATAMATRIX_ENCODING_FAILED" : "DATAMATRIX_ENCODING_FAILED",
+      gs1
+        ? "Label payload could not be encoded as a GS1 Data Matrix ECC 200 symbol."
+        : "Label payload could not be encoded as a Data Matrix ECC 200 symbol.",
+    );
+  }
 }
 
 export function normalizeScannedLabel(rawCode) {
@@ -201,7 +266,7 @@ export function normalizeScannedLabel(rawCode) {
 export function validateWmsLabelIssue(issue, options = {}) {
   const contract = extractContract(issue);
   const symbology = String(contract.symbology ?? "").toUpperCase();
-  requireCondition(["QR", "CODE128", "DATAMATRIX", "GS1_128"].includes(symbology), "UNSUPPORTED_SYMBOLOGY", "The label issue has an unsupported symbology.");
+  requireCondition(["QR", "CODE128", "DATAMATRIX", "GS1_128", "GS1_DATAMATRIX"].includes(symbology), "UNSUPPORTED_SYMBOLOGY", "The label issue has an unsupported symbology.");
   const value = String(contract.encoded_value ?? "").trim();
   requireCondition(value.length > 0 && value.length <= 512, "INVALID_LABEL_VALUE", "Label encoded value must contain 1–512 characters.");
   requireCondition(/^[\x20-\x7e]+$/.test(value), "INVALID_LABEL_VALUE", "Label encoded value must contain printable ASCII for a portable print payload.");
@@ -240,36 +305,9 @@ export function renderWmsLabel(issue, options = {}) {
       throw new WmsLabelRenderError("QR_ENCODING_FAILED", "QR payload could not be encoded by the local renderer.");
     }
   } else if (label.symbology === "DATAMATRIX") {
-    try {
-      const symbol = dataMatrixSvg({
-        msg: label.value,
-        dim: 256,
-        pad: 2,
-        pal: ["#000000", "#ffffff"],
-      });
-      const source = symbol?.outerHTML;
-      const dimensions = typeof source === "string"
-        ? source.match(/viewBox="0 0 (\d+) (\d+)"/)
-        : null;
-      requireCondition(
-        dimensions
-          && Number(dimensions[1]) > 4
-          && Number(dimensions[2]) > 4
-          && /<path[^>]*transform="matrix\([^"]+\)"[^>]*d="M/.test(source),
-        "DATAMATRIX_ENCODING_FAILED",
-        "Data Matrix encoder did not produce a non-empty ECC 200 SVG symbol.",
-      );
-      svg = source.replace(
-        "<svg ",
-        '<svg role="img" aria-label="' + escapeHtml(description) + '" ',
-      );
-    } catch (error) {
-      if (error instanceof WmsLabelRenderError) throw error;
-      throw new WmsLabelRenderError(
-        "DATAMATRIX_ENCODING_FAILED",
-        "Label payload could not be encoded as a Data Matrix ECC 200 symbol.",
-      );
-    }
+    svg = renderDataMatrixSvg(label.value, description, false);
+  } else if (label.symbology === "GS1_DATAMATRIX") {
+    svg = renderDataMatrixSvg(gs1DataMatrixPayload(label.value), description, true);
   } else if (label.symbology === "GS1_128") {
     svg = gs1_128Svg(label.value, description);
   } else {

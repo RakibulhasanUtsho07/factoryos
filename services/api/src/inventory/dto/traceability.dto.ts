@@ -113,8 +113,8 @@ export class CreateTraceabilityLabelTemplateDto {
   @IsString()
   @MaxLength(255)
   name!: string;
-  @IsIn(['QR', 'CODE128', 'DATAMATRIX', 'GS1_128'])
-  symbology!: 'QR' | 'CODE128' | 'DATAMATRIX' | 'GS1_128';
+  @IsIn(['QR', 'CODE128', 'DATAMATRIX', 'GS1_128', 'GS1_DATAMATRIX'])
+  symbology!: 'QR' | 'CODE128' | 'DATAMATRIX' | 'GS1_128' | 'GS1_DATAMATRIX';
   @IsArray()
   @ArrayUnique()
   @IsIn([...TRACEABILITY_LABEL_TARGET_TYPES], { each: true })

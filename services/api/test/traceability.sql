@@ -47,6 +47,20 @@ BEGIN
     RAISE EXCEPTION 'traceability permissions are missing';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'traceability_label_templates'::regclass
+      AND conname = 'chk_traceability_label_template_symbology'
+      AND pg_get_constraintdef(oid) LIKE '%GS1_DATAMATRIX%'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'traceability_label_issues'::regclass
+      AND conname = 'chk_traceability_label_issue_symbology'
+      AND pg_get_constraintdef(oid) LIKE '%GS1_DATAMATRIX%'
+  ) THEN
+    RAISE EXCEPTION 'GS1 Data Matrix must be accepted by both template and immutable issue symbology constraints';
+  END IF;
+
   INSERT INTO tenants (id, slug, name)
   VALUES (v_tenant, 'traceability-test-' || v_tenant::text, 'Traceability Integration Test');
   INSERT INTO users (id, display_name) VALUES (v_actor, 'Traceability Test Actor');
