@@ -5,6 +5,7 @@ import {
   ChangeTraceabilityUnitStatusDto,
   CreateGenealogyEventDto,
   CreateTraceabilityUnitDto,
+  CreateTraceabilityLabelTemplateDto,
   DeclareTraceabilityRecallDto,
   UpdateTraceabilitySettingsDto,
 } from './dto/traceability.dto';
@@ -27,6 +28,48 @@ describe('TraceabilityService input contracts', () => {
   const validUnit = (): CreateTraceabilityUnitDto => ({
     unit_type: 'LOT', product_role: 'MATERIAL', unit_code: 'MAT-LOT-0001',
     barcode_value: 'QR-MAT-LOT-0001', inventory_item_id: UNIT_ID, quantity: 10, unit: 'PCS',
+  });
+
+  it('accepts GS1_DATAMATRIX as a persisted label template symbology', async () => {
+    const template = {
+      id: 'b4fbbe44-d33b-4df4-a5ca-fbcb9eb8e9fd',
+      template_code: 'TRACE-GS1-DM-V1',
+      name: 'GS1 Data Matrix v1',
+      symbology: 'GS1_DATAMATRIX',
+      supported_unit_types: ['LOT'],
+      label_layout: { fields: ['unit_code', 'barcode_value', 'status'] },
+      is_active: true,
+      created_at: '2026-10-27T00:00:00.000Z',
+    };
+    const client = {
+      query: jest.fn(async (sql: string) => {
+        if (sql.includes('INSERT INTO traceability_label_templates')) return { rows: [template] };
+        return { rows: [] };
+      }),
+    };
+    const transaction = database.transaction as unknown as {
+      mockImplementation: (fn: (
+        scope: unknown,
+        callback: (client: unknown) => Promise<unknown>,
+      ) => Promise<unknown>) => void;
+    };
+    transaction.mockImplementation(async (_scope, callback) => callback(client));
+
+    const dto: CreateTraceabilityLabelTemplateDto = {
+      template_code: 'TRACE-GS1-DM-V1',
+      name: 'GS1 Data Matrix v1',
+      symbology: 'GS1_DATAMATRIX',
+      supported_unit_types: ['LOT'],
+      label_layout: { fields: ['unit_code', 'barcode_value', 'status'] },
+    };
+    const result = await service.createLabelTemplate(
+      USER_ID, TENANT_ID, FACTORY_ID, dto, null, null,
+    );
+    expect(result).toMatchObject({ symbology: 'GS1_DATAMATRIX', template_code: 'TRACE-GS1-DM-V1' });
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO traceability_label_templates'),
+      expect.any(Array),
+    );
   });
 
   it('requires idempotency before opening a transaction', async () => {
