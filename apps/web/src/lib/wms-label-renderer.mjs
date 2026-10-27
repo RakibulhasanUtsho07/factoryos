@@ -255,7 +255,7 @@ export function renderWmsLabel(issue, options = {}) {
         dimensions
           && Number(dimensions[1]) > 4
           && Number(dimensions[2]) > 4
-          && /<path[^>]*transform="matrix\([^"]+"\)[^>]*d="M/.test(source),
+          && /<path[^>]*transform="matrix\([^"]+\)"[^>]*d="M/.test(source),
         "DATAMATRIX_ENCODING_FAILED",
         "Data Matrix encoder did not produce a non-empty ECC 200 SVG symbol.",
       );
