@@ -234,7 +234,7 @@ function renderDataMatrixSvg(value, ariaLabel, gs1 = false) {
       dimensions
         && Number(dimensions[1]) > 4
         && Number(dimensions[2]) > 4
-        && /<path[^>]*transform="matrix\([^"]+"\)[^>]*d="M/.test(source),
+        && /<path[^>]*transform="matrix\([^"]+\)"[^>]*d="M/.test(source),
       gs1 ? "GS1_DATAMATRIX_ENCODING_FAILED" : "DATAMATRIX_ENCODING_FAILED",
       gs1
         ? "GS1 Data Matrix encoder did not produce a non-empty ECC 200 SVG symbol."
