@@ -248,7 +248,7 @@ export function renderWmsLabel(issue, options = {}) {
         pal: ["#000000", "#ffffff"],
       });
       requireCondition(
-        symbol && typeof symbol.outerHTML === "string" && /^<svg\\b/.test(symbol.outerHTML),
+        symbol && typeof symbol.outerHTML === "string" && symbol.outerHTML.startsWith("<svg"),
         "DATAMATRIX_ENCODING_FAILED",
         "Data Matrix encoder did not produce an SVG symbol.",
       );
