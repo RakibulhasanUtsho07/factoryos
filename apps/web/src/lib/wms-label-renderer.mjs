@@ -197,7 +197,7 @@ function parseGs1ElementString(value, options = {}) {
   const codes = [104, 102];
   elements.forEach((element, index) => {
     for (const character of element.ai + element.field) codes.push(character.charCodeAt(0) - 32);
-    if (element.variable && index < elements.length - 1) codes.push(102);
+    if (!element.predefinedLength && index < elements.length - 1) codes.push(102);
   });
   return { elements, codes, dataCharacterCount };
 }

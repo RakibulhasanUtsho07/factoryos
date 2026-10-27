@@ -33,6 +33,12 @@ const FIXTURES = [
     expected: "3300000125",
   },
   {
+    name: "GS1-128 fixed non-predefined AI gets separator when followed",
+    symbology: "GS1_128",
+    value: "(422)840(01)09506000134352",
+    expected: "422840\u001d0109506000134352",
+  },
+  {
     name: "Data Matrix ECC 200 lot identifier",
     symbology: "DATAMATRIX",
     value: "LOT-TEST-01",
