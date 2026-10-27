@@ -307,13 +307,33 @@ test("QR renderer emits a real local SVG and self-contained print document with 
   assert.match(rendered.svg_data_uri, /^data:image\/svg\+xml;charset=utf-8,/);
 });
 
-test("Code 128 renderer creates bars and rejects non-printable values; Data Matrix remains disabled", () => {
+test("Code 128 renderer creates bars and rejects non-printable values", () => {
   const rendered = renderWmsLabel(labelIssue("CODE128"));
   assert.match(rendered.svg, /<rect/);
   assert.match(rendered.svg, /role="img"/);
   assert.match(rendered.svg, /LOT-TEST-01/);
   assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" }, issue: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" } })), errorCode("INVALID_LABEL_VALUE"));
-  assert.throws(() => renderWmsLabel(labelIssue("DATAMATRIX")), errorCode("ENCODER_NOT_IMPLEMENTED"));
+});
+
+test("Data Matrix ECC 200 renders a deterministic SVG and preserves the print contract", () => {
+  const rendered = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX")));
+  const replayed = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX")));
+  assert.equal(rendered.symbology, "DATAMATRIX");
+  assert.ok(rendered.svg.startsWith("<svg"));
+  assert.match(rendered.svg, /shape-rendering="crispEdges"/);
+  assert.match(rendered.svg, /viewBox="0 0 \d+ \d+"/);
+  assert.match(rendered.svg, /<path/);
+  assert.match(rendered.svg, /role="img"/);
+  assert.match(rendered.svg, /aria-label="DATAMATRIX label LOT-TEST-01; status ACTIVE"/);
+  assert.match(rendered.print_html, /DATAMATRIX label LOT-TEST-01/);
+  assert.match(rendered.print_html, /ACTIVE/);
+  assert.equal((rendered.print_html.match(/data-copy=/g) ?? []).length, 2);
+  assert.equal(rendered.svg, replayed.svg);
+  assert.match(rendered.svg_data_uri, /^data:image\/svg\+xml;charset=utf-8,/);
+  assert.throws(() => renderWmsLabel(labelIssue("DATAMATRIX", {
+    identity: { barcode_value: "OTHER" },
+    issue: { barcode_value: "LOT-TEST-01" },
+  })), errorCode("LABEL_IDENTITY_MISMATCH"));
 });
 
 test("GS1-128 encodes FNC1 start/separators and validates the supported AI profile", () => {
