@@ -33,6 +33,12 @@ const FIXTURES = [
     expected: "3300000125",
   },
   {
+    name: "GS1-128 fixed non-predefined AI gets separator when followed",
+    symbology: "GS1_128",
+    value: "(422)840(01)09506000134352",
+    expected: "422840\u001d0109506000134352",
+  },
+  {
     name: "Data Matrix ECC 200 lot identifier",
     symbology: "DATAMATRIX",
     value: "LOT-TEST-01",
@@ -44,6 +50,27 @@ const FIXTURES = [
     symbology: "DATAMATRIX",
     value: "WMS:LOT-01/FR-02_2026.10",
     expected: "WMS:LOT-01/FR-02_2026.10",
+    decoder: "dmtxread",
+  },
+  {
+    name: "GS1 Data Matrix FNC1 start and variable lot separator",
+    symbology: "GS1_DATAMATRIX",
+    value: "(10)LOT-01(01)09506000134352",
+    expected: "10LOT-01\u001d0109506000134352",
+    decoder: "dmtxread",
+  },
+  {
+    name: "GS1 Data Matrix fixed GTIN and expiry date without separator",
+    symbology: "GS1_DATAMATRIX",
+    value: "(01)09506000134352(17)271231",
+    expected: "010950600013435217271231",
+    decoder: "dmtxread",
+  },
+  {
+    name: "GS1 Data Matrix fixed AI outside predefined list uses separator",
+    symbology: "GS1_DATAMATRIX",
+    value: "(422)840(01)09506000134352",
+    expected: "422840\u001d0109506000134352",
     decoder: "dmtxread",
   },
 ];
@@ -168,7 +195,7 @@ async function main() {
       );
       console.log("PASS independent " + (fixture.decoder === "dmtxread" ? "libdmtx" : "ZBar") + " decode: " + fixture.name + " -> " + JSON.stringify(decoded));
     }
-    console.log("PASS: " + FIXTURES.length + " rendered Code 128, GS1-128 and Data Matrix ECC 200 vectors decoded from rasterized pixels.");
+    console.log("PASS: " + FIXTURES.length + " rendered Code 128, GS1-128, Data Matrix ECC 200 and GS1 Data Matrix vectors decoded from rasterized pixels.");
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
