@@ -193,7 +193,7 @@ describe('SaasTenantPropagationService external saga', () => {
           ...(activeRun ?? {}),
           run_id: p[2], status: p[3], external_manifest: manifest, manifest_digest: p[5],
           target_count: p[6], verified_targets: p[7], planned_copies: p[8], deleted_copies: p[9],
-          residual_copies: p[10], failure_code: p[11], request_hash: 'd'.repeat(64),
+          residual_copies: p[10], failure_code: p[11],
           request_id: requestId, request_version: 1, source_export_digest: sourceDigest,
         };
         return { rows: [{ ...activeRun }] };
