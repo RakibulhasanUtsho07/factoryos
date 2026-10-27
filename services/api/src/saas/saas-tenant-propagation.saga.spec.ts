@@ -38,6 +38,7 @@ describe('SaasTenantPropagationService external saga', () => {
   let residualOnFirstVerificationTarget: string | null = null;
   let mismatchedDeletionTarget: string | null = null;
   const verifyCallsByTarget = new Map<string, number>();
+  let activeRequest: ReturnType<typeof requestRow>;
   let service: SaasTenantPropagationService;
 
   function latestReceiptRows(): Record<string, unknown>[] {
@@ -98,6 +99,7 @@ describe('SaasTenantPropagationService external saga', () => {
     activeRun = null;
     activateHoldAfterPrepare = false;
     legalHoldActivated = false;
+    activeRequest = requestRow();
     residualOnFirstVerificationTarget = null;
     mismatchedDeletionTarget = null;
     verifyCallsByTarget.clear();
@@ -131,7 +133,7 @@ describe('SaasTenantPropagationService external saga', () => {
       const sql = String(args[0]);
       const p = (args[1] ?? []) as unknown[];
       if (sql.includes('FROM tenants')) return { rows: [{ id: tenant }] };
-      if (sql.includes('FROM saas_tenant_data_erasure_requests') && sql.includes('FOR UPDATE')) return { rows: [requestRow()] };
+      if (sql.includes('FROM saas_tenant_data_erasure_requests') && sql.includes('FOR UPDATE')) return { rows: [{ ...activeRequest }] };
       if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('run_id=$3') && sql.includes('FOR UPDATE')) {
         return { rows: activeRun ? [{ ...activeRun }] : [] };
       }
@@ -197,10 +199,11 @@ describe('SaasTenantPropagationService external saga', () => {
         return { rows: [{ ...activeRun }] };
       }
       if (sql.includes("UPDATE saas_tenant_data_erasure_requests") && sql.includes("status='VERIFIED'")) {
-        return { rows: [{
-          ...requestRow(), status: 'VERIFIED', row_version: 5, propagation_run_id: p[2],
+        activeRequest = {
+          ...activeRequest, status: 'VERIFIED', row_version: 5, propagation_run_id: p[2],
           propagation_manifest_digest: p[3], propagation_verified_at: '2026-10-20T12:00:00.000Z',
-        }] };
+        };
+        return { rows: [{ ...activeRequest }] };
       }
       throw new Error('unexpected transaction SQL: ' + sql);
     });
@@ -340,4 +343,32 @@ describe('SaasTenantPropagationService external saga', () => {
         payload: expect.objectContaining({ postgresqlReceiptScope: 'POSTGRESQL_ONLY', residualCopies: '0' }) }),
     );
   });
+
+  it('replays an already verified idempotency key without calling a provider again', async () => {
+    const input = {
+      expected_version: 4,
+      reason: 'Verify every external copy',
+      idempotency_key: 'external-propagation-replay-v1',
+    };
+
+    const first = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
+    expect(first.wholeTenantErasureVerified).toBe(true);
+    expect(first.request).toMatchObject({ status: 'VERIFIED', version: 5 });
+
+    const second = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
+    expect(second).toMatchObject({
+      wholeTenantErasureVerified: true,
+      replayed: true,
+      request: { requestId, status: 'VERIFIED', version: 5 },
+      run: { status: 'VERIFIED' },
+    });
+    for (const adapter of adapterMocks) {
+      expect(adapter.prepare).toHaveBeenCalledTimes(1);
+      expect(adapter.erase).toHaveBeenCalledTimes(1);
+      expect(adapter.verify).toHaveBeenCalledTimes(1);
+      expect(adapter.recover).not.toHaveBeenCalled();
+    }
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+  });
+
 });
