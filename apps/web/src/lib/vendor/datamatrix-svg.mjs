@@ -164,7 +164,7 @@ function DATAMatrix( Q ) {
 		return r;
 	}
 
-	,encodeMsg = function( text, rct ) {
+	,encodeMsg = function( text, rct, gs1 ) {
 
 		text = unescape( encodeURI( text ) );
 
@@ -233,6 +233,13 @@ function DATAMatrix( Q ) {
 		k = toBase( text ); l = k.length;
 		if( l > 0 && l < el ) enc = k, el = l;
 
+
+		if( gs1 ) {
+			/* FNC1 is the first codeword in GS1 DataMatrix. Keep the following
+			   data in ASCII mode so an ASCII GS (29) remains a separator. */
+			enc = [ 232 ].concat( toAscii( text ) );
+			el = enc.length;
+		}
 
 		var
 		h, w, nc = 1, nr = 1, fw, fh, /* symbol size, regions, region size */
@@ -503,7 +510,7 @@ function DATAMatrix( Q ) {
 		/* render optimized or verbose svg */
 		optimized = ( q.vrb ) ? 0 : 1;
 
-		encodeMsg( q.msg || '', q.rct );
+		encodeMsg( q.msg || '', q.rct, q.gs1 === true );
 
 		sx = xx + pd * 2,
 		sy = yy + pd * 2;
