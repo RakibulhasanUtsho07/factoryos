@@ -34,7 +34,20 @@ describe('SaasTenantPropagationService external saga', () => {
   let activeRun: Record<string, unknown> | null;
   let activateHoldAfterPrepare = false;
   let legalHoldActivated = false;
+  let residualOnFirstVerificationTarget: string | null = null;
+  let mismatchedDeletionTarget: string | null = null;
+  const verifyCallsByTarget = new Map<string, number>();
   let service: SaasTenantPropagationService;
+
+  function latestReceiptRows(): Record<string, unknown>[] {
+    const latest = new Map<string, Record<string, unknown>>();
+    const ordered = [...storedReceipts].sort((a, b) => Number(b.attempt_no) - Number(a.attempt_no));
+    for (const receipt of ordered) {
+      const targetId = String(receipt.target_id);
+      if (!latest.has(targetId)) latest.set(targetId, receipt);
+    }
+    return [...latest.values()];
+  }
 
   function createAdapter(kind: (typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]) {
     const adapter = {
@@ -54,13 +67,24 @@ describe('SaasTenantPropagationService external saga', () => {
     });
     adapter.erase.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
-      return { deletedCopies: input.plan.plannedCopies, manifestDigest: input.plan.manifestDigest,
-        providerReceiptReference: 'receipt.' + input.target.targetId };
+      return {
+        deletedCopies: input.plan.plannedCopies,
+        manifestDigest: mismatchedDeletionTarget === input.target.targetId ? 'f'.repeat(64) : input.plan.manifestDigest,
+        providerReceiptReference: 'receipt.' + input.target.targetId,
+      };
     });
     adapter.verify.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string }; plan: SaasExternalPropagationPlan };
-      return { verifiedManifestDigest: input.plan.manifestDigest, residualCopies: '0',
-        residualReferences: [], verificationReference: 'verify.' + input.target.targetId };
+      const targetId = input.target.targetId;
+      const verifyCount = (verifyCallsByTarget.get(targetId) ?? 0) + 1;
+      verifyCallsByTarget.set(targetId, verifyCount);
+      const leaveResidual = residualOnFirstVerificationTarget === targetId && verifyCount === 1;
+      return {
+        verifiedManifestDigest: input.plan.manifestDigest,
+        residualCopies: leaveResidual ? '1' : '0',
+        residualReferences: leaveResidual ? ['residual.' + targetId] : [],
+        verificationReference: 'verify.' + targetId + '.' + verifyCount,
+      };
     });
     adapter.recover.mockResolvedValue(undefined);
     return adapter;
@@ -73,6 +97,9 @@ describe('SaasTenantPropagationService external saga', () => {
     activeRun = null;
     activateHoldAfterPrepare = false;
     legalHoldActivated = false;
+    residualOnFirstVerificationTarget = null;
+    mismatchedDeletionTarget = null;
+    verifyCallsByTarget.clear();
     iam.authorize.mockResolvedValue(undefined);
     audit.recordWithClient.mockResolvedValue('audit-event');
     const targets = REQUIRED_EXTERNAL_STORE_KINDS.map((kind) => ({
@@ -95,7 +122,7 @@ describe('SaasTenantPropagationService external saga', () => {
     database.query.mockImplementation(async (...args: unknown[]) => {
       const sql = String(args[0]);
       if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) {
-        return { rows: [...storedReceipts] };
+        return { rows: latestReceiptRows() };
       }
       throw new Error('unexpected database.query SQL: ' + sql);
     });
@@ -107,7 +134,9 @@ describe('SaasTenantPropagationService external saga', () => {
       if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('run_id=$3') && sql.includes('FOR UPDATE')) {
         return { rows: activeRun ? [{ ...activeRun }] : [] };
       }
-      if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('idempotency_key')) return { rows: [] };
+      if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('idempotency_key')) {
+        return { rows: activeRun ? [{ ...activeRun }] : [] };
+      }
       if (sql.includes('FROM saas_tenant_data_transfers')) {
         return { rows: [{ source_manifest: { tenantId: tenant, categories: ['BUSINESS_DATA'] },
           source_bundle_digest: sourceDigest, actor_user_id: requester }] };
@@ -128,7 +157,15 @@ describe('SaasTenantPropagationService external saga', () => {
         };
         return { rows: [{ ...activeRun }] };
       }
-      if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) return { rows: [...storedReceipts] };
+      if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) return { rows: latestReceiptRows() };
+      if (sql.includes('UPDATE saas_tenant_external_propagation_runs') && sql.includes("SET status='RUNNING'") && sql.includes('RETURNING *')) {
+        activeRun = {
+          ...(activeRun ?? {}),
+          status: 'RUNNING', failure_code: null, finished_at: null, manifest_digest: null,
+          verified_targets: 0, planned_copies: '0', deleted_copies: '0', residual_copies: '0',
+        };
+        return { rows: [{ ...activeRun }] };
+      }
       if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) {
         if (activeRun) activeRun.external_manifest = JSON.parse(String(p[3])) as Record<string, unknown>;
         return { rows: [] };
@@ -198,6 +235,63 @@ describe('SaasTenantPropagationService external saga', () => {
       expect.anything(),
       expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED' }),
     );
+  });
+
+  it('keeps the request pending when a provider deletion receipt has a different manifest digest', async () => {
+    mismatchedDeletionTarget = 'target-OBJECT_STORAGE';
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Reject a provider receipt that does not match its prepared scope',
+      idempotency_key: 'manifest-mismatch-saga-v1',
+    });
+
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
+    const mismatchedReceipt = storedReceipts.find((receipt) => receipt.target_id === mismatchedDeletionTarget);
+    expect(mismatchedReceipt).toMatchObject({ status: 'FAILED', failure_code: 'VERIFICATION_MISMATCH' });
+    expect(adapterMocks[0]?.erase).toHaveBeenCalledTimes(1);
+    expect(adapterMocks[0]?.verify).not.toHaveBeenCalled();
+    expect(audit.recordWithClient).toHaveBeenCalledWith(
+      expect.objectContaining({ query: clientQuery }),
+      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_PARTIAL' }),
+    );
+    expect(audit.recordWithClient).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED' }),
+    );
+  });
+
+  it('recovers a partial provider result idempotently without re-erasing targets already verified', async () => {
+    const retryTarget = 'target-OBJECT_STORAGE';
+    residualOnFirstVerificationTarget = retryTarget;
+    const input = {
+      expected_version: 4,
+      reason: 'Retry an explicitly residual external store after reconciliation',
+      idempotency_key: 'partial-recovery-saga-v1',
+    };
+
+    const first = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
+    expect(first.wholeTenantErasureVerified).toBe(false);
+    expect(first.run.status).toBe('PARTIAL');
+    expect(first.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedReceipts.find((receipt) => receipt.target_id === retryTarget)).toMatchObject({ status: 'RESIDUALS' });
+
+    const second = await service.propagateErasure(tenant, propagationExecutor, requestId, input);
+    expect(second.wholeTenantErasureVerified).toBe(true);
+    expect(second.run.status).toBe('VERIFIED');
+    expect(second.request).toMatchObject({ requestId, status: 'VERIFIED', version: 5 });
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length + 1);
+
+    const recoveryAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
+    expect(recoveryAdapter?.recover).toHaveBeenCalledTimes(1);
+    expect(recoveryAdapter?.prepare).toHaveBeenCalledTimes(1);
+    expect(recoveryAdapter?.erase).toHaveBeenCalledTimes(2);
+    expect(recoveryAdapter?.verify).toHaveBeenCalledTimes(2);
+    for (const adapter of adapterMocks.filter((candidate) => candidate.storeKind !== 'OBJECT_STORAGE')) {
+      expect(adapter.erase).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
