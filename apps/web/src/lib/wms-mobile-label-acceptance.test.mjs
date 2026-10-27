@@ -351,9 +351,9 @@ test("Data Matrix ECC 200 renders a deterministic SVG and keeps the label print 
   const rendered = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX")));
   const replayed = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX")));
   assert.equal(rendered.symbology, "DATAMATRIX");
-  assert.match(rendered.svg, /^<svg\\b/);
+  assert.ok(rendered.svg.startsWith("<svg"));
   assert.match(rendered.svg, /shape-rendering="crispEdges"/);
-  assert.match(rendered.svg, /viewBox="0 0 \\d+ \\d+"/);
+  assert.match(rendered.svg, /viewBox="0 0 [0-9]+ [0-9]+"/);
   assert.match(rendered.svg, /<path/);
   assert.match(rendered.svg, /role="img"/);
   assert.match(rendered.svg, /aria-label="DATAMATRIX label LOT-TEST-01; status ACTIVE"/);
