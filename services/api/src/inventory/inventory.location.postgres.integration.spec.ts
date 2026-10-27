@@ -2743,10 +2743,10 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       evidence: { verification_sheet: 'FACTORY-E2E-QA-01', verifier: 'independent-approver' },
     };
 
-    // Inject a database failure at the final genealogy outbox write, after
-    // output stock, movement, lot balance, quality evidence, genealogy edge and
-    // genealogy audit have all been attempted in this same transaction. The
-    // snapshot below must prove that every write is rolled back together.
+    // Inject a database failure at the final DEFECT_RESOLVED outbox write,
+    // after stock, movement, lot balance, quality and genealogy evidence, and
+    // the defect row/event/audit have all been attempted in this transaction.
+    // The snapshot below must prove every related write is rolled back together.
     const beforeInjectedFailure = await adminPool.query<{
       rework_event_count: number;
       rework_outbox_count: number;
