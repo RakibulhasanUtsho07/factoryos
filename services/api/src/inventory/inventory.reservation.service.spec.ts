@@ -690,6 +690,7 @@ describe('InventoryReservationService', () => {
           item_id: ITEM_ID,
           source_unit_id: sourceUnitId,
           source_unit_code: 'RAW-LOT-01',
+          source_unit_type: 'LOT',
           source_unit: 'KG',
           source_location_id: BIN_A_ID,
           consumed_quantity: '1.0001',
@@ -754,6 +755,101 @@ describe('InventoryReservationService', () => {
       .toEqual([postingA, postingA, postingB, postingB]);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO audit_events'))).toHaveLength(4);
     expect(client.query.mock.calls.filter((call) => String(call[0]).includes('TRACEABILITY.GENEALOGY_RECORDED'))).toHaveLength(4);
+  });
+
+  it('assigns each serialized material identity to exactly one output target', async () => {
+    const reportA = randomUUID();
+    const reportB = randomUUID();
+    const postingA = randomUUID();
+    const postingB = randomUUID();
+    const lotA = randomUUID();
+    const lotB = randomUUID();
+    const scrapA = randomUUID();
+    const scrapB = randomUUID();
+    const consumptionA = randomUUID();
+    const consumptionB = randomUUID();
+    const allocationA = randomUUID();
+    const allocationB = randomUUID();
+    const serialA = randomUUID();
+    const serialB = randomUUID();
+    const insertedEvents: Array<{ source: string; target: string; relation: string; quantity: string }> = [];
+    const insertedEvidence: Array<Record<string, unknown>> = [];
+
+    client.query.mockImplementation(async (sql: unknown, values?: unknown[]) => {
+      const query = String(sql);
+      if (query.includes('FROM order_production_reports r') && query.includes('JOIN production_output_postings p')) {
+        return queryRows([
+          {
+            posting_id: postingA, production_report_id: reportA, finished_item_id: ITEM_ID,
+            traceability_unit_id: lotA, scrap_traceability_unit_id: scrapA,
+            good_quantity: '3.0000', scrap_quantity: '1.0000',
+          },
+          {
+            posting_id: postingB, production_report_id: reportB, finished_item_id: ITEM_ID,
+            traceability_unit_id: lotB, scrap_traceability_unit_id: scrapB,
+            good_quantity: '5.0000', scrap_quantity: '1.0000',
+          },
+        ]);
+      }
+      if (query.includes('FROM inventory_reservation_consumption_traceability_allocations ca')) {
+        return queryRows([
+          {
+            allocation_id: allocationA, consumption_id: consumptionA, reservation_id: RESERVATION_ID,
+            item_id: ITEM_ID, source_unit_id: serialA, source_unit_code: 'RAW-SERIAL-001',
+            source_unit_type: 'SERIAL', source_unit: 'PCS', source_location_id: BIN_A_ID,
+            consumed_quantity: '1.0000', source_created_at: '2026-10-01T00:00:00.000Z',
+            consumption_created_at: '2026-10-24T00:00:00.000Z',
+          },
+          {
+            allocation_id: allocationB, consumption_id: consumptionB, reservation_id: RESERVATION_ID,
+            item_id: ITEM_ID, source_unit_id: serialB, source_unit_code: 'RAW-SERIAL-002',
+            source_unit_type: 'SERIAL', source_unit: 'PCS', source_location_id: BIN_A_ID,
+            consumed_quantity: '1.0000', source_created_at: '2026-10-02T00:00:00.000Z',
+            consumption_created_at: '2026-10-24T00:00:00.000Z',
+          },
+        ]);
+      }
+      if (query.includes('FROM product_genealogy_events') && query.includes('request_hash')) {
+        return queryRows([]);
+      }
+      if (query.includes('INSERT INTO product_genealogy_events')) {
+        insertedEvents.push({
+          source: String(values?.[2]),
+          target: String(values?.[3]),
+          relation: String(values?.[4]),
+          quantity: String(values?.[5]),
+        });
+        insertedEvidence.push(JSON.parse(String(values?.[7])) as Record<string, unknown>);
+        return queryRows([{ id: randomUUID() }]);
+      }
+      if (query.includes('INSERT INTO audit_events') || query.includes('INSERT INTO outbox_events')) {
+        return queryRows([]);
+      }
+      throw new Error('Unexpected query in serialized work-order genealogy test: ' + query.slice(0, 120));
+    });
+
+    const result = await service.recordWorkOrderOutputGenealogy(client as never, {
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      factoryId: FACTORY_ID,
+      workOrderId: ORDER_ID,
+      correlationId: TRACE_ID,
+    });
+
+    expect(result).toEqual({ genealogyEventCount: 2, traceabilityAllocationCount: 2 });
+    expect(insertedEvents).toEqual([
+      { source: serialA, target: lotA, relation: 'CONSUMED_INTO', quantity: '1.0000' },
+      { source: serialB, target: lotB, relation: 'CONSUMED_INTO', quantity: '1.0000' },
+    ]);
+    expect(new Set(insertedEvents.map((edge) => edge.source)).size).toBe(2);
+    expect(new Set(insertedEvents.map((edge) => edge.target))).toEqual(new Set([lotA, lotB]));
+    expect(insertedEvidence.every((evidence) =>
+      evidence.allocation_method === 'SERIAL_IDENTITY_ASSIGNED_TO_SINGLE_OUTPUT_BY_WEIGHTED_MIDPOINT_V1'
+      && evidence.source_quantity === '1.0000'
+      && evidence.source_unit === 'PCS'
+    )).toBe(true);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('INSERT INTO audit_events'))).toHaveLength(2);
+    expect(client.query.mock.calls.filter((call) => String(call[0]).includes('TRACEABILITY.GENEALOGY_RECORDED'))).toHaveLength(2);
   });
 
   it('fails closed when work-order output postings have no finished-good traceability lot', async () => {
