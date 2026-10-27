@@ -2752,6 +2752,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       rework_outbox_count: number;
       rework_audit_count: number;
       item_stock_quantity: string;
+      item_stock_version: number;
+      recovered_traceability_quantity: string;
+      rework_output_movement_count: number;
+      rework_inventory_outbox_count: number;
+      rework_genealogy_count: number;
+      rework_genealogy_audit_count: number;
+      rework_genealogy_outbox_count: number;
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
@@ -2763,8 +2770,41 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
             AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
-          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity`,
-      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity,
+        (SELECT version::int FROM inventory_stock_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_version,
+        (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text
+          FROM inventory_traceability_location_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND item_id::text=$4::text AND traceability_unit_id::text=$6::text) AS recovered_traceability_quantity,
+        (SELECT count(*)::int FROM inventory_movements
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id::text=$3::text) AS rework_output_movement_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND event_type='INVENTORY.STOCK_RECEIVED'
+            AND payload->>'quality_rework_order_id'=$3::text) AS rework_inventory_outbox_count,
+        (SELECT count(*)::int FROM product_genealogy_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND source_unit_id::text=$5::text AND target_unit_id::text=$6::text
+            AND relationship_type='REWORKED_INTO'
+            AND idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_count,
+        (SELECT count(*)::int FROM audit_events a
+          JOIN product_genealogy_events e ON e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
+            AND a.resource_type='PRODUCT_GENEALOGY_EVENT' AND a.resource_id=e.id AND a.action='RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_audit_count,
+        (SELECT count(*)::int FROM outbox_events o
+          JOIN product_genealogy_events e ON e.tenant_id=o.tenant_id AND e.factory_id=o.factory_id
+            AND o.aggregate_type='PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id=e.id
+            AND o.event_type='TRACEABILITY.GENEALOGY_RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id],
     );
     await adminPool.query(`
       CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
@@ -2797,6 +2837,13 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       rework_outbox_count: number;
       rework_audit_count: number;
       item_stock_quantity: string;
+      item_stock_version: number;
+      recovered_traceability_quantity: string;
+      rework_output_movement_count: number;
+      rework_inventory_outbox_count: number;
+      rework_genealogy_count: number;
+      rework_genealogy_audit_count: number;
+      rework_genealogy_outbox_count: number;
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
@@ -2808,8 +2855,41 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
             AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
-          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity`,
-      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity,
+        (SELECT version::int FROM inventory_stock_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_version,
+        (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text
+          FROM inventory_traceability_location_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND item_id::text=$4::text AND traceability_unit_id::text=$6::text) AS recovered_traceability_quantity,
+        (SELECT count(*)::int FROM inventory_movements
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id::text=$3::text) AS rework_output_movement_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND event_type='INVENTORY.STOCK_RECEIVED'
+            AND payload->>'quality_rework_order_id'=$3::text) AS rework_inventory_outbox_count,
+        (SELECT count(*)::int FROM product_genealogy_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND source_unit_id::text=$5::text AND target_unit_id::text=$6::text
+            AND relationship_type='REWORKED_INTO'
+            AND idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_count,
+        (SELECT count(*)::int FROM audit_events a
+          JOIN product_genealogy_events e ON e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
+            AND a.resource_type='PRODUCT_GENEALOGY_EVENT' AND a.resource_id=e.id AND a.action='RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_audit_count,
+        (SELECT count(*)::int FROM outbox_events o
+          JOIN product_genealogy_events e ON e.tenant_id=o.tenant_id AND e.factory_id=o.factory_id
+            AND o.aggregate_type='PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id=e.id
+            AND o.event_type='TRACEABILITY.GENEALOGY_RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id],
     );
     expect(afterInjectedFailure.rows[0]).toEqual(beforeInjectedFailure.rows[0]);
     const afterFailedVerify = await qualityService.getReworkOrder(qualityContext, reworkOrder.id);
