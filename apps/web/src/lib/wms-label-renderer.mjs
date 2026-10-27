@@ -54,12 +54,10 @@ function geometry(layout) {
   return { width, height };
 }
 
-function code128Svg(value, ariaLabel) {
-  requireCondition(/^[\x20-\x7e]{1,128}$/.test(value), "INVALID_CODE128_VALUE", "Code 128 B accepts 1–128 printable ASCII characters in this renderer.");
-  const codes = [104, ...Array.from(value, (character) => character.charCodeAt(0) - 32)];
+function code128SvgFromCodes(codes, value, ariaLabel) {
   const checksum = codes.reduce((sum, code, index) => sum + code * (index === 0 ? 1 : index), 0) % 103;
-  codes.push(checksum, 106);
-  const patterns = codes.map((code) => CODE128_PATTERNS[code]);
+  const completeCodes = [...codes, checksum, 106];
+  const patterns = completeCodes.map((code) => CODE128_PATTERNS[code]);
   requireCondition(patterns.every(Boolean), "CODE128_ENCODER_ERROR", "Code 128 encoder table is incomplete.");
   const bits = patterns.join("");
   const quiet = 10;
@@ -77,6 +75,106 @@ function code128Svg(value, ariaLabel) {
   return '<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="' + escapeHtml(ariaLabel) + '" viewBox="0 0 ' + fullWidth + ' 82" width="100%" height="82" preserveAspectRatio="none"><title>' + escapeHtml(ariaLabel) + '</title><rect width="' + fullWidth + '" height="82" fill="#fff"/><g fill="#000">' + bars.join("") + '</g><text x="' + (fullWidth / 2) + '" y="81" text-anchor="middle" font-family="monospace" font-size="1" fill="#000">' + escapeHtml(value) + '</text></svg>';
 }
 
+function code128Svg(value, ariaLabel) {
+  requireCondition(/^[\\x20-\\x7e]{1,128}$/.test(value), "INVALID_CODE128_VALUE", "Code 128 B accepts 1–128 printable ASCII characters in this renderer.");
+  return code128SvgFromCodes([104, ...Array.from(value, (character) => character.charCodeAt(0) - 32)], value, ariaLabel);
+}
+
+const GS1_AI_SPECS = Object.freeze({
+  "00": { length: 18, numeric: true, checkDigit: true },
+  "01": { length: 14, numeric: true, checkDigit: true },
+  "02": { length: 14, numeric: true, checkDigit: true },
+  "10": { maxLength: 20, variable: true },
+  "11": { length: 6, numeric: true, date: true },
+  "13": { length: 6, numeric: true, date: true },
+  "15": { length: 6, numeric: true, date: true },
+  "17": { length: 6, numeric: true, date: true },
+  "20": { length: 2, numeric: true },
+  "21": { maxLength: 20, variable: true },
+  "30": { maxLength: 8, numeric: true, variable: true },
+  "37": { maxLength: 8, numeric: true, variable: true },
+  "240": { maxLength: 30, variable: true },
+  "241": { maxLength: 30, variable: true },
+  "400": { maxLength: 30, variable: true },
+  "401": { maxLength: 30, variable: true },
+  "420": { maxLength: 20, variable: true },
+  "422": { length: 3, numeric: true },
+});
+
+function hasValidGs1CheckDigit(value) {
+  let sum = 0;
+  let weight = 3;
+  for (let index = value.length - 2; index >= 0; index -= 1) {
+    sum += Number(value[index]) * weight;
+    weight = weight === 3 ? 1 : 3;
+  }
+  return Number(value[value.length - 1]) === ((10 - (sum % 10)) % 10);
+}
+
+function isValidGs1Date(value) {
+  if (!/^\\d{6}$/.test(value)) return false;
+  const year = 2000 + Number(value.slice(0, 2));
+  const month = Number(value.slice(2, 4));
+  const day = Number(value.slice(4, 6));
+  if (month < 1 || month > 12 || day > 31) return false;
+  if (day === 0) return true;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= daysInMonth;
+}
+
+function parseGs1ElementString(value) {
+  requireCondition(typeof value === "string" && value.length > 0, "INVALID_GS1_128_VALUE", "GS1-128 requires parenthesized GS1 Application Identifier element strings.");
+  const elements = [];
+  const seenAis = new Set();
+  let offset = 0;
+  let dataCharacterCount = 0;
+
+  while (offset < value.length) {
+    const aiMatch = value.slice(offset).match(/^\\((\\d{2,4})\\)/);
+    requireCondition(aiMatch, "INVALID_GS1_128_VALUE", "Each GS1 element must start with a parenthesized numeric Application Identifier.");
+    const ai = aiMatch[1];
+    const spec = GS1_AI_SPECS[ai];
+    requireCondition(spec, "UNSUPPORTED_GS1_AI", "This renderer does not support GS1 Application Identifier " + ai + ".");
+    requireCondition(!seenAis.has(ai), "DUPLICATE_GS1_AI", "An Application Identifier may appear only once in this supported label profile.");
+    seenAis.add(ai);
+    const dataStart = offset + aiMatch[0].length;
+    const nextElement = value.indexOf("(", dataStart);
+    const field = value.slice(dataStart, nextElement < 0 ? value.length : nextElement);
+    requireCondition(field.length > 0, "INVALID_GS1_FIELD", "GS1 Application Identifier " + ai + " requires a non-empty data field.");
+
+    const minLength = spec.length ?? 1;
+    const maxLength = spec.length ?? spec.maxLength;
+    requireCondition(field.length >= minLength && field.length <= maxLength, "INVALID_GS1_FIELD_LENGTH", "GS1 Application Identifier " + ai + " has an invalid data-field length.");
+    if (spec.numeric) {
+      requireCondition(/^\\d+$/.test(field), "INVALID_GS1_FIELD_FORMAT", "GS1 Application Identifier " + ai + " requires numeric data.");
+    } else {
+      requireCondition(/^[A-Za-z0-9 ._\\/-]+$/.test(field), "INVALID_GS1_FIELD_FORMAT", "This renderer supports only alphanumeric, space, dot, underscore, slash and hyphen in variable GS1 fields.");
+    }
+    if (spec.checkDigit) {
+      requireCondition(hasValidGs1CheckDigit(field), "INVALID_GS1_CHECK_DIGIT", "GS1 Application Identifier " + ai + " has an invalid check digit.");
+    }
+    if (spec.date) {
+      requireCondition(isValidGs1Date(field), "INVALID_GS1_DATE", "GS1 Application Identifier " + ai + " requires a valid YYMMDD date.");
+    }
+
+    dataCharacterCount += ai.length + field.length;
+    elements.push({ ai, field, variable: Boolean(spec.variable) });
+    offset = nextElement < 0 ? value.length : nextElement;
+  }
+
+  requireCondition(dataCharacterCount <= 48, "GS1_128_TOO_LONG", "GS1-128 symbols are limited to 48 encoded Application Identifier and data characters.");
+  const codes = [104, 102];
+  elements.forEach((element, index) => {
+    for (const character of element.ai + element.field) codes.push(character.charCodeAt(0) - 32);
+    if (element.variable && index < elements.length - 1) codes.push(102);
+  });
+  return codes;
+}
+
+function gs1_128Svg(value, ariaLabel) {
+  return code128SvgFromCodes(parseGs1ElementString(value), value, ariaLabel);
+}
+
 export function normalizeScannedLabel(rawCode) {
   requireCondition(typeof rawCode === "string", "INVALID_SCAN", "Scanned data must be text.");
   const code = rawCode.replace(/[\r\n\t]+$/g, "").trim().toUpperCase();
@@ -89,7 +187,7 @@ export function validateWmsLabelIssue(issue, options = {}) {
   const contract = extractContract(issue);
   const symbology = String(contract.symbology ?? "").toUpperCase();
   requireCondition(["QR", "CODE128", "DATAMATRIX", "GS1_128"].includes(symbology), "UNSUPPORTED_SYMBOLOGY", "The label issue has an unsupported symbology.");
-  requireCondition(symbology === "QR" || symbology === "CODE128", "ENCODER_NOT_IMPLEMENTED", symbology + " is accepted by the API template contract but does not yet have a verified client renderer.");
+  requireCondition(symbology !== "DATAMATRIX", "ENCODER_NOT_IMPLEMENTED", "Data Matrix is accepted by the API template contract but does not yet have a verified client renderer.");
   const value = String(contract.encoded_value ?? "").trim();
   requireCondition(value.length > 0 && value.length <= 512, "INVALID_LABEL_VALUE", "Label encoded value must contain 1–512 characters.");
   requireCondition(/^[\x20-\x7e]+$/.test(value), "INVALID_LABEL_VALUE", "Label encoded value must contain printable ASCII for a portable print payload.");
@@ -127,6 +225,8 @@ export function renderWmsLabel(issue, options = {}) {
     } catch {
       throw new WmsLabelRenderError("QR_ENCODING_FAILED", "QR payload could not be encoded by the local renderer.");
     }
+  } else if (label.symbology === "GS1_128") {
+    svg = gs1_128Svg(label.value, description);
   } else {
     svg = code128Svg(label.value, description);
   }
