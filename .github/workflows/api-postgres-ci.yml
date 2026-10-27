@@ -194,6 +194,12 @@ jobs:
 
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/traceability.sql
+
+          echo "Reapplying GS1 Data Matrix symbology migration and rechecking traceability contract"
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f migrations/213_traceability_gs1_datamatrix_symbology.sql
+          psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
+            -v ON_ERROR_STOP=1 -f services/api/test/traceability.sql
           psql "postgresql://postgres@127.0.0.1:5432/factoryos_test" \
             -v ON_ERROR_STOP=1 -f services/api/test/quality-management-contract.sql
 
