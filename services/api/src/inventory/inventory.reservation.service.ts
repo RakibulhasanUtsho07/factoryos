@@ -2066,6 +2066,7 @@ export class InventoryReservationService {
       item_id: string;
       source_unit_id: string;
       source_unit_code: string;
+      source_unit_type: 'LOT' | 'SERIAL';
       source_unit: string;
       source_location_id: string;
       consumed_quantity: string;
@@ -2075,7 +2076,8 @@ export class InventoryReservationService {
       `
       SELECT ca.id::text AS allocation_id, c.id::text AS consumption_id,
         c.reservation_id::text AS reservation_id, c.item_id::text AS item_id,
-        tu.id::text AS source_unit_id, tu.unit_code AS source_unit_code, tu.unit AS source_unit,
+        tu.id::text AS source_unit_id, tu.unit_code AS source_unit_code,
+        tu.unit_type AS source_unit_type, tu.unit AS source_unit,
         ca.location_id::text AS source_location_id,
         ca.quantity::text AS consumed_quantity, tu.created_at::text AS source_created_at,
         c.created_at::text AS consumption_created_at
@@ -2118,29 +2120,78 @@ export class InventoryReservationService {
       [input.workOrderId, input.tenantId, input.factoryId],
     );
 
+    const serialSourcesByItem = new Map<string, typeof sources.rows>();
+    for (const source of sources.rows) {
+      if (source.source_unit_type !== 'SERIAL') continue;
+      const group = serialSourcesByItem.get(source.item_id) ?? [];
+      group.push(source);
+      serialSourcesByItem.set(source.item_id, group);
+    }
+    const serialOrdinalByAllocation = new Map<string, { ordinal: number; count: number }>();
+    for (const group of serialSourcesByItem.values()) {
+      group.forEach((source, ordinal) => {
+        serialOrdinalByAllocation.set(source.allocation_id, { ordinal, count: group.length });
+      });
+    }
+
     let genealogyEventCount = 0;
     for (const source of sources.rows) {
       const consumedUnits = parseUnits(source.consumed_quantity, 'consumed material quantity');
       if (consumedUnits <= 0n) {
         throw new ConflictException('Consumed material genealogy quantity must be positive');
       }
-      let remainingUnits = consumedUnits;
-      for (let index = 0; index < targets.length; index += 1) {
-        const target = targets[index]!;
-        const allocationUnits = index === targets.length - 1
-          ? remainingUnits
-          : (consumedUnits * target.quantityUnits) / totalOutputUnits;
-        if (allocationUnits < 0n || allocationUnits > remainingUnits) {
-          throw new ConflictException('Material-to-output genealogy allocation exceeded the consumed input quantity');
-        }
-        remainingUnits -= allocationUnits;
-        if (allocationUnits === 0n) continue;
 
-        const quantity = toDecimal(allocationUnits);
+      const allocations: Array<{ target: (typeof targets)[number]; quantityUnits: bigint }> = [];
+      if (source.source_unit_type === 'SERIAL') {
+        // A serial identity represents one whole unit. Never split its genealogy
+        // quantity across multiple good/scrap output batches.
+        if (consumedUnits !== 10_000n) {
+          throw new ConflictException('Serialized material genealogy must preserve one whole serial identity');
+        }
+        const serial = serialOrdinalByAllocation.get(source.allocation_id);
+        if (!serial) {
+          throw new ConflictException('Serialized material genealogy allocation ordering is inconsistent');
+        }
+        // Assign serials deterministically across targets by output-weighted
+        // midpoint so a serial belongs to exactly one output identity.
+        const midpoint = (BigInt(2 * serial.ordinal + 1) * totalOutputUnits) / BigInt(2 * serial.count);
+        let cumulative = 0n;
+        let targetIndex = targets.length - 1;
+        for (let index = 0; index < targets.length; index += 1) {
+          cumulative += targets[index]!.quantityUnits;
+          if (midpoint < cumulative) {
+            targetIndex = index;
+            break;
+          }
+        }
+        allocations.push({ target: targets[targetIndex]!, quantityUnits: consumedUnits });
+      } else {
+        let remainingUnits = consumedUnits;
+        for (let index = 0; index < targets.length; index += 1) {
+          const target = targets[index]!;
+          const allocationUnits = index === targets.length - 1
+            ? remainingUnits
+            : (consumedUnits * target.quantityUnits) / totalOutputUnits;
+          if (allocationUnits < 0n || allocationUnits > remainingUnits) {
+            throw new ConflictException('Material-to-output genealogy allocation exceeded the consumed input quantity');
+          }
+          remainingUnits -= allocationUnits;
+          if (allocationUnits > 0n) allocations.push({ target, quantityUnits: allocationUnits });
+        }
+        if (remainingUnits !== 0n) {
+          throw new ConflictException('Consumed material quantity was not fully allocated across output genealogy targets');
+        }
+      }
+
+      for (const allocation of allocations) {
+        const target = allocation.target;
+        const quantity = toDecimal(allocation.quantityUnits);
         const key = `wo:${input.workOrderId}:consumption:${source.consumption_id}:allocation:${source.allocation_id}:target:${target.unitId}:v1`;
         const evidence = {
           source: 'WORK_ORDER_MATERIAL_CONSUMPTION',
-          allocation_method: 'PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_QUANTITY_V1',
+          allocation_method: source.source_unit_type === 'SERIAL'
+            ? 'SERIAL_IDENTITY_ASSIGNED_TO_SINGLE_OUTPUT_BY_WEIGHTED_MIDPOINT_V1'
+            : 'PROPORTIONAL_TO_REPORTED_GOOD_AND_SCRAP_QUANTITY_V1',
           work_order_id: input.workOrderId,
           reservation_id: source.reservation_id,
           consumption_id: source.consumption_id,
@@ -2195,7 +2246,7 @@ export class InventoryReservationService {
           [
             input.tenantId, input.factoryId, source.source_unit_id, target.unitId,
             target.relationshipType, quantity, source.source_unit, JSON.stringify(evidence),
-            `Work-order ${input.workOrderId} consumed material lot ${source.source_unit_code} into ${target.targetKind.toLowerCase()} output`,
+            `Work-order ${input.workOrderId} consumed material ${source.source_unit_type.toLowerCase()} ${source.source_unit_code} into ${target.targetKind.toLowerCase()} output`,
             key, requestHash, input.userId, input.correlationId,
           ],
         );
@@ -2229,9 +2280,6 @@ export class InventoryReservationService {
           })],
         );
         genealogyEventCount += 1;
-      }
-      if (remainingUnits !== 0n) {
-        throw new ConflictException('Consumed material quantity was not fully allocated across output genealogy targets');
       }
     }
 
