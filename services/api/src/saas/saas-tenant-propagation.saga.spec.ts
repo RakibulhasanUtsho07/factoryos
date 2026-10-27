@@ -31,6 +31,9 @@ describe('SaasTenantPropagationService external saga', () => {
   const audit = { recordWithClient: jest.fn<(...args: unknown[]) => Promise<string>>() };
   const storedReceipts: Record<string, unknown>[] = [];
   const adapterMocks: ReturnType<typeof createAdapter>[] = [];
+  let activeRun: Record<string, unknown> | null;
+  let activateHoldAfterPrepare = false;
+  let legalHoldActivated = false;
   let service: SaasTenantPropagationService;
 
   function createAdapter(kind: (typeof REQUIRED_EXTERNAL_STORE_KINDS)[number]) {
@@ -46,6 +49,7 @@ describe('SaasTenantPropagationService external saga', () => {
     adapter.isConfigured.mockResolvedValue(true);
     adapter.prepare.mockImplementation(async (...args: unknown[]) => {
       const input = args[0] as { target: { targetId: string } };
+      if (activateHoldAfterPrepare) legalHoldActivated = true;
       return { manifestDigest: 'a'.repeat(64), plannedCopies: '2', planReference: 'plan.' + input.target.targetId };
     });
     adapter.erase.mockImplementation(async (...args: unknown[]) => {
@@ -66,6 +70,9 @@ describe('SaasTenantPropagationService external saga', () => {
     jest.resetAllMocks();
     storedReceipts.length = 0;
     adapterMocks.length = 0;
+    activeRun = null;
+    activateHoldAfterPrepare = false;
+    legalHoldActivated = false;
     iam.authorize.mockResolvedValue(undefined);
     audit.recordWithClient.mockResolvedValue('audit-event');
     const targets = REQUIRED_EXTERNAL_STORE_KINDS.map((kind) => ({
@@ -97,26 +104,35 @@ describe('SaasTenantPropagationService external saga', () => {
       const p = (args[1] ?? []) as unknown[];
       if (sql.includes('FROM tenants')) return { rows: [{ id: tenant }] };
       if (sql.includes('FROM saas_tenant_data_erasure_requests') && sql.includes('FOR UPDATE')) return { rows: [requestRow()] };
+      if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('run_id=$3') && sql.includes('FOR UPDATE')) {
+        return { rows: activeRun ? [{ ...activeRun }] : [] };
+      }
       if (sql.includes('FROM saas_tenant_external_propagation_runs') && sql.includes('idempotency_key')) return { rows: [] };
       if (sql.includes('FROM saas_tenant_data_transfers')) {
         return { rows: [{ source_manifest: { tenantId: tenant, categories: ['BUSINESS_DATA'] },
           source_bundle_digest: sourceDigest, actor_user_id: requester }] };
       }
       if (sql.includes('FROM saas_tenant_data_export_preservation_attestations')) return { rows: [{ verified_by_user_id: independentAttestor }] };
-      if (sql.includes('FROM saas_tenant_data_legal_holds')) return { rows: [] };
+      if (sql.includes('FROM saas_tenant_data_legal_holds')) {
+        return { rows: legalHoldActivated ? [{ categories: ['BUSINESS_DATA'] }] : [] };
+      }
       if (sql.includes('FROM saas_tenant_external_data_targets')) return { rows: targets };
       if (sql.includes('INSERT INTO saas_tenant_external_propagation_runs')) {
         const manifest = JSON.parse(String(p[6])) as Record<string, unknown>;
-        return { rows: [{
+        activeRun = {
           run_id: p[1], request_id: p[2], request_version: p[3], status: 'RUNNING', categories: p[4],
           source_export_digest: p[5], external_manifest: manifest, target_count: p[7],
           verified_targets: 0, planned_copies: '0', deleted_copies: '0', residual_copies: '0',
           reason: p[8], idempotency_key: p[9], request_hash: p[10], executor_user_id: p[11],
           failure_code: null, manifest_digest: null, finished_at: null,
-        }] };
+        };
+        return { rows: [{ ...activeRun }] };
       }
       if (sql.includes('SELECT DISTINCT ON (target_id) * FROM saas_tenant_external_propagation_receipts')) return { rows: [...storedReceipts] };
-      if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) return { rows: [] };
+      if (sql.includes('UPDATE saas_tenant_external_propagation_runs SET external_manifest')) {
+        if (activeRun) activeRun.external_manifest = JSON.parse(String(p[3])) as Record<string, unknown>;
+        return { rows: [] };
+      }
       if (sql.includes('SELECT COALESCE(MAX(attempt_no),0)+1 AS attempt_no')) {
         const targetId = String(p[3]);
         return { rows: [{ attempt_no: storedReceipts.filter((row) => row.target_id === targetId).length + 1 }] };
@@ -133,12 +149,14 @@ describe('SaasTenantPropagationService external saga', () => {
       }
       if (sql.includes('UPDATE saas_tenant_external_propagation_runs') && sql.includes('RETURNING *')) {
         const manifest = JSON.parse(String(p[4])) as Record<string, unknown>;
-        return { rows: [{
+        activeRun = {
+          ...(activeRun ?? {}),
           run_id: p[2], status: p[3], external_manifest: manifest, manifest_digest: p[5],
           target_count: p[6], verified_targets: p[7], planned_copies: p[8], deleted_copies: p[9],
           residual_copies: p[10], failure_code: p[11], request_hash: 'd'.repeat(64),
-          request_id: requestId, request_version: 1,
-        }] };
+          request_id: requestId, request_version: 1, source_export_digest: sourceDigest,
+        };
+        return { rows: [{ ...activeRun }] };
       }
       if (sql.includes("UPDATE saas_tenant_data_erasure_requests") && sql.includes("status='VERIFIED'")) {
         return { rows: [{
@@ -149,6 +167,37 @@ describe('SaasTenantPropagationService external saga', () => {
       throw new Error('unexpected transaction SQL: ' + sql);
     });
     service = new SaasTenantPropagationService(database as never, iam as never, audit as never, adapterMocks as never);
+  });
+
+  it('rechecks active legal holds after preparing a provider plan and never erases after a new hold appears', async () => {
+    activateHoldAfterPrepare = true;
+
+    const result = await service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Block deletion when a legal hold is activated during planning',
+      idempotency_key: 'legal-hold-race-saga-v1',
+    });
+
+    expect(result.wholeTenantErasureVerified).toBe(false);
+    expect(result.request).toMatchObject({ requestId, status: 'PROPAGATION_PENDING', version: 4 });
+    expect(adapterMocks).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    for (const adapter of adapterMocks) {
+      expect(adapter.prepare).toHaveBeenCalledTimes(1);
+      expect(adapter.erase).not.toHaveBeenCalled();
+    }
+    expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
+    expect(storedReceipts.every((receipt) => receipt.status === 'FAILED')).toBe(true);
+    expect(audit.recordWithClient).toHaveBeenCalledWith(
+      expect.objectContaining({ query: clientQuery }),
+      expect.objectContaining({
+        action: 'TENANT_ERASURE_PROPAGATION_PARTIAL',
+        payload: expect.objectContaining({ postgresqlReceiptScope: 'POSTGRESQL_ONLY' }),
+      }),
+    );
+    expect(audit.recordWithClient).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED' }),
+    );
   });
 
   it('verifies every configured storage class before promoting request status to whole-tenant VERIFIED', async () => {
