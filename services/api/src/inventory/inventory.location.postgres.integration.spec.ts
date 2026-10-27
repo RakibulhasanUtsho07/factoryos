@@ -2806,7 +2806,7 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
             AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count`,
       [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id],
     );
-    awa    // Fail at the last durable write in this flow, after stock, movement,
+    // Fail at the last durable write in this flow, after stock, movement,
     // traceability balance, quality evidence, genealogy edge and genealogy audit
     // have been attempted. This makes the snapshot prove transactional rollback
     // for those writes rather than only proving an earlier statement failed.
