@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'docs/wms-mobile-offline-label-acceptance.md'
       - 'apps/web/**'
       - 'package.json'
       - 'package-lock.json'
@@ -40,6 +41,9 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm ci
+
+      - name: Test WMS mobile and label contracts
+        run: npm --workspace apps/web run test
 
       - name: Lint web app
         run: npm --workspace apps/web run lint

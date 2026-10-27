@@ -8,6 +8,12 @@ DECLARE
   v_actor UUID := gen_random_uuid();
   v_completer UUID := gen_random_uuid();
   v_verifier UUID := gen_random_uuid();
+  v_approver UUID := gen_random_uuid();
+  v_supplier UUID := gen_random_uuid();
+  v_purchase_order UUID := gen_random_uuid();
+  v_po_line UUID := gen_random_uuid();
+  v_receipt UUID := gen_random_uuid();
+  v_receipt_line UUID;
   v_item UUID := gen_random_uuid();
   v_location UUID;
   v_source_unit UUID := gen_random_uuid();
@@ -15,6 +21,7 @@ DECLARE
   v_source_inspection UUID := gen_random_uuid();
   v_followup_inspection UUID := gen_random_uuid();
   v_hold UUID := gen_random_uuid();
+  v_rework_disposition UUID := gen_random_uuid();
   v_defect UUID := gen_random_uuid();
   v_source_link UUID := gen_random_uuid();
   v_output_link UUID := gen_random_uuid();
@@ -38,7 +45,8 @@ BEGIN
   INSERT INTO users (id,display_name) VALUES
     (v_actor,'Rework Operator'),
     (v_completer,'Rework Completer'),
-    (v_verifier,'Independent Rework Verifier');
+    (v_verifier,'Independent Rework Verifier'),
+    (v_approver,'Independent GRN Approver');
   INSERT INTO factories (id,tenant_id,code,name,status)
   VALUES (v_factory,v_tenant,'QWR-'||upper(substr(v_factory::text,1,8)),'Quality Rework Inventory Factory','ACTIVE');
 
@@ -55,55 +63,120 @@ BEGIN
   WHERE tenant_id=v_tenant AND factory_id=v_factory AND is_default=TRUE AND status='ACTIVE';
   IF v_location IS NULL THEN RAISE EXCEPTION 'Rework test requires a default active inventory location'; END IF;
 
+  -- Material stock originates from a persisted PO and approved GRN in this same fixture.
+  -- The lot, GRN line, supplier, quality hold and rework orders share the same identifiers.
+  INSERT INTO suppliers (id,tenant_id,code,name,created_by_user_id)
+  VALUES (v_supplier,v_tenant,'QWR-SUP-'||upper(substr(v_supplier::text,1,8)),'Rework Test Supplier',v_actor);
+
+  INSERT INTO purchase_orders (id,tenant_id,factory_id,supplier_id,po_number,status,created_by_user_id)
+  VALUES (v_purchase_order,v_tenant,v_factory,v_supplier,
+    'QWR-PO-'||upper(substr(v_purchase_order::text,1,8)),'DRAFT',v_actor);
+  INSERT INTO purchase_order_lines (
+    id,tenant_id,factory_id,purchase_order_id,line_number,inventory_item_id,description,quantity,unit,unit_price
+  ) VALUES (
+    v_po_line,v_tenant,v_factory,v_purchase_order,1,v_item,'Source material for quality rework',5,'PCS',4
+  );
+  INSERT INTO purchase_order_status_history (
+    tenant_id,factory_id,purchase_order_id,from_status,to_status,version,actor_user_id,reason
+  ) VALUES (v_tenant,v_factory,v_purchase_order,NULL,'DRAFT',1,v_actor,'PO created for shared GRN/rework acceptance');
+
+  UPDATE purchase_orders SET status='SUBMITTED',
+    submitted_by_user_id=v_actor,submitted_at=clock_timestamp(),
+    updated_at=clock_timestamp(),version=version+1
+  WHERE id=v_purchase_order AND tenant_id=v_tenant AND factory_id=v_factory;
+  INSERT INTO purchase_order_status_history (
+    tenant_id,factory_id,purchase_order_id,from_status,to_status,version,actor_user_id,reason,request_id,trace_id
+  ) VALUES (
+    v_tenant,v_factory,v_purchase_order,'DRAFT','SUBMITTED',2,v_actor,
+    'Submit shared fixture PO',v_request,v_correlation
+  );
+
+  PERFORM set_config('app.user_id',v_approver::text,TRUE);
+  UPDATE purchase_orders SET status='APPROVED',
+    approved_by_user_id=v_approver,approved_at=clock_timestamp(),
+    updated_at=clock_timestamp(),version=version+1
+  WHERE id=v_purchase_order AND tenant_id=v_tenant AND factory_id=v_factory;
+  INSERT INTO purchase_order_status_history (
+    tenant_id,factory_id,purchase_order_id,from_status,to_status,version,actor_user_id,reason,request_id,trace_id
+  ) VALUES (
+    v_tenant,v_factory,v_purchase_order,'SUBMITTED','APPROVED',3,v_approver,
+    'Approve source material PO',v_request,v_correlation
+  );
+
+  PERFORM set_config('app.inventory_location_id',v_location::text,TRUE);
+  INSERT INTO goods_receipts (
+    id,tenant_id,factory_id,purchase_order_id,location_id,receipt_number,status,
+    supplier_delivery_reference,notes,created_by_user_id,idempotency_key,request_hash,
+    request_id,trace_id,correlation_id
+  ) VALUES (
+    v_receipt,v_tenant,v_factory,v_purchase_order,v_location,
+    'QWR-GRN-'||upper(substr(v_receipt::text,1,8)),'POSTING',
+    'QWR-DELIVERY-'||upper(substr(v_receipt::text,1,8)),
+    'Accepted material used by the shared quality/rework fixture',v_approver,
+    'qwr-grn-'||v_receipt::text,repeat('a',64),v_request,v_correlation,v_correlation
+  );
+  INSERT INTO goods_receipt_lines (
+    tenant_id,factory_id,goods_receipt_id,purchase_order_id,purchase_order_line_id,
+    inventory_item_id,received_quantity,rejected_quantity
+  ) VALUES (
+    v_tenant,v_factory,v_receipt,v_purchase_order,v_po_line,v_item,5,0
+  ) RETURNING id INTO v_receipt_line;
+
+  UPDATE inventory_stock_balances SET quantity_on_hand=quantity_on_hand+5,
+    version=version+1,updated_at=clock_timestamp()
+  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
+  RETURNING quantity_on_hand INTO v_quantity_after;
+  INSERT INTO inventory_movements (
+    tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,
+    idempotency_key,request_hash,reference_type,reference_id,notes,created_by_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_item,v_location,'RECEIPT',5,5,v_quantity_after,
+    'GRN:'||v_receipt::text||':'||v_po_line::text,repeat('b',64),'GOODS_RECEIPT',v_receipt,
+    'Accepted source material receipt for rework fixture',v_approver,v_correlation
+  ) RETURNING id INTO v_movement;
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (
+    v_tenant,v_factory,'GOODS_RECEIPT',v_receipt,'PROCUREMENT.GOODS_RECEIPT_POSTED',
+    jsonb_build_object('receipt_id',v_receipt,'accepted_quantity',5,'rejected_quantity',0)
+  );
+  INSERT INTO audit_events (
+    tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,
+    correlation_id,request_id,data_class,payload
+  ) VALUES (
+    v_tenant,v_factory,v_approver,'PROCUREMENT','POSTED','GOODS_RECEIPT',v_receipt,
+    v_correlation,v_request,'INTERNAL',
+    jsonb_build_object('accepted_quantity',5,'rejected_quantity',0,'purchase_order_id',v_purchase_order)
+  );
+  UPDATE goods_receipts SET status='POSTED',posted_at=clock_timestamp()
+  WHERE id=v_receipt AND tenant_id=v_tenant AND factory_id=v_factory;
+
+  PERFORM set_config('app.user_id',v_actor::text,TRUE);
   INSERT INTO traceability_units (
     id,tenant_id,factory_id,unit_type,product_role,unit_code,barcode_value,inventory_item_id,
-    quantity,unit,external_reference,status,attributes,idempotency_key,request_hash,version,
+    quantity,unit,supplier_id,goods_receipt_id,goods_receipt_line_id,
+    external_reference,status,attributes,idempotency_key,request_hash,version,
     created_by_user_id,correlation_id
   ) VALUES (
-    v_source_unit,v_tenant,v_factory,'LOT','OTHER',
+    v_source_unit,v_tenant,v_factory,'LOT','MATERIAL',
     'QWR-SOURCE-'||upper(substr(v_source_unit::text,1,8)),
     'QWR-SOURCE-BAR-'||upper(substr(v_source_unit::text,1,8)),v_item,5,'PCS',
-    'quality-rework-source-fixture','ACTIVE','{"origin":"quality-rework-test"}'::jsonb,
-    'qwr-source-unit',repeat('a',64),1,v_actor,v_correlation
+    v_supplier,v_receipt,v_receipt_line,
+    'quality-rework-source-lot','ACTIVE','{"origin":"posted-grn","fixture":"quality-rework"}'::jsonb,
+    'qwr-source-unit',repeat('c',64),1,v_actor,v_correlation
   );
   INSERT INTO audit_events (
     tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,correlation_id,request_id,data_class,payload
   ) VALUES (
     v_tenant,v_factory,v_actor,'TRACEABILITY','REGISTERED','TRACEABILITY_UNIT',v_source_unit,v_correlation,v_request,'INTERNAL',
-    jsonb_build_object('unit_id',v_source_unit,'quantity',5,'unit','PCS','fixture','quality-rework')
+    jsonb_build_object('unit_id',v_source_unit,'quantity',5,'unit','PCS','goods_receipt_id',v_receipt,'goods_receipt_line_id',v_receipt_line)
   );
   INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
   VALUES (
     v_tenant,v_factory,'TRACEABILITY_UNIT',v_source_unit,'TRACEABILITY.UNIT_REGISTERED',
-    jsonb_build_object('unit_id',v_source_unit,'quantity',5,'fixture','quality-rework')
+    jsonb_build_object('unit_id',v_source_unit,'quantity',5,'goods_receipt_id',v_receipt,'supplier_id',v_supplier)
   );
-
-  PERFORM set_config('app.inventory_location_id',v_location::text,TRUE);
-  UPDATE inventory_stock_balances SET quantity_on_hand=5,version=version+1,updated_at=clock_timestamp()
-  WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item
-  RETURNING quantity_on_hand INTO v_quantity_after;
-  INSERT INTO inventory_movements (
-    tenant_id,factory_id,item_id,location_id,movement_type,quantity,quantity_delta,quantity_after,
-    idempotency_key,request_hash,reference_type,notes,created_by_user_id,correlation_id
-  ) VALUES (
-    v_tenant,v_factory,v_item,v_location,'RECEIPT',5,5,v_quantity_after,
-    'qwr-source-initial-receipt',repeat('b',64),'QWR_FIXTURE_RECEIPT',
-    'Initial stock for tracked rework input fixture',v_actor,v_correlation
-  ) RETURNING id INTO v_movement;
-  INSERT INTO audit_events (
-    tenant_id,factory_id,actor_user_id,event_type,action,resource_type,resource_id,correlation_id,request_id,data_class,payload
-  ) VALUES (
-    v_tenant,v_factory,v_actor,'INVENTORY','STOCK_RECEIPT','INVENTORY_MOVEMENT',v_movement,v_correlation,v_request,'INTERNAL',
-    jsonb_build_object('item_id',v_item,'location_id',v_location,'quantity',5,'quantity_after',v_quantity_after)
-  );
-  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
-  VALUES (
-    v_tenant,v_factory,'INVENTORY_ITEM',v_item,'INVENTORY.STOCK_RECEIVED',
-    jsonb_build_object('movement_id',v_movement,'quantity',5,'location_id',v_location)
-  );
-  INSERT INTO inventory_traceability_location_balances (
-    tenant_id,factory_id,item_id,traceability_unit_id,location_id,quantity_on_hand,quantity_reserved
-  ) VALUES (v_tenant,v_factory,v_item,v_source_unit,v_location,5,0);
+  -- MATERIAL lot registration seeds its bounded quantity into the default UNASSIGNED
+  -- bucket through traceability_unit_seed_inventory_location_balance; do not insert it twice.
 
   INSERT INTO quality_inspections (
     id,tenant_id,factory_id,inspection_type,target_type,target_id,inventory_item_id,traceability_unit_id,
@@ -146,7 +219,31 @@ BEGIN
     'Hold source stock pending controlled rework',v_actor,v_correlation
   );
   INSERT INTO quality_audit_events (tenant_id,factory_id,inspection_id,hold_id,action_type,payload,actor_user_id,correlation_id)
-  VALUES (v_tenant,v_factory,v_source_inspection,v_hold,'QWR_SOURCE_HOLD_RECORDED','{"status":"ACTIVE"}'::jsonb,v_actor,v_correlation);
+  VALUES (v_tenant,v_factory,v_source_inspection,v_hold,'QWR_SOURCE_HOLD_RECORDED',
+    jsonb_build_object('status','ACTIVE','source_traceability_unit_id',v_source_unit),v_actor,v_correlation);
+
+  -- Record the authorized REWORK disposition against the same held GRN-sourced lot.
+  INSERT INTO quality_dispositions (
+    id,tenant_id,factory_id,inspection_id,hold_id,inventory_item_id,action,status,reason,
+    idempotency_key,request_hash,created_by_user_id,correlation_id
+  ) VALUES (
+    v_rework_disposition,v_tenant,v_factory,v_source_inspection,v_hold,v_item,'REWORK','RECORDED',
+    'Route the quarantined GRN material through controlled rework and follow-up inspection',
+    'qwr-source-rework-disposition',repeat('d',64),v_actor,v_correlation
+  );
+  INSERT INTO quality_audit_events (
+    tenant_id,factory_id,inspection_id,hold_id,action_type,payload,actor_user_id,correlation_id
+  ) VALUES (
+    v_tenant,v_factory,v_source_inspection,v_hold,'QWR_REWORK_DISPOSITION_RECORDED',
+    jsonb_build_object('disposition_id',v_rework_disposition,'action','REWORK',
+      'goods_receipt_id',v_receipt,'goods_receipt_line_id',v_receipt_line),v_actor,v_correlation
+  );
+  INSERT INTO outbox_events (tenant_id,factory_id,aggregate_type,aggregate_id,event_type,payload)
+  VALUES (
+    v_tenant,v_factory,'QUALITY_DISPOSITION',v_rework_disposition,'QUALITY.DISPOSITION_CHANGED',
+    jsonb_build_object('disposition_id',v_rework_disposition,'action','REWORK','status','RECORDED',
+      'goods_receipt_id',v_receipt,'goods_receipt_line_id',v_receipt_line)
+  );
 
   INSERT INTO quality_defects (
     id,tenant_id,factory_id,inspection_id,defect_code,severity,affected_quantity,description,evidence,
@@ -194,11 +291,12 @@ BEGIN
 
   INSERT INTO quality_rework_orders (
     id,tenant_id,factory_id,rework_number,defect_id,inspection_id,source_inventory_item_id,source_traceability_unit_id,
+    source_goods_receipt_id,source_goods_receipt_line_id,
     input_quantity,recovered_quantity,scrap_quantity,status,reason,instructions,row_version,idempotency_key,request_hash,
     created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
     v_rework,v_tenant,v_factory,'QWR-'||upper(substr(v_rework::text,1,12)),v_defect,v_source_inspection,v_item,v_source_unit,
-    2,0,0,'DRAFT','Controlled repair of held source stock','Rework and re-inspect before inventory release',1,
+    v_receipt,v_receipt_line,2,0,0,'DRAFT','Controlled repair of held source stock','Rework and re-inspect before inventory release',1,
     'qwr-rework-order',repeat('3',64),v_actor,v_actor,v_correlation
   );
   INSERT INTO quality_rework_events (
@@ -567,11 +665,12 @@ BEGIN
 
   INSERT INTO quality_rework_orders (
     id,tenant_id,factory_id,rework_number,defect_id,inspection_id,source_inventory_item_id,source_traceability_unit_id,
+    source_goods_receipt_id,source_goods_receipt_line_id,
     input_quantity,recovered_quantity,scrap_quantity,status,reason,instructions,row_version,idempotency_key,request_hash,
     created_by_user_id,updated_by_user_id,correlation_id
   ) VALUES (
     v_cancel_rework,v_tenant,v_factory,'QWR-CANCEL-'||upper(substr(v_cancel_rework::text,1,10)),
-    v_cancel_defect,v_cancel_inspection,v_item,v_source_unit,1,0,0,'DRAFT',
+    v_cancel_defect,v_cancel_inspection,v_item,v_source_unit,v_receipt,v_receipt_line,1,0,0,'DRAFT',
     'Cancellation must restore held source stock','Cancel before recovery or scrap is recorded',1,
     'qwr-cancel-rework-order',repeat('7',64),v_actor,v_actor,v_correlation
   );
@@ -743,8 +842,52 @@ BEGIN
   END IF;
 
 
-  SET CONSTRAINTS ctr_quality_inspection_evidence, ctr_traceability_unit_evidence,
-    ctr_quality_rework_inventory_reconciliation, ctr_quality_defect_link_audit IMMEDIATE;
+  SET CONSTRAINTS ctr_goods_receipt_posted_integrity, ctr_quality_inspection_evidence,
+    ctr_traceability_unit_evidence, ctr_quality_rework_inventory_reconciliation,
+    ctr_quality_defect_link_audit IMMEDIATE;
+
+  IF (SELECT status FROM purchase_orders WHERE id=v_purchase_order AND tenant_id=v_tenant AND factory_id=v_factory)
+       IS DISTINCT FROM 'APPROVED'
+    OR (SELECT status FROM goods_receipts WHERE id=v_receipt AND tenant_id=v_tenant AND factory_id=v_factory)
+       IS DISTINCT FROM 'POSTED'
+    OR NOT EXISTS (
+      SELECT 1 FROM goods_receipt_lines gl
+      WHERE gl.id=v_receipt_line AND gl.goods_receipt_id=v_receipt
+        AND gl.purchase_order_id=v_purchase_order AND gl.purchase_order_line_id=v_po_line
+        AND gl.inventory_item_id=v_item AND gl.received_quantity=5 AND gl.rejected_quantity=0
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM inventory_movements im
+      WHERE im.tenant_id=v_tenant AND im.factory_id=v_factory
+        AND im.reference_type='GOODS_RECEIPT' AND im.reference_id=v_receipt
+        AND im.item_id=v_item AND im.movement_type='RECEIPT'
+        AND im.quantity=5 AND im.quantity_delta=5
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM traceability_units tu
+      WHERE tu.id=v_source_unit AND tu.tenant_id=v_tenant AND tu.factory_id=v_factory
+        AND tu.inventory_item_id=v_item AND tu.product_role='MATERIAL' AND tu.quantity=5
+        AND tu.supplier_id=v_supplier AND tu.goods_receipt_id=v_receipt
+        AND tu.goods_receipt_line_id=v_receipt_line
+    )
+    OR (SELECT count(*) FROM quality_rework_orders r
+        WHERE r.tenant_id=v_tenant AND r.factory_id=v_factory
+          AND r.id IN (v_rework,v_cancel_rework)
+          AND r.source_goods_receipt_id=v_receipt
+          AND r.source_goods_receipt_line_id=v_receipt_line) <> 2
+    OR (SELECT action FROM quality_dispositions WHERE id=v_rework_disposition) IS DISTINCT FROM 'REWORK'
+    OR (SELECT status FROM quality_dispositions WHERE id=v_rework_disposition) IS DISTINCT FROM 'RECORDED'
+    OR NOT EXISTS (
+      SELECT 1 FROM audit_events a WHERE a.tenant_id=v_tenant AND a.factory_id=v_factory
+        AND a.resource_type='GOODS_RECEIPT' AND a.resource_id=v_receipt AND a.action='POSTED'
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM outbox_events o WHERE o.tenant_id=v_tenant AND o.factory_id=v_factory
+        AND o.aggregate_type='GOODS_RECEIPT' AND o.aggregate_id=v_receipt
+        AND o.event_type='PROCUREMENT.GOODS_RECEIPT_POSTED'
+    ) THEN
+    RAISE EXCEPTION 'Shared GRN/quality acceptance failed: approved PO, posted GRN, accepted stock, supplier genealogy and source-bound REWORK disposition must reconcile';
+  END IF;
 
   SELECT quantity_on_hand INTO v_quantity_after FROM inventory_stock_balances
   WHERE tenant_id=v_tenant AND factory_id=v_factory AND item_id=v_item;

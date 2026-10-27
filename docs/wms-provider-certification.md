@@ -100,3 +100,57 @@ Before dispatching it, a repository administrator must:
 On successful completion, the workflow re-checks that the evidence JSON does not contain the configured secrets, verifies that the result retains the external-carrier limitation, and uploads only that JSON artifact for 30 days. The upload step is skipped if the smoke or redaction check fails. A failed attempt is not a certification result.
 
 The workflow does not have access to carrier-native sandbox credentials, does not ask the carrier platform to emit a genuine callback, does not prove provider-side retry delivery, and cannot inspect or test storage IAM list/delete permissions or credential rotation. Complete the provider-owned evidence table above independently. **Do not close the external certification gate solely because this workflow passed.**
+
+
+## Automated storage IAM policy-shape check
+
+Before a staging smoke run, export the identity policy attached to the deployed POD storage runtime principal to a protected local file and run the checker. It prints a policy SHA-256 and a redacted summary; it never copies policy JSON into the evidence output.
+
+    node scripts/integrations/wms-storage-iam-policy-check.mjs --policy "C:\secure-evidence\pod-runtime-policy.json" --bucket "factoryos-pod-staging" --prefix "pod/"
+
+The checker accepts only explicit s3:GetObject and s3:PutObject allows for the named bucket under the exact requested POD object prefix. It rejects wildcard actions/resources, bucket-wide grants, sibling prefixes, s3:ListBucket, s3:DeleteObject, unsupported NotAction/NotResource constructs, and extra allow actions. A narrower prefix can be checked by passing a trailing-slash prefix such as pod/tenant/factory/.
+
+**Interpretation:** PASS_POLICY_SHAPE_ONLY proves only the supplied JSON has the supported narrow shape. It does not prove the export is attached to the deployed identity, nor compute effective permissions across bucket policies, permission boundaries, organization/session policies or KMS grants. The live authenticated upload plus independent read-back is still required to prove effective write/read access. A storage/security owner must separately verify the deployed principal, bucket policy, scope, expiry/rotation, and revocation owner. Do not commit the policy export or any credentials to Git.
+
+
+
+## Storage IAM policy preflight added to the protected smoke
+
+The manual workflow now runs the policy-shape checker **before** posting a POD or creating delivery/reconciliation events. Configure these protected `wms-certification` environment values:
+
+- Secret `WMS_POD_STORAGE_POLICY_JSON`: JSON export of the identity policy intended to be attached to the actual POD runtime principal.
+- Variable `WMS_POD_STORAGE_BUCKET`: exact target bucket.
+- Variable `WMS_POD_STORAGE_PREFIX`: exact approved object prefix ending in `/` (usually `pod/`).
+
+The workflow writes the policy to an owner-readable temporary file, evaluates it, removes the temporary file, and uploads only the redacted shape report alongside the existing smoke evidence. It refuses to proceed to the shipment-side-effect smoke when the required policy inputs are absent or the policy shape fails. The report includes a policy fingerprint, bucket/prefix and required action summary; it does not include policy JSON or credentials.
+
+The API CI suite also includes a regression test that checks this preflight appears before the side-effecting smoke and that both redacted reports are retained. The static checker rejects conditional `Allow` statements because it cannot resolve their effective semantics; it intentionally handles no provider-side policy evaluation.
+
+**This is still not live provider certification.** A passed shape check is not proof that the policy is attached to the active runtime identity, or that bucket policies, organization/session policies, permission boundaries, encryption-key grants, expiry, rotation and revocation behave as intended. A real upload followed by independent provider-side read-back plus an authorized storage/security owner's effective-permissions and credential review is still required. The configured callback harness signs its synthetic callback with the FactoryOS secret, so genuine carrier sandbox origin, the carrier-native signature algorithm, carrier-side retry/replay and carrier credential scope require provider-owned evidence and an approved provider-specific adapter.
+
+Do not upload this PR's policy JSON, API tokens, webhook secret or vendor credentials to Git, workflow output or the evidence artifact. Keep the external certification disposition **OPEN** until the named carrier, storage/security and WMS owners sign the evidence pack against the exact release SHA.
+
+
+## External provider evidence-pack gate
+
+The configured smoke above is useful regression evidence, but it is **not** the live-carrier or effective-storage-IAM certification. Use the evidence-pack validator to stop release acceptance from being marked complete until provider-owned proof and three independent owner approvals are assembled for the exact tested release.
+
+Run this locally in the approved, access-controlled evidence workspace; do not commit the manifest or provider files:
+
+    node scripts/integrations/wms-provider-evidence-pack.mjs --manifest "C:\secure-evidence\manifest.json" --evidence-root "C:\secure-evidence\attachments" --release-sha "<exact-tested-release-sha>"
+
+The manifest must use schema \`factoryos.wms.external-certification-evidence/v1\` and include the exact 40- or 64-character release SHA, a \`sandbox\` or \`staging\` target, and timestamped provider evidence. The checker fails closed unless the bundle includes all of these attachment kinds with matching SHA-256 digests:
+
+- \`carrier-callback\`: provider-native event/request identifiers, raw payload digest and a documented native signature verification PASS. FactoryOS synthetic HMAC callbacks are explicitly rejected.
+- \`carrier-retry-replay\`: the carrier's same event/payload retry after an observed transient failure, with the persisted delivery receipt/event count showing no duplicate delivery.
+- \`carrier-conflicting-replay\`: a same-event-ID/different-payload conflict rejected or reconciled without creating a second delivery event.
+- \`storage-independent-readback\`: direct provider SDK/API/CLI read-back that bypasses the FactoryOS API, with upload and read-back byte lengths and SHA-256 digests equal.
+- \`storage-effective-iam\`: redacted deployed-principal/policy fingerprints plus storage/security review of bucket policy, permission boundary, organization/session policy and KMS applicability.
+- \`storage-credential-rotation\`: proof the new credential can perform the approved operation and the old credential is denied after rotation/revocation.
+- \`owner-signoffs\`: approval evidence for the exact same release SHA.
+
+The manifest must record three distinct approvals: \`carrier_integration_owner\`, \`storage_security_owner\`, and \`wms_process_owner\`. The validator checks role coverage, identities, approval timestamps and release binding. Evidence paths must be relative to the private evidence directory; path traversal, symlinks, duplicate kinds/paths, missing files, digest mismatches, oversized attachments and secret-bearing manifest field names fail validation.
+
+**Meaning of PASS:** \`PASS_EVIDENCE_BUNDLE_COMPLETE\` means required fields are complete, attachments exist and hash correctly, and the approvals cite the expected release SHA. It is a bundle-integrity/completeness check, not proof that provider evidence is truthful or cryptographically signed by the provider. A human storage/security, carrier and WMS owner must inspect original provider records and sign off in the approved release process. Do not place raw credentials, tokens, private keys, raw webhook secrets, or unredacted provider records into GitHub artifacts or a public repository.
+
+API CI runs deterministic fixture tests for the validator. Those tests do not use live credentials and do not change the external certification disposition. Until the selected carrier's real sandbox callback/retry evidence, direct object-storage read-back, effective IAM/credential-rotation review and owner sign-offs are supplied for the candidate SHA, **live carrier and object-storage certification remains OPEN**.

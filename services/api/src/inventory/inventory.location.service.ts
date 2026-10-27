@@ -793,7 +793,14 @@ export class InventoryLocationService {
             SELECT EXISTS (
               SELECT 1 FROM quality_holds qh
               WHERE qh.tenant_id=$1 AND qh.factory_id=$2 AND qh.status='ACTIVE'
-                AND (qh.inventory_item_id=$3 OR qh.traceability_unit_id=$4)
+                -- A lot/serial-targeted hold quarantines that identity only. An
+                -- item-level hold (no traceability identity) blocks all lots for
+                -- the item. Do not let a held source lot block a separately
+                -- inspected and accepted recovered lot of the same SKU.
+                AND (
+                  qh.traceability_unit_id=$4
+                  OR (qh.traceability_unit_id IS NULL AND qh.inventory_item_id=$3)
+                )
             ) AS present
             `,
             [tenantId, factoryId, itemId, traceabilityUnitId],
