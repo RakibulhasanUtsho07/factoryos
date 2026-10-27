@@ -315,6 +315,39 @@ test("Code 128 renderer creates bars and rejects non-printable values", () => {
   assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" }, issue: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" } })), errorCode("INVALID_LABEL_VALUE"));
 });
 
+function withSvgDocumentStub(run) {
+  const escapeAttribute = (value) => String(value).replace(/[&<>\"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
+  })[char]);
+  const makeElement = (tag) => {
+    const attributes = new Map();
+    const children = [];
+    const node = {
+      setAttribute(name, value) { attributes.set(name, String(value)); },
+      appendChild(child) { children.push(child); return child; },
+    };
+    Object.defineProperty(node, "outerHTML", {
+      get() {
+        const attrs = [...attributes].map(([name, value]) => " " + name + '="' + escapeAttribute(value) + '"').join("");
+        return "<" + tag + attrs + ">" + children.map((child) => child.outerHTML).join("") + "</" + tag + ">";
+      },
+    });
+    return node;
+  };
+  const previousDocument = globalThis.document;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    writable: true,
+    value: { createElementNS: (_namespace, tag) => makeElement(tag) },
+  });
+  try {
+    return run();
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: previousDocument });
+  }
+}
+
 test("Data Matrix ECC 200 renders a deterministic SVG and preserves the print contract", () => {
   const rendered = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX")));
   const replayed = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX")));
