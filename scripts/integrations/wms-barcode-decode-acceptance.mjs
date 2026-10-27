@@ -41,12 +41,16 @@ function run(command, args) {
   });
   if (result.error) {
     throw new Error(
-      \`Required independent decode tool "\${command}" is unavailable. Install zbar-tools and librsvg2-bin. Details: \${result.error.message}\`,
+      "Required independent decode tool \"" + command +
+      "\" is unavailable. Install zbar-tools and librsvg2-bin. Details: " +
+      result.error.message,
     );
   }
   if (result.status !== 0) {
     throw new Error(
-      \`Independent decode tool "\${command}" exited \${result.status}. stdout=\${JSON.stringify(result.stdout)} stderr=\${JSON.stringify(result.stderr)}\`,
+      "Independent decode tool \"" + command + "\" exited " + result.status +
+      ". stdout=" + JSON.stringify(result.stdout) +
+      " stderr=" + JSON.stringify(result.stderr),
     );
   }
   return result;
@@ -80,14 +84,14 @@ async function main() {
       assert.equal(rendered.symbology, fixture.symbology);
 
       const dimensions = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/);
-      assert.ok(dimensions, \`SVG viewBox missing for \${fixture.name}\`);
+      assert.ok(dimensions, "SVG viewBox missing for " + fixture.name);
       const rasterWidth = Number(dimensions[1]) * 8;
       const rasterHeight = Number(dimensions[2]) * 8;
-      assert.ok(rasterWidth > 0 && rasterHeight > 0, \`Invalid SVG dimensions for \${fixture.name}\`);
+      assert.ok(rasterWidth > 0 && rasterHeight > 0, "Invalid SVG dimensions for " + fixture.name);
 
       const prefix = String(index + 1).padStart(2, "0");
-      const svgPath = join(workspace, \`\${prefix}.svg\`);
-      const pngPath = join(workspace, \`\${prefix}.png\`);
+      const svgPath = join(workspace, prefix + ".svg");
+      const pngPath = join(workspace, prefix + ".png");
       await writeFile(svgPath, rendered.svg, "utf8");
 
       // Rasterize the rendered output, then let ZBar independently decode pixels.
@@ -108,11 +112,13 @@ async function main() {
       assert.equal(
         decoded,
         fixture.expected,
-        \`ZBar decode mismatch for \${fixture.name}: expected \${JSON.stringify(fixture.expected)}, received \${JSON.stringify(decoded)}\`,
+        "ZBar decode mismatch for " + fixture.name +
+        ": expected " + JSON.stringify(fixture.expected) +
+        ", received " + JSON.stringify(decoded),
       );
-      console.log(\`PASS independent ZBar decode: \${fixture.name} -> \${JSON.stringify(decoded)}\`);
+      console.log("PASS independent ZBar decode: " + fixture.name + " -> " + JSON.stringify(decoded));
     }
-    console.log(\`PASS: \${FIXTURES.length} rendered Code 128 / GS1-128 vectors decoded from rasterized pixels.\`);
+    console.log("PASS: " + FIXTURES.length + " rendered Code 128 / GS1-128 vectors decoded from rasterized pixels.");
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
