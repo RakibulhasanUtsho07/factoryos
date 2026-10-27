@@ -342,7 +342,7 @@ test("GS1-128 encodes FNC1 start/separators and validates the supported AI profi
   assert.throws(() => invalid("(17)271399"), errorCode("INVALID_GS1_DATE"));
   assert.throws(() => invalid("(10)LOT(21)SERIAL(10)DUPLICATE"), errorCode("DUPLICATE_GS1_AI"));
   assert.throws(() => invalid("(10)LOT(01)09506000134353"), errorCode("INVALID_GS1_CHECK_DIGIT"));
-  assert.throws(() => invalid("(10)" + "A".repeat(45)), errorCode("GS1_128_TOO_LONG"));
+  assert.throws(() => invalid("(10)" + "A".repeat(20) + "(21)" + "B".repeat(20) + "(01)09506000134352"), errorCode("GS1_128_TOO_LONG"));
 });
 
 test("label rendering fails closed for bad identity, status, geometry, and copy count", () => {
