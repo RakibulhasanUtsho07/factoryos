@@ -126,6 +126,50 @@ BEGIN
     RAISE EXCEPTION '% direct tenant table(s) were allowlisted without a reviewed export adapter', allowlist_count;
   END IF;
 
+  -- Runtime agent traces, execution claims, rollout drafts and evaluation outcomes
+  -- may contain prompts, action payloads or operational results. They are not the
+  -- curated AI_CONTEXT/LEARNING_EVALUATION transfer allowlist. Keep them explicitly
+  -- excluded and erasure-blocked until category-specific adapters and receipts exist.
+  IF EXISTS (
+    SELECT 1
+    FROM (VALUES
+      ('agent_tasks'),
+      ('agent_task_steps'),
+      ('agent_action_attempts'),
+      ('agent_handoffs'),
+      ('agent_sandboxes'),
+      ('simulation_runs'),
+      ('ai_agent_definitions'),
+      ('ai_agent_tool_grants'),
+      ('ai_agent_publish_requests'),
+      ('ai_agent_deployments'),
+      ('workflow_drafts'),
+      ('ai_execution_claims'),
+      ('ai_execution_claim_reconciliations'),
+      ('ai_agent_operational_controls'),
+      ('ai_agent_evaluation_cases'),
+      ('ai_agent_evaluation_results'),
+      ('ai_operational_evaluation_records'),
+      ('ai_decision_lifecycle_states'),
+      ('ai_decision_lifecycle_events'),
+      ('ai_context_evidence_refs')
+    ) AS expected(relation_name)
+    LEFT JOIN factoryos_governance.tenant_relation_inventory i
+      ON i.schema_name='public' AND i.relation_name=expected.relation_name
+    LEFT JOIN factoryos_governance.tenant_relation_ownership_reviews r
+      ON r.schema_name='public' AND r.relation_name=expected.relation_name
+    WHERE i.relation_name IS NULL OR r.relation_name IS NULL
+      OR i.scope_model <> 'DIRECT_TENANT_ID'
+      OR r.ownership_class <> 'DIRECT_TENANT'
+      OR i.export_disposition <> 'EXCLUDED'
+      OR i.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+      OR r.export_disposition <> 'EXCLUDED'
+      OR r.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+  ) THEN
+    RAISE EXCEPTION 'AI runtime/execution/evaluation relation(s) bypass the explicit export/erasure exclusion boundary';
+  END IF;
+
+
   IF EXISTS (
     SELECT 1 FROM factoryos_governance.tenant_relation_inventory
     WHERE export_disposition = 'EXCLUDED'
