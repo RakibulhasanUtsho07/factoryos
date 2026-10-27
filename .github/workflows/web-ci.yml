@@ -5,6 +5,7 @@ on:
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
       - 'docs/wms-mobile-offline-label-acceptance.md'
+      - 'scripts/integrations/wms-barcode-decode-acceptance.mjs'
       - 'apps/web/**'
       - 'package.json'
       - 'package-lock.json'
@@ -13,6 +14,7 @@ on:
     branches: [main, dev]
     paths:
       - 'docs/merge-commit-release-verification-2026-10-20.md'
+      - 'scripts/integrations/wms-barcode-decode-acceptance.mjs'
       - 'apps/web/**'
       - 'package.json'
       - 'package-lock.json'
@@ -41,6 +43,14 @@ jobs:
 
       - name: Install workspace dependencies
         run: npm ci
+
+      - name: Install independent barcode decoder and SVG rasterizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y zbar-tools librsvg2-bin
+
+      - name: Independently decode rendered Code 128 and GS1-128 pixels
+        run: node scripts/integrations/wms-barcode-decode-acceptance.mjs
 
       - name: Test WMS mobile and label contracts
         run: npm --workspace apps/web run test
