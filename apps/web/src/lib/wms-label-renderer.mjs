@@ -80,6 +80,20 @@ function code128Svg(value, ariaLabel) {
   return code128SvgFromCodes([104, ...Array.from(value, (character) => character.charCodeAt(0) - 32)], value, ariaLabel);
 }
 
+function resolveGs1AiSpec(ai) {
+  const fixedSpec = GS1_AI_SPECS[ai];
+  if (fixedSpec) return fixedSpec;
+
+  // GS1 AI families 310n (net weight kg), 320n (net weight lb), and
+  // 330n (logistic/gross weight kg) encode a six-digit numeric value.
+  // The final AI digit n denotes decimal precision and is limited here to 0–5.
+  if (/^(310|320|330)[0-5]$/.test(ai)) {
+    return { length: 6, numeric: true, decimalIndicator: Number(ai[3]) };
+  }
+
+  return undefined;
+}
+
 const GS1_AI_SPECS = Object.freeze({
   "00": { length: 18, numeric: true, checkDigit: true },
   "01": { length: 14, numeric: true, checkDigit: true },
@@ -133,7 +147,7 @@ function parseGs1ElementString(value) {
     const aiMatch = value.slice(offset).match(/^\((\d{2,4})\)/);
     requireCondition(aiMatch, "INVALID_GS1_128_VALUE", "Each GS1 element must start with a parenthesized numeric Application Identifier.");
     const ai = aiMatch[1];
-    const spec = GS1_AI_SPECS[ai];
+    const spec = resolveGs1AiSpec(ai);
     requireCondition(spec, "UNSUPPORTED_GS1_AI", "This renderer does not support GS1 Application Identifier " + ai + ".");
     requireCondition(!seenAis.has(ai), "DUPLICATE_GS1_AI", "An Application Identifier may appear only once in this supported label profile.");
     seenAis.add(ai);
