@@ -409,6 +409,15 @@ test("GS1 Data Matrix applies FNC1 first, GS separator rules, and bounded AI val
   assert.match(rendered.svg, /viewBox="0 0 \d+ \d+"/);
   assert.match(rendered.print_html, /GS1_DATAMATRIX label/);
   assert.equal(rendered.encoded_value, value);
+  const plainValue = "0109506000134352";
+  const plain = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX", {
+    identity: { barcode_value: plainValue, unit_code: plainValue },
+    issue: { barcode_value: plainValue },
+  })));
+  const symbolPath = (svg) => svg.match(/<path[^>]*d="([^"]+)"/)?.[1];
+  assert.ok(symbolPath(rendered.svg));
+  assert.ok(symbolPath(plain.svg));
+  assert.notEqual(symbolPath(rendered.svg), symbolPath(plain.svg), "GS1 mode must alter encoded symbol modules for FNC1");
 
   const fixedFields = "(01)09506000134352(17)271231";
   assert.match(withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
