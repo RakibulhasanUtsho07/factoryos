@@ -25,6 +25,65 @@ BEGIN
     RAISE EXCEPTION '% public base/partition relation(s) have no ownership review record', missing_count;
   END IF;
 
+  -- Fail closed if an old review survives after its relation was dropped/renamed.
+  SELECT count(*) INTO missing_count
+  FROM factoryos_governance.tenant_relation_ownership_reviews r
+  LEFT JOIN pg_namespace n ON n.nspname = r.schema_name
+  LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = r.relation_name
+  WHERE r.schema_name = 'public'
+    AND (c.oid IS NULL OR c.relkind NOT IN ('r', 'p'));
+  IF missing_count <> 0 THEN
+    RAISE EXCEPTION '% stale public relation ownership review record(s) remain', missing_count;
+  END IF;
+
+  -- The ownership ledger and the migration-156 inventory are a single governance
+  -- crosswalk. Direct and derived ownership may be reviewed differently, but
+  -- export/erasure dispositions must never drift between the two records.
+  SELECT count(*) INTO missing_count
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+  JOIN factoryos_governance.tenant_relation_ownership_reviews r
+    ON r.schema_name = n.nspname AND r.relation_name = c.relname
+  LEFT JOIN factoryos_governance.tenant_relation_inventory i
+    ON i.schema_name = n.nspname AND i.relation_name = c.relname
+  WHERE c.relkind IN ('r', 'p')
+    AND (
+      (r.ownership_class = 'DIRECT_TENANT' AND (
+        i.relation_name IS NULL
+        OR i.scope_model <> 'DIRECT_TENANT_ID'
+        OR r.export_disposition IS DISTINCT FROM i.export_disposition
+        OR r.erasure_disposition IS DISTINCT FROM i.erasure_disposition
+      ))
+      OR (r.ownership_class = 'DERIVED_TENANT' AND (
+        i.relation_name IS NULL
+        OR r.export_disposition IS DISTINCT FROM i.export_disposition
+        OR r.erasure_disposition IS DISTINCT FROM i.erasure_disposition
+      ))
+    );
+  IF missing_count <> 0 THEN
+    RAISE EXCEPTION '% tenant relation(s) have missing or conflicting ownership/export/erasure crosswalk entries', missing_count;
+  END IF;
+
+  -- Integration metadata and file-reference rows are not allowed to appear
+  -- covered merely because a tenant_id column exists. Until category-specific
+  -- source/retention adapters are reviewed, these classes remain explicit
+  -- export exclusions and fail-closed for generic erasure.
+  SELECT count(*) INTO missing_count
+  FROM factoryos_governance.tenant_relation_inventory i
+  JOIN factoryos_governance.tenant_relation_ownership_reviews r
+    ON r.schema_name = i.schema_name AND r.relation_name = i.relation_name
+  WHERE i.schema_name = 'public'
+    AND i.data_category IN ('INTEGRATION_METADATA', 'FILE_REFERENCES')
+    AND (
+      i.export_disposition <> 'EXCLUDED'
+      OR i.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+      OR r.export_disposition <> 'EXCLUDED'
+      OR r.erasure_disposition <> 'BLOCKED_UNREVIEWED'
+    );
+  IF missing_count <> 0 THEN
+    RAISE EXCEPTION '% integration metadata/file-reference relation(s) bypass the unconfigured-adapter fail-closed boundary', missing_count;
+  END IF;
+
   SELECT string_agg(format('%I.%I: %s', schema_name, relation_name, evidence_detail), E'\n' ORDER BY relation_name)
     INTO unresolved
   FROM factoryos_governance.tenant_relation_ownership_reviews
