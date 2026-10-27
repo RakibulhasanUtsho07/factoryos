@@ -307,14 +307,42 @@ test("QR renderer emits a real local SVG and self-contained print document with 
   assert.match(rendered.svg_data_uri, /^data:image\/svg\+xml;charset=utf-8,/);
 });
 
-test("Code 128 renderer creates bars and rejects unsupported or non-printable values", () => {
+test("Code 128 renderer creates bars and rejects non-printable values; Data Matrix remains disabled", () => {
   const rendered = renderWmsLabel(labelIssue("CODE128"));
   assert.match(rendered.svg, /<rect/);
   assert.match(rendered.svg, /role="img"/);
   assert.match(rendered.svg, /LOT-TEST-01/);
   assert.throws(() => renderWmsLabel(labelIssue("CODE128", { identity: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" }, issue: { barcode_value: "LOT-TEST-" + String.fromCharCode(10) + "BAD" } })), errorCode("INVALID_LABEL_VALUE"));
   assert.throws(() => renderWmsLabel(labelIssue("DATAMATRIX")), errorCode("ENCODER_NOT_IMPLEMENTED"));
-  assert.throws(() => renderWmsLabel(labelIssue("GS1_128")), errorCode("ENCODER_NOT_IMPLEMENTED"));
+});
+
+test("GS1-128 encodes FNC1 start/separators and validates the supported AI profile", () => {
+  const value = "(10)LOT-01(01)09506000134352";
+  const rendered = renderWmsLabel(labelIssue("GS1_128", {
+    identity: { barcode_value: value, unit_code: value },
+    issue: { barcode_value: value },
+  }));
+  assert.match(rendered.svg, /viewBox="0 0 341 82"/);
+  assert.match(rendered.svg, /LOT-01\(01\)09506000134352/);
+  assert.equal(rendered.symbology, "GS1_128");
+  assert.match(rendered.print_html, /GS1_128 label/);
+
+  const withValidDate = "(01)09506000134352(17)270101(10)LOT-01";
+  assert.match(renderWmsLabel(labelIssue("GS1_128", {
+    identity: { barcode_value: withValidDate, unit_code: withValidDate },
+    issue: { barcode_value: withValidDate },
+  })).svg, /<rect/);
+
+  const invalid = (badValue) => renderWmsLabel(labelIssue("GS1_128", {
+    identity: { barcode_value: badValue, unit_code: badValue },
+    issue: { barcode_value: badValue },
+  }));
+  assert.throws(() => invalid("(99)ABC"), errorCode("UNSUPPORTED_GS1_AI"));
+  assert.throws(() => invalid("(01)09506000134353"), errorCode("INVALID_GS1_CHECK_DIGIT"));
+  assert.throws(() => invalid("(17)271399"), errorCode("INVALID_GS1_DATE"));
+  assert.throws(() => invalid("(10)LOT(21)SERIAL(10)DUPLICATE"), errorCode("DUPLICATE_GS1_AI"));
+  assert.throws(() => invalid("(10)LOT(01)09506000134353"), errorCode("INVALID_GS1_CHECK_DIGIT"));
+  assert.throws(() => invalid("(10)" + "A".repeat(45)), errorCode("GS1_128_TOO_LONG"));
 });
 
 test("label rendering fails closed for bad identity, status, geometry, and copy count", () => {
