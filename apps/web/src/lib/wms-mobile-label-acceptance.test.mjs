@@ -409,15 +409,20 @@ test("GS1 Data Matrix applies FNC1 first, GS separator rules, and bounded AI val
   assert.match(rendered.svg, /viewBox="0 0 \d+ \d+"/);
   assert.match(rendered.print_html, /GS1_DATAMATRIX label/);
   assert.equal(rendered.encoded_value, value);
+  const fnc1Value = "(01)09506000134352";
+  const fnc1Label = withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
+    identity: { barcode_value: fnc1Value, unit_code: fnc1Value },
+    issue: { barcode_value: fnc1Value },
+  })));
   const plainValue = "0109506000134352";
   const plain = withSvgDocumentStub(() => renderWmsLabel(labelIssue("DATAMATRIX", {
     identity: { barcode_value: plainValue, unit_code: plainValue },
     issue: { barcode_value: plainValue },
   })));
   const symbolPath = (svg) => svg.match(/<path[^>]*d="([^"]+)"/)?.[1];
-  assert.ok(symbolPath(rendered.svg));
+  assert.ok(symbolPath(fnc1Label.svg));
   assert.ok(symbolPath(plain.svg));
-  assert.notEqual(symbolPath(rendered.svg), symbolPath(plain.svg), "GS1 mode must alter encoded symbol modules for FNC1");
+  assert.notEqual(symbolPath(fnc1Label.svg), symbolPath(plain.svg), "FNC1-first GS1 Data Matrix must differ from plain Data Matrix for identical data bytes");
 
   const fixedFields = "(01)09506000134352(17)271231";
   assert.match(withSvgDocumentStub(() => renderWmsLabel(labelIssue("GS1_DATAMATRIX", {
