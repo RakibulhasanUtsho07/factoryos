@@ -90,11 +90,45 @@ function makeLabelIssue(fixture) {
   };
 }
 
+
+function withSvgDocumentStub(run) {
+  const escapeAttribute = (value) => String(value).replace(/[&<>\"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
+  })[char]);
+  const makeElement = (tag) => {
+    const attributes = new Map();
+    const children = [];
+    const node = {
+      setAttribute(name, value) { attributes.set(name, String(value)); },
+      appendChild(child) { children.push(child); return child; },
+    };
+    Object.defineProperty(node, "outerHTML", {
+      get() {
+        const attrs = [...attributes].map(([name, value]) => " " + name + '="' + escapeAttribute(value) + '"').join("");
+        return "<" + tag + attrs + ">" + children.map((child) => child.outerHTML).join("") + "</" + tag + ">";
+      },
+    });
+    return node;
+  };
+  const previousDocument = globalThis.document;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    writable: true,
+    value: { createElementNS: (_namespace, tag) => makeElement(tag) },
+  });
+  try {
+    return run();
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: previousDocument });
+  }
+}
+
 async function main() {
   const workspace = await mkdtemp(join(tmpdir(), "factoryos-wms-barcode-"));
   try {
     for (const [index, fixture] of FIXTURES.entries()) {
-      const rendered = renderWmsLabel(makeLabelIssue(fixture));
+      const rendered = withSvgDocumentStub(() => renderWmsLabel(makeLabelIssue(fixture)));
       assert.equal(rendered.symbology, fixture.symbology);
 
       const dimensions = rendered.svg.match(/viewBox="0 0 (\d+) (\d+)"/);
