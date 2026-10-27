@@ -24,7 +24,8 @@
     "test:recovery:contract": "node --test ../../scripts/recovery/postgres-backup-restore-rehearsal.test.mjs ../../scripts/recovery/rehearsal-evidence.test.mjs",
     "test:soak": "node ../../scripts/performance/api-soak-test.mjs",
     "test:capacity:contract": "node --test ../../scripts/performance/api-soak-test.test.mjs ../../scripts/performance/observability-config.test.mjs",
-    "test:observability:contract": "node --test ../../scripts/performance/observability-config.test.mjs"
+    "test:observability:contract": "node --test ../../scripts/performance/observability-config.test.mjs",
+    "start:edge-agent": "node dist/edge/edge-agent.main.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.2.0",
