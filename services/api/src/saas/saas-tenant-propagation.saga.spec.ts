@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { SaasTenantPropagationService } from './saas-tenant-propagation.service';
 import { REQUIRED_EXTERNAL_STORE_KINDS } from './saas-tenant-propagation.adapters';
 import type { SaasExternalPropagationPlan, SaasTenantExternalDataPropagationAdapter } from './saas-tenant-propagation.adapters';
@@ -235,6 +236,28 @@ describe('SaasTenantPropagationService external saga', () => {
       expect.anything(),
       expect.objectContaining({ action: 'TENANT_ERASURE_PROPAGATION_VERIFIED' }),
     );
+  });
+
+  it('fails closed before starting a run when a required provider adapter is not configured', async () => {
+    const missingAdapter = adapterMocks.find((adapter) => adapter.storeKind === 'OBJECT_STORAGE');
+    if (!missingAdapter) throw new Error('OBJECT_STORAGE adapter fixture was not created');
+    missingAdapter.isConfigured.mockResolvedValue(false);
+
+    await expect(service.propagateErasure(tenant, propagationExecutor, requestId, {
+      expected_version: 4,
+      reason: 'Require every external store adapter before erasure',
+      idempotency_key: 'missing-adapter-saga-v1',
+    })).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(activeRun).toBeNull();
+    expect(storedReceipts).toHaveLength(0);
+    for (const adapter of adapterMocks) {
+      expect(adapter.prepare).not.toHaveBeenCalled();
+      expect(adapter.erase).not.toHaveBeenCalled();
+      expect(adapter.verify).not.toHaveBeenCalled();
+      expect(adapter.recover).not.toHaveBeenCalled();
+    }
+    expect(audit.recordWithClient).not.toHaveBeenCalled();
   });
 
   it('keeps the request pending when a provider deletion receipt has a different manifest digest', async () => {
