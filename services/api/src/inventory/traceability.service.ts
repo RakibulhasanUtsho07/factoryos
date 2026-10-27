@@ -1359,8 +1359,8 @@ export class TraceabilityService {
     const templateCode = this.requiredText(dto.template_code, 'template_code', 100).toUpperCase();
     const name = this.requiredText(dto.name, 'name', 255);
     const symbology = dto.symbology.trim().toUpperCase();
-    if (!['QR', 'CODE128', 'DATAMATRIX', 'GS1_128'].includes(symbology)) {
-      throw new BadRequestException('symbology must be QR, CODE128, DATAMATRIX or GS1_128');
+    if (!['QR', 'CODE128', 'DATAMATRIX', 'GS1_128', 'GS1_DATAMATRIX'].includes(symbology)) {
+      throw new BadRequestException('symbology must be QR, CODE128, DATAMATRIX, GS1_128 or GS1_DATAMATRIX');
     }
     if (!Array.isArray(dto.supported_unit_types) || dto.supported_unit_types.length === 0) {
       throw new BadRequestException('supported_unit_types must contain at least one traceability unit type');
