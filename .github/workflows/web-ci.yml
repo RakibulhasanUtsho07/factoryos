@@ -44,12 +44,12 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
-      - name: Install independent barcode decoder and SVG rasterizer
+      - name: Install independent barcode decoders and SVG rasterizer
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y zbar-tools librsvg2-bin
+          sudo apt-get install --no-install-recommends -y zbar-tools dmtx-utils librsvg2-bin
 
-      - name: Independently decode rendered Code 128 and GS1-128 pixels
+      - name: Independently decode rendered Code 128, GS1-128 and Data Matrix pixels
         run: node scripts/integrations/wms-barcode-decode-acceptance.mjs
 
       - name: Test WMS mobile and label contracts
