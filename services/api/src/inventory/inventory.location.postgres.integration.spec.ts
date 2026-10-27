@@ -2743,15 +2743,27 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
       evidence: { verification_sheet: 'FACTORY-E2E-QA-01', verifier: 'independent-approver' },
     };
 
-    // Inject a database failure after the VERIFY transaction has updated the
-    // rework row, inserted lifecycle/audit/outbox evidence, and incremented the
-    // output stock balance, but before the output movement can be inserted.
-    // The whole transaction must roll back, not leave a phantom stock balance.
+    // Inject a database failure at the final DEFECT_RESOLVED outbox write,
+    // after stock, movement, lot balance, quality and genealogy evidence, and
+    // the defect row/event/audit have all been attempted in this transaction.
+    // The snapshot below must prove every related write is rolled back together.
     const beforeInjectedFailure = await adminPool.query<{
       rework_event_count: number;
       rework_outbox_count: number;
       rework_audit_count: number;
       item_stock_quantity: string;
+      item_stock_version: number;
+      recovered_traceability_quantity: string;
+      rework_output_movement_count: number;
+      rework_inventory_outbox_count: number;
+      rework_genealogy_count: number;
+      rework_genealogy_audit_count: number;
+      rework_genealogy_outbox_count: number;
+      defect_status: string;
+      defect_version: number;
+      rework_defect_event_count: number;
+      rework_defect_audit_count: number;
+      rework_defect_outbox_count: number;
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
@@ -2763,40 +2775,104 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
             AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
-          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity`,
-      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity,
+        (SELECT version::int FROM inventory_stock_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_version,
+        (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text
+          FROM inventory_traceability_location_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND item_id::text=$4::text AND traceability_unit_id::text=$6::text) AS recovered_traceability_quantity,
+        (SELECT count(*)::int FROM inventory_movements
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id::text=$3::text) AS rework_output_movement_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND event_type='INVENTORY.STOCK_RECEIVED'
+            AND payload->>'quality_rework_order_id'=$3::text) AS rework_inventory_outbox_count,
+        (SELECT count(*)::int FROM product_genealogy_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND source_unit_id::text=$5::text AND target_unit_id::text=$6::text
+            AND relationship_type='REWORKED_INTO'
+            AND idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_count,
+        (SELECT count(*)::int FROM audit_events a
+          JOIN product_genealogy_events e ON e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
+            AND a.resource_type='PRODUCT_GENEALOGY_EVENT' AND a.resource_id=e.id AND a.action='RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_audit_count,
+        (SELECT count(*)::int FROM outbox_events o
+          JOIN product_genealogy_events e ON e.tenant_id=o.tenant_id AND e.factory_id=o.factory_id
+            AND o.aggregate_type='PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id=e.id
+            AND o.event_type='TRACEABILITY.GENEALOGY_RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count,
+        (SELECT status FROM quality_defects
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND id::text=$7::text) AS defect_status,
+        (SELECT row_version::int FROM quality_defects
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND id::text=$7::text) AS defect_version,
+        (SELECT count(*)::int FROM quality_defect_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND defect_id::text=$7::text AND action='RESOLVED') AS rework_defect_event_count,
+        (SELECT count(*)::int FROM quality_audit_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND defect_id::text=$7::text AND action_type='DEFECT_RESOLVED') AS rework_defect_audit_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND aggregate_type='QUALITY_DEFECT' AND aggregate_id::text=$7::text
+            AND event_type='QUALITY.DEFECT_CHANGED' AND payload->>'action'='DEFECT_RESOLVED') AS rework_defect_outbox_count`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id, sourceDefect.id],
     );
+    // Fail at the final DEFECT_RESOLVED outbox write, after rework output stock,
+    // movement, lot balance, quality evidence, genealogy edge/audit/outbox, and
+    // the defect row/event/audit have been attempted in this same transaction.
+    // The before/after snapshot must prove that every write rolls back together.
     await adminPool.query(`
-      CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_output()
+      CREATE OR REPLACE FUNCTION factoryos_test_fail_quality_rework_defect_outbox()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF NEW.reference_type = 'QUALITY_REWORK_OUTPUT' THEN
-          RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_OUTPUT_FAILURE';
+        IF NEW.event_type = 'QUALITY.DEFECT_CHANGED'
+          AND NEW.aggregate_type = 'QUALITY_DEFECT'
+          AND NEW.aggregate_id::text = '${sourceDefect.id}'
+          AND NEW.payload->>'action' = 'DEFECT_RESOLVED' THEN
+          RAISE EXCEPTION 'INJECTED_QUALITY_REWORK_DEFECT_OUTBOX_FAILURE';
         END IF;
         RETURN NEW;
       END;
       $$;
     `);
-    await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
+    await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_defect_outbox ON outbox_events');
     await adminPool.query(`
-      CREATE TRIGGER zz_test_fail_quality_rework_output
-      BEFORE INSERT ON inventory_movements
-      FOR EACH ROW EXECUTE FUNCTION factoryos_test_fail_quality_rework_output()
+      CREATE TRIGGER zz_test_fail_quality_rework_defect_outbox
+      BEFORE INSERT ON outbox_events
+      FOR EACH ROW EXECUTE FUNCTION factoryos_test_fail_quality_rework_defect_outbox()
     `);
     try {
       await expect(qualityService.transitionReworkOrder(
         qualityVerifierContext, reworkOrder.id, verificationPayload as never,
         'factory-e2e-quality-rework-verify-injected-failure-' + suffix,
-      )).rejects.toThrow(/INJECTED_QUALITY_REWORK_OUTPUT_FAILURE/i);
+      )).rejects.toThrow(/INJECTED_QUALITY_REWORK_DEFECT_OUTBOX_FAILURE/i);
     } finally {
-      await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_output ON inventory_movements');
-      await adminPool.query('DROP FUNCTION IF EXISTS factoryos_test_fail_quality_rework_output()');
+      await adminPool.query('DROP TRIGGER IF EXISTS zz_test_fail_quality_rework_defect_outbox ON outbox_events');
+      await adminPool.query('DROP FUNCTION IF EXISTS factoryos_test_fail_quality_rework_defect_outbox()');
     }
     const afterInjectedFailure = await adminPool.query<{
       rework_event_count: number;
       rework_outbox_count: number;
       rework_audit_count: number;
       item_stock_quantity: string;
+      item_stock_version: number;
+      recovered_traceability_quantity: string;
+      rework_output_movement_count: number;
+      rework_inventory_outbox_count: number;
+      rework_genealogy_count: number;
+      rework_genealogy_audit_count: number;
+      rework_genealogy_outbox_count: number;
+      defect_status: string;
+      defect_version: number;
+      rework_defect_event_count: number;
+      rework_defect_audit_count: number;
+      rework_defect_outbox_count: number;
     }>(
       `SELECT
         (SELECT count(*)::int FROM quality_rework_events
@@ -2808,8 +2884,53 @@ postgresDescribe('Inventory locations and bin balances PostgreSQL integration', 
           WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND action_type='QUALITY_REWORK_EVENT'
             AND payload->>'rework_order_id'=$3::text) AS rework_audit_count,
         (SELECT quantity_on_hand::text FROM inventory_stock_balances
-          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity`,
-      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId],
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_quantity,
+        (SELECT version::int FROM inventory_stock_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND item_id::text=$4::text) AS item_stock_version,
+        (SELECT COALESCE(sum(quantity_on_hand),0)::numeric(18,4)::text
+          FROM inventory_traceability_location_balances
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND item_id::text=$4::text AND traceability_unit_id::text=$6::text) AS recovered_traceability_quantity,
+        (SELECT count(*)::int FROM inventory_movements
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND reference_type='QUALITY_REWORK_OUTPUT' AND reference_id::text=$3::text) AS rework_output_movement_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND event_type='INVENTORY.STOCK_RECEIVED'
+            AND payload->>'quality_rework_order_id'=$3::text) AS rework_inventory_outbox_count,
+        (SELECT count(*)::int FROM product_genealogy_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND source_unit_id::text=$5::text AND target_unit_id::text=$6::text
+            AND relationship_type='REWORKED_INTO'
+            AND idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_count,
+        (SELECT count(*)::int FROM audit_events a
+          JOIN product_genealogy_events e ON e.tenant_id=a.tenant_id AND e.factory_id=a.factory_id
+            AND a.resource_type='PRODUCT_GENEALOGY_EVENT' AND a.resource_id=e.id AND a.action='RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_audit_count,
+        (SELECT count(*)::int FROM outbox_events o
+          JOIN product_genealogy_events e ON e.tenant_id=o.tenant_id AND e.factory_id=o.factory_id
+            AND o.aggregate_type='PRODUCT_GENEALOGY_EVENT' AND o.aggregate_id=e.id
+            AND o.event_type='TRACEABILITY.GENEALOGY_RECORDED'
+          WHERE e.tenant_id::text=$1::text AND e.factory_id::text=$2::text
+            AND e.source_unit_id::text=$5::text AND e.target_unit_id::text=$6::text
+            AND e.relationship_type='REWORKED_INTO'
+            AND e.idempotency_key='quality-rework-genealogy:' || $3::text) AS rework_genealogy_outbox_count,
+        (SELECT status FROM quality_defects
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND id::text=$7::text) AS defect_status,
+        (SELECT row_version::int FROM quality_defects
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND id::text=$7::text) AS defect_version,
+        (SELECT count(*)::int FROM quality_defect_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND defect_id::text=$7::text AND action='RESOLVED') AS rework_defect_event_count,
+        (SELECT count(*)::int FROM quality_audit_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text AND defect_id::text=$7::text AND action_type='DEFECT_RESOLVED') AS rework_defect_audit_count,
+        (SELECT count(*)::int FROM outbox_events
+          WHERE tenant_id::text=$1::text AND factory_id::text=$2::text
+            AND aggregate_type='QUALITY_DEFECT' AND aggregate_id::text=$7::text
+            AND event_type='QUALITY.DEFECT_CHANGED' AND payload->>'action'='DEFECT_RESOLVED') AS rework_defect_outbox_count`,
+      [tenantId, fixture.factoryId, reworkOrder.id, fixture.itemId, quarantinedSourceUnitId, recoveredUnit.id, sourceDefect.id],
     );
     expect(afterInjectedFailure.rows[0]).toEqual(beforeInjectedFailure.rows[0]);
     const afterFailedVerify = await qualityService.getReworkOrder(qualityContext, reworkOrder.id);
