@@ -59,7 +59,7 @@ CREATE TABLE public.tenant_export_completeness_parent_probe (
 );
 CREATE TABLE public.tenant_export_completeness_derived_probe (
   id uuid PRIMARY KEY,
-  parent_id uuid NOT NULL
+  parent_id uuid NOT NULL REFERENCES public.tenant_export_completeness_parent_probe(id)
 );
 
 INSERT INTO factoryos_governance.tenant_relation_inventory (
@@ -138,6 +138,26 @@ DECLARE
   iam_adapter_relations text[] := ARRAY[
     'tenant_memberships', 'roles', 'user_roles', 'role_permissions'
   ]::text[];
+  business_data_adapter_relations text[] := ARRAY[
+    'legal_entities','factories','orders','order_lines','order_event_projections',
+    'inventory_items','inventory_stock_balances','inventory_movements','business_blueprints',
+    'business_blueprint_versions','business_entities','business_relations','business_processes',
+    'business_process_steps','business_rules','business_terms','business_exceptions',
+    'business_change_proposals','business_conflicts','business_feedback','growth_opportunities',
+    'growth_scenarios','growth_experiments','saas_usage_events','saas_usage_adjustments',
+    'saas_usage_reconciliations','saas_budget_evaluations','saas_workload_control_events',
+    'saas_budget_alerts','saas_budget_alert_acknowledgements','saas_provider_cost_events',
+    'saas_provider_cost_reconciliations'
+  ]::text[];
+  evidence_adapter_relations text[] := ARRAY[
+    'business_evidence','business_evidence_links','growth_opportunity_evidence'
+  ]::text[];
+  effective_master_adapter_relations text[] := ARRAY[
+    'risk_classes','policies','saas_usage_rate_cards','saas_usage_budgets'
+  ]::text[];
+  learning_adapter_relations text[] := ARRAY[
+    'research_release_evaluations','growth_experiment_results','growth_opportunity_outcomes'
+  ]::text[];
 BEGIN
   has_incomplete_scope :=
     factoryos_governance.tenant_export_category_has_excluded_rows('AI_CONTEXT', ai_context_adapter_relations);
@@ -185,6 +205,20 @@ BEGIN
     factoryos_governance.tenant_export_category_has_excluded_rows('AI_CONTEXT', ai_context_adapter_relations);
   IF has_incomplete_scope THEN
     RAISE EXCEPTION 'An unrelated tenant must not inherit another tenant derived-scope incompleteness';
+  END IF;
+
+  -- Verify the database adapter registry exactly matches every reviewed
+  -- category map, not only AI_CONTEXT and IAM_ACCESS.
+  PERFORM set_config('app.tenant_id', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5', true);
+  IF factoryos_governance.tenant_export_category_has_excluded_rows('BUSINESS_DATA', business_data_adapter_relations)
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('AUDIT_LOG', ARRAY['audit_events']::text[])
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('EVIDENCE', evidence_adapter_relations)
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('APPROVALS', ARRAY['approvals']::text[])
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('EFFECTIVE_DATED_MASTER_DATA', effective_master_adapter_relations)
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('LEARNING_EVALUATION', learning_adapter_relations)
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('AI_CONTEXT', ai_context_adapter_relations)
+    OR factoryos_governance.tenant_export_category_has_excluded_rows('IAM_ACCESS', iam_adapter_relations) THEN
+    RAISE EXCEPTION 'A tenant with no scoped rows should pass all exactly mapped category completeness checks';
   END IF;
 
   BEGIN
