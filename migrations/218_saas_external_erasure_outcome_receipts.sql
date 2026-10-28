@@ -8,6 +8,8 @@ ALTER TABLE public.saas_tenant_external_propagation_receipts
   ADD COLUMN IF NOT EXISTS manifest_kind varchar(24),
   ADD COLUMN IF NOT EXISTS resource_class varchar(32),
   ADD COLUMN IF NOT EXISTS adapter_version varchar(100),
+  ADD COLUMN IF NOT EXISTS max_page_size integer,
+  ADD COLUMN IF NOT EXISTS max_batch_size integer,
   ADD COLUMN IF NOT EXISTS policy_versions jsonb,
   ADD COLUMN IF NOT EXISTS residual_reason varchar(1000),
   ADD COLUMN IF NOT EXISTS completed_at timestamptz;
@@ -43,6 +45,8 @@ ALTER TABLE public.saas_tenant_external_propagation_receipts
   DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_outcome_code,
   DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_manifest_kind,
   DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_adapter_version,
+  DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_page_size,
+  DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_batch_size,
   DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_policy_versions,
   DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_residual_reason,
   DROP CONSTRAINT IF EXISTS chk_saas_external_receipt_outcome_consistency;
@@ -53,7 +57,41 @@ ALTER TABLE public.saas_tenant_external_propagation_receipts
   ADD CONSTRAINT chk_saas_external_receipt_manifest_kind
     CHECK (manifest_kind IN ('RESOURCE_IDENTITIES','SCOPE_INTENT')),
   ADD CONSTRAINT chk_saas_external_receipt_adapter_version
-    CHECK (adapter_version IS NULL OR adapter_version ~ '^[A-Za-z0-9][A-Za-z0-9.+_-]{0,99}$'),
+    CHECK (adapter_version IS NULL OR adapter_version ~ '^[A-Za-z0-9][A-Za-z0-9.+_-]{0,99}
+    CHECK (jsonb_typeof(policy_versions) = 'object' AND octet_length(policy_versions::text) <= 16384),
+  ADD CONSTRAINT chk_saas_external_receipt_residual_reason
+    CHECK (residual_reason IS NULL OR length(btrim(residual_reason)) BETWEEN 3 AND 1000),
+  ADD CONSTRAINT chk_saas_external_receipt_outcome_consistency
+    CHECK (
+      (outcome_code = 'COMPLETED'
+        AND status = 'VERIFIED'
+        AND manifest_kind = 'RESOURCE_IDENTITIES'
+        AND verified_manifest_digest = manifest_digest
+        AND residual_copies = 0
+        AND deleted_copies = planned_copies
+        AND residual_reason IS NULL)
+      OR
+      (outcome_code = 'BLOCKED'
+        AND status = 'FAILED'
+        AND residual_reason IS NOT NULL)
+      OR
+      (outcome_code = 'RETAINED'
+        AND status = 'FAILED'
+        AND residual_reason IS NOT NULL)
+      OR
+      (outcome_code = 'FAILED_RETRYABLE'
+        AND status IN ('FAILED','RESIDUALS'))
+    );
+
+CREATE INDEX IF NOT EXISTS idx_saas_external_receipt_outcome
+  ON public.saas_tenant_external_propagation_receipts(tenant_id, request_id, outcome_code, created_at DESC);
+
+COMMIT;
+),
+  ADD CONSTRAINT chk_saas_external_receipt_page_size
+    CHECK (max_page_size IS NULL OR max_page_size BETWEEN 1 AND 5000),
+  ADD CONSTRAINT chk_saas_external_receipt_batch_size
+    CHECK (max_batch_size IS NULL OR max_batch_size BETWEEN 1 AND 1000),
   ADD CONSTRAINT chk_saas_external_receipt_policy_versions
     CHECK (jsonb_typeof(policy_versions) = 'object' AND octet_length(policy_versions::text) <= 16384),
   ADD CONSTRAINT chk_saas_external_receipt_residual_reason
