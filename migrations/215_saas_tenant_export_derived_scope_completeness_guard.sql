@@ -216,6 +216,49 @@ BEGIN
     END IF;
   END LOOP;
 
+  -- Direct tenant data assigned to UNREVIEWED is not an intentional policy
+  -- exclusion. Any current-tenant rows in that bucket block category exports,
+  -- even when the caller did not request a category name for the unknown data.
+  FOR relation IN
+    SELECT i.relation_name,
+           c.oid AS relation_oid,
+           c.relkind,
+           a.attnum AS tenant_id_attnum
+    FROM factoryos_governance.tenant_relation_inventory i
+    LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = i.schema_name
+    LEFT JOIN pg_catalog.pg_class c
+      ON c.relnamespace = n.oid AND c.relname = i.relation_name
+    LEFT JOIN pg_catalog.pg_attribute a
+      ON a.attrelid = c.oid
+     AND a.attname = 'tenant_id'
+     AND a.attnum > 0
+     AND NOT a.attisdropped
+    WHERE i.schema_name = 'public'
+      AND i.scope_model = 'DIRECT_TENANT_ID'
+      AND i.data_category = 'UNREVIEWED'
+      AND i.export_disposition = 'EXCLUDED'
+    ORDER BY i.relation_name
+  LOOP
+    IF relation.relation_oid IS NULL
+      OR relation.relkind NOT IN ('r', 'p')
+      OR relation.tenant_id_attnum IS NULL THEN
+      RAISE EXCEPTION 'Unreviewed direct-tenant inventory is stale or invalid'
+        USING ERRCODE = '55000';
+    END IF;
+
+    EXECUTE pg_catalog.format(
+      'SELECT EXISTS (SELECT 1 FROM %I.%I WHERE tenant_id::text = $1::text)',
+      'public',
+      relation.relation_name
+    )
+    INTO relation_has_rows
+    USING current_tenant_id;
+
+    IF relation_has_rows THEN
+      RETURN TRUE;
+    END IF;
+  END LOOP;
+
   -- Relations with tenant ownership derived through foreign keys have no
   -- direct tenant_id/category column in migration 156. Until a category-specific
   -- adapter explicitly covers them, any current-tenant rows in these excluded
