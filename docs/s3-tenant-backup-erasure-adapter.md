@@ -44,3 +44,10 @@ The adapter-generated \`s3-backup-version-delete.*\` reference is a correlation 
 This adapter **does not** erase or verify copies outside the configured bucket/keyspace. It does not cover monolithic database dumps, PostgreSQL base backups or WAL/PITR archives, Redis AOF/RDB files, filesystem/block-volume snapshots, provider-managed backup vaults, replicas/failover regions, immutable external copies, or backups whose contents are not tenant-exclusive. Those copy classes require their own enumerator, retention semantics, deletion method, independent verification and controlled acceptance.
 
 Do not activate a required production BACKUP target until the exact provider and deployed bucket have passed controlled staging acceptance with synthetic data, including Object Lock API behavior, versioned deletion, pagination failures, late writes, legal holds, expiry and residual verification. Keep AS-137 / NFR-PROD-14 **PARTIAL** until all remaining copy classes and release gates are accepted.
+
+
+## Required writer-fence control (not yet implemented by this adapter)
+
+S3 Object Lock protects already-written object versions; it does not stop an authorized backup producer from creating a new version while or after an erasure is running. The adapter's fresh post-delete inventory catches versions created before that inventory, but cannot prevent a write made after the final scan and before the request's terminal state is committed.
+
+Therefore, **this adapter is not production-accepted until a provider/control-plane write-freeze mechanism is enforced for every writer to the selected tenant/category prefixes**. The freeze must be acquired before the authoritative inventory, remain held through delete/independent verification and durable completion, and have a reviewed recovery path for process crashes. A manual pause or a configuration flag is not a machine-verifiable fence by itself. If the deployment cannot prove this control for every producer identity, do not activate or use this adapter for a production whole-tenant erasure. The missing runtime fence integration remains a release gap and AS-137 / NFR-PROD-14 remain PARTIAL.
