@@ -500,7 +500,7 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
         if (truncated) {
           const nextKey = xmlText(xml, 'NextKeyMarker');
           const nextVersion = xmlText(xml, 'NextVersionIdMarker');
-          if (!nextKey || nextKey === keyMarker || (nextVersion !== null && nextVersion === versionMarker)) {
+          if (!nextKey || (nextKey === keyMarker && (nextVersion ?? null) === versionMarker)) {
             throw new ServiceUnavailableException('Backup version pagination markers are missing or repeated');
           }
           const marker = nextKey + '\u0000' + (nextVersion ?? '');
