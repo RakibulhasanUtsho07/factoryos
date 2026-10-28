@@ -108,6 +108,13 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
       if (fsyncSetting !== 'always') {
         throw new Error('Synchronous AOF fsync is required to preserve erasure fences across crashes');
       }
+      const saveSchedule = this.redisConfigValue(
+        await client.sendCommand(['CONFIG', 'GET', 'save']),
+        'save',
+      );
+      if (saveSchedule !== '') {
+        throw new Error('RDB snapshots must be disabled because they are separate historical cache copies');
+      }
 
       // Confirm that the atomic scripts used by cache writers/fence checks are
       // permitted by the provider ACL without mutating any keyspace.
