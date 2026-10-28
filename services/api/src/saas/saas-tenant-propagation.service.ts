@@ -651,6 +651,12 @@ export class SaasTenantPropagationService {
         planDigest = plan.manifestDigest;
         manifestKind = 'RESOURCE_IDENTITIES';
         if (state.preexistingPlan) {
+          // Recovery can reconcile an uncertain/destructive-capable prior call, so it
+          // also needs a fresh guard immediately before the recovery operation.
+          await this.assertExternalDeletionPreconditions({
+            tenantId, actorUserId, requestId, expectedVersion,
+            request: prepared.request, runId: prepared.run.run_id, target, plan, policyVersions,
+          });
           await adapter.recover({ ...context, plan });
         }
         // Re-check once again immediately before each destructive operation. A hold
