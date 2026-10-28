@@ -5,6 +5,9 @@ import {
   deleteWmsPodObjectAndVerifyGone, listWmsPodTenantObjects,
   uploadWmsPodObjectAndVerify, verifyWmsPodObjectDigest,
 } from './wms-pod-storage';
+import { SaasTransferDatasetCategory } from '../saas/dto/create-saas-schema-compatibility-rule.dto';
+import { WmsPodS3ErasureAdapter } from '../saas/wms-pod-s3-erasure.adapter';
+import type { SaasExternalPropagationContext } from '../saas/saas-tenant-propagation.adapters';
 
 type TestStorageEnv = {
   endpoint: string;
@@ -92,10 +95,15 @@ async function createTestBucket(): Promise<void> {
   await response.body?.cancel().catch(() => undefined);
 }
 
+function testConfigReference(): string {
+  return process.env.WMS_POD_STORAGE_CONFIG_REFERENCE?.trim() || 'ci-wms-pod-erasure-test-v1';
+}
+
 function testConfig() {
   const storage = requireStorageEnv();
   const values: Record<string, string | undefined> = {
     NODE_ENV: 'test',
+    WMS_POD_STORAGE_CONFIG_REFERENCE: testConfigReference(),
     WMS_POD_STORAGE_ENDPOINT: storage.endpoint,
     WMS_POD_STORAGE_BUCKET: storage.bucket,
     WMS_POD_STORAGE_REGION: storage.region,
@@ -228,5 +236,75 @@ storageDescribe('WMS POD scoped deletion against a real S3-compatible test serve
       testConfig(), expectedTenantId, objectKey, 'a'.repeat(64), fetcher,
     )).rejects.toBeInstanceOf(BadRequestException);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+
+storageDescribe('WMS POD S3 erasure adapter against a real S3-compatible test server', () => {
+  beforeAll(async () => {
+    await createTestBucket();
+  });
+
+  it('prepares a content-digested tenant inventory, erases it, and verifies a fresh empty listing', async () => {
+    const tenantId = randomUUID();
+    const factoryId = randomUUID();
+    const shipmentId = randomUUID();
+    const objectId = randomUUID();
+    const objectKey = 'pod/' + tenantId + '/' + factoryId + '/' + shipmentId + '/' + objectId;
+    const bytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x41, 0x42, 0x43, 0x44, 0x45,
+    ]);
+    const contentDigest = sha256(bytes);
+    await uploadWmsPodObjectAndVerify(testConfig(), objectKey, bytes, 'image/png');
+
+    const configReference = testConfigReference();
+    const target = {
+      tenantId,
+      targetId: 'ci-wms-pod-evidence',
+      storeKind: 'OBJECT_STORAGE' as const,
+      adapterKey: 'wms.pod.s3.v1',
+      configReference,
+      categories: [SaasTransferDatasetCategory.EVIDENCE],
+      required: true,
+    };
+    const context: SaasExternalPropagationContext = {
+      tenantId,
+      requestId: randomUUID(),
+      requestVersion: 1,
+      runId: randomUUID(),
+      categories: [SaasTransferDatasetCategory.EVIDENCE],
+      sourceExportDigest: 'd'.repeat(64),
+      sourceManifest: { EVIDENCE: { record_count: 1, sha256: contentDigest } },
+      idempotencyKey: 'ci-wms-pod-erasure.' + tenantId,
+      target,
+    };
+    const adapter = new WmsPodS3ErasureAdapter(testConfig());
+
+    expect(await adapter.isConfigured(target)).toBe(true);
+    const plan = await adapter.prepare(context);
+    expect(plan).toMatchObject({
+      plannedCopies: '1',
+      manifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      resources: [{
+        resourceKind: 'WMS_POD_OBJECT',
+        resourceReference: objectKey,
+        resourceVersionReference: null,
+        resourceContentDigest: contentDigest,
+      }],
+    });
+    await adapter.recover({ ...context, plan });
+    const deletion = await adapter.erase({ ...context, plan });
+    const verification = await adapter.verify({ ...context, plan, deletion });
+
+    expect(deletion).toMatchObject({ deletedCopies: '1', manifestDigest: plan.manifestDigest });
+    expect(verification).toMatchObject({
+      verifiedManifestDigest: plan.manifestDigest,
+      residualCopies: '0',
+      residualReferences: [],
+    });
+    expect(await listWmsPodTenantObjects(testConfig(), tenantId)).toEqual([]);
+    await expect(verifyWmsPodObjectDigest(testConfig(), objectKey, contentDigest))
+      .rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });
