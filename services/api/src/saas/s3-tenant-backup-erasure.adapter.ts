@@ -295,6 +295,12 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
     await this.assertVersioningEnabled(storage);
     await this.assertObjectLockEnabled(storage);
     const current = await this.listAllVersions(storage, input.tenantId, input.categories);
+    const plannedIdentityKeys = new Set(input.plan.resources.map((resource) => this.identityKey({
+      key: resource.resourceReference,
+      versionId: resource.resourceVersionReference!,
+      deleteMarker: resource.resourceKind === RESOURCE_DELETE_MARKER,
+    })));
+    this.assertNoUnplannedVersions(current, plannedIdentityKeys);
     const currentIdentities = new Set(current.map((value) => this.identityKey(value)));
 
     // Preflight the complete sealed set before the first delete. If any object
@@ -312,6 +318,12 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
         throw new ConflictException('Backup object bytes changed after the sealed version inventory; deletion was blocked before mutation');
       }
     }
+    // Detect versions added while the expensive digest/retention preflight ran.
+    // A provider writer fence is still required for the remaining post-scan race.
+    this.assertNoUnplannedVersions(
+      await this.listAllVersions(storage, input.tenantId, input.categories),
+      plannedIdentityKeys,
+    );
 
     let accounted = 0;
     for (const resource of input.plan.resources) {
@@ -609,6 +621,13 @@ export class S3TenantBackupErasureAdapter implements SaasTenantExternalDataPropa
       });
     } catch {
       throw new ServiceUnavailableException('Backup storage request failed or timed out');
+    }
+  }
+
+  private assertNoUnplannedVersions(current: VersionIdentity[], planned: Set<string>): void {
+    const unexpected = current.find((version) => !planned.has(this.identityKey(version)));
+    if (unexpected) {
+      throw new ConflictException('Backup inventory changed after the sealed plan; unplanned versions block deletion');
     }
   }
 
