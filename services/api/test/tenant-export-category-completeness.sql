@@ -34,8 +34,17 @@ BEGIN
     END IF;
 
     IF has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_inventory', 'SELECT')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_inventory', 'INSERT')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_inventory', 'UPDATE')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_inventory', 'DELETE')
       OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_ownership_reviews', 'SELECT')
-      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_export_adapter_relation_registry', 'SELECT') THEN
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_ownership_reviews', 'INSERT')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_ownership_reviews', 'UPDATE')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_relation_ownership_reviews', 'DELETE')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_export_adapter_relation_registry', 'SELECT')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_export_adapter_relation_registry', 'INSERT')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_export_adapter_relation_registry', 'UPDATE')
+      OR has_table_privilege('factoryos_app', 'factoryos_governance.tenant_export_adapter_relation_registry', 'DELETE') THEN
       RAISE EXCEPTION 'Runtime role must not read governance ledgers directly';
     END IF;
   END IF;
