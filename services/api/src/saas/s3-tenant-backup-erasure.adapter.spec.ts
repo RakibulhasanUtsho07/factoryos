@@ -47,6 +47,8 @@ describe('S3TenantBackupErasureAdapter', () => {
   let fetchMock: jest.SpiedFunction<typeof fetch>;
   let addResidualAfterDelete: boolean;
   let failVersionList: boolean;
+  let versioningEnabled: boolean;
+  let objectLockEnabled: boolean;
   let deleted: Array<{ key: string; versionId: string }>;
 
   const target = {
@@ -81,6 +83,8 @@ describe('S3TenantBackupErasureAdapter', () => {
     ];
     addResidualAfterDelete = false;
     failVersionList = false;
+    versioningEnabled = true;
+    objectLockEnabled = true;
     deleted = [];
     adapter = new S3TenantBackupErasureAdapter(createConfig());
 
@@ -92,8 +96,10 @@ describe('S3TenantBackupErasureAdapter', () => {
       const keyFromUrl = decodeURIComponent(url.pathname.split('/').slice(2).join('/'));
       const versionId = url.searchParams.get('versionId');
 
-      if (url.searchParams.has('versioning')) return xmlResponse('<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>');
-      if (url.searchParams.has('object-lock')) return xmlResponse('<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>');
+      if (url.searchParams.has('versioning')) return xmlResponse('<VersioningConfiguration><Status>' + (versioningEnabled ? 'Enabled' : 'Suspended') + '</Status></VersioningConfiguration>');
+      if (url.searchParams.has('object-lock')) return objectLockEnabled
+        ? xmlResponse('<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>')
+        : xmlResponse('<Error><Code>ObjectLockConfigurationNotFoundError</Code></Error>', 404);
 
       if (url.searchParams.has('versions')) {
         if (failVersionList) return xmlResponse('<Error><Code>AccessDenied</Code></Error>', 403);
@@ -219,10 +225,12 @@ describe('S3TenantBackupErasureAdapter', () => {
   });
 
   it('refuses activation when bucket versioning or Object Lock cannot be proven', async () => {
-    const versioningConfig = createConfig({ FACTORYOS_BACKUP_STORAGE_ENDPOINT: 'https://backup.example.test' });
-    const noLockConfig = createConfig({ FACTORYOS_BACKUP_STORAGE_CONFIG_REFERENCE: 'other-ref' });
-    const wrongTarget = { ...target, configReference: 'other-ref' };
-    expect(await new S3TenantBackupErasureAdapter(noLockConfig).isConfigured(target)).toBe(false);
-    expect(await new S3TenantBackupErasureAdapter(versioningConfig).isConfigured(wrongTarget)).toBe(false);
+    versioningEnabled = false;
+    expect(await adapter.isConfigured(target)).toBe(false);
+    versioningEnabled = true;
+    objectLockEnabled = false;
+    expect(await adapter.isConfigured(target)).toBe(false);
+    objectLockEnabled = true;
+    expect(await adapter.isConfigured({ ...target, configReference: 'other-ref' })).toBe(false);
   });
 });
