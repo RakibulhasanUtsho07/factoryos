@@ -159,6 +159,7 @@ CREATE POLICY saas_tenant_backup_writer_fences_tenant_enforce ON saas_tenant_bac
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_backup_writer_operation()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
+DECLARE expected_epoch bigint;
 BEGIN
   IF TG_OP='DELETE' THEN RAISE EXCEPTION 'backup writer operations are retained as lifecycle evidence' USING ERRCODE='55000'; END IF;
   IF TG_OP='INSERT' THEN
@@ -171,8 +172,17 @@ BEGIN
       WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code AND f.state<>'RELEASED') THEN
       RAISE EXCEPTION 'backup writer operation rejected by tenant/category fence' USING ERRCODE='55000';
     END IF;
+    SELECT f.next_writer_epoch INTO expected_epoch FROM public.saas_tenant_backup_writer_fences f
+      WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code AND f.state='RELEASED'
+      ORDER BY f.released_at DESC,f.fence_id DESC LIMIT 1;
+    expected_epoch:=COALESCE(expected_epoch,1);
+    IF NEW.writer_epoch<>expected_epoch THEN
+      RAISE EXCEPTION 'backup writer operation uses a stale writer epoch' USING ERRCODE='55000';
+    END IF;
     RETURN NEW;
   END IF;
+  PERFORM 1 FROM public.tenants t WHERE t.id=OLD.tenant_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'backup writer operation requires an existing tenant' USING ERRCODE='23503'; END IF;
   IF (NEW.tenant_id,NEW.operation_id,NEW.category_code,NEW.producer_id,NEW.writer_epoch,NEW.started_at)
      IS DISTINCT FROM (OLD.tenant_id,OLD.operation_id,OLD.category_code,OLD.producer_id,OLD.writer_epoch,OLD.started_at) THEN
     RAISE EXCEPTION 'backup writer operation identity is immutable' USING ERRCODE='55000';
@@ -189,7 +199,7 @@ CREATE TRIGGER saas_tenant_backup_writer_operation_guard BEFORE INSERT OR UPDATE
 
 CREATE OR REPLACE FUNCTION factoryos_guard_saas_backup_writer_fence()
 RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$
-DECLARE run_row public.saas_tenant_external_propagation_runs%ROWTYPE; active_count bigint;
+DECLARE run_row public.saas_tenant_external_propagation_runs%ROWTYPE; active_count bigint; expected_epoch bigint;
 BEGIN
   IF TG_OP='DELETE' THEN RAISE EXCEPTION 'backup writer fences are retained as lifecycle evidence' USING ERRCODE='55000'; END IF;
   IF TG_OP='INSERT' THEN
@@ -205,8 +215,17 @@ BEGIN
       OR NOT (run_row.categories ? NEW.category_code) THEN
       RAISE EXCEPTION 'backup writer fence must bind to the exact RUNNING erasure run/category' USING ERRCODE='55000';
     END IF;
+    SELECT f.next_writer_epoch INTO expected_epoch FROM public.saas_tenant_backup_writer_fences f
+      WHERE f.tenant_id=NEW.tenant_id AND f.category_code=NEW.category_code AND f.state='RELEASED'
+      ORDER BY f.released_at DESC,f.fence_id DESC LIMIT 1;
+    expected_epoch:=COALESCE(expected_epoch,1);
+    IF NEW.writer_epoch<>expected_epoch THEN
+      RAISE EXCEPTION 'backup writer fence uses a stale writer epoch' USING ERRCODE='55000';
+    END IF;
     RETURN NEW;
   END IF;
+  PERFORM 1 FROM public.tenants t WHERE t.id=OLD.tenant_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'backup writer fence requires an existing tenant' USING ERRCODE='23503'; END IF;
   IF (NEW.fence_id,NEW.tenant_id,NEW.category_code,NEW.request_id,NEW.request_version,NEW.run_id,
       NEW.source_export_digest,NEW.writer_epoch,NEW.created_by_user_id,NEW.created_at)
      IS DISTINCT FROM (OLD.fence_id,OLD.tenant_id,OLD.category_code,OLD.request_id,OLD.request_version,OLD.run_id,
