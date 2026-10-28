@@ -21,6 +21,9 @@ export const SAAS_TENANT_DATASET_TABLES: Partial<
   [SaasTransferDatasetCategory.BUSINESS_DATA]: Object.freeze([
     'legal_entities',
     'factories',
+    // Factories create one virtual default location automatically. The target
+    // importer rebinds that generated row to the source identity before import.
+    'inventory_locations',
     'orders',
     'order_lines',
     'order_event_projections',
