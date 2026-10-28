@@ -32,7 +32,7 @@ describe('RedisCacheErasureAdapter', () => {
     getBytes: jest.Mock;
   };
   let adapter: RedisCacheErasureAdapter;
-  let scanMode: 'normal' | 'duplicate' | 'malformed';
+  let scanMode: 'normal' | 'duplicate' | 'malformed' | 'buffer-cursor';
 
   const target = {
     tenantId: tenantA,
@@ -70,7 +70,8 @@ describe('RedisCacheErasureAdapter', () => {
         if (scanMode === 'malformed') return { cursor: 'not-a-cursor', keys: [] };
         const prefix = options.MATCH.slice(0, -1);
         const keys = [...values.keys()].filter((key) => key.startsWith(prefix)).sort();
-        return { cursor: '0', keys: scanMode === 'duplicate' ? [...keys, ...keys] : keys };
+        const cursor = scanMode === 'buffer-cursor' ? Buffer.from('0') : '0';
+        return { cursor, keys: scanMode === 'duplicate' ? [...keys, ...keys] : keys };
       }),
       type: jest.fn(async (key: string) => keyTypes.get(key) ?? (values.has(key) ? 'string' : 'none')),
       eval: jest.fn(async (script: string, options: { keys: string[]; arguments: Array<string | Buffer> }) => {
@@ -165,6 +166,15 @@ describe('RedisCacheErasureAdapter', () => {
     });
     expect(values.has(keyA)).toBe(false);
     expect(values.get(keyB)?.toString('utf8')).toBe('tenant-b-secret');
+  });
+
+  it('accepts only decimal ASCII cursor bytes returned by binary-safe RESP mapping', async () => {
+    const key = tenantCachePhysicalKey(tenantA, Category.BUSINESS_DATA, logicalKey);
+    values.set(key, Buffer.from('payload'));
+    scanMode = 'buffer-cursor';
+    const plan = await adapter.prepare(context());
+    expect(plan.plannedCopies).toBe('1');
+    expect(plan.resources[0].resourceReference).toBe(key);
   });
 
   it('blocks deletion if the value changes after the sealed manifest was prepared', async () => {
