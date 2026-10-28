@@ -190,7 +190,7 @@ export async function readWmsPodObjectDigestIfPresent(
   const storage = readConfiguration(config);
   const basePath = storage.endpoint.pathname === '/'
     ? ''
-    : storage.endpoint.pathname.replace(/\\/+$/, '');
+    : storage.endpoint.pathname.replace(/\/+$/, '');
   const encodedKey = objectKey.split('/').map((segment) => encodeURIComponent(segment)).join('/');
   const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket) + '/' + encodedKey;
   const target = new URL(storage.endpoint.origin);
@@ -551,7 +551,7 @@ export async function listWmsPodTenantObjects(
 
   const basePath = storage.endpoint.pathname === '/'
     ? ''
-    : storage.endpoint.pathname.replace(/\\/+$/, '');
+    : storage.endpoint.pathname.replace(/\/+$/, '');
   const canonicalUri = basePath + '/' + encodeURIComponent(storage.bucket);
   const prefix = 'pod/' + normalizedTenantId + '/';
   const objects: string[] = [];
@@ -598,7 +598,7 @@ export async function listWmsPodTenantObjects(
       throw new ServiceUnavailableException('POD tenant inventory page exceeded its safety limit or was incomplete');
     }
 
-    const contents = [...xml.matchAll(/<Contents(?:\\s[^>]*)?>([\\s\\S]*?)<\\/Contents>/gi)];
+    const contents = [...xml.matchAll(/<Contents(?:\s[^>]*)?>([\s\S]*?)<\/Contents>/gi)];
     for (const content of contents) {
       const key = xmlText(content[1]!, 'Key');
       if (!key || !key.startsWith(prefix)) {
