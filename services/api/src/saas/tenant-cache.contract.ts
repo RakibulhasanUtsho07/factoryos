@@ -59,17 +59,13 @@ export function tenantCacheFenceOwner(input: {
   tenantId: string;
   requestId: string;
   requestVersion: number;
-  runId: string;
-  idempotencyKey: string;
-  targetId: string;
 }): string {
+  // A retry/new reviewed propagation run for the same immutable erasure request
+  // may recover a failed attempt. A different request cannot take over the fence.
   const digest = createHash('sha256').update(JSON.stringify([
     normalizeTenantId(input.tenantId),
     input.requestId.toLowerCase(),
     input.requestVersion,
-    input.runId.toLowerCase(),
-    input.idempotencyKey,
-    input.targetId,
   ]), 'utf8').digest('hex');
   return 'erasure-fence.v1.' + digest;
 }
