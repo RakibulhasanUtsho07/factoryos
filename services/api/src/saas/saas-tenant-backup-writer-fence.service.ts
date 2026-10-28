@@ -89,6 +89,13 @@ export class SaasTenantBackupWriterFenceService {
           throw new ConflictException('Backup writer operation ID is bound to a different immutable operation');
         }
         if (prior.status !== 'ACTIVE') throw new ConflictException('A terminal writer operation cannot be replayed as a new upload');
+        const replayFence = await client.query<{ fence_id: string }>(
+          "SELECT fence_id FROM saas_tenant_backup_writer_fences WHERE tenant_id=$1 AND category_code=$2 AND state<>'RELEASED' FOR SHARE",
+          [tenantId, category],
+        );
+        if (replayFence.rows[0]) {
+          throw new ConflictException('An active writer operation under a fence must be provider-reconciled, not retried as a fresh upload');
+        }
         return prior;
       }
       const blocked = await client.query<{ fence_id: string }>(
