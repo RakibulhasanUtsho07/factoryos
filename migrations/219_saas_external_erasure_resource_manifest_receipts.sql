@@ -196,7 +196,10 @@ ALTER TABLE saas_tenant_external_propagation_manifest_items
   DROP CONSTRAINT IF EXISTS chk_saas_external_manifest_item_content_digest;
 ALTER TABLE saas_tenant_external_propagation_manifest_items
   ADD CONSTRAINT chk_saas_external_manifest_item_content_digest CHECK (
-    resource_content_digest IS NULL OR resource_content_digest ~ '^[a-f0-9]{64}
+    resource_content_digest IS NULL OR resource_content_digest ~ '^[a-f0-9]{64}$'
+  );
+CREATE INDEX IF NOT EXISTS idx_saas_external_manifest_item_lookup
+  ON saas_tenant_external_propagation_manifest_items(tenant_id,manifest_id,resource_ordinal);
 
 ALTER TABLE saas_tenant_external_propagation_manifest_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saas_tenant_external_propagation_manifest_items FORCE ROW LEVEL SECURITY;
