@@ -1,5 +1,19 @@
 BEGIN;
 
+-- Only a separately configured transfer-import database identity may rebind
+-- the factory-generated default-location UUID. A session-level custom GUC alone
+-- is not authority: the trigger also checks the login role's membership.
+DO $transfer_role$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos_transfer_importer') THEN
+    CREATE ROLE factoryos_transfer_importer NOLOGIN;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos') THEN
+    GRANT factoryos_transfer_importer TO factoryos;
+  END IF;
+END
+$transfer_role$;
+
 -- A target factory insert creates its required UNASSIGNED virtual location.
 -- During an approved exact-schema transfer, the importer must rebind that
 -- generated row to the source location's stable ID so movement/location FKs and
@@ -38,6 +52,7 @@ BEGIN
       -- A transfer may replace only the generated identity; scope and the
       -- canonical default-location key remain immutable even in this path.
       IF NOT v_transfer_rebind
+        OR NOT pg_catalog.pg_has_role(session_user, 'factoryos_transfer_importer', 'member')
         OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
         OR NEW.factory_id IS DISTINCT FROM OLD.factory_id
         OR NEW.location_code IS DISTINCT FROM OLD.location_code
