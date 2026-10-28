@@ -251,10 +251,14 @@ describe('SaasTenantPropagationService external saga', () => {
     for (const adapter of adapterMocks) {
       expect(adapter.prepare).toHaveBeenCalledTimes(1);
       expect(adapter.execute).not.toHaveBeenCalled();
+      expect(adapter.recover).not.toHaveBeenCalled();
     }
     expect(storedReceipts).toHaveLength(REQUIRED_EXTERNAL_STORE_KINDS.length);
-    expect(storedReceipts.every((receipt) => receipt.status === 'FAILED' && receipt.outcome_code === 'RETAINED'
-      && receipt.residual_copies === '2' && receipt.manifest_kind === 'RESOURCE_IDENTITIES')).toBe(true);
+    expect(storedReceipts.every((receipt) => receipt.status === 'FAILED'
+      && receipt.outcome_code === 'RETAINED'
+      && receipt.failure_code === 'ACTIVE_LEGAL_HOLD'
+      && receipt.residual_copies === '2'
+      && receipt.manifest_kind === 'RESOURCE_IDENTITIES')).toBe(true);
     expect(audit.recordWithClient).toHaveBeenCalledWith(
       expect.objectContaining({ query: clientQuery }),
       expect.objectContaining({
