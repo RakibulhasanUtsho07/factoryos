@@ -62,6 +62,11 @@ CREATE TABLE public.tenant_export_completeness_unmapped_probe (
   tenant_id uuid NOT NULL
 );
 
+CREATE TABLE public.tenant_export_completeness_unreviewed_probe (
+  id uuid PRIMARY KEY,
+  tenant_id uuid NOT NULL
+);
+
 CREATE TABLE public.tenant_export_completeness_parent_probe (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL
@@ -86,6 +91,11 @@ INSERT INTO factoryos_governance.tenant_relation_inventory (
   'Temporary SQL contract probe for allowlisted relation missing from adapter map'
 ),
 (
+  'public', 'tenant_export_completeness_unreviewed_probe', 'DIRECT_TENANT_ID', 'UNREVIEWED',
+  'EXCLUDED', 'BLOCKED_UNREVIEWED', 'REVIEW_REQUIRED',
+  'Temporary direct-tenant row that has not been assigned a data category'
+),
+(
   'public', 'tenant_export_completeness_parent_probe', 'DIRECT_TENANT_ID', 'BUSINESS_DATA',
   'ALLOWLISTED', 'BOUNDED_ADAPTER', 'REVIEW_REQUIRED',
   'Temporary parent table for derived-scope completeness probe'
@@ -105,6 +115,12 @@ INSERT INTO public.tenant_export_completeness_unmapped_probe (id, tenant_id)
 VALUES (
   'cccccccc-cccc-4ccc-8ccc-ccccccccccc3',
   'cccccccc-cccc-4ccc-8ccc-ccccccccccc3'
+);
+
+INSERT INTO public.tenant_export_completeness_unreviewed_probe (id, tenant_id)
+VALUES (
+  'ffffffff-ffff-4fff-8fff-fffffffffff6',
+  'ffffffff-ffff-4fff-8fff-fffffffffff6'
 );
 
 INSERT INTO public.tenant_export_completeness_parent_probe (id, tenant_id)
@@ -196,6 +212,23 @@ BEGIN
     factoryos_governance.tenant_export_category_has_excluded_rows('AI_CONTEXT', ai_context_adapter_relations);
   IF NOT has_incomplete_scope THEN
     RAISE EXCEPTION 'Allowlisted tenant rows omitted from the source adapter must prevent a completeness claim';
+  END IF;
+
+  -- Direct-tenant rows without a reviewed data category cannot be silently
+  -- omitted just because the caller did not request an UNREVIEWED category.
+  PERFORM set_config('app.tenant_id', 'ffffffff-ffff-4fff-8fff-fffffffffff6', true);
+  has_incomplete_scope :=
+    factoryos_governance.tenant_export_category_has_excluded_rows('AI_CONTEXT', ai_context_adapter_relations);
+  IF NOT has_incomplete_scope THEN
+    RAISE EXCEPTION 'Unreviewed direct-tenant rows must block a category export';
+  END IF;
+
+  -- A different tenant with no unreviewed direct rows must not inherit that block.
+  PERFORM set_config('app.tenant_id', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5', true);
+  has_incomplete_scope :=
+    factoryos_governance.tenant_export_category_has_excluded_rows('AI_CONTEXT', ai_context_adapter_relations);
+  IF has_incomplete_scope THEN
+    RAISE EXCEPTION 'An unrelated tenant must not inherit another tenant unreviewed-row block';
   END IF;
 
   -- This table has no tenant_id; the ownership ledger's FK predicate must still
