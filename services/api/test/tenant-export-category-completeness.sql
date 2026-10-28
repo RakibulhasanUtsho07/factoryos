@@ -177,7 +177,7 @@ DECLARE
     'tenant_memberships', 'roles', 'user_roles', 'role_permissions'
   ]::text[];
   business_data_adapter_relations text[] := ARRAY[
-    'legal_entities','factories','inventory_locations','orders','order_lines','order_event_projections',
+    'legal_entities','factories','inventory_locations','traceability_settings','orders','order_lines','order_event_projections',
     'inventory_items','inventory_stock_balances','inventory_movements','business_blueprints',
     'business_blueprint_versions','business_entities','business_relations','business_processes',
     'business_process_steps','business_rules','business_terms','business_exceptions',
