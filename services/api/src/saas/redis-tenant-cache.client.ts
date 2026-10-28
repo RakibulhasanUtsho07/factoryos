@@ -23,6 +23,10 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
   async getClient(): Promise<RedisClient> {
     if (this.client?.isReady) return this.client;
     if (this.connecting) return this.connecting;
+    if (this.client) {
+      this.client.destroy();
+      this.client = null;
+    }
 
     const url = this.cacheUrl();
     if (!url) {
@@ -79,6 +83,17 @@ export class RedisTenantCacheClient implements OnModuleDestroy {
       if (!/(?:^|\r?\n)cluster_enabled:0(?:\r?\n|$)/.test(infoText)) {
         throw new Error('Redis Cluster is not a supported tenant-cache topology');
       }
+
+      const memoryInfo = await client.sendCommand(['INFO', 'memory']);
+      const memoryText = this.redisText(memoryInfo);
+      if (!/(?:^|\r?\n)maxmemory_policy:noeviction(?:\r?\n|$)/.test(memoryText)) {
+        throw new Error('Non-evicting cache topology is required to preserve erasure fences');
+      }
+
+      // Confirm that the atomic scripts used by cache writers/fence checks are
+      // permitted by the provider ACL without mutating any keyspace.
+      const scriptProbe: unknown = await client.eval('return 1', { keys: [], arguments: [] });
+      if (scriptProbe !== 1) throw new Error('Redis Lua script execution is unavailable');
 
       const rawRole: unknown = await client.sendCommand(['ROLE']);
       if (!Array.isArray(rawRole) || this.redisText(rawRole[0]) !== 'master'
