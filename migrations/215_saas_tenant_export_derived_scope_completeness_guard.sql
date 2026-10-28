@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS factoryos_governance.tenant_export_adapter_relation_r
   )
 );
 REVOKE ALL ON TABLE factoryos_governance.tenant_export_adapter_relation_registry FROM PUBLIC;
+DO $revoke_runtime$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'factoryos_app') THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE factoryos_governance.tenant_export_adapter_relation_registry FROM factoryos_app';
+  END IF;
+END
+$revoke_runtime$;
 
 INSERT INTO factoryos_governance.tenant_export_adapter_relation_registry (data_category, relation_name) VALUES
   ('BUSINESS_DATA','legal_entities'),
