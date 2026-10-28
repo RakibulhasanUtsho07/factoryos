@@ -76,6 +76,8 @@ type ExternalTargetReadiness = {
   failureCode?: string;
   reason?: string;
   preexistingPlan: boolean;
+  /** True only when an earlier provider mutation may have occurred without verified reconciliation. */
+  recoverPriorAttempt: boolean;
 };
 
 const CATEGORY_VALUES = Object.values(SaasTransferDatasetCategory);
@@ -394,7 +396,15 @@ export class SaasTenantPropagationService {
       const previous = latestReceiptByTarget.get(target.targetId);
       if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
       const preexistingPlan = Object.prototype.hasOwnProperty.call(initialPlans, target.targetId);
-      const state: ExternalTargetReadiness = { preexistingPlan };
+      const providerOutcomeMayBeUnknown = previous?.status === 'RESIDUALS'
+        || (previous?.outcome_code === 'FAILED_RETRYABLE'
+          && ['ADAPTER_OPERATION_FAILED', 'VERIFICATION_MISMATCH',
+            'EXTERNAL_RESIDUALS_REMAIN', 'EXTERNAL_VERIFICATION_MISMATCH'].includes(previous.failure_code ?? ''))
+        || (!previous && prepared.run.status === 'RUNNING' && preexistingPlan);
+      const state: ExternalTargetReadiness = {
+        preexistingPlan,
+        recoverPriorAttempt: preexistingPlan && providerOutcomeMayBeUnknown,
+      };
       readinessByTarget.set(target.targetId, state);
       const held = activeLegalHoldCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category));
       if (held) {
@@ -713,9 +723,10 @@ export class SaasTenantPropagationService {
         plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
         planDigest = plan.manifestDigest;
         manifestKind = 'RESOURCE_IDENTITIES';
-        if (state.preexistingPlan) {
-          // Recovery can reconcile an uncertain/destructive-capable prior call, so it
-          // also needs a fresh guard immediately before the recovery operation.
+        if (state.recoverPriorAttempt) {
+          // Recover only when a prior provider mutation could have happened. A saved
+          // dry-run plan alone is not evidence of a prior mutation: targets blocked
+          // behind another target's failure must not be needlessly reconciled.
           await this.assertExternalDeletionPreconditions({
             tenantId, actorUserId, requestId, expectedVersion,
             request: prepared.request, runId: prepared.run.run_id, target, plan, policyVersions,
