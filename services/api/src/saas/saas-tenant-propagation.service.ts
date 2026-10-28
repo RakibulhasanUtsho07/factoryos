@@ -628,12 +628,61 @@ export class SaasTenantPropagationService {
     }
 
     // Phase 4: execute only after every target has a valid dry-run plan and every
-    // target passed its final pre-delete guard. An uncertain provider call is never
-    // treated as success; its existing plan is recovered before an idempotent retry.
+    // target passed its final pre-delete guard. Once one target fails, later targets
+    // receive durable BLOCKED receipts and are not destructively attempted.
+    const readyForExecution = globallyReady;
     for (const target of prepared.targets) {
       const previous = latestReceiptByTarget.get(target.targetId);
       if (previous?.status === 'VERIFIED' && previous.outcome_code === 'COMPLETED') continue;
-      if (!globallyReady) continue;
+      if (!readyForExecution) continue;
+
+      if (!globallyReady) {
+        const state = readinessByTarget.get(target.targetId);
+        const prior = latestReceiptByTarget.get(target.targetId);
+        const plan = state?.plan;
+        let plannedCopies = '0';
+        let deletedCopies = '0';
+        let residualCopies = '0';
+        let manifestKind: SaasExternalManifestKind = 'SCOPE_INTENT';
+        let manifestDigest = this.hash({
+          manifestKind: 'SCOPE_INTENT', tenantId, requestId, runId: prepared.run.run_id,
+          targetId: target.targetId, storeKind: target.storeKind,
+          categories: this.parseCategories(prepared.request.categories),
+          sourceExportDigest: prepared.request.export_bundle_digest, policyVersions,
+        });
+        if (plan) {
+          manifestKind = 'RESOURCE_IDENTITIES';
+          manifestDigest = plan.manifestDigest;
+          plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
+          residualCopies = plannedCopies;
+        }
+        if (prior && prior.outcome_code !== 'COMPLETED') {
+          plannedCopies = String(prior.planned_copies);
+          deletedCopies = String(prior.deleted_copies);
+          residualCopies = String(prior.residual_copies);
+          manifestDigest = prior.manifest_digest || manifestDigest;
+          manifestKind = prior.manifest_kind || manifestKind;
+        }
+        await this.insertReceipt({
+          tenantId, actorUserId, requestId, runId: prepared.run.run_id, target,
+          plannedCopies, deletedCopies, residualCopies, manifestDigest,
+          verifiedManifestDigest: prior?.verified_manifest_digest ?? null,
+          verificationReference: prior?.verification_reference ?? null,
+          providerReceiptReference: prior?.provider_receipt_reference ?? null,
+          residualManifest: this.residualReferences(prior ? this.jsonArray(prior.residual_manifest)
+            : (plan && plannedCopies !== '0' ? ['not-executed:' + target.targetId] : [])),
+          status: 'FAILED', failureCode: 'RUN_ABORTED_AFTER_TARGET_FAILURE',
+          outcomeCode: 'BLOCKED', manifestKind,
+          resourceClass: state?.preflight?.resourceClass ?? target.storeKind,
+          adapterVersion: state?.preflight?.adapterVersion ?? state?.adapter?.adapterVersion ?? null,
+          maxPageSize: state?.preflight?.maxPageSize ?? null,
+          maxBatchSize: state?.preflight?.maxBatchSize ?? null,
+          policyVersions,
+          residualReason: 'A prior target failed or became retained during execution; this target was not executed.',
+        });
+        continue;
+      }
+
       const state = readinessByTarget.get(target.targetId);
       const plan = state?.plan;
       let plannedCopies = '0';
@@ -710,6 +759,7 @@ export class SaasTenantPropagationService {
           if (residualCopies !== '0' && residualManifest.length === 0) {
             residualManifest = ['residual-count:' + residualCopies];
           }
+          globallyReady = false;
         }
       } catch (error) {
         if (error instanceof ExternalPropagationDispositionError) {
@@ -764,6 +814,9 @@ export class SaasTenantPropagationService {
           residualCopies = '0';
           manifestKind = 'SCOPE_INTENT';
         }
+        // Do not mutate any further target after this target's outcome is uncertain,
+        // blocked, retained, or fails manifest/count/verification reconciliation.
+        globallyReady = false;
       }
 
       await this.insertReceipt({
