@@ -125,6 +125,8 @@ export interface SaasExternalPropagationVerification {
 export interface SaasTenantExternalDataPropagationAdapter {
   readonly storeKind: SaasExternalStoreKind;
   readonly adapterKey: string;
+  /** Build/version contract must match every plan this adapter creates or resumes. */
+  readonly adapterVersion: string;
 
   /** Resolves the opaque config reference through deployment secret/config management. */
   isConfigured(target: SaasTenantExternalDataTarget): Promise<boolean>;
