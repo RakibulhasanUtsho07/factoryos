@@ -33,6 +33,14 @@ BEGIN
   END LOOP;
 
   IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname='saas_tenant_data_legal_hold_external_propagation_fence'
+      AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'active legal holds must fence overlapping RUNNING external erasure';
+  END IF;
+
+  IF NOT EXISTS (
     SELECT 1 FROM pg_constraint c
     WHERE c.conrelid='public.saas_tenant_data_erasure_runs'::regclass
       AND c.conname='chk_saas_erasure_run_receipt_scope'
@@ -165,6 +173,88 @@ INSERT INTO saas_tenant_finance_retention_policies
 VALUES
  ('16000000-0000-4000-8000-000000000001',1,365,'Contractual finance record basis','finance.adapter.v1','PENDING','16010000-0000-4000-8000-000000000001','CI tenant-scoped finance retention fixture','sql-finance-a-160',repeat('c',64)),
  ('16000000-0000-4000-8000-000000000002',1,730,'Statutory finance record basis','finance.adapter.v1','PENDING','16010000-0000-4000-8000-000000000002','CI tenant-scoped finance retention fixture','sql-finance-b-160',repeat('d',64));
+
+-- Build a schema-valid preserved export and a RUNNING external run so the
+-- database trigger itself, not only the HTTP service, is exercised below.
+INSERT INTO saas_tenant_data_transfers
+ (tenant_id,transfer_id,version,operation_type,status,source_schema_version,required_categories,
+  reason,idempotency_key,request_hash,actor_user_id)
+VALUES
+ ('16000000-0000-4000-8000-000000000001','16020000-0000-4000-8000-000000000001',1,
+  'EXPORT','REQUESTED','1.0.0',
+  '["BUSINESS_DATA","AUDIT_LOG","EVIDENCE","APPROVALS","FILE_REFERENCES"]'::jsonb,
+  'Initial export version for legal-hold fence CI','hold-fence-export-v1',repeat('1',64),
+  '16010000-0000-4000-8000-000000000001');
+INSERT INTO saas_tenant_data_transfers
+ (tenant_id,transfer_id,version,operation_type,status,source_schema_version,required_categories,
+  source_bundle_reference,source_bundle_digest,source_manifest,preservation_verified,
+  reason,idempotency_key,request_hash,actor_user_id)
+VALUES
+ ('16000000-0000-4000-8000-000000000001','16020000-0000-4000-8000-000000000001',2,
+  'EXPORT','COMPLETED','1.0.0',
+  '["BUSINESS_DATA","AUDIT_LOG","EVIDENCE","APPROVALS","FILE_REFERENCES"]'::jsonb,
+  'fixture-export-fence-160',repeat('f',64), '{"fixture":"legal-hold-propagation-fence"}'::jsonb,true,
+  'Completed export version for legal-hold fence CI','hold-fence-export-v2',repeat('2',64),
+  '16010000-0000-4000-8000-000000000001');
+
+INSERT INTO saas_tenant_data_erasure_requests
+ (tenant_id,request_id,version,status,categories,export_transfer_id,export_transfer_version,
+  export_bundle_digest,reason,requested_by_user_id,idempotency_key,request_hash)
+VALUES
+ ('16000000-0000-4000-8000-000000000001','16030000-0000-4000-8000-000000000001',1,'REQUESTED',
+  '["BUSINESS_DATA"]'::jsonb,'16020000-0000-4000-8000-000000000001',2,repeat('f',64),
+  'Legal hold propagation fence contract fixture','16010000-0000-4000-8000-000000000001',
+  'hold-fence-erasure-v1',repeat('3',64));
+
+UPDATE saas_tenant_external_data_targets
+SET status='ACTIVE',reviewed_by_user_id='16010000-0000-4000-8000-000000000002',
+    reviewed_at=clock_timestamp(),review_reason='Activate synthetic CI target for fence test'
+WHERE tenant_id='16000000-0000-4000-8000-000000000001' AND target_id='sql-target-a-160';
+
+INSERT INTO saas_tenant_external_propagation_runs
+ (tenant_id,run_id,request_id,request_version,status,categories,source_export_digest,target_count,
+  reason,idempotency_key,request_hash,executor_user_id)
+VALUES
+ ('16000000-0000-4000-8000-000000000001','16040000-0000-4000-8000-000000000001',
+  '16030000-0000-4000-8000-000000000001',1,'RUNNING','["BUSINESS_DATA"]'::jsonb,
+  repeat('f',64),1,'Synthetic in-flight run for legal-hold race contract',
+  'hold-fence-propagation-v1',repeat('4',64),'16010000-0000-4000-8000-000000000002');
+
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO saas_tenant_data_legal_holds
+      (tenant_id,categories,case_reference,reason,idempotency_key,request_hash,created_by_user_id)
+    VALUES
+      ('16000000-0000-4000-8000-000000000001','["BUSINESS_DATA"]'::jsonb,
+       'CASE-BLOCKED-160','Legal hold requested during in-flight erasure',
+       'hold-blocked-running-v1',repeat('5',64),'16010000-0000-4000-8000-000000000001');
+    RAISE EXCEPTION 'overlapping legal hold was accepted during RUNNING propagation';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
+
+  -- Category scoping matters: unrelated evidence must not be spuriously blocked.
+  INSERT INTO saas_tenant_data_legal_holds
+    (tenant_id,categories,case_reference,reason,idempotency_key,request_hash,created_by_user_id)
+  VALUES
+    ('16000000-0000-4000-8000-000000000001','["EVIDENCE"]'::jsonb,
+     'CASE-EVIDENCE-160','Preserve evidence independent of business-data erasure',
+     'hold-evidence-running-v1',repeat('6',64),'16010000-0000-4000-8000-000000000001');
+END $$;
+
+-- Once the run is no longer RUNNING, the fence should not become a permanent
+-- ban on creating a new hold; the ordinary hold lifecycle applies again.
+UPDATE saas_tenant_external_propagation_runs
+SET status='PARTIAL'
+WHERE tenant_id='16000000-0000-4000-8000-000000000001'
+  AND run_id='16040000-0000-4000-8000-000000000001';
+INSERT INTO saas_tenant_data_legal_holds
+  (tenant_id,categories,case_reference,reason,idempotency_key,request_hash,created_by_user_id)
+VALUES
+  ('16000000-0000-4000-8000-000000000001','["BUSINESS_DATA"]'::jsonb,
+   'CASE-AFTER-160','Preserve records after the propagation attempt is stopped',
+   'hold-after-partial-v1',repeat('7',64),'16010000-0000-4000-8000-000000000001');
 
 SET LOCAL ROLE factoryos_app;
 SELECT set_config('app.tenant_id','16000000-0000-4000-8000-000000000001',true);
