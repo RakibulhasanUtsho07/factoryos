@@ -120,3 +120,23 @@ test('backup provider adapter remains fail-closed until the provider controller 
   assert.match(adapter, /S3 versioning\/Object Lock do not fence new writes[\s\S]*?return false;/i);
   assert.match(doc, /no provider control-plane adapter that applies and independently reads back the S3 write freeze is integrated/i);
 });
+
+
+test('backup writer-fence ledger is in replay and PostgreSQL acceptance coverage', async () => {
+  const manifest = await readRepoFile('scripts/audit/migration-manifest.txt');
+  const migration = await readRepoFile('migrations/222_saas_tenant_backup_writer_fence_ledger.sql');
+  const contract = await readRepoFile('services/api/test/saas-tenant-propagation-contract.sql');
+  const workflow = await readRepoFile('.github/workflows/api-postgres-ci.yml');
+
+  assert.ok(
+    manifest.split(/\\r?\\n/).map((entry) => entry.trim()).includes('migrations/222_saas_tenant_backup_writer_fence_ledger.sql'),
+    'writer-fence migration must be included in the canonical PostgreSQL replay',
+  );
+  assert.match(migration, /tenant_relation_ownership_reviews/i);
+  assert.match(migration, /backup writer operation uses a stale writer epoch/i);
+  assert.match(contract, /writer fence advanced while upload outcome remained ACTIVE/);
+  assert.match(contract, /backup erasure was verified while residual copies remained/);
+  assert.match(contract, /stale writer epoch was accepted after release/);
+  assert.match(contract, /Tenant B must not see tenant A backup writer fence/);
+  assert.match(workflow, /Reapplying the tenant backup writer-fence ledger/);
+});
