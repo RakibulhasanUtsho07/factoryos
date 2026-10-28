@@ -26,16 +26,36 @@ export interface SaasTenantExternalDataTarget {
   required: boolean;
 }
 
+export type SaasExternalPropagationOutcome =
+  | 'COMPLETED'
+  | 'BLOCKED'
+  | 'RETAINED'
+  | 'FAILED_RETRYABLE';
+
+export type SaasExternalManifestKind = 'RESOURCE_IDENTITIES' | 'SCOPE_INTENT';
+
 export interface SaasExternalPropagationContext {
   tenantId: string;
   requestId: string;
   requestVersion: number;
   runId: string;
   categories: SaasTransferDatasetCategory[];
+  /** Immutable, latest DELETE retention-policy version captured for every category. */
+  policyVersions: Record<string, number>;
   sourceExportDigest: string;
   sourceManifest: Record<string, unknown>;
   idempotencyKey: string;
   target: SaasTenantExternalDataTarget;
+}
+
+/** A non-destructive capability/policy probe; it never authorizes mutation by itself. */
+export interface SaasExternalPropagationPreflight {
+  outcome: 'READY' | 'BLOCKED' | 'RETAINED';
+  resourceClass: string;
+  adapterVersion: string;
+  maxPageSize: number;
+  maxBatchSize: number;
+  reason?: string;
 }
 
 export interface SaasExternalPropagationPlan {
