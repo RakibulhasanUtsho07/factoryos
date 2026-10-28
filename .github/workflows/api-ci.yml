@@ -164,6 +164,11 @@ jobs:
       - name: Run API unit tests
         working-directory: services/api
         run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config ./jest.config.cjs --runInBand --testPathIgnorePatterns='\.integration\.spec\.ts$|\.postgres\.integration\.spec\.ts$'
+      - name: Configure isolated Redis erasure-fence persistence
+        env:
+          CI: "true"
+          FACTORYOS_CACHE_URL: redis://127.0.0.1:6379/0
+        run: node scripts/integrations/prepare-tenant-cache-redis-ci.mjs
       - name: Run isolated Redis tenant-cache erasure acceptance
         working-directory: services/api
         env:
