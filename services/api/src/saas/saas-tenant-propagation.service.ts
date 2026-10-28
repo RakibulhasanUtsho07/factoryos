@@ -371,7 +371,8 @@ export class SaasTenantPropagationService {
       try {
         if (planEntry) {
           const loaded = await this.loadPlanFromManifest({
-            tenantId, actorUserId, requestId, runId: prepared.run.run_id, target, planEntry,
+            tenantId, actorUserId, requestId, runId: prepared.run.run_id,
+            sourceExportDigest: prepared.request.export_bundle_digest, target, planEntry,
           });
           plan = loaded.plan;
           resourceManifestId = loaded.manifestId;
