@@ -253,9 +253,11 @@ export class SaasTenantPropagationService {
         "SELECT categories FROM saas_tenant_data_legal_holds WHERE tenant_id=$1 AND status='ACTIVE' FOR SHARE",
         [tenantId],
       );
-      if (holdResult.rows.some((hold) => categories.some((category) => this.parseCategories(hold.categories).includes(category)))) {
-        throw new ConflictException('An active legal hold blocks external propagation for one or more categories');
-      }
+      // Record the hold disposition rather than aborting before a durable run/receipt exists.
+      // The per-target loop below will emit RETAINED evidence and will not call providers.
+      const activeLegalHoldCategories = [...new Set(holdResult.rows
+        .flatMap((hold) => this.parseCategories(hold.categories))
+        .filter((category) => categories.includes(category)))];
 
       const targetResult = await client.query<TargetRow>(
         `SELECT * FROM saas_tenant_external_data_targets
@@ -281,16 +283,22 @@ export class SaasTenantPropagationService {
       );
       const policyByCategory = new Map(policyResult.rows.map((row) => [row.category_code, row]));
       const policyVersions: Record<string, number> = {};
+      const heldCategorySet = new Set(activeLegalHoldCategories);
       for (const category of categories) {
         const policy = policyByCategory.get(category);
-        if (!policy || policy.disposition !== 'DELETE') {
+        if (!policy && !heldCategorySet.has(category)) {
           throw new ConflictException('A current DELETE retention policy is required for each requested erasure category');
         }
-        const version = Number(policy.version);
-        if (!Number.isSafeInteger(version) || version < 1) {
-          throw new ConflictException('A requested retention policy has an invalid version');
+        if (policy && !heldCategorySet.has(category) && policy.disposition !== 'DELETE') {
+          throw new ConflictException('A current DELETE retention policy is required for each requested erasure category');
         }
-        policyVersions[category] = version;
+        if (policy) {
+          const version = Number(policy.version);
+          if (!Number.isSafeInteger(version) || version < 1) {
+            throw new ConflictException('A requested retention policy has an invalid version');
+          }
+          policyVersions[category] = version;
+        }
       }
 
       const sourceManifest = this.jsonObject(transfer.source_manifest);
@@ -301,6 +309,7 @@ export class SaasTenantPropagationService {
           sourceExportDigest: request.export_bundle_digest,
           sourceManifestDigest: this.hash(sourceManifest), sourceManifest,
           policyVersions: this.parsePolicyVersions(policyVersions),
+          activeLegalHoldCategories,
           targetIds: targets.map((target) => target.targetId).sort(), plans: {},
         };
         const inserted = await client.query<PropagationRunRow>(
@@ -345,7 +354,7 @@ export class SaasTenantPropagationService {
          WHERE tenant_id=$1 AND request_id=$2 AND run_id=$3 ORDER BY target_id,attempt_no DESC`,
         [tenantId, requestId, run.run_id],
       );
-      return { replayed: false, request, run, targets, latestReceipts: receipts.rows };
+      return { replayed: false, request, run, targets, latestReceipts: receipts.rows, activeLegalHoldCategories };
     }, { tenantId, userId: actorUserId, advisoryLockKey: 'saas-external-propagation:' + tenantId + ':' + requestId });
 
     if (prepared.replayed) {
@@ -392,6 +401,13 @@ export class SaasTenantPropagationService {
       const context = this.contextFor(prepared.request, prepared.run, target, actorUserId, idempotencyKey);
 
       try {
+        if (prepared.activeLegalHoldCategories.some((category: SaasTransferDatasetCategory) => target.categories.includes(category))) {
+          throw new ExternalPropagationDispositionError(
+            'RETAINED',
+            'An active legal hold retains this target/category scope; provider deletion was not attempted.',
+            'ACTIVE_LEGAL_HOLD',
+          );
+        }
         adapter = this.adapterFor(target);
         adapterVersion = this.validateAdapterVersion(adapter.adapterVersion);
         configured = await adapter.isConfigured(target);
