@@ -75,7 +75,7 @@ test('adapter and resource-ledger docs make the backup-copy boundary discoverabl
 
 test('BACKUP target cannot activate until an erasure-lifecycle writer fence is implemented', async () => {
   const source = await readRepoFile(BACKUP_ADAPTER_SOURCE);
-  assert.match(source, /Keep the BACKUP target\s+inactive until that lifecycle integration exists/i);
+  assert.match(source, /S3 versioning\/Object Lock do not fence new writes[\s\S]*?return false;/i);
   assert.match(source, /return false;/);
   const doc = await readRepoFile(BACKUP_ADAPTER_DOC);
   assert.match(doc, /`isConfigured\(\)` intentionally returns false/i);
