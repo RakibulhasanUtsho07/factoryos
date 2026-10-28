@@ -108,7 +108,7 @@ BEGIN
     AND i.export_disposition = 'ALLOWLISTED'
     AND i.relation_name <> ALL(ARRAY[
       'legal_entities','factories','orders','order_lines','order_event_projections',
-      'inventory_items','inventory_stock_balances','inventory_movements',
+      'inventory_locations','traceability_settings','inventory_items','inventory_stock_balances','inventory_movements',
       'business_blueprints','business_blueprint_versions','business_entities','business_relations',
       'business_processes','business_process_steps','business_rules','business_terms','business_exceptions',
       'business_change_proposals','business_conflicts','business_feedback','growth_opportunities',

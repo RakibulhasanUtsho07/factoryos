@@ -10,8 +10,10 @@ import { SaasTransferDatasetCategory } from './dto/create-saas-schema-compatibil
 /**
  * The source is deliberately an allowlist, not a generic table dumper.
  *
- * Each relation is known to be tenant-owned and expose UUID id + tenant_id
- * columns. New tables must be reviewed and assigned to a category explicitly.
+ * Each relation is tenant-owned and explicitly reviewed. Most expose UUID id +
+ * tenant_id; traceability_settings is the sole reviewed composite-key exception
+ * and uses factory_id keyset paging. New tables require a category-specific
+ * source/target adapter and matching governance inventory entry.
  * Auth identities, credential stores, queue internals, and transfer control-plane
  * rows are intentionally not exported.
  */
@@ -21,6 +23,10 @@ export const SAAS_TENANT_DATASET_TABLES: Partial<
   [SaasTransferDatasetCategory.BUSINESS_DATA]: Object.freeze([
     'legal_entities',
     'factories',
+    // Factories create one virtual default location automatically. The target
+    // importer rebinds that generated row to the source identity before import.
+    'inventory_locations',
+    'traceability_settings',
     'orders',
     'order_lines',
     'order_event_projections',
@@ -99,8 +105,9 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SCHEMA_VERSION_PATTERN = /^[0-9]{1,8}\.[0-9]{1,8}\.[0-9]{1,8}$/;
 
 interface TenantDatasetRow extends QueryResultRow {
-  id: string;
+  id?: string;
   tenant_id: string;
+  factory_id?: string;
 }
 
 /**
@@ -358,6 +365,38 @@ export class SaasTenantPostgresDatasetSource {
     await this.assertCategoryCompleteOnClient(client, category, tables);
 
     for (const table of tables) {
+      if (table === 'traceability_settings') {
+        let afterFactoryId: string | null = null;
+        while (true) {
+          if (!isActive()) {
+            throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+          }
+          const result: QueryResult<TenantDatasetRow> = await client.query<TenantDatasetRow>(
+            'SELECT dataset_row.* FROM public.traceability_settings AS dataset_row ' +
+              'WHERE dataset_row.tenant_id = $1::uuid ' +
+              'AND ($2::uuid IS NULL OR dataset_row.factory_id > $2::uuid) ' +
+              'ORDER BY dataset_row.factory_id ASC LIMIT $3',
+            [tenantId, afterFactoryId, PAGE_SIZE],
+          );
+          for (const row of result.rows) {
+            if (!isActive()) {
+              throw new ServiceUnavailableException('Tenant dataset snapshot is no longer active');
+            }
+            if (typeof row.factory_id !== 'string'
+              || !UUID_PATTERN.test(row.factory_id)
+              || row.tenant_id !== tenantId) {
+              throw new BadRequestException(
+                'Traceability settings source returned a row outside its reviewed tenant/factory key',
+              );
+            }
+            afterFactoryId = row.factory_id;
+            yield { ...row, __factoryos_table: table };
+          }
+          if (result.rows.length < PAGE_SIZE) break;
+        }
+        continue;
+      }
+
       let afterId: string | null = null;
       while (true) {
         if (!isActive()) {

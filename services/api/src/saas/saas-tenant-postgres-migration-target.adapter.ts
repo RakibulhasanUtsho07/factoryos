@@ -165,9 +165,12 @@ export class SaasTenantPostgresMigrationTargetAdapter
       const columns = await this.readTargetColumns(client, allTables);
       for (const table of allTables) {
         const tableColumns = columns.get(table);
-        if (!tableColumns?.has('id') || !tableColumns.has('tenant_id')) {
+        const compositeTraceabilitySettings = table === 'traceability_settings';
+        if (compositeTraceabilitySettings
+          ? (!tableColumns?.has('tenant_id') || !tableColumns.has('factory_id') || tableColumns.has('id'))
+          : (!tableColumns?.has('id') || !tableColumns.has('tenant_id'))) {
           throw new ServiceUnavailableException(
-            'Target schema does not expose the reviewed id/tenant_id contract for ' + table,
+            'Target schema does not expose the reviewed primary-key/tenant contract for ' + table,
           );
         }
         const existing = await client.query(
@@ -279,7 +282,11 @@ export class SaasTenantPostgresMigrationTargetAdapter
             'No reviewed target importer is registered for ' + event.category + '/' + event.table,
           );
         }
-        if (typeof row.id !== 'string' || !UUID_PATTERN.test(row.id)) {
+        if (event.table === 'traceability_settings') {
+          if (typeof row.factory_id !== 'string' || !UUID_PATTERN.test(row.factory_id)) {
+            throw new BadRequestException('Traceability settings row must include its reviewed factory UUID key');
+          }
+        } else if (typeof row.id !== 'string' || !UUID_PATTERN.test(row.id)) {
           throw new BadRequestException('Source bundle contains a row without a valid logical row ID');
         }
         for (const key of keys) {
@@ -321,6 +328,14 @@ export class SaasTenantPostgresMigrationTargetAdapter
       for (const table of this.dependencyOrder(allTables)) {
         const keys = tableColumnsInBundle.get(table);
         if (!keys) continue;
+        if (table === 'inventory_locations') {
+          await this.importInventoryLocations(client, input.tenantId, keys);
+          continue;
+        }
+        if (table === 'traceability_settings') {
+          await this.importTraceabilitySettings(client, input.tenantId, keys);
+          continue;
+        }
         const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
         const projectionSql = keys.map((key) =>
           table === 'business_blueprints' && key === 'current_version_id'
@@ -542,9 +557,162 @@ export class SaasTenantPostgresMigrationTargetAdapter
     return columns;
   }
 
+  private async importTraceabilitySettings(
+    client: PoolClient,
+    tenantId: string,
+    keys: string[],
+  ): Promise<void> {
+    const table = 'traceability_settings';
+    const stagedCountResult = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM pg_temp.factoryos_transfer_stage WHERE table_name = $1',
+      [table],
+    );
+    const stagedCount = Number(stagedCountResult.rows[0]?.count ?? '0');
+    if (!Number.isSafeInteger(stagedCount) || stagedCount < 0) {
+      throw new ConflictException('Source traceability settings count is invalid');
+    }
+    if (stagedCount === 0) return;
+
+    // Factories seed default settings during import. Reconcile only those new
+    // tenant/factory rows under the dedicated transfer role; never insert/update
+    // arbitrary settings or widen the selected tenant scope.
+    const mutableColumns = keys.filter((key) => key !== 'tenant_id' && key !== 'factory_id');
+    if (!mutableColumns.includes('retention_years')
+      || !mutableColumns.includes('allocation_policy')
+      || !mutableColumns.includes('version')) {
+      throw new ConflictException('Traceability settings bundle omits required reviewed policy fields');
+    }
+    const savepoint = 'factoryos_traceability_settings_import';
+    await client.query('SAVEPOINT ' + savepoint);
+    try {
+      await client.query("SELECT set_config('app.saas_tenant_transfer_import', 'on', true)");
+      const setList = mutableColumns
+        .map((key) => this.quoteIdentifier(key) + ' = source_row.' + this.quoteIdentifier(key))
+        .join(', ');
+      const updated = await client.query<{ factory_id: string }>(
+        'UPDATE public.traceability_settings AS target_row SET ' + setList + ' ' +
+        'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+        'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.traceability_settings, staged.row_payload) AS source_row ' +
+        'WHERE staged.table_name = $1 ' +
+        'AND target_row.tenant_id = $2::uuid ' +
+        'AND target_row.factory_id = source_row.factory_id ' +
+        'RETURNING target_row.factory_id::text AS factory_id',
+        [table, tenantId],
+      );
+      if (updated.rowCount !== stagedCount) {
+        throw new ConflictException(
+          'Target factory-seeded traceability settings do not match the source composite-key manifest',
+        );
+      }
+      await client.query("SELECT set_config('app.saas_tenant_transfer_import', '', true)");
+      await client.query('RELEASE SAVEPOINT ' + savepoint);
+    } catch (error) {
+      await client.query('ROLLBACK TO SAVEPOINT ' + savepoint).catch(() => undefined);
+      await client.query('RELEASE SAVEPOINT ' + savepoint).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async importInventoryLocations(
+    client: PoolClient,
+    tenantId: string,
+    keys: string[],
+  ): Promise<void> {
+    const table = 'inventory_locations';
+    const defaultCountResult = await client.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM pg_temp.factoryos_transfer_stage " +
+        "WHERE table_name = $1 AND (row_payload->>'is_default')::boolean IS TRUE",
+      [table],
+    );
+    const defaultCount = Number(defaultCountResult.rows[0]?.count ?? '0');
+    if (!Number.isSafeInteger(defaultCount) || defaultCount < 0) {
+      throw new ConflictException('Source inventory-location default count is invalid');
+    }
+
+    if (defaultCount > 0) {
+      const savepoint = 'factoryos_inventory_location_rebind';
+      await client.query('SAVEPOINT ' + savepoint);
+      try {
+        await client.query(
+          "SELECT set_config('app.saas_tenant_transfer_import', 'on', true)",
+        );
+        const setList = keys
+          .map((key) => this.quoteIdentifier(key) + ' = source_row.' + this.quoteIdentifier(key))
+          .join(', ');
+        const rebound = await client.query<{ id: string }>(
+          'UPDATE public.inventory_locations AS target_row SET ' + setList + ' ' +
+          'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+          'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.inventory_locations, staged.row_payload) AS source_row ' +
+          'WHERE staged.table_name = $1 ' +
+          'AND source_row.is_default IS TRUE ' +
+          'AND target_row.tenant_id = $2::uuid ' +
+          'AND target_row.factory_id = source_row.factory_id ' +
+          'AND target_row.is_default IS TRUE ' +
+          'AND target_row.location_code = source_row.location_code ' +
+          'RETURNING target_row.id::text AS id',
+          [table, tenantId],
+        );
+        if (rebound.rowCount !== defaultCount) {
+          throw new ConflictException(
+            'Target factory-created default locations do not match the source inventory-location manifest',
+          );
+        }
+        await client.query("SELECT set_config('app.saas_tenant_transfer_import', '', true)");
+        await client.query('RELEASE SAVEPOINT ' + savepoint);
+      } catch (error) {
+        await client.query('ROLLBACK TO SAVEPOINT ' + savepoint).catch(() => undefined);
+        await client.query('RELEASE SAVEPOINT ' + savepoint).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    const nonDefaultCountResult = await client.query<{ count: string }>(
+      "SELECT COUNT(*)::text AS count FROM pg_temp.factoryos_transfer_stage " +
+        "WHERE table_name = $1 AND (row_payload->>'is_default')::boolean IS DISTINCT FROM TRUE",
+      [table],
+    );
+    const nonDefaultCount = Number(nonDefaultCountResult.rows[0]?.count ?? '0');
+    if (!Number.isSafeInteger(nonDefaultCount) || nonDefaultCount < 0) {
+      throw new ConflictException('Source inventory-location count is invalid');
+    }
+    if (nonDefaultCount === 0) return;
+
+    const columnSql = keys.map((key) => this.quoteIdentifier(key)).join(', ');
+    const projectionSql = keys.map((key) => 'source_row.' + this.quoteIdentifier(key)).join(', ');
+    const inserted = await client.query(
+      'WITH RECURSIVE location_hierarchy(sequence, row_payload, location_id, parent_location_id, depth) AS (' +
+        'SELECT staged.sequence, staged.row_payload, (staged.row_payload->>\'id\')::uuid, ' +
+          'NULLIF(staged.row_payload->>\'parent_location_id\', \'\')::uuid, 0 ' +
+        'FROM pg_temp.factoryos_transfer_stage AS staged ' +
+        'WHERE staged.table_name = $1 ' +
+          'AND (staged.row_payload->>\'parent_location_id\' IS NULL OR staged.row_payload->>\'parent_location_id\' = \'\') ' +
+        'UNION ALL ' +
+        'SELECT child.sequence, child.row_payload, (child.row_payload->>\'id\')::uuid, ' +
+          'NULLIF(child.row_payload->>\'parent_location_id\', \'\')::uuid, parent.depth + 1 ' +
+        'FROM pg_temp.factoryos_transfer_stage AS child ' +
+        'JOIN location_hierarchy AS parent ' +
+          'ON NULLIF(child.row_payload->>\'parent_location_id\', \'\')::uuid = parent.location_id ' +
+        'WHERE child.table_name = $1 ' +
+          'AND NULLIF(child.row_payload->>\'parent_location_id\', \'\') IS NOT NULL' +
+      ') ' +
+      'INSERT INTO public.inventory_locations (' + columnSql + ') ' +
+      'SELECT ' + projectionSql + ' ' +
+      'FROM location_hierarchy AS staged ' +
+      'CROSS JOIN LATERAL jsonb_populate_record(NULL::public.inventory_locations, staged.row_payload) AS source_row ' +
+      'WHERE source_row.is_default IS DISTINCT FROM TRUE ' +
+      'ORDER BY staged.depth, staged.sequence',
+      [table],
+    );
+    if (inserted.rowCount !== nonDefaultCount) {
+      throw new ConflictException(
+        'Target inventory locations could not be imported in parent-before-child order',
+      );
+    }
+  }
+
   private dependencyOrder(tables: string[]): string[] {
     const preferred = [
-      'legal_entities', 'factories',
+      'legal_entities', 'factories', 'inventory_locations', 'traceability_settings',
       'business_blueprints', 'business_blueprint_versions',
       'business_entities', 'business_relations',
       'business_processes', 'business_process_steps',
@@ -756,6 +924,26 @@ export class SaasTenantPostgresMigrationTargetAdapter
       const hash = createHash('sha256');
       let count = 0;
       for (const table of entry.tables) {
+        if (table === 'traceability_settings') {
+          let afterFactoryId: string | null = null;
+          while (true) {
+            const result: QueryResult<QueryResultRow> = await client.query(
+              'SELECT * FROM public.traceability_settings ' +
+                'WHERE tenant_id = $1::uuid AND ($2::uuid IS NULL OR factory_id > $2::uuid) ' +
+                'ORDER BY factory_id ASC LIMIT $3',
+              [tenantId, afterFactoryId, PAGE_SIZE],
+            );
+            for (const row of result.rows as Array<Record<string, unknown>>) {
+              const canonical = this.canonicalJson({ ...row, __factoryos_table: table });
+              hash.update(canonical, 'utf8');
+              hash.update('\n', 'utf8');
+              afterFactoryId = String(row.factory_id);
+              count += 1;
+            }
+            if (result.rows.length < PAGE_SIZE) break;
+          }
+          continue;
+        }
         let afterId: string | null = null;
         while (true) {
           const result: QueryResult<QueryResultRow> = await client.query(
