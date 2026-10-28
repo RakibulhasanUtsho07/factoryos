@@ -879,14 +879,179 @@ export class SaasTenantPropagationService {
     };
   }
   private validatePlan(plan: SaasExternalPropagationPlan) {
-    if (!plan || !HEX_DIGEST.test(plan.manifestDigest)) throw new ConflictException('Adapter plan must include a SHA-256 manifest digest');
-    this.count(plan.plannedCopies, 'plannedCopies'); this.reference(plan.planReference, 'planReference');
+    if (!plan || typeof plan !== 'object' || !HEX_DIGEST.test(plan.manifestDigest)) {
+      throw new ConflictException('Adapter plan must include a SHA-256 resource identity manifest digest');
+    }
+    this.count(plan.plannedCopies, 'plannedCopies');
+    this.reference(plan.planReference, 'planReference');
+    if (typeof plan.adapterVersion !== 'string'
+      || !/^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$/.test(plan.adapterVersion)) {
+      throw new ConflictException('Adapter plan must pin a semantic adapter version');
+    }
+    if (typeof plan.resourceClass !== 'string'
+      || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(plan.resourceClass)) {
+      throw new ConflictException('Adapter plan resourceClass has an invalid format');
+    }
+    if (!Number.isSafeInteger(plan.maxPageSize) || plan.maxPageSize < 1 || plan.maxPageSize > 5000
+      || !Number.isSafeInteger(plan.maxBatchSize) || plan.maxBatchSize < 1 || plan.maxBatchSize > 1000) {
+      throw new ConflictException('Adapter plan enumeration and database batch limits exceed the supported bounds');
+    }
+    if (!plan.policyVersions || typeof plan.policyVersions !== 'object' || Array.isArray(plan.policyVersions)
+      || Buffer.byteLength(JSON.stringify(plan.policyVersions), 'utf8') > 16384) {
+      throw new ConflictException('Adapter plan policyVersions must be a bounded object');
+    }
+    for (const [key, value] of Object.entries(plan.policyVersions)) {
+      if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(key) || typeof value !== 'string'
+        || value.length < 1 || value.length > 100
+        || /(secret|password|credential|access[-_]?key|token)/i.test(key + ':' + value)) {
+        throw new ConflictException('Adapter plan policyVersions may contain only bounded non-secret labels');
+      }
+    }
+    if (!Array.isArray(plan.resources) || plan.resources.length > 1000000
+      || Buffer.byteLength(JSON.stringify(plan.resources), 'utf8') > 32 * 1024 * 1024) {
+      throw new ConflictException('Adapter plan resources must be a bounded complete identity array');
+    }
+    if (BigInt(this.count(plan.plannedCopies, 'plannedCopies')) !== BigInt(plan.resources.length)) {
+      throw new ConflictException('Adapter plannedCopies must exactly equal the enumerable resource identity count');
+    }
+    const seenIdentityDigests = new Set<string>();
+    for (const resource of plan.resources) {
+      if (!resource || typeof resource !== 'object'
+        || typeof resource.resourceKind !== 'string'
+        || !/^[A-Za-z][A-Za-z0-9._:-]{0,31}$/.test(resource.resourceKind)) {
+        throw new ConflictException('Adapter resource identity has an invalid resourceKind');
+      }
+      this.resourceReference(resource.resourceReference, 'resourceReference', 500);
+      if (resource.resourceVersionReference !== undefined && resource.resourceVersionReference !== null) {
+        this.resourceReference(resource.resourceVersionReference, 'resourceVersionReference', 200);
+      }
+      const identityDigest = this.hash({
+        resourceKind: resource.resourceKind,
+        resourceReference: resource.resourceReference,
+        resourceVersionReference: resource.resourceVersionReference ?? null,
+      });
+      if (seenIdentityDigests.has(identityDigest)) {
+        throw new ConflictException('Adapter resource manifest contains duplicate provider identities');
+      }
+      seenIdentityDigests.add(identityDigest);
+    }
+    if (digestSaasExternalPropagationResources(plan.resources) !== plan.manifestDigest) {
+      throw new ConflictException('Adapter manifest digest does not match the canonical resource identity set');
+    }
   }
-  private decodePlan(value: unknown): SaasExternalPropagationPlan | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-    const row = value as Record<string, unknown>;
-    const plan = { manifestDigest: String(row.manifestDigest ?? ''), plannedCopies: String(row.plannedCopies ?? ''), planReference: String(row.planReference ?? '') };
-    try { this.validatePlan(plan); return plan; } catch { return undefined; }
+
+  private async loadPlanFromManifest(input: {
+    tenantId: string;
+    actorUserId: string;
+    requestId: string;
+    runId: string;
+    sourceExportDigest: string;
+    target: SaasTenantExternalDataTarget;
+    planEntry: unknown;
+  }): Promise<{
+    plan: SaasExternalPropagationPlan;
+    manifestId: string;
+    latestOutcome: string | null;
+    providerReceiptReference: string | null;
+  }> {
+    const entry = this.jsonObject(input.planEntry);
+    const manifestId = this.uuid(entry.resourceManifestId, 'resourceManifestId');
+    const planReference = this.reference(entry.planReference, 'planReference');
+    const result = await this.database.query<QueryResultRow & {
+      manifest_id: string; manifest_digest: string; resource_count: string | number;
+      source_export_digest: string; store_kind: string; adapter_key: string; adapter_version: string;
+      resource_class: string; max_page_size: number; max_batch_size: number;
+      policy_versions: Record<string, unknown> | string;
+      resource_id: string | null; resource_kind: string | null; resource_reference: string | null;
+      resource_version_reference: string | null; latest_outcome: string | null;
+      provider_receipt_reference: string | null;
+    }>(
+      `SELECT m.id::text AS manifest_id,m.manifest_digest,m.resource_count,m.source_export_digest,
+              m.store_kind,m.adapter_key,m.adapter_version,m.resource_class,m.max_page_size,m.max_batch_size,
+              m.policy_versions,
+              i.id::text AS resource_id,i.resource_kind,i.resource_reference,i.resource_version_reference,
+              latest.outcome_code AS latest_outcome,latest.provider_receipt_reference
+       FROM saas_tenant_external_propagation_manifests m
+       LEFT JOIN saas_tenant_external_propagation_manifest_items i
+         ON i.tenant_id=m.tenant_id AND i.manifest_id=m.id
+       LEFT JOIN LATERAL (
+         SELECT e.outcome_code,e.provider_receipt_reference
+         FROM saas_tenant_external_propagation_resource_events e
+         WHERE e.tenant_id=i.tenant_id AND e.manifest_id=i.manifest_id AND e.resource_id=i.id
+         ORDER BY e.attempt_no DESC,e.event_no DESC LIMIT 1
+       ) latest ON true
+       WHERE m.tenant_id=$1 AND m.id=$2::uuid AND m.request_id=$3::uuid
+         AND m.run_id=$4::uuid AND m.target_id=$5 AND m.state='SEALED'
+       ORDER BY i.resource_ordinal`,
+      [input.tenantId, manifestId, input.requestId, input.runId, input.target.targetId],
+      { tenantId: input.tenantId, userId: input.actorUserId },
+    );
+    if (!result.rows.length) throw new ConflictException('Persisted resource manifest is missing or is not SEALED');
+    const row = result.rows[0]!;
+    if (row.source_export_digest !== input.sourceExportDigest
+      || row.store_kind !== input.target.storeKind
+      || row.adapter_key !== input.target.adapterKey
+      || String(entry.storeKind) !== input.target.storeKind
+      || String(entry.adapterKey) !== input.target.adapterKey
+      || String(entry.configReference) !== input.target.configReference
+      || String(entry.manifestDigest) !== row.manifest_digest
+      || String(entry.plannedCopies) !== String(row.resource_count)
+      || String(entry.resourceManifestId) !== row.manifest_id) {
+      throw new ConflictException('Stored plan metadata does not bind to the approved target and exact source export');
+    }
+    const resources: SaasExternalPropagationResourceIdentity[] = result.rows
+      .filter((resource) => resource.resource_id !== null)
+      .map((resource) => ({
+        resourceKind: String(resource.resource_kind),
+        resourceReference: String(resource.resource_reference),
+        resourceVersionReference: resource.resource_version_reference === null
+          ? null : String(resource.resource_version_reference),
+      }));
+    const resourceEventStates = result.rows
+      .filter((resource) => resource.resource_id !== null)
+      .map((resource) => resource.latest_outcome);
+    const distinctStates = [...new Set(resourceEventStates)];
+    if (distinctStates.length > 1) {
+      throw new ConflictException('Per-resource ledger is inconsistent: items do not share one resumable state');
+    }
+    if (resourceEventStates.some((state) => state === null)) {
+      throw new ConflictException('Per-resource ledger is incomplete: one or more identities lack execution evidence');
+    }
+    const providerReceiptReferences = [...new Set(result.rows
+      .filter((resource) => resource.resource_id !== null && resource.provider_receipt_reference !== null)
+      .map((resource) => String(resource.provider_receipt_reference)))];
+    if (providerReceiptReferences.length > 1) {
+      throw new ConflictException('Per-resource ledger has conflicting provider receipt references');
+    }
+    const plan: SaasExternalPropagationPlan = {
+      manifestDigest: row.manifest_digest,
+      plannedCopies: String(row.resource_count),
+      planReference,
+      adapterVersion: row.adapter_version,
+      resourceClass: row.resource_class,
+      maxPageSize: Number(row.max_page_size),
+      maxBatchSize: Number(row.max_batch_size),
+      policyVersions: this.jsonObject(row.policy_versions) as Record<string, string>,
+      resources,
+    };
+    this.validatePlan(plan);
+    if (entry.adapterVersion !== undefined && String(entry.adapterVersion) !== plan.adapterVersion) {
+      throw new ConflictException('Stored adapter version does not match the sealed resource manifest');
+    }
+    return {
+      plan, manifestId,
+      latestOutcome: resourceEventStates[0] ?? null,
+      providerReceiptReference: providerReceiptReferences[0] ?? null,
+    };
+  }
+
+  private resourceReference(value: unknown, field: string, maxLength: number) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > maxLength
+      || !SAFE_RESOURCE_REFERENCE.test(value) || value.includes('://')
+      || /(secret|password|credential|access[-_]?key|token)/i.test(value)) {
+      throw new ConflictException(field + ' must be an opaque, bounded, non-secret provider identity');
+    }
+    return value;
   }
   private residualReferences(value: unknown): string[] {
     if (!Array.isArray(value) || value.length > 50) throw new ConflictException('Adapter residual manifest must be an array of at most 50 opaque references');
