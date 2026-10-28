@@ -589,12 +589,10 @@ export class SaasTenantPropagationService {
           manifestKind = 'RESOURCE_IDENTITIES';
           manifestDigest = plan.manifestDigest;
           plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
-          if (outcomeCode === 'BLOCKED' || outcomeCode === 'RETAINED') {
-            // The exact prepared identities remain undeleted because the run-wide
-            // barrier prevented execution. Do not encode this as zero residuals.
-            residualCopies = plannedCopies;
-            if (residualCopies !== '0') residualManifest = ['retained-count:' + residualCopies];
-          }
+          // The run-wide barrier prevented execution, so all exact identities remain
+          // unresolved (unless an earlier immutable receipt provides better counts).
+          residualCopies = plannedCopies;
+          if (residualCopies !== '0') residualManifest = ['unexecuted-count:' + residualCopies];
         }
         // Preserve the last known counts if this is a retry after a prior uncertain
         // provider attempt; a new blocked attempt must not erase prior residual evidence.
@@ -742,11 +740,11 @@ export class SaasTenantPropagationService {
             plannedCopies = this.count(plan.plannedCopies, 'plannedCopies');
             planDigest = this.digestOrNull(plan.manifestDigest) ?? planDigest;
             manifestKind = 'RESOURCE_IDENTITIES';
-            if ((outcomeCode === 'BLOCKED' || outcomeCode === 'RETAINED') && deletedCopies === '0') {
-              residualCopies = plannedCopies;
-              if (residualCopies !== '0' && residualManifest.length === 0) {
-                residualManifest = ['retained-count:' + residualCopies];
-              }
+            if (deletedCopies === '0' && residualCopies === '0') {
+              // A timeout/recovery/verification exception leaves the exact plan
+              // unresolved; conservatively retain its count until provider read-back.
+              residualCopies = plannedCopies === '0' ? '1' : plannedCopies;
+              residualManifest = ['unverified-scope:' + target.targetId];
             }
           } catch {
             plannedCopies = '0';
